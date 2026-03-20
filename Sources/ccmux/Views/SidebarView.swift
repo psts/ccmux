@@ -7,8 +7,9 @@ struct SidebarView: View {
     let onDetachWorkspace: (UUID) -> Void
     let onSelectWorkspace: (UUID) -> Void
     let onReopenWorkspace: (UUID) -> Void
+    let onMoveToThisWindow: (UUID) -> Void
 
-    /// Workspaces available in this window (not displayed in other windows)
+    /// Workspaces belonging to this window (not displayed in other windows)
     private var thisWindowWorkspaces: [Workspace] {
         manager.workspaces.filter { !windowContext.otherWindowWorkspaceIds.contains($0.id) }
     }
@@ -33,9 +34,7 @@ struct SidebarView: View {
                                 isInOtherWindow: false,
                                 onSelect: { onSelectWorkspace(workspace.id) },
                                 onFileClicked: { filePath in
-                                    // Open file in this workspace's file explorer if one exists
                                     if let ctrl = manager.controllers[workspace.id] {
-                                        // Switch to this workspace first if not displayed
                                         if !isDisplayed {
                                             onSelectWorkspace(workspace.id)
                                         }
@@ -156,6 +155,14 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func workspaceContextMenu(for workspace: Workspace) -> some View {
+        let isInOtherWindow = windowContext.otherWindowWorkspaceIds.contains(workspace.id)
+
+        if isInOtherWindow {
+            Button("Move to This Window") {
+                onMoveToThisWindow(workspace.id)
+            }
+            Divider()
+        }
         Button("Open in New Window") {
             onDetachWorkspace(workspace.id)
         }

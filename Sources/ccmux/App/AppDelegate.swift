@@ -36,6 +36,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Prevent windowWillClose from moving workspaces to closedWorkspaces during quit
+        windowManager?.isTerminating = true
+        // Save current state including all window descriptors
         workspaceManager.saveState()
     }
 

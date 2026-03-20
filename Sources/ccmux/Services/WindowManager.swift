@@ -4,8 +4,10 @@ import Combine
 /// Per-window state binding — each window creates one and passes it to its views.
 class WindowContext: ObservableObject {
     @Published var displayedWorkspaceId: UUID?
-    /// IDs of workspaces displayed in OTHER windows (for sidebar badges)
+    /// IDs of workspaces that belong to OTHER windows
     @Published var otherWindowWorkspaceIds: Set<UUID> = []
+    /// IDs of workspaces that belong to THIS window (displayed + previously selected here)
+    @Published var ownedWorkspaceIds: Set<UUID> = []
     weak var workspaceManager: WorkspaceManager?
 
     var displayedController: SplitTreeController? {
@@ -16,6 +18,9 @@ class WindowContext: ObservableObject {
     init(workspaceId: UUID?, workspaceManager: WorkspaceManager) {
         self.displayedWorkspaceId = workspaceId
         self.workspaceManager = workspaceManager
+        if let id = workspaceId {
+            ownedWorkspaceIds = [id]
+        }
     }
 }
 
@@ -25,6 +30,9 @@ class WindowContext: ObservableObject {
 class WindowManager {
     let workspaceManager: WorkspaceManager
     private(set) var windowControllers: [WorkspaceWindowController] = []
+
+    /// Set to true during app termination to prevent windowWillClose from closing workspaces.
+    var isTerminating = false
 
     init(workspaceManager: WorkspaceManager) {
         self.workspaceManager = workspaceManager
@@ -65,9 +73,14 @@ class WindowManager {
     /// If already displayed in a window, bring that window to front.
     /// Uses the source window's frame for the new window.
     func detachWorkspace(id: UUID, sourceWindow: NSWindow? = nil) {
-        if let existing = windowDisplaying(workspaceId: id) {
-            existing.window?.makeKeyAndOrderFront(nil)
-            return
+        if let ownerWc = windowOwning(workspaceId: id) {
+            if ownerWc.windowContext.displayedWorkspaceId == id {
+                // Already displayed in a window, bring it to front
+                ownerWc.window?.makeKeyAndOrderFront(nil)
+                return
+            }
+            // Remove ownership from source window
+            ownerWc.windowContext.ownedWorkspaceIds.remove(id)
         }
         let frame: WindowFrame?
         if let f = sourceWindow?.frame {
@@ -82,13 +95,15 @@ class WindowManager {
     /// If the workspace is already open in another window, bring that window to front.
     /// Otherwise, switch the requesting window to show it.
     func selectWorkspace(id: UUID, from requestingController: WorkspaceWindowController) {
-        // Check if another window is already showing this workspace
-        if let existing = windowDisplaying(workspaceId: id), existing !== requestingController {
-            existing.window?.makeKeyAndOrderFront(nil)
+        // Check if another window owns this workspace
+        if let ownerWc = windowOwning(workspaceId: id), ownerWc !== requestingController {
+            ownerWc.window?.makeKeyAndOrderFront(nil)
             return
         }
-        // Switch the requesting window
+
+        // Switch the requesting window and claim ownership
         requestingController.windowContext.displayedWorkspaceId = id
+        requestingController.windowContext.ownedWorkspaceIds.insert(id)
         requestingController.updateWindowTitle()
 
         // Update global activeWorkspaceId for compatibility
@@ -96,22 +111,32 @@ class WindowManager {
         refreshOtherWindowIds()
     }
 
+    /// Find which window owns (not just displays) a workspace.
+    func windowOwning(workspaceId: UUID) -> WorkspaceWindowController? {
+        windowControllers.first { $0.windowContext.ownedWorkspaceIds.contains(workspaceId) }
+    }
+
     /// Called when a window is about to close.
     func windowWillClose(_ controller: WorkspaceWindowController) {
-        // If this window has a workspace that no other window is displaying, close it
-        if let wsId = controller.windowContext.displayedWorkspaceId {
-            let otherWindowsShowingIt = windowControllers.contains { wc in
-                wc !== controller && wc.windowContext.displayedWorkspaceId == wsId
-            }
-            if !otherWindowsShowingIt {
-                // Save window frame before closing
-                if let f = controller.window?.frame {
-                    workspaceManager.saveWindowFrame(
-                        workspaceId: wsId,
-                        frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height)
-                    )
+        // During app termination, don't close workspaces — they'll be saved as-is
+        if !isTerminating {
+            // Close ALL owned workspaces that aren't owned by another window
+            let ownedIds = controller.windowContext.ownedWorkspaceIds
+            for wsId in ownedIds {
+                let ownedElsewhere = windowControllers.contains { wc in
+                    wc !== controller && wc.windowContext.ownedWorkspaceIds.contains(wsId)
                 }
-                workspaceManager.closeWorkspace(id: wsId)
+                if !ownedElsewhere {
+                    // Save window frame for the displayed workspace
+                    if wsId == controller.windowContext.displayedWorkspaceId,
+                       let f = controller.window?.frame {
+                        workspaceManager.saveWindowFrame(
+                            workspaceId: wsId,
+                            frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height)
+                        )
+                    }
+                    workspaceManager.closeWorkspace(id: wsId)
+                }
             }
         }
 
@@ -119,6 +144,33 @@ class WindowManager {
         refreshOtherWindowIds()
 
         // Don't quit — app stays running so user can reopen from dock
+    }
+
+    /// Move a workspace from its current window into the requesting window.
+    /// Closes the source window if it only had that workspace.
+    func moveWorkspaceToWindow(id: UUID, targetController: WorkspaceWindowController) {
+        // Remove ownership from any other window
+        for wc in windowControllers where wc !== targetController {
+            wc.windowContext.ownedWorkspaceIds.remove(id)
+            // If source window was displaying this workspace and has no other owned workspaces, close it
+            if wc.windowContext.displayedWorkspaceId == id {
+                if let otherOwned = wc.windowContext.ownedWorkspaceIds.first {
+                    wc.windowContext.displayedWorkspaceId = otherOwned
+                    wc.updateWindowTitle()
+                } else {
+                    wc.windowContext.displayedWorkspaceId = nil
+                    windowControllers.removeAll { $0 === wc }
+                    wc.window?.close()
+                }
+            }
+        }
+
+        // Switch target window to display and own this workspace
+        targetController.windowContext.displayedWorkspaceId = id
+        targetController.windowContext.ownedWorkspaceIds.insert(id)
+        targetController.updateWindowTitle()
+        workspaceManager.activeWorkspaceId = id
+        refreshOtherWindowIds()
     }
 
     /// Reopen a previously closed workspace in a new window with its saved frame.
@@ -174,21 +226,27 @@ class WindowManager {
         if windowControllers.isEmpty {
             createWindow(displayingWorkspace: workspaceManager.workspaces.first?.id)
         }
-    }
 
-    /// Update all window contexts with which workspaces are in other windows.
-    func refreshOtherWindowIds() {
-        // Build a map of all displayed workspace IDs
-        let allDisplayed: [(controller: WorkspaceWindowController, wsId: UUID)] = windowControllers.compactMap { wc in
-            guard let wsId = wc.windowContext.displayedWorkspaceId else { return nil }
-            return (wc, wsId)
+        // Assign unowned workspaces to the first window
+        let allOwned = windowControllers.reduce(into: Set<UUID>()) { $0.formUnion($1.windowContext.ownedWorkspaceIds) }
+        if let firstWc = windowControllers.first {
+            for ws in workspaceManager.workspaces where !allOwned.contains(ws.id) {
+                firstWc.windowContext.ownedWorkspaceIds.insert(ws.id)
+            }
         }
 
+        // Tell all windows about each other's workspaces
+        refreshOtherWindowIds()
+    }
+
+    /// Update all window contexts with which workspaces belong to other windows.
+    func refreshOtherWindowIds() {
         for wc in windowControllers {
-            let othersIds = Set(allDisplayed.compactMap { entry -> UUID? in
-                entry.controller !== wc ? entry.wsId : nil
-            })
-            wc.windowContext.otherWindowWorkspaceIds = othersIds
+            var otherIds = Set<UUID>()
+            for otherWc in windowControllers where otherWc !== wc {
+                otherIds.formUnion(otherWc.windowContext.ownedWorkspaceIds)
+            }
+            wc.windowContext.otherWindowWorkspaceIds = otherIds
         }
     }
 

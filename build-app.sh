@@ -18,6 +18,12 @@ mkdir -p "$APP_DIR/Contents/Resources"
 # Copy binary
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
+# Copy icon
+if [ -f "AppIcon.icns" ]; then
+    cp AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
+    echo "Icon added."
+fi
+
 # Create Info.plist
 cat > "$APP_DIR/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,6 +50,8 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <true/>
     <key>NSSupportsAutomaticTermination</key>
     <false/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSUIElement</key>
     <false/>
 </dict>

@@ -73,6 +73,10 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             },
             onReopenWorkspace: { [weak self] id in
                 self?.windowManager?.reopenWorkspace(id: id)
+            },
+            onMoveToThisWindow: { [weak self] id in
+                guard let self else { return }
+                self.windowManager?.moveWorkspaceToWindow(id: id, targetController: self)
             }
         )
         let sidebarHosting = NSHostingController(rootView: sidebarView)
@@ -122,10 +126,12 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             let name = url.lastPathComponent
             self.workspaceManager.addWorkspace(name: name, repoPath: url.path)
 
-            // Show the new workspace in this window
+            // Show the new workspace in this window and claim ownership
             if let newId = self.workspaceManager.workspaces.last?.id {
                 self.windowContext.displayedWorkspaceId = newId
+                self.windowContext.ownedWorkspaceIds.insert(newId)
                 self.updateWindowTitle()
+                self.windowManager?.refreshOtherWindowIds()
             }
         }
     }
