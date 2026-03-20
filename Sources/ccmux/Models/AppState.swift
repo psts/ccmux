@@ -20,4 +20,5 @@ struct WindowDescriptor: Codable, Identifiable {
     let id: UUID
     var workspaceId: UUID?
     var frame: WindowFrame
+    var space: SpaceSnapshot?
 }

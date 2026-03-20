@@ -34,8 +34,14 @@ class WindowManager {
     /// Set to true during app termination to prevent windowWillClose from closing workspaces.
     var isTerminating = false
 
+    /// Windows assigned to other Spaces but not yet ordered. Keyed by target CGS Space ID.
+    /// Ordered when the user navigates to the target Space.
+    private var pendingSpaceWindows: [size_t: [WorkspaceWindowController]] = [:]
+    private var spaceChangeObserver: NSObjectProtocol?
+
     init(workspaceManager: WorkspaceManager) {
         self.workspaceManager = workspaceManager
+        setupSpaceChangeObserver()
 
         // When a workspace is removed, clear any window that was showing it
         workspaceManager.onWorkspaceRemoved = { [weak self] removedId in
@@ -97,7 +103,21 @@ class WindowManager {
     func selectWorkspace(id: UUID, from requestingController: WorkspaceWindowController) {
         // Check if another window owns this workspace
         if let ownerWc = windowOwning(workspaceId: id), ownerWc !== requestingController {
-            ownerWc.window?.makeKeyAndOrderFront(nil)
+            // Switch that window to display the clicked workspace
+            ownerWc.windowContext.displayedWorkspaceId = id
+            ownerWc.updateWindowTitle()
+            // Bring it to front (switches Space if needed via FocusWindowCommand-style behavior)
+            NSApp.activate(ignoringOtherApps: true)
+            if let window = ownerWc.window {
+                let originalBehavior = window.collectionBehavior
+                window.collectionBehavior.insert(.canJoinAllSpaces)
+                window.makeKeyAndOrderFront(nil)
+                window.orderFrontRegardless()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    window.collectionBehavior = originalBehavior
+                }
+            }
+            workspaceManager.activeWorkspaceId = id
             return
         }
 
@@ -188,37 +208,74 @@ class WindowManager {
 
     // MARK: - Persistence
 
-    /// Get current window descriptors for saving.
+    /// Get current window descriptors for saving (including Space snapshot).
     func windowDescriptors() -> [WindowDescriptor] {
         windowControllers.compactMap { wc in
             guard let window = wc.window else { return nil }
             let f = window.frame
+            let space = SpaceTracker.spaceSnapshot(for: window)
             return WindowDescriptor(
                 id: wc.windowId,
                 workspaceId: wc.windowContext.displayedWorkspaceId,
-                frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height)
+                frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height),
+                space: space
             )
         }
     }
 
-    /// Restore windows from saved descriptors.
+    /// Restore windows from saved descriptors, placing each on its saved Space.
+    ///
+    /// Critical sequence (from old cmux app analysis):
+    /// 1. Create window (defer: false gives valid windowNumber immediately)
+    /// 2. Resolve target Space from saved snapshot
+    /// 3. If other Space: CGS pre-assign, do NOT order (no showWindow/orderFront)
+    /// 4. If current Space: makeKeyAndOrderFront directly on NSWindow
+    /// 5. THEN set frame with display: true (after ordering decision)
+    ///
+    /// Pending (other-Space) windows are ordered when the user navigates to that Space
+    /// via NSWorkspace.activeSpaceDidChangeNotification.
     func restoreWindows(from descriptors: [WindowDescriptor]) {
+        let currentSpaceID = SpaceTracker.currentSpaceID()
+
         for desc in descriptors {
             // Only restore if the workspace still exists
             if let wsId = desc.workspaceId,
                workspaceManager.workspaces.contains(where: { $0.id == wsId }) {
+                // Step 1: Create window (defer: false → valid windowNumber)
                 let wc = WorkspaceWindowController(
                     workspaceManager: workspaceManager,
                     windowManager: self,
                     displayedWorkspaceId: wsId,
                     windowId: desc.id
                 )
-                wc.window?.setFrame(
-                    NSRect(x: desc.frame.x, y: desc.frame.y, width: desc.frame.width, height: desc.frame.height),
-                    display: true
-                )
+
+                // Step 2: Resolve target Space
+                let targetSpaceID: size_t? = {
+                    guard let spaceSnap = desc.space else { return nil }
+                    return SpaceTracker.resolveSpaceID(from: spaceSnap)
+                }()
+                let isOtherSpace = targetSpaceID != nil && targetSpaceID != currentSpaceID
+
                 windowControllers.append(wc)
-                wc.showWindow(nil)
+
+                // Step 3/4: Order or defer based on Space
+                if isOtherSpace, let targetSpaceID, let window = wc.window {
+                    // OTHER SPACE: Pre-assign to target Space BEFORE any ordering.
+                    // The window has a valid windowNumber from defer:false but is not yet
+                    // on any space. Assigning first means it won't auto-place on current space.
+                    SpaceTracker.assignWindowToSpace(window, spaceID: targetSpaceID)
+                    // Do NOT order — any ordering triggers macOS to switch Spaces.
+                    pendingSpaceWindows[targetSpaceID, default: []].append(wc)
+                } else if let window = wc.window {
+                    // CURRENT SPACE (or no Space info): Order directly on NSWindow
+                    // Use makeKeyAndOrderFront, not showWindow (which triggers extra WC machinery)
+                    window.makeKeyAndOrderFront(nil)
+                }
+
+                // Step 5: Apply frame AFTER ordering decision
+                let frame = NSRect(x: desc.frame.x, y: desc.frame.y,
+                                   width: desc.frame.width, height: desc.frame.height)
+                wc.window?.setFrame(frame, display: true)
             }
         }
 
@@ -237,6 +294,10 @@ class WindowManager {
 
         // Tell all windows about each other's workspaces
         refreshOtherWindowIds()
+
+        // Schedule fallback: if the user is already on a target Space,
+        // no activeSpaceDidChangeNotification will fire. Force-order after a delay.
+        schedulePendingWindowFallback()
     }
 
     /// Update all window contexts with which workspaces belong to other windows.
@@ -250,6 +311,48 @@ class WindowManager {
         }
     }
 
+    // MARK: - Space Management
+
+    /// Observe Space changes to order pending windows when the user switches to their Space.
+    private func setupSpaceChangeObserver() {
+        spaceChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.orderPendingWindowsForCurrentSpace()
+        }
+    }
+
+    /// Schedule a fallback to order all pending windows after a delay.
+    /// Handles the case where the user is already on the target Space when the app launches
+    /// (no Space change notification will fire).
+    func schedulePendingWindowFallback() {
+        guard !pendingSpaceWindows.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.forceOrderAllPendingWindows()
+        }
+    }
+
+    /// When the user switches to a Space, order ALL pending windows.
+    /// We order all of them regardless of Space ID matching because:
+    /// - Space IDs can drift between save and restore
+    /// - Windows already assigned to the wrong Space simply won't be visible
+    /// - This ensures no window gets stuck as "pending" forever
+    private func orderPendingWindowsForCurrentSpace() {
+        forceOrderAllPendingWindows()
+    }
+
+    /// Force-order all pending windows immediately.
+    private func forceOrderAllPendingWindows() {
+        guard !pendingSpaceWindows.isEmpty else { return }
+        let allPending = pendingSpaceWindows.values.flatMap { $0 }
+        pendingSpaceWindows.removeAll()
+        for wc in allPending {
+            wc.window?.orderFront(nil)
+        }
+    }
+
     // MARK: - Private
 
     private func handleWorkspaceRemoved(id: UUID) {
@@ -260,6 +363,12 @@ class WindowManager {
                 wc.windowContext.displayedWorkspaceId = nextId
                 wc.updateWindowTitle()
             }
+        }
+    }
+
+    deinit {
+        if let observer = spaceChangeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
     }
 }

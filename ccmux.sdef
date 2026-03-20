@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<dictionary title="ccmux Terminology">
+
+    <suite name="Standard Suite" code="????" description="Common classes and commands for all applications.">
+        <cocoa name="NSCoreSuite"/>
+
+        <class name="application" code="capp" description="The ccmux application.">
+            <cocoa class="NSApplication"/>
+            <element type="window" access="r">
+                <cocoa key="orderedWindows"/>
+            </element>
+        </class>
+
+        <class name="window" code="cwin" description="A window.">
+            <cocoa class="NSWindow"/>
+            <property name="id" code="ID  " type="integer" access="r"
+                      description="The unique identifier of the window.">
+                <cocoa key="windowNumber"/>
+            </property>
+            <property name="name" code="pnam" type="text" access="rw"
+                      description="The title of the window.">
+                <cocoa key="title"/>
+            </property>
+            <property name="visible" code="pvis" type="boolean" access="r"
+                      description="Is the window visible?">
+                <cocoa key="isVisible"/>
+            </property>
+            <property name="miniaturized" code="pmnd" type="boolean" access="rw"
+                      description="Is the window minimized?">
+                <cocoa key="isMiniaturized"/>
+            </property>
+        </class>
+    </suite>
+
+    <suite name="ccmux Suite" code="ccmx" description="ccmux-specific scripting commands.">
+        <command name="focus" code="ccmxFcus"
+                 description="Bring a window to the front, switching macOS Spaces if needed.">
+            <cocoa class="ccmux.FocusWindowCommand"/>
+            <direct-parameter type="specifier" description="The window to focus."/>
+        </command>
+    </suite>
+
+</dictionary>

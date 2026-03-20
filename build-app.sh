@@ -24,6 +24,12 @@ if [ -f "AppIcon.icns" ]; then
     echo "Icon added."
 fi
 
+# Copy scripting definition
+if [ -f "ccmux.sdef" ]; then
+    cp ccmux.sdef "$APP_DIR/Contents/Resources/ccmux.sdef"
+    echo "Scripting definition added."
+fi
+
 # Create Info.plist
 cat > "$APP_DIR/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -52,6 +58,10 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <false/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>NSAppleScriptEnabled</key>
+    <true/>
+    <key>OSAScriptingDefinition</key>
+    <string>ccmux.sdef</string>
     <key>LSUIElement</key>
     <false/>
 </dict>

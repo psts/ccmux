@@ -5,6 +5,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let workspaceManager = WorkspaceManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setAppIcon()
+        registerScriptingIfNeeded()
         buildMainMenu()
 
         // Try to restore saved state
@@ -88,6 +90,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func newWindow() {
         windowManager?.createWindow(displayingWorkspace: workspaceManager.workspaces.first?.id)
+    }
+
+    private func setAppIcon() {
+        // Try loading from app bundle first (release .app build)
+        if let bundleIcon = NSImage(named: "AppIcon") {
+            NSApp.applicationIconImage = bundleIcon
+            return
+        }
+
+        // Fallback: load from source tree (debug build via swift build)
+        // Walk up from the executable to find the project root
+        let executablePath = ProcessInfo.processInfo.arguments[0]
+        let execDir = (executablePath as NSString).deletingLastPathComponent
+
+        // Check common locations relative to the executable
+        let candidates = [
+            (execDir as NSString).appendingPathComponent("../../AppIcon.icns"),          // .build/debug/ → project root
+            (execDir as NSString).appendingPathComponent("../../../AppIcon.icns"),        // deeper build paths
+            (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent("AppIcon.icns"), // cwd
+        ]
+
+        for path in candidates {
+            let resolved = (path as NSString).standardizingPath
+            if FileManager.default.fileExists(atPath: resolved),
+               let icon = NSImage(contentsOfFile: resolved) {
+                NSApp.applicationIconImage = icon
+                return
+            }
+        }
+    }
+
+    private func registerScriptingIfNeeded() {
+        // Cocoa Scripting auto-loads from Info.plist + sdef in Resources for .app bundles.
+        // For debug builds (plain executable), AppleScript is not available.
+        if Bundle.main.path(forResource: "ccmux", ofType: "sdef") == nil {
+            print("[AppleScript] Scripting not available — run from .app bundle (./build-app.sh)")
+        }
     }
 
     private func buildMainMenu() {
