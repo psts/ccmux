@@ -39,6 +39,18 @@ class WorkspaceManager: ObservableObject {
                 self?.scheduleSave()
             }
             .store(in: &cancellables)
+
+        // Handle file link clicks from terminals — route to the right workspace's File Explorer
+        TerminalStore.shared.onFileLinkClicked = { [weak self] terminalPaneId, relativePath in
+            guard let self else { return }
+            // Find which workspace owns this terminal pane
+            for (_, ctrl) in self.controllers {
+                if ctrl.tree.findLeaf(id: terminalPaneId) != nil {
+                    _ = ctrl.openFileInExplorer(relativePath: relativePath)
+                    break
+                }
+            }
+        }
     }
 
     // MARK: - Load / Save
@@ -194,6 +206,12 @@ class WorkspaceManager: ObservableObject {
         if activeWorkspaceId == id {
             activeWorkspaceId = workspaces.first?.id
         }
+    }
+
+    /// Permanently delete a closed workspace.
+    func deleteClosedWorkspace(id: UUID) {
+        closedWorkspaces.removeAll { $0.id == id }
+        scheduleSave()
     }
 
     /// Reopen a previously closed workspace.

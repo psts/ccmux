@@ -113,12 +113,25 @@ struct SidebarView: View {
                             Button {
                                 onReopenWorkspace(ws.id)
                             } label: {
-                                VStack(alignment: .leading) {
-                                    Text(ws.name)
-                                    Text(shortenPath(ws.repoPath))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(ws.name)
+                                        Text(shortenPath(ws.repoPath))
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
                                 }
+                            }
+                        }
+
+                        Divider()
+
+                        ForEach(manager.closedWorkspaces) { ws in
+                            Button(role: .destructive) {
+                                manager.deleteClosedWorkspace(id: ws.id)
+                            } label: {
+                                Label("Delete \(ws.name)", systemImage: "trash")
                             }
                         }
                     }
