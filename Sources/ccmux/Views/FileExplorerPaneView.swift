@@ -75,6 +75,7 @@ private struct FileExplorerContent: View {
                                 onStateChange()
                             }
                         )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
                     // Empty state
@@ -361,6 +362,13 @@ struct FileEditorView: NSViewRepresentable {
         context.coordinator.currentTabId = tabId
 
         scrollView.documentView = textView
+
+        // Line number gutter
+        let ruler = LineNumberRulerView(textView: textView)
+        scrollView.verticalRulerView = ruler
+        scrollView.hasVerticalRuler = true
+        scrollView.rulersVisible = true
+
         return scrollView
     }
 
@@ -374,6 +382,7 @@ struct FileEditorView: NSViewRepresentable {
             textView.onSave = onSave
             context.coordinator.onContentChange = onContentChange
             context.coordinator.isUpdating = false
+            nsView.verticalRulerView?.needsDisplay = true
         }
     }
 
@@ -405,5 +414,148 @@ class SaveableTextView: NSTextView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+// MARK: - Line Number Ruler
+
+/// Draws line numbers in a gutter alongside the text view.
+class LineNumberRulerView: NSRulerView {
+    private weak var textView: NSTextView?
+
+    private let gutterBackgroundColor = NSColor(red: 0.09, green: 0.10, blue: 0.12, alpha: 1.0)
+    private let lineNumberColor = NSColor(white: 0.40, alpha: 1.0)
+    private let currentLineColor = NSColor(white: 0.70, alpha: 1.0)
+
+    private lazy var lineNumberFont: NSFont = {
+        NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    }()
+
+    init(textView: NSTextView) {
+        self.textView = textView
+        super.init(scrollView: textView.enclosingScrollView!, orientation: .verticalRuler)
+        self.clipsToBounds = true  // macOS 14+: prevent drawing outside ruler bounds
+        self.ruleThickness = 40
+        self.clientView = textView
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textDidChange),
+            name: NSText.didChangeNotification, object: textView
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(boundsDidChange),
+            name: NSView.boundsDidChangeNotification,
+            object: textView.enclosingScrollView?.contentView
+        )
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) not implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func textDidChange(_ notification: Notification) {
+        needsDisplay = true
+    }
+
+    @objc private func boundsDidChange(_ notification: Notification) {
+        needsDisplay = true
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let textView = textView,
+              let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else { return }
+
+        // Fill background — use bounds, NOT rect (rect can extend beyond ruler on macOS 14+)
+        gutterBackgroundColor.setFill()
+        bounds.fill()
+
+        // Draw separator line
+        NSColor(white: 0.2, alpha: 1.0).setStroke()
+        let separatorX = bounds.maxX - 0.5
+        NSBezierPath.strokeLine(from: NSPoint(x: separatorX, y: bounds.minY),
+                                to: NSPoint(x: separatorX, y: bounds.maxY))
+
+        let string = textView.string as NSString
+        let visibleRect = scrollView?.contentView.bounds ?? textView.visibleRect
+        let yOffset = textView.textContainerInset.height
+
+        // Ensure layout is complete
+        layoutManager.ensureLayout(for: textContainer)
+
+        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+
+        // Get the current line (where the insertion point is)
+        let selectedRange = textView.selectedRange()
+        let currentLineRange = string.length > 0
+            ? string.lineRange(for: NSRange(location: min(selectedRange.location, string.length - 1), length: 0))
+            : NSRange(location: 0, length: 0)
+
+        // Use enumerateLineFragments for robust line rect computation.
+        // First, count lines before the visible range to get the starting line number.
+        let visibleCharRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+        var startingLineNumber = 1
+        if visibleCharRange.location > 0 {
+            let preText = string.substring(to: visibleCharRange.location)
+            startingLineNumber = preText.components(separatedBy: "\n").count
+            // If the visible range starts right after a newline, we're on the next line
+            if preText.hasSuffix("\n") {
+                // Already counted correctly
+            }
+        }
+
+        var lineNumber = startingLineNumber
+
+        // Draw line numbers using enumerateLineFragments — handles empty lines correctly
+        layoutManager.enumerateLineFragments(forGlyphRange: visibleGlyphRange) { (fragmentRect, usedRect, container, glyphRange, stop) in
+            let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            let lineRect = NSRect(
+                x: fragmentRect.origin.x,
+                y: fragmentRect.origin.y + yOffset,
+                width: fragmentRect.width,
+                height: fragmentRect.height
+            )
+
+            let yPosition = lineRect.origin.y - visibleRect.origin.y
+
+            let isCurrentLine = NSLocationInRange(currentLineRange.location, charRange) ||
+                (currentLineRange.location == charRange.location)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: self.lineNumberFont,
+                .foregroundColor: isCurrentLine ? self.currentLineColor : self.lineNumberColor
+            ]
+
+            let lineStr = "\(lineNumber)" as NSString
+            let strSize = lineStr.size(withAttributes: attrs)
+            let drawPoint = NSPoint(
+                x: self.ruleThickness - strSize.width - 8,
+                y: yPosition + (lineRect.height - strSize.height) / 2
+            )
+            lineStr.draw(at: drawPoint, withAttributes: attrs)
+
+            lineNumber += 1
+        }
+
+        // Handle the extra line after a trailing newline
+        let extraRect = layoutManager.extraLineFragmentRect
+        if extraRect.height > 0 {
+            let yPosition = extraRect.origin.y + yOffset - visibleRect.origin.y
+            let isCurrentLine = selectedRange.location == string.length
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: lineNumberFont,
+                .foregroundColor: isCurrentLine ? currentLineColor : lineNumberColor
+            ]
+            let lineStr = "\(lineNumber)" as NSString
+            let strSize = lineStr.size(withAttributes: attrs)
+            let drawPoint = NSPoint(
+                x: ruleThickness - strSize.width - 8,
+                y: yPosition + (extraRect.height - strSize.height) / 2
+            )
+            lineStr.draw(at: drawPoint, withAttributes: attrs)
+        }
     }
 }
