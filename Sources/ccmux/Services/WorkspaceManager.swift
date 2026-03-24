@@ -4,6 +4,7 @@ import Combine
 class WorkspaceManager: ObservableObject {
     @Published var workspaces: [Workspace] = []
     @Published var closedWorkspaces: [Workspace] = []
+    @Published var closedWindows: [ClosedWindow] = []
     @Published var activeWorkspaceId: UUID?
 
     /// Map of workspace ID → its SplitTreeController (runtime only, not persisted)
@@ -11,6 +12,9 @@ class WorkspaceManager: ObservableObject {
 
     /// Map of workspace ID → its GitStatusMonitor (runtime only)
     private(set) var monitors: [UUID: GitStatusMonitor] = [:]
+
+    /// Map of workspace ID → its ClaudeProcessMonitor (runtime only)
+    private(set) var claudeMonitors: [UUID: ClaudeProcessMonitor] = [:]
 
     /// Called by WindowManager when a workspace is removed
     var onWorkspaceRemoved: ((UUID) -> Void)?
@@ -79,10 +83,12 @@ class WorkspaceManager: ObservableObject {
 
             // Start git monitoring
             monitors[workspace.id] = GitStatusMonitor(repoPath: workspace.repoPath)
+            claudeMonitors[workspace.id] = ClaudeProcessMonitor(repoPath: workspace.repoPath)
         }
 
-        // Load closed workspaces
+        // Load closed workspaces and windows
         closedWorkspaces = state.closedWorkspaces
+        closedWindows = state.closedWindows
 
         activeWorkspaceId = state.activeWorkspaceId ?? workspaces.first?.id
 
@@ -123,6 +129,7 @@ class WorkspaceManager: ObservableObject {
         let state = AppState(
             workspaces: snapshot,
             closedWorkspaces: closedWorkspaces,
+            closedWindows: closedWindows,
             activeWorkspaceId: activeWorkspaceId,
             version: 2,
             windows: windowDescriptorProvider?() ?? []
@@ -164,6 +171,7 @@ class WorkspaceManager: ObservableObject {
 
         // Start git monitoring
         monitors[workspace.id] = GitStatusMonitor(repoPath: repoPath)
+        claudeMonitors[workspace.id] = ClaudeProcessMonitor(repoPath: repoPath)
 
         activeWorkspaceId = workspace.id
     }
@@ -202,6 +210,8 @@ class WorkspaceManager: ObservableObject {
         controllers.removeValue(forKey: id)
         monitors[id]?.stop()
         monitors.removeValue(forKey: id)
+        claudeMonitors[id]?.stop()
+        claudeMonitors.removeValue(forKey: id)
 
         if activeWorkspaceId == id {
             activeWorkspaceId = workspaces.first?.id
@@ -211,6 +221,28 @@ class WorkspaceManager: ObservableObject {
     /// Permanently delete a closed workspace.
     func deleteClosedWorkspace(id: UUID) {
         closedWorkspaces.removeAll { $0.id == id }
+        // Also remove from any closed windows
+        for i in closedWindows.indices {
+            closedWindows[i].workspaceIds.removeAll { $0 == id }
+        }
+        closedWindows.removeAll { $0.workspaceIds.isEmpty }
+        scheduleSave()
+    }
+
+    /// Save a closed window group for later restoration.
+    func saveClosedWindow(_ closedWindow: ClosedWindow) {
+        closedWindows.append(closedWindow)
+        scheduleSave()
+    }
+
+    /// Permanently delete a closed window group.
+    func deleteClosedWindow(id: UUID) {
+        guard let window = closedWindows.first(where: { $0.id == id }) else { return }
+        // Also remove the individual workspaces
+        for wsId in window.workspaceIds {
+            closedWorkspaces.removeAll { $0.id == wsId }
+        }
+        closedWindows.removeAll { $0.id == id }
         scheduleSave()
     }
 
@@ -237,6 +269,7 @@ class WorkspaceManager: ObservableObject {
 
         // Start git monitoring
         monitors[workspace.id] = GitStatusMonitor(repoPath: workspace.repoPath)
+        claudeMonitors[workspace.id] = ClaudeProcessMonitor(repoPath: workspace.repoPath)
 
         activeWorkspaceId = workspace.id
         return workspace
@@ -247,6 +280,8 @@ class WorkspaceManager: ObservableObject {
         controllers.removeValue(forKey: id)
         monitors[id]?.stop()
         monitors.removeValue(forKey: id)
+        claudeMonitors[id]?.stop()
+        claudeMonitors.removeValue(forKey: id)
         if activeWorkspaceId == id {
             activeWorkspaceId = workspaces.first?.id
         }

@@ -170,6 +170,9 @@ private struct LeafPaneView: View {
                         direction: zone.splitDirection,
                         insertAsFirst: zone.insertAsFirst
                     )
+                },
+                onStartListener: {
+                    controller.startListenerTerminal(paneId: paneId)
                 }
             )
 

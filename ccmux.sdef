@@ -5,6 +5,16 @@
     <suite name="Standard Suite" code="????" description="Common classes and commands for all applications.">
         <cocoa name="NSCoreSuite"/>
 
+        <command name="count" code="corecnte" description="Return the number of elements of a particular class within an object.">
+            <cocoa class="NSCountCommand"/>
+            <direct-parameter type="specifier" description="The objects to count."/>
+            <result type="integer" description="The count."/>
+            <parameter name="each" code="kocl" type="type" optional="yes"
+                       description="The class of objects to count.">
+                <cocoa key="ObjectClass"/>
+            </parameter>
+        </command>
+
         <class name="application" code="capp" description="The ccmux application.">
             <cocoa class="NSApplication"/>
             <element type="window" access="r">
@@ -34,11 +44,25 @@
     </suite>
 
     <suite name="ccmux Suite" code="ccmx" description="ccmux-specific scripting commands.">
+
         <command name="focus" code="ccmxFcus"
                  description="Bring a window to the front, switching macOS Spaces if needed.">
             <cocoa class="ccmux.FocusWindowCommand"/>
             <direct-parameter type="specifier" description="The window to focus."/>
         </command>
+
+        <command name="activate workspace" code="ccmxActW"
+                 description="Switch to a workspace by name. Brings its owning window to front and switches the displayed workspace.">
+            <cocoa class="ccmux.ActivateWorkspaceCommand"/>
+            <direct-parameter type="text" description="The name of the workspace to activate."/>
+        </command>
+
+        <command name="list workspaces" code="ccmxLstW"
+                 description="List all open workspace names.">
+            <cocoa class="ccmux.ListWorkspacesCommand"/>
+            <result type="text" description="Newline-separated list of workspace names with their window assignments."/>
+        </command>
+
     </suite>
 
 </dictionary>

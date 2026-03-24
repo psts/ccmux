@@ -10,6 +10,7 @@ struct PaneContentView: View {
         switch content {
         case .terminal(let config):
             TerminalPaneView(paneId: paneId, workingDirectory: config.workingDirectory)
+                .id(config.id)
 
         case .browser(let config):
             BrowserPaneView(config: config)

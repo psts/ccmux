@@ -8,21 +8,26 @@ struct SidebarView: View {
     let onSelectWorkspace: (UUID) -> Void
     let onReopenWorkspace: (UUID) -> Void
     let onMoveToThisWindow: (UUID) -> Void
+    var currentWindowId: UUID?
+    var onRenameWindow: ((UUID, String) -> Void)?
+    var onRestoreWindow: ((UUID) -> Void)?
 
-    /// Workspaces belonging to this window (not displayed in other windows)
+    /// Workspaces belonging to this window
     private var thisWindowWorkspaces: [Workspace] {
-        manager.workspaces.filter { !windowContext.otherWindowWorkspaceIds.contains($0.id) }
+        manager.workspaces
+            .filter { windowContext.ownedWorkspaceIds.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    /// Workspaces displayed in other windows
-    private var otherWindowWorkspaces: [Workspace] {
-        manager.workspaces.filter { windowContext.otherWindowWorkspaceIds.contains($0.id) }
+    /// Current window's display name
+    private var thisWindowName: String {
+        windowContext.windowName ?? "This Window"
     }
 
     var body: some View {
         VStack(spacing: 0) {
             List {
-                // Workspaces in this window
+                // This window's workspaces
                 if !thisWindowWorkspaces.isEmpty {
                     Section {
                         ForEach(thisWindowWorkspaces) { workspace in
@@ -30,6 +35,7 @@ struct SidebarView: View {
                             WorkspaceRow(
                                 workspace: workspace,
                                 monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
+                                claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
                                 isActive: isDisplayed,
                                 isInOtherWindow: false,
                                 onSelect: { onSelectWorkspace(workspace.id) },
@@ -52,45 +58,57 @@ struct SidebarView: View {
                             }
                         }
                     } header: {
-                        Text("THIS WINDOW")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary.opacity(0.6))
-                            .tracking(1.2)
+                        windowSectionHeader(name: thisWindowName.uppercased(), isCurrentWindow: true)
+                            .contextMenu {
+                                if let windowId = currentWindowId {
+                                    Button("Rename Window...") {
+                                        onRenameWindow?(windowId, windowContext.windowName ?? "This Window")
+                                    }
+                                }
+                            }
                     }
                 }
 
-                // Workspaces in other windows
-                if !otherWindowWorkspaces.isEmpty {
-                    Section {
-                        ForEach(otherWindowWorkspaces) { workspace in
-                            WorkspaceRow(
-                                workspace: workspace,
-                                monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
-                                isActive: false,
-                                isInOtherWindow: true,
-                                onSelect: { onSelectWorkspace(workspace.id) },
-                                onFileClicked: { filePath in
-                                    if let ctrl = manager.controllers[workspace.id] {
-                                        onSelectWorkspace(workspace.id)
-                                        _ = ctrl.openFileInExplorer(relativePath: filePath)
+                // Other windows — each as its own section
+                ForEach(windowContext.otherWindowGroups) { group in
+                    let groupWorkspaces = manager.workspaces
+                        .filter { group.workspaceIds.contains($0.id) }
+                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    if !groupWorkspaces.isEmpty {
+                        Section {
+                            ForEach(groupWorkspaces) { workspace in
+                                WorkspaceRow(
+                                    workspace: workspace,
+                                    monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
+                                    claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
+                                    isActive: false,
+                                    isInOtherWindow: true,
+                                    onSelect: { onSelectWorkspace(workspace.id) },
+                                    onFileClicked: { filePath in
+                                        if let ctrl = manager.controllers[workspace.id] {
+                                            onSelectWorkspace(workspace.id)
+                                            _ = ctrl.openFileInExplorer(relativePath: filePath)
+                                        }
+                                    }
+                                )
+                                .opacity(0.7)
+                                .listRowBackground(
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { onSelectWorkspace(workspace.id) }
+                                )
+                                .contextMenu {
+                                    workspaceContextMenu(for: workspace)
+                                }
+                            }
+                        } header: {
+                            windowSectionHeader(name: group.name.uppercased(), isCurrentWindow: false)
+                                .contextMenu {
+                                    Button("Rename Window...") {
+                                        onRenameWindow?(group.id, group.name)
                                     }
                                 }
-                            )
-                            .opacity(0.7)
-                            .listRowBackground(
-                                Color.clear
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { onSelectWorkspace(workspace.id) }
-                            )
-                            .contextMenu {
-                                workspaceContextMenu(for: workspace)
-                            }
                         }
-                    } header: {
-                        Text("OTHER WINDOWS")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary.opacity(0.6))
-                            .tracking(1.2)
                     }
                 }
             }
@@ -101,37 +119,85 @@ struct SidebarView: View {
 
             HStack {
                 Menu {
-                    Button("New from Folder...") {
+                    Button {
                         onAddWorkspace()
+                    } label: {
+                        Label("New from Folder...", systemImage: "folder.badge.plus")
                     }
 
-                    if !manager.closedWorkspaces.isEmpty {
+                    // Closed windows (restore entire window with all workspaces)
+                    if !manager.closedWindows.isEmpty {
                         Divider()
 
-                        ForEach(manager.closedWorkspaces) { ws in
+                        ForEach(manager.closedWindows) { cw in
+                            let wsNames = cw.workspaceIds.compactMap { id in
+                                manager.closedWorkspaces.first(where: { $0.id == id })?.name
+                            }
+                            Button {
+                                onRestoreWindow?(cw.id)
+                            } label: {
+                                Label {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(cw.displayName)
+                                        Text(wsNames.joined(separator: ", "))
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                } icon: {
+                                    Image(systemName: "macwindow.on.rectangle")
+                                }
+                            }
+                        }
+                    }
+
+                    // Individual closed workspaces (not part of a closed window)
+                    let standaloneWorkspaces = manager.closedWorkspaces.filter { ws in
+                        !manager.closedWindows.contains { $0.workspaceIds.contains(ws.id) }
+                    }
+                    if !standaloneWorkspaces.isEmpty {
+                        Divider()
+
+                        ForEach(standaloneWorkspaces) { ws in
                             Button {
                                 onReopenWorkspace(ws.id)
                             } label: {
-                                HStack {
-                                    VStack(alignment: .leading) {
+                                Label {
+                                    VStack(alignment: .leading, spacing: 2) {
                                         Text(ws.name)
                                         Text(shortenPath(ws.repoPath))
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                     }
-                                    Spacer()
+                                } icon: {
+                                    Image(systemName: "arrow.uturn.backward.circle")
                                 }
                             }
                         }
+                    }
 
+                    // Delete section
+                    let hasAnythingToDelete = !manager.closedWindows.isEmpty || !manager.closedWorkspaces.isEmpty
+                    if hasAnythingToDelete {
                         Divider()
 
-                        ForEach(manager.closedWorkspaces) { ws in
-                            Button(role: .destructive) {
-                                manager.deleteClosedWorkspace(id: ws.id)
-                            } label: {
-                                Label("Delete \(ws.name)", systemImage: "trash")
+                        Menu {
+                            ForEach(manager.closedWindows) { cw in
+                                Button(role: .destructive) {
+                                    manager.deleteClosedWindow(id: cw.id)
+                                } label: {
+                                    Label(cw.displayName, systemImage: "trash")
+                                }
                             }
+
+                            ForEach(standaloneWorkspaces) { ws in
+                                Button(role: .destructive) {
+                                    manager.deleteClosedWorkspace(id: ws.id)
+                                } label: {
+                                    Label(ws.name, systemImage: "trash")
+                                }
+                            }
+                        } label: {
+                            Label("Delete...", systemImage: "trash")
                         }
                     }
                 } label: {
@@ -147,6 +213,14 @@ struct SidebarView: View {
             }
         }
         .background(Color(nsColor: NSColor(red: 0.15, green: 0.16, blue: 0.17, alpha: 1.0)))
+    }
+
+    @ViewBuilder
+    private func windowSectionHeader(name: String, isCurrentWindow: Bool) -> some View {
+        Text(name)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundColor(.secondary.opacity(0.6))
+            .tracking(1.2)
     }
 
     private func shortenPath(_ path: String) -> String {
@@ -182,6 +256,7 @@ struct SidebarView: View {
 private struct WorkspaceRow: View {
     let workspace: Workspace
     @ObservedObject var monitor: GitStatusMonitor
+    @ObservedObject var claudeMonitor: ClaudeProcessMonitor
     let isActive: Bool
     let isInOtherWindow: Bool
     var onSelect: (() -> Void)?
@@ -234,6 +309,13 @@ private struct WorkspaceRow: View {
                     .font(.system(size: 12, weight: isActive ? .semibold : .regular))
                     .foregroundColor(.primary)
 
+                if claudeMonitor.isRunning {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                        .help("Claude is running")
+                }
+
                 Spacer()
 
                 if status.isGitRepo {
@@ -259,14 +341,14 @@ private struct WorkspaceRow: View {
                     if status.ahead > 0 {
                         Text("↑\(status.ahead)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.green)
+                            .foregroundColor(.orange)
                     }
 
                     // Behind
                     if status.behind > 0 {
                         Text("↓\(status.behind)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(Color(nsColor: .systemBlue))
+                            .foregroundColor(.orange)
                     }
                 }
 
@@ -312,12 +394,12 @@ private struct GitDashboardContent: View {
                     if status.ahead > 0 {
                         Text("↑\(status.ahead)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.green)
+                            .foregroundColor(.orange)
                     }
                     if status.behind > 0 {
                         Text("↓\(status.behind)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(Color(nsColor: .systemBlue))
+                            .foregroundColor(.orange)
                     }
                 }
                 .padding(.leading, 4)
@@ -336,12 +418,12 @@ private struct GitDashboardContent: View {
                     if status.aheadOfDefault > 0 {
                         Text("↑\(status.aheadOfDefault)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.green.opacity(0.7))
+                            .foregroundColor(.orange.opacity(0.7))
                     }
                     if status.behindDefault > 0 {
                         Text("↓\(status.behindDefault)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.red.opacity(0.8))
+                            .foregroundColor(.orange.opacity(0.8))
                             .help("\(status.behindDefault) commits behind \(defaultBranch)")
                     }
                 }

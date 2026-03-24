@@ -4,8 +4,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
     private let workspaceManager = WorkspaceManager()
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    /// Exposed for AppleScript command handlers.
+    var windowManagerForScripting: WindowManager? { windowManager }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
         setAppIcon()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
         registerScriptingIfNeeded()
         buildMainMenu()
 

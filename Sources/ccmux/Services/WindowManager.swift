@@ -4,11 +4,21 @@ import Combine
 /// Per-window state binding — each window creates one and passes it to its views.
 class WindowContext: ObservableObject {
     @Published var displayedWorkspaceId: UUID?
-    /// IDs of workspaces that belong to OTHER windows
+    /// IDs of workspaces that belong to OTHER windows, grouped by window
     @Published var otherWindowWorkspaceIds: Set<UUID> = []
     /// IDs of workspaces that belong to THIS window (displayed + previously selected here)
     @Published var ownedWorkspaceIds: Set<UUID> = []
+    /// Custom window name, nil = auto-generated "Window N"
+    @Published var windowName: String?
+    /// Info about other windows for sidebar display
+    @Published var otherWindowGroups: [WindowGroup] = []
     weak var workspaceManager: WorkspaceManager?
+
+    struct WindowGroup: Identifiable {
+        let id: UUID  // window ID
+        let name: String
+        let workspaceIds: [UUID]
+    }
 
     var displayedController: SplitTreeController? {
         guard let id = displayedWorkspaceId else { return nil }
@@ -106,16 +116,10 @@ class WindowManager {
             // Switch that window to display the clicked workspace
             ownerWc.windowContext.displayedWorkspaceId = id
             ownerWc.updateWindowTitle()
-            // Bring it to front (switches Space if needed via FocusWindowCommand-style behavior)
-            NSApp.activate(ignoringOtherApps: true)
+            // Bring that window to front — macOS switches to its Space automatically
             if let window = ownerWc.window {
-                let originalBehavior = window.collectionBehavior
-                window.collectionBehavior.insert(.canJoinAllSpaces)
+                NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    window.collectionBehavior = originalBehavior
-                }
             }
             workspaceManager.activeWorkspaceId = id
             return
@@ -140,23 +144,43 @@ class WindowManager {
     func windowWillClose(_ controller: WorkspaceWindowController) {
         // During app termination, don't close workspaces — they'll be saved as-is
         if !isTerminating {
-            // Close ALL owned workspaces that aren't owned by another window
+            // Collect workspace IDs that will actually be closed (not owned by other windows)
             let ownedIds = controller.windowContext.ownedWorkspaceIds
+            var closingIds: [UUID] = []
+
             for wsId in ownedIds {
                 let ownedElsewhere = windowControllers.contains { wc in
                     wc !== controller && wc.windowContext.ownedWorkspaceIds.contains(wsId)
                 }
                 if !ownedElsewhere {
-                    // Save window frame for the displayed workspace
-                    if wsId == controller.windowContext.displayedWorkspaceId,
-                       let f = controller.window?.frame {
-                        workspaceManager.saveWindowFrame(
-                            workspaceId: wsId,
-                            frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height)
-                        )
-                    }
-                    workspaceManager.closeWorkspace(id: wsId)
+                    closingIds.append(wsId)
                 }
+            }
+
+            // Save as a closed window group if it had workspaces
+            if !closingIds.isEmpty {
+                let frame = controller.window?.frame ?? NSRect(x: 100, y: 100, width: 1200, height: 800)
+                let closedWindow = ClosedWindow(
+                    id: UUID(),
+                    windowName: controller.windowContext.windowName,
+                    workspaceIds: closingIds,
+                    displayedWorkspaceId: controller.windowContext.displayedWorkspaceId,
+                    frame: WindowFrame(x: frame.origin.x, y: frame.origin.y,
+                                       width: frame.size.width, height: frame.size.height)
+                )
+                workspaceManager.saveClosedWindow(closedWindow)
+            }
+
+            // Now close the individual workspaces
+            for wsId in closingIds {
+                if wsId == controller.windowContext.displayedWorkspaceId,
+                   let f = controller.window?.frame {
+                    workspaceManager.saveWindowFrame(
+                        workspaceId: wsId,
+                        frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height)
+                    )
+                }
+                workspaceManager.closeWorkspace(id: wsId)
             }
         }
 
@@ -199,6 +223,34 @@ class WindowManager {
         createWindow(displayingWorkspace: workspace.id, frame: workspace.lastWindowFrame)
     }
 
+    /// Restore an entire closed window with all its workspaces.
+    func restoreClosedWindow(id: UUID) {
+        guard let closedWindow = workspaceManager.closedWindows.first(where: { $0.id == id }) else { return }
+
+        // Reopen all workspaces that belong to this window
+        var reopenedIds: [UUID] = []
+        for wsId in closedWindow.workspaceIds {
+            if let _ = workspaceManager.reopenWorkspace(id: wsId) {
+                reopenedIds.append(wsId)
+            }
+        }
+
+        guard !reopenedIds.isEmpty else { return }
+
+        // Create a new window displaying the previously displayed workspace (or first)
+        let displayId = closedWindow.displayedWorkspaceId ?? reopenedIds.first!
+        let wc = createWindow(displayingWorkspace: displayId, frame: closedWindow.frame)
+
+        // Assign all reopened workspaces to this window
+        wc.windowContext.ownedWorkspaceIds = Set(reopenedIds)
+        wc.windowContext.windowName = closedWindow.windowName
+
+        // Remove the closed window record
+        workspaceManager.closedWindows.removeAll { $0.id == id }
+
+        refreshOtherWindowIds()
+    }
+
     // MARK: - Queries
 
     /// Find which window (if any) is currently displaying a given workspace.
@@ -217,6 +269,8 @@ class WindowManager {
             return WindowDescriptor(
                 id: wc.windowId,
                 workspaceId: wc.windowContext.displayedWorkspaceId,
+                ownedWorkspaceIds: Array(wc.windowContext.ownedWorkspaceIds),
+                windowName: wc.windowContext.windowName,
                 frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height),
                 space: space
             )
@@ -255,6 +309,12 @@ class WindowManager {
                     return SpaceTracker.resolveSpaceID(from: spaceSnap)
                 }()
                 let isOtherSpace = targetSpaceID != nil && targetSpaceID != currentSpaceID
+
+                // Restore ownership from saved state
+                if !desc.ownedWorkspaceIds.isEmpty {
+                    wc.windowContext.ownedWorkspaceIds = Set(desc.ownedWorkspaceIds)
+                }
+                wc.windowContext.windowName = desc.windowName
 
                 windowControllers.append(wc)
 
@@ -304,11 +364,38 @@ class WindowManager {
     func refreshOtherWindowIds() {
         for wc in windowControllers {
             var otherIds = Set<UUID>()
+            var otherGroups: [WindowContext.WindowGroup] = []
             for otherWc in windowControllers where otherWc !== wc {
                 otherIds.formUnion(otherWc.windowContext.ownedWorkspaceIds)
+                let name = otherWc.windowContext.windowName ?? autoWindowName(for: otherWc)
+                otherGroups.append(WindowContext.WindowGroup(
+                    id: otherWc.windowId,
+                    name: name,
+                    workspaceIds: Array(otherWc.windowContext.ownedWorkspaceIds)
+                ))
             }
             wc.windowContext.otherWindowWorkspaceIds = otherIds
+            wc.windowContext.otherWindowGroups = otherGroups
+            // Auto-assign window name if not custom
+            if wc.windowContext.windowName == nil {
+                // Don't publish — just for display fallback
+            }
         }
+    }
+
+    /// Rename a window.
+    func renameWindow(id: UUID, newName: String?) {
+        guard let wc = windowControllers.first(where: { $0.windowId == id }) else { return }
+        wc.windowContext.windowName = newName
+        refreshOtherWindowIds()
+    }
+
+    /// Get the auto-generated name for a window based on its index.
+    func autoWindowName(for controller: WorkspaceWindowController) -> String {
+        if let idx = windowControllers.firstIndex(where: { $0 === controller }) {
+            return "Window \(idx + 1)"
+        }
+        return "Window"
     }
 
     // MARK: - Space Management

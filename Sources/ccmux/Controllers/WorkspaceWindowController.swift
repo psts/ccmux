@@ -77,6 +77,13 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             onMoveToThisWindow: { [weak self] id in
                 guard let self else { return }
                 self.windowManager?.moveWorkspaceToWindow(id: id, targetController: self)
+            },
+            currentWindowId: windowId,
+            onRenameWindow: { [weak self] windowId, currentName in
+                self?.showRenameWindowAlert(windowId: windowId, currentName: currentName)
+            },
+            onRestoreWindow: { [weak self] windowId in
+                self?.windowManager?.restoreClosedWindow(id: windowId)
             }
         )
         let sidebarHosting = NSHostingController(rootView: sidebarView)
@@ -111,6 +118,25 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         splitVC.addSplitViewItem(mainItem)
 
         window?.contentViewController = splitVC
+    }
+
+    func showRenameWindowAlert(windowId: UUID, currentName: String) {
+        let alert = NSAlert()
+        alert.messageText = "Rename Window"
+        alert.informativeText = "Enter a name for this window:"
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        textField.stringValue = currentName
+        alert.accessoryView = textField
+
+        alert.beginSheetModal(for: window!) { [weak self] response in
+            if response == .alertFirstButtonReturn {
+                let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                self?.windowManager?.renameWindow(id: windowId, newName: newName.isEmpty ? nil : newName)
+            }
+        }
     }
 
     func showAddWorkspacePanel() {
