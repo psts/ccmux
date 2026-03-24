@@ -137,6 +137,24 @@ class WorkspaceManager: ObservableObject {
         PersistenceService.save(state)
     }
 
+    /// Detect running commands in all terminal panes and persist them into the
+    /// workspace layouts. Called once from applicationWillTerminate — uses native
+    /// libproc APIs so it's fast even with many terminals.
+    func detectAndSaveCommands() {
+        for i in workspaces.indices {
+            if let ctrl = controllers[workspaces[i].id] {
+                var tree = ctrl.tree
+                for leaf in tree.allLeaves {
+                    if case .terminal(var config) = leaf.content {
+                        config.startupCommand = TerminalStore.shared.detectRunningCommand(for: leaf.id)
+                        tree = tree.replaceContent(leafId: leaf.id, newContent: .terminal(config))
+                    }
+                }
+                ctrl.tree = tree
+            }
+        }
+    }
+
     /// Called by the window controller on resize/move to persist the frame.
     func scheduleSaveFromWindow() {
         scheduleSave()
@@ -193,6 +211,16 @@ class WorkspaceManager: ObservableObject {
         if let ctrl = controllers[id] {
             workspace.layout = ctrl.tree
             workspace.focusedPaneId = ctrl.focusedPaneId
+        }
+
+        // Detect running commands before terminating terminals
+        for leaf in workspace.layout.allLeaves {
+            if case .terminal(var config) = leaf.content {
+                config.startupCommand = TerminalStore.shared.detectRunningCommand(for: leaf.id)
+                workspace.layout = workspace.layout.replaceContent(
+                    leafId: leaf.id, newContent: .terminal(config)
+                )
+            }
         }
 
         // Clean up all terminals in this workspace

@@ -64,16 +64,21 @@ class ClaudeProcessMonitor: ObservableObject {
 
         let count = Int(actualSize) / MemoryLayout<pid_t>.size
 
-        // Step 2: Find PIDs named "claude"
+        // Step 2: Find PIDs whose executable path indicates Claude Code
+        // proc_name() returns the actual binary filename (e.g. "2.1.81" for
+        // .local/share/claude/versions/2.1.81), so we use proc_pidpath instead.
         var claudePids: [pid_t] = []
         for i in 0..<count {
             let pid = pids[i]
             guard pid > 0 else { continue }
 
-            var nameBuffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) + 1)
-            proc_name(pid, &nameBuffer, UInt32(MAXCOMLEN) + 1)
-            let name = String(cString: nameBuffer)
-            if name == "claude" {
+            var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            let pathLen = proc_pidpath(pid, &pathBuffer, UInt32(MAXPATHLEN))
+            guard pathLen > 0 else { continue }
+            let path = String(cString: pathBuffer)
+
+            let lastComponent = (path as NSString).lastPathComponent
+            if lastComponent == "claude" || path.contains("/claude/versions/") {
                 claudePids.append(pid)
             }
         }

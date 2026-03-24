@@ -9,7 +9,7 @@ struct PaneContentView: View {
     var body: some View {
         switch content {
         case .terminal(let config):
-            TerminalPaneView(paneId: paneId, workingDirectory: config.workingDirectory)
+            TerminalPaneView(paneId: paneId, workingDirectory: config.workingDirectory, startupCommand: config.startupCommand)
                 .id(config.id)
 
         case .browser(let config):

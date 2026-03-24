@@ -8,9 +8,10 @@ import SwiftTerm
 struct TerminalPaneView: NSViewRepresentable {
     let paneId: UUID
     let workingDirectory: String
+    var startupCommand: String?
 
     func makeNSView(context: Context) -> TerminalContainerView {
-        TerminalContainerView(paneId: paneId, workingDirectory: workingDirectory)
+        TerminalContainerView(paneId: paneId, workingDirectory: workingDirectory, startupCommand: startupCommand)
     }
 
     func updateNSView(_ nsView: TerminalContainerView, context: Context) {
@@ -28,18 +29,20 @@ struct TerminalPaneView: NSViewRepresentable {
 class TerminalContainerView: NSView {
     let paneId: UUID
     let workingDirectory: String
+    let startupCommand: String?
     private var hasLaidOut = false
 
-    init(paneId: UUID, workingDirectory: String) {
+    init(paneId: UUID, workingDirectory: String, startupCommand: String? = nil) {
         self.paneId = paneId
         self.workingDirectory = workingDirectory
+        self.startupCommand = startupCommand
         super.init(frame: .zero)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     func ensureTerminalEmbedded() {
-        let terminal = TerminalStore.shared.terminal(for: paneId, workingDirectory: workingDirectory)
+        let terminal = TerminalStore.shared.terminal(for: paneId, workingDirectory: workingDirectory, startupCommand: startupCommand)
         if terminal.superview !== self {
             terminal.removeFromSuperview()
             addSubview(terminal)

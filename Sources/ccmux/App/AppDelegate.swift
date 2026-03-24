@@ -46,6 +46,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Prevent windowWillClose from moving workspaces to closedWorkspaces during quit
         windowManager?.isTerminating = true
+        // Capture running commands before terminals are destroyed
+        workspaceManager.detectAndSaveCommands()
         // Save current state including all window descriptors
         workspaceManager.saveState()
     }

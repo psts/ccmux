@@ -67,6 +67,7 @@ struct TerminalConfig: Codable, Identifiable {
     var shell: String
     var workingDirectory: String
     var title: String?
+    var startupCommand: String?
 }
 
 struct BrowserConfig: Codable, Identifiable {
