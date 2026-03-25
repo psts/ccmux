@@ -125,9 +125,10 @@ struct SidebarView: View {
                         Label("New from Folder...", systemImage: "folder.badge.plus")
                     }
 
-                    // Closed windows (restore entire window with all workspaces)
+                    // Restore Window section
                     if !manager.closedWindows.isEmpty {
                         Divider()
+                        Text("Restore Window")
 
                         ForEach(manager.closedWindows) { cw in
                             let wsNames = cw.workspaceIds.compactMap { id in
@@ -137,46 +138,33 @@ struct SidebarView: View {
                                 onRestoreWindow?(cw.id)
                             } label: {
                                 Label {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(cw.displayName)
-                                        Text(wsNames.joined(separator: ", "))
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
+                                    Text(cw.windowName ?? (wsNames.isEmpty ? "Window" : wsNames.joined(separator: ", ")))
                                 } icon: {
-                                    Image(systemName: "macwindow.on.rectangle")
+                                    Image(systemName: "macwindow")
                                 }
                             }
                         }
                     }
 
-                    // Individual closed workspaces (not part of a closed window)
+                    // Restore Workspace section
                     let standaloneWorkspaces = manager.closedWorkspaces.filter { ws in
                         !manager.closedWindows.contains { $0.workspaceIds.contains(ws.id) }
                     }
                     if !standaloneWorkspaces.isEmpty {
                         Divider()
+                        Text("Restore Workspace")
 
                         ForEach(standaloneWorkspaces) { ws in
                             Button {
                                 onReopenWorkspace(ws.id)
                             } label: {
-                                Label {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(ws.name)
-                                        Text(shortenPath(ws.repoPath))
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                } icon: {
-                                    Image(systemName: "arrow.uturn.backward.circle")
-                                }
+                                Label(ws.name, systemImage: "folder")
                             }
                         }
                     }
 
-                    // Delete section
-                    let hasAnythingToDelete = !manager.closedWindows.isEmpty || !manager.closedWorkspaces.isEmpty
+                    // Clear History submenu
+                    let hasAnythingToDelete = !manager.closedWindows.isEmpty || !standaloneWorkspaces.isEmpty
                     if hasAnythingToDelete {
                         Divider()
 
@@ -185,7 +173,7 @@ struct SidebarView: View {
                                 Button(role: .destructive) {
                                     manager.deleteClosedWindow(id: cw.id)
                                 } label: {
-                                    Label(cw.displayName, systemImage: "trash")
+                                    Label(cw.displayName, systemImage: "macwindow")
                                 }
                             }
 
@@ -193,11 +181,24 @@ struct SidebarView: View {
                                 Button(role: .destructive) {
                                     manager.deleteClosedWorkspace(id: ws.id)
                                 } label: {
-                                    Label(ws.name, systemImage: "trash")
+                                    Label(ws.name, systemImage: "folder")
                                 }
                             }
+
+                            Divider()
+
+                            Button(role: .destructive) {
+                                for cw in manager.closedWindows {
+                                    manager.deleteClosedWindow(id: cw.id)
+                                }
+                                for ws in standaloneWorkspaces {
+                                    manager.deleteClosedWorkspace(id: ws.id)
+                                }
+                            } label: {
+                                Label("Clear All", systemImage: "trash")
+                            }
                         } label: {
-                            Label("Delete...", systemImage: "trash")
+                            Label("Clear History...", systemImage: "clock.arrow.circlepath")
                         }
                     }
                 } label: {

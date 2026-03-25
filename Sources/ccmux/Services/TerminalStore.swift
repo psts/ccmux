@@ -104,6 +104,8 @@ class TerminalStore {
             __ccmux_preexec() { print -r -- "$1" > "$CCMUX_CMD_FILE" }
             preexec_functions+=(__ccmux_preexec)
         fi
+        __ccmux_reset_keyboard_protocol() { printf '\\e[<99u' }
+        precmd_functions+=(__ccmux_reset_keyboard_protocol)
 
         """
         try? zshrc.write(toFile: "\(path)/.zshrc", atomically: true, encoding: .utf8)
