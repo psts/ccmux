@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WebKit
 
 // MARK: - Main File Explorer Pane
 
@@ -64,17 +65,40 @@ private struct FileExplorerContent: View {
 
                     if let activeId = state.activeTabId,
                        let tab = state.openTabs.first(where: { $0.id == activeId }) {
-                        FileEditorView(
-                            tabId: tab.id,
-                            content: tab.content,
-                            onContentChange: { newContent in
-                                state.updateContent(tabId: tab.id, newContent: newContent)
-                            },
-                            onSave: {
-                                _ = state.saveActiveFile()
-                                onStateChange()
+                        ZStack(alignment: .topTrailing) {
+                            if tab.isPreviewMode {
+                                MarkdownPreviewView(content: tab.content)
+                            } else {
+                                FileEditorView(
+                                    tabId: tab.id,
+                                    content: tab.content,
+                                    onContentChange: { newContent in
+                                        state.updateContent(tabId: tab.id, newContent: newContent)
+                                    },
+                                    onSave: {
+                                        _ = state.saveActiveFile()
+                                        onStateChange()
+                                    }
+                                )
                             }
-                        )
+
+                            if tab.isMarkdown {
+                                Button(action: {
+                                    state.togglePreview(tabId: tab.id)
+                                    onStateChange()
+                                }) {
+                                    Image(systemName: tab.isPreviewMode ? "doc.plaintext" : "eye")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(5)
+                                .background(.ultraThinMaterial)
+                                .cornerRadius(4)
+                                .padding(8)
+                                .help(tab.isPreviewMode ? "Show raw text" : "Show preview")
+                            }
+                        }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
@@ -318,6 +342,73 @@ private struct FileTabButton: View {
         .contentShape(Rectangle())
         .onTapGesture { onActivate() }
         .onHover { isHovered = $0 }
+    }
+}
+
+// MARK: - Markdown Preview (WKWebView wrapper)
+
+struct MarkdownPreviewView: NSViewRepresentable {
+    let content: String
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.setValue(false, forKey: "drawsBackground")
+        loadMarkdown(webView: webView)
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        loadMarkdown(webView: webView)
+    }
+
+    private func loadMarkdown(webView: WKWebView) {
+        let escaped = content
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "`", with: "\\`")
+            .replacingOccurrences(of: "$", with: "\\$")
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                 color: #d9d9d9; background: #1c1e24;
+                 padding: 20px; font-size: 14px; line-height: 1.6; margin: 0; }
+          table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+          th, td { border: 1px solid #3a3d45; padding: 8px 12px; text-align: left; }
+          th { background: #2a2d35; font-weight: 600; }
+          tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+          code { background: #2a2d35; padding: 2px 6px; border-radius: 3px;
+                 font-family: 'SF Mono', Monaco, monospace; font-size: 13px; }
+          pre { background: #2a2d35; padding: 14px; border-radius: 6px;
+                overflow-x: auto; margin: 12px 0; }
+          pre code { background: none; padding: 0; }
+          h1, h2, h3, h4, h5, h6 { color: #e5e5e5; margin-top: 24px; }
+          h1, h2 { border-bottom: 1px solid #3a3d45; padding-bottom: 6px; }
+          a { color: #58a6ff; text-decoration: none; }
+          a:hover { text-decoration: underline; }
+          blockquote { border-left: 3px solid #3a3d45; margin: 12px 0;
+                       padding: 4px 16px; color: #8b949e; }
+          hr { border: none; border-top: 1px solid #3a3d45; margin: 20px 0; }
+          img { max-width: 100%; border-radius: 4px; }
+          ul, ol { padding-left: 24px; }
+          li { margin: 4px 0; }
+          input[type="checkbox"] { margin-right: 6px; }
+        </style>
+        </head>
+        <body>
+        <div id="content"></div>
+        <script>
+          const raw = `\(escaped)`;
+          document.getElementById('content').innerHTML = marked.parse(raw);
+        </script>
+        </body>
+        </html>
+        """
+        webView.loadHTMLString(html, baseURL: nil)
     }
 }
 

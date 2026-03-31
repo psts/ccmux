@@ -5,7 +5,7 @@ let package = Package(
     name: "ccmux",
     platforms: [.macOS(.v14)],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.12.0"),
+        .package(path: "SwiftTerm"),
     ],
     targets: [
         .executableTarget(

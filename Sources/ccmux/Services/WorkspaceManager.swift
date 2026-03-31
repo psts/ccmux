@@ -155,6 +155,35 @@ class WorkspaceManager: ObservableObject {
         }
     }
 
+    /// Pre-create terminals for ALL workspaces so startup commands are replayed
+    /// even for workspaces not currently displayed. Staggers creation to avoid
+    /// launching many shell processes simultaneously.
+    /// Safe to call after window restoration — TerminalStore.terminal(for:) is
+    /// idempotent, so terminals already created by the view layer are skipped.
+    func preCreateTerminals() {
+        var delay: TimeInterval = 0.3
+        let stagger: TimeInterval = 0.15
+
+        for workspace in workspaces {
+            guard let controller = controllers[workspace.id] else { continue }
+            for leaf in controller.tree.allLeaves {
+                if case .terminal(let config) = leaf.content {
+                    let paneId = leaf.id
+                    let workingDir = config.workingDirectory
+                    let command = config.startupCommand
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        _ = TerminalStore.shared.terminal(
+                            for: paneId,
+                            workingDirectory: workingDir,
+                            startupCommand: command
+                        )
+                    }
+                    delay += stagger
+                }
+            }
+        }
+    }
+
     /// Called by the window controller on resize/move to persist the frame.
     func scheduleSaveFromWindow() {
         scheduleSave()

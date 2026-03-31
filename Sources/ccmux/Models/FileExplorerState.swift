@@ -14,10 +14,16 @@ class FileExplorerState: ObservableObject {
         let absolutePath: String
         var content: String
         var originalContent: String
+        var isPreviewMode: Bool = false
         var isModified: Bool { content != originalContent }
 
         var filename: String {
             (relativePath as NSString).lastPathComponent
+        }
+
+        var isMarkdown: Bool {
+            let ext = (relativePath as NSString).pathExtension.lowercased()
+            return ext == "md" || ext == "markdown"
         }
     }
 
@@ -34,16 +40,20 @@ class FileExplorerState: ObservableObject {
             return
         }
 
-        let absolutePath = (rootPath as NSString).appendingPathComponent(relativePath)
+        let absolutePath = relativePath.hasPrefix("/")
+            ? relativePath
+            : (rootPath as NSString).appendingPathComponent(relativePath)
         guard let data = FileManager.default.contents(atPath: absolutePath),
               let content = String(data: data, encoding: .utf8) else { return }
 
+        let isMd = relativePath.hasSuffix(".md") || relativePath.hasSuffix(".markdown")
         let tab = FileTab(
             id: UUID(),
             relativePath: relativePath,
             absolutePath: absolutePath,
             content: content,
-            originalContent: content
+            originalContent: content,
+            isPreviewMode: isMd
         )
         openTabs.append(tab)
         activeTabId = tab.id
@@ -63,6 +73,11 @@ class FileExplorerState: ObservableObject {
     func updateContent(tabId: UUID, newContent: String) {
         guard let idx = openTabs.firstIndex(where: { $0.id == tabId }) else { return }
         openTabs[idx].content = newContent
+    }
+
+    func togglePreview(tabId: UUID) {
+        guard let idx = openTabs.firstIndex(where: { $0.id == tabId }) else { return }
+        openTabs[idx].isPreviewMode.toggle()
     }
 
     func saveActiveFile() -> Bool {

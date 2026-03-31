@@ -8,7 +8,6 @@ class TerminalStore {
     static let shared = TerminalStore()
 
     private var terminals: [UUID: LocalProcessTerminalView] = [:]
-    private var keyMonitors: [UUID: Any] = [:]
     private var linkDelegates: [UUID: TerminalLinkInterceptor] = [:]
     fileprivate var workingDirs: [UUID: String] = [:]
     private var zdotdirPaths: [UUID: String] = [:]
@@ -141,8 +140,7 @@ class TerminalStore {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
-        env["TERM_PROGRAM"] = "Apple_Terminal"
-        env["TERM_PROGRAM_VERSION"] = "450"
+        env["TERM_PROGRAM"] = "ghostty"
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         env["CCMUX_CMD_FILE"] = cmdFilePath(for: paneId)
 
@@ -174,22 +172,8 @@ class TerminalStore {
         terminal.terminalDelegate = interceptor
         linkDelegates[paneId] = interceptor
 
-        // Install Shift+Enter key monitor
-        let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak terminal] event in
-            guard let tv = terminal else { return event }
-            if event.keyCode == 36 && event.modifierFlags.contains(.shift) {
-                if let firstResponder = tv.window?.firstResponder as? NSView,
-                   firstResponder === tv || firstResponder.isDescendant(of: tv) {
-                    tv.getTerminal().sendResponse(text: "\u{1b}[13;2u")
-                    return nil
-                }
-            }
-            return event
-        }
-
         terminals[paneId] = terminal
         workingDirs[paneId] = workingDirectory
-        if let monitor { keyMonitors[paneId] = monitor }
 
         // Replay startup command after shell initializes
         if let command = startupCommand, !command.isEmpty {
@@ -203,9 +187,6 @@ class TerminalStore {
 
     /// Remove a terminal when its pane is closed.
     func remove(paneId: UUID) {
-        if let monitor = keyMonitors.removeValue(forKey: paneId) {
-            NSEvent.removeMonitor(monitor)
-        }
         workingDirs.removeValue(forKey: paneId)
         linkDelegates.removeValue(forKey: paneId)
         // Clean up temp files

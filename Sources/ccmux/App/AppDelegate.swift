@@ -40,6 +40,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             wm.createWindow(displayingWorkspace: workspaceManager.activeWorkspaceId ?? workspaceManager.workspaces.first?.id)
         }
 
+        // Pre-create terminals for non-displayed workspaces so startup commands replay immediately
+        workspaceManager.preCreateTerminals()
+
         NSApp.activate(ignoringOtherApps: true)
     }
 
