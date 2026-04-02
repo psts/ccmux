@@ -3,6 +3,7 @@ import AppKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
     private let workspaceManager = WorkspaceManager()
+    private var quitConfirmationController: QuitConfirmationController?
 
     /// Exposed for AppleScript command handlers.
     var windowManagerForScripting: WindowManager? { windowManager }
@@ -43,10 +44,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Pre-create terminals for non-displayed workspaces so startup commands replay immediately
         workspaceManager.preCreateTerminals()
 
+        let qc = QuitConfirmationController()
+        qc.install()
+        self.quitConfirmationController = qc
+
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        quitConfirmationController?.teardown()
         // Prevent windowWillClose from moving workspaces to closedWorkspaces during quit
         windowManager?.isTerminating = true
         // Capture running commands before terminals are destroyed
@@ -150,7 +156,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appMenuItem.submenu = appMenu
         appMenu.addItem(withTitle: "About ccmux", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit ccmux", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit ccmux", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
 
         // File menu
         let fileMenuItem = NSMenuItem()

@@ -140,7 +140,7 @@ class TerminalStore {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
-        env["TERM_PROGRAM"] = "ghostty"
+        env["TERM_PROGRAM"] = "iTerm.app"
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         env["CCMUX_CMD_FILE"] = cmdFilePath(for: paneId)
 
