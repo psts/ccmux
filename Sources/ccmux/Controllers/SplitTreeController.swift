@@ -119,21 +119,6 @@ class SplitTreeController: ObservableObject {
         return false
     }
 
-    /// Replace the current pane with a terminal running the claude-peers listener.
-    func startListenerTerminal(paneId: UUID) {
-        let newContent = PaneContent.defaultTerminal(workingDirectory: workingDirectory)
-        replaceContent(leafId: paneId, newContent: newContent)
-        focusedPaneId = paneId
-
-        // Send the listen command after a short delay so the shell is ready
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            let terminal = TerminalStore.shared.terminal(for: paneId, workingDirectory: self.workingDirectory)
-            let command = "claude_channels_listener\r"
-            let data = Array(command.utf8)
-            terminal.send(data)
-        }
-    }
-
     func updateScratchpadContent(leafId: UUID, newText: String) {
         guard case .scratchpad(var config) = tree.findLeaf(id: leafId) else { return }
         config.content = newText

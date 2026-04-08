@@ -16,6 +16,11 @@ let package = Package(
                 .copy("Resources")
             ]
         ),
+        .executableTarget(
+            name: "TermTest",
+            dependencies: ["SwiftTerm"],
+            path: "Sources/TermTest"
+        ),
         .testTarget(
             name: "ccmuxTests",
             dependencies: ["ccmux"],

@@ -2,6 +2,12 @@ import AppKit
 import SwiftTerm
 import Darwin
 
+/// Terminal view that accepts first-mouse clicks so panes activate without
+/// requiring a separate click to make the window key first.
+class ClickThroughTerminalView: LocalProcessTerminalView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// Manages terminal view instances outside of SwiftUI's lifecycle.
 /// Terminals survive view tree changes (e.g. splits) by being keyed to pane IDs.
 class TerminalStore {
@@ -121,7 +127,7 @@ class TerminalStore {
             return existing
         }
 
-        let terminal = LocalProcessTerminalView(frame: .zero)
+        let terminal = ClickThroughTerminalView(frame: .zero)
 
         // Appearance
         terminal.font = NSFont(name: "Monaco", size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -140,7 +146,8 @@ class TerminalStore {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
-        env["TERM_PROGRAM"] = "iTerm.app"
+        env["TERM_PROGRAM"] = "WezTerm"
+        env["TERM_PROGRAM_VERSION"] = "20240203-110809-5046fc22"
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         env["CCMUX_CMD_FILE"] = cmdFilePath(for: paneId)
 

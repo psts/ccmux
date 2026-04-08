@@ -13,7 +13,6 @@ struct PaneTabBar: View {
     let onFocus: () -> Void
     let onChangeType: (PaneContent) -> Void
     var onMovePane: ((UUID, DropZone) -> Void)?
-    var onStartListener: (() -> Void)?
 
     @EnvironmentObject var dragState: PaneDragState
 
@@ -66,10 +65,6 @@ struct PaneTabBar: View {
                 }
                 TabBarButton(icon: "folder.fill", tooltip: "Files") {
                     onChangeType(.defaultFileExplorer(rootPath: workingDirectory))
-                }
-
-                TabBarButton(icon: "antenna.radiowaves.left.and.right", tooltip: "Start Listener") {
-                    onStartListener?()
                 }
 
                 TabBarButton(icon: "square.split.2x1", tooltip: "Split Horizontal") {

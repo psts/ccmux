@@ -90,6 +90,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ctrl.splitPane(id: id, direction: .vertical)
     }
 
+    @objc private func togglePeerMessages() {
+        guard let keyWindow = NSApp.keyWindow,
+              let wc = windowManager?.windowControllers.first(where: { $0.window === keyWindow })
+        else { return }
+        wc.togglePeerMessages()
+    }
+
     @objc private func closeFocusedPane() {
         guard let ctrl = activeController, let id = ctrl.focusedPaneId else { return }
         ctrl.closePane(id: id)
@@ -185,6 +192,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let splitV = NSMenuItem(title: "Split Vertical", action: #selector(splitVertical), keyEquivalent: "d")
         splitV.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(splitV)
+
+        viewMenu.addItem(.separator())
+        let peerItem = NSMenuItem(title: "Peer Messages", action: #selector(togglePeerMessages), keyEquivalent: "p")
+        peerItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(peerItem)
 
         // Edit menu
         let editMenuItem = NSMenuItem()

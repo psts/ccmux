@@ -7,6 +7,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     weak var windowManager: WindowManager?
     let windowContext: WindowContext
     let windowId: UUID
+    let peerMessagesController = PeerMessagesController()
 
     init(
         workspaceManager: WorkspaceManager,
@@ -118,6 +119,31 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         splitVC.addSplitViewItem(mainItem)
 
         window?.contentViewController = splitVC
+
+        // Add antenna button in the titlebar (right side)
+        let antennaButton = NSButton(frame: .zero)
+        antennaButton.image = NSImage(systemSymbolName: "antenna.radiowaves.left.and.right", accessibilityDescription: "Peer Messages")
+        antennaButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        antennaButton.isBordered = false
+        antennaButton.target = self
+        antennaButton.action = #selector(togglePeerMessages)
+        antennaButton.toolTip = "Peer Messages"
+        antennaButton.contentTintColor = NSColor.white.withAlphaComponent(0.5)
+        antennaButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 36, height: 28))
+        containerView.addSubview(antennaButton)
+        NSLayoutConstraint.activate([
+            antennaButton.centerXAnchor.constraint(equalTo: containerView.centerXAnchor),
+            antennaButton.centerYAnchor.constraint(equalTo: containerView.centerYAnchor),
+            antennaButton.widthAnchor.constraint(equalToConstant: 28),
+            antennaButton.heightAnchor.constraint(equalToConstant: 28),
+        ])
+
+        let accessoryVC = NSTitlebarAccessoryViewController()
+        accessoryVC.view = containerView
+        accessoryVC.layoutAttribute = .trailing
+        window?.addTitlebarAccessoryViewController(accessoryVC)
     }
 
     func showRenameWindowAlert(windowId: UUID, currentName: String) {
@@ -173,6 +199,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        peerMessagesController.dismiss()
         windowManager?.windowWillClose(self)
     }
 
@@ -181,6 +208,14 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         if let wsId = windowContext.displayedWorkspaceId {
             workspaceManager.activeWorkspaceId = wsId
         }
+    }
+
+    @objc func togglePeerMessages() {
+        guard let wsId = windowContext.displayedWorkspaceId,
+              let ws = workspaceManager.workspaces.first(where: { $0.id == wsId })
+        else { return }
+        let project = (ws.repoPath as NSString).deletingLastPathComponent
+        peerMessagesController.toggle(project: project, relativeTo: window)
     }
 
     var activeController: SplitTreeController? {
