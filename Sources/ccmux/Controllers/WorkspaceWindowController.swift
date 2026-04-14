@@ -25,7 +25,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -108,7 +108,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sidebarItem.canCollapse = true
         splitVC.addSplitViewItem(sidebarItem)
 
-        // Main content — observes windowContext for which workspace to show
+        // Main content — observes windowContext for which workspace to show.
         let mainView = MainContentView(
             manager: workspaceManager,
             windowContext: windowContext

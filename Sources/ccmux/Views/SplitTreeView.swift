@@ -17,15 +17,15 @@ struct SplitTreeView: View {
 
 /// Renders a single node of the split tree.
 private struct SplitNodeView: View {
-    let node: SplitTree<PaneContent>
+    let node: SplitTree<PaneTabs>
     @ObservedObject var controller: SplitTreeController
 
     var body: some View {
         switch node {
-        case .leaf(let id, let content):
+        case .leaf(let id, let tabs):
             LeafPaneView(
                 paneId: id,
-                content: content,
+                tabs: tabs,
                 controller: controller
             )
 
@@ -143,7 +143,7 @@ private extension View {
 /// A leaf pane: tab bar + content + drop zone overlay.
 private struct LeafPaneView: View {
     let paneId: UUID
-    let content: PaneContent
+    let tabs: PaneTabs
     @ObservedObject var controller: SplitTreeController
     @EnvironmentObject var dragState: PaneDragState
 
@@ -151,7 +151,7 @@ private struct LeafPaneView: View {
         VStack(spacing: 0) {
             PaneTabBar(
                 paneId: paneId,
-                content: content,
+                tabs: tabs,
                 isFocused: controller.focusedPaneId == paneId,
                 isOnlyPane: controller.tree.leafCount <= 1,
                 workingDirectory: controller.workingDirectory,
@@ -160,8 +160,14 @@ private struct LeafPaneView: View {
                 onSplitV: { controller.splitPane(id: paneId, direction: .vertical) },
                 onClose: { controller.closePane(id: paneId) },
                 onFocus: { controller.setFocus(paneId: paneId) },
-                onChangeType: { newContent in
-                    controller.replaceContent(leafId: paneId, newContent: newContent)
+                onAddTab: { newContent in
+                    controller.addTab(leafId: paneId, newContent: newContent)
+                },
+                onActivateTab: { tabId in
+                    controller.activateTab(leafId: paneId, tabId: tabId)
+                },
+                onCloseTab: { tabId in
+                    controller.closeTab(leafId: paneId, tabId: tabId)
                 },
                 onMovePane: { targetId, zone in
                     controller.movePane(
@@ -177,7 +183,7 @@ private struct LeafPaneView: View {
 
             PaneContentView(
                 paneId: paneId,
-                content: content,
+                tabs: tabs,
                 controller: controller
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

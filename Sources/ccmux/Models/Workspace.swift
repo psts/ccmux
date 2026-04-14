@@ -4,7 +4,7 @@ struct Workspace: Codable, Identifiable {
     let id: UUID
     var name: String
     var repoPath: String
-    var layout: SplitTree<PaneContent>
+    var layout: SplitTree<PaneTabs>
     var focusedPaneId: UUID?
     var subItems: [WorkspaceSubItem]
     var lastOpened: Date
@@ -13,12 +13,13 @@ struct Workspace: Codable, Identifiable {
     /// Create a new workspace for a given directory.
     static func create(name: String, repoPath: String) -> Workspace {
         let terminalContent = PaneContent.defaultTerminal(workingDirectory: repoPath)
+        let tabs = PaneTabs(single: terminalContent)
         return Workspace(
             id: UUID(),
             name: name,
             repoPath: repoPath,
-            layout: .leaf(id: terminalContent.id, content: terminalContent),
-            focusedPaneId: terminalContent.id,
+            layout: .leaf(id: tabs.id, content: tabs),
+            focusedPaneId: tabs.id,
             subItems: [],
             lastOpened: Date()
         )

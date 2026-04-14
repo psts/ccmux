@@ -45,11 +45,17 @@ class WorkspaceManager: ObservableObject {
             .store(in: &cancellables)
 
         // Handle file link clicks from terminals — route to the right workspace's File Explorer
-        TerminalStore.shared.onFileLinkClicked = { [weak self] terminalPaneId, relativePath in
+        TerminalStore.shared.onFileLinkClicked = { [weak self] terminalId, relativePath in
             guard let self else { return }
-            // Find which workspace owns this terminal pane
+            // Find which workspace owns this terminal tab (matched by terminal config UUID)
             for (_, ctrl) in self.controllers {
-                if ctrl.tree.findLeaf(id: terminalPaneId) != nil {
+                let ownsTerminal = ctrl.tree.allLeaves.contains { leaf in
+                    leaf.content.tabs.contains { tab in
+                        if case .terminal(let config) = tab { return config.id == terminalId }
+                        return false
+                    }
+                }
+                if ownsTerminal {
                     _ = ctrl.openFileInExplorer(relativePath: relativePath)
                     break
                 }
@@ -69,11 +75,13 @@ class WorkspaceManager: ObservableObject {
             // Restore the saved layout
             controller.tree = workspace.layout
             controller.focusedPaneId = workspace.focusedPaneId
-            // Initialize scratchpad content from saved tree
-            for leaf in workspace.layout.allLeaves {
-                if case .scratchpad(let config) = leaf.content {
-                    controller.scratchpadContent = config.content
-                    break
+            // Initialize scratchpad content from saved tree (scan every tab in every pane)
+            outer: for leaf in workspace.layout.allLeaves {
+                for tab in leaf.content.tabs {
+                    if case .scratchpad(let config) = tab {
+                        controller.scratchpadContent = config.content
+                        break outer
+                    }
                 }
             }
 
@@ -117,8 +125,10 @@ class WorkspaceManager: ObservableObject {
             if let ctrl = controllers[snapshot[i].id] {
                 // Sync file explorer states back to configs before saving
                 for leaf in ctrl.tree.allLeaves {
-                    if case .fileExplorer = leaf.content {
-                        ctrl.updateFileExplorerConfig(leafId: leaf.id)
+                    for tab in leaf.content.tabs {
+                        if case .fileExplorer(let config) = tab {
+                            ctrl.updateFileExplorerConfig(explorerId: config.id)
+                        }
                     }
                 }
                 snapshot[i].layout = ctrl.tree
@@ -145,9 +155,17 @@ class WorkspaceManager: ObservableObject {
             if let ctrl = controllers[workspaces[i].id] {
                 var tree = ctrl.tree
                 for leaf in tree.allLeaves {
-                    if case .terminal(var config) = leaf.content {
-                        config.startupCommand = TerminalStore.shared.detectRunningCommand(for: leaf.id)
-                        tree = tree.replaceContent(leafId: leaf.id, newContent: .terminal(config))
+                    var pane = leaf.content
+                    var changed = false
+                    for (idx, tab) in pane.tabs.enumerated() {
+                        if case .terminal(var config) = tab {
+                            config.startupCommand = TerminalStore.shared.detectRunningCommand(for: config.id)
+                            pane.tabs[idx] = .terminal(config)
+                            changed = true
+                        }
+                    }
+                    if changed {
+                        tree = tree.replaceContent(leafId: leaf.id, newContent: pane)
                     }
                 }
                 ctrl.tree = tree
@@ -167,18 +185,20 @@ class WorkspaceManager: ObservableObject {
         for workspace in workspaces {
             guard let controller = controllers[workspace.id] else { continue }
             for leaf in controller.tree.allLeaves {
-                if case .terminal(let config) = leaf.content {
-                    let paneId = leaf.id
-                    let workingDir = config.workingDirectory
-                    let command = config.startupCommand
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                        _ = TerminalStore.shared.terminal(
-                            for: paneId,
-                            workingDirectory: workingDir,
-                            startupCommand: command
-                        )
+                for tab in leaf.content.tabs {
+                    if case .terminal(let config) = tab {
+                        let terminalId = config.id
+                        let workingDir = config.workingDirectory
+                        let command = config.startupCommand
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            _ = TerminalStore.shared.terminal(
+                                for: terminalId,
+                                workingDirectory: workingDir,
+                                startupCommand: command
+                            )
+                        }
+                        delay += stagger
                     }
-                    delay += stagger
                 }
             }
         }
@@ -244,18 +264,26 @@ class WorkspaceManager: ObservableObject {
 
         // Detect running commands before terminating terminals
         for leaf in workspace.layout.allLeaves {
-            if case .terminal(var config) = leaf.content {
-                config.startupCommand = TerminalStore.shared.detectRunningCommand(for: leaf.id)
-                workspace.layout = workspace.layout.replaceContent(
-                    leafId: leaf.id, newContent: .terminal(config)
-                )
+            var pane = leaf.content
+            var changed = false
+            for (idx, tab) in pane.tabs.enumerated() {
+                if case .terminal(var config) = tab {
+                    config.startupCommand = TerminalStore.shared.detectRunningCommand(for: config.id)
+                    pane.tabs[idx] = .terminal(config)
+                    changed = true
+                }
+            }
+            if changed {
+                workspace.layout = workspace.layout.replaceContent(leafId: leaf.id, newContent: pane)
             }
         }
 
         // Clean up all terminals in this workspace
         for leaf in workspace.layout.allLeaves {
-            if case .terminal = leaf.content {
-                TerminalStore.shared.remove(paneId: leaf.id)
+            for tab in leaf.content.tabs {
+                if case .terminal(let config) = tab {
+                    TerminalStore.shared.remove(paneId: config.id)
+                }
             }
         }
 
@@ -314,11 +342,13 @@ class WorkspaceManager: ObservableObject {
         let controller = SplitTreeController(workingDirectory: workspace.repoPath)
         controller.tree = workspace.layout
         controller.focusedPaneId = workspace.focusedPaneId
-        // Restore scratchpad content
-        for leaf in workspace.layout.allLeaves {
-            if case .scratchpad(let config) = leaf.content {
-                controller.scratchpadContent = config.content
-                break
+        // Restore scratchpad content (first scratchpad tab across all panes)
+        outer: for leaf in workspace.layout.allLeaves {
+            for tab in leaf.content.tabs {
+                if case .scratchpad(let config) = tab {
+                    controller.scratchpadContent = config.content
+                    break outer
+                }
             }
         }
         observeController(controller, workspaceId: workspace.id)

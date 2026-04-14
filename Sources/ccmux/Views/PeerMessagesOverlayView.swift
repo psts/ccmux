@@ -105,7 +105,7 @@ struct PeerMessagesOverlayView: View {
         .frame(minWidth: 360, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color(red: 0.11, green: 0.12, blue: 0.14).opacity(0.98))
+                .fill(Color(red: 0.15, green: 0.16, blue: 0.17).opacity(0.98))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14)
                         .stroke(Color.white.opacity(0.1), lineWidth: 1)
@@ -128,7 +128,7 @@ struct PeerMessagesOverlayView: View {
             if !peer.summary.isEmpty {
                 Text(peer.summary)
                     .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.7))
                     .lineLimit(1)
             }
         }
@@ -147,7 +147,7 @@ struct PeerMessagesOverlayView: View {
                     .foregroundColor(.secondary.opacity(0.6))
                 Text(message.from_name)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Color(red: 0.47, green: 0.57, blue: 0.88))
                 Image(systemName: "arrow.right")
                     .font(.system(size: 7))
                     .foregroundColor(.secondary.opacity(0.4))
@@ -156,7 +156,7 @@ struct PeerMessagesOverlayView: View {
                     .foregroundColor(.orange)
             }
             Text(message.text)
-                .font(.system(size: 11))
+                .font(.system(size: 12))
                 .foregroundColor(.white.opacity(0.85))
                 .textSelection(.enabled)
         }

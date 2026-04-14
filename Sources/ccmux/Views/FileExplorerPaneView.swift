@@ -5,14 +5,14 @@ import WebKit
 // MARK: - Main File Explorer Pane
 
 struct FileExplorerPaneView: View {
-    let paneId: UUID
+    let explorerId: UUID
     let config: FileExplorerConfig
     @ObservedObject var controller: SplitTreeController
 
     var body: some View {
-        if let state = controller.fileExplorerState(for: paneId) {
+        if let state = controller.fileExplorerState(for: explorerId) {
             FileExplorerContent(state: state, onStateChange: {
-                controller.updateFileExplorerConfig(leafId: paneId)
+                controller.updateFileExplorerConfig(explorerId: explorerId)
             })
         } else {
             VStack {

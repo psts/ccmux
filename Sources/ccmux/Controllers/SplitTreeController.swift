@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 class SplitTreeController: ObservableObject {
-    @Published var tree: SplitTree<PaneContent>
+    @Published var tree: SplitTree<PaneTabs>
     @Published var focusedPaneId: UUID?
 
     let workingDirectory: String
@@ -10,48 +10,45 @@ class SplitTreeController: ObservableObject {
     /// Workspace-level scratchpad content — survives pane close/reopen.
     var scratchpadContent: String = ""
 
-    /// Runtime state for file explorer panes, keyed by pane ID.
+    /// Runtime state for file explorer tabs, keyed by the FileExplorerConfig UUID.
     var fileExplorerStates: [UUID: FileExplorerState] = [:]
 
     init(workingDirectory: String) {
         self.workingDirectory = workingDirectory
         let initialContent = PaneContent.defaultTerminal(workingDirectory: workingDirectory)
-        let leafId = initialContent.id
-        self.tree = .leaf(id: leafId, content: initialContent)
-        self.focusedPaneId = leafId
+        let initialTabs = PaneTabs(single: initialContent)
+        self.tree = .leaf(id: initialTabs.id, content: initialTabs)
+        self.focusedPaneId = initialTabs.id
     }
 
-    // MARK: - Mutations
+    // MARK: - Pane Mutations
 
     func splitPane(id: UUID, direction: SplitDirection) {
         let newContent = PaneContent.defaultTerminal(workingDirectory: workingDirectory)
-        tree = tree.splitLeaf(targetId: id, direction: direction, newContent: newContent)
-        focusedPaneId = newContent.id
+        let newTabs = PaneTabs(single: newContent)
+        tree = tree.splitLeaf(targetId: id, direction: direction, newContent: newTabs)
+        focusedPaneId = newTabs.id
     }
 
     func closePane(id: UUID) {
         // Don't close if it's the last pane
         guard tree.leafCount > 1 else { return }
 
-        // Save scratchpad content before closing, in case it's a scratchpad pane
-        if case .scratchpad(let config) = tree.findLeaf(id: id) {
-            scratchpadContent = config.content
-        }
-
-        // Check what type of pane is being closed before removing it from the tree
-        let closedContent = tree.findLeaf(id: id)
+        // Capture content before mutation so we can clean up resources
+        let closedTabs = tree.findLeaf(id: id)
 
         if let newTree = tree.closeLeaf(targetId: id) {
-            // Clean up resources for the closed pane
-            if case .terminal = closedContent {
-                TerminalStore.shared.remove(paneId: id)
-            }
-            if case .fileExplorer = closedContent {
-                fileExplorerStates.removeValue(forKey: id)
+            if let pane = closedTabs {
+                for tab in pane.tabs {
+                    // Stash last scratchpad content so reopening a scratchpad restores it
+                    if case .scratchpad(let config) = tab {
+                        scratchpadContent = config.content
+                    }
+                    cleanupResources(for: tab)
+                }
             }
 
             tree = newTree
-            // Move focus to first remaining leaf if we closed the focused pane
             if focusedPaneId == id {
                 focusedPaneId = tree.allLeaves.first?.id
             }
@@ -61,17 +58,6 @@ class SplitTreeController: ObservableObject {
     func updateRatio(splitId: UUID, newRatio: CGFloat) {
         let clamped = max(0.1, min(0.9, newRatio))
         tree = tree.updateRatio(splitId: splitId, newRatio: clamped)
-    }
-
-    func replaceContent(leafId: UUID, newContent: PaneContent) {
-        // Clean up old resources if switching away
-        if case .terminal = tree.findLeaf(id: leafId) {
-            TerminalStore.shared.remove(paneId: leafId)
-        }
-        if case .fileExplorer = tree.findLeaf(id: leafId) {
-            fileExplorerStates.removeValue(forKey: leafId)
-        }
-        tree = tree.replaceContent(leafId: leafId, newContent: newContent)
     }
 
     func setFocus(paneId: UUID) {
@@ -86,43 +72,132 @@ class SplitTreeController: ObservableObject {
         }
     }
 
-    /// Get or create a FileExplorerState for a pane. Lazily initializes and restores from config.
-    func fileExplorerState(for paneId: UUID) -> FileExplorerState? {
-        if let existing = fileExplorerStates[paneId] {
+    // MARK: - Tab Mutations
+
+    /// Append a new tab to an existing pane and activate it.
+    func addTab(leafId: UUID, newContent: PaneContent) {
+        guard var pane = tree.findLeaf(id: leafId) else { return }
+        pane.addTab(newContent)
+        tree = tree.replaceContent(leafId: leafId, newContent: pane)
+        focusedPaneId = leafId
+    }
+
+    /// Switch the active tab within a pane.
+    func activateTab(leafId: UUID, tabId: UUID) {
+        guard var pane = tree.findLeaf(id: leafId) else { return }
+        guard pane.activeTabId != tabId else { return }
+        guard pane.tabs.contains(where: { $0.id == tabId }) else { return }
+        pane.activeTabId = tabId
+        tree = tree.replaceContent(leafId: leafId, newContent: pane)
+        focusedPaneId = leafId
+    }
+
+    /// Close a tab. If it was the last tab in the pane, the pane itself is closed
+    /// (unless it's also the last pane, in which case nothing happens).
+    func closeTab(leafId: UUID, tabId: UUID) {
+        guard var pane = tree.findLeaf(id: leafId) else { return }
+
+        // Single-tab pane → delegate to closePane
+        if pane.tabs.count <= 1 {
+            closePane(id: leafId)
+            return
+        }
+
+        // Clean up the tab's resources before removing
+        if let tab = pane.tabs.first(where: { $0.id == tabId }) {
+            if case .scratchpad(let config) = tab {
+                scratchpadContent = config.content
+            }
+            cleanupResources(for: tab)
+        }
+
+        if pane.removeTab(tabId: tabId) {
+            tree = tree.replaceContent(leafId: leafId, newContent: pane)
+        }
+    }
+
+    private func cleanupResources(for content: PaneContent) {
+        switch content {
+        case .terminal(let config):
+            TerminalStore.shared.remove(paneId: config.id)
+        case .fileExplorer(let config):
+            fileExplorerStates.removeValue(forKey: config.id)
+        default:
+            break
+        }
+    }
+
+    // MARK: - Content-specific helpers
+
+    /// Get or create a FileExplorerState for a file-explorer tab, keyed by its config UUID.
+    func fileExplorerState(for explorerId: UUID) -> FileExplorerState? {
+        if let existing = fileExplorerStates[explorerId] {
             return existing
         }
-        guard case .fileExplorer(let config) = tree.findLeaf(id: paneId) else { return nil }
+        // Find the config by scanning all panes' tabs
+        guard let config = findFileExplorerConfig(explorerId: explorerId) else { return nil }
         let state = FileExplorerState(rootPath: config.rootPath)
         state.restoreFromConfig(config)
-        fileExplorerStates[paneId] = state
+        fileExplorerStates[explorerId] = state
         return state
     }
 
-    /// Sync file explorer runtime state back to the tree config for persistence.
-    func updateFileExplorerConfig(leafId: UUID) {
-        guard let state = fileExplorerStates[leafId] else { return }
-        let config = state.persistableConfig(id: leafId)
-        tree = tree.replaceContent(leafId: leafId, newContent: .fileExplorer(config))
+    private func findFileExplorerConfig(explorerId: UUID) -> FileExplorerConfig? {
+        for leaf in tree.allLeaves {
+            for tab in leaf.content.tabs {
+                if case .fileExplorer(let config) = tab, config.id == explorerId {
+                    return config
+                }
+            }
+        }
+        return nil
     }
 
-    /// Open a file in the first available File Explorer pane. Returns true if successful.
-    func openFileInExplorer(relativePath: String) -> Bool {
-        // Find first file explorer pane
+    /// Locate the pane (leaf) containing a file-explorer tab with the given id.
+    private func findLeafContaining(explorerId: UUID) -> UUID? {
         for leaf in tree.allLeaves {
-            if case .fileExplorer = leaf.content {
-                if let state = fileExplorerState(for: leaf.id) {
-                    state.openFile(relativePath: relativePath)
-                    return true
+            for tab in leaf.content.tabs {
+                if case .fileExplorer(let config) = tab, config.id == explorerId {
+                    return leaf.id
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Sync a file explorer's runtime state back to its persisted config.
+    func updateFileExplorerConfig(explorerId: UUID) {
+        guard let state = fileExplorerStates[explorerId] else { return }
+        guard let leafId = findLeafContaining(explorerId: explorerId) else { return }
+        guard var pane = tree.findLeaf(id: leafId) else { return }
+        let newConfig = state.persistableConfig(id: explorerId)
+        pane.updateTab(tabId: explorerId, newContent: .fileExplorer(newConfig))
+        tree = tree.replaceContent(leafId: leafId, newContent: pane)
+    }
+
+    /// Open a file in the first available File Explorer tab. Returns true if successful.
+    func openFileInExplorer(relativePath: String) -> Bool {
+        for leaf in tree.allLeaves {
+            for tab in leaf.content.tabs {
+                if case .fileExplorer(let config) = tab {
+                    if let state = fileExplorerState(for: config.id) {
+                        state.openFile(relativePath: relativePath)
+                        return true
+                    }
                 }
             }
         }
         return false
     }
 
-    func updateScratchpadContent(leafId: UUID, newText: String) {
-        guard case .scratchpad(var config) = tree.findLeaf(id: leafId) else { return }
+    /// Update the content of a scratchpad tab.
+    func updateScratchpadContent(leafId: UUID, tabId: UUID, newText: String) {
+        guard var pane = tree.findLeaf(id: leafId) else { return }
+        guard let tab = pane.tabs.first(where: { $0.id == tabId }) else { return }
+        guard case .scratchpad(var config) = tab else { return }
         config.content = newText
         scratchpadContent = newText
-        tree = tree.replaceContent(leafId: leafId, newContent: .scratchpad(config))
+        pane.updateTab(tabId: tabId, newContent: .scratchpad(config))
+        tree = tree.replaceContent(leafId: leafId, newContent: pane)
     }
 }

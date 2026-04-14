@@ -7,15 +7,25 @@ VERSION="1.0.0"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
-echo "Building release..."
-swift build -c release
+echo "Building release for arm64..."
+swift build -c release --arch arm64
+
+echo "Building release for x86_64..."
+swift build -c release --arch x86_64
+
+echo "Creating universal binary..."
+mkdir -p "$BUILD_DIR"
+lipo -create \
+    ".build/arm64-apple-macosx/release/$APP_NAME" \
+    ".build/x86_64-apple-macosx/release/$APP_NAME" \
+    -output "$BUILD_DIR/$APP_NAME"
 
 echo "Creating app bundle..."
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# Copy binary
+# Copy universal binary
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
 # Copy icon

@@ -1,16 +1,25 @@
 import SwiftUI
 
-/// Routes to the correct pane view based on PaneContent type.
+/// Routes to the correct pane view based on the active tab's PaneContent.
 struct PaneContentView: View {
     let paneId: UUID
-    let content: PaneContent
+    let tabs: PaneTabs
     @ObservedObject var controller: SplitTreeController
 
     var body: some View {
+        if let active = tabs.activeTab {
+            contentView(for: active)
+                .id(active.id)
+        } else {
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private func contentView(for content: PaneContent) -> some View {
         switch content {
         case .terminal(let config):
-            TerminalPaneView(paneId: paneId, workingDirectory: config.workingDirectory, startupCommand: config.startupCommand)
-                .id(config.id)
+            TerminalPaneView(terminalId: config.id, workingDirectory: config.workingDirectory, startupCommand: config.startupCommand)
 
         case .browser(let config):
             BrowserPaneView(config: config)
@@ -22,10 +31,10 @@ struct PaneContentView: View {
             DiffPaneView(config: config)
 
         case .scratchpad(let config):
-            ScratchpadPaneView(initialText: config.content, paneId: paneId, controller: controller)
+            ScratchpadPaneView(initialText: config.content, paneId: paneId, tabId: config.id, controller: controller)
 
         case .fileExplorer(let config):
-            FileExplorerPaneView(paneId: paneId, config: config, controller: controller)
+            FileExplorerPaneView(explorerId: config.id, config: config, controller: controller)
         }
     }
 }
@@ -34,11 +43,13 @@ struct PaneContentView: View {
 /// Uses @State for responsive local editing, with debounced sync to the controller for persistence.
 struct ScratchpadPaneView: View {
     let paneId: UUID
+    let tabId: UUID
     @ObservedObject var controller: SplitTreeController
     @State private var text: String
 
-    init(initialText: String, paneId: UUID, controller: SplitTreeController) {
+    init(initialText: String, paneId: UUID, tabId: UUID, controller: SplitTreeController) {
         self.paneId = paneId
+        self.tabId = tabId
         self.controller = controller
         self._text = State(initialValue: initialText)
     }
@@ -77,10 +88,10 @@ struct ScratchpadPaneView: View {
         .task(id: text) {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            controller.updateScratchpadContent(leafId: paneId, newText: text)
+            controller.updateScratchpadContent(leafId: paneId, tabId: tabId, newText: text)
         }
         .onDisappear {
-            controller.updateScratchpadContent(leafId: paneId, newText: text)
+            controller.updateScratchpadContent(leafId: paneId, tabId: tabId, newText: text)
         }
     }
 
