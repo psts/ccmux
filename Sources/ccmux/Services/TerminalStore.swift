@@ -127,7 +127,12 @@ class TerminalStore {
             return existing
         }
 
-        let terminal = ClickThroughTerminalView(frame: .zero)
+        // Start at a plausible 80x24 size so SwiftTerm's buffer and the kernel PTY
+        // are initialized at sensible dimensions even for panes that are pre-created
+        // off-screen. Without this, bounds.size is .zero, cols floors at MINIMUM_COLS=2,
+        // and any output that arrives before the first real layout is hard-wrapped to
+        // 2 columns — Buffer.resize doesn't reflow already-wrapped lines.
+        let terminal = ClickThroughTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 480))
 
         // Appearance
         terminal.font = NSFont(name: "Monaco", size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -244,7 +249,14 @@ class TerminalLinkInterceptor: NSObject, TerminalViewDelegate {
 
         // Strip line:column suffix
         let components = filePath.split(separator: ":", maxSplits: 2)
-        let cleanPath = String(components[0])
+        var cleanPath = String(components[0])
+
+        // Strip trailing sentence punctuation the implicit-link regex can capture
+        // (e.g. "Full plan at /path/to/file.md." — the period is not part of the filename).
+        let trailingPunctuation: Set<Character> = [".", ",", ";", "!", "?", ")", "]"]
+        while let last = cleanPath.last, trailingPunctuation.contains(last) {
+            cleanPath.removeLast()
+        }
 
         // Resolve path
         let absolutePath = cleanPath.hasPrefix("/") ? cleanPath :
@@ -255,15 +267,15 @@ class TerminalLinkInterceptor: NSObject, TerminalViewDelegate {
             let relativePath: String
             if cleanPath.hasPrefix(workingDirectory + "/") {
                 relativePath = String(cleanPath.dropFirst(workingDirectory.count + 1))
-            } else if cleanPath.hasPrefix("/") {
-                relativePath = cleanPath
             } else {
                 relativePath = cleanPath
             }
             TerminalStore.shared.onFileLinkClicked?(paneId, relativePath)
         } else {
-            // Fall back to system open
-            if let url = URL(string: link) {
+            // URL(string:) on a bare filesystem path produces a schemeless URL that
+            // NSWorkspace rejects with OSStatus -50. Use fileURLWithPath for paths,
+            // and only fall back to URL(string:) when the link has a real scheme.
+            if let url = URL(string: link), url.scheme != nil {
                 NSWorkspace.shared.open(url)
             }
         }
