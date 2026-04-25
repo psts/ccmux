@@ -23,7 +23,11 @@ class WorkspaceManager: ObservableObject {
     var windowDescriptorProvider: (() -> [WindowDescriptor])?
 
     private let saveDebouncer = Debouncer(delay: 0.3)
+    /// Long-lived subscriptions on `self` (e.g. `$workspaces`).
     private var cancellables = Set<AnyCancellable>()
+    /// Per-workspace controller subscriptions. Cleared in `closeWorkspace`/`removeWorkspace`
+    /// so the upstream `SplitTreeController` is no longer retained after close.
+    private var controllerCancellables: [UUID: Set<AnyCancellable>] = [:]
 
     var activeWorkspace: Workspace? {
         workspaces.first { $0.id == activeWorkspaceId }
@@ -216,14 +220,16 @@ class WorkspaceManager: ObservableObject {
     }
 
     private func observeController(_ controller: SplitTreeController, workspaceId: UUID) {
+        var bag = Set<AnyCancellable>()
         controller.$tree
             .dropFirst()
             .sink { [weak self] _ in self?.scheduleSave() }
-            .store(in: &cancellables)
+            .store(in: &bag)
         controller.$focusedPaneId
             .dropFirst()
             .sink { [weak self] _ in self?.scheduleSave() }
-            .store(in: &cancellables)
+            .store(in: &bag)
+        controllerCancellables[workspaceId] = bag
     }
 
     // MARK: - Workspace Operations
@@ -293,6 +299,7 @@ class WorkspaceManager: ObservableObject {
         // Remove from open list
         workspaces.remove(at: idx)
         controllers.removeValue(forKey: id)
+        controllerCancellables.removeValue(forKey: id)
         monitors[id]?.stop()
         monitors.removeValue(forKey: id)
         claudeMonitors[id]?.stop()
@@ -365,6 +372,7 @@ class WorkspaceManager: ObservableObject {
     func removeWorkspace(id: UUID) {
         workspaces.removeAll { $0.id == id }
         controllers.removeValue(forKey: id)
+        controllerCancellables.removeValue(forKey: id)
         monitors[id]?.stop()
         monitors.removeValue(forKey: id)
         claudeMonitors[id]?.stop()
