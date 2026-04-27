@@ -17,6 +17,7 @@ class TerminalStore {
     private var linkDelegates: [UUID: TerminalLinkInterceptor] = [:]
     fileprivate var workingDirs: [UUID: String] = [:]
     private var zdotdirPaths: [UUID: String] = [:]
+    private var pendingStartupCommands: [UUID: String] = [:]
 
     /// Callback for when a file link is clicked in a terminal.
     /// Set by WorkspaceManager to route file opens to the right controller.
@@ -187,20 +188,32 @@ class TerminalStore {
         terminals[paneId] = terminal
         workingDirs[paneId] = workingDirectory
 
-        // Replay startup command after shell initializes
+        // Queue startup command for the first real layout. Sending it now would
+        // launch the user's TUI (claude, vim, etc.) into the 800x480 fallback
+        // buffer; whatever it draws there gets hard-wrapped at ~100 cols and
+        // SwiftTerm's Buffer.resize doesn't reflow already-wrapped content.
         if let command = startupCommand, !command.isEmpty {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                terminal.send(Array((command + "\r").utf8))
-            }
+            pendingStartupCommands[paneId] = command
         }
 
         return terminal
+    }
+
+    /// Sends a previously queued startup command, if any, into the PTY.
+    /// Called by TerminalContainerView after the pane's first real layout so
+    /// the TUI launches at the actual visible size, not the fallback frame.
+    /// One-shot: each queued command runs at most once per pane lifetime.
+    func runStartupCommandIfPending(paneId: UUID) {
+        guard let command = pendingStartupCommands.removeValue(forKey: paneId),
+              let terminal = terminals[paneId] else { return }
+        terminal.send(Array((command + "\r").utf8))
     }
 
     /// Remove a terminal when its pane is closed.
     func remove(paneId: UUID) {
         workingDirs.removeValue(forKey: paneId)
         linkDelegates.removeValue(forKey: paneId)
+        pendingStartupCommands.removeValue(forKey: paneId)
         // Clean up temp files
         try? FileManager.default.removeItem(atPath: cmdFilePath(for: paneId))
         if let zdotdir = zdotdirPaths.removeValue(forKey: paneId) {

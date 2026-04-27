@@ -71,6 +71,9 @@ class TerminalContainerView: NSView {
                 if pid > 0 {
                     kill(pid, SIGWINCH)
                 }
+                // PTY now has correct cols/rows; safe to launch the user's TUI so
+                // it never observes the 800x480 fallback frame.
+                TerminalStore.shared.runStartupCommandIfPending(paneId: terminalId)
             }
         }
     }
