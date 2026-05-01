@@ -38,6 +38,7 @@ struct SidebarView: View {
                                 claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
                                 isActive: isDisplayed,
                                 isInOtherWindow: false,
+                                isExpanded: currentWindowExpansionBinding(for: workspace.id),
                                 onSelect: { onSelectWorkspace(workspace.id) },
                                 onFileClicked: { filePath in
                                     if let ctrl = manager.controllers[workspace.id] {
@@ -77,12 +78,10 @@ struct SidebarView: View {
                     if !groupWorkspaces.isEmpty {
                         Section {
                             ForEach(groupWorkspaces) { workspace in
-                                WorkspaceRow(
+                                OtherWindowWorkspaceRow(
                                     workspace: workspace,
                                     monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
                                     claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
-                                    isActive: false,
-                                    isInOtherWindow: true,
                                     onSelect: { onSelectWorkspace(workspace.id) },
                                     onFileClicked: { filePath in
                                         if let ctrl = manager.controllers[workspace.id] {
@@ -228,6 +227,22 @@ struct SidebarView: View {
         path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
+    /// Binding for current-window rows: reads from the persisted set, writes back
+    /// and triggers a debounced save. Default (id absent) = expanded.
+    private func currentWindowExpansionBinding(for id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { !windowContext.collapsedWorkspaceIds.contains(id) },
+            set: { newValue in
+                if newValue {
+                    windowContext.collapsedWorkspaceIds.remove(id)
+                } else {
+                    windowContext.collapsedWorkspaceIds.insert(id)
+                }
+                manager.scheduleSaveFromWindow()
+            }
+        )
+    }
+
     @ViewBuilder
     private func workspaceContextMenu(for workspace: Workspace) -> some View {
         let isInOtherWindow = windowContext.otherWindowWorkspaceIds.contains(workspace.id)
@@ -260,10 +275,9 @@ private struct WorkspaceRow: View {
     @ObservedObject var claudeMonitor: ClaudeProcessMonitor
     let isActive: Bool
     let isInOtherWindow: Bool
+    @Binding var isExpanded: Bool
     var onSelect: (() -> Void)?
     var onFileClicked: ((String) -> Void)?
-
-    @State private var isExpanded = true
 
     private var status: GitStatusInfo {
         monitor.status
@@ -370,6 +384,34 @@ private struct WorkspaceRow: View {
             return "~" + path.dropFirst(home.count)
         }
         return path
+    }
+}
+
+// MARK: - Other-window row (session-only peek expansion)
+
+/// Wraps `WorkspaceRow` for workspaces in other windows. Holds session-only
+/// expansion state initialized to collapsed; the user can click to expand
+/// temporarily but the state is never persisted and resets on app restart.
+private struct OtherWindowWorkspaceRow: View {
+    let workspace: Workspace
+    @ObservedObject var monitor: GitStatusMonitor
+    @ObservedObject var claudeMonitor: ClaudeProcessMonitor
+    var onSelect: (() -> Void)?
+    var onFileClicked: ((String) -> Void)?
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        WorkspaceRow(
+            workspace: workspace,
+            monitor: monitor,
+            claudeMonitor: claudeMonitor,
+            isActive: false,
+            isInOtherWindow: true,
+            isExpanded: $isExpanded,
+            onSelect: onSelect,
+            onFileClicked: onFileClicked
+        )
     }
 }
 

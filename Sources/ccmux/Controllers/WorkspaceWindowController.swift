@@ -118,6 +118,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         mainItem.minimumThickness = 400
         splitVC.addSplitViewItem(mainItem)
 
+        // Persist sidebar width across launches (shared across windows via UserDefaults).
+        splitVC.splitView.autosaveName = "ccmux.mainSplit"
+
         window?.contentViewController = splitVC
 
         // Add antenna button in the titlebar (right side)

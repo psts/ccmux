@@ -12,6 +12,10 @@ class WindowContext: ObservableObject {
     @Published var windowName: String?
     /// Info about other windows for sidebar display
     @Published var otherWindowGroups: [WindowGroup] = []
+    /// Workspace IDs whose sidebar disclosure is collapsed in this window.
+    /// Persisted via WindowDescriptor; only consulted for the current window's
+    /// own rows (other windows render collapsed regardless).
+    @Published var collapsedWorkspaceIds: Set<UUID> = []
     weak var workspaceManager: WorkspaceManager?
 
     struct WindowGroup: Identifiable {
@@ -196,6 +200,7 @@ class WindowManager {
         // Remove ownership from any other window
         for wc in windowControllers where wc !== targetController {
             wc.windowContext.ownedWorkspaceIds.remove(id)
+            wc.windowContext.collapsedWorkspaceIds.remove(id)
             // If source window was displaying this workspace and has no other owned workspaces, close it
             if wc.windowContext.displayedWorkspaceId == id {
                 if let otherOwned = wc.windowContext.ownedWorkspaceIds.first {
@@ -272,7 +277,8 @@ class WindowManager {
                 ownedWorkspaceIds: Array(wc.windowContext.ownedWorkspaceIds),
                 windowName: wc.windowContext.windowName,
                 frame: WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height),
-                space: space
+                space: space,
+                collapsedWorkspaceIds: Array(wc.windowContext.collapsedWorkspaceIds)
             )
         }
     }
@@ -315,6 +321,7 @@ class WindowManager {
                     wc.windowContext.ownedWorkspaceIds = Set(desc.ownedWorkspaceIds)
                 }
                 wc.windowContext.windowName = desc.windowName
+                wc.windowContext.collapsedWorkspaceIds = Set(desc.collapsedWorkspaceIds)
 
                 windowControllers.append(wc)
 
@@ -450,6 +457,7 @@ class WindowManager {
                 wc.windowContext.displayedWorkspaceId = nextId
                 wc.updateWindowTitle()
             }
+            wc.windowContext.collapsedWorkspaceIds.remove(id)
         }
     }
 

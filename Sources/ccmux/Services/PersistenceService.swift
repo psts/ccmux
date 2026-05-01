@@ -23,7 +23,31 @@ enum PersistenceService {
 
         // Legacy fallback: old format stored `layout: SplitTree<PaneContent>` (one PaneContent
         // per leaf). Try to decode that shape and wrap each leaf in a single-tab PaneTabs.
-        return try? decoder.decode(LegacyAppState.self, from: data).migrated()
+        if let migrated = try? decoder.decode(LegacyAppState.self, from: data).migrated() {
+            return migrated
+        }
+
+        // Decoding failed entirely. Preserve the un-decodable file under a
+        // timestamped name so the next save() doesn't silently overwrite it.
+        // (This is the safety net that would have saved the May 2026 collapse-
+        // expansion field rollout if it had been in place earlier.)
+        preserveUnreadableState(data: data)
+        return nil
+    }
+
+    private static func preserveUnreadableState(data: Data) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        formatter.timeZone = TimeZone.current
+        let timestamp = formatter.string(from: Date())
+        let backupURL = stateURL.deletingLastPathComponent()
+            .appendingPathComponent("state.unreadable-\(timestamp).json")
+        do {
+            try data.write(to: backupURL, options: .atomic)
+            NSLog("[ccmux] state.json could not be decoded — preserved a copy at %@", backupURL.path)
+        } catch {
+            NSLog("[ccmux] state.json could not be decoded AND backup failed: %@", String(describing: error))
+        }
     }
 
     static func save(_ state: AppState) {

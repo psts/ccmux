@@ -8,6 +8,37 @@ struct AppState: Codable {
     var version: Int = 2
     var windowFrame: WindowFrame?       // v1 compat
     var windows: [WindowDescriptor] = [] // v2: multi-window state
+
+    init(
+        workspaces: [Workspace],
+        closedWorkspaces: [Workspace] = [],
+        closedWindows: [ClosedWindow] = [],
+        activeWorkspaceId: UUID? = nil,
+        version: Int = 2,
+        windowFrame: WindowFrame? = nil,
+        windows: [WindowDescriptor] = []
+    ) {
+        self.workspaces = workspaces
+        self.closedWorkspaces = closedWorkspaces
+        self.closedWindows = closedWindows
+        self.activeWorkspaceId = activeWorkspaceId
+        self.version = version
+        self.windowFrame = windowFrame
+        self.windows = windows
+    }
+
+    // See WindowDescriptor.init(from:) for the rationale — `decodeIfPresent`
+    // keeps default-valued fields tolerant of older state.json files.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        workspaces = try c.decode([Workspace].self, forKey: .workspaces)
+        closedWorkspaces = try c.decodeIfPresent([Workspace].self, forKey: .closedWorkspaces) ?? []
+        closedWindows = try c.decodeIfPresent([ClosedWindow].self, forKey: .closedWindows) ?? []
+        activeWorkspaceId = try c.decodeIfPresent(UUID.self, forKey: .activeWorkspaceId)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 2
+        windowFrame = try c.decodeIfPresent(WindowFrame.self, forKey: .windowFrame)
+        windows = try c.decodeIfPresent([WindowDescriptor].self, forKey: .windows) ?? []
+    }
 }
 
 /// A closed window with its workspace group, saved for later restoration.
@@ -39,4 +70,42 @@ struct WindowDescriptor: Codable, Identifiable {
     var windowName: String?             // custom name, nil = auto "Window N"
     var frame: WindowFrame
     var space: SpaceSnapshot?
+    /// Workspace IDs whose sidebar disclosure is collapsed in this window.
+    /// Absence = expanded (the default). Only honored when this window is current;
+    /// other-window rows always start collapsed regardless of saved state.
+    var collapsedWorkspaceIds: [UUID] = []
+
+    init(
+        id: UUID,
+        workspaceId: UUID? = nil,
+        ownedWorkspaceIds: [UUID] = [],
+        windowName: String? = nil,
+        frame: WindowFrame,
+        space: SpaceSnapshot? = nil,
+        collapsedWorkspaceIds: [UUID] = []
+    ) {
+        self.id = id
+        self.workspaceId = workspaceId
+        self.ownedWorkspaceIds = ownedWorkspaceIds
+        self.windowName = windowName
+        self.frame = frame
+        self.space = space
+        self.collapsedWorkspaceIds = collapsedWorkspaceIds
+    }
+
+    // Custom decoder so that adding optional-with-default fields later does not
+    // break loading older state.json files. Swift's synthesized `init(from:)`
+    // calls `decode` (not `decodeIfPresent`) for non-Optional properties, even
+    // when they have a default value, which throws `keyNotFound` if the JSON
+    // omits the key. Using `decodeIfPresent` here keeps the defaults working.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        workspaceId = try c.decodeIfPresent(UUID.self, forKey: .workspaceId)
+        ownedWorkspaceIds = try c.decodeIfPresent([UUID].self, forKey: .ownedWorkspaceIds) ?? []
+        windowName = try c.decodeIfPresent(String.self, forKey: .windowName)
+        frame = try c.decode(WindowFrame.self, forKey: .frame)
+        space = try c.decodeIfPresent(SpaceSnapshot.self, forKey: .space)
+        collapsedWorkspaceIds = try c.decodeIfPresent([UUID].self, forKey: .collapsedWorkspaceIds) ?? []
+    }
 }
