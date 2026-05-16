@@ -1,26 +1,71 @@
 import Foundation
 
 enum GitService {
+    /// Collector for stdout bytes streamed asynchronously off a Pipe — no parked thread.
+    private final class OutputCollector: @unchecked Sendable {
+        private var data = Data()
+        private var resumed = false
+        private let lock = NSLock()
+
+        func append(_ chunk: Data) {
+            lock.lock(); defer { lock.unlock() }
+            data.append(chunk)
+        }
+
+        /// Returns the buffered data exactly once; subsequent calls return nil.
+        func takeIfFirst() -> Data? {
+            lock.lock(); defer { lock.unlock() }
+            guard !resumed else { return nil }
+            resumed = true
+            return data
+        }
+    }
+
     /// Run a git command and return stdout.
+    ///
+    /// Drains the child's stdout via `Pipe.readabilityHandler` instead of
+    /// `waitUntilExit()` + `readDataToEndOfFile()`. The blocking variants would
+    /// park one GCD worker thread per inflight git invocation; with many workspaces
+    /// this can saturate the 64-thread soft limit and stall pane I/O across the app.
+    ///
+    /// The handler fires with non-empty data as the child writes, and once with
+    /// empty data when the child closes its write end of the pipe (EOF). EOF is
+    /// our completion signal — by that point the child has finished writing.
+    /// We deliberately avoid `Process.terminationHandler` because it runs on a
+    /// different queue from `readabilityHandler` and racing reads against the
+    /// same FileHandle yields partial/empty output (the source of the flicker
+    /// in the previous version of this function).
     static func run(args: [String], in directory: String) async -> String {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-                process.arguments = args
-                process.currentDirectoryURL = URL(fileURLWithPath: directory)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = args
+            process.currentDirectoryURL = URL(fileURLWithPath: directory)
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = FileHandle.nullDevice
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
 
-                do {
-                    try process.run()
-                    process.waitUntilExit()
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
-                    continuation.resume(returning: output)
-                } catch {
+            let pipeHandle = pipe.fileHandleForReading
+            let collector = OutputCollector()
+
+            pipeHandle.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    if let data = collector.takeIfFirst() {
+                        continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
+                    }
+                } else {
+                    collector.append(chunk)
+                }
+            }
+
+            do {
+                try process.run()
+            } catch {
+                pipeHandle.readabilityHandler = nil
+                if collector.takeIfFirst() != nil {
                     continuation.resume(returning: "")
                 }
             }
@@ -28,6 +73,13 @@ enum GitService {
     }
 
     static func isGitRepo(path: String) async -> Bool {
+        // Cheap filesystem check first. Avoids spawning `git` for the common
+        // case (~all repos have `.git` at the root), which used to fail under
+        // the startup spawn-burst and paint "Not a git repository" over real
+        // repos until the next 30s poll tick.
+        let gitPath = (path as NSString).appendingPathComponent(".git")
+        if FileManager.default.fileExists(atPath: gitPath) { return true }
+        // Fallback for worktrees / unusual layouts where `.git` isn't at the root.
         let result = await run(args: ["rev-parse", "--git-dir"], in: path)
         return !result.isEmpty
     }
