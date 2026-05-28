@@ -78,6 +78,16 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 </plist>
 EOF
 
+echo "Code signing..."
+SIGN_ID="Apple Development: Patric Sandelin (H5287KRN8S)"
+# No hardened runtime (--options runtime): it enables library validation, which
+# blocks CoreText from loading the system font machinery ("System LastResort not
+# available") and renders every terminal glyph as a .notdef tofu box. Hardened
+# runtime is only needed for notarization, which this Apple Development cert can't
+# do anyway. Sign without it so glyphs render and the app stays copyable.
+codesign --force --sign "$SIGN_ID" "$APP_DIR"
+codesign --verify --verbose=2 "$APP_DIR"
+
 echo ""
 echo "✅ Built: $APP_DIR"
 echo ""
