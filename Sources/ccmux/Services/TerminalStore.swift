@@ -13,20 +13,38 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
 class TerminalStore {
     static let shared = TerminalStore()
 
+    private static let claudeScrollbackLines = 5000
+
     private var terminals: [UUID: LocalProcessTerminalView] = [:]
     private var linkDelegates: [UUID: TerminalLinkInterceptor] = [:]
     fileprivate var workingDirs: [UUID: String] = [:]
     private var zdotdirPaths: [UUID: String] = [:]
     private var pendingStartupCommands: [UUID: String] = [:]
+    private var scrollbackBumpedPanes: Set<UUID> = []
+    private var claudeDetectionTimer: DispatchSourceTimer?
 
     /// Callback for when a file link is clicked in a terminal.
     /// Set by WorkspaceManager to route file opens to the right controller.
     var onFileLinkClicked: ((UUID, String) -> Void)?
 
-    private init() {}
+    private init() {
+        sweepOrphanedTempFiles()
+    }
 
     private func cmdFilePath(for paneId: UUID) -> String {
         "/tmp/ccmux-cmd-\(paneId.uuidString)"
+    }
+
+    /// Remove leftover per-pane ZDOTDIR dirs and cmd files from previous runs
+    /// that crashed or were killed before `terminateAll` could clean them up.
+    /// Safe before any panes exist this session — every path is keyed by a
+    /// per-pane UUID, so anything present belongs to a process that's gone.
+    private func sweepOrphanedTempFiles() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: "/tmp") else { return }
+        for entry in entries where entry.hasPrefix("ccmux-zsh-") || entry.hasPrefix("ccmux-cmd-") {
+            try? fm.removeItem(atPath: "/tmp/\(entry)")
+        }
     }
 
     // MARK: - Command Detection (native APIs — no process spawning)
@@ -188,6 +206,13 @@ class TerminalStore {
         terminals[paneId] = terminal
         workingDirs[paneId] = workingDirectory
 
+        if let command = startupCommand,
+           let firstToken = command.split(separator: " ").first,
+           firstToken.hasPrefix("claude") {
+            terminal.getTerminal().changeScrollback(Self.claudeScrollbackLines)
+            scrollbackBumpedPanes.insert(paneId)
+        }
+
         // Queue startup command for the first real layout. Sending it now would
         // launch the user's TUI (claude, vim, etc.) into the 800x480 fallback
         // buffer; whatever it draws there gets hard-wrapped at ~100 cols and
@@ -196,7 +221,42 @@ class TerminalStore {
             pendingStartupCommands[paneId] = command
         }
 
+        startClaudeDetectionTimerIfNeeded()
+
         return terminal
+    }
+
+    // MARK: - Live Claude Detection (per-pane scrollback bump)
+
+    /// One shared timer that walks all live panes every 5s and bumps scrollback
+    /// to 5000 for any pane currently hosting `claude`. Once a pane is bumped
+    /// it stays bumped for the pane's lifetime — claude renders into the main
+    /// buffer (no alt-screen) so users want full history even after `/exit`.
+    private func startClaudeDetectionTimerIfNeeded() {
+        guard claudeDetectionTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + 3, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            DispatchQueue.main.async { self?.scanPanesForClaude() }
+        }
+        timer.resume()
+        claudeDetectionTimer = timer
+    }
+
+    private func scanPanesForClaude() {
+        for paneId in terminals.keys {
+            bumpScrollbackIfClaudeRunning(paneId: paneId)
+        }
+    }
+
+    private func bumpScrollbackIfClaudeRunning(paneId: UUID) {
+        guard !scrollbackBumpedPanes.contains(paneId) else { return }
+        guard let terminal = terminals[paneId] else { return }
+        guard let command = detectRunningCommand(for: paneId) else { return }
+        guard let firstToken = command.split(separator: " ").first,
+              firstToken.hasPrefix("claude") else { return }
+        terminal.getTerminal().changeScrollback(Self.claudeScrollbackLines)
+        scrollbackBumpedPanes.insert(paneId)
     }
 
     /// Sends a previously queued startup command, if any, into the PTY.
@@ -214,6 +274,7 @@ class TerminalStore {
         workingDirs.removeValue(forKey: paneId)
         linkDelegates.removeValue(forKey: paneId)
         pendingStartupCommands.removeValue(forKey: paneId)
+        scrollbackBumpedPanes.remove(paneId)
         // Clean up temp files
         try? FileManager.default.removeItem(atPath: cmdFilePath(for: paneId))
         if let zdotdir = zdotdirPaths.removeValue(forKey: paneId) {
@@ -223,6 +284,19 @@ class TerminalStore {
             terminal.terminalDelegate = nil
             terminal.terminate()
         }
+    }
+
+    /// Kill every tracked terminal. Called from app-quit so child process groups
+    /// (zsh + claude / dev servers / etc.) get reaped instead of leaking to launchd.
+    func terminateAll() {
+        for paneId in Array(terminals.keys) {
+            remove(paneId: paneId)
+        }
+        claudeDetectionTimer?.cancel()
+        claudeDetectionTimer = nil
+        // Defensive: catches any zdotdir/cmd file whose paneId fell out of the
+        // tracking maps before `remove` ran.
+        sweepOrphanedTempFiles()
     }
 
 }

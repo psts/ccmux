@@ -148,8 +148,14 @@ class WindowManager {
     func windowWillClose(_ controller: WorkspaceWindowController) {
         // During app termination, don't close workspaces — they'll be saved as-is
         if !isTerminating {
-            // Collect workspace IDs that will actually be closed (not owned by other windows)
-            let ownedIds = controller.windowContext.ownedWorkspaceIds
+            // Collect workspace IDs that will actually be closed (not owned by other windows).
+            // Seed with the displayed workspace too — ownership tracking has historically had
+            // gaps (detach/move paths can drop a workspace from ownedWorkspaceIds while it's
+            // still on screen), and a leaked workspace there means leaked PTYs/child processes.
+            var ownedIds = controller.windowContext.ownedWorkspaceIds
+            if let displayed = controller.windowContext.displayedWorkspaceId {
+                ownedIds.insert(displayed)
+            }
             var closingIds: [UUID] = []
 
             for wsId in ownedIds {

@@ -65,41 +65,55 @@ private struct FileExplorerContent: View {
 
                     if let activeId = state.activeTabId,
                        let tab = state.openTabs.first(where: { $0.id == activeId }) {
-                        ZStack(alignment: .topTrailing) {
-                            if tab.isPreviewMode {
-                                MarkdownPreviewView(content: tab.content)
-                            } else {
-                                FileEditorView(
-                                    tabId: tab.id,
-                                    content: tab.content,
-                                    onContentChange: { newContent in
-                                        state.updateContent(tabId: tab.id, newContent: newContent)
-                                    },
-                                    onSave: {
-                                        _ = state.saveActiveFile()
+                        VStack(spacing: 0) {
+                            if tab.diskChangedExternally {
+                                DiskChangedBanner(
+                                    onReload: {
+                                        state.reloadFromDisk(tabId: tab.id)
                                         onStateChange()
+                                    },
+                                    onDismiss: {
+                                        state.dismissDiskChange(tabId: tab.id)
                                     }
                                 )
                             }
 
-                            if tab.isMarkdown {
-                                Button(action: {
-                                    state.togglePreview(tabId: tab.id)
-                                    onStateChange()
-                                }) {
-                                    Image(systemName: tab.isPreviewMode ? "doc.plaintext" : "eye")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
+                            ZStack(alignment: .topTrailing) {
+                                if tab.isPreviewMode {
+                                    MarkdownPreviewView(content: tab.content)
+                                } else {
+                                    FileEditorView(
+                                        tabId: tab.id,
+                                        content: tab.content,
+                                        onContentChange: { newContent in
+                                            state.updateContent(tabId: tab.id, newContent: newContent)
+                                        },
+                                        onSave: {
+                                            _ = state.saveActiveFile()
+                                            onStateChange()
+                                        }
+                                    )
                                 }
-                                .buttonStyle(.plain)
-                                .padding(5)
-                                .background(.ultraThinMaterial)
-                                .cornerRadius(4)
-                                .padding(8)
-                                .help(tab.isPreviewMode ? "Show raw text" : "Show preview")
+
+                                if tab.isMarkdown {
+                                    Button(action: {
+                                        state.togglePreview(tabId: tab.id)
+                                        onStateChange()
+                                    }) {
+                                        Image(systemName: tab.isPreviewMode ? "doc.plaintext" : "eye")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(5)
+                                    .background(.ultraThinMaterial)
+                                    .cornerRadius(4)
+                                    .padding(8)
+                                    .help(tab.isPreviewMode ? "Show raw text" : "Show preview")
+                                }
                             }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
                     // Empty state
@@ -345,6 +359,39 @@ private struct FileTabButton: View {
     }
 }
 
+// MARK: - Disk Changed Banner
+
+private struct DiskChangedBanner: View {
+    let onReload: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .font(.system(size: 11))
+            Text("File changed on disk — your unsaved edits would be overwritten.")
+                .font(.system(size: 11))
+                .foregroundColor(.primary)
+            Spacer(minLength: 8)
+            Button("Reload from disk", action: onReload)
+                .font(.system(size: 11))
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.12))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.orange.opacity(0.4)).frame(height: 1)
+        }
+    }
+}
+
 // MARK: - Markdown Preview (WKWebView wrapper)
 
 struct MarkdownPreviewView: NSViewRepresentable {
@@ -372,7 +419,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
         <html>
         <head>
         <meta charset="utf-8">
-        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, sans-serif;
                  color: #d9d9d9; background: #1c1e24;
@@ -386,6 +434,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
           pre { background: #2a2d35; padding: 14px; border-radius: 6px;
                 overflow-x: auto; margin: 12px 0; }
           pre code { background: none; padding: 0; }
+          pre.mermaid { background: #1c1e24; padding: 8px; text-align: center; }
           h1, h2, h3, h4, h5, h6 { color: #e5e5e5; margin-top: 24px; }
           h1, h2 { border-bottom: 1px solid #3a3d45; padding-bottom: 6px; }
           a { color: #58a6ff; text-decoration: none; }
@@ -403,7 +452,25 @@ struct MarkdownPreviewView: NSViewRepresentable {
         <div id="content"></div>
         <script>
           const raw = `\(escaped)`;
+          // marked v15 calls renderer.code with a single token: { text, lang, escaped }.
+          // Emit <pre class="mermaid"> for mermaid fences so mermaid.run() can pick them up.
+          marked.use({
+            renderer: {
+              code({ text, lang }) {
+                if (((lang || '') + '').trim().toLowerCase() === 'mermaid') {
+                  const escaped = String(text)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+                  return '<pre class="mermaid">' + escaped + '</pre>';
+                }
+                return false;
+              }
+            }
+          });
+          mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
           document.getElementById('content').innerHTML = marked.parse(raw);
+          mermaid.run({ querySelector: '.mermaid' }).catch(() => {});
         </script>
         </body>
         </html>

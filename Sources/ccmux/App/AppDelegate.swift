@@ -55,10 +55,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         quitConfirmationController?.teardown()
         // Prevent windowWillClose from moving workspaces to closedWorkspaces during quit
         windowManager?.isTerminating = true
-        // Capture running commands before terminals are destroyed
+        // Capture running commands before terminals are destroyed (uses libproc on each shellPid)
         workspaceManager.detectAndSaveCommands()
-        // Save current state including all window descriptors
+        // Persist workspaces + window descriptors so the next launch can replay startupCommands
         workspaceManager.saveState()
+        // Reap every shell + its process group. Without this, ccmux's spawned zsh shells
+        // (and anything they were running — claude, dev servers, …) survive app quit
+        // because nothing else closes the PTYs.
+        TerminalStore.shared.terminateAll()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

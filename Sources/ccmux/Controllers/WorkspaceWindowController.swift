@@ -210,6 +210,11 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         // Update global activeWorkspaceId for menu actions
         if let wsId = windowContext.displayedWorkspaceId {
             workspaceManager.activeWorkspaceId = wsId
+            // Cheap belt-and-suspenders for "user just Cmd-Tabbed back from an
+            // external editor" — FSEvents would catch the change eventually,
+            // but a focus-event refresh makes the sidebar feel instant and
+            // covers any missed events on weird filesystems.
+            workspaceManager.monitors[wsId]?.refresh()
         }
     }
 

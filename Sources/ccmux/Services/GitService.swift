@@ -1,5 +1,38 @@
 import Foundation
 
+/// Caps how many `git` subprocesses can be inflight at once.
+///
+/// Without a cap, ~5 workspaces resuming together × 4–5 git calls per
+/// `fullStatus` = 20–25 fork/exec in the same ms. Some of those fork() calls
+/// fail under kernel resource pressure, `Process.run()` throws, and the
+/// caller sees an empty result that masquerades as "branch is the SHA"
+/// or "no files changed" until the next 30 s poll. Drain 6 at a time and
+/// no fork() fails.
+private actor GitProcessLimit {
+    static let shared = GitProcessLimit()
+    private let maxConcurrent = 6
+    private var inflight = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if inflight < maxConcurrent {
+            inflight += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if !waiters.isEmpty {
+            // Direct handoff: inflight count stays the same, the slot
+            // transfers from the releaser to the next waiter.
+            waiters.removeFirst().resume()
+        } else {
+            inflight -= 1
+        }
+    }
+}
+
 enum GitService {
     /// Collector for stdout bytes streamed asynchronously off a Pipe — no parked thread.
     private final class OutputCollector: @unchecked Sendable {
@@ -36,6 +69,13 @@ enum GitService {
     /// same FileHandle yields partial/empty output (the source of the flicker
     /// in the previous version of this function).
     static func run(args: [String], in directory: String) async -> String {
+        await GitProcessLimit.shared.acquire()
+        let result = await runUnlimited(args: args, in: directory)
+        await GitProcessLimit.shared.release()
+        return result
+    }
+
+    private static func runUnlimited(args: [String], in directory: String) async -> String {
         await withCheckedContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -117,7 +157,16 @@ enum GitService {
     // MARK: - Full Status (for sidebar dashboard)
 
     /// Fetch complete git status for a workspace: branch, tracking, ahead/behind, file changes.
-    static func fullStatus(path: String) async -> GitStatusInfo {
+    ///
+    /// Returns `nil` when the result is structurally invalid for a known-good repo
+    /// — i.e. `isGitRepo` says yes (cheap filesystem check) but both `symbolic-ref`
+    /// AND the SHA fallback came back empty. That combination only happens when
+    /// concurrent git calls hit a transient failure (fork pressure, `.git/index.lock`
+    /// held by another git process, etc.). The caller treats `nil` as "couldn't read,
+    /// keep previous status" instead of painting empty over good cached data.
+    /// Returns `GitStatusInfo()` (cleared, `isGitRepo == false`) when the directory
+    /// genuinely isn't a git repo — that's a real state change worth publishing.
+    static func fullStatus(path: String) async -> GitStatusInfo? {
         guard await isGitRepo(path: path) else {
             return GitStatusInfo()
         }
@@ -140,6 +189,10 @@ enum GitService {
             let sha = await run(args: ["rev-parse", "--short", "HEAD"], in: path)
             finalBranch = sha.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+
+        // Structural validity gate: a real repo always has either a symbolic-ref
+        // or a short SHA. Empty here = transient git failure, not real state.
+        if finalBranch.isEmpty { return nil }
 
         // Parse tracking branch
         let finalTracking: String? = tracking.isEmpty ? nil : tracking

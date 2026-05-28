@@ -15,6 +15,7 @@ class FileExplorerState: ObservableObject {
         var content: String
         var originalContent: String
         var isPreviewMode: Bool = false
+        var diskChangedExternally: Bool = false
         var isModified: Bool { content != originalContent }
 
         var filename: String {
@@ -27,8 +28,14 @@ class FileExplorerState: ObservableObject {
         }
     }
 
+    private var watchers: [UUID: FileWatcher] = [:]
+
     init(rootPath: String) {
         self.rootPath = rootPath
+    }
+
+    deinit {
+        for w in watchers.values { w.stop() }
     }
 
     // MARK: - Tab Operations
@@ -57,9 +64,12 @@ class FileExplorerState: ObservableObject {
         )
         openTabs.append(tab)
         activeTabId = tab.id
+        startWatcher(for: tab.id, path: absolutePath)
     }
 
     func closeTab(id: UUID) {
+        watchers[id]?.stop()
+        watchers.removeValue(forKey: id)
         openTabs.removeAll { $0.id == id }
         if activeTabId == id {
             activeTabId = openTabs.last?.id
@@ -87,9 +97,53 @@ class FileExplorerState: ObservableObject {
         do {
             try tab.content.write(toFile: tab.absolutePath, atomically: true, encoding: .utf8)
             openTabs[idx].originalContent = tab.content
+            openTabs[idx].diskChangedExternally = false
             return true
         } catch {
             return false
+        }
+    }
+
+    // MARK: - External Disk Changes
+
+    func reloadFromDisk(tabId: UUID) {
+        guard let idx = openTabs.firstIndex(where: { $0.id == tabId }),
+              let data = FileManager.default.contents(atPath: openTabs[idx].absolutePath),
+              let newContent = String(data: data, encoding: .utf8) else { return }
+        openTabs[idx].content = newContent
+        openTabs[idx].originalContent = newContent
+        openTabs[idx].diskChangedExternally = false
+    }
+
+    func dismissDiskChange(tabId: UUID) {
+        guard let idx = openTabs.firstIndex(where: { $0.id == tabId }) else { return }
+        openTabs[idx].diskChangedExternally = false
+    }
+
+    private func startWatcher(for tabId: UUID, path: String) {
+        let watcher = FileWatcher(path: path) { [weak self] in
+            DispatchQueue.main.async { self?.handleDiskChange(tabId: tabId) }
+        }
+        watchers[tabId] = watcher
+        watcher.start()
+    }
+
+    private func handleDiskChange(tabId: UUID) {
+        guard let idx = openTabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let tab = openTabs[idx]
+        guard let data = FileManager.default.contents(atPath: tab.absolutePath),
+              let newContent = String(data: data, encoding: .utf8) else { return }
+        // Self-write echo: disk now matches what we last loaded/saved. No-op.
+        if newContent == tab.originalContent { return }
+        if tab.isModified {
+            // Don't clobber unsaved edits — let the UI surface a banner.
+            if !openTabs[idx].diskChangedExternally {
+                openTabs[idx].diskChangedExternally = true
+            }
+        } else {
+            openTabs[idx].content = newContent
+            openTabs[idx].originalContent = newContent
+            openTabs[idx].diskChangedExternally = false
         }
     }
 
