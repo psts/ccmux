@@ -34,21 +34,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             wm?.windowDescriptors() ?? []
         }
 
-        // Restore windows from saved state, or create one
-        if !windowDescriptors.isEmpty {
-            wm.restoreWindows(from: windowDescriptors)
-        } else {
-            wm.createWindow(displayingWorkspace: workspaceManager.activeWorkspaceId ?? workspaceManager.workspaces.first?.id)
-        }
-
-        // Pre-create terminals for non-displayed workspaces so startup commands replay immediately
-        workspaceManager.preCreateTerminals()
-
         let qc = QuitConfirmationController()
         qc.install()
         self.quitConfirmationController = qc
 
         NSApp.activate(ignoringOtherApps: true)
+
+        // Defer window/terminal creation — and therefore the first Monaco load — to the
+        // next run-loop pass. Launched via LaunchServices the fresh session's CoreText
+        // font connection isn't ready yet during didFinishLaunching, so resolving Monaco
+        // synchronously here comes back degraded ("System LastResort not available") and
+        // every glyph renders as a .notdef "tofu" box — and the bad resolution is cached
+        // for the process's lifetime. (Run bare from a terminal it works because the
+        // connection is already up.) Creating windows one tick later lets it establish.
+        DispatchQueue.main.async { [weak self, weak wm] in
+            guard let self, let wm else { return }
+            if !windowDescriptors.isEmpty {
+                wm.restoreWindows(from: windowDescriptors)
+            } else {
+                wm.createWindow(displayingWorkspace: self.workspaceManager.activeWorkspaceId ?? self.workspaceManager.workspaces.first?.id)
+            }
+            // Pre-create terminals for non-displayed workspaces so startup commands replay.
+            self.workspaceManager.preCreateTerminals()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
