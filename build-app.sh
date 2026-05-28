@@ -80,11 +80,13 @@ EOF
 
 echo "Code signing..."
 SIGN_ID="Apple Development: Patric Sandelin (H5287KRN8S)"
-# No hardened runtime (--options runtime): it enables library validation, which
-# blocks CoreText from loading the system font machinery ("System LastResort not
-# available") and renders every terminal glyph as a .notdef tofu box. Hardened
-# runtime is only needed for notarization, which this Apple Development cert can't
-# do anyway. Sign without it so glyphs render and the app stays copyable.
+# No hardened runtime (--options runtime): it's only needed for notarization,
+# which an Apple Development cert can't do anyway, so there's nothing to gain.
+# NB: signing has no bearing on glyph rendering. The ".notdef tofu" bug was a
+# cold-launch CoreText font race (terminals resolved Monaco before the
+# LaunchServices session's font connection was ready), fixed by deferring window
+# creation in AppDelegate — not hardened runtime or library validation, despite
+# what an earlier version of this comment claimed.
 codesign --force --sign "$SIGN_ID" "$APP_DIR"
 codesign --verify --verbose=2 "$APP_DIR"
 
