@@ -1,38 +1,5 @@
 import Foundation
 
-/// Caps how many `git` subprocesses can be inflight at once.
-///
-/// Without a cap, ~5 workspaces resuming together × 4–5 git calls per
-/// `fullStatus` = 20–25 fork/exec in the same ms. Some of those fork() calls
-/// fail under kernel resource pressure, `Process.run()` throws, and the
-/// caller sees an empty result that masquerades as "branch is the SHA"
-/// or "no files changed" until the next 30 s poll. Drain 6 at a time and
-/// no fork() fails.
-private actor GitProcessLimit {
-    static let shared = GitProcessLimit()
-    private let maxConcurrent = 6
-    private var inflight = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func acquire() async {
-        if inflight < maxConcurrent {
-            inflight += 1
-            return
-        }
-        await withCheckedContinuation { waiters.append($0) }
-    }
-
-    func release() {
-        if !waiters.isEmpty {
-            // Direct handoff: inflight count stays the same, the slot
-            // transfers from the releaser to the next waiter.
-            waiters.removeFirst().resume()
-        } else {
-            inflight -= 1
-        }
-    }
-}
-
 enum GitService {
     /// Collector for stdout bytes streamed asynchronously off a Pipe — no parked thread.
     private final class OutputCollector: @unchecked Sendable {
@@ -54,7 +21,7 @@ enum GitService {
         }
     }
 
-    /// Run a git command and return stdout.
+    /// Run a git command, returning its stdout and exit code.
     ///
     /// Drains the child's stdout via `Pipe.readabilityHandler` instead of
     /// `waitUntilExit()` + `readDataToEndOfFile()`. The blocking variants would
@@ -62,20 +29,16 @@ enum GitService {
     /// this can saturate the 64-thread soft limit and stall pane I/O across the app.
     ///
     /// The handler fires with non-empty data as the child writes, and once with
-    /// empty data when the child closes its write end of the pipe (EOF). EOF is
-    /// our completion signal — by that point the child has finished writing.
-    /// We deliberately avoid `Process.terminationHandler` because it runs on a
-    /// different queue from `readabilityHandler` and racing reads against the
-    /// same FileHandle yields partial/empty output (the source of the flicker
-    /// in the previous version of this function).
-    static func run(args: [String], in directory: String) async -> String {
-        await GitProcessLimit.shared.acquire()
-        let result = await runUnlimited(args: args, in: directory)
-        await GitProcessLimit.shared.release()
-        return result
-    }
-
-    private static func runUnlimited(args: [String], in directory: String) async -> String {
+    /// empty data when the child closes its write end (EOF). EOF means the child
+    /// has finished writing and is exiting, so the `waitUntilExit()` that follows
+    /// returns immediately and lets us read `terminationStatus`. We deliberately
+    /// avoid `Process.terminationHandler` because it runs on a different queue from
+    /// `readabilityHandler` and racing reads against the same FileHandle yields
+    /// partial/empty output.
+    ///
+    /// `exitCode == -1` is a sentinel for "couldn't exec git at all" (the
+    /// `process.run()` throw path), which callers treat as a transient failure.
+    static func run(args: [String], in directory: String) async -> (stdout: String, exitCode: Int32) {
         await withCheckedContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -94,7 +57,9 @@ enum GitService {
                 if chunk.isEmpty {
                     handle.readabilityHandler = nil
                     if let data = collector.takeIfFirst() {
-                        continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
+                        process.waitUntilExit()
+                        let text = String(data: data, encoding: .utf8) ?? ""
+                        continuation.resume(returning: (text, process.terminationStatus))
                     }
                 } else {
                     collector.append(chunk)
@@ -106,33 +71,10 @@ enum GitService {
             } catch {
                 pipeHandle.readabilityHandler = nil
                 if collector.takeIfFirst() != nil {
-                    continuation.resume(returning: "")
+                    continuation.resume(returning: ("", -1))
                 }
             }
         }
-    }
-
-    static func isGitRepo(path: String) async -> Bool {
-        // Cheap filesystem check first. Avoids spawning `git` for the common
-        // case (~all repos have `.git` at the root), which used to fail under
-        // the startup spawn-burst and paint "Not a git repository" over real
-        // repos until the next 30s poll tick.
-        let gitPath = (path as NSString).appendingPathComponent(".git")
-        if FileManager.default.fileExists(atPath: gitPath) { return true }
-        // Fallback for worktrees / unusual layouts where `.git` isn't at the root.
-        let result = await run(args: ["rev-parse", "--git-dir"], in: path)
-        return !result.isEmpty
-    }
-
-    static func repoRoot(path: String) async -> String? {
-        let result = await run(args: ["rev-parse", "--show-toplevel"], in: path)
-        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    static func currentBranch(path: String) async -> String {
-        let result = await run(args: ["branch", "--show-current"], in: path)
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func diff(repoPath: String, target: DiffTarget) async -> String {
@@ -147,176 +89,149 @@ enum GitService {
         case .range(let from, let to):
             args = ["diff", from, to]
         }
-        return await run(args: args, in: repoPath)
-    }
-
-    static func status(path: String) async -> String {
-        await run(args: ["status", "--porcelain"], in: path)
+        return await run(args: args, in: repoPath).stdout
     }
 
     // MARK: - Full Status (for sidebar dashboard)
 
-    /// Fetch complete git status for a workspace: branch, tracking, ahead/behind, file changes.
+    /// Fetch complete git status for a workspace in a single `git status` call.
     ///
-    /// Returns `nil` when the result is structurally invalid for a known-good repo
-    /// — i.e. `isGitRepo` says yes (cheap filesystem check) but both `symbolic-ref`
-    /// AND the SHA fallback came back empty. That combination only happens when
-    /// concurrent git calls hit a transient failure (fork pressure, `.git/index.lock`
-    /// held by another git process, etc.). The caller treats `nil` as "couldn't read,
-    /// keep previous status" instead of painting empty over good cached data.
-    /// Returns `GitStatusInfo()` (cleared, `isGitRepo == false`) when the directory
-    /// genuinely isn't a git repo — that's a real state change worth publishing.
-    static func fullStatus(path: String) async -> GitStatusInfo? {
-        guard await isGitRepo(path: path) else {
-            return GitStatusInfo()
-        }
+    /// Repo-ness comes from the exit code, not a separate probe:
+    /// - exit 128 → genuinely not a git repo → cleared `GitStatusInfo()`.
+    /// - exit -1 (couldn't exec git) → `nil`, a transient failure the caller treats
+    ///   as "keep previous status".
+    /// - exit 0 → parse the porcelain v2 output.
+    ///
+    /// `--porcelain=v2 --branch` yields branch, upstream, ahead/behind, and every
+    /// file change in one invocation. The only thing it can't give is ahead/behind
+    /// vs the *default* branch, so that needs one extra `rev-list` — but only when
+    /// we're not already on the default branch. `cachedDefaultBranch` lets the
+    /// caller detect the default once and skip re-detecting it on every refresh.
+    static func fullStatus(path: String, cachedDefaultBranch: String?) async -> GitStatusInfo? {
+        let result = await run(args: ["status", "--porcelain=v2", "--branch"], in: path)
+        if result.exitCode == 128 { return GitStatusInfo() }
+        if result.exitCode != 0 { return nil }
 
-        // Run queries concurrently
-        async let branchResult = run(args: ["symbolic-ref", "--short", "HEAD"], in: path)
-        async let trackingResult = run(args: ["rev-parse", "--abbrev-ref", "@{upstream}"], in: path)
-        async let statusResult = run(args: ["status", "--porcelain"], in: path)
-        // left-right gives "behind\tahead" in one call
-        async let aheadBehindResult = run(args: ["rev-list", "--count", "--left-right", "@{upstream}...HEAD"], in: path)
+        var info = parseStatusV2(result.stdout)
+        info.isGitRepo = true
 
-        let branch = await branchResult.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tracking = await trackingResult.trimmingCharacters(in: .whitespacesAndNewlines)
-        let porcelain = await statusResult
-        let abRaw = await aheadBehindResult.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Parse branch — fallback to short SHA for detached HEAD
-        var finalBranch = branch
-        if finalBranch.isEmpty {
-            let sha = await run(args: ["rev-parse", "--short", "HEAD"], in: path)
-            finalBranch = sha.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        // Structural validity gate: a real repo always has either a symbolic-ref
-        // or a short SHA. Empty here = transient git failure, not real state.
-        if finalBranch.isEmpty { return nil }
-
-        // Parse tracking branch
-        let finalTracking: String? = tracking.isEmpty ? nil : tracking
-
-        // Parse ahead/behind from "behind\tahead" format
-        var ahead = 0
-        var behind = 0
-        let abParts = abRaw.split(separator: "\t")
-        if abParts.count == 2 {
-            behind = Int(abParts[0]) ?? 0
-            ahead = Int(abParts[1]) ?? 0
-        }
-
-        // Parse porcelain output
-        let (staged, modified, untracked, deleted) = parsePorcelain(porcelain)
-
-        // Detect default branch and compare
-        let defaultBranch = await detectDefaultBranch(path: path)
-        var aheadOfDefault = 0
-        var behindDefault = 0
-        if let defaultBranch, finalBranch != defaultBranch {
-            let defaultAB = await run(
+        // Default-branch comparison (the "vs main ↑↓" row). The caller resolves and
+        // caches the default branch (see GitStatusMonitor); we just consume it here,
+        // and skip the extra call when on the default branch (the sidebar hides the
+        // row in that case anyway).
+        info.defaultBranch = cachedDefaultBranch
+        if let defaultBranch = cachedDefaultBranch, !defaultBranch.isEmpty, info.branch != defaultBranch {
+            let ab = await run(
                 args: ["rev-list", "--count", "--left-right", "\(defaultBranch)...HEAD"],
                 in: path
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
-            let parts = defaultAB.split(separator: "\t")
-            if parts.count == 2 {
-                behindDefault = Int(parts[0]) ?? 0
-                aheadOfDefault = Int(parts[1]) ?? 0
+            )
+            if ab.exitCode == 0 {
+                let parts = ab.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t")
+                if parts.count == 2 {
+                    info.behindDefault = Int(parts[0]) ?? 0
+                    info.aheadOfDefault = Int(parts[1]) ?? 0
+                }
             }
         }
-
-        var info = GitStatusInfo()
-        info.branch = finalBranch
-        info.trackingBranch = finalTracking
-        info.ahead = ahead
-        info.behind = behind
-        info.defaultBranch = defaultBranch
-        info.aheadOfDefault = aheadOfDefault
-        info.behindDefault = behindDefault
-        info.stagedFiles = staged
-        info.modifiedFiles = modified
-        info.untrackedFiles = untracked
-        info.deletedFiles = deleted
-        info.isGitRepo = true
         return info
     }
 
-    /// Detect the default branch (main, master, or whatever origin/HEAD points to).
-    private static func detectDefaultBranch(path: String) async -> String? {
-        // Try origin/HEAD first (most reliable)
+    /// Detect the default branch (origin/HEAD, else main, else master).
+    /// Meant to be called once per repo and cached by the caller.
+    static func detectDefaultBranch(path: String) async -> String? {
         let originHead = await run(args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: path)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         if !originHead.isEmpty {
-            // Returns "origin/main" → extract "main"
+            // "origin/main" → "main"
             return originHead.split(separator: "/").last.map(String.init)
         }
-
-        // Fallback: check if main or master exists
-        let mainCheck = await run(args: ["rev-parse", "--verify", "main"], in: path)
-        if !mainCheck.isEmpty { return "main" }
-
-        let masterCheck = await run(args: ["rev-parse", "--verify", "master"], in: path)
-        if !masterCheck.isEmpty { return "master" }
-
+        if !(await run(args: ["rev-parse", "--verify", "main"], in: path)).stdout.isEmpty { return "main" }
+        if !(await run(args: ["rev-parse", "--verify", "master"], in: path)).stdout.isEmpty { return "master" }
         return nil
     }
 
-    /// Parse `git status --porcelain` output into categorized file changes.
-    /// Format: XY filename (X = index/staged status, Y = working tree status)
-    static func parsePorcelain(_ output: String) -> (
-        staged: [GitStatusInfo.FileChange],
-        modified: [GitStatusInfo.FileChange],
-        untracked: [GitStatusInfo.FileChange],
-        deleted: [GitStatusInfo.FileChange]
-    ) {
-        var staged: [GitStatusInfo.FileChange] = []
-        var modified: [GitStatusInfo.FileChange] = []
-        var untracked: [GitStatusInfo.FileChange] = []
-        var deleted: [GitStatusInfo.FileChange] = []
+    // MARK: - Porcelain v2 parsing
+
+    /// Parse `git status --porcelain=v2 --branch` output into a `GitStatusInfo`
+    /// (without `isGitRepo`/default-branch fields, which the caller fills in).
+    ///
+    /// Pure function on the raw string — unit-tested without spawning git.
+    static func parseStatusV2(_ output: String) -> GitStatusInfo {
+        var info = GitStatusInfo()
+        var oid = ""
+        var head = ""
 
         for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard line.count >= 3 else { continue }
             let chars = Array(line)
-            let x = chars[0]  // index (staged) status
-            let y = chars[1]  // working tree status
-            var path = String(line.dropFirst(3))
+            guard let first = chars.first else { continue }
 
-            // Handle renames: "R  old -> new"
-            if let arrowRange = path.range(of: " -> ") {
-                path = String(path[arrowRange.upperBound...])
-            }
-
-            // Untracked files
-            if x == "?" && y == "?" {
-                untracked.append(.init(path: path, status: .untracked))
+            if first == "#" {
+                parseHeader(line, oid: &oid, head: &head, info: &info)
                 continue
             }
-
-            // Staged changes (index column)
-            switch x {
-            case "M":
-                staged.append(.init(path: path, status: .modified))
-            case "A":
-                staged.append(.init(path: path, status: .added))
-            case "D":
-                staged.append(.init(path: path, status: .deleted))
-            case "R":
-                staged.append(.init(path: path, status: .renamed))
-            default:
-                break
+            guard chars.count > 3 else {
+                if first == "?" { info.untrackedFiles.append(.init(path: String(line.dropFirst(2)), status: .untracked)) }
+                continue
             }
-
-            // Working tree changes
-            switch y {
-            case "M":
-                modified.append(.init(path: path, status: .modified))
-            case "D":
-                deleted.append(.init(path: path, status: .deleted))
+            switch first {
+            case "1":
+                categorize(x: chars[2], y: chars[3], path: lastField(line, fieldCount: 9), into: &info)
+            case "2":
+                let raw = lastField(line, fieldCount: 10)
+                let newPath = raw.split(separator: "\t", maxSplits: 1).first.map(String.init) ?? raw
+                categorize(x: chars[2], y: chars[3], path: newPath, into: &info)
+            case "?":
+                info.untrackedFiles.append(.init(path: String(line.dropFirst(2)), status: .untracked))
             default:
-                break
+                break  // 'u' (unmerged) / '!' (ignored) — not surfaced in the dashboard
             }
         }
 
-        return (staged, modified, untracked, deleted)
+        // Detached HEAD reports "(detached)" for branch.head; use the short SHA instead.
+        info.branch = (head == "(detached)") ? String(oid.prefix(7)) : head
+        return info
+    }
+
+    /// Parse a `# branch.*` header line into `info` (and the oid/head locals).
+    private static func parseHeader(_ line: Substring, oid: inout String, head: inout String, info: inout GitStatusInfo) {
+        let parts = line.dropFirst(2).split(separator: " ", maxSplits: 1)
+        guard let keySub = parts.first else { return }
+        let key = String(keySub)
+        let value = parts.count > 1 ? String(parts[1]) : ""
+        switch key {
+        case "branch.oid": oid = value
+        case "branch.head": head = value
+        case "branch.upstream": info.trackingBranch = value.isEmpty ? nil : value
+        case "branch.ab":
+            for token in value.split(separator: " ") {
+                if token.hasPrefix("+") { info.ahead = Int(token.dropFirst()) ?? 0 }
+                else if token.hasPrefix("-") { info.behind = Int(token.dropFirst()) ?? 0 }
+            }
+        default:
+            break
+        }
+    }
+
+    /// The path field of a changed-entry line is everything after the fixed-count
+    /// leading fields. Splitting with a maxSplits cap keeps spaces in the path intact.
+    private static func lastField(_ line: Substring, fieldCount: Int) -> String {
+        let pieces = line.split(separator: " ", maxSplits: fieldCount - 1, omittingEmptySubsequences: false)
+        return String(pieces.last ?? "")
+    }
+
+    /// Map a porcelain XY code (X = index/staged, Y = worktree) into the file buckets.
+    private static func categorize(x: Character, y: Character, path: String, into info: inout GitStatusInfo) {
+        switch x {
+        case "M": info.stagedFiles.append(.init(path: path, status: .modified))
+        case "A": info.stagedFiles.append(.init(path: path, status: .added))
+        case "D": info.stagedFiles.append(.init(path: path, status: .deleted))
+        case "R", "C": info.stagedFiles.append(.init(path: path, status: .renamed))
+        default: break
+        }
+        switch y {
+        case "M": info.modifiedFiles.append(.init(path: path, status: .modified))
+        case "D": info.deletedFiles.append(.init(path: path, status: .deleted))
+        default: break
+        }
     }
 }

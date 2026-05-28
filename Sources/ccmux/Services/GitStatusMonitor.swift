@@ -22,6 +22,11 @@ class GitStatusMonitor: ObservableObject {
     /// writes to `status`. Without this, a slow earlier refresh can overwrite a
     /// fresh later one when an FS-event burst stacks up.
     private var refreshGeneration: UInt64 = 0
+    /// Default branch (main/master/origin-HEAD), resolved once on first confirmed
+    /// repo and reused on every later refresh. `resolved` distinguishes "not looked
+    /// up yet" from a genuine nil (repo with no main/master/remote).
+    private var defaultBranch: String?
+    private var defaultBranchResolved = false
 
     /// No-op init for the static `empty` sentinel.
     private init() {
@@ -63,9 +68,18 @@ class GitStatusMonitor: ObservableObject {
         guard isActive else { return }
         refreshGeneration &+= 1
         let myGen = refreshGeneration
-        // nil = transient failure (e.g. fork pressure / index.lock); keep prior status.
-        guard let newStatus = await GitService.fullStatus(path: repoPath) else { return }
+        // nil = couldn't exec git (transient); keep prior status. exit 128 = genuine
+        // non-repo, which comes back as a cleared GitStatusInfo (isGitRepo == false).
+        guard let newStatus = await GitService.fullStatus(path: repoPath, cachedDefaultBranch: defaultBranch) else { return }
         guard isActive, myGen == refreshGeneration else { return }
         self.status = newStatus
+
+        // Once we know it's a repo, resolve the default branch a single time and
+        // refresh again so the "vs default" row populates. Cached thereafter.
+        if newStatus.isGitRepo && !defaultBranchResolved {
+            defaultBranchResolved = true
+            defaultBranch = await GitService.detectDefaultBranch(path: repoPath)
+            refresh()
+        }
     }
 }
