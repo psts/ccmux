@@ -1,9 +1,16 @@
 import Foundation
 
 enum GitService {
-    /// Collector for stdout bytes streamed asynchronously off a Pipe — no parked thread.
-    private final class OutputCollector: @unchecked Sendable {
+    /// Coordinates the two async signals of a `run`: stdout EOF (from the read source)
+    /// and process exit (from `terminationHandler`). The continuation must resume exactly
+    /// once, and only when *both* are in — EOF guarantees stdout is fully drained, exit
+    /// gives the status. Whichever signal lands second produces the resume payload;
+    /// `resumed` gates against a double resume. All state is lock-guarded since the two
+    /// signals fire on different queues.
+    private final class RunState: @unchecked Sendable {
         private var data = Data()
+        private var sawEOF = false
+        private var exitCode: Int32?
         private var resumed = false
         private let lock = NSLock()
 
@@ -12,29 +19,58 @@ enum GitService {
             data.append(chunk)
         }
 
-        /// Returns the buffered data exactly once; subsequent calls return nil.
-        func takeIfFirst() -> Data? {
-            lock.lock(); defer { lock.unlock() }
-            guard !resumed else { return nil }
+        /// Resume payload if both signals are in and we haven't resumed yet; else nil.
+        private func readyLocked() -> (stdout: String, exitCode: Int32)? {
+            guard sawEOF, let code = exitCode, !resumed else { return nil }
             resumed = true
-            return data
+            return (String(data: data, encoding: .utf8) ?? "", code)
+        }
+
+        func markEOF() -> (stdout: String, exitCode: Int32)? {
+            lock.lock(); defer { lock.unlock() }
+            sawEOF = true
+            return readyLocked()
+        }
+
+        func markExit(_ code: Int32) -> (stdout: String, exitCode: Int32)? {
+            lock.lock(); defer { lock.unlock() }
+            exitCode = code
+            return readyLocked()
+        }
+
+        /// Claim the one-and-only resume for the exec-failure path; nil if already taken.
+        func claimFailure() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard !resumed else { return false }
+            resumed = true
+            return true
         }
     }
 
     /// Run a git command, returning its stdout and exit code.
     ///
-    /// Drains the child's stdout via `Pipe.readabilityHandler` instead of
-    /// `waitUntilExit()` + `readDataToEndOfFile()`. The blocking variants would
-    /// park one GCD worker thread per inflight git invocation; with many workspaces
-    /// this can saturate the 64-thread soft limit and stall pane I/O across the app.
+    /// Drains the child's stdout with a `DispatchSource` read source over the pipe's
+    /// raw file descriptor, reading via POSIX `read()` — instead of `waitUntilExit()`
+    /// + `readDataToEndOfFile()`. The blocking variants would park one GCD worker
+    /// thread per inflight git invocation; with many workspaces this can saturate the
+    /// 64-thread soft limit and stall pane I/O across the app.
     ///
-    /// The handler fires with non-empty data as the child writes, and once with
-    /// empty data when the child closes its write end (EOF). EOF means the child
-    /// has finished writing and is exiting, so the `waitUntilExit()` that follows
-    /// returns immediately and lets us read `terminationStatus`. We deliberately
-    /// avoid `Process.terminationHandler` because it runs on a different queue from
-    /// `readabilityHandler` and racing reads against the same FileHandle yields
-    /// partial/empty output.
+    /// We deliberately avoid `NSFileHandle.readabilityHandler` + `availableData`: that
+    /// API *raises an ObjC `NSException`* (EBADF "Bad file descriptor") when a pipe read
+    /// fails, which under concurrent fd churn happens intermittently. The handler runs
+    /// on a dispatch queue where Swift `do/catch` can't catch ObjC exceptions, so it
+    /// aborts the process. POSIX `read()` instead returns `-1`/`errno` on error and `0`
+    /// at EOF, so the same conditions are handled inline and never crash.
+    ///
+    /// Two async signals drive completion, joined by `RunState` (resume only when both
+    /// are in): the read source appends bytes as the child writes and, on `read()` == 0
+    /// (EOF) or < 0 (error), cancels itself and marks EOF (stdout fully drained); the
+    /// non-blocking `terminationHandler` supplies the exit code. We must NOT call the
+    /// blocking `waitUntilExit()` here — doing so on a GCD worker parks that thread, and
+    /// under many concurrent invocations it starves the dispatch pool (Foundation's own
+    /// child-reaper source can't get a thread to deliver exits), deadlocking. Reading
+    /// only in the source (never in `terminationHandler`) also avoids the partial-output
+    /// race between the two queues.
     ///
     /// `exitCode == -1` is a sentinel for "couldn't exec git at all" (the
     /// `process.run()` throw path), which callers treat as a transient failure.
@@ -49,30 +85,50 @@ enum GitService {
             process.standardOutput = pipe
             process.standardError = FileHandle.nullDevice
 
-            let pipeHandle = pipe.fileHandleForReading
-            let collector = OutputCollector()
+            // Keep the read FileHandle captured so the fd stays valid for the source's
+            // lifetime; the Pipe closes it on dealloc — we never close it ourselves.
+            let readHandle = pipe.fileHandleForReading
+            let readFD = readHandle.fileDescriptor
+            let state = RunState()
+            let queue = DispatchQueue(label: "com.ccmux.git-read")
+            let source = DispatchSource.makeReadSource(fileDescriptor: readFD, queue: queue)
 
-            pipeHandle.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                if chunk.isEmpty {
-                    handle.readabilityHandler = nil
-                    if let data = collector.takeIfFirst() {
-                        process.waitUntilExit()
-                        let text = String(data: data, encoding: .utf8) ?? ""
-                        continuation.resume(returning: (text, process.terminationStatus))
-                    }
+            source.setEventHandler {
+                var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+                let n = buffer.withUnsafeMutableBytes { read(readFD, $0.baseAddress, $0.count) }
+                if n > 0 {
+                    state.append(Data(buffer[0..<n]))
                 } else {
-                    collector.append(chunk)
+                    // n == 0 → EOF; n < 0 → read error. Either way, stop draining.
+                    source.cancel()
+                }
+            }
+
+            source.setCancelHandler {
+                _ = readHandle  // retain the fd owner until the source is fully torn down
+                if let result = state.markEOF() { continuation.resume(returning: result) }
+            }
+
+            process.terminationHandler = { proc in
+                if let result = state.markExit(proc.terminationStatus) {
+                    continuation.resume(returning: result)
                 }
             }
 
             do {
                 try process.run()
+                source.resume()
             } catch {
-                pipeHandle.readabilityHandler = nil
-                if collector.takeIfFirst() != nil {
+                // Couldn't exec git. Claim the single resume with the -1 sentinel; the
+                // terminationHandler won't fire (never launched). The source starts
+                // suspended, and releasing a suspended source traps in libdispatch — so
+                // resume() before cancel() to let it tear down cleanly (its markEOF()
+                // then no-ops, since claimFailure() already took the resume).
+                if state.claimFailure() {
                     continuation.resume(returning: ("", -1))
                 }
+                source.resume()
+                source.cancel()
             }
         }
     }

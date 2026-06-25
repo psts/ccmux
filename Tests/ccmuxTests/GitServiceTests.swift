@@ -171,4 +171,54 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(info.untrackedFiles.map(\.path), ["untracked.txt"])
         XCTAssertEqual(info.totalChanges, 4)
     }
+
+    // MARK: - Concurrency / crash regression
+
+    /// Regression for the random SIGABRT crashes: `GitService.run` used to drain the
+    /// pipe via `NSFileHandle.availableData`, which raises an uncaught ObjC NSException
+    /// (EBADF) under concurrent fd churn and aborts the process. Firing many `run`
+    /// invocations at once reproduced that abort; the POSIX-read drain must survive it.
+    func testConcurrentRunsDoNotCrash() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ccmux-gitconc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        func git(_ args: [String]) async { _ = await GitService.run(args: args, in: tmp.path) }
+        await git(["init", "-b", "main"])
+        await git(["config", "user.email", "t@example.com"])
+        await git(["config", "user.name", "t"])
+        try "hello".write(to: tmp.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        await git(["add", "a.txt"])
+        await git(["commit", "-m", "init"])
+        // Leave the worktree dirty + an untracked file so status output is non-trivial.
+        try "changed".write(to: tmp.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "new".write(to: tmp.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+
+        let okCount = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<200 {
+                group.addTask {
+                    let result = await GitService.run(
+                        args: ["status", "--porcelain=v2", "--branch"], in: tmp.path
+                    )
+                    let info = GitService.parseStatusV2(result.stdout)
+                    return result.exitCode == 0 && info.branch == "main" && info.totalChanges > 0
+                }
+            }
+            var count = 0
+            for await ok in group where ok { count += 1 }
+            return count
+        }
+        XCTAssertEqual(okCount, 200, "every concurrent git status should succeed and parse")
+    }
+
+    /// `run` against a path that can't host git returns the -1 "couldn't exec/transient"
+    /// sentinel that callers (GitStatusMonitor) rely on, without crashing.
+    func testRunInNonexistentDirectoryReturnsSentinel() async {
+        let result = await GitService.run(
+            args: ["status"], in: "/nonexistent-ccmux-\(UUID().uuidString)"
+        )
+        XCTAssertEqual(result.exitCode, -1)
+        XCTAssertEqual(result.stdout, "")
+    }
 }
