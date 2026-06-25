@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CoreGraphics
 
 class WorkspaceManager: ObservableObject {
     @Published var workspaces: [Workspace] = []
@@ -189,34 +190,103 @@ class WorkspaceManager: ObservableObject {
         }
     }
 
-    /// Pre-create terminals for ALL workspaces so startup commands are replayed
-    /// even for workspaces not currently displayed. Staggers creation to avoid
-    /// launching many shell processes simultaneously.
-    /// Safe to call after window restoration — TerminalStore.terminal(for:) is
-    /// idempotent, so terminals already created by the view layer are skipped.
-    func preCreateTerminals() {
-        var delay: TimeInterval = 0.3
-        let stagger: TimeInterval = 0.15
+    /// Whether a pre-created pane should replay its startup command eagerly (without waiting
+    /// to be displayed) and at what off-screen size.
+    enum EagerStartupDecision: Equatable {
+        /// Don't fire here — either it's the displayed workspace (fires via the view layer)
+        /// or there's no command to replay.
+        case skip
+        /// Fire the queued command; resize the off-screen terminal to `targetSize` first when
+        /// non-nil, else fire at the conservative fallback size.
+        case fire(targetSize: CGSize?)
+    }
 
+    /// Pure policy behind `preCreateTerminals`:
+    /// - Displayed workspaces fire via `TerminalContainerView.fireStartupIfReady` at the exact
+    ///   laid-out size, so skip them here (firing at an estimated size could mis-wrap the one
+    ///   pane the user is looking at).
+    /// - Panes with no startup command have nothing to replay.
+    /// - Single-leaf workspaces size to the owning window's content area; multi-pane keep the
+    ///   conservative fallback (nil), which launches narrower than the eventual pane — the safe
+    ///   wrap direction, since SwiftTerm doesn't reflow already-wrapped lines on grow.
+    static func eagerStartupDecision(
+        isDisplayed: Bool,
+        isSingleLeaf: Bool,
+        startupCommand: String?,
+        contentSize: CGSize?
+    ) -> EagerStartupDecision {
+        guard !isDisplayed, let command = startupCommand, !command.isEmpty else { return .skip }
+        return .fire(targetSize: isSingleLeaf ? contentSize : nil)
+    }
+
+    /// A terminal pane to (re)create on relaunch.
+    private struct PaneJob {
+        let workspaceId: UUID
+        let terminalId: UUID
+        let workingDirectory: String
+        let startupCommand: String?
+        let isSingleLeaf: Bool
+    }
+
+    /// Pre-create terminals on relaunch and replay startup commands, in two passes.
+    ///
+    /// The split matters because firing the (few) command panes must beat a manual workspace
+    /// switch — otherwise the user activates the workspace first and it looks lazy:
+    /// 1. Command panes (non-displayed + non-empty startupCommand) fire FIRST with a tight
+    ///    stagger, so claude restarts within ~1s instead of being buried behind the bulk
+    ///    shell warm-up. Displayed panes are excluded — the view layer
+    ///    (TerminalContainerView.fireStartupIfReady) fires them at the exact laid-out size.
+    /// 2. Remaining panes are pre-warmed with a gentle stagger (for fast switching); no command.
+    ///
+    /// Safe after window restoration — TerminalStore.terminal(for:) is idempotent, and the
+    /// one-shot runStartupCommandIfPending prevents a double-send if a pane is activated first.
+    func preCreateTerminals(
+        displayedWorkspaceIds: Set<UUID>,
+        contentSizeProvider: @escaping (_ workspaceId: UUID) -> CGSize?
+    ) {
+        var commandPanes: [PaneJob] = []   // non-displayed + has command → fire fast, first
+        var warmPanes: [PaneJob] = []      // everything else → pre-warm the shell, no command
         for workspace in workspaces {
             guard let controller = controllers[workspace.id] else { continue }
+            let isDisplayed = displayedWorkspaceIds.contains(workspace.id)
+            let isSingleLeaf = controller.tree.allLeaves.count == 1
             for leaf in controller.tree.allLeaves {
                 for tab in leaf.content.tabs {
-                    if case .terminal(let config) = tab {
-                        let terminalId = config.id
-                        let workingDir = config.workingDirectory
-                        let command = config.startupCommand
-                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                            _ = TerminalStore.shared.terminal(
-                                for: terminalId,
-                                workingDirectory: workingDir,
-                                startupCommand: command
-                            )
-                        }
-                        delay += stagger
-                    }
+                    guard case .terminal(let config) = tab else { continue }
+                    let job = PaneJob(workspaceId: workspace.id, terminalId: config.id,
+                                      workingDirectory: config.workingDirectory,
+                                      startupCommand: config.startupCommand, isSingleLeaf: isSingleLeaf)
+                    let fires = Self.eagerStartupDecision(isDisplayed: isDisplayed, isSingleLeaf: isSingleLeaf,
+                                                          startupCommand: config.startupCommand, contentSize: nil) != .skip
+                    if fires { commandPanes.append(job) } else { warmPanes.append(job) }
                 }
             }
+        }
+
+        // Pass 1: restore commands fast. Start at 0.3s (windows are laid out → contentSize valid),
+        // tight 0.05s stagger so even a dozen live commands all fire within ~1s.
+        var delay: TimeInterval = 0.3
+        for job in commandPanes {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                _ = TerminalStore.shared.terminal(for: job.terminalId, workingDirectory: job.workingDirectory,
+                                                  startupCommand: job.startupCommand)
+                let decision = Self.eagerStartupDecision(isDisplayed: false, isSingleLeaf: job.isSingleLeaf,
+                                                         startupCommand: job.startupCommand,
+                                                         contentSize: contentSizeProvider(job.workspaceId))
+                if case .fire(let targetSize) = decision {
+                    TerminalStore.shared.fireStartupEagerly(paneId: job.terminalId, targetSize: targetSize)
+                }
+            }
+            delay += 0.05
+        }
+
+        // Pass 2: pre-warm the remaining shells gently (no command fired here).
+        for job in warmPanes {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                _ = TerminalStore.shared.terminal(for: job.terminalId, workingDirectory: job.workingDirectory,
+                                                  startupCommand: job.startupCommand)
+            }
+            delay += 0.15
         }
     }
 

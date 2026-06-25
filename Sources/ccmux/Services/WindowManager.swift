@@ -144,6 +144,19 @@ class WindowManager {
         windowControllers.first { $0.windowContext.ownedWorkspaceIds.contains(workspaceId) }
     }
 
+    /// Measured content-area size of the window owning `workspaceId`, or nil if the window
+    /// isn't laid out yet (e.g. pre-assigned to another Space). The main content split item
+    /// is the terminal area shared by all workspaces owned by that window — used to size
+    /// off-screen terminals before replaying their startup command on relaunch.
+    func contentSize(forWorkspace workspaceId: UUID) -> CGSize? {
+        guard let wc = windowOwning(workspaceId: workspaceId),
+              let split = wc.window?.contentViewController as? NSSplitViewController,
+              split.splitViewItems.count > 1 else { return nil }
+        let size = split.splitViewItems[1].viewController.view.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        return size
+    }
+
     /// Called when a window is about to close.
     func windowWillClose(_ controller: WorkspaceWindowController) {
         // During app termination, don't close workspaces — they'll be saved as-is

@@ -59,8 +59,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 wm.createWindow(displayingWorkspace: self.workspaceManager.activeWorkspaceId ?? self.workspaceManager.workspaces.first?.id)
             }
-            // Pre-create terminals for non-displayed workspaces so startup commands replay.
-            self.workspaceManager.preCreateTerminals()
+            // Pre-create terminals and replay startup commands for ALL workspaces — non-displayed
+            // ones fire eagerly here (the view layer only fires the displayed workspace), sized to
+            // their owning window's content area.
+            self.workspaceManager.preCreateTerminals(
+                displayedWorkspaceIds: Set(wm.windowControllers.compactMap { $0.windowContext.displayedWorkspaceId }),
+                contentSizeProvider: { [weak wm] wsId in wm?.contentSize(forWorkspace: wsId) }
+            )
 
             // The window manager is now live — service any spawn URLs that cold-started us.
             self.isReadyForSpawns = true

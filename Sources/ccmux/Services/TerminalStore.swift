@@ -290,6 +290,24 @@ class TerminalStore {
         terminal.send(Array((command + "\r").utf8))
     }
 
+    /// Resize a pre-created off-screen terminal to `targetSize` (drives the kernel PTY winsize
+    /// via setFrameSize → processSizeChange → setWinSize), notify the shell with SIGWINCH, then
+    /// drain its queued startup command. Lets non-displayed workspaces replay their startup
+    /// command on relaunch without waiting to be shown — the view path (fireStartupIfReady)
+    /// only fires once a pane is embedded with real bounds. No-op if the pane has no terminal
+    /// or nothing is queued. targetSize nil = fire at the current 800x480 fallback size.
+    func fireStartupEagerly(paneId: UUID, targetSize: CGSize?) {
+        guard let terminal = terminals[paneId] else { return }
+        if let size = targetSize, size.width > 0, size.height > 0 {
+            terminal.setFrameSize(size)
+        }
+        let pid = terminal.process?.shellPid ?? 0
+        if pid > 0 {
+            kill(pid, SIGWINCH)
+        }
+        runStartupCommandIfPending(paneId: paneId)
+    }
+
     /// Send a command line into a live terminal immediately (as if typed + Enter).
     /// Used to launch a teammate claude in an already-open, idle designated pane.
     func sendCommand(_ command: String, to paneId: UUID) {
