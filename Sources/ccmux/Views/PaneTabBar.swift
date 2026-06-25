@@ -15,6 +15,10 @@ struct PaneTabBar: View {
     let onActivateTab: (UUID) -> Void
     let onCloseTab: (UUID) -> Void
     var onMovePane: ((UUID, DropZone) -> Void)?
+    /// TerminalConfig.id designated as the workspace's Claude pane (for the checkmark).
+    var claudePaneId: UUID?
+    /// Toggle a terminal tab as the designated Claude pane.
+    var onDesignateClaudePane: ((UUID) -> Void)?
 
     @EnvironmentObject var dragState: PaneDragState
 
@@ -52,7 +56,15 @@ struct PaneTabBar: View {
                                     onActivateTab(tab.id)
                                 })
                         )
-                        .contextMenu { addTabMenu }
+                        .contextMenu {
+                            addTabMenu
+                            if case .terminal = tab {
+                                Divider()
+                                Button(tab.id == claudePaneId ? "✓ Claude pane (spawns land here)" : "Use as Claude pane") {
+                                    onDesignateClaudePane?(tab.id)
+                                }
+                            }
+                        }
                     }
                 }
             }

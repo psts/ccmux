@@ -4,6 +4,8 @@ import Combine
 class SplitTreeController: ObservableObject {
     @Published var tree: SplitTree<PaneTabs>
     @Published var focusedPaneId: UUID?
+    /// TerminalConfig.id of the designated "Claude pane" (see Workspace.claudePaneId).
+    @Published var claudePaneId: UUID?
 
     let workingDirectory: String
 
@@ -69,6 +71,38 @@ class SplitTreeController: ObservableObject {
         if let newTree = tree.moveLeaf(sourceId: sourceId, targetId: targetId, direction: direction, insertAsFirst: insertAsFirst) {
             tree = newTree
             focusedPaneId = sourceId
+        }
+    }
+
+    // MARK: - Claude Pane Designation
+
+    /// Toggle the designated Claude pane. Passing the currently-designated terminal clears it.
+    func setClaudePane(terminalId: UUID) {
+        claudePaneId = (claudePaneId == terminalId) ? nil : terminalId
+    }
+
+    /// Leaf (pane) id that contains the terminal tab `terminalId`, if any.
+    func leafContaining(terminalId: UUID) -> UUID? {
+        for leaf in tree.allLeaves {
+            for tab in leaf.content.tabs {
+                if case .terminal(let config) = tab, config.id == terminalId { return leaf.id }
+            }
+        }
+        return nil
+    }
+
+    /// Set a terminal tab's persisted startup command. Used to keep a spawned teammate's
+    /// pane replaying a plain `claude` on restart instead of re-firing the birth prompt.
+    func setTerminalStartupCommand(_ command: String?, terminalId: UUID) {
+        guard let leafId = leafContaining(terminalId: terminalId),
+              var pane = tree.findLeaf(id: leafId) else { return }
+        for (idx, tab) in pane.tabs.enumerated() {
+            if case .terminal(var config) = tab, config.id == terminalId {
+                config.startupCommand = command
+                pane.tabs[idx] = .terminal(config)
+                tree = tree.replaceContent(leafId: leafId, newContent: pane)
+                return
+            }
         }
     }
 

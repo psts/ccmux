@@ -5,6 +5,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let workspaceManager = WorkspaceManager()
     private var quitConfirmationController: QuitConfirmationController?
 
+    /// ccmux://spawn requests that arrived before the window manager was ready
+    /// (e.g. when a spawn URL cold-starts the app). Flushed once launch completes.
+    private var pendingSpawnRequests: [SpawnRequest] = []
+    private var isReadyForSpawns = false
+
     /// Exposed for AppleScript command handlers.
     var windowManagerForScripting: WindowManager? { windowManager }
 
@@ -56,7 +61,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // Pre-create terminals for non-displayed workspaces so startup commands replay.
             self.workspaceManager.preCreateTerminals()
+
+            // The window manager is now live — service any spawn URLs that cold-started us.
+            self.isReadyForSpawns = true
+            self.flushPendingSpawns()
         }
+    }
+
+    // MARK: - ccmux:// URL scheme (teammate spawning from claude-peers)
+
+    /// Handle `ccmux://spawn?repo=…&prompt=…&requester=…` deep links. macOS delivers
+    /// these via LaunchServices, cold-starting ccmux if it isn't already running.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let requests = urls.compactMap { SpawnRequest.parse(from: $0) }
+        guard !requests.isEmpty else { return }
+        if isReadyForSpawns {
+            requests.forEach { handleSpawn($0) }
+        } else {
+            pendingSpawnRequests.append(contentsOf: requests)
+        }
+    }
+
+    private func flushPendingSpawns() {
+        let pending = pendingSpawnRequests
+        pendingSpawnRequests.removeAll()
+        pending.forEach { handleSpawn($0) }
+    }
+
+    private func handleSpawn(_ request: SpawnRequest) {
+        let workspaceId = workspaceManager.spawnTeammate(request)
+        showWorkspace(workspaceId)
+    }
+
+    /// Bring the given workspace on screen and to the front so a spawned teammate is visible.
+    private func showWorkspace(_ id: UUID) {
+        guard let wm = windowManager else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        if let wc = wm.windowDisplaying(workspaceId: id) ?? wm.windowOwning(workspaceId: id) {
+            wc.windowContext.displayedWorkspaceId = id
+            wc.updateWindowTitle()
+            wc.window?.makeKeyAndOrderFront(nil)
+        } else if let wc = wm.windowControllers.first {
+            wm.selectWorkspace(id: id, from: wc)
+            wc.window?.makeKeyAndOrderFront(nil)
+        } else {
+            wm.createWindow(displayingWorkspace: id)
+        }
+        workspaceManager.activeWorkspaceId = id
     }
 
     func applicationWillTerminate(_ notification: Notification) {

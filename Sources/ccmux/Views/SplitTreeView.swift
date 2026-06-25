@@ -176,6 +176,10 @@ private struct LeafPaneView: View {
                         direction: zone.splitDirection,
                         insertAsFirst: zone.insertAsFirst
                     )
+                },
+                claudePaneId: controller.claudePaneId,
+                onDesignateClaudePane: { terminalId in
+                    controller.setClaudePane(terminalId: terminalId)
                 }
             )
 

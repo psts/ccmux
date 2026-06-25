@@ -6,6 +6,10 @@ struct Workspace: Codable, Identifiable {
     var repoPath: String
     var layout: SplitTree<PaneTabs>
     var focusedPaneId: UUID?
+    /// TerminalConfig.id of the pane designated as this workspace's "Claude pane" —
+    /// where a spawned teammate (ccmux://spawn) lands instead of a new split.
+    /// Optional so older persisted state decodes cleanly.
+    var claudePaneId: UUID?
     var subItems: [WorkspaceSubItem]
     var lastOpened: Date
     var lastWindowFrame: WindowFrame?

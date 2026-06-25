@@ -21,6 +21,10 @@ class TerminalStore {
     private var zdotdirPaths: [UUID: String] = [:]
     private var pendingStartupCommands: [UUID: String] = [:]
     private var scrollbackBumpedPanes: Set<UUID> = []
+    /// Panes whose currently-running `claude --dangerously-load-development-channels` has
+    /// already had its startup prompts auto-confirmed. Cleared by the scan once that claude
+    /// exits, so a later manual re-launch in the same pane is auto-confirmed again.
+    private var handledDevChannelPanes: Set<UUID> = []
     private var claudeDetectionTimer: DispatchSourceTimer?
 
     /// Callback for when a file link is clicked in a terminal.
@@ -244,19 +248,36 @@ class TerminalStore {
     }
 
     private func scanPanesForClaude() {
+        // One detectRunningCommand (libproc, no process spawning) per pane, reused for both
+        // the scrollback bump and dev-channels auto-confirm — so this adds ~nothing over the
+        // scan that already runs every 5s.
         for paneId in terminals.keys {
-            bumpScrollbackIfClaudeRunning(paneId: paneId)
+            let command = detectRunningCommand(for: paneId)
+            bumpScrollbackIfClaudeRunning(paneId: paneId, command: command)
+            autoConfirmDevChannelsIfRunning(paneId: paneId, command: command)
         }
     }
 
-    private func bumpScrollbackIfClaudeRunning(paneId: UUID) {
+    private func bumpScrollbackIfClaudeRunning(paneId: UUID, command: String?) {
         guard !scrollbackBumpedPanes.contains(paneId) else { return }
         guard let terminal = terminals[paneId] else { return }
-        guard let command = detectRunningCommand(for: paneId) else { return }
-        guard let firstToken = command.split(separator: " ").first,
+        guard let command, let firstToken = command.split(separator: " ").first,
               firstToken.hasPrefix("claude") else { return }
         terminal.getTerminal().changeScrollback(Self.claudeScrollbackLines)
         scrollbackBumpedPanes.insert(paneId)
+    }
+
+    /// Auto-confirm claude's startup prompts for ANY pane running
+    /// `claude --dangerously-load-development-channels` — whether ccmux spawned it or the
+    /// user typed it manually. Idempotent per running claude (see `handledDevChannelPanes`);
+    /// re-arms once that claude exits.
+    private func autoConfirmDevChannelsIfRunning(paneId: UUID, command: String?) {
+        let isDevChannels = command?.contains("--dangerously-load-development-channels") ?? false
+        if isDevChannels {
+            autoConfirmStartupPrompts(paneId: paneId)  // guarded; no-op if already handled
+        } else {
+            handledDevChannelPanes.remove(paneId)      // claude gone → re-arm for a future launch
+        }
     }
 
     /// Sends a previously queued startup command, if any, into the PTY.
@@ -269,12 +290,81 @@ class TerminalStore {
         terminal.send(Array((command + "\r").utf8))
     }
 
+    /// Send a command line into a live terminal immediately (as if typed + Enter).
+    /// Used to launch a teammate claude in an already-open, idle designated pane.
+    func sendCommand(_ command: String, to paneId: UUID) {
+        guard let terminal = terminals[paneId] else { return }
+        terminal.send(Array((command + "\r").utf8))
+    }
+
+    /// A freshly-spawned teammate (launched with `--dangerously-load-development-channels`)
+    /// can show up to two blocking confirmation prompts before its session starts:
+    ///  1. "Is this a project you trust? … 1. Yes, I trust this folder" (untrusted dirs only)
+    ///  2. "Loading development channels … 1. I am using this for local development"
+    /// Both pre-select option 1 and confirm on Enter. Watch the pane and press Enter for
+    /// each as it appears, so a spawn is fully hands-free.
+    ///
+    /// Robustness notes (learned the hard way):
+    ///  - claude can take tens of seconds to render the first prompt, so we watch for ~120s.
+    ///  - We match each prompt's SPECIFIC text (not a generic "Enter to confirm") so the
+    ///    watcher never auto-confirms a later tool-permission prompt.
+    ///  - Plain CR (0x0D) confirms correctly even though claude enables the kitty keyboard
+    ///    protocol; legacy Enter still works.
+    ///  - Safe to call before the pane's terminal exists (it just keeps polling).
+    func autoConfirmStartupPrompts(paneId: UUID) {
+        // Idempotent per running claude: the first caller (spawn or the 5s scan) wins; the
+        // pane stays "handled" until that claude exits and the scan re-arms it.
+        guard handledDevChannelPanes.insert(paneId).inserted else { return }
+        confirmStartupPrompts(paneId: paneId, attemptsRemaining: 480, entersRemaining: 3)
+    }
+
+    private func confirmStartupPrompts(paneId: UUID, attemptsRemaining: Int, entersRemaining: Int) {
+        guard attemptsRemaining > 0, entersRemaining > 0 else { return }
+        if let terminal = terminals[paneId],
+           Self.isStartupConfirmPrompt(Self.visibleText(of: terminal.getTerminal())) {
+            terminal.send([0x0D])  // Enter → confirms the pre-selected option
+            // Give the screen ~2s to advance, then keep watching for a following prompt.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.confirmStartupPrompts(paneId: paneId, attemptsRemaining: attemptsRemaining - 8, entersRemaining: entersRemaining - 1)
+            }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.confirmStartupPrompts(paneId: paneId, attemptsRemaining: attemptsRemaining - 1, entersRemaining: entersRemaining)
+        }
+    }
+
+    /// True if the visible text is one of claude's startup confirmation prompts (trust-folder
+    /// or load-development-channels). claude's TUI positions words with cursor moves, leaving
+    /// the cells between them as NUL (`getCharacter()` for an empty cell returns "\0", NOT a
+    /// space) — so we compact out NUL/space/newline and match the jammed phrase. Matching a
+    /// spaced phrase silently never fires.
+    static func isStartupConfirmPrompt(_ text: String) -> Bool {
+        let compact = text
+            .replacingOccurrences(of: "\0", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+        return compact.contains("localdevelopment") || compact.contains("trustthisfolder")
+    }
+
+    /// Currently-visible terminal text (viewport rows joined), for prompt detection.
+    static func visibleText(of term: Terminal) -> String {
+        var text = ""
+        for row in 0..<term.rows {
+            if let line = term.getLine(row: row) {
+                text += line.translateToString(trimRight: true) + "\n"
+            }
+        }
+        return text
+    }
+
     /// Remove a terminal when its pane is closed.
     func remove(paneId: UUID) {
         workingDirs.removeValue(forKey: paneId)
         linkDelegates.removeValue(forKey: paneId)
         pendingStartupCommands.removeValue(forKey: paneId)
         scrollbackBumpedPanes.remove(paneId)
+        handledDevChannelPanes.remove(paneId)
         // Clean up temp files
         try? FileManager.default.removeItem(atPath: cmdFilePath(for: paneId))
         if let zdotdir = zdotdirPaths.removeValue(forKey: paneId) {

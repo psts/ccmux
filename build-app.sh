@@ -74,6 +74,17 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <string>ccmux.sdef</string>
     <key>LSUIElement</key>
     <false/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>$BUNDLE_ID.spawn</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>ccmux</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF

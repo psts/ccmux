@@ -42,6 +42,10 @@ class TerminalContainerView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func ensureTerminalEmbedded() {
+        // Always pass startupCommand: terminal(for:) only queues it on first creation,
+        // so whichever call (this, viewDidMoveToWindow, or layout) creates the terminal
+        // must carry it — otherwise the idempotent guard drops the command for a pane
+        // added to an already-laid-out workspace (e.g. a spawned teammate pane).
         let terminal = TerminalStore.shared.terminal(for: terminalId, workingDirectory: workingDirectory, startupCommand: startupCommand)
         if terminal.superview !== self {
             terminal.removeFromSuperview()
@@ -57,25 +61,33 @@ class TerminalContainerView: NSView {
             // Mark that we need to send SIGWINCH once we get a real size
             hasLaidOut = false
         }
+        // Embedding may complete after the container's first layout() pass, so try
+        // firing here too — whichever of embed/layout finishes last wins.
+        fireStartupIfReady()
     }
 
     override func layout() {
         super.layout()
-        // After we get a real layout, force the terminal to redraw by sending SIGWINCH
-        if !hasLaidOut && bounds.width > 0 && bounds.height > 0 {
-            hasLaidOut = true
-            let terminal = TerminalStore.shared.terminal(for: terminalId, workingDirectory: workingDirectory)
-            if terminal.superview === self {
-                // Send SIGWINCH to tell the shell the window size changed — forces full redraw
-                let pid = terminal.process?.shellPid ?? 0
-                if pid > 0 {
-                    kill(pid, SIGWINCH)
-                }
-                // PTY now has correct cols/rows; safe to launch the user's TUI so
-                // it never observes the 800x480 fallback frame.
-                TerminalStore.shared.runStartupCommandIfPending(paneId: terminalId)
-            }
+        fireStartupIfReady()
+    }
+
+    /// Send the queued startup command once the terminal is BOTH embedded and has a
+    /// real size — order-independent across layout()/embed. `hasLaidOut` is only set
+    /// when we actually fire, so an early layout() (before embedding) can't consume
+    /// the one-shot and leave the command stranded.
+    private func fireStartupIfReady() {
+        guard !hasLaidOut, bounds.width > 0, bounds.height > 0 else { return }
+        let terminal = TerminalStore.shared.terminal(for: terminalId, workingDirectory: workingDirectory, startupCommand: startupCommand)
+        guard terminal.superview === self else { return }
+        hasLaidOut = true
+        // Send SIGWINCH to tell the shell the window size changed — forces full redraw.
+        let pid = terminal.process?.shellPid ?? 0
+        if pid > 0 {
+            kill(pid, SIGWINCH)
         }
+        // PTY now has correct cols/rows; safe to launch the user's TUI so it never
+        // observes the 800x480 fallback frame.
+        TerminalStore.shared.runStartupCommandIfPending(paneId: terminalId)
     }
 
     override func viewDidMoveToWindow() {
