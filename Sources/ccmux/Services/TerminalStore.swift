@@ -57,16 +57,7 @@ class TerminalStore {
     /// Returns nil if the shell has no child processes (idle prompt).
     /// Prefers the preexec-captured command (preserves alias names) over sysctl fallback.
     func detectRunningCommand(for paneId: UUID) -> String? {
-        guard let terminal = terminals[paneId],
-              let shellPid = terminal.process?.shellPid,
-              shellPid > 0 else { return nil }
-
-        // Check for child processes using native libproc (no pgrep spawning)
-        var childBuf = [pid_t](repeating: 0, count: 64)
-        let actual = proc_listpids(6 /* PROC_PPID_ONLY */, UInt32(shellPid), &childBuf,
-                                   Int32(childBuf.count * MemoryLayout<pid_t>.size))
-        let childCount = Int(actual) / MemoryLayout<pid_t>.size
-        guard childCount > 0, childBuf[0] > 0 else { return nil }
+        guard let childPid = firstChildPid(for: paneId) else { return nil }
 
         // Prefer preexec-captured command (preserves aliases/functions as typed)
         let cmdFile = cmdFilePath(for: paneId)
@@ -76,7 +67,31 @@ class TerminalStore {
         }
 
         // Fallback: get child process command line via sysctl (no ps spawning)
-        return getProcessCommandLine(pid: childBuf[0])
+        return getProcessCommandLine(pid: childPid)
+    }
+
+    /// The actual argv (sysctl KERN_PROCARGS2) of the shell's foreground child, ignoring the
+    /// preexec-captured typed line. Returns nil when the shell is idle. Needed for flag
+    /// detection that must see THROUGH shell aliases/functions: `claude_channels` execs
+    /// `claude --dangerously-load-development-channels …`, but the typed alias name preexec
+    /// records doesn't contain the flag — the kernel argv always does.
+    func runningChildArgv(for paneId: UUID) -> String? {
+        guard let childPid = firstChildPid(for: paneId) else { return nil }
+        return getProcessCommandLine(pid: childPid)
+    }
+
+    /// First direct child PID of the pane's shell (native libproc, no process spawning),
+    /// or nil if the shell is idle (sitting at the prompt).
+    private func firstChildPid(for paneId: UUID) -> pid_t? {
+        guard let terminal = terminals[paneId],
+              let shellPid = terminal.process?.shellPid,
+              shellPid > 0 else { return nil }
+        var childBuf = [pid_t](repeating: 0, count: 64)
+        let actual = proc_listpids(6 /* PROC_PPID_ONLY */, UInt32(shellPid), &childBuf,
+                                   Int32(childBuf.count * MemoryLayout<pid_t>.size))
+        let childCount = Int(actual) / MemoryLayout<pid_t>.size
+        guard childCount > 0, childBuf[0] > 0 else { return nil }
+        return childBuf[0]
     }
 
     /// Get the full command line (argv joined) of a process using sysctl KERN_PROCARGS2.
@@ -248,13 +263,12 @@ class TerminalStore {
     }
 
     private func scanPanesForClaude() {
-        // One detectRunningCommand (libproc, no process spawning) per pane, reused for both
-        // the scrollback bump and dev-channels auto-confirm — so this adds ~nothing over the
-        // scan that already runs every 5s.
+        // libproc/sysctl only (no process spawning), every 5s. The scrollback bump keys off the
+        // display command (preexec-captured, so it reads naturally); the dev-channels auto-confirm
+        // keys off the REAL child argv so it fires through aliases/functions like `claude_channels`.
         for paneId in terminals.keys {
-            let command = detectRunningCommand(for: paneId)
-            bumpScrollbackIfClaudeRunning(paneId: paneId, command: command)
-            autoConfirmDevChannelsIfRunning(paneId: paneId, command: command)
+            bumpScrollbackIfClaudeRunning(paneId: paneId, command: detectRunningCommand(for: paneId))
+            autoConfirmDevChannelsIfRunning(paneId: paneId, argv: runningChildArgv(for: paneId))
         }
     }
 
@@ -268,16 +282,23 @@ class TerminalStore {
     }
 
     /// Auto-confirm claude's startup prompts for ANY pane running
-    /// `claude --dangerously-load-development-channels` — whether ccmux spawned it or the
-    /// user typed it manually. Idempotent per running claude (see `handledDevChannelPanes`);
-    /// re-arms once that claude exits.
-    private func autoConfirmDevChannelsIfRunning(paneId: UUID, command: String?) {
-        let isDevChannels = command?.contains("--dangerously-load-development-channels") ?? false
-        if isDevChannels {
+    /// `claude --dangerously-load-development-channels` — whether ccmux spawned it, the user
+    /// typed it in full, or it came from a shell alias/function (e.g. `claude_channels`). Keys
+    /// off the real child-process argv, not the preexec-captured typed line, so the flag is seen
+    /// regardless of how claude was invoked. Idempotent per running claude (see
+    /// `handledDevChannelPanes`); re-arms once that claude exits.
+    private func autoConfirmDevChannelsIfRunning(paneId: UUID, argv: String?) {
+        if Self.isDevChannelsCommand(argv) {
             autoConfirmStartupPrompts(paneId: paneId)  // guarded; no-op if already handled
         } else {
             handledDevChannelPanes.remove(paneId)      // claude gone → re-arm for a future launch
         }
+    }
+
+    /// True if `argv` is a claude launched with `--dangerously-load-development-channels` — the
+    /// flag that triggers claude's blocking "local development" startup prompt we auto-confirm.
+    static func isDevChannelsCommand(_ argv: String?) -> Bool {
+        argv?.contains("--dangerously-load-development-channels") ?? false
     }
 
     /// Sends a previously queued startup command, if any, into the PTY.

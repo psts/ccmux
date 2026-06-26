@@ -35,4 +35,29 @@ final class StartupPromptDetectionTests: XCTestCase {
     func testIgnoresNormalOutput() {
         XCTAssertFalse(TerminalStore.isStartupConfirmPrompt("just some normal terminal output\n$ "))
     }
+
+    // The auto-confirm keys off the REAL child-process argv, not the preexec-captured typed line,
+    // so it fires whether claude was typed in full or launched via a shell alias.
+    func testDevChannelsDetectedInFullArgv() {
+        XCTAssertTrue(TerminalStore.isDevChannelsCommand(
+            "claude --dangerously-load-development-channels server:claude-peers"))
+    }
+
+    func testDevChannelsDetectedBehindAlias() {
+        // `claude_channels` expands to the flagged claude command at exec time. The typed alias
+        // name (what preexec records) lacks the flag — which is exactly why detection must read
+        // the kernel argv instead. The argv we'd inspect always contains the flag.
+        XCTAssertFalse("claude_channels".contains("--dangerously-load-development-channels"))
+        XCTAssertTrue(TerminalStore.isDevChannelsCommand(
+            "claude --dangerously-load-development-channels server:claude-peers"))
+    }
+
+    func testPlainClaudeIsNotDevChannels() {
+        XCTAssertFalse(TerminalStore.isDevChannelsCommand("claude"))
+        XCTAssertFalse(TerminalStore.isDevChannelsCommand("claude -c server:foo"))
+    }
+
+    func testIdleShellIsNotDevChannels() {
+        XCTAssertFalse(TerminalStore.isDevChannelsCommand(nil))
+    }
 }
