@@ -50,9 +50,11 @@ struct SidebarView: View {
                                 }
                             )
                             .listRowBackground(
-                                (isDisplayed ? Color.white.opacity(0.15) : Color.clear)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { onSelectWorkspace(workspace.id) }
+                                AttentionRowBackground(
+                                    monitor: manager.attentionMonitors[workspace.id] ?? .empty,
+                                    isDisplayed: isDisplayed,
+                                    onTap: { onSelectWorkspace(workspace.id) }
+                                )
                             )
                             .contextMenu {
                                 workspaceContextMenu(for: workspace)
@@ -92,9 +94,11 @@ struct SidebarView: View {
                                 )
                                 .opacity(0.7)
                                 .listRowBackground(
-                                    Color.clear
-                                        .contentShape(Rectangle())
-                                        .onTapGesture { onSelectWorkspace(workspace.id) }
+                                    AttentionRowBackground(
+                                        monitor: manager.attentionMonitors[workspace.id] ?? .empty,
+                                        isDisplayed: false,
+                                        onTap: { onSelectWorkspace(workspace.id) }
+                                    )
                                 )
                                 .contextMenu {
                                     workspaceContextMenu(for: workspace)
@@ -263,6 +267,66 @@ struct SidebarView: View {
         Divider()
         Button("Remove Workspace", role: .destructive) {
             manager.removeWorkspace(id: workspace.id)
+        }
+    }
+}
+
+// MARK: - Attention Row Background
+
+/// Row background for a sidebar workspace. Layers the existing selection highlight
+/// with an attention signal: a pulsing orange tint + left accent bar when Claude
+/// `needsInput`, a steady soft-green tint when a turn is `done`. Idle rows render
+/// exactly as before. Observes the per-workspace `ClaudeAttentionMonitor` so it
+/// repaints when the state changes.
+private struct AttentionRowBackground: View {
+    @ObservedObject var monitor: ClaudeAttentionMonitor
+    let isDisplayed: Bool
+    let onTap: () -> Void
+
+    /// Drives the pulse oscillation; flipped once when entering `needsInput` so the
+    /// repeating animation interpolates the tint/accent opacity back and forth.
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            isDisplayed ? Color.white.opacity(0.15) : Color.clear
+            tintColor
+            if monitor.state != .none {
+                Rectangle()
+                    .fill(accentColor)
+                    .frame(width: 3)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+        .onAppear { syncPulse() }
+        .onChange(of: monitor.state) { _, _ in syncPulse() }
+        .animation(pulseAnimation, value: pulse)
+    }
+
+    private func syncPulse() {
+        pulse = (monitor.state == .needsInput)
+    }
+
+    private var pulseAnimation: Animation {
+        monitor.state == .needsInput
+            ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
+            : .easeOut(duration: 0.25)
+    }
+
+    private var tintColor: Color {
+        switch monitor.state {
+        case .needsInput: return Color.orange.opacity(pulse ? 0.30 : 0.05)
+        case .done: return Color.green.opacity(0.14)
+        case .none: return Color.clear
+        }
+    }
+
+    private var accentColor: Color {
+        switch monitor.state {
+        case .needsInput: return Color.orange.opacity(pulse ? 0.95 : 0.45)
+        case .done: return Color.green.opacity(0.85)
+        case .none: return Color.clear
         }
     }
 }

@@ -7,26 +7,21 @@ VERSION="1.0.0"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
-echo "Building release for arm64..."
+echo "Building release for arm64 (Apple Silicon)..."
 swift build -c release --arch arm64
 
-echo "Building release for x86_64..."
-swift build -c release --arch x86_64
-
-echo "Creating universal binary..."
-mkdir -p "$BUILD_DIR"
-lipo -create \
-    ".build/arm64-apple-macosx/release/$APP_NAME" \
-    ".build/x86_64-apple-macosx/release/$APP_NAME" \
-    -output "$BUILD_DIR/$APP_NAME"
-
 echo "Creating app bundle..."
+mkdir -p "$BUILD_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# Copy universal binary
-cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
+# Copy the arm64 release binary straight from SwiftPM's build product. We build a
+# single architecture (Apple Silicon only), so there's no lipo step. This keeps
+# rebuilds incremental: the old universal build alternated --arch arm64/x86_64 each
+# run, and switching arch forces a full whole-module recompile every time. It also
+# avoids lipo clobbering SwiftPM's own build product via the .build/release symlink.
+cp ".build/arm64-apple-macosx/release/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
 # Copy icon
 if [ -f "AppIcon.icns" ]; then
@@ -38,6 +33,14 @@ fi
 if [ -f "ccmux.sdef" ]; then
     cp ccmux.sdef "$APP_DIR/Contents/Resources/ccmux.sdef"
     echo "Scripting definition added."
+fi
+
+# Copy Claude Code hook scripts (referenced from ~/.claude/settings.json via
+# hooks/install-hooks.sh; bundled for reference/distribution).
+if [ -d "hooks" ]; then
+    cp -r hooks "$APP_DIR/Contents/Resources/hooks"
+    chmod +x "$APP_DIR/Contents/Resources/hooks/"*.sh 2>/dev/null || true
+    echo "Hook scripts added."
 fi
 
 # Create Info.plist

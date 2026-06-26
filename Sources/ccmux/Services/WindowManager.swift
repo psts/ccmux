@@ -115,6 +115,9 @@ class WindowManager {
     /// If the workspace is already open in another window, bring that window to front.
     /// Otherwise, switch the requesting window to show it.
     func selectWorkspace(id: UUID, from requestingController: WorkspaceWindowController) {
+        // Switching to a workspace is the "I've seen it" acknowledgment — clear any flash.
+        workspaceManager.attentionMonitors[id]?.clear()
+
         // Check if another window owns this workspace
         if let ownerWc = windowOwning(workspaceId: id), ownerWc !== requestingController {
             // Switch that window to display the clicked workspace

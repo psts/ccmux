@@ -210,6 +210,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         // Update global activeWorkspaceId for menu actions
         if let wsId = windowContext.displayedWorkspaceId {
             workspaceManager.activeWorkspaceId = wsId
+            // Returning focus to a window counts as "seeing" the workspace it shows —
+            // clear any attention flash so a Cmd-Tab back stops the pulse.
+            workspaceManager.attentionMonitors[wsId]?.clear()
             // Cheap belt-and-suspenders for "user just Cmd-Tabbed back from an
             // external editor" — FSEvents would catch the change eventually,
             // but a focus-event refresh makes the sidebar feel instant and

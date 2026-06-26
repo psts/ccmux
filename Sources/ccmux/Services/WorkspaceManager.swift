@@ -17,6 +17,10 @@ class WorkspaceManager: ObservableObject {
     /// Map of workspace ID → its ClaudeProcessMonitor (runtime only)
     private(set) var claudeMonitors: [UUID: ClaudeProcessMonitor] = [:]
 
+    /// Map of workspace ID → its ClaudeAttentionMonitor (runtime only). Driven by
+    /// Claude Code hook events via `ClaudeHookListener`; renders the sidebar flash.
+    private(set) var attentionMonitors: [UUID: ClaudeAttentionMonitor] = [:]
+
     /// Terminal config IDs of ephemeral "teammate" panes spawned via `ccmux://spawn`
     /// (runtime only). These are stripped from every persisted layout so their seed
     /// prompt fires exactly once and never replays on restart. See `spawnTeammate`.
@@ -108,6 +112,7 @@ class WorkspaceManager: ObservableObject {
             // Start git monitoring
             monitors[workspace.id] = GitStatusMonitor(repoPath: workspace.repoPath)
             claudeMonitors[workspace.id] = ClaudeProcessMonitor(repoPath: workspace.repoPath)
+            attentionMonitors[workspace.id] = ClaudeAttentionMonitor()
         }
 
         // Load closed workspaces and windows
@@ -331,6 +336,7 @@ class WorkspaceManager: ObservableObject {
         // Start git monitoring
         monitors[workspace.id] = GitStatusMonitor(repoPath: repoPath)
         claudeMonitors[workspace.id] = ClaudeProcessMonitor(repoPath: repoPath)
+        attentionMonitors[workspace.id] = ClaudeAttentionMonitor()
 
         activeWorkspaceId = workspace.id
     }
@@ -422,6 +428,34 @@ class WorkspaceManager: ObservableObject {
         var p = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
         if p.count > 1, p.hasSuffix("/") { p.removeLast() }
         return p
+    }
+
+    /// Resolve a hook event's `cwd` to the open workspace it belongs to. A Claude
+    /// session usually runs in a subdirectory of the repo, so we match the workspace
+    /// whose `repoPath` is the longest prefix of `cwd` (exact match wins outright).
+    /// Returns nil when no open workspace contains the path.
+    func workspace(forCwd cwd: String) -> Workspace? {
+        guard let idx = Self.bestRepoMatchIndex(cwd: cwd, repoPaths: workspaces.map { $0.repoPath })
+        else { return nil }
+        return workspaces[idx]
+    }
+
+    /// Pure longest-prefix resolver behind `workspace(forCwd:)`: index of the repo path
+    /// that best contains `cwd` (exact match or `cwd` under it), or nil. Longest match wins
+    /// so a nested workspace beats its parent.
+    static func bestRepoMatchIndex(cwd: String, repoPaths: [String]) -> Int? {
+        let target = normalizePath(cwd)
+        var bestIdx: Int?
+        var bestLen = -1
+        for (i, repoPath) in repoPaths.enumerated() {
+            let repo = normalizePath(repoPath)
+            guard target == repo || target.hasPrefix(repo + "/") else { continue }
+            if repo.count > bestLen {
+                bestLen = repo.count
+                bestIdx = i
+            }
+        }
+        return bestIdx
     }
 
     /// Return `tree` with every leaf that contains an ephemeral terminal removed.
@@ -520,6 +554,8 @@ class WorkspaceManager: ObservableObject {
         monitors.removeValue(forKey: id)
         claudeMonitors[id]?.stop()
         claudeMonitors.removeValue(forKey: id)
+        attentionMonitors[id]?.stop()
+        attentionMonitors.removeValue(forKey: id)
 
         if activeWorkspaceId == id {
             activeWorkspaceId = workspaces.first?.id
@@ -581,6 +617,7 @@ class WorkspaceManager: ObservableObject {
         // Start git monitoring
         monitors[workspace.id] = GitStatusMonitor(repoPath: workspace.repoPath)
         claudeMonitors[workspace.id] = ClaudeProcessMonitor(repoPath: workspace.repoPath)
+        attentionMonitors[workspace.id] = ClaudeAttentionMonitor()
 
         activeWorkspaceId = workspace.id
         return workspace
@@ -594,6 +631,8 @@ class WorkspaceManager: ObservableObject {
         monitors.removeValue(forKey: id)
         claudeMonitors[id]?.stop()
         claudeMonitors.removeValue(forKey: id)
+        attentionMonitors[id]?.stop()
+        attentionMonitors.removeValue(forKey: id)
         if activeWorkspaceId == id {
             activeWorkspaceId = workspaces.first?.id
         }

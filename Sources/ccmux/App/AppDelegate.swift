@@ -1,9 +1,14 @@
 import AppKit
+import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
     private let workspaceManager = WorkspaceManager()
     private var quitConfirmationController: QuitConfirmationController?
+
+    /// Listens for Claude Code hook events and drives the sidebar attention flash.
+    private var hookListener: ClaudeHookListener?
+    private let attentionNotifier = AttentionNotifier()
 
     /// ccmux://spawn requests that arrived before the window manager was ready
     /// (e.g. when a spawn URL cold-starts the app). Flushed once launch completes.
@@ -70,7 +75,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // The window manager is now live — service any spawn URLs that cold-started us.
             self.isReadyForSpawns = true
             self.flushPendingSpawns()
+
+            // Start listening for Claude Code attention events (sidebar flash + notifications).
+            self.startAttentionSignals(windowManager: wm)
         }
+    }
+
+    /// Wire up the macOS-notification delegate and the hook-event socket listener.
+    /// Both depend on the window manager being live (for click navigation and the
+    /// "currently watched" suppression check).
+    private func startAttentionSignals(windowManager wm: WindowManager) {
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+            attentionNotifier.requestAuthorization()
+        }
+        let listener = ClaudeHookListener(
+            workspaceManager: workspaceManager,
+            windowManager: wm,
+            notifier: attentionNotifier
+        )
+        listener.start()
+        hookListener = listener
     }
 
     // MARK: - ccmux:// URL scheme (teammate spawning from claude-peers)
@@ -116,6 +141,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hookListener?.stop()
         quitConfirmationController?.teardown()
         // Prevent windowWillClose from moving workspaces to closedWorkspaces during quit
         windowManager?.isTerminating = true
@@ -312,5 +338,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.mainMenu = mainMenu
         NSApp.windowsMenu = windowMenu
+    }
+}
+
+// MARK: - Attention Notifications
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Show the banner even when ccmux is frontmost (we only post for background
+    /// workspaces, so the alert always concerns a workspace you're not viewing).
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    /// Clicking the notification navigates to the workspace that needed attention.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if let idString = response.notification.request.content.userInfo[AttentionNotifier.workspaceIdKey] as? String,
+           let id = UUID(uuidString: idString) {
+            showWorkspace(id)
+        }
+        completionHandler()
     }
 }
