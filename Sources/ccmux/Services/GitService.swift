@@ -192,17 +192,27 @@ enum GitService {
         return info
     }
 
-    /// Detect the default branch (origin/HEAD, else main, else master).
+    /// Detect the branch to compare the working branch against — the release/trunk
+    /// branch, preferring `main`, then `master`, then the remote default (origin/HEAD).
+    ///
+    /// `main`/`master` come first on purpose. A repo can set its remote default
+    /// (origin/HEAD) to an *integration* branch like `dev` that you work on directly
+    /// and merge into `main` to deploy. Trusting origin/HEAD there would make ccmux
+    /// think `dev` is the base and hide the comparison — when what you actually want
+    /// is "dev vs main" (am I ahead of the release branch?). Falling back to
+    /// origin/HEAD only when neither main nor master exists still handles repos whose
+    /// trunk is genuinely named something else.
+    ///
     /// Meant to be called once per repo and cached by the caller.
     static func detectDefaultBranch(path: String) async -> String? {
+        if !(await run(args: ["rev-parse", "--verify", "main"], in: path)).stdout.isEmpty { return "main" }
+        if !(await run(args: ["rev-parse", "--verify", "master"], in: path)).stdout.isEmpty { return "master" }
         let originHead = await run(args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: path)
             .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         if !originHead.isEmpty {
-            // "origin/main" → "main"
+            // "origin/dev" → "dev"
             return originHead.split(separator: "/").last.map(String.init)
         }
-        if !(await run(args: ["rev-parse", "--verify", "main"], in: path)).stdout.isEmpty { return "main" }
-        if !(await run(args: ["rev-parse", "--verify", "master"], in: path)).stdout.isEmpty { return "master" }
         return nil
     }
 

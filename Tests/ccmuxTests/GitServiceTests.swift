@@ -153,6 +153,54 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(dirty?.modifiedFiles.map(\.path), ["a.txt"])
     }
 
+    /// The comparison base must be the release branch (`main`), even when the repo's
+    /// remote default (origin/HEAD) is an integration branch like `dev` that you work
+    /// on directly. Regression for ChartLabs repos where origin/HEAD → origin/dev used
+    /// to make ccmux treat `dev` as the base and hide the "vs main" row entirely.
+    func testDetectDefaultBranchPrefersMainOverOriginHead() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ccmux-gitdefault-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        func git(_ args: [String]) async { _ = await GitService.run(args: args, in: tmp.path) }
+        await git(["init", "-b", "dev"])
+        await git(["config", "user.email", "t@example.com"])
+        await git(["config", "user.name", "t"])
+        try "hello".write(to: tmp.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        await git(["add", "a.txt"])
+        await git(["commit", "-m", "init"])
+        await git(["branch", "main"])
+        // Simulate a remote whose default (origin/HEAD) is the integration branch `dev`.
+        await git(["update-ref", "refs/remotes/origin/dev", "HEAD"])
+        await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev"])
+
+        let def = await GitService.detectDefaultBranch(path: tmp.path)
+        XCTAssertEqual(def, "main")
+    }
+
+    /// When no main/master exists, fall back to the remote default so repos whose
+    /// trunk is genuinely named something else still get a comparison base.
+    func testDetectDefaultBranchFallsBackToOriginHead() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ccmux-gitfallback-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        func git(_ args: [String]) async { _ = await GitService.run(args: args, in: tmp.path) }
+        await git(["init", "-b", "trunk"])
+        await git(["config", "user.email", "t@example.com"])
+        await git(["config", "user.name", "t"])
+        try "hello".write(to: tmp.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        await git(["add", "a.txt"])
+        await git(["commit", "-m", "init"])
+        await git(["update-ref", "refs/remotes/origin/trunk", "HEAD"])
+        await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"])
+
+        let def = await GitService.detectDefaultBranch(path: tmp.path)
+        XCTAssertEqual(def, "trunk")
+    }
+
     func testMixedChanges() {
         let info = parse([
             "# branch.oid db45204caa80cd229171d32292ab98c9c57d87a7",
