@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ccmux</title>
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header>
+        <span class="logo">ccmux</span>
+        <button id="new-ws" title="New workspace">+</button>
+      </header>
+      <ul id="ws-list"></ul>
+    </aside>
+    <main id="main">
+      <div id="tabs"></div>
+      <div id="terminal"></div>
+      <div id="empty" class="empty">Select a workspace</div>
+    </main>
+  </div>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

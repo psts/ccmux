@@ -45,9 +45,11 @@ func (c *Client) ResizeWindow(window string, cols, rows int) error {
 }
 
 // CapturePane returns the current pane contents with escape sequences preserved
-// (`capture-pane -e -p`), joined with newlines. Bytes are raw — command replies
-// are not octal-escaped — so lenses can feed the result straight into their
-// emulator to seed a fresh attach.
+// (`capture-pane -e -p`). Lines are joined with CRLF, not LF: the result is fed
+// raw into a lens emulator to seed a fresh attach, and a bare LF only moves the
+// cursor down — without the CR each seeded line would start at the previous
+// line's column (a staircase). Bytes are otherwise raw (command replies are not
+// octal-escaped).
 func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 	args := []string{"capture-pane", "-e", "-p", "-t", pane}
 	if historyLines > 0 {
@@ -57,7 +59,7 @@ func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []byte(strings.Join(lines, "\n")), nil
+	return []byte(strings.Join(lines, "\r\n")), nil
 }
 
 // CapturePlain returns a pane's visible contents as plain text (no escape
