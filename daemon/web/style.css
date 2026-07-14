@@ -48,6 +48,19 @@ body {
 .dot.live { background: var(--accent); }
 .dot.cold { background: #55585d; }
 
+/* firehose attention on the session list — flashes a row that needs you even
+   when it isn't attached (mirrors the native AttentionRowBackground). */
+.ws.att-done { background: rgba(114, 185, 121, .13); box-shadow: inset 3px 0 0 var(--done); }
+.ws.att-needs_input { box-shadow: inset 3px 0 0 var(--needs); }
+.ws.att-needs_input .name { color: var(--needs); }
+@media (prefers-reduced-motion: no-preference) {
+  .ws.att-needs_input { animation: ws-pulse 1.6s ease-in-out infinite; }
+}
+@keyframes ws-pulse {
+  0%, 100% { background: rgba(224, 160, 74, .10); }
+  50% { background: rgba(224, 160, 74, .26); }
+}
+
 /* main */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 #bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); min-height: 38px; }

@@ -12,6 +12,8 @@ const state = {
   conn: null,
   term: null,
   fit: null,
+  firehose: null,    // global /v1/events WS (sidebar attention, all workspaces)
+  attn: {},          // wsId -> { paneId -> attentionState } from the firehose
 };
 
 const $ = (id) => document.getElementById(id);
@@ -56,8 +58,12 @@ function renderList() {
   const ul = $("ws-list");
   ul.innerHTML = "";
   for (const ws of state.workspaces) {
+    const active = ws.id === state.wsId;
+    // Suppress the flash on the workspace you're already watching (mirrors the
+    // native "clear on watch"); other rows flash live from the firehose.
+    const att = active ? "" : wsAttention(ws);
     const li = document.createElement("li");
-    li.className = "ws" + (ws.id === state.wsId ? " active" : "");
+    li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "");
     li.innerHTML =
       `<span class="dot ${esc(ws.status)}"></span>` +
       `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
@@ -65,6 +71,20 @@ function renderList() {
     li.onclick = () => attach(ws.id, null);
     ul.appendChild(li);
   }
+}
+
+// Aggregate a workspace's per-pane firehose attention into one row signal:
+// needs_input wins over done. Only panes the workspace still lists count, so a
+// closed pane's stale state can't keep a row lit (the 5s poll self-corrects).
+function wsAttention(ws) {
+  const per = state.attn[ws.id];
+  if (!per) return "";
+  let done = false;
+  for (const p of ws.panes || []) {
+    if (per[p.id] === "needs_input") return "needs_input";
+    if (per[p.id] === "done") done = true;
+  }
+  return done ? "done" : "";
 }
 
 // --- terminal ---
@@ -96,6 +116,7 @@ function attach(wsId, wantPane) {
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = wsId;
   state.wantPane = wantPane;
+  delete state.attn[wsId]; // opening it marks its attention seen
   $("empty").style.display = "none";
   ensureTerm();
   state.term.reset();
@@ -180,6 +201,35 @@ function setAttention(paneId, stateStr) {
   if (btn) btn.className = btn.className.replace(/att-\w+/, "att-" + stateStr);
 }
 
+// --- global firehose (/v1/events): live sidebar attention for every workspace,
+// so a row flashes even when we're not attached to it. Read-only; reconnects. ---
+function connectFirehose() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const fh = new WebSocket(`${proto}://${location.host}/v1/events`);
+  fh.onmessage = onFirehose;
+  fh.onclose = () => { state.firehose = null; setTimeout(connectFirehose, 2000); };
+  state.firehose = fh;
+}
+
+function onFirehose(ev) {
+  let m;
+  try { m = JSON.parse(ev.data); } catch (_) { return; }
+  if (m.t === "hello") {
+    state.attn = {};
+    for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state);
+  } else if (m.t === "attention") {
+    noteAttention(m.workspace, m.pane, m.state);
+  } else {
+    return;
+  }
+  renderList();
+}
+
+function noteAttention(wsId, paneId, stateStr) {
+  if (!wsId || !paneId) return;
+  (state.attn[wsId] || (state.attn[wsId] = {}))[paneId] = stateStr;
+}
+
 // --- new workspace ---
 async function newWorkspace() {
   const repoPath = prompt("Repo path on the host:", "");
@@ -199,4 +249,5 @@ async function newWorkspace() {
 // --- boot ---
 $("new-ws").onclick = newWorkspace;
 fetchWorkspaces();
+connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes
