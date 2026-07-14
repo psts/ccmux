@@ -3,7 +3,7 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v1";
+const CACHE = "ccmux-shell-v2";
 
 // The app shell: everything needed to boot the lens offline. Session bytes are
 // never cached (they come over /v1/attach, which the fetch handler leaves alone).
@@ -33,9 +33,13 @@ self.addEventListener("activate", (e) => {
   );
 });
 
-// Cache-first for the shell; network-only for the API (/v1/*) and anything that
-// isn't a same-origin GET. WebSocket upgrades never reach fetch, so /v1/attach
-// and /v1/events are unaffected either way.
+// Stale-while-revalidate for the shell; network-only for the API (/v1/*) and
+// anything that isn't a same-origin GET. Serving cache-first keeps the lens
+// instant and offline-capable, but we ALSO refresh the cache from the network in
+// the background so a deployed shell change (app.js/style.css/push.js) lands on
+// the next load — a fixed cache name alone would otherwise pin the old assets
+// forever. WebSocket upgrades never reach fetch, so /v1/attach and /v1/events are
+// unaffected either way.
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
@@ -43,15 +47,15 @@ self.addEventListener("fetch", (e) => {
     return; // default network handling
   }
   e.respondWith(
-    caches.match(req, { ignoreSearch: true }).then((hit) => {
-      if (hit) return hit;
-      return fetch(req).then((resp) => {
-        if (resp.ok && resp.type === "basic") {
-          const copy = resp.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy));
-        }
-        return resp;
-      });
+    caches.open(CACHE).then(async (cache) => {
+      const cached = await cache.match(req, { ignoreSearch: true });
+      const fresh = fetch(req)
+        .then((resp) => {
+          if (resp.ok && resp.type === "basic") cache.put(req, resp.clone());
+          return resp;
+        })
+        .catch(() => cached); // offline → fall back to whatever we have
+      return cached || fresh; // instant from cache, refreshed in the background
     })
   );
 });

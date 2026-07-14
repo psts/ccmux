@@ -23,7 +23,8 @@ type ClientInfo struct {
 
 type client struct {
 	info      ClientInfo
-	email     string // verified tailnet login (email); server-side only, never broadcast
+	login     string // canonical identity key (verified login/email, else self-declared name); push-suppression matches on this
+	email     string // verified tailnet login (email) only; server-side only, never broadcast; for git attribution
 	lastInput int64
 }
 
@@ -57,10 +58,11 @@ func newPresenceHub(mgr *manager.Manager) *presenceHub {
 	return &presenceHub{mgr: mgr, byWS: map[string]*wsPresence{}}
 }
 
-// Join registers a client and returns its connection id. email is the verified
-// tailnet login (empty for self-declared identities); it is retained server-side
-// for git attribution and never broadcast.
-func (h *presenceHub) Join(wsID string, info ClientInfo, email string) string {
+// Join registers a client and returns its connection id. login is the canonical
+// identity key (what push subscriptions and suppression match on); email is the
+// verified tailnet login (empty for self-declared identities), retained
+// server-side for git attribution and never broadcast.
+func (h *presenceHub) Join(wsID string, info ClientInfo, login, email string) string {
 	h.mu.Lock()
 	h.seq++
 	id := strconv.Itoa(h.seq)
@@ -70,7 +72,7 @@ func (h *presenceHub) Join(wsID string, info ClientInfo, email string) string {
 		wp = &wsPresence{clients: map[string]*client{}}
 		h.byWS[wsID] = wp
 	}
-	wp.clients[id] = &client{info: info, email: email}
+	wp.clients[id] = &client{info: info, login: login, email: email}
 	snap := h.snapshotLocked(wsID)
 	h.mu.Unlock()
 	h.broadcast(wsID, snap)
@@ -93,13 +95,13 @@ func (h *presenceHub) Driver(wsID string) (DriverIdentity, bool) {
 	return DriverIdentity{User: c.info.User, Email: c.email, Device: c.info.Device, Verified: c.info.Verified}, true
 }
 
-// FocusedOwners returns the set of identities currently attached to wsID with a
-// focused pane — the devs actively watching this workspace, whose push
-// notifications the notifier suppresses. Both the verified email and the
-// self-declared user are included per client so a subscription keyed by either
-// (email when the subscriber was on the tailnet, user when self-declared) matches.
-// A client with no focused pane (e.g. a backgrounded PWA tab that cleared focus)
-// is deliberately excluded, so it still gets pushed.
+// FocusedOwners returns the set of identity logins currently attached to wsID
+// with a focused pane — the devs actively watching this workspace, whose push
+// notifications the notifier suppresses. The key is each client's canonical
+// login, the same key a subscription is stored under (resolveIdentity produces
+// both), so suppression matches exactly and never keys on the collision-prone
+// display name. A client with no focused pane (e.g. a backgrounded PWA tab that
+// cleared focus) is deliberately excluded, so it still gets pushed.
 func (h *presenceHub) FocusedOwners(wsID string) map[string]bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -109,15 +111,10 @@ func (h *presenceHub) FocusedOwners(wsID string) map[string]bool {
 	}
 	owners := map[string]bool{}
 	for _, c := range wp.clients {
-		if c.info.Focused == "" {
+		if c.info.Focused == "" || c.login == "" {
 			continue
 		}
-		if c.email != "" {
-			owners[c.email] = true
-		}
-		if c.info.User != "" {
-			owners[c.info.User] = true
-		}
+		owners[c.login] = true
 	}
 	return owners
 }

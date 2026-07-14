@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -16,19 +17,26 @@ import (
 // session state has almost certainly moved on, so a stale "needs input" is noise.
 const pushTTL = 3600
 
+// sendTimeout bounds each POST to a push service. Without it a push endpoint that
+// accepts the connection but never responds would park the sending goroutine (and
+// its socket) for the daemon's whole lifetime; the notifier spawns one goroutine
+// per attention event, so an unbounded send is a leak.
+const sendTimeout = 20 * time.Second
+
 // Sender delivers an encrypted payload to a single Web Push subscription. It is
-// safe for concurrent use (webpush.SendNotification builds a fresh request each
-// call and the default http.Client is concurrent-safe).
+// safe for concurrent use: webpush.SendNotification builds a fresh request each
+// call and the shared *http.Client (with a per-request timeout) is
+// concurrent-safe and pools connections across sends.
 type Sender struct {
 	keys    Keys
 	subject string             // VAPID "sub": a mailto:/https: identifying this server
-	client  webpush.HTTPClient // nil → webpush-go's default *http.Client
+	client  webpush.HTTPClient // shared, timeout-bounded
 }
 
 // NewSender builds a Sender. subject must be a valid mailto: or https: URL (the
 // VAPID JWT subject the push service attributes the send to).
 func NewSender(keys Keys, subject string) *Sender {
-	return &Sender{keys: keys, subject: subject}
+	return &Sender{keys: keys, subject: subject, client: &http.Client{Timeout: sendTimeout}}
 }
 
 // PublicKey returns the base64url VAPID public key a lens passes to

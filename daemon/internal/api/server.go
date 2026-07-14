@@ -15,11 +15,18 @@ import (
 	"ccmux.dev/ccmuxd/web"
 )
 
+// whoisResolver maps a connection's remote address to a verified tailnet
+// identity. *tailnet.Resolver satisfies it; tests inject a fake so they never
+// shell out to `tailscale whois`.
+type whoisResolver interface {
+	Resolve(remoteAddr string) (login, display string, ok bool)
+}
+
 // Server adapts a Manager to HTTP.
 type Server struct {
 	mgr      *manager.Manager
 	presence *presenceHub
-	identity *tailnet.Resolver
+	identity whoisResolver
 	upgrader websocket.Upgrader
 
 	// Push notifications, wired by EnablePush; nil when push is disabled (the

@@ -55,22 +55,13 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	sub := ctrl.Subscribe()
 	defer sub.Close()
 
-	// Prefer verified Tailscale identity; fall back to a self-declared name for
-	// loopback/LAN connections or when whois is unavailable.
-	user := orDefault(r.URL.Query().Get("user"), "anon")
-	verified := false
-	email := ""
-	if login, display, ok := s.identity.Resolve(r.RemoteAddr); ok {
-		user = orDefault(display, login)
-		email = login // tailnet LoginName is an email — used for git attribution
-		verified = true
-	}
+	id := s.resolveIdentity(r)
 	connID := s.presence.Join(wsID, ClientInfo{
-		User:     user,
+		User:     id.Display,
 		Device:   r.URL.Query().Get("device"),
 		ReadOnly: readonly,
-		Verified: verified,
-	}, email)
+		Verified: id.Verified,
+	}, id.Login, id.Email)
 	defer s.presence.Leave(wsID, connID)
 
 	if err := conn.WriteJSON(wsMsg{T: "hello", Panes: paneInfos(ws), Layout: ws.LayoutJSON, LayoutVersion: ws.LayoutVersion}); err != nil {

@@ -4,7 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
@@ -47,6 +50,14 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Endpoint == "" || body.Keys.P256dh == "" || body.Keys.Auth == "" {
 		writeError(w, http.StatusBadRequest, "endpoint and keys required")
+		return
+	}
+	// The daemon POSTs to this endpoint on every attention event, so a bogus one
+	// is a server-side request forgery vector. Real push services are public
+	// https; reject anything else (http, or a host pointing back inside the host/
+	// tailnet).
+	if err := validPushEndpoint(body.Endpoint); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	address, _ := json.Marshal(body) // canonical {endpoint, keys:{p256dh, auth}}
@@ -118,14 +129,34 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// loginKey resolves the identity a subscription is keyed on: the verified tailnet
-// login (email) when whois succeeds, else the self-declared user (default "anon").
-// The notifier suppresses on this same key.
+// loginKey resolves the identity a subscription is keyed on. It shares
+// resolveIdentity with attach/presence, so a subscription and the same dev's
+// attached lens land on the same key and suppression matches.
 func (s *Server) loginKey(r *http.Request) string {
-	if login, _, ok := s.identity.Resolve(r.RemoteAddr); ok && login != "" {
-		return login
+	return s.resolveIdentity(r).Login
+}
+
+// validPushEndpoint rejects endpoints that would turn the notifier into an SSRF
+// primitive: it must be an https URL whose host is not a loopback/private/
+// link-local literal. (A public hostname that later resolves to a private IP —
+// DNS rebinding — is out of scope for this literal check.)
+func validPushEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("unparseable endpoint")
 	}
-	return orDefault(r.URL.Query().Get("user"), "anon")
+	if u.Scheme != "https" {
+		return fmt.Errorf("endpoint must be https")
+	}
+	host := u.Hostname()
+	if host == "" || host == "localhost" {
+		return fmt.Errorf("endpoint host not allowed")
+	}
+	if ip := net.ParseIP(host); ip != nil &&
+		(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
+		return fmt.Errorf("endpoint host not allowed")
+	}
+	return nil
 }
 
 // subscriptionID is a stable id for a push endpoint, so re-subscribing replaces

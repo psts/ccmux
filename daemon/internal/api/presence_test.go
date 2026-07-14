@@ -16,8 +16,8 @@ func newTestHub() *presenceHub {
 
 func TestPresence_DriverTracksLastNonReadonlyTypist(t *testing.T) {
 	h := newTestHub()
-	alice := h.Join("ws1", ClientInfo{User: "Alice", Verified: true}, "alice@example.com")
-	bob := h.Join("ws1", ClientInfo{User: "Bob"}, "")
+	alice := h.Join("ws1", ClientInfo{User: "Alice", Verified: true}, "alice@example.com", "alice@example.com")
+	bob := h.Join("ws1", ClientInfo{User: "Bob"}, "Bob", "")
 
 	if _, ok := h.Driver("ws1"); ok {
 		t.Fatal("no driver expected before any input")
@@ -39,20 +39,23 @@ func TestPresence_DriverTracksLastNonReadonlyTypist(t *testing.T) {
 
 func TestPresence_FocusedOwnersDrivePushSuppression(t *testing.T) {
 	h := newTestHub()
-	alice := h.Join("ws1", ClientInfo{User: "Alice", Verified: true}, "alice@example.com")
-	h.Join("ws1", ClientInfo{User: "Bob"}, "") // attached but never focuses
+	alice := h.Join("ws1", ClientInfo{User: "Alice", Verified: true}, "alice@example.com", "alice@example.com")
+	h.Join("ws1", ClientInfo{User: "Bob"}, "Bob", "") // attached but never focuses
 
 	// No one has focused a pane yet → nobody is suppressed.
 	if owners := h.FocusedOwners("ws1"); len(owners) != 0 {
 		t.Fatalf("owners before any focus = %v, want empty", owners)
 	}
 
-	// Alice focuses a pane → she (by both email and display name) is suppressed;
-	// Bob, attached but unfocused (e.g. backgrounded), still gets pushed.
+	// Alice focuses a pane → her login (email) is suppressed. The display name is
+	// deliberately NOT a key (it would falsely collide with a self-declared "Alice").
 	h.Focus("ws1", alice, "pane-1")
 	owners := h.FocusedOwners("ws1")
-	if !owners["alice@example.com"] || !owners["Alice"] {
-		t.Errorf("owners = %v, want Alice keyed by email and name", owners)
+	if !owners["alice@example.com"] {
+		t.Errorf("owners = %v, want Alice keyed by her login", owners)
+	}
+	if owners["Alice"] {
+		t.Error("display name must not be a suppression key")
 	}
 	if owners["Bob"] {
 		t.Error("Bob has no focused pane but was marked focused")
@@ -81,7 +84,7 @@ func TestPresence_DriverUnknownWorkspace(t *testing.T) {
 
 func TestPresence_DriverClearsWhenDriverLeaves(t *testing.T) {
 	h := newTestHub()
-	alice := h.Join("ws1", ClientInfo{User: "Alice"}, "")
+	alice := h.Join("ws1", ClientInfo{User: "Alice"}, "Alice", "")
 	h.Input("ws1", alice)
 	h.Leave("ws1", alice)
 	if _, ok := h.Driver("ws1"); ok {
