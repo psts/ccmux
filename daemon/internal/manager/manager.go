@@ -5,6 +5,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -292,6 +293,48 @@ func (m *Manager) ResolvePane(paneID, cwd string) string {
 		}
 	}
 	return best
+}
+
+// ErrLayoutConflict is returned by SetLayout when the caller's baseVersion is
+// stale (another lens changed the layout first). The caller re-reads and rebases.
+var ErrLayoutConflict = errors.New("layout version conflict")
+
+// LayoutUpdate is the payload of a "layout" session event: the new opaque blob
+// and the version it produced, so attached lenses re-render the split arrangement.
+type LayoutUpdate struct {
+	Blob    string
+	Version int
+}
+
+// SetLayout replaces a workspace's opaque layout blob under optimistic
+// concurrency: baseVersion must equal the current version or SetLayout returns
+// ErrLayoutConflict (and the current version). On success the version increments,
+// the blob is persisted, and a "layout" event is broadcast to attached lenses.
+// Returns the resulting version.
+func (m *Manager) SetLayout(wsID, blob string, baseVersion int) (int, error) {
+	m.mu.Lock()
+	e := m.byID[wsID]
+	if e == nil {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("unknown workspace %s", wsID)
+	}
+	if e.ws.LayoutVersion != baseVersion {
+		cur := e.ws.LayoutVersion
+		m.mu.Unlock()
+		return cur, ErrLayoutConflict
+	}
+	e.ws.LayoutJSON = blob
+	e.ws.LayoutVersion++
+	newV := e.ws.LayoutVersion
+	ctrl := e.ctrl
+	saved := *e.ws
+	m.mu.Unlock()
+
+	_ = m.store.SaveWorkspace(&saved)
+	if ctrl != nil {
+		ctrl.Broadcast(session.Event{Kind: "layout", Payload: LayoutUpdate{Blob: blob, Version: newV}})
+	}
+	return newV, nil
 }
 
 // ApplyAttention sets a pane's attention state, persists it, and broadcasts the

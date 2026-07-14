@@ -347,6 +347,111 @@ func TestAPI_PaneDriver(t *testing.T) {
 	}
 }
 
+// TestAPI_LayoutSync exercises the layout-blob contract: optimistic-concurrency
+// PUT (version bump, 409 on a stale baseVersion), broadcast to an attached lens,
+// and restore of the current blob in a fresh attach's hello.
+func TestAPI_LayoutSync(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-layout-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := manager.New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	hs := httptest.NewServer(NewServer(mgr).Handler())
+	defer hs.Close()
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Attach a lens; it should receive the layout broadcast for a later PUT.
+	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http") + "/v1/attach?workspace=" + ws.ID
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+	hello := readMsg(t, conn)
+	if hello.T != "hello" || hello.Layout != "" || hello.LayoutVersion != 0 {
+		t.Fatalf("initial hello layout = %q v%d, want empty v0", hello.Layout, hello.LayoutVersion)
+	}
+
+	// PUT the first layout from baseVersion 0 → version 1.
+	if code, body := putLayout(t, hs.URL, ws.ID, `{"split":"L1"}`, 0); code != 200 || body["version"] != float64(1) {
+		t.Fatalf("first PUT = %d %v, want 200 v1", code, body)
+	}
+	// The attached lens should see a layout broadcast.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	sawBroadcast := false
+	for i := 0; i < 50 && !sawBroadcast; i++ {
+		m := readMsg(t, conn)
+		if m.T == "layout" {
+			if m.Layout != `{"split":"L1"}` || m.LayoutVersion != 1 {
+				t.Fatalf("layout broadcast = %q v%d", m.Layout, m.LayoutVersion)
+			}
+			sawBroadcast = true
+		}
+	}
+	if !sawBroadcast {
+		t.Fatal("attached lens never received the layout broadcast")
+	}
+
+	// A stale baseVersion (0 again) → 409 with the current version+blob.
+	code, body := putLayout(t, hs.URL, ws.ID, `{"split":"STALE"}`, 0)
+	if code != http.StatusConflict {
+		t.Fatalf("stale PUT = %d, want 409", code)
+	}
+	if body["version"] != float64(1) || body["blob"] != `{"split":"L1"}` {
+		t.Fatalf("409 body = %v, want v1 + L1 blob", body)
+	}
+
+	// Rebased PUT from version 1 → version 2.
+	if code, body := putLayout(t, hs.URL, ws.ID, `{"split":"L2"}`, 1); code != 200 || body["version"] != float64(2) {
+		t.Fatalf("rebased PUT = %d %v, want 200 v2", code, body)
+	}
+
+	// A fresh attach restores the current blob in its hello.
+	conn2, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial 2: %v", err)
+	}
+	defer conn2.Close()
+	h2 := readMsg(t, conn2)
+	if h2.T != "hello" || h2.Layout != `{"split":"L2"}` || h2.LayoutVersion != 2 {
+		t.Fatalf("restore hello = %q v%d, want L2 v2", h2.Layout, h2.LayoutVersion)
+	}
+}
+
+func putLayout(t *testing.T, base, wsID, blob string, baseVersion int) (int, map[string]any) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"blob": blob, "baseVersion": baseVersion})
+	req, _ := http.NewRequest(http.MethodPut, base+"/v1/workspaces/"+wsID+"/layout", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT layout: %v", err)
+	}
+	defer resp.Body.Close()
+	var m map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&m)
+	return resp.StatusCode, m
+}
+
 func getStatus(t *testing.T, url string) int {
 	t.Helper()
 	resp, err := http.Get(url)

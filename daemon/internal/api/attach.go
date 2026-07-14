@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
 )
@@ -14,14 +15,16 @@ import (
 // wsMsg is the single JSON envelope for all attach traffic (v1: JSON+base64; a
 // binary hot-path frame is a later optimization). Bytes travel in Data (base64).
 type wsMsg struct {
-	T       string          `json:"t"`
-	Pane    string          `json:"pane,omitempty"`
-	Data    string          `json:"data,omitempty"`
-	State   model.Attention `json:"state,omitempty"`
-	Cols    int             `json:"cols,omitempty"`
-	Rows    int             `json:"rows,omitempty"`
-	Panes   []paneInfo      `json:"panes,omitempty"`
-	Clients []ClientInfo    `json:"clients,omitempty"`
+	T             string          `json:"t"`
+	Pane          string          `json:"pane,omitempty"`
+	Data          string          `json:"data,omitempty"`
+	State         model.Attention `json:"state,omitempty"`
+	Cols          int             `json:"cols,omitempty"`
+	Rows          int             `json:"rows,omitempty"`
+	Panes         []paneInfo      `json:"panes,omitempty"`
+	Clients       []ClientInfo    `json:"clients,omitempty"`
+	Layout        string          `json:"layout,omitempty"`
+	LayoutVersion int             `json:"layoutVersion,omitempty"`
 }
 
 type paneInfo struct {
@@ -70,7 +73,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	}, email)
 	defer s.presence.Leave(wsID, connID)
 
-	if err := conn.WriteJSON(wsMsg{T: "hello", Panes: paneInfos(ws)}); err != nil {
+	if err := conn.WriteJSON(wsMsg{T: "hello", Panes: paneInfos(ws), Layout: ws.LayoutJSON, LayoutVersion: ws.LayoutVersion}); err != nil {
 		return
 	}
 	sendSnapshots(conn, ctrl, ws)
@@ -161,6 +164,9 @@ func frameFor(ev session.Event) wsMsg {
 	case "presence":
 		clients, _ := ev.Payload.([]ClientInfo)
 		return wsMsg{T: "presence", Clients: clients}
+	case "layout":
+		lu, _ := ev.Payload.(manager.LayoutUpdate)
+		return wsMsg{T: "layout", Layout: lu.Blob, LayoutVersion: lu.Version}
 	case "pane-added", "pane-closed":
 		return wsMsg{T: ev.Kind, Pane: ev.PaneID}
 	default:

@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/gorilla/websocket"
@@ -43,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
+	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
 	mux.HandleFunc("GET /v1/attach", s.attach)
 	mux.HandleFunc("GET /v1/events", s.events)
@@ -115,6 +117,36 @@ func (s *Server) reviveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+type layoutReq struct {
+	Blob        string `json:"blob"`
+	BaseVersion int    `json:"baseVersion"`
+}
+
+// putLayout stores a workspace's opaque layout blob under optimistic concurrency.
+// A stale baseVersion returns 409 with the current {version, blob} so the client
+// can rebase; success returns {version} and broadcasts the change to other lenses.
+func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
+	var req layoutReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	id := r.PathValue("id")
+	newV, err := s.mgr.SetLayout(id, req.Blob, req.BaseVersion)
+	switch {
+	case errors.Is(err, manager.ErrLayoutConflict):
+		cur := s.mgr.Workspace(id)
+		blob := ""
+		if cur != nil {
+			blob = cur.LayoutJSON
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"version": newV, "blob": blob})
+	case err != nil:
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"version": newV})
+	}
 }
 
 // paneDriver reports the human currently driving a pane's workspace, for the git
