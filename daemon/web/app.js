@@ -103,6 +103,17 @@ function ensureTerm() {
   state.term.open($("terminal"));
   state.term.onData((d) => sendInput(d));
   window.addEventListener("resize", doFit);
+  // Focus reporting powers push suppression: while this lens is actively watching
+  // the daemon holds back notifications; when the tab is hidden or blurred we
+  // clear focus so a "needs input" push comes through.
+  document.addEventListener("visibilitychange", reportFocus);
+  window.addEventListener("focus", reportFocus);
+  window.addEventListener("blur", reportFocus);
+}
+
+function reportFocus() {
+  const watching = document.visibilityState === "visible" && document.hasFocus();
+  send({ t: "focus", pane: watching ? state.paneId : "" });
 }
 
 function doFit() {
@@ -139,7 +150,7 @@ function onMessage(ev) {
       state.wantPane = null;
       renderTabs();
       doFit();
-      send({ t: "focus", pane: state.paneId });
+      reportFocus();
       break;
     case "snapshot":
     case "output":
@@ -249,8 +260,15 @@ async function newWorkspace() {
   attach(ws.id, null);
 }
 
+// Opened from a notification tap (/?ws=<id>): attach straight to that workspace.
+function bootDeepLink() {
+  const ws = new URLSearchParams(location.search).get("ws");
+  if (ws) attach(ws, null);
+}
+
 // --- boot ---
+window.ccmux = { attach, getUser }; // push.js deep-links + shares the presence name
 $("new-ws").onclick = newWorkspace;
-fetchWorkspaces();
+fetchWorkspaces().then(bootDeepLink);
 connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes
