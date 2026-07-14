@@ -17,7 +17,8 @@ type ClientInfo struct {
 	Device   string `json:"device,omitempty"`
 	Focused  string `json:"focused,omitempty"` // pane id
 	ReadOnly bool   `json:"readonly"`
-	Driving  bool   `json:"driving"` // most recent typist (live pairing / handoff)
+	Driving  bool   `json:"driving"`  // most recent typist (live pairing / handoff)
+	Verified bool   `json:"verified"` // identity confirmed via Tailscale whois
 }
 
 type client struct {

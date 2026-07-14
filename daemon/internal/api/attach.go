@@ -52,11 +52,19 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	sub := ctrl.Subscribe()
 	defer sub.Close()
 
-	// Register presence (broadcasts to everyone, incl. this client's own sub).
+	// Prefer verified Tailscale identity; fall back to a self-declared name for
+	// loopback/LAN connections or when whois is unavailable.
+	user := orDefault(r.URL.Query().Get("user"), "anon")
+	verified := false
+	if login, display, ok := s.identity.Resolve(r.RemoteAddr); ok {
+		user = orDefault(display, login)
+		verified = true
+	}
 	connID := s.presence.Join(wsID, ClientInfo{
-		User:     orDefault(r.URL.Query().Get("user"), "anon"),
+		User:     user,
 		Device:   r.URL.Query().Get("device"),
 		ReadOnly: readonly,
+		Verified: verified,
 	})
 	defer s.presence.Leave(wsID, connID)
 

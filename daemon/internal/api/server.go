@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/web"
 )
 
@@ -16,6 +17,7 @@ import (
 type Server struct {
 	mgr      *manager.Manager
 	presence *presenceHub
+	identity *tailnet.Resolver
 	upgrader websocket.Upgrader
 }
 
@@ -23,8 +25,9 @@ func NewServer(mgr *manager.Manager) *Server {
 	return &Server{
 		mgr:      mgr,
 		presence: newPresenceHub(mgr),
+		identity: tailnet.NewResolver(),
 		// Same-origin default; the web lens is served from this daemon, and
-		// tailnet identity (Phase 3) gates access. Loosened checks come with auth.
+		// tailnet identity gates access. Loosened checks come with auth.
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
 }
