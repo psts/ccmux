@@ -125,6 +125,52 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertNil(DaemonEvent.decode(text: "not json"))
     }
 
+    // MARK: - Firehose frame codec (/v1/events, server → client)
+
+    func testFirehoseHelloDecodesEntries() {
+        let text = """
+        {"t":"hello","attention":[
+          {"workspace":"ws-1","pane":"p1","state":"needs_input"},
+          {"workspace":"ws-2","pane":"p2","state":"idle"}]}
+        """
+        guard case .hello(let entries)? = DaemonFirehoseEvent.decode(text: text) else {
+            return XCTFail("expected hello")
+        }
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries[0].workspace, "ws-1")
+        XCTAssertEqual(entries[0].pane, "p1")
+        XCTAssertEqual(entries[0].state, .needsInput)
+        XCTAssertEqual(entries[1].state, .idle)
+    }
+
+    func testFirehoseHelloWithNoAttentionDecodesEmpty() {
+        guard case .hello(let entries)? = DaemonFirehoseEvent.decode(text: #"{"t":"hello"}"#) else {
+            return XCTFail("expected hello")
+        }
+        XCTAssertTrue(entries.isEmpty)
+    }
+
+    func testFirehoseAttentionCarriesWorkspace() {
+        let text = #"{"t":"attention","workspace":"ws-9","pane":"p3","state":"needs_input"}"#
+        guard case .attention(let workspace, let pane, let state)? = DaemonFirehoseEvent.decode(text: text) else {
+            return XCTFail("expected attention")
+        }
+        XCTAssertEqual(workspace, "ws-9")
+        XCTAssertEqual(pane, "p3")
+        XCTAssertEqual(state, .needsInput)
+    }
+
+    func testFirehoseUnknownFrameIsCaptured() {
+        guard case .unknown(let t)? = DaemonFirehoseEvent.decode(text: #"{"t":"workspace-added","workspace":"w"}"#) else {
+            return XCTFail("expected unknown")
+        }
+        XCTAssertEqual(t, "workspace-added")
+    }
+
+    func testFirehoseMalformedJSONDecodesToNil() {
+        XCTAssertNil(DaemonFirehoseEvent.decode(text: "}{"))
+    }
+
     // MARK: - Attach command codec (client → server)
 
     func testInputCommandEncodesBase64() throws {

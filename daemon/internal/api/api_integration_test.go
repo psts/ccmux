@@ -182,9 +182,108 @@ func TestAPI_HookAttentionReachesLens(t *testing.T) {
 	t.Fatal("did not receive attention frame for pane0")
 }
 
+// TestAPI_EventsFirehose proves the /v1/events firehose: a lens that never
+// attaches to the workspace still receives its attention change, tagged with the
+// workspace id so a sidebar can flash the right row. The opening hello also seeds
+// the pane's current (idle) attention.
+func TestAPI_EventsFirehose(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-events-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := manager.New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	hookSock := "/tmp/ccmux-events.sock"
+	_ = os.Remove(hookSock)
+	hl, err := hooks.Listen(hookSock, mgr)
+	if err != nil {
+		t.Fatalf("hooks listen: %v", err)
+	}
+	defer hl.Close()
+
+	hs := httptest.NewServer(NewServer(mgr).Handler())
+	defer hs.Close()
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	// Connect to the firehose only — deliberately NOT /v1/attach.
+	evURL := "ws" + strings.TrimPrefix(hs.URL, "http") + "/v1/events"
+	conn, _, err := websocket.DefaultDialer.Dial(evURL, nil)
+	if err != nil {
+		t.Fatalf("events dial: %v", err)
+	}
+	defer conn.Close()
+
+	// hello must carry the pane's current attention for the live workspace.
+	hello := readFirehose(t, conn)
+	if hello.T != "hello" {
+		t.Fatalf("first frame = %q, want hello", hello.T)
+	}
+	seen := false
+	for _, e := range hello.Attention {
+		if e.Workspace == ws.ID && e.Pane == pane0 {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("hello did not seed pane0 attention: %+v", hello.Attention)
+	}
+
+	// Fire a permission_request hook; expect a workspace-tagged attention frame.
+	hookConn, err := net.Dial("unix", hookSock)
+	if err != nil {
+		t.Fatalf("hook dial: %v", err)
+	}
+	_, _ = hookConn.Write([]byte(`{"type":"permission_request","cwd":"/tmp","pane_id":"` + pane0 + `"}`))
+	hookConn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for i := 0; i < 200; i++ {
+		m := readFirehose(t, conn)
+		if m.T == "attention" && m.Pane == pane0 {
+			if m.Workspace != ws.ID {
+				t.Fatalf("attention workspace = %q, want %q", m.Workspace, ws.ID)
+			}
+			if string(m.State) != "needs_input" {
+				t.Fatalf("attention state = %q, want needs_input", m.State)
+			}
+			return // success
+		}
+	}
+	t.Fatal("did not receive firehose attention frame for pane0")
+}
+
 func readMsg(t *testing.T, conn *websocket.Conn) wsMsg {
 	t.Helper()
 	var m wsMsg
+	if err := conn.ReadJSON(&m); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	return m
+}
+
+func readFirehose(t *testing.T, conn *websocket.Conn) firehoseMsg {
+	t.Helper()
+	var m firehoseMsg
 	if err := conn.ReadJSON(&m); err != nil {
 		t.Fatalf("read: %v", err)
 	}

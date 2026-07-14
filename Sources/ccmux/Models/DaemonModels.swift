@@ -202,6 +202,63 @@ enum DaemonEvent {
     }
 }
 
+// MARK: - Firehose (/v1/events) frames
+
+/// The JSON envelope for global-firehose frames (api.firehoseMsg). Unlike the
+/// attach envelope it carries no pane bytes — only workspace-scoped attention, so
+/// every frame names the workspace a sidebar row should flash.
+struct DaemonFirehoseFrame: Decodable {
+    let t: String
+    let workspace: String?
+    let pane: String?
+    let state: DaemonAttention?
+    let attention: [DaemonAttentionEntry]?  // hello only
+}
+
+/// One pane's current attention in the firehose `hello` snapshot.
+struct DaemonAttentionEntry: Decodable {
+    let workspace: String
+    let pane: String
+    let state: DaemonAttention
+
+    private enum CodingKeys: String, CodingKey { case workspace, pane, state }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        workspace = try c.decodeIfPresent(String.self, forKey: .workspace) ?? ""
+        pane = try c.decodeIfPresent(String.self, forKey: .pane) ?? ""
+        state = try c.decodeIfPresent(DaemonAttention.self, forKey: .state) ?? .unknown
+    }
+}
+
+/// Typed, decoded firehose event. `hello` seeds current attention for every live
+/// pane; `attention` is a live change. Both name the daemon workspace id so the
+/// lens can flash the right sidebar row without being attached to it.
+enum DaemonFirehoseEvent {
+    case hello(entries: [DaemonAttentionEntry])
+    case attention(workspace: String, pane: String, state: DaemonAttention)
+    case unknown(String)
+
+    init(frame: DaemonFirehoseFrame) {
+        switch frame.t {
+        case "hello":
+            self = .hello(entries: frame.attention ?? [])
+        case "attention":
+            self = .attention(workspace: frame.workspace ?? "", pane: frame.pane ?? "", state: frame.state ?? .unknown)
+        default:
+            self = .unknown(frame.t)
+        }
+    }
+
+    /// Decode a raw text frame straight to a typed event; nil if the JSON is malformed.
+    static func decode(text: String) -> DaemonFirehoseEvent? {
+        guard let data = text.data(using: .utf8),
+              let frame = try? JSONDecoder().decode(DaemonFirehoseFrame.self, from: data)
+        else { return nil }
+        return DaemonFirehoseEvent(frame: frame)
+    }
+}
+
 /// Client→server attach command. Serializes to the same `wsMsg` envelope.
 enum DaemonCommand {
     case input(pane: String, bytes: ArraySlice<UInt8>)

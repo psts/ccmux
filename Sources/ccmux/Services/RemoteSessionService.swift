@@ -31,6 +31,13 @@ final class RemoteSessionService: ObservableObject {
     private var paneSignatures: [UUID: [String]] = [:]
     private var daemonIds: [UUID: String] = [:]
 
+    /// One global firehose (`/v1/events`) drives the sidebar attention flash for
+    /// every hosted workspace, attached or not — the single hosted-attention source.
+    private let events = DaemonEventsClient()
+    /// Latest firehose attention per daemon workspace id, retained so a workspace
+    /// that materializes (or rebuilds) after its attention arrived still flashes.
+    private var latestAttention: [String: DaemonAttention] = [:]
+
     /// True while the user is watching this hosted workspace (suppresses the flash).
     var isWatched: (UUID) -> Bool = { _ in false }
     /// Fired for a needs-input/done transition on an unwatched hosted workspace.
@@ -43,19 +50,58 @@ final class RemoteSessionService: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Begin polling the daemon for hosted workspaces (also fires once immediately).
+    /// Begin polling the daemon for hosted workspaces (also fires once immediately)
+    /// and open the global attention firehose.
     func start(pollInterval: TimeInterval = 4) {
         Task { await refresh() }
         let timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
         }
         pollTimer = timer
+
+        events.onEvent = { [weak self] in self?.handleFirehose($0) }
+        events.connect()
     }
 
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        events.disconnect()
         for id in Array(attachments.keys) { removeWorkspace(id) }
+    }
+
+    // MARK: - Attention firehose
+
+    /// Route a decoded firehose event onto the sidebar flash. `hello` seeds current
+    /// state silently (no notification burst on connect); a live `attention` change
+    /// both flashes and notifies.
+    private func handleFirehose(_ event: DaemonFirehoseEvent) {
+        switch event {
+        case .hello(let entries):
+            for e in entries { applyAttention(daemonWsId: e.workspace, state: e.state, notify: false) }
+        case .attention(let workspace, _, let state):
+            applyAttention(daemonWsId: workspace, state: state, notify: true)
+        case .unknown:
+            break
+        }
+    }
+
+    /// Drive one hosted workspace's flash from a firehose attention change — the
+    /// single hosted-attention source, working whether or not the workspace has a
+    /// live attach. Mirrors the local hook path (`ClaudeHookListener.handle`): a
+    /// `.none` mapping clears; an actionable state either clears (already watching)
+    /// or flashes, and — for a live change — posts a notification.
+    private func applyAttention(daemonWsId: String, state: DaemonAttention, notify: Bool) {
+        latestAttention[daemonWsId] = state
+        let appId = RemoteWorkspaceBuilder.workspaceUUID(daemonWsId)
+        guard let monitor = attentionMonitors[appId] else { return }
+        let appState = state.appAttentionState
+        guard appState != .none else { monitor.clear(); return }
+        if isWatched(appId) { monitor.clear(); return }
+        monitor.set(appState)
+        if notify, let ws = workspaces.first(where: { $0.id == appId }) {
+            onAttention?(ws, appState)
+        }
     }
 
     // MARK: - View access
@@ -153,6 +199,10 @@ final class RemoteSessionService: ObservableObject {
         reachable = true
         lastError = nil
         let live = list.filter { $0.isLive }
+        // Prune retained attention for workspaces the daemon no longer lists live,
+        // while keeping it across a mere pane-signature rebuild (still live).
+        let liveDaemonIds = Set(live.map { $0.id })
+        latestAttention = latestAttention.filter { liveDaemonIds.contains($0.key) }
         let liveIds = Set(live.map { RemoteWorkspaceBuilder.workspaceUUID($0.id) })
         for appId in Array(attachments.keys) where !liveIds.contains(appId) {
             removeWorkspace(appId)
@@ -177,6 +227,12 @@ final class RemoteSessionService: ObservableObject {
         else { return nil }
         let monitor = ClaudeAttentionMonitor()
         attentionMonitors[appId] = monitor
+        // Re-seed the flash from the firehose's retained state, so a workspace that
+        // materializes (or rebuilds on a pane change) after its attention arrived
+        // still shows it. Visual only — no notification when merely (re)building.
+        if let retained = latestAttention[dw.id], retained.appAttentionState != .none, !isWatched(appId) {
+            monitor.set(retained.appAttentionState)
+        }
         let controller = SplitTreeController(workingDirectory: dw.repoPath)
         controller.tree = tree
         controller.focusedPaneId = focused
@@ -185,14 +241,8 @@ final class RemoteSessionService: ObservableObject {
         paneSignatures[appId] = RemoteWorkspaceBuilder.paneSignature(dw.panes)
 
         let attachment = WorkspaceAttachment(
-            workspaceId: appId, daemonId: dw.id, repoPath: dw.repoPath,
-            panes: dw.panes, attentionMonitor: monitor)
-        attachment.isWatched = { [weak self] in self?.isWatched(appId) ?? false }
+            workspaceId: appId, daemonId: dw.id, repoPath: dw.repoPath, panes: dw.panes)
         attachment.onConnectionState = { [weak self] state in self?.connectionStates[appId] = state }
-        attachment.onAttention = { [weak self] appState in
-            guard let self, let ws = self.workspaces.first(where: { $0.id == appId }) else { return }
-            self.onAttention?(ws, appState)
-        }
         attachment.onFileLink = { [weak self] rel in self?.onFileLink?(appId, rel) }
         attachments[appId] = attachment
         connectionStates[appId] = .connecting

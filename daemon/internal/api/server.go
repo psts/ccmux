@@ -44,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
 	mux.HandleFunc("GET /v1/attach", s.attach)
+	mux.HandleFunc("GET /v1/events", s.events)
 	// The web lens (served from the embedded bundle) catches everything not
 	// matched by a more specific /v1 pattern.
 	mux.Handle("GET /", http.FileServerFS(web.Files))

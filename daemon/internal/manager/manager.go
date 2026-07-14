@@ -32,15 +32,23 @@ type Manager struct {
 	server *tmux.Server
 	store  store.Store
 	ctx    context.Context
+	events *firehose
 
-	mu    sync.RWMutex
-	byID  map[string]*entry
+	mu   sync.RWMutex
+	byID map[string]*entry
 }
 
 // New builds a Manager. ctx bounds the lifetime of spawned control connections.
 func New(ctx context.Context, server *tmux.Server, st store.Store) *Manager {
-	return &Manager{server: server, store: st, ctx: ctx, byID: map[string]*entry{}}
+	return &Manager{server: server, store: st, ctx: ctx, events: newFirehose(), byID: map[string]*entry{}}
 }
+
+// SubscribeEvents registers a global firehose consumer (the /v1/events endpoint).
+// The returned channel is closed by UnsubscribeEvents.
+func (m *Manager) SubscribeEvents() (int, <-chan Event) { return m.events.subscribe() }
+
+// UnsubscribeEvents drops a firehose consumer.
+func (m *Manager) UnsubscribeEvents(id int) { m.events.unsubscribe(id) }
 
 // Start brings up the tmux server and reconciles the registry against live
 // sessions: existing managed sessions are adopted (control connection reopened),
@@ -292,12 +300,16 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
 	}
 	p.Attention = att
 	ctrl := e.ctrl
+	wsID := e.ws.ID
 	saved := *p
 	m.mu.Unlock()
 
 	if ctrl != nil {
 		ctrl.Broadcast(session.Event{Kind: "attention", PaneID: paneID, Attention: att})
 	}
+	// Fan the same change out globally so sidebar lenses flash without holding a
+	// per-workspace attach WebSocket.
+	m.events.publish(Event{Kind: "attention", WorkspaceID: wsID, PaneID: paneID, Attention: att})
 	_ = m.store.SavePane(&saved)
 }
 

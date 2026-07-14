@@ -1,8 +1,12 @@
 import Foundation
 
 /// Runtime state for one attached hosted workspace: its single WS attach connection
-/// (multiplexing all panes), one `RemoteTermController` per pane, and the routing
-/// that feeds daemon frames into them + drives the sidebar attention flash.
+/// (multiplexing all panes) and one `RemoteTermController` per pane, feeding daemon
+/// output/snapshot frames into them.
+///
+/// Attention is *not* handled here — it rides the global `/v1/events` firehose
+/// (`DaemonEventsClient` → `RemoteSessionService`), so a sidebar row flashes whether
+/// or not its workspace is attached. This connection carries pane bytes only.
 ///
 /// Controllers are pre-created for every known pane *before* connecting, so each pane
 /// receives the daemon's initial `capture-pane` snapshot even while it's off-screen —
@@ -13,25 +17,19 @@ final class WorkspaceAttachment {
     let repoPath: String
 
     private let attach: DaemonAttachClient
-    private let attention: ClaudeAttentionMonitor
     private var controllers: [String: RemoteTermController] = [:]  // daemon paneId → controller
 
     /// Called on the main thread when the connection state changes (drives the overlay).
     var onConnectionState: ((DaemonConnectionState) -> Void)?
-    /// True while the user is actively looking at this workspace — suppresses the flash.
-    var isWatched: () -> Bool = { false }
-    /// Post a system notification for a needs-input/done transition on an unwatched pane.
-    var onAttention: ((AttentionState) -> Void)?
     /// Route a clicked file link (absolute local path) to the app.
     var onFileLink: ((String) -> Void)?
 
     private(set) var connectionState: DaemonConnectionState = .connecting
 
-    init(workspaceId: UUID, daemonId: String, repoPath: String, panes: [DaemonPane], attentionMonitor: ClaudeAttentionMonitor) {
+    init(workspaceId: UUID, daemonId: String, repoPath: String, panes: [DaemonPane]) {
         self.workspaceId = workspaceId
         self.daemonId = daemonId
         self.repoPath = repoPath
-        self.attention = attentionMonitor
         self.attach = DaemonAttachClient(workspaceId: daemonId)
         for pane in panes { _ = makeController(paneId: pane.id, workingDirectory: pane.cwd) }
         attach.onEvent = { [weak self] in self?.handle($0) }
@@ -69,23 +67,10 @@ final class WorkspaceAttachment {
             controller(forPane: pane, workingDirectory: repoPath).seedSnapshot(bytes)
         case .output(let pane, let bytes):
             controller(forPane: pane, workingDirectory: repoPath).feedOutput(bytes)
-        case .attention(_, let state):
-            applyAttention(state)
-        case .hello, .presence, .paneAdded, .paneClosed, .unknown:
+        // Attention now rides the global firehose; the attach still carries the
+        // per-workspace `attention` frame but it is authoritative on /v1/events.
+        case .attention, .hello, .presence, .paneAdded, .paneClosed, .unknown:
             break
         }
-    }
-
-    /// Mirror `ClaudeHookListener.handle`: a `.none` mapping clears; an actionable
-    /// state either clears (already watching) or flashes + notifies.
-    private func applyAttention(_ state: DaemonAttention) {
-        let appState = state.appAttentionState
-        guard appState != .none else { attention.clear(); return }
-        if isWatched() {
-            attention.clear()
-            return
-        }
-        attention.set(appState)
-        onAttention?(appState)
     }
 }
