@@ -1,0 +1,8 @@
+# built binaries
+/ccmuxd
+/spike-*
+cmd/**/debug
+# local registry
+*.db
+*.db-wal
+*.db-shm
