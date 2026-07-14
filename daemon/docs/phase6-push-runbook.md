@@ -19,19 +19,18 @@ Host: `mbp.tailb9053d.ts.net` · tailnet `sandelin@gmail.com` · daemon `:7900`.
   `/manifest.webmanifest` (`application/manifest+json`), `/sw.js`, icons, and a
   secure-context service-worker registration all return 200.
 
-### ⚠️ Caddy coexistence
+### ⚠️ Caddy coexistence (temporary — goes away with tsnet)
 
 Caddy owns `:443` (wildcard) for your `*.dev.chartlabs.io` dev domains and has no
 route for the ts.net name, so **while Caddy runs it shadows `tailscale serve` and
-the ts.net origin breaks**. You stopped Caddy for this test, which is why it works
-now. Pick one before relying on it long-term:
+the ts.net origin breaks**. This collision only exists in the current interim
+setup (`tailscale serve` fronting a loopback daemon on the shared `mbp` node).
+The **tsnet target removes it entirely**: the daemon becomes its own tailnet node
+(`ccmuxd.<tailnet>.ts.net`) that terminates TLS itself, so it never touches the
+`mbp` host's `:443` and Caddy is unaffected.
 
-- **Keep them separate** — run Caddy bound to specific interface IPs (not `:443`
-  wildcard) so the tailnet IP is free for serve. Cleanest; needs a Caddy config edit.
-- **Front through Caddy** — add a Caddy site for `mbp.tailb9053d.ts.net` →
-  `127.0.0.1:7900` using `tls { get_certificate tailscale }` (your Caddy build has
-  the module) and drop the serve config. Then Caddy handles both.
-- **Just keep Caddy stopped** during phone use (fine for a one-off test).
+**For now, just keep Caddy stopped while you run the phone test** and restart it
+when you need the dev domains. No config change needed.
 
 Reset serve if you ever want it gone: `tailscale serve --https=443 off`.
 
