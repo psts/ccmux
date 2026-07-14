@@ -23,10 +23,14 @@ enum RemoteWorkspaceBuilder {
         return config
     }
 
-    /// Default layout: panes chained left-to-right (real layout blobs arrive with
-    /// Phase 7 layout sync). Returns nil when the workspace has no panes.
-    static func buildTree(panes: [DaemonPane], repoPath: String) -> (tree: SplitTree<PaneTabs>, focused: UUID)? {
+    /// Build the workspace's SplitTree. A stored `layoutBlob` (Phase 7 layout sync)
+    /// restores the exact pane arrangement; otherwise panes chain left-to-right.
+    /// Returns nil when the workspace has no panes.
+    static func buildTree(panes: [DaemonPane], repoPath: String, layoutBlob: String? = nil) -> (tree: SplitTree<PaneTabs>, focused: UUID)? {
         guard let first = panes.first else { return nil }
+        if let blob = layoutBlob, let restored = restoredTree(blob: blob, panes: panes) {
+            return restored
+        }
         let firstTabs = PaneTabs(single: .terminal(terminalConfig(for: first, repoPath: repoPath)))
         var tree: SplitTree<PaneTabs> = .leaf(id: firstTabs.id, content: firstTabs)
         // `splitLeaf` preserves the *target* leaf's id but mints a fresh id for the new
@@ -37,6 +41,18 @@ enum RemoteWorkspaceBuilder {
             tree = tree.splitLeaf(targetId: firstTabs.id, direction: .horizontal, newContent: tabs)
         }
         return (tree, firstTabs.id)
+    }
+
+    /// Decode a layout blob and accept it only when its hosted pane set *exactly*
+    /// matches the workspace's live panes — a stale blob (a pane was added/closed on
+    /// the daemon) is rejected so we never render a broken arrangement; the caller
+    /// falls back to the default chain.
+    static func restoredTree(blob: String, panes: [DaemonPane]) -> (tree: SplitTree<PaneTabs>, focused: UUID)? {
+        guard let tree = HostedLayoutCodec.decode(blob) else { return nil }
+        let live = Set(panes.map { $0.id })
+        guard HostedLayoutCodec.hostedPaneIds(tree) == live else { return nil }
+        guard let firstLeaf = tree.allLeaves.first else { return nil }
+        return (tree, firstLeaf.id)
     }
 
     /// Ordered daemon pane-id set — a change means the layout must be rebuilt;

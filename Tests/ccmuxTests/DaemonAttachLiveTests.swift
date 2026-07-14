@@ -116,6 +116,50 @@ final class DaemonAttachLiveTests: XCTestCase {
         client.disconnect()
     }
 
+    /// Live proof of the native layout WRITER: a real SplitTreeController edit rides
+    /// the observer → debounce → PUT path all the way to the daemon's stored blob.
+    /// Ensures the workspace has a split, nudges its ratio, and waits for the
+    /// daemon's version + blob to follow.
+    func testLayoutEditReachesDaemon() throws {
+        let wsId = try liveWorkspace()
+        let svc = RemoteSessionService.shared
+        let appId = RemoteWorkspaceBuilder.workspaceUUID(wsId)
+        let done = expectation(description: "layout edit reaches daemon")
+
+        Task { @MainActor in
+            await svc.refresh()
+            if (svc.splitController(for: appId)?.tree.allLeaves.count ?? 0) < 2 {
+                _ = await svc.spawnPane(workspace: appId, cwd: nil, startupCommand: nil)
+                await svc.refresh()
+            }
+            guard let controller = svc.splitController(for: appId), controller.tree.allLeaves.count >= 2 else {
+                XCTFail("could not obtain a multi-pane hosted workspace")
+                done.fulfill(); return
+            }
+            let before = await Self.daemonLayout(wsId).version
+            controller.tree = controller.tree.updateRatio(splitId: controller.tree.id, newRatio: 0.37)
+            let expected = HostedLayoutCodec.encode(controller.tree)
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                let cur = await Self.daemonLayout(wsId)
+                if cur.version > before && cur.blob == expected { done.fulfill(); return }
+            }
+            XCTFail("daemon never stored the edited layout (before v\(before))")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 25)
+    }
+
+    /// The daemon's current stored layout (version, blob) for a workspace.
+    private static func daemonLayout(_ wsId: String) async -> (version: Int, blob: String) {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let list = try? JSONDecoder().decode([DaemonWorkspace].self, from: data),
+              let ws = list.first(where: { $0.id == wsId })
+        else { return (0, "") }
+        return (ws.layoutVersion ?? 0, ws.layoutJson ?? "")
+    }
+
     /// Minimal blocking write to a Unix-domain stream socket (the daemon's hooks
     /// wire) — no process spawn, just POSIX connect+write.
     private static func writeUnixSocket(path: String, payload: String) -> Bool {

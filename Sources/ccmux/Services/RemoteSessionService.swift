@@ -38,6 +38,12 @@ final class RemoteSessionService: ObservableObject {
     /// that materializes (or rebuilds) after its attention arrived still flashes.
     private var latestAttention: [String: DaemonAttention] = [:]
 
+    // Layout-blob sync (Phase 7): each hosted workspace's split arrangement is
+    // versioned by the daemon; we restore it on build and PUT real edits back.
+    private var layoutVersions: [UUID: Int] = [:]
+    private var lastLayoutBlob: [UUID: String] = [:]      // last blob we've reconciled with the daemon
+    private var layoutObservers: [UUID: AnyCancellable] = [:]
+
     /// True while the user is watching this hosted workspace (suppresses the flash).
     var isWatched: (UUID) -> Bool = { _ in false }
     /// Fired for a needs-input/done transition on an unwatched hosted workspace.
@@ -193,6 +199,62 @@ final class RemoteSessionService: ObservableObject {
         await refresh()
     }
 
+    // MARK: - Layout sync
+
+    /// Seed a workspace's layout version/blob and watch the controller for edits.
+    /// The initial (built/restored) tree is the baseline — only later, genuine
+    /// changes (split/move/close/resize) are pushed, coalesced to avoid churn.
+    private func observeLayout(appId: UUID, controller: SplitTreeController, tree: SplitTree<PaneTabs>, version: Int) {
+        layoutVersions[appId] = version
+        lastLayoutBlob[appId] = HostedLayoutCodec.encode(tree)
+        layoutObservers[appId] = controller.$tree
+            .dropFirst() // skip the initial value; only real edits should push
+            .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
+            .sink { [weak self] newTree in self?.onLayoutChanged(appId, newTree) }
+    }
+
+    private func onLayoutChanged(_ appId: UUID, _ tree: SplitTree<PaneTabs>) {
+        let blob = HostedLayoutCodec.encode(tree)
+        guard blob != lastLayoutBlob[appId] else { return } // same arrangement, no PUT
+        Task { await self.pushLayout(appId: appId, blob: blob) }
+    }
+
+    /// PUT a changed layout with the version we last saw. On success we advance our
+    /// version+blob; on 409 another lens won the race, so we adopt its version to
+    /// rebase the next edit (live re-render of a remote arrangement is a follow-up).
+    private func pushLayout(appId: UUID, blob: String) async {
+        guard let daemonId = daemonIds[appId] else { return }
+        let base = layoutVersions[appId] ?? 0
+        let (code, version) = await putLayoutRequest(daemonId: daemonId, blob: blob, baseVersion: base)
+        await MainActor.run {
+            switch code {
+            case 200:
+                self.lastLayoutBlob[appId] = blob
+                if let version { self.layoutVersions[appId] = version }
+            case 409:
+                if let version { self.layoutVersions[appId] = version }
+            default:
+                break
+            }
+        }
+    }
+
+    private func putLayoutRequest(daemonId: String, blob: String, baseVersion: Int) async -> (Int, Int?) {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/layout") else { return (0, nil) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["blob": blob, "baseVersion": baseVersion])
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return (code, obj?["version"] as? Int)
+        } catch {
+            return (0, nil)
+        }
+    }
+
     // MARK: - Reconciliation (main thread)
 
     private func reconcile(_ list: [DaemonWorkspace]) {
@@ -223,7 +285,7 @@ final class RemoteSessionService: ObservableObject {
     }
 
     private func addWorkspace(_ dw: DaemonWorkspace, appId: UUID) -> Workspace? {
-        guard let (tree, focused) = RemoteWorkspaceBuilder.buildTree(panes: dw.panes, repoPath: dw.repoPath)
+        guard let (tree, focused) = RemoteWorkspaceBuilder.buildTree(panes: dw.panes, repoPath: dw.repoPath, layoutBlob: dw.layoutJson)
         else { return nil }
         let monitor = ClaudeAttentionMonitor()
         attentionMonitors[appId] = monitor
@@ -239,6 +301,7 @@ final class RemoteSessionService: ObservableObject {
         controllers[appId] = controller
         daemonIds[appId] = dw.id
         paneSignatures[appId] = RemoteWorkspaceBuilder.paneSignature(dw.panes)
+        observeLayout(appId: appId, controller: controller, tree: tree, version: dw.layoutVersion ?? 0)
 
         let attachment = WorkspaceAttachment(
             workspaceId: appId, daemonId: dw.id, repoPath: dw.repoPath, panes: dw.panes)
@@ -259,6 +322,10 @@ final class RemoteSessionService: ObservableObject {
         controllers.removeValue(forKey: appId)
         attentionMonitors[appId]?.stop()
         attentionMonitors.removeValue(forKey: appId)
+        layoutObservers[appId]?.cancel()
+        layoutObservers.removeValue(forKey: appId)
+        layoutVersions.removeValue(forKey: appId)
+        lastLayoutBlob.removeValue(forKey: appId)
         paneSignatures.removeValue(forKey: appId)
         daemonIds.removeValue(forKey: appId)
         connectionStates.removeValue(forKey: appId)
