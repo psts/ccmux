@@ -19,6 +19,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/push"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
@@ -28,6 +29,8 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:7890", "HTTP listen address")
 	dbPath := flag.String("db", defaultDBPath(), "registry SQLite path")
 	hooksSock := flag.String("hooks-socket", "/tmp/ccmux-hooks.sock", "Claude Code hooks Unix socket")
+	vapidPath := flag.String("vapid", defaultVAPIDPath(), "VAPID keypair JSON path (web push)")
+	pushSubject := flag.String("push-subject", "mailto:ccmux@ccmux.local", "VAPID subject (mailto:/https: identifying this server)")
 	flag.Parse()
 
 	cfgPath := filepath.Join(os.TempDir(), "ccmux-tmux.conf")
@@ -62,7 +65,19 @@ func main() {
 		log.Printf("hooks listening on %s", *hooksSock)
 	}
 
-	httpSrv := &http.Server{Addr: *addr, Handler: api.NewServer(mgr).Handler()}
+	apiSrv := api.NewServer(mgr)
+
+	// Web push: generate + persist a VAPID keypair on first run, then wire the
+	// push endpoints + attention notifier. Non-fatal — the daemon still serves
+	// terminals if push can't initialize.
+	if keys, err := push.LoadOrCreateKeys(*vapidPath); err != nil {
+		log.Printf("web push disabled: %v", err)
+	} else {
+		apiSrv.EnablePush(ctx, push.NewSender(keys, *pushSubject), st)
+		log.Printf("web push enabled (vapid %s)", *vapidPath)
+	}
+
+	httpSrv := &http.Server{Addr: *addr, Handler: apiSrv.Handler()}
 	go func() {
 		<-ctx.Done()
 		shutCtx, c := context.WithTimeout(context.Background(), 3e9)
@@ -93,10 +108,15 @@ func loopbackURL(addr string) string {
 
 // defaultDBPath returns ~/Library/Application Support/ccmuxd/ccmuxd.db (or the
 // XDG/OS equivalent on the future Linux host).
-func defaultDBPath() string {
+func defaultDBPath() string { return filepath.Join(configDir(), "ccmuxd.db") }
+
+// defaultVAPIDPath returns the VAPID keypair path beside the registry.
+func defaultVAPIDPath() string { return filepath.Join(configDir(), "vapid.json") }
+
+func configDir() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "ccmuxd", "ccmuxd.db")
+	return filepath.Join(dir, "ccmuxd")
 }

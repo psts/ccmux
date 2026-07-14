@@ -40,6 +40,19 @@ type Workspace struct {
 	Panes         []*Pane  `json:"panes"`
 }
 
+// PushSubscription is a stored notification target, keyed by tailnet login and
+// kept transport-generic ({transport, address, prefs}) so web push today and
+// APNs/Telegram later share one table. For transport "webpush", Address is the
+// browser's PushSubscription.toJSON() ({endpoint, keys:{p256dh, auth}}).
+type PushSubscription struct {
+	ID        string `json:"id"`        // stable: sha256(endpoint), so re-subscribe replaces
+	Login     string `json:"login"`     // tailnet login (email) or self-declared user
+	Transport string `json:"transport"` // "webpush" | "apns" | "telegram"
+	Address   string `json:"address"`   // transport-specific JSON (see above)
+	Prefs     string `json:"prefs,omitempty"`
+	CreatedAt int64  `json:"createdAt"`
+}
+
 // Pane is one terminal (a tmux window with a single pane).
 type Pane struct {
 	ID             string    `json:"id"` // stable uuid → tmux @ccmux_pane_id

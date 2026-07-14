@@ -93,6 +93,35 @@ func (h *presenceHub) Driver(wsID string) (DriverIdentity, bool) {
 	return DriverIdentity{User: c.info.User, Email: c.email, Device: c.info.Device, Verified: c.info.Verified}, true
 }
 
+// FocusedOwners returns the set of identities currently attached to wsID with a
+// focused pane — the devs actively watching this workspace, whose push
+// notifications the notifier suppresses. Both the verified email and the
+// self-declared user are included per client so a subscription keyed by either
+// (email when the subscriber was on the tailnet, user when self-declared) matches.
+// A client with no focused pane (e.g. a backgrounded PWA tab that cleared focus)
+// is deliberately excluded, so it still gets pushed.
+func (h *presenceHub) FocusedOwners(wsID string) map[string]bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	wp := h.byWS[wsID]
+	if wp == nil {
+		return nil
+	}
+	owners := map[string]bool{}
+	for _, c := range wp.clients {
+		if c.info.Focused == "" {
+			continue
+		}
+		if c.email != "" {
+			owners[c.email] = true
+		}
+		if c.info.User != "" {
+			owners[c.info.User] = true
+		}
+	}
+	return owners
+}
+
 // Leave removes a client.
 func (h *presenceHub) Leave(wsID, connID string) {
 	h.mu.Lock()

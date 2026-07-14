@@ -20,6 +20,12 @@ type Store interface {
 	DeletePane(id string) error
 	SetWorkspaceStatus(id string, status model.Status) error
 	Load() ([]*model.Workspace, error)
+
+	// Push notification subscriptions (transport-generic, keyed by login).
+	SavePushSubscription(*model.PushSubscription) error
+	ListPushSubscriptions() ([]*model.PushSubscription, error)
+	DeletePushSubscription(id string) error
+
 	io.Closer
 }
 
@@ -38,7 +44,12 @@ CREATE TABLE IF NOT EXISTS panes (
   startup_command TEXT, created_by TEXT, created_at INTEGER,
   status TEXT, attention TEXT
 );
-CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);`
+CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id TEXT PRIMARY KEY, login TEXT, transport TEXT,
+  address TEXT, prefs TEXT, created_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS push_by_login ON push_subscriptions(login);`
 
 // Open opens (creating if needed) the registry at path.
 func Open(path string) (*SQLite, error) {
@@ -84,6 +95,38 @@ func (s *SQLite) DeleteWorkspace(id string) error {
 
 func (s *SQLite) DeletePane(id string) error {
 	_, err := s.db.Exec(`DELETE FROM panes WHERE id=?`, id)
+	return err
+}
+
+func (s *SQLite) SavePushSubscription(sub *model.PushSubscription) error {
+	_, err := s.db.Exec(`
+INSERT INTO push_subscriptions (id,login,transport,address,prefs,created_at)
+VALUES (?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET login=excluded.login, transport=excluded.transport,
+  address=excluded.address, prefs=excluded.prefs`,
+		sub.ID, sub.Login, sub.Transport, sub.Address, sub.Prefs, sub.CreatedAt)
+	return err
+}
+
+func (s *SQLite) ListPushSubscriptions() ([]*model.PushSubscription, error) {
+	rows, err := s.db.Query(`SELECT id,login,transport,address,prefs,created_at FROM push_subscriptions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.PushSubscription
+	for rows.Next() {
+		sub := &model.PushSubscription{}
+		if err := rows.Scan(&sub.ID, &sub.Login, &sub.Transport, &sub.Address, &sub.Prefs, &sub.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) DeletePushSubscription(id string) error {
+	_, err := s.db.Exec(`DELETE FROM push_subscriptions WHERE id=?`, id)
 	return err
 }
 

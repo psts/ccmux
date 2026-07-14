@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,6 +21,11 @@ type Server struct {
 	presence *presenceHub
 	identity *tailnet.Resolver
 	upgrader websocket.Upgrader
+
+	// Push notifications, wired by EnablePush; nil when push is disabled (the
+	// /v1/push/* handlers then answer 503 and no notifier runs).
+	sender    pushSender
+	pushStore pushStore
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -31,6 +37,21 @@ func NewServer(mgr *manager.Manager) *Server {
 		// tailnet identity gates access. Loosened checks come with auth.
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
+}
+
+// EnablePush wires Web Push: it stores the sender + subscription store the
+// /v1/push/* handlers use, and starts a notifier that pushes on attention (with
+// per-dev suppression) for the lifetime of ctx. Idempotent-safe to call once at
+// startup; the notifier's firehose subscription is released when ctx is cancelled.
+func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore) {
+	s.sender = sender
+	s.pushStore = ps
+	n := &notifier{sender: sender, subs: ps, focus: s.presence, names: s.mgr}
+	id, ch := s.mgr.SubscribeEvents()
+	go func() {
+		defer s.mgr.UnsubscribeEvents(id)
+		n.run(ctx, ch)
+	}()
 }
 
 // Handler builds the routed HTTP handler (Go 1.22+ method+wildcard patterns).
@@ -46,6 +67,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
+	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
+	mux.HandleFunc("GET /v1/push/subscriptions", s.listSubscriptions)
+	mux.HandleFunc("POST /v1/push/subscriptions", s.createSubscription)
+	mux.HandleFunc("DELETE /v1/push/subscriptions", s.deleteSubscription)
 	mux.HandleFunc("GET /v1/attach", s.attach)
 	mux.HandleFunc("GET /v1/events", s.events)
 	// The web lens (served from the embedded bundle) catches everything not

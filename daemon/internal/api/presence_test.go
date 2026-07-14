@@ -37,6 +37,41 @@ func TestPresence_DriverTracksLastNonReadonlyTypist(t *testing.T) {
 	}
 }
 
+func TestPresence_FocusedOwnersDrivePushSuppression(t *testing.T) {
+	h := newTestHub()
+	alice := h.Join("ws1", ClientInfo{User: "Alice", Verified: true}, "alice@example.com")
+	h.Join("ws1", ClientInfo{User: "Bob"}, "") // attached but never focuses
+
+	// No one has focused a pane yet → nobody is suppressed.
+	if owners := h.FocusedOwners("ws1"); len(owners) != 0 {
+		t.Fatalf("owners before any focus = %v, want empty", owners)
+	}
+
+	// Alice focuses a pane → she (by both email and display name) is suppressed;
+	// Bob, attached but unfocused (e.g. backgrounded), still gets pushed.
+	h.Focus("ws1", alice, "pane-1")
+	owners := h.FocusedOwners("ws1")
+	if !owners["alice@example.com"] || !owners["Alice"] {
+		t.Errorf("owners = %v, want Alice keyed by email and name", owners)
+	}
+	if owners["Bob"] {
+		t.Error("Bob has no focused pane but was marked focused")
+	}
+
+	// Alice clears focus (tab hidden) → suppression lifts.
+	h.Focus("ws1", alice, "")
+	if owners := h.FocusedOwners("ws1"); len(owners) != 0 {
+		t.Errorf("owners after focus cleared = %v, want empty", owners)
+	}
+}
+
+func TestPresence_FocusedOwnersUnknownWorkspace(t *testing.T) {
+	h := newTestHub()
+	if owners := h.FocusedOwners("nope"); owners != nil {
+		t.Fatalf("unknown workspace owners = %v, want nil", owners)
+	}
+}
+
 func TestPresence_DriverUnknownWorkspace(t *testing.T) {
 	h := newTestHub()
 	if _, ok := h.Driver("nope"); ok {
