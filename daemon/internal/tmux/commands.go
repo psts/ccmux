@@ -50,6 +50,12 @@ func (c *Client) ResizeWindow(window string, cols, rows int) error {
 // cursor down — without the CR each seeded line would start at the previous
 // line's column (a staircase). Bytes are otherwise raw (command replies are not
 // octal-escaped).
+//
+// For a visible-screen capture (historyLines == 0) it appends a cursor-restore
+// (CUP) escape: capture-pane emits every pane row including the trailing blank
+// ones, so feeding them leaves the emulator cursor at the bottom of the screen,
+// not where tmux's cursor actually is. The trailing CUP snaps it back so typed
+// input lands at the prompt rather than far below it.
 func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 	args := []string{"capture-pane", "-e", "-p", "-t", pane}
 	if historyLines > 0 {
@@ -59,7 +65,30 @@ func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []byte(strings.Join(lines, "\r\n")), nil
+	out := []byte(strings.Join(lines, "\r\n"))
+	if historyLines == 0 {
+		if x, y, err := c.CursorPosition(pane); err == nil {
+			// CUP is 1-indexed; tmux cursor_x/_y are 0-indexed.
+			out = append(out, []byte(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1))...)
+		}
+	}
+	return out, nil
+}
+
+// CursorPosition returns a pane's 0-indexed cursor column (x) and row (y),
+// relative to the top of the visible screen.
+func (c *Client) CursorPosition(pane string) (x, y int, err error) {
+	lines, err := c.Command("display-message", "-p", "-t", pane, "#{cursor_x} #{cursor_y}")
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(lines) == 0 {
+		return 0, 0, fmt.Errorf("tmux: empty cursor position for pane %s", pane)
+	}
+	if _, err := fmt.Sscanf(strings.TrimSpace(lines[0]), "%d %d", &x, &y); err != nil {
+		return 0, 0, fmt.Errorf("tmux: parse cursor position %q: %w", lines[0], err)
+	}
+	return x, y, nil
 }
 
 // CapturePlain returns a pane's visible contents as plain text (no escape

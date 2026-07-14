@@ -13,6 +13,10 @@ struct Workspace: Codable, Identifiable {
     var subItems: [WorkspaceSubItem]
     var lastOpened: Date
     var lastWindowFrame: WindowFrame?
+    /// `.local` (driver, default) or `.hosted` (attached to a ccmuxd/tmux session).
+    /// Hosted workspaces are sourced live from the daemon and are NOT persisted; the
+    /// default keeps older state.json workspaces decoding as local.
+    var mode: WorkspaceMode = .local
 
     /// Create a new workspace for a given directory.
     static func create(name: String, repoPath: String) -> Workspace {
@@ -27,6 +31,25 @@ struct Workspace: Codable, Identifiable {
             subItems: [],
             lastOpened: Date()
         )
+    }
+}
+
+extension Workspace {
+    // Custom decoder so adding `mode` (and any future default-valued field) tolerates
+    // older state.json files. Declared in an extension to preserve the synthesized
+    // memberwise initializer that `Workspace.create` and callers rely on.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        repoPath = try c.decode(String.self, forKey: .repoPath)
+        layout = try c.decode(SplitTree<PaneTabs>.self, forKey: .layout)
+        focusedPaneId = try c.decodeIfPresent(UUID.self, forKey: .focusedPaneId)
+        claudePaneId = try c.decodeIfPresent(UUID.self, forKey: .claudePaneId)
+        subItems = try c.decodeIfPresent([WorkspaceSubItem].self, forKey: .subItems) ?? []
+        lastOpened = try c.decodeIfPresent(Date.self, forKey: .lastOpened) ?? Date()
+        lastWindowFrame = try c.decodeIfPresent(WindowFrame.self, forKey: .lastWindowFrame)
+        mode = try c.decodeIfPresent(WorkspaceMode.self, forKey: .mode) ?? .local
     }
 }
 

@@ -19,7 +19,13 @@ struct PaneContentView: View {
     private func contentView(for content: PaneContent) -> some View {
         switch content {
         case .terminal(let config):
-            TerminalPaneView(terminalId: config.id, workingDirectory: config.workingDirectory, startupCommand: config.startupCommand)
+            if let hostedPaneId = config.host.hostedPaneId {
+                // Hosted pane: attach to the daemon over WebSocket instead of spawning
+                // a local process. The local driver path below is untouched.
+                HostedTerminalPaneView(paneId: hostedPaneId, workingDirectory: config.workingDirectory)
+            } else {
+                TerminalPaneView(terminalId: config.id, workingDirectory: config.workingDirectory, startupCommand: config.startupCommand)
+            }
 
         case .browser(let config):
             BrowserPaneView(config: config)

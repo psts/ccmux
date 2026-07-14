@@ -68,6 +68,25 @@ struct TerminalConfig: Codable, Identifiable {
     var workingDirectory: String
     var title: String?
     var startupCommand: String?
+    /// Where this pane's process lives. Default `.local` preserves the original
+    /// driver behavior for every persisted config written before the lens pivot.
+    var host: PaneHost = .local
+}
+
+extension TerminalConfig {
+    // Custom decoder so adding `host` doesn't break older state.json files. Swift's
+    // synthesized init(from:) calls `decode` (not `decodeIfPresent`) for non-Optional
+    // properties even with a default value, throwing keyNotFound when the key is absent.
+    // Declaring this in an extension preserves the synthesized memberwise initializer.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        shell = try c.decode(String.self, forKey: .shell)
+        workingDirectory = try c.decode(String.self, forKey: .workingDirectory)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
+        host = try c.decodeIfPresent(PaneHost.self, forKey: .host) ?? .local
+    }
 }
 
 struct BrowserConfig: Codable, Identifiable {

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -106,6 +107,68 @@ func TestControlClient_EndToEnd(t *testing.T) {
 	if !h.outputContains(marker) {
 		t.Errorf("marker %q not seen in live %%output stream", marker)
 	}
+}
+
+// TestCapturePane_AppendsCursorRestore pins the seed-cursor fix: a visible-screen
+// capture must end with a CUP escape at tmux's real cursor, so a lens that feeds the
+// (blank-line-padded) capture doesn't strand the cursor far below the prompt.
+func TestCapturePane_AppendsCursorRestore(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-curtest"
+	tmuxRun(t, socket, "kill-server")
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	// Type a token so the cursor sits mid-line, then let the pane settle.
+	if err := c.SendKeys("it", []byte("echo hi")); err != nil {
+		t.Fatalf("send-keys: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	x, y, err := c.CursorPosition("it")
+	if err != nil {
+		t.Fatalf("cursor position: %v", err)
+	}
+	b, err := c.CapturePane("it", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	wantCUP := fmt.Sprintf("\x1b[%d;%dH", y+1, x+1) // CUP is 1-indexed
+	if !strings.HasSuffix(string(b), wantCUP) {
+		t.Fatalf("capture should end with cursor restore %q; tail:\n%q", wantCUP, tailStr(b, 16))
+	}
+
+	// A history capture (historyLines > 0) must NOT append a CUP — its row numbers
+	// don't map to the visible screen.
+	hist, err := c.CapturePane("it", 5)
+	if err != nil {
+		t.Fatalf("capture history: %v", err)
+	}
+	if strings.HasSuffix(string(hist), "H") && strings.Contains(string(hist), "\x1b[") &&
+		strings.HasSuffix(string(hist), wantCUP) {
+		t.Errorf("history capture unexpectedly ends with a cursor restore")
+	}
+}
+
+func tailStr(b []byte, n int) string {
+	if len(b) > n {
+		b = b[len(b)-n:]
+	}
+	return string(b)
 }
 
 func tmuxRun(t *testing.T, socket string, args ...string) {

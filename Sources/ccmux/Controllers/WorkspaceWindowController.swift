@@ -48,10 +48,38 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func updateWindowTitle() {
         if let wsId = windowContext.displayedWorkspaceId,
-           let ws = workspaceManager.workspaces.first(where: { $0.id == wsId }) {
+           let ws = workspaceManager.workspaces.first(where: { $0.id == wsId })
+            ?? RemoteSessionService.shared.workspaces.first(where: { $0.id == wsId }) {
             window?.title = ws.name
         } else {
             window?.title = "ccmux"
+        }
+    }
+
+    /// Display a hosted (ccmuxd-backed) workspace without engaging the local
+    /// multi-window ownership machinery — hosted sessions live on the daemon.
+    func displayHostedWorkspace(_ id: UUID) {
+        windowContext.displayedWorkspaceId = id
+        updateWindowTitle()
+        RemoteSessionService.shared.attentionMonitors[id]?.clear()
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Prompt for a project directory and create a hosted session on the daemon.
+    func showAddHostedWorkspacePanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a project directory for a hosted session"
+
+        panel.beginSheetModal(for: window!) { result in
+            guard result == .OK, let url = panel.url else { return }
+            let name = url.lastPathComponent
+            Task {
+                await RemoteSessionService.shared.createWorkspace(
+                    name: name, repoPath: url.path, startupCommand: "claude")
+            }
         }
     }
 
@@ -62,6 +90,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let sidebarView = SidebarView(
             manager: workspaceManager,
             windowContext: windowContext,
+            remoteService: RemoteSessionService.shared,
             onAddWorkspace: { [weak self] in
                 self?.showAddWorkspacePanel()
             },
@@ -71,6 +100,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             onSelectWorkspace: { [weak self] id in
                 guard let self else { return }
                 self.windowManager?.selectWorkspace(id: id, from: self)
+            },
+            onSelectHosted: { [weak self] id in
+                self?.displayHostedWorkspace(id)
             },
             onReopenWorkspace: { [weak self] id in
                 self?.windowManager?.reopenWorkspace(id: id)
@@ -85,6 +117,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             },
             onRestoreWindow: { [weak self] windowId in
                 self?.windowManager?.restoreClosedWindow(id: windowId)
+            },
+            onNewHostedSession: { [weak self] in
+                self?.showAddHostedWorkspacePanel()
             }
         )
         let sidebarHosting = NSHostingController(rootView: sidebarView)
@@ -111,7 +146,8 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         // Main content — observes windowContext for which workspace to show.
         let mainView = MainContentView(
             manager: workspaceManager,
-            windowContext: windowContext
+            windowContext: windowContext,
+            remoteService: RemoteSessionService.shared
         )
         let mainHosting = NSHostingController(rootView: mainView)
         let mainItem = NSSplitViewItem(contentListWithViewController: mainHosting)
@@ -213,6 +249,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             // Returning focus to a window counts as "seeing" the workspace it shows —
             // clear any attention flash so a Cmd-Tab back stops the pulse.
             workspaceManager.attentionMonitors[wsId]?.clear()
+            RemoteSessionService.shared.attentionMonitors[wsId]?.clear()
             // Cheap belt-and-suspenders for "user just Cmd-Tabbed back from an
             // external editor" — FSEvents would catch the change eventually,
             // but a focus-event refresh makes the sidebar feel instant and
@@ -238,6 +275,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 struct MainContentView: View {
     @ObservedObject var manager: WorkspaceManager
     @ObservedObject var windowContext: WindowContext
+    /// Observed so the main view re-renders when a hosted workspace's controller is
+    /// (re)built by the daemon poll.
+    @ObservedObject var remoteService: RemoteSessionService
 
     var body: some View {
         if let controller = windowContext.displayedController {

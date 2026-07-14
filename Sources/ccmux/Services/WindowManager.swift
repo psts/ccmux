@@ -26,7 +26,10 @@ class WindowContext: ObservableObject {
 
     var displayedController: SplitTreeController? {
         guard let id = displayedWorkspaceId else { return nil }
-        return workspaceManager?.controllers[id]
+        // Local workspaces resolve from WorkspaceManager; hosted workspaces (the lens
+        // pivot) resolve from RemoteSessionService, which renders through the same
+        // SplitTree machinery.
+        return workspaceManager?.controllers[id] ?? RemoteSessionService.shared.controllers[id]
     }
 
     init(workspaceId: UUID?, workspaceManager: WorkspaceManager) {

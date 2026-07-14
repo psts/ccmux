@@ -3,14 +3,19 @@ import SwiftUI
 struct SidebarView: View {
     @ObservedObject var manager: WorkspaceManager
     @ObservedObject var windowContext: WindowContext
+    /// Hosted (ccmuxd-backed) workspaces — the lens pivot's remote sessions.
+    @ObservedObject var remoteService: RemoteSessionService
     let onAddWorkspace: () -> Void
     let onDetachWorkspace: (UUID) -> Void
     let onSelectWorkspace: (UUID) -> Void
+    /// Selecting a hosted workspace just displays it (no local ownership machinery).
+    let onSelectHosted: (UUID) -> Void
     let onReopenWorkspace: (UUID) -> Void
     let onMoveToThisWindow: (UUID) -> Void
     var currentWindowId: UUID?
     var onRenameWindow: ((UUID, String) -> Void)?
     var onRestoreWindow: ((UUID) -> Void)?
+    var onNewHostedSession: (() -> Void)?
 
     /// Workspaces belonging to this window
     private var thisWindowWorkspaces: [Workspace] {
@@ -27,6 +32,35 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             List {
+                // Hosted (ccmuxd-backed) sessions — persistent, multi-dev, attach-from-anywhere.
+                if !remoteService.workspaces.isEmpty {
+                    Section {
+                        ForEach(remoteService.workspaces) { workspace in
+                            let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
+                            HostedWorkspaceRow(
+                                workspace: workspace,
+                                isActive: isDisplayed,
+                                connectionState: remoteService.connectionState(for: workspace.id),
+                                onSelect: { onSelectHosted(workspace.id) }
+                            )
+                            .listRowBackground(
+                                AttentionRowBackground(
+                                    monitor: remoteService.attentionMonitors[workspace.id] ?? .empty,
+                                    isDisplayed: isDisplayed,
+                                    onTap: { onSelectHosted(workspace.id) }
+                                )
+                            )
+                            .contextMenu {
+                                Button("Remove Session", role: .destructive) {
+                                    Task { await remoteService.deleteWorkspace(workspace.id) }
+                                }
+                            }
+                        }
+                    } header: {
+                        windowSectionHeader(name: "HOSTED", isCurrentWindow: false)
+                    }
+                }
+
                 // This window's workspaces
                 if !thisWindowWorkspaces.isEmpty {
                     Section {
@@ -126,6 +160,14 @@ struct SidebarView: View {
                         onAddWorkspace()
                     } label: {
                         Label("New from Folder...", systemImage: "folder.badge.plus")
+                    }
+
+                    if let onNewHostedSession {
+                        Button {
+                            onNewHostedSession()
+                        } label: {
+                            Label("New Hosted Session...", systemImage: "antenna.radiowaves.left.and.right")
+                        }
                     }
 
                     // Restore Window section
@@ -327,6 +369,55 @@ private struct AttentionRowBackground: View {
         case .needsInput: return Color.orange.opacity(pulse ? 0.95 : 0.45)
         case .done: return Color.green.opacity(0.85)
         case .none: return Color.clear
+        }
+    }
+}
+
+// MARK: - Hosted Workspace Row
+
+/// Sidebar row for a ccmuxd-backed (hosted) workspace. Leaner than the local
+/// `WorkspaceRow` — no local git dashboard (v1 hosted scope is terminal-only) —
+/// plus a connection dot reflecting the attach WebSocket's health.
+private struct HostedWorkspaceRow: View {
+    let workspace: Workspace
+    let isActive: Bool
+    let connectionState: DaemonConnectionState
+    let onSelect: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Text(workspace.name)
+                .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Circle()
+                .fill(connectionColor)
+                .frame(width: 6, height: 6)
+                .help(connectionHelp)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+    }
+
+    private var connectionColor: Color {
+        switch connectionState {
+        case .connected: return .green
+        case .connecting, .reconnecting: return .yellow
+        case .closed: return .red
+        }
+    }
+
+    private var connectionHelp: String {
+        switch connectionState {
+        case .connected: return "Attached"
+        case .connecting: return "Connecting…"
+        case .reconnecting: return "Reconnecting…"
+        case .closed: return "Disconnected"
         }
     }
 }

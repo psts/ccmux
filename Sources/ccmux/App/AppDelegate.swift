@@ -78,7 +78,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Start listening for Claude Code attention events (sidebar flash + notifications).
             self.startAttentionSignals(windowManager: wm)
+
+            // Start polling the ccmuxd daemon for hosted (lens) workspaces.
+            self.startRemoteSessions()
         }
+    }
+
+    /// Wire and start the hosted-session service: it polls ccmuxd, renders hosted
+    /// workspaces through the same sidebar/SplitTree machinery, and feeds the same
+    /// attention flash + notifications the local hook path uses.
+    private func startRemoteSessions() {
+        let service = RemoteSessionService.shared
+        service.isWatched = { [weak self] id in self?.isWatchingWorkspace(id) ?? false }
+        service.onAttention = { [weak self] workspace, state in
+            self?.attentionNotifier.post(for: workspace, state: state)
+        }
+        service.onFileLink = { wsId, absolutePath in
+            // Hosted panes are terminal-only in v1; reveal a clicked file in the local
+            // clone rather than mutating the daemon-driven layout.
+            guard FileManager.default.fileExists(atPath: absolutePath) else { return }
+            let parent = (absolutePath as NSString).deletingLastPathComponent
+            NSWorkspace.shared.selectFile(absolutePath, inFileViewerRootedAtPath: parent)
+        }
+        service.start()
+    }
+
+    /// True when ccmux is frontmost AND the key window displays this (hosted)
+    /// workspace — mirrors `ClaudeHookListener.isCurrentlyWatched` for local ones, so
+    /// a workspace you're already looking at doesn't flash or notify.
+    private func isWatchingWorkspace(_ id: UUID) -> Bool {
+        guard NSApp.isActive,
+              let keyWindow = NSApp.keyWindow,
+              let wc = windowManager?.windowControllers.first(where: { $0.window === keyWindow })
+        else { return false }
+        return wc.windowContext.displayedWorkspaceId == id
     }
 
     /// Wire up the macOS-notification delegate and the hook-event socket listener.
@@ -142,6 +175,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hookListener?.stop()
+        RemoteSessionService.shared.stop()
         quitConfirmationController?.teardown()
         // Prevent windowWillClose from moving workspaces to closedWorkspaces during quit
         windowManager?.isTerminating = true
