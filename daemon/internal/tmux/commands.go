@@ -60,6 +60,16 @@ func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 	return []byte(strings.Join(lines, "\n")), nil
 }
 
+// CapturePlain returns a pane's visible contents as plain text (no escape
+// sequences), for prompt/text matching.
+func (c *Client) CapturePlain(pane string) ([]byte, error) {
+	lines, err := c.Command("capture-pane", "-p", "-t", pane)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.Join(lines, "\n")), nil
+}
+
 // SetOption sets a tmux option (global with -g, or targeted).
 func (c *Client) SetOption(args ...string) error {
 	_, err := c.Command(append([]string{"set-option"}, args...)...)

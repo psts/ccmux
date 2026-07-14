@@ -201,6 +201,16 @@ func (c *Controller) Capture(paneID string, historyLines int) ([]byte, error) {
 	return c.client.CapturePane(ref.pane, historyLines)
 }
 
+// CaptureText returns a pane's visible contents as plain text (for prompt
+// detection, e.g. dev-channels auto-confirm).
+func (c *Controller) CaptureText(paneID string) ([]byte, error) {
+	ref := c.ref(paneID)
+	if ref == nil {
+		return nil, fmt.Errorf("unknown pane %s", paneID)
+	}
+	return c.client.CapturePlain(ref.pane)
+}
+
 // KillPane removes a pane's window.
 func (c *Controller) KillPane(paneID string) error {
 	ref := c.ref(paneID)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ccmux.dev/ccmuxd/internal/autoconfirm"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
 	"ccmux.dev/ccmuxd/internal/shellint"
@@ -328,12 +329,15 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 
 // deliverStartup sends a pane's startup command as keystrokes (the sanctioned
 // startup mechanism — not mid-session injection). Sizing is already set, so no
-// wrap dance is needed.
+// wrap dance is needed. Because a startup command may launch a dev-channels
+// claude (possibly via a shell alias), we arm the hands-free auto-confirm
+// watcher for the pane's first ~120s.
 func (m *Manager) deliverStartup(ctrl *session.Controller, p *model.Pane) {
 	if p.StartupCommand == "" {
 		return
 	}
 	_ = ctrl.SendInput(p.ID, []byte(p.StartupCommand+"\r"))
+	go autoconfirm.Watch(m.ctx, ctrl, p.ID)
 }
 
 // watch consumes a controller's notices and reflects them into the registry:
