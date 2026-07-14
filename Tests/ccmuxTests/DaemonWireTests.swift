@@ -160,11 +160,21 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertEqual(state, .needsInput)
     }
 
+    func testFirehoseWorkspaceLifecycleDecodes() {
+        for kind in ["workspace-added", "workspace-removed", "workspace-status"] {
+            guard case .workspaceChanged(let k, let ws)? = DaemonFirehoseEvent.decode(text: #"{"t":"\#(kind)","workspace":"w1"}"#) else {
+                return XCTFail("expected workspaceChanged for \(kind)")
+            }
+            XCTAssertEqual(k, kind)
+            XCTAssertEqual(ws, "w1")
+        }
+    }
+
     func testFirehoseUnknownFrameIsCaptured() {
-        guard case .unknown(let t)? = DaemonFirehoseEvent.decode(text: #"{"t":"workspace-added","workspace":"w"}"#) else {
+        guard case .unknown(let t)? = DaemonFirehoseEvent.decode(text: #"{"t":"future-firehose-frame"}"#) else {
             return XCTFail("expected unknown")
         }
-        XCTAssertEqual(t, "workspace-added")
+        XCTAssertEqual(t, "future-firehose-frame")
     }
 
     func testFirehoseMalformedJSONDecodesToNil() {

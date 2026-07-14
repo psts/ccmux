@@ -106,7 +106,7 @@ final class DaemonAttachLiveTests: XCTestCase {
                 XCTAssertTrue(Self.writeUnixSocket(path: hookSock, payload: msg), "hook write should succeed")
             case .attention(let workspace, _, let state):
                 if workspace == wsId, state == .needsInput { sawNeedsInput.fulfill() }
-            case .unknown:
+            case .workspaceChanged, .unknown:
                 break
             }
         }

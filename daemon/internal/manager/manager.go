@@ -144,6 +144,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy str
 	m.byID[wsID] = &entry{ws: ws, ctrl: ctrl}
 	m.mu.Unlock()
 	go m.watch(wsID, ctrl)
+	m.events.publish(Event{Kind: "workspace-added", WorkspaceID: wsID})
 	return ws, nil
 }
 
@@ -226,22 +227,31 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 		_ = m.store.SavePane(p)
 	}
 	go m.watch(wsID, ctrl)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return ws, nil
 }
 
-// KillWorkspace tears down a workspace's tmux session and registry record.
+// KillWorkspace tears down a workspace's tmux session and registry record. The
+// entry is removed *before* the controller is closed so the exit that closing
+// triggers doesn't race markCold into publishing a spurious cold-status for a
+// workspace that's being deleted — a delete emits only workspace-removed.
 func (m *Manager) KillWorkspace(wsID string) error {
-	e := m.entry(wsID)
+	m.mu.Lock()
+	e := m.byID[wsID]
 	if e == nil {
+		m.mu.Unlock()
 		return fmt.Errorf("unknown workspace %s", wsID)
 	}
-	if e.ctrl != nil {
-		e.ctrl.Close()
-	}
-	_ = m.server.KillSession(e.ws.TmuxSession)
-	m.mu.Lock()
+	ctrl := e.ctrl
+	session := e.ws.TmuxSession
 	delete(m.byID, wsID)
 	m.mu.Unlock()
+
+	if ctrl != nil {
+		ctrl.Close()
+	}
+	_ = m.server.KillSession(session)
+	m.events.publish(Event{Kind: "workspace-removed", WorkspaceID: wsID})
 	return m.store.DeleteWorkspace(wsID)
 }
 
@@ -448,12 +458,17 @@ func (m *Manager) dropPane(wsID, paneID string) {
 
 func (m *Manager) markCold(wsID string) {
 	m.mu.Lock()
-	if e := m.byID[wsID]; e != nil {
+	e := m.byID[wsID]
+	if e != nil {
 		e.ws.Status = model.StatusCold
 		e.ctrl = nil
 	}
 	m.mu.Unlock()
+	if e == nil {
+		return // already removed (e.g. a concurrent delete) — nothing to cool down
+	}
 	_ = m.store.SetWorkspaceStatus(wsID, model.StatusCold)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 }
 
 func (m *Manager) entry(wsID string) *entry {

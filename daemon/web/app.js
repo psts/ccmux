@@ -219,6 +219,9 @@ function onFirehose(ev) {
     for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state);
   } else if (m.t === "attention") {
     noteAttention(m.workspace, m.pane, m.state);
+  } else if (m.t === "workspace-added" || m.t === "workspace-removed" || m.t === "workspace-status") {
+    fetchWorkspaces(); // a workspace changed elsewhere — refresh now, don't wait for the poll
+    return;
   } else {
     return;
   }

@@ -479,6 +479,72 @@ func getJSON(t *testing.T, url string) (int, map[string]any) {
 	return resp.StatusCode, body
 }
 
+// TestAPI_EventsFirehoseLifecycle proves the firehose carries workspace lifecycle
+// so a sidebar lens updates without polling: a create emits workspace-added and a
+// delete emits workspace-removed, both tagged with the workspace id.
+func TestAPI_EventsFirehoseLifecycle(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-evlife-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := manager.New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	hs := httptest.NewServer(NewServer(mgr).Handler())
+	defer hs.Close()
+
+	evURL := "ws" + strings.TrimPrefix(hs.URL, "http") + "/v1/events"
+	conn, _, err := websocket.DefaultDialer.Dial(evURL, nil)
+	if err != nil {
+		t.Fatalf("events dial: %v", err)
+	}
+	defer conn.Close()
+	if m := readFirehose(t, conn); m.T != "hello" {
+		t.Fatalf("first frame = %q, want hello", m.T)
+	}
+
+	// Create → workspace-added.
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	awaitFirehoseKind(t, conn, "workspace-added", ws.ID)
+
+	// Delete → workspace-removed.
+	if err := mgr.KillWorkspace(ws.ID); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	awaitFirehoseKind(t, conn, "workspace-removed", ws.ID)
+}
+
+func awaitFirehoseKind(t *testing.T, conn *websocket.Conn, kind, wsID string) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for i := 0; i < 100; i++ {
+		m := readFirehose(t, conn)
+		if m.T == kind {
+			if m.Workspace != wsID {
+				t.Fatalf("%s workspace = %q, want %q", kind, m.Workspace, wsID)
+			}
+			return
+		}
+	}
+	t.Fatalf("did not receive %s for %s", kind, wsID)
+}
+
 func readMsg(t *testing.T, conn *websocket.Conn) wsMsg {
 	t.Helper()
 	var m wsMsg

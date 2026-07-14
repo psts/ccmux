@@ -237,6 +237,9 @@ struct DaemonAttentionEntry: Decodable {
 enum DaemonFirehoseEvent {
     case hello(entries: [DaemonAttentionEntry])
     case attention(workspace: String, pane: String, state: DaemonAttention)
+    /// A workspace was added/removed or changed live↔cold — the lens re-fetches the
+    /// list instead of waiting for its poll.
+    case workspaceChanged(kind: String, workspace: String)
     case unknown(String)
 
     init(frame: DaemonFirehoseFrame) {
@@ -245,6 +248,8 @@ enum DaemonFirehoseEvent {
             self = .hello(entries: frame.attention ?? [])
         case "attention":
             self = .attention(workspace: frame.workspace ?? "", pane: frame.pane ?? "", state: frame.state ?? .unknown)
+        case "workspace-added", "workspace-removed", "workspace-status":
+            self = .workspaceChanged(kind: frame.t, workspace: frame.workspace ?? "")
         default:
             self = .unknown(frame.t)
         }

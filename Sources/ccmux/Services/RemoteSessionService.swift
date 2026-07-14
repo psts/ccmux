@@ -87,6 +87,10 @@ final class RemoteSessionService: ObservableObject {
             for e in entries { applyAttention(daemonWsId: e.workspace, state: e.state, notify: false) }
         case .attention(let workspace, _, let state):
             applyAttention(daemonWsId: workspace, state: state, notify: true)
+        case .workspaceChanged:
+            // A workspace appeared/vanished/changed live↔cold elsewhere — pick it up
+            // now rather than at the next poll.
+            Task { await refresh() }
         case .unknown:
             break
         }
