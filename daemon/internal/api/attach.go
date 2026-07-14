@@ -14,13 +14,14 @@ import (
 // wsMsg is the single JSON envelope for all attach traffic (v1: JSON+base64; a
 // binary hot-path frame is a later optimization). Bytes travel in Data (base64).
 type wsMsg struct {
-	T     string          `json:"t"`
-	Pane  string          `json:"pane,omitempty"`
-	Data  string          `json:"data,omitempty"`
-	State model.Attention `json:"state,omitempty"`
-	Cols  int             `json:"cols,omitempty"`
-	Rows  int             `json:"rows,omitempty"`
-	Panes []paneInfo      `json:"panes,omitempty"`
+	T       string          `json:"t"`
+	Pane    string          `json:"pane,omitempty"`
+	Data    string          `json:"data,omitempty"`
+	State   model.Attention `json:"state,omitempty"`
+	Cols    int             `json:"cols,omitempty"`
+	Rows    int             `json:"rows,omitempty"`
+	Panes   []paneInfo      `json:"panes,omitempty"`
+	Clients []ClientInfo    `json:"clients,omitempty"`
 }
 
 type paneInfo struct {
@@ -41,6 +42,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "workspace not live")
 		return
 	}
+	readonly := r.URL.Query().Get("readonly") == "1"
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -50,6 +52,14 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	sub := ctrl.Subscribe()
 	defer sub.Close()
 
+	// Register presence (broadcasts to everyone, incl. this client's own sub).
+	connID := s.presence.Join(wsID, ClientInfo{
+		User:     orDefault(r.URL.Query().Get("user"), "anon"),
+		Device:   r.URL.Query().Get("device"),
+		ReadOnly: readonly,
+	})
+	defer s.presence.Leave(wsID, connID)
+
 	if err := conn.WriteJSON(wsMsg{T: "hello", Panes: paneInfos(ws)}); err != nil {
 		return
 	}
@@ -57,8 +67,15 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	go readLoop(cancel, conn, ctrl)
+	go s.readLoop(cancel, conn, ctrl, wsID, connID, readonly)
 	writeLoop(ctx, conn, ctrl, ws, sub)
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 // sendSnapshots seeds each pane with its current screen so a fresh attach isn't
@@ -94,8 +111,10 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 	}
 }
 
-// readLoop applies client input/resize until the connection closes.
-func readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller) {
+// readLoop applies client input/resize/focus until the connection closes.
+// Read-only observers can focus but cannot send input or resize (server-enforced
+// — an observer must never crunch a driver's pane size).
+func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool) {
 	defer cancel()
 	for {
 		var msg wsMsg
@@ -104,13 +123,22 @@ func readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Con
 		}
 		switch msg.T {
 		case "input":
+			if readonly {
+				continue
+			}
 			if data, err := base64.StdEncoding.DecodeString(msg.Data); err == nil {
+				s.presence.Input(wsID, connID)
 				_ = ctrl.SendInput(msg.Pane, data)
 			}
 		case "resize":
+			if readonly {
+				continue
+			}
 			if msg.Cols > 0 && msg.Rows > 0 {
 				_ = ctrl.Resize(msg.Pane, msg.Cols, msg.Rows)
 			}
+		case "focus":
+			s.presence.Focus(wsID, connID, msg.Pane)
 		}
 	}
 }
@@ -120,6 +148,9 @@ func frameFor(ev session.Event) wsMsg {
 	switch ev.Kind {
 	case "attention":
 		return wsMsg{T: "attention", Pane: ev.PaneID, State: ev.Attention}
+	case "presence":
+		clients, _ := ev.Payload.([]ClientInfo)
+		return wsMsg{T: "presence", Clients: clients}
 	case "pane-added", "pane-closed":
 		return wsMsg{T: ev.Kind, Pane: ev.PaneID}
 	default:

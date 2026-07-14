@@ -16,13 +16,16 @@ import (
 
 // Event is a message fanned out to attached lenses. Kind "output" carries pane
 // bytes in Data; "attention" carries a pane's new Attention; lifecycle kinds
-// ("pane-added"/"pane-closed") carry just the PaneID. All lens-bound traffic
-// flows through this one channel so ordering per subscriber is preserved.
+// ("pane-added"/"pane-closed") carry just the PaneID; "presence" carries a
+// snapshot in Payload. All lens-bound traffic flows through this one channel so
+// ordering per subscriber is preserved. Payload lets the api layer route its own
+// event types through the same fan-out without the session package knowing them.
 type Event struct {
 	Kind      string
 	PaneID    string
 	Data      []byte
 	Attention model.Attention
+	Payload   any
 }
 
 // paneRef binds a stable ccmux pane id to its runtime tmux window/pane ids.

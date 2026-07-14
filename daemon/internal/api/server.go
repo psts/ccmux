@@ -15,12 +15,14 @@ import (
 // Server adapts a Manager to HTTP.
 type Server struct {
 	mgr      *manager.Manager
+	presence *presenceHub
 	upgrader websocket.Upgrader
 }
 
 func NewServer(mgr *manager.Manager) *Server {
 	return &Server{
-		mgr: mgr,
+		mgr:      mgr,
+		presence: newPresenceHub(mgr),
 		// Same-origin default; the web lens is served from this daemon, and
 		// tailnet identity (Phase 3) gates access. Loosened checks come with auth.
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},

@@ -17,6 +17,17 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
 
+// A display name for presence; asked once and remembered. Tailscale identity
+// will replace this on the tailnet.
+function getUser() {
+  let u = localStorage.getItem("ccmux-user");
+  if (!u) {
+    u = (prompt("Your name (for presence):", "") || "anon").trim() || "anon";
+    localStorage.setItem("ccmux-user", u);
+  }
+  return u;
+}
+
 // --- base64 <-> bytes (terminal I/O travels base64 in JSON frames) ---
 function b64ToBytes(b64) {
   const bin = atob(b64);
@@ -91,7 +102,8 @@ function attach(wsId, wantPane) {
   renderList();
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const conn = new WebSocket(`${proto}://${location.host}/v1/attach?workspace=${wsId}`);
+  const q = `workspace=${wsId}&user=${encodeURIComponent(getUser())}&device=web`;
+  const conn = new WebSocket(`${proto}://${location.host}/v1/attach?${q}`);
   conn.onmessage = onMessage;
   conn.onopen = () => doFit();
   state.conn = conn;
@@ -106,6 +118,7 @@ function onMessage(ev) {
       state.wantPane = null;
       renderTabs();
       doFit();
+      send({ t: "focus", pane: state.paneId });
       break;
     case "snapshot":
     case "output":
@@ -113,6 +126,9 @@ function onMessage(ev) {
       break;
     case "attention":
       setAttention(m.pane, m.state);
+      break;
+    case "presence":
+      renderPresence(m.clients || []);
       break;
     case "pane-added":
     case "pane-closed":
@@ -143,6 +159,18 @@ function renderTabs() {
     b.onclick = () => attach(state.wsId, p.id);
     tabs.appendChild(b);
   });
+}
+
+function renderPresence(clients) {
+  const el = $("presence");
+  el.innerHTML = "";
+  for (const c of clients) {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (c.driving ? " driving" : "") + (c.readonly ? " ro" : "");
+    chip.title = (c.driving ? "driving" : c.readonly ? "observing" : "attached") + (c.device ? " · " + c.device : "");
+    chip.innerHTML = `<span class="ring"></span>${esc(c.user)}`;
+    el.appendChild(chip);
+  }
 }
 
 function setAttention(paneId, stateStr) {
