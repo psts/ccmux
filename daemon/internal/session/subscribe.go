@@ -11,16 +11,16 @@ import (
 const subBufferSize = 512
 
 type subscriber struct {
-	ch     chan OutputEvent
+	ch     chan Event
 	lagged atomic.Bool
 }
 
 // Sub is a consumer handle for one lens attachment.
 type Sub struct {
 	ID int
-	C  <-chan OutputEvent
+	C  <-chan Event
 
-	ctrl *Controller
+	ctrl  *Controller
 	inner *subscriber
 }
 
@@ -36,9 +36,9 @@ func (s *Sub) Close() {
 	s.ctrl.mu.Unlock()
 }
 
-// Subscribe registers a new consumer of this session's pane output.
+// Subscribe registers a new consumer of this session's events.
 func (c *Controller) Subscribe() *Sub {
-	inner := &subscriber{ch: make(chan OutputEvent, subBufferSize)}
+	inner := &subscriber{ch: make(chan Event, subBufferSize)}
 	c.mu.Lock()
 	id := c.nextSub
 	c.nextSub++
@@ -47,20 +47,14 @@ func (c *Controller) Subscribe() *Sub {
 	return &Sub{ID: id, C: inner.ch, ctrl: c, inner: inner}
 }
 
-// OnOutput implements tmux.Handler. It runs on the control reader goroutine, so
-// it must never block: sends are non-blocking, overflow flags the subscriber.
-func (c *Controller) OnOutput(tmuxPane string, data []byte) {
+// Broadcast fans a manager-originated event (e.g. attention) out to every
+// attached lens. Non-blocking, like output delivery.
+func (c *Controller) Broadcast(ev Event) { c.fanout(ev) }
+
+// fanout delivers an event to all subscribers without blocking the caller; a
+// full subscriber is flagged lagged and re-seeds from a fresh snapshot.
+func (c *Controller) fanout(ev Event) {
 	c.mu.RLock()
-	ref := c.byTmuxPane[tmuxPane]
-	if ref == nil {
-		c.mu.RUnlock()
-		return // output for an unregistered window; the attach snapshot covers it
-	}
-	paneID := ref.id
-	// Copy: the caller reuses the underlying buffer.
-	buf := make([]byte, len(data))
-	copy(buf, data)
-	ev := OutputEvent{PaneID: paneID, Data: buf}
 	for _, s := range c.subs {
 		select {
 		case s.ch <- ev:
@@ -69,6 +63,21 @@ func (c *Controller) OnOutput(tmuxPane string, data []byte) {
 		}
 	}
 	c.mu.RUnlock()
+}
+
+// OnOutput implements tmux.Handler. It runs on the control reader goroutine, so
+// it must never block.
+func (c *Controller) OnOutput(tmuxPane string, data []byte) {
+	c.mu.RLock()
+	ref := c.byTmuxPane[tmuxPane]
+	c.mu.RUnlock()
+	if ref == nil {
+		return // output for an unregistered window; the attach snapshot covers it
+	}
+	// Copy: the caller reuses the underlying buffer.
+	buf := make([]byte, len(data))
+	copy(buf, data)
+	c.fanout(Event{Kind: "output", PaneID: ref.id, Data: buf})
 }
 
 // OnNotification implements tmux.Handler for non-output events.

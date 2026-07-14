@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
@@ -102,6 +105,81 @@ func TestAPI_CreateAttachInput(t *testing.T) {
 	if !found {
 		t.Fatalf("marker %q not seen over WS attach", marker)
 	}
+}
+
+// TestAPI_HookAttentionReachesLens proves the Phase 2 loop end-to-end: a Claude
+// Code hook message arriving on the Unix socket updates a pane's attention and
+// is broadcast to an already-attached WebSocket lens.
+func TestAPI_HookAttentionReachesLens(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-hookattn-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := manager.New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	hookSock := "/tmp/ccmux-hookattn.sock"
+	_ = os.Remove(hookSock)
+	hl, err := hooks.Listen(hookSock, mgr)
+	if err != nil {
+		t.Fatalf("hooks listen: %v", err)
+	}
+	defer hl.Close()
+
+	hs := httptest.NewServer(NewServer(mgr).Handler())
+	defer hs.Close()
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	// Attach a lens.
+	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http") + "/v1/attach?workspace=" + ws.ID
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+	if m := readMsg(t, conn); m.T != "hello" {
+		t.Fatalf("first frame = %q, want hello", m.T)
+	}
+
+	// Fire a permission_request hook (exact pane via pane_id).
+	hookConn, err := net.Dial("unix", hookSock)
+	if err != nil {
+		t.Fatalf("hook dial: %v", err)
+	}
+	_, _ = hookConn.Write([]byte(`{"type":"permission_request","cwd":"/tmp","pane_id":"` + pane0 + `"}`))
+	hookConn.Close()
+
+	// Expect an attention=needs_input frame for pane0.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for i := 0; i < 200; i++ {
+		m := readMsg(t, conn)
+		if m.T == "attention" && m.Pane == pane0 {
+			if string(m.State) != "needs_input" {
+				t.Fatalf("attention state = %q, want needs_input", m.State)
+			}
+			return // success
+		}
+	}
+	t.Fatal("did not receive attention frame for pane0")
 }
 
 func readMsg(t *testing.T, conn *websocket.Conn) wsMsg {

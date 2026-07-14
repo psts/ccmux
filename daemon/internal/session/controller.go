@@ -10,13 +10,19 @@ import (
 	"strings"
 	"sync"
 
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
 
-// OutputEvent is a chunk of one pane's bytes, tagged with the stable pane id.
-type OutputEvent struct {
-	PaneID string
-	Data   []byte
+// Event is a message fanned out to attached lenses. Kind "output" carries pane
+// bytes in Data; "attention" carries a pane's new Attention; lifecycle kinds
+// ("pane-added"/"pane-closed") carry just the PaneID. All lens-bound traffic
+// flows through this one channel so ordering per subscriber is preserved.
+type Event struct {
+	Kind      string
+	PaneID    string
+	Data      []byte
+	Attention model.Attention
 }
 
 // paneRef binds a stable ccmux pane id to its runtime tmux window/pane ids.

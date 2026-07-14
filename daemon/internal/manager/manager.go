@@ -6,6 +6,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,6 +155,65 @@ func (m *Manager) SpawnPane(wsID, cwd, startupCmd, createdBy string) (*model.Pan
 	return p, nil
 }
 
+// ReviveWorkspace recreates a cold workspace's tmux session and replays each
+// pane's startup command (panes[0] becomes the session's first window). This is
+// the resurrection path: tmux died, the SQLite recipe brings it back.
+func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
+	e := m.entry(wsID)
+	if e == nil {
+		return nil, fmt.Errorf("unknown workspace %s", wsID)
+	}
+	if e.ctrl != nil {
+		return e.ws, nil // already live
+	}
+	ws := e.ws
+	if len(ws.Panes) == 0 {
+		return nil, fmt.Errorf("workspace %s has no panes to revive", wsID)
+	}
+
+	pane0 := ws.Panes[0]
+	if err := m.server.NewSession(ws.TmuxSession, pane0.CWD, defaultCols, defaultRows, m.paneEnv(pane0.ID)); err != nil {
+		return nil, err
+	}
+	ctrl, err := session.Open(m.ctx, m.server, ws.TmuxSession, wsID)
+	if err != nil {
+		return nil, err
+	}
+	win, tmuxPane, err := ctrl.FirstWindow()
+	if err != nil {
+		ctrl.Close()
+		return nil, err
+	}
+	if err := ctrl.AdoptWindow(pane0.ID, win, tmuxPane); err != nil {
+		ctrl.Close()
+		return nil, err
+	}
+	_ = ctrl.Resize(pane0.ID, defaultCols, defaultRows)
+	m.deliverStartup(ctrl, pane0)
+
+	for _, p := range ws.Panes[1:] {
+		if err := ctrl.SpawnWindow(p.ID, p.CWD, m.paneEnv(p.ID)); err != nil {
+			ctrl.Close()
+			return nil, err
+		}
+		_ = ctrl.Resize(p.ID, defaultCols, defaultRows)
+		m.deliverStartup(ctrl, p)
+		p.Status = model.StatusLive
+	}
+	pane0.Status = model.StatusLive
+	ws.Status = model.StatusLive
+
+	m.mu.Lock()
+	e.ctrl = ctrl
+	m.mu.Unlock()
+	_ = m.store.SaveWorkspace(ws)
+	for _, p := range ws.Panes {
+		_ = m.store.SavePane(p)
+	}
+	go m.watch(wsID, ctrl)
+	return ws, nil
+}
+
 // KillWorkspace tears down a workspace's tmux session and registry record.
 func (m *Manager) KillWorkspace(wsID string) error {
 	e := m.entry(wsID)
@@ -195,6 +255,60 @@ func (m *Manager) Workspace(wsID string) *model.Workspace {
 		return e.ws
 	}
 	return nil
+}
+
+// ResolvePane maps a Claude Code hook to a ccmux pane id: prefer the explicit
+// CCMUX_PANE_ID the hook inherited; otherwise fall back to the pane whose CWD is
+// the longest prefix of the hook's cwd (port of the app's longest-repo-prefix
+// resolution). Returns "" if nothing matches.
+func (m *Manager) ResolvePane(paneID, cwd string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if paneID != "" {
+		if _, p := m.findPaneLocked(paneID); p != nil {
+			return paneID
+		}
+	}
+	best, bestLen := "", -1
+	for _, e := range m.byID {
+		for _, p := range e.ws.Panes {
+			if p.CWD != "" && strings.HasPrefix(cwd, p.CWD) && len(p.CWD) > bestLen {
+				best, bestLen = p.ID, len(p.CWD)
+			}
+		}
+	}
+	return best
+}
+
+// ApplyAttention sets a pane's attention state, persists it, and broadcasts the
+// change to every lens attached to its workspace.
+func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
+	m.mu.Lock()
+	e, p := m.findPaneLocked(paneID)
+	if p == nil {
+		m.mu.Unlock()
+		return
+	}
+	p.Attention = att
+	ctrl := e.ctrl
+	saved := *p
+	m.mu.Unlock()
+
+	if ctrl != nil {
+		ctrl.Broadcast(session.Event{Kind: "attention", PaneID: paneID, Attention: att})
+	}
+	_ = m.store.SavePane(&saved)
+}
+
+func (m *Manager) findPaneLocked(paneID string) (*entry, *model.Pane) {
+	for _, e := range m.byID {
+		for _, p := range e.ws.Panes {
+			if p.ID == paneID {
+				return e, p
+			}
+		}
+	}
+	return nil, nil
 }
 
 // --- helpers ---

@@ -14,12 +14,13 @@ import (
 // wsMsg is the single JSON envelope for all attach traffic (v1: JSON+base64; a
 // binary hot-path frame is a later optimization). Bytes travel in Data (base64).
 type wsMsg struct {
-	T     string      `json:"t"`
-	Pane  string      `json:"pane,omitempty"`
-	Data  string      `json:"data,omitempty"`
-	Cols  int         `json:"cols,omitempty"`
-	Rows  int         `json:"rows,omitempty"`
-	Panes []paneInfo  `json:"panes,omitempty"`
+	T     string          `json:"t"`
+	Pane  string          `json:"pane,omitempty"`
+	Data  string          `json:"data,omitempty"`
+	State model.Attention `json:"state,omitempty"`
+	Cols  int             `json:"cols,omitempty"`
+	Rows  int             `json:"rows,omitempty"`
+	Panes []paneInfo      `json:"panes,omitempty"`
 }
 
 type paneInfo struct {
@@ -86,7 +87,7 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 			if sub.Lagged() {
 				sendSnapshots(conn, ctrl, ws)
 			}
-			if err := conn.WriteJSON(wsMsg{T: "output", Pane: ev.PaneID, Data: b64(ev.Data)}); err != nil {
+			if err := conn.WriteJSON(frameFor(ev)); err != nil {
 				return
 			}
 		}
@@ -111,6 +112,18 @@ func readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Con
 				_ = ctrl.Resize(msg.Pane, msg.Cols, msg.Rows)
 			}
 		}
+	}
+}
+
+// frameFor renders a session event into its wire frame.
+func frameFor(ev session.Event) wsMsg {
+	switch ev.Kind {
+	case "attention":
+		return wsMsg{T: "attention", Pane: ev.PaneID, State: ev.Attention}
+	case "pane-added", "pane-closed":
+		return wsMsg{T: ev.Kind, Pane: ev.PaneID}
+	default:
+		return wsMsg{T: "output", Pane: ev.PaneID, Data: b64(ev.Data)}
 	}
 }
 

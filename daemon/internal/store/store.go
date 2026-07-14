@@ -117,7 +117,7 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 }
 
 func (s *SQLite) attachPanes(byID map[string]*model.Workspace) error {
-	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention FROM panes`)
+	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention FROM panes ORDER BY created_at`)
 	if err != nil {
 		return err
 	}

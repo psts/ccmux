@@ -16,6 +16,7 @@ import (
 
 	"ccmux.dev/ccmuxd/config"
 	"ccmux.dev/ccmuxd/internal/api"
+	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
@@ -25,6 +26,7 @@ func main() {
 	socket := flag.String("socket", "ccmux", "tmux server socket name (-L)")
 	addr := flag.String("addr", "127.0.0.1:7890", "HTTP listen address")
 	dbPath := flag.String("db", defaultDBPath(), "registry SQLite path")
+	hooksSock := flag.String("hooks-socket", "/tmp/ccmux-hooks.sock", "Claude Code hooks Unix socket")
 	flag.Parse()
 
 	cfgPath := filepath.Join(os.TempDir(), "ccmux-tmux.conf")
@@ -47,6 +49,15 @@ func main() {
 	mgr := manager.New(ctx, srv, st)
 	if err := mgr.Start(); err != nil {
 		log.Fatalf("manager start: %v", err)
+	}
+
+	// Claude Code hooks → attention fan-out. Non-fatal if the socket is taken
+	// (e.g. a local ccmux app already bound it); the daemon still serves.
+	if hl, err := hooks.Listen(*hooksSock, mgr); err != nil {
+		log.Printf("hooks listener disabled: %v", err)
+	} else {
+		defer hl.Close()
+		log.Printf("hooks listening on %s", *hooksSock)
 	}
 
 	httpSrv := &http.Server{Addr: *addr, Handler: api.NewServer(mgr).Handler()}

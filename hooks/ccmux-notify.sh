@@ -28,8 +28,11 @@ case "${1:-unknown}" in
 esac
 
 # Build the outgoing message in a single python pass: reads stdin, pulls cwd +
-# notification_type, and emits properly-escaped compact JSON. Bails (no output) when
-# there's no cwd to map to a workspace.
+# notification_type, and emits properly-escaped compact JSON. Also forwards
+# session_id (from the payload) and pane_id (from $CCMUX_PANE_ID, inherited from
+# the tmux window the daemon spawned) so the daemon can attribute the event to an
+# exact pane; these extra fields are ignored by the app's driver-mode listener.
+# Bails (no output) when there's no cwd to map to a workspace.
 MSG=$(TYPE="$TYPE" python3 -c "
 import sys, json, os
 try:
@@ -43,6 +46,8 @@ print(json.dumps({
     'type': os.environ['TYPE'],
     'cwd': cwd,
     'notification_type': d.get('notification_type') or '',
+    'session_id': d.get('session_id') or '',
+    'pane_id': os.environ.get('CCMUX_PANE_ID') or '',
 }))
 " 2>/dev/null)
 
