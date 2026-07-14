@@ -23,7 +23,18 @@ type ClientInfo struct {
 
 type client struct {
 	info      ClientInfo
+	email     string // verified tailnet login (email); server-side only, never broadcast
 	lastInput int64
+}
+
+// DriverIdentity is the human currently driving a workspace, for git attribution
+// (the /v1/panes/{id}/driver endpoint). Unlike the broadcast ClientInfo it carries
+// the email, so a commit hook can write a real Co-Authored-By trailer.
+type DriverIdentity struct {
+	User     string `json:"user"`
+	Email    string `json:"email,omitempty"`
+	Device   string `json:"device,omitempty"`
+	Verified bool   `json:"verified"`
 }
 
 type wsPresence struct {
@@ -46,8 +57,10 @@ func newPresenceHub(mgr *manager.Manager) *presenceHub {
 	return &presenceHub{mgr: mgr, byWS: map[string]*wsPresence{}}
 }
 
-// Join registers a client and returns its connection id.
-func (h *presenceHub) Join(wsID string, info ClientInfo) string {
+// Join registers a client and returns its connection id. email is the verified
+// tailnet login (empty for self-declared identities); it is retained server-side
+// for git attribution and never broadcast.
+func (h *presenceHub) Join(wsID string, info ClientInfo, email string) string {
 	h.mu.Lock()
 	h.seq++
 	id := strconv.Itoa(h.seq)
@@ -57,11 +70,27 @@ func (h *presenceHub) Join(wsID string, info ClientInfo) string {
 		wp = &wsPresence{clients: map[string]*client{}}
 		h.byWS[wsID] = wp
 	}
-	wp.clients[id] = &client{info: info}
+	wp.clients[id] = &client{info: info, email: email}
 	snap := h.snapshotLocked(wsID)
 	h.mu.Unlock()
 	h.broadcast(wsID, snap)
 	return id
+}
+
+// Driver returns the identity of the workspace's current driver (the most recent
+// non-readonly typist), or ok=false when nobody is driving.
+func (h *presenceHub) Driver(wsID string) (DriverIdentity, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	wp := h.byWS[wsID]
+	if wp == nil || wp.driver == "" {
+		return DriverIdentity{}, false
+	}
+	c := wp.clients[wp.driver]
+	if c == nil {
+		return DriverIdentity{}, false
+	}
+	return DriverIdentity{User: c.info.User, Email: c.email, Device: c.info.Device, Verified: c.info.Verified}, true
 }
 
 // Leave removes a client.

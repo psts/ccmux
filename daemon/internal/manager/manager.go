@@ -34,6 +34,11 @@ type Manager struct {
 	ctx    context.Context
 	events *firehose
 
+	// LocalURL is the daemon's own loopback base URL (e.g. http://127.0.0.1:7890),
+	// injected into every hosted pane's env as CCMUX_DAEMON_URL so on-host hooks
+	// (the git co-author trailer) reach the daemon with zero config. Empty = omit.
+	LocalURL string
+
 	mu   sync.RWMutex
 	byID map[string]*entry
 }
@@ -336,7 +341,21 @@ func (m *Manager) newPane(wsID, cwd, startupCmd, createdBy string) *model.Pane {
 
 func (m *Manager) paneEnv(paneID string) map[string]string {
 	_ = shellint.WriteZdotdir(shellint.ZdotdirPath(paneID))
-	return shellint.EnvForPane(paneID)
+	env := shellint.EnvForPane(paneID)
+	if m.LocalURL != "" {
+		env["CCMUX_DAEMON_URL"] = m.LocalURL
+	}
+	return env
+}
+
+// WorkspaceForPane returns the workspace id owning a pane, or "" if unknown.
+func (m *Manager) WorkspaceForPane(paneID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, _ := m.findPaneLocked(paneID); e != nil {
+		return e.ws.ID
+	}
+	return ""
 }
 
 // deliverStartup sends a pane's startup command as keystrokes (the sanctioned

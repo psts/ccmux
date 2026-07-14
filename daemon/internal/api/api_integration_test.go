@@ -272,6 +272,108 @@ func TestAPI_EventsFirehose(t *testing.T) {
 	t.Fatal("did not receive firehose attention frame for pane0")
 }
 
+// TestAPI_PaneDriver drives the git-attribution path: with nobody attached the
+// driver endpoint is empty (204 → a solo commit gets no trailer); once a lens
+// attaches and types, GET /v1/panes/{id}/driver names that typist.
+func TestAPI_PaneDriver(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-driver-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := manager.New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	hs := httptest.NewServer(NewServer(mgr).Handler())
+	defer hs.Close()
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	// Unknown pane → 404.
+	if code := getStatus(t, hs.URL+"/v1/panes/nope/driver"); code != http.StatusNotFound {
+		t.Fatalf("unknown pane status = %d, want 404", code)
+	}
+	// No one attached yet → 204 (no driver).
+	if code := getStatus(t, hs.URL+"/v1/panes/"+pane0+"/driver"); code != http.StatusNoContent {
+		t.Fatalf("no-driver status = %d, want 204", code)
+	}
+
+	// Attach as Alice and type, making her the driver.
+	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http") + "/v1/attach?workspace=" + ws.ID + "&user=Alice&device=laptop"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+	if m := readMsg(t, conn); m.T != "hello" {
+		t.Fatalf("first frame = %q, want hello", m.T)
+	}
+	_ = conn.WriteJSON(wsMsg{T: "input", Pane: pane0, Data: base64.StdEncoding.EncodeToString([]byte("x"))})
+
+	// Poll the driver endpoint until Alice shows up (input is applied async).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, body := getJSON(t, hs.URL+"/v1/panes/"+pane0+"/driver")
+		if code == http.StatusOK {
+			if body["user"] != "Alice" {
+				t.Fatalf("driver user = %v, want Alice", body["user"])
+			}
+			if body["device"] != "laptop" {
+				t.Fatalf("driver device = %v, want laptop", body["device"])
+			}
+			return // success
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("driver never became Alice (last status %d)", code)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func getStatus(t *testing.T, url string) int {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func getJSON(t *testing.T, url string) (int, map[string]any) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, nil
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode driver: %v", err)
+	}
+	return resp.StatusCode, body
+}
+
 func readMsg(t *testing.T, conn *websocket.Conn) wsMsg {
 	t.Helper()
 	var m wsMsg

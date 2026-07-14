@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
+	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
 	mux.HandleFunc("GET /v1/attach", s.attach)
 	mux.HandleFunc("GET /v1/events", s.events)
 	// The web lens (served from the embedded bundle) catches everything not
@@ -114,6 +115,23 @@ func (s *Server) reviveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+// paneDriver reports the human currently driving a pane's workspace, for the git
+// co-author trailer. 404 if the pane is unknown; 204 when nobody is driving (a
+// solo/unattended session), so the hook simply adds no trailer.
+func (s *Server) paneDriver(w http.ResponseWriter, r *http.Request) {
+	wsID := s.mgr.WorkspaceForPane(r.PathValue("id"))
+	if wsID == "" {
+		writeError(w, http.StatusNotFound, "unknown pane")
+		return
+	}
+	driver, ok := s.presence.Driver(wsID)
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, driver)
 }
 
 // --- JSON helpers ---

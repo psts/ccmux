@@ -56,8 +56,10 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	// loopback/LAN connections or when whois is unavailable.
 	user := orDefault(r.URL.Query().Get("user"), "anon")
 	verified := false
+	email := ""
 	if login, display, ok := s.identity.Resolve(r.RemoteAddr); ok {
 		user = orDefault(display, login)
+		email = login // tailnet LoginName is an email — used for git attribution
 		verified = true
 	}
 	connID := s.presence.Join(wsID, ClientInfo{
@@ -65,7 +67,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 		Device:   r.URL.Query().Get("device"),
 		ReadOnly: readonly,
 		Verified: verified,
-	})
+	}, email)
 	defer s.presence.Leave(wsID, connID)
 
 	if err := conn.WriteJSON(wsMsg{T: "hello", Panes: paneInfos(ws)}); err != nil {

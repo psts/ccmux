@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,6 +48,7 @@ func main() {
 
 	srv := &tmux.Server{Socket: *socket, ConfigPath: cfgPath}
 	mgr := manager.New(ctx, srv, st)
+	mgr.LocalURL = loopbackURL(*addr)
 	if err := mgr.Start(); err != nil {
 		log.Fatalf("manager start: %v", err)
 	}
@@ -73,6 +75,20 @@ func main() {
 		log.Fatalf("http: %v", err)
 	}
 	log.Print("ccmuxd stopped")
+}
+
+// loopbackURL turns a listen address into a base URL an on-host hook can reach.
+// A wildcard/empty host (0.0.0.0, ::, "") isn't dialable as a client, so it maps
+// to 127.0.0.1; a concrete host is kept as-is.
+func loopbackURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // defaultDBPath returns ~/Library/Application Support/ccmuxd/ccmuxd.db (or the
