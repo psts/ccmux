@@ -35,7 +35,7 @@ func main() {
 	dbPath := flag.String("db", defaultDBPath(), "registry SQLite path")
 	hooksSock := flag.String("hooks-socket", "/tmp/ccmux-hooks.sock", "Claude Code hooks Unix socket")
 	vapidPath := flag.String("vapid", defaultVAPIDPath(), "VAPID keypair JSON path (web push)")
-	pushSubject := flag.String("push-subject", "mailto:ccmux@ccmux.local", "VAPID subject (mailto:/https: identifying this server)")
+	pushSubject := flag.String("push-subject", "https://ccmux.dev", "VAPID subject: a real contact email or https: URL identifying this server (Apple rejects unroutable domains like .local)")
 	tsnetEnabled := flag.Bool("tsnet", false, "serve as an own tailnet node (HTTPS on :443, in-process WhoIs identity); needs TS_AUTHKEY on first run")
 	tsnetHostname := flag.String("tsnet-hostname", "ccmuxd", "tailnet node name (→ <name>.<tailnet>.ts.net)")
 	tsnetDir := flag.String("tsnet-dir", defaultTsnetDir(), "tsnet node state directory")

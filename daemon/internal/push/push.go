@@ -33,9 +33,16 @@ type Sender struct {
 	client  webpush.HTTPClient // shared, timeout-bounded
 }
 
-// NewSender builds a Sender. subject must be a valid mailto: or https: URL (the
-// VAPID JWT subject the push service attributes the send to).
+// NewSender builds a Sender. subject is the VAPID JWT "sub": a contact email or
+// https: URL the push service attributes the send to.
+//
+// webpush-go prepends "mailto:" to any non-https subject, so a subject that
+// already carries "mailto:" would become "mailto:mailto:..." — which Apple's push
+// service rejects as BadJwtToken. We strip a redundant prefix so callers may pass
+// either a bare email, a mailto: URI, or an https: URL. (Note Apple also rejects
+// unroutable mailto domains like ".local"; use a real domain or an https: URL.)
 func NewSender(keys Keys, subject string) *Sender {
+	subject = strings.TrimPrefix(subject, "mailto:")
 	return &Sender{keys: keys, subject: subject, client: &http.Client{Timeout: sendTimeout}}
 }
 

@@ -54,6 +54,20 @@ func TestLoadOrCreateKeys_RejectsCorruptFile(t *testing.T) {
 	}
 }
 
+func TestNewSender_NormalizesSubject(t *testing.T) {
+	// webpush-go prepends mailto: to non-https subjects; a pre-prefixed mailto:
+	// would double up and Apple rejects it (BadJwtToken). NewSender strips it.
+	for in, want := range map[string]string{
+		"mailto:ops@example.com": "ops@example.com",
+		"ops@example.com":        "ops@example.com",
+		"https://example.com":    "https://example.com",
+	} {
+		if got := NewSender(Keys{}, in).subject; got != want {
+			t.Errorf("NewSender subject %q → %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestTopic_URLSafeAndBounded(t *testing.T) {
 	got := Topic("11111111-2222-3333-4444-555555555555")
 	if len(got) > 32 {
