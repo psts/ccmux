@@ -32,6 +32,8 @@ type paneInfo struct {
 	Title     string          `json:"title"`
 	CWD       string          `json:"cwd"`
 	Attention model.Attention `json:"attention"`
+	Cols      int             `json:"cols,omitempty"`
+	Rows      int             `json:"rows,omitempty"`
 }
 
 // attach upgrades to a WebSocket and streams one workspace's panes. Only this
@@ -154,7 +156,9 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 				continue
 			}
 			if msg.Cols > 0 && msg.Rows > 0 {
-				_ = ctrl.Resize(msg.Pane, msg.Cols, msg.Rows)
+				// Through the manager so the new size is recorded and broadcast to
+				// other lenses (drives the mobile "take over" affordance).
+				_ = s.mgr.ResizePane(msg.Pane, msg.Cols, msg.Rows)
 			}
 		case "focus":
 			s.presence.Focus(wsID, connID, msg.Pane)
@@ -175,6 +179,9 @@ func frameFor(ev session.Event) wsMsg {
 		return wsMsg{T: "layout", Layout: lu.Blob, LayoutVersion: lu.Version}
 	case "pane-added", "pane-closed":
 		return wsMsg{T: ev.Kind, Pane: ev.PaneID}
+	case "pane-size":
+		ps, _ := ev.Payload.(manager.PaneSize)
+		return wsMsg{T: "pane-size", Pane: ev.PaneID, Cols: ps.Cols, Rows: ps.Rows}
 	default:
 		return wsMsg{T: "output", Pane: ev.PaneID, Data: b64(ev.Data)}
 	}
@@ -183,7 +190,7 @@ func frameFor(ev session.Event) wsMsg {
 func paneInfos(ws *model.Workspace) []paneInfo {
 	out := make([]paneInfo, len(ws.Panes))
 	for i, p := range ws.Panes {
-		out[i] = paneInfo{ID: p.ID, Title: p.Title, CWD: p.CWD, Attention: p.Attention}
+		out[i] = paneInfo{ID: p.ID, Title: p.Title, CWD: p.CWD, Attention: p.Attention, Cols: p.Cols, Rows: p.Rows}
 	}
 	return out
 }

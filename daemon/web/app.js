@@ -14,6 +14,7 @@ const state = {
   fit: null,
   firehose: null,    // global /v1/events WS (sidebar attention, all workspaces)
   attn: {},          // wsId -> { paneId -> attentionState } from the firehose
+  paneCols: 0,       // authoritative width of the current pane (from the daemon)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -115,10 +116,13 @@ function ensureTerm() {
 }
 
 // onActivity fires on visibility/focus/blur: always report focus (suppression),
-// and when this device is the active view, re-fit its size.
+// and re-fit whenever this view is visible. Being visible (foreground) is enough
+// reason to re-assert our size — gating on document.hasFocus() was unreliable on
+// iOS PWAs, so returning to the phone never re-drove and the pane stayed at the
+// width a desktop had set (distorted). Re-fitting on visible auto-corrects it.
 function onActivity() {
   reportFocus();
-  if (document.visibilityState === "visible" && document.hasFocus()) scheduleFit();
+  if (document.visibilityState === "visible") scheduleFit();
 }
 
 function reportFocus() {
@@ -145,15 +149,44 @@ function doFit() {
   const { cols, rows } = state.term;
   if (!cols || !rows || cols < MIN_COLS) return;
   send({ t: "resize", pane: state.paneId, cols, rows });
+  // We just drove the pane to our width — reflect it immediately (the daemon's
+  // pane-size broadcast will confirm) so the "take over" affordance clears.
+  state.paneCols = cols;
+  updateTakeover();
+}
+
+// --- "take over" (mobile): reclaim the shared pane's size when another lens (a
+// desktop) drove it wider than this phone shows. Shown only when the daemon's
+// authoritative pane width differs from what this view can display 1:1. ---
+function isMobile() { return window.matchMedia("(max-width: 700px)").matches; }
+
+function updateTakeover() {
+  const stale = isMobile() && !!state.paneId && !!state.term &&
+    state.term.cols > 0 && state.paneCols > 0 && state.paneCols !== state.term.cols;
+  document.getElementById("app").classList.toggle("stale", stale);
+}
+
+// Reclaim: re-attach the current pane, which resets + re-seeds and re-fits to this
+// screen's width (the same thing selecting the session in the drawer does).
+function takeOver() {
+  document.getElementById("app").classList.remove("stale");
+  if (state.wsId) attach(state.wsId, state.paneId);
 }
 
 // --- mobile session drawer (off-canvas sidebar) ---
 function closeDrawer() { document.getElementById("app").classList.remove("drawer-open"); }
 function toggleDrawer() { document.getElementById("app").classList.toggle("drawer-open"); }
 
+// paneColsOf returns a pane's daemon-reported width (0 if unknown).
+function paneColsOf(paneId) {
+  const p = state.panes.find((x) => x.id === paneId);
+  return (p && p.cols) || 0;
+}
+
 // --- attach / websocket ---
 function attach(wsId, wantPane) {
   closeDrawer(); // selecting a session on mobile dismisses the drawer
+  state.paneCols = 0;
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = wsId;
   state.wantPane = wantPane;
@@ -178,13 +211,18 @@ function onMessage(ev) {
       state.panes = m.panes || [];
       state.paneId = state.wantPane || (state.panes[0] && state.panes[0].id) || null;
       state.wantPane = null;
+      state.paneCols = paneColsOf(state.paneId);
       renderTabs();
       scheduleFit();
       reportFocus();
+      updateTakeover();
       break;
     case "snapshot":
     case "output":
       if (m.pane === state.paneId && m.data) state.term.write(b64ToBytes(m.data));
+      break;
+    case "pane-size":
+      if (m.pane === state.paneId) { state.paneCols = m.cols || 0; updateTakeover(); }
       break;
     case "attention":
       setAttention(m.pane, m.state);
@@ -301,6 +339,7 @@ window.ccmux = { attach, getUser }; // push.js deep-links + shares the presence 
 $("new-ws").onclick = newWorkspace;
 $("menu-toggle").onclick = toggleDrawer;
 $("drawer-backdrop").onclick = closeDrawer;
+$("takeover").onclick = takeOver;
 fetchWorkspaces().then(bootDeepLink);
 connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes

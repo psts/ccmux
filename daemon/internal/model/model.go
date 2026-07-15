@@ -66,4 +66,9 @@ type Pane struct {
 	CreatedAt      int64     `json:"createdAt"`
 	Status         Status    `json:"status"`
 	Attention      Attention `json:"attention"`
+	// Cols/Rows are the pane's current tmux size (runtime-only; the daemon owns it
+	// via resize-window). Lenses use it to detect when another lens drove the shared
+	// pane to a different width — e.g. a phone showing a "take over" control.
+	Cols int `json:"cols,omitempty"`
+	Rows int `json:"rows,omitempty"`
 }

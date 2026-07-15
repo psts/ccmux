@@ -397,7 +397,43 @@ func (m *Manager) newPane(wsID, cwd, startupCmd, createdBy string) *model.Pane {
 		ID: uuid.NewString(), WorkspaceID: wsID, CWD: cwd, StartupCommand: startupCmd,
 		CreatedBy: createdBy, CreatedAt: nowMillis(), Status: model.StatusLive,
 		Attention: model.AttentionIdle,
+		Cols:      defaultCols, Rows: defaultRows, // matches the initial ctrl.Resize
 	}
+}
+
+// PaneSize is the payload of a "pane-size" event: a pane's new tmux dimensions,
+// broadcast so lenses know the authoritative size (a phone can then surface a
+// "take over" control when another lens drove the shared pane wider than it shows).
+type PaneSize struct {
+	Cols int
+	Rows int
+}
+
+// ResizePane sets a pane's tmux size, records it on the pane, and — only when the
+// size actually changed — broadcasts the new size to every attached lens. This is
+// the single resize entry point for the API so size changes are always announced.
+func (m *Manager) ResizePane(paneID string, cols, rows int) error {
+	m.mu.Lock()
+	e, p := m.findPaneLocked(paneID)
+	if p == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("unknown pane %s", paneID)
+	}
+	ctrl := e.ctrl
+	changed := p.Cols != cols || p.Rows != rows
+	p.Cols, p.Rows = cols, rows
+	m.mu.Unlock()
+
+	if ctrl == nil {
+		return fmt.Errorf("workspace for pane %s not live", paneID)
+	}
+	if err := ctrl.Resize(paneID, cols, rows); err != nil {
+		return err
+	}
+	if changed {
+		ctrl.Broadcast(session.Event{Kind: "pane-size", PaneID: paneID, Payload: PaneSize{Cols: cols, Rows: rows}})
+	}
+	return nil
 }
 
 func (m *Manager) paneEnv(paneID string) map[string]string {
