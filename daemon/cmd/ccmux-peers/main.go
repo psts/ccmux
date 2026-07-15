@@ -1,0 +1,219 @@
+// Command ccmux-peers is the per-session claude-peers MCP server, thin-client
+// edition: all durable state (delivery cursor, recent senders, outstanding
+// permission requests, pending spawns) lives in ccmuxd — this process holds
+// only its identity and connections. Wire it exactly like the old bun server:
+//
+//	claude mcp add --scope user --transport stdio claude-peers -- /path/to/ccmux-peers
+//	claude --dangerously-load-development-channels server:claude-peers
+//
+// Identity: hosted panes carry CCMUX_DAEMON_URL / CCMUX_PANE_ID /
+// CCMUX_PANE_TOKEN in their environment; sessions outside ccmux read the
+// daemon-info file (~/Library/Application Support/ccmuxd/peers.json) and land
+// in the parent-directory fallback group. CCMUX_PEERS_CHANNEL=0 opts a session
+// out of live push (check_messages becomes the delivery path).
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"ccmux.dev/ccmuxd/internal/peers"
+)
+
+type app struct {
+	mcp         *mcpServer
+	daemon      *daemonClient
+	channelMode bool
+	paneID      string
+	name        string
+	cwd         string
+	gitRoot     string
+
+	mu     sync.Mutex
+	id     string // assigned by ccmuxd on register
+	grp    string
+	regReq map[string]any
+}
+
+func (a *app) peerID() string { a.mu.Lock(); defer a.mu.Unlock(); return a.id }
+func (a *app) group() string  { a.mu.Lock(); defer a.mu.Unlock(); return a.grp }
+
+func main() {
+	a := &app{mcp: newMCPServer(), channelMode: os.Getenv("CCMUX_PEERS_CHANNEL") != "0"}
+	a.cwd, _ = os.Getwd()
+	a.gitRoot = gitRoot(a.cwd)
+	a.name = os.Getenv("CLAUDE_PEERS_NAME")
+	a.paneID = os.Getenv("CCMUX_PANE_ID")
+
+	url, token := os.Getenv("CCMUX_DAEMON_URL"), os.Getenv("CCMUX_PANE_TOKEN")
+	if a.paneID == "" || url == "" || token == "" {
+		// Not a fully-tokened hosted pane → register pane-less (dirname fallback
+		// group) with the daemon-info file's shared credentials.
+		a.paneID = ""
+		url, token = readDaemonInfo()
+	}
+	if url == "" {
+		logf("no ccmuxd found (env or daemon-info file) — tools will error until it appears")
+		url, token = "http://127.0.0.1:7890", ""
+	}
+	a.daemon = newDaemonClient(url, token)
+	logf("cwd=%s git_root=%s pane=%s daemon=%s channel=%v", a.cwd, a.gitRoot, orID(a.paneID, "(none)"), url, a.channelMode)
+
+	a.installHandlers()
+
+	// Register in the background with backoff — never block the MCP handshake.
+	go func() {
+		delay := time.Second
+		for a.peerID() == "" {
+			if err := a.register(); err != nil {
+				logf("register: %v (retrying in %s)", err, delay)
+				time.Sleep(delay)
+				delay = min(delay*2, 15*time.Second)
+				continue
+			}
+			logf("registered as %s (name %s, group %s)", a.peerID(), a.name, a.group())
+			if a.channelMode {
+				go a.runPushLoop()
+			} else {
+				go a.keepRegistered()
+			}
+		}
+	}()
+
+	// Serve stdio until the parent closes the pipe, then unregister and exit —
+	// an orphaned thin client must not hold a stale registration.
+	a.mcp.Serve()
+	if id := a.peerID(); id != "" {
+		_ = a.daemon.post("/v1/peers/unregister", map[string]any{"peer_id": id}, nil)
+		logf("unregistered (stdin closed)")
+	}
+}
+
+func (a *app) register() error {
+	a.mu.Lock()
+	req := map[string]any{
+		"pane_id": a.paneID, "pid": os.Getpid(),
+		"cwd": a.cwd, "git_root": a.gitRoot,
+		"name": a.name, "requested_id": a.id,
+	}
+	a.mu.Unlock()
+	var resp struct {
+		PeerID string `json:"peer_id"`
+		Name   string `json:"name"`
+		Group  string `json:"group"`
+	}
+	if err := a.daemon.post("/v1/peers/register", req, &resp); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.id, a.grp = resp.PeerID, resp.Group
+	a.mu.Unlock()
+	a.name = resp.Name
+	return nil
+}
+
+func (a *app) installHandlers() {
+	a.mcp.onRequest["initialize"] = func(params json.RawMessage) (any, *rpcError) {
+		var in struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(params, &in)
+		if in.ProtocolVersion == "" {
+			in.ProtocolVersion = "2024-11-05"
+		}
+		return map[string]any{
+			"protocolVersion": in.ProtocolVersion,
+			"capabilities": map[string]any{
+				"tools": map[string]any{},
+				"experimental": map[string]any{
+					"claude/channel":            map[string]any{},
+					"claude/channel/permission": map[string]any{},
+				},
+			},
+			"serverInfo":   map[string]any{"name": "claude-peers", "version": "0.2.0"},
+			"instructions": serverInstructions,
+		}, nil
+	}
+	a.mcp.onRequest["ping"] = func(json.RawMessage) (any, *rpcError) {
+		return map[string]any{}, nil
+	}
+	a.mcp.onRequest["tools/list"] = func(json.RawMessage) (any, *rpcError) {
+		return map[string]any{"tools": toolsList}, nil
+	}
+	a.mcp.onRequest["tools/call"] = func(params json.RawMessage) (any, *rpcError) {
+		var in struct {
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal(params, &in); err != nil {
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+		return a.callTool(in.Name, in.Args), nil
+	}
+	a.mcp.onNotify["notifications/initialized"] = func(json.RawMessage) {}
+	a.mcp.onNotify["notifications/cancelled"] = func(json.RawMessage) {}
+
+	// Claude Code opened a tool-approval dialog → hand it to ccmuxd, which
+	// relays to whoever delegated work to this session recently.
+	a.mcp.onNotify["notifications/claude/channel/permission_request"] = func(params json.RawMessage) {
+		var in struct {
+			RequestID    string `json:"request_id"`
+			ToolName     string `json:"tool_name"`
+			Description  string `json:"description"`
+			InputPreview string `json:"input_preview"`
+		}
+		if err := json.Unmarshal(params, &in); err != nil || a.peerID() == "" {
+			return
+		}
+		var resp struct {
+			RelayedTo int `json:"relayed_to"`
+		}
+		if err := a.daemon.post("/v1/peers/permission-request", map[string]any{
+			"peer_id": a.peerID(), "request_id": in.RequestID,
+			"tool_name": in.ToolName, "description": in.Description,
+			"input_preview": in.InputPreview,
+		}, &resp); err != nil {
+			logf("permission relay failed: %v", err)
+			return
+		}
+		logf("relayed permission_request %s (%s) to %d recent sender(s)", in.RequestID, in.ToolName, resp.RelayedTo)
+	}
+}
+
+// keepRegistered is the poll-only session's substitute for the push loop's
+// reconnect-and-re-register: a periodic idempotent re-register, so a daemon
+// restart doesn't strand the peer until its own process restarts.
+func (a *app) keepRegistered() {
+	for range time.Tick(time.Minute) {
+		if err := a.register(); err != nil {
+			logf("keepalive register: %v", err)
+		}
+	}
+}
+
+// readDaemonInfo loads the pane-less discovery file (plain terminals have no
+// CCMUX_DAEMON_URL in their environment).
+func readDaemonInfo() (url, token string) {
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		return "", ""
+	}
+	info, err := peers.ReadDaemonInfo(filepath.Join(cfg, "ccmuxd", "peers.json"))
+	if err != nil {
+		return "", ""
+	}
+	return info.URL, info.Token
+}
+
+func gitRoot(cwd string) string {
+	out, err := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
