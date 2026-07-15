@@ -9,7 +9,7 @@ class PeerMessagesController {
     private var isShowing = false
     private var lastDismissTime: Date?
 
-    func toggle(project: String, relativeTo window: NSWindow?) {
+    func toggle(group: String, relativeTo window: NSWindow?) {
         if isShowing {
             dismiss()
         } else {
@@ -17,15 +17,15 @@ class PeerMessagesController {
             if let last = lastDismissTime, Date().timeIntervalSince(last) < 0.3 {
                 return
             }
-            show(project: project, relativeTo: window)
+            show(group: group, relativeTo: window)
         }
     }
 
-    func show(project: String, relativeTo window: NSWindow?) {
+    func show(group: String, relativeTo window: NSWindow?) {
         guard !isShowing else { return }
         isShowing = true
 
-        state.start(project: project)
+        state.start(group: group)
 
         let view = PeerMessagesOverlayView(state: state, onClose: { [weak self] in
             self?.dismiss()

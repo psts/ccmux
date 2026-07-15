@@ -256,11 +256,10 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func togglePeerMessages() {
-        guard let wsId = windowContext.displayedWorkspaceId,
-              let ws = workspaceManager.workspaces.first(where: { $0.id == wsId })
-        else { return }
-        let project = (ws.repoPath as NSString).deletingLastPathComponent
-        peerMessagesController.toggle(project: project, relativeTo: window)
+        // Peers are grouped by ccmux window now: the overlay shows THIS window's
+        // traffic, keyed by the same name syncHostedGroups pushes to the daemon.
+        let group = windowContext.windowName ?? windowManager?.autoWindowName(for: self) ?? "This Window"
+        peerMessagesController.toggle(group: group, relativeTo: window)
     }
 
     var activeController: SplitTreeController? {

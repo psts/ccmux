@@ -1,22 +1,17 @@
 import Foundation
 
+/// Read-only client for ccmuxd's built-in peers bus (the old external broker
+/// on :7899 is gone — the daemon now hosts history, peers, and the live
+/// listen stream under /v1/peers/*, keyed by window group name).
 class PeerBrokerService {
     static let shared = PeerBrokerService()
 
-    var basePortValue: Int {
-        if let portStr = ProcessInfo.processInfo.environment["CLAUDE_PEERS_PORT"],
-           let port = Int(portStr) {
-            return port
-        }
-        return 7899
-    }
+    private var baseURL: String { DaemonConfig.baseURL }
+    private var wsBaseURL: String { DaemonConfig.wsBaseURL }
 
-    private var baseURL: String { "http://127.0.0.1:\(basePortValue)" }
-    private var wsBaseURL: String { "ws://127.0.0.1:\(basePortValue)" }
-
-    func fetchMessages(project: String, limit: Int = 50, since: Date? = nil) async throws -> [PeerMessage] {
-        var components = URLComponents(string: "\(baseURL)/project-messages")!
-        var queryItems = [URLQueryItem(name: "project", value: project)]
+    func fetchMessages(group: String, limit: Int = 50, since: Date? = nil) async throws -> [PeerMessage] {
+        var components = URLComponents(string: "\(baseURL)/v1/peers/messages")!
+        var queryItems = [URLQueryItem(name: "group", value: group)]
         queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
         if let since {
             let formatter = ISO8601DateFormatter()
@@ -29,22 +24,19 @@ class PeerBrokerService {
         return try JSONDecoder().decode([PeerMessage].self, from: data)
     }
 
-    func fetchPeers(project: String) async throws -> [PeerInfo] {
-        var components = URLComponents(string: "\(baseURL)/list-peers")!
-        components.queryItems = [
-            URLQueryItem(name: "project", value: project),
-            URLQueryItem(name: "scope", value: "project"),
-        ]
+    func fetchPeers(group: String) async throws -> [PeerInfo] {
+        var components = URLComponents(string: "\(baseURL)/v1/peers")!
+        components.queryItems = [URLQueryItem(name: "group", value: group)]
 
         let (data, _) = try await URLSession.shared.data(from: components.url!)
         return try JSONDecoder().decode([PeerInfo].self, from: data)
     }
 
-    func connectWebSocket(project: String) -> (stream: AsyncStream<PeerWSMessage>, cancel: () -> Void) {
-        var components = URLComponents(string: "\(wsBaseURL)/ws")!
+    func connectWebSocket(group: String) -> (stream: AsyncStream<PeerWSMessage>, cancel: () -> Void) {
+        var components = URLComponents(string: "\(wsBaseURL)/v1/peers/ws")!
         components.queryItems = [
-            URLQueryItem(name: "project", value: project),
             URLQueryItem(name: "mode", value: "listen"),
+            URLQueryItem(name: "group", value: group),
         ]
 
         let task = URLSession.shared.webSocketTask(with: components.url!)

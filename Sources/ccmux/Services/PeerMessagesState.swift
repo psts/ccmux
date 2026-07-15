@@ -12,26 +12,26 @@ class PeerMessagesState: ObservableObject {
     private var listenTask: Task<Void, Never>?
     private var nextLocalId = -1
 
-    func start(project: String) {
+    func start(group: String) {
         error = nil
         isConnected = false
 
         // Fetch history + peers in parallel, then start WebSocket
         listenTask = Task {
             do {
-                async let fetchedMessages = service.fetchMessages(project: project)
-                async let fetchedPeers = service.fetchPeers(project: project)
+                async let fetchedMessages = service.fetchMessages(group: group)
+                async let fetchedPeers = service.fetchPeers(group: group)
                 let (msgs, prs) = try await (fetchedMessages, fetchedPeers)
                 messages = msgs
                 peers = prs
                 isConnected = true
             } catch {
-                self.error = "Cannot reach peer broker at 127.0.0.1:\(service.basePortValue)"
+                self.error = "Cannot reach ccmuxd at \(DaemonConfig.baseURL)"
                 return
             }
 
             // Start WebSocket for live updates
-            let (stream, cancel) = service.connectWebSocket(project: project)
+            let (stream, cancel) = service.connectWebSocket(group: group)
             wsCancel = cancel
 
             for await wsMessage in stream {
