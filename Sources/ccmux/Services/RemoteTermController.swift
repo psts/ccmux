@@ -29,6 +29,30 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
     private var lastSentCols = -1
     private var lastSentRows = -1
 
+    /// The daemon's authoritative width for this pane (0 until known). When it
+    /// diverges from what this view shows 1:1, another lens drove the shared pane
+    /// and `isStale` becomes true — the hosting view surfaces a "take over" control.
+    private var paneCols = 0
+    private(set) var isStale = false
+    /// Fired (main thread) when isStale flips, so the service can publish it.
+    var onStaleChanged: ((Bool) -> Void)?
+
+    /// Record the daemon's authoritative pane width (from a hello or pane-size frame)
+    /// and re-evaluate staleness against this view's current grid.
+    func setAuthoritativeSize(cols: Int, rows: Int) {
+        paneCols = cols
+        recomputeStale()
+    }
+
+    private func recomputeStale() {
+        let gridCols = terminalView.getTerminal().cols
+        let next = paneCols > 0 && gridCols > 0 && paneCols != gridCols
+        if next != isStale {
+            isStale = next
+            onStaleChanged?(next)
+        }
+    }
+
     init(paneId: String, workingDirectory: String, attach: DaemonAttachClient?) {
         self.paneId = paneId
         self.workingDirectory = workingDirectory
@@ -96,6 +120,10 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
         guard cols != lastSentCols || rows != lastSentRows else { return }
         lastSentCols = cols
         lastSentRows = rows
+        // We are driving the pane to our grid — reflect it immediately (the daemon's
+        // pane-size broadcast confirms) so "take over" clears without a round-trip.
+        paneCols = cols
+        recomputeStale()
         attach?.send(.resize(pane: paneId, cols: cols, rows: rows))
     }
 

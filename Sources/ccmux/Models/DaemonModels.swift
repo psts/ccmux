@@ -140,11 +140,13 @@ struct DaemonPaneInfo: Decodable {
     let title: String
     let cwd: String
     let attention: DaemonAttention?
+    let cols: Int   // authoritative tmux width (0 if the daemon omitted it)
+    let rows: Int
 
     // Explicit keys: a Decodable-only type with a custom init(from:) doesn't get
     // CodingKeys synthesized (the compiler only synthesizes them alongside a
     // synthesized init/encode).
-    private enum CodingKeys: String, CodingKey { case id, title, cwd, attention }
+    private enum CodingKeys: String, CodingKey { case id, title, cwd, attention, cols, rows }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -152,6 +154,8 @@ struct DaemonPaneInfo: Decodable {
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? ""
         attention = try c.decodeIfPresent(DaemonAttention.self, forKey: .attention)
+        cols = try c.decodeIfPresent(Int.self, forKey: .cols) ?? 0
+        rows = try c.decodeIfPresent(Int.self, forKey: .rows) ?? 0
     }
 }
 
@@ -164,6 +168,7 @@ enum DaemonEvent {
     case presence(clients: [DaemonClient])
     case paneAdded(pane: String)
     case paneClosed(pane: String)
+    case paneSize(pane: String, cols: Int, rows: Int)
     case unknown(String)
 
     /// Pure mapping from a wire frame to a typed event (the testable codec seam).
@@ -183,6 +188,8 @@ enum DaemonEvent {
             self = .paneAdded(pane: frame.pane ?? "")
         case "pane-closed":
             self = .paneClosed(pane: frame.pane ?? "")
+        case "pane-size":
+            self = .paneSize(pane: frame.pane ?? "", cols: frame.cols ?? 0, rows: frame.rows ?? 0)
         default:
             self = .unknown(frame.t)
         }

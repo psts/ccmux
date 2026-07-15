@@ -19,6 +19,38 @@ struct HostedTerminalPaneView: View {
                 ReconnectOverlay(state: state)
             }
         }
+        // "Take over" when another lens drove the shared pane to a size this window
+        // can't show 1:1. Sized to the button (top-trailing), so terminal clicks
+        // elsewhere pass through. Tapping re-asserts this window's size.
+        .overlay(alignment: .topTrailing) {
+            if service.hostedConnectionState(paneId: paneId) == .connected,
+               service.hostedIsStale(paneId: paneId) {
+                TakeoverButton {
+                    service.hostedController(paneId: paneId, workingDirectory: workingDirectory)?.sendCurrentSize()
+                }
+                .padding(8)
+            }
+        }
+    }
+}
+
+/// Amber pill that reclaims the shared pane's size for this window.
+private struct TakeoverButton: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.left.and.right")
+                Text("Take over").font(.system(size: 11, weight: .semibold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color(red: 0.88, green: 0.63, blue: 0.29))
+            .foregroundColor(Color(red: 0.13, green: 0.09, blue: 0.01))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Resize this session to fit this window")
     }
 }
 

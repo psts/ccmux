@@ -23,6 +23,9 @@ final class WorkspaceAttachment {
     var onConnectionState: ((DaemonConnectionState) -> Void)?
     /// Route a clicked file link (absolute local path) to the app.
     var onFileLink: ((String) -> Void)?
+    /// Fired when a pane's "another lens drove the size" staleness changes, so the
+    /// service can publish it and the hosting view can show a "take over" control.
+    var onPaneStale: ((String, Bool) -> Void)?
 
     private(set) var connectionState: DaemonConnectionState = .connecting
 
@@ -55,6 +58,7 @@ final class WorkspaceAttachment {
         let cwd = workingDirectory.isEmpty ? repoPath : workingDirectory
         let c = RemoteTermController(paneId: paneId, workingDirectory: cwd, attach: attach)
         c.onFileLinkClicked = { [weak self] rel in self?.onFileLink?(rel) }
+        c.onStaleChanged = { [weak self] stale in self?.onPaneStale?(paneId, stale) }
         controllers[paneId] = c
         return c
     }
@@ -67,9 +71,15 @@ final class WorkspaceAttachment {
             controller(forPane: pane, workingDirectory: repoPath).seedSnapshot(bytes)
         case .output(let pane, let bytes):
             controller(forPane: pane, workingDirectory: repoPath).feedOutput(bytes)
+        case .hello(let panes):
+            for p in panes where p.cols > 0 {
+                controller(forPane: p.id, workingDirectory: p.cwd).setAuthoritativeSize(cols: p.cols, rows: p.rows)
+            }
+        case .paneSize(let pane, let cols, let rows):
+            controller(forPane: pane, workingDirectory: repoPath).setAuthoritativeSize(cols: cols, rows: rows)
         // Attention now rides the global firehose; the attach still carries the
         // per-workspace `attention` frame but it is authoritative on /v1/events.
-        case .attention, .hello, .presence, .paneAdded, .paneClosed, .unknown:
+        case .attention, .presence, .paneAdded, .paneClosed, .unknown:
             break
         }
     }

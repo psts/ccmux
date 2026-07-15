@@ -20,6 +20,10 @@ final class RemoteSessionService: ObservableObject {
     @Published private(set) var coldWorkspaces: [DaemonWorkspace] = []
     /// Per-workspace connection state, for the reconnect overlay.
     @Published private(set) var connectionStates: [UUID: DaemonConnectionState] = [:]
+
+    /// Daemon pane ids whose shared tmux pane was driven to a size this app can't
+    /// show 1:1 (another lens took over). Drives the hosted "Take over" control.
+    @Published private(set) var stalePanes: Set<String> = []
     /// True once a `/v1/workspaces` fetch has succeeded (daemon reachable).
     @Published private(set) var reachable = false
     @Published private(set) var lastError: String?
@@ -138,6 +142,10 @@ final class RemoteSessionService: ObservableObject {
         }
         return nil
     }
+
+    /// Whether another lens drove `paneId`'s shared pane to a size this app can't
+    /// show 1:1 — drives the hosted "Take over" control.
+    func hostedIsStale(paneId: String) -> Bool { stalePanes.contains(paneId) }
 
     /// Connection state of the workspace owning `paneId`, for the reconnect overlay.
     func hostedConnectionState(paneId: String) -> DaemonConnectionState {
@@ -311,6 +319,10 @@ final class RemoteSessionService: ObservableObject {
             workspaceId: appId, daemonId: dw.id, repoPath: dw.repoPath, panes: dw.panes)
         attachment.onConnectionState = { [weak self] state in self?.connectionStates[appId] = state }
         attachment.onFileLink = { [weak self] rel in self?.onFileLink?(appId, rel) }
+        attachment.onPaneStale = { [weak self] pane, stale in
+            guard let self else { return }
+            if stale { self.stalePanes.insert(pane) } else { self.stalePanes.remove(pane) }
+        }
         attachments[appId] = attachment
         connectionStates[appId] = .connecting
         attachment.connect()

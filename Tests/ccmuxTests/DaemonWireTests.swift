@@ -114,6 +114,29 @@ final class DaemonWireTests: XCTestCase {
         } else { XCTFail("expected pane-closed") }
     }
 
+    func testPaneSizeFrameDecodes() {
+        guard case .paneSize(let pane, let cols, let rows)? =
+            DaemonEvent.decode(text: #"{"t":"pane-size","pane":"p1","cols":137,"rows":42}"#) else {
+            return XCTFail("expected pane-size")
+        }
+        XCTAssertEqual(pane, "p1")
+        XCTAssertEqual(cols, 137)
+        XCTAssertEqual(rows, 42)
+    }
+
+    func testHelloPaneCarriesSize() {
+        let text = #"{"t":"hello","panes":[{"id":"p1","title":"c","cwd":"/r","attention":"idle","cols":100,"rows":30}]}"#
+        guard case .hello(let panes)? = DaemonEvent.decode(text: text) else {
+            return XCTFail("expected hello")
+        }
+        XCTAssertEqual(panes[0].cols, 100)
+        XCTAssertEqual(panes[0].rows, 30)
+        // Older daemons omit cols/rows → tolerated as 0.
+        let old = #"{"t":"hello","panes":[{"id":"p1","title":"c","cwd":"/r"}]}"#
+        guard case .hello(let p2)? = DaemonEvent.decode(text: old) else { return XCTFail("expected hello") }
+        XCTAssertEqual(p2[0].cols, 0)
+    }
+
     func testUnknownFrameTypeIsCaptured() {
         guard case .unknown(let t)? = DaemonEvent.decode(text: #"{"t":"future-frame"}"#) else {
             return XCTFail("expected unknown")
