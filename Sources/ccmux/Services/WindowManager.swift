@@ -118,8 +118,10 @@ class WindowManager {
     /// If the workspace is already open in another window, bring that window to front.
     /// Otherwise, switch the requesting window to show it.
     func selectWorkspace(id: UUID, from requestingController: WorkspaceWindowController) {
-        // Switching to a workspace is the "I've seen it" acknowledgment — clear any flash.
+        // Switching to a workspace is the "I've seen it" acknowledgment — clear any
+        // flash. Hosted workspaces flash via RemoteSessionService's monitors.
         workspaceManager.attentionMonitors[id]?.clear()
+        RemoteSessionService.shared.attentionMonitors[id]?.clear()
 
         // Check if another window owns this workspace
         if let ownerWc = windowOwning(workspaceId: id), ownerWc !== requestingController {
@@ -178,6 +180,12 @@ class WindowManager {
             var closingIds: [UUID] = []
 
             for wsId in ownedIds {
+                // Hosted workspaces live on the daemon, not in this window — closing
+                // the window must not close (or archive) them. They become unowned
+                // and are re-adopted into the first window on the next reconcile.
+                if RemoteSessionService.shared.isHosted(wsId) {
+                    continue
+                }
                 let ownedElsewhere = windowControllers.contains { wc in
                     wc !== controller && wc.windowContext.ownedWorkspaceIds.contains(wsId)
                 }
@@ -323,9 +331,16 @@ class WindowManager {
         let currentSpaceID = SpaceTracker.currentSpaceID()
 
         for desc in descriptors {
-            // Only restore if the workspace still exists
+            // Restore if the displayed workspace exists locally — or if the window
+            // owns anything at all: a hosted displayed workspace can't be checked
+            // here (the daemon list arrives async after startup), so the window gets
+            // the benefit of the doubt and shows the welcome screen until the hosted
+            // workspace materializes.
+            let displayedExistsLocally = desc.workspaceId.map { id in
+                workspaceManager.workspaces.contains { $0.id == id }
+            } ?? false
             if let wsId = desc.workspaceId,
-               workspaceManager.workspaces.contains(where: { $0.id == wsId }) {
+               displayedExistsLocally || !desc.ownedWorkspaceIds.isEmpty {
                 // Step 1: Create window (defer: false → valid windowNumber)
                 let wc = WorkspaceWindowController(
                     workspaceManager: workspaceManager,
@@ -392,6 +407,35 @@ class WindowManager {
         schedulePendingWindowFallback()
     }
 
+    /// Give every hosted workspace a window: any id no window owns yet is adopted
+    /// by the first window (mirroring the unowned-local assignment in
+    /// `restoreWindows`). Called after each daemon reconcile, so sessions created
+    /// by other lenses (web, phone, another Mac) always land in a sidebar group.
+    func adoptOrphanHostedWorkspaces() {
+        guard let firstWc = windowControllers.first else { return }
+        var adopted = false
+        for ws in RemoteSessionService.shared.workspaces where windowOwning(workspaceId: ws.id) == nil {
+            firstWc.windowContext.ownedWorkspaceIds.insert(ws.id)
+            adopted = true
+        }
+        if adopted { refreshOtherWindowIds() }
+    }
+
+    /// A hosted workspace is genuinely gone from the daemon (removed by some lens):
+    /// drop it from every window; a window displaying it falls back to its next
+    /// owned workspace (or the welcome screen).
+    func hostedWorkspaceRemoved(id: UUID) {
+        for wc in windowControllers {
+            wc.windowContext.ownedWorkspaceIds.remove(id)
+            wc.windowContext.collapsedWorkspaceIds.remove(id)
+            if wc.windowContext.displayedWorkspaceId == id {
+                wc.windowContext.displayedWorkspaceId = wc.windowContext.ownedWorkspaceIds.first
+                wc.updateWindowTitle()
+            }
+        }
+        refreshOtherWindowIds()
+    }
+
     /// Update all window contexts with which workspaces belong to other windows.
     func refreshOtherWindowIds() {
         for wc in windowControllers {
@@ -411,6 +455,23 @@ class WindowManager {
             // Auto-assign window name if not custom
             if wc.windowContext.windowName == nil {
                 // Don't publish — just for display fallback
+            }
+        }
+        syncHostedGroups()
+    }
+
+    /// Push each hosted workspace's owning-window name to the daemon as its
+    /// shared `group`, so non-Mac lenses (web/phone) render the same sidebar
+    /// grouping. This Mac is the source of truth; the diff against the daemon's
+    /// last-known value keeps steady-state silent. Runs on every ownership/name
+    /// change via refreshOtherWindowIds (move, detach, adopt, create, rename).
+    private func syncHostedGroups() {
+        let service = RemoteSessionService.shared
+        for wc in windowControllers {
+            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
+            for wsId in wc.windowContext.ownedWorkspaceIds
+            where service.isHosted(wsId) && service.groups[wsId] != name {
+                Task { await service.setGroup(wsId, to: name) }
             }
         }
     }

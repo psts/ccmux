@@ -9,6 +9,16 @@ class ClaudeProcessMonitor: ObservableObject {
 
     static let empty = ClaudeProcessMonitor()
 
+    /// A remote-fed monitor for a hosted workspace: no libproc polling (claude
+    /// runs on the daemon's host); reconcile maps the daemon's per-pane
+    /// attention (`running`) into `apply(isRunning:)`.
+    static func remoteFed() -> ClaudeProcessMonitor { ClaudeProcessMonitor() }
+
+    /// Publish daemon-derived state (main thread — called from reconcile).
+    func apply(isRunning running: Bool) {
+        if isRunning != running { isRunning = running }
+    }
+
     private let repoPath: String
     private var pollTimer: DispatchSourceTimer?
     private var isActive = true

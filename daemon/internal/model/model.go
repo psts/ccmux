@@ -4,6 +4,8 @@
 // lens-side concept the daemon stores as an opaque versioned JSON blob.
 package model
 
+import "ccmux.dev/ccmuxd/internal/gitstatus"
+
 // Status is a workspace/pane lifecycle state.
 type Status string
 
@@ -38,6 +40,15 @@ type Workspace struct {
 	LayoutJSON    string   `json:"layoutJson,omitempty"`
 	LayoutVersion int      `json:"layoutVersion"`
 	Panes         []*Pane  `json:"panes"`
+	// Git is the repo's dashboard status (branch, ahead/behind, changed files),
+	// computed daemon-side by the manager's collector — the repo lives on the
+	// daemon's host, so lenses can't read it locally. Runtime-only (not stored);
+	// nil until the first collection.
+	Git *gitstatus.Status `json:"git,omitempty"`
+	// Group is the workspace's sidebar group, shared across lenses. The Mac app
+	// is the source of truth: it pushes the owning window's name here so the
+	// web/phone lens renders the same grouping. Empty = ungrouped.
+	Group string `json:"group,omitempty"`
 }
 
 // PushSubscription is a stored notification target, keyed by tailnet login and

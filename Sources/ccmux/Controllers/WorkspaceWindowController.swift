@@ -56,31 +56,31 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Display a hosted (ccmuxd-backed) workspace without engaging the local
-    /// multi-window ownership machinery — hosted sessions live on the daemon.
-    func displayHostedWorkspace(_ id: UUID) {
-        windowContext.displayedWorkspaceId = id
-        updateWindowTitle()
-        RemoteSessionService.shared.attentionMonitors[id]?.clear()
-        window?.makeKeyAndOrderFront(nil)
-    }
-
-    /// Prompt for a project directory and create a hosted session on the daemon.
+    /// Pick a project folder from the daemon's projects root and create a hosted
+    /// session there. No local file panel: the folders live on the daemon's
+    /// filesystem, which may be a remote server. The new workspace joins THIS
+    /// window's sidebar group and is displayed, like a locally added one.
     func showAddHostedWorkspacePanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a project directory for a hosted session"
-
-        panel.beginSheetModal(for: window!) { result in
-            guard result == .OK, let url = panel.url else { return }
-            let name = url.lastPathComponent
-            Task {
-                await RemoteSessionService.shared.createWorkspace(
-                    name: name, repoPath: url.path, startupCommand: "claude")
-            }
-        }
+        guard let window else { return }
+        var sheet: NSWindow?
+        let picker = HostedProjectPickerView(
+            onPick: { [weak self] project in
+                if let sheet { window.endSheet(sheet) }
+                Task { @MainActor in
+                    guard let newId = await RemoteSessionService.shared.createWorkspace(
+                        name: project.name, repoPath: project.path, startupCommand: "claude"),
+                        let self else { return }
+                    self.windowContext.ownedWorkspaceIds.insert(newId)
+                    self.windowContext.displayedWorkspaceId = newId
+                    self.updateWindowTitle()
+                    self.windowManager?.refreshOtherWindowIds()
+                }
+            },
+            onCancel: { if let sheet { window.endSheet(sheet) } }
+        )
+        let sheetWindow = NSWindow(contentViewController: NSHostingController(rootView: picker))
+        sheet = sheetWindow
+        window.beginSheet(sheetWindow)
     }
 
     private func setupSplitView() {
@@ -100,9 +100,6 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             onSelectWorkspace: { [weak self] id in
                 guard let self else { return }
                 self.windowManager?.selectWorkspace(id: id, from: self)
-            },
-            onSelectHosted: { [weak self] id in
-                self?.displayHostedWorkspace(id)
             },
             onReopenWorkspace: { [weak self] id in
                 self?.windowManager?.reopenWorkspace(id: id)

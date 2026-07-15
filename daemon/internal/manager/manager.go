@@ -271,6 +271,30 @@ func (m *Manager) Controller(wsID string) *session.Controller {
 	return nil
 }
 
+// SetGroup labels a workspace with its shared sidebar group (the owning Mac
+// window's name — the Mac app is the source of truth and pushes it here) so
+// every lens renders the same grouping. Persisted; broadcast as a
+// workspace-status event, which both lenses already answer with a refetch.
+func (m *Manager) SetGroup(wsID, group string) error {
+	m.mu.Lock()
+	e := m.byID[wsID]
+	if e == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("unknown workspace %s", wsID)
+	}
+	if e.ws.Group == group {
+		m.mu.Unlock()
+		return nil
+	}
+	e.ws.Group = group
+	m.mu.Unlock()
+	if err := m.store.SetWorkspaceGroup(wsID, group); err != nil {
+		return err
+	}
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return nil
+}
+
 // List returns a snapshot of all workspaces.
 func (m *Manager) List() []*model.Workspace {
 	m.mu.RLock()

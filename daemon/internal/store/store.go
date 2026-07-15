@@ -19,6 +19,7 @@ type Store interface {
 	DeleteWorkspace(id string) error
 	DeletePane(id string) error
 	SetWorkspaceStatus(id string, status model.Status) error
+	SetWorkspaceGroup(id, group string) error
 	Load() ([]*model.Workspace, error)
 
 	// Push notification subscriptions (transport-generic, keyed by login).
@@ -37,7 +38,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, name TEXT, repo_path TEXT, created_by TEXT,
   created_at INTEGER, tmux_session TEXT, status TEXT,
-  layout_json TEXT, layout_version INTEGER
+  layout_json TEXT, layout_version INTEGER, ws_group TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS panes (
   id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, cwd TEXT,
@@ -61,17 +62,22 @@ func Open(path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
+	// Migration for pre-group registries: ADD COLUMN fails with "duplicate
+	// column" once applied, so the error is deliberately ignored. DEFAULT ''
+	// keeps existing rows scannable into a plain string.
+	_, _ = db.Exec(`ALTER TABLE workspaces ADD COLUMN ws_group TEXT DEFAULT ''`)
 	return &SQLite{db: db}, nil
 }
 
 func (s *SQLite) SaveWorkspace(w *model.Workspace) error {
 	_, err := s.db.Exec(`
-INSERT INTO workspaces (id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version)
-VALUES (?,?,?,?,?,?,?,?,?)
+INSERT INTO workspaces (id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group)
+VALUES (?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
   tmux_session=excluded.tmux_session, status=excluded.status,
-  layout_json=excluded.layout_json, layout_version=excluded.layout_version`,
-		w.ID, w.Name, w.RepoPath, w.CreatedBy, w.CreatedAt, w.TmuxSession, w.Status, w.LayoutJSON, w.LayoutVersion)
+  layout_json=excluded.layout_json, layout_version=excluded.layout_version,
+  ws_group=excluded.ws_group`,
+		w.ID, w.Name, w.RepoPath, w.CreatedBy, w.CreatedAt, w.TmuxSession, w.Status, w.LayoutJSON, w.LayoutVersion, w.Group)
 	return err
 }
 
@@ -135,9 +141,14 @@ func (s *SQLite) SetWorkspaceStatus(id string, status model.Status) error {
 	return err
 }
 
+func (s *SQLite) SetWorkspaceGroup(id, group string) error {
+	_, err := s.db.Exec(`UPDATE workspaces SET ws_group=? WHERE id=?`, group, id)
+	return err
+}
+
 // Load returns all workspaces with their panes attached.
 func (s *SQLite) Load() ([]*model.Workspace, error) {
-	rows, err := s.db.Query(`SELECT id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version FROM workspaces`)
+	rows, err := s.db.Query(`SELECT id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group FROM workspaces`)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +156,7 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 	var out []*model.Workspace
 	for rows.Next() {
 		w := &model.Workspace{}
-		if err := rows.Scan(&w.ID, &w.Name, &w.RepoPath, &w.CreatedBy, &w.CreatedAt, &w.TmuxSession, &w.Status, &w.LayoutJSON, &w.LayoutVersion); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.RepoPath, &w.CreatedBy, &w.CreatedAt, &w.TmuxSession, &w.Status, &w.LayoutJSON, &w.LayoutVersion, &w.Group); err != nil {
 			rows.Close()
 			return nil, err
 		}

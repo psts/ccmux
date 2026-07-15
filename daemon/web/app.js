@@ -15,6 +15,7 @@ const state = {
   firehose: null,    // global /v1/events WS (sidebar attention, all workspaces)
   attn: {},          // wsId -> { paneId -> attentionState } from the firehose
   paneCols: 0,       // authoritative width of the current pane (from the daemon)
+  gitOpen: {},       // wsId -> true when the row's changed-files list is expanded
 };
 
 const $ = (id) => document.getElementById(id);
@@ -55,24 +56,133 @@ async function fetchWorkspaces() {
   renderList();
 }
 
+// renderList mirrors the Mac sidebar: workspaces grouped under their window's
+// name (shared via ws.group — the Mac app pushes it), sorted by name within
+// each group, each row carrying the full git dashboard.
 function renderList() {
   const ul = $("ws-list");
   ul.innerHTML = "";
-  for (const ws of state.workspaces) {
-    const active = ws.id === state.wsId;
-    // Suppress the flash on the workspace you're already watching (mirrors the
-    // native "clear on watch"); other rows flash live from the firehose.
-    const att = active ? "" : wsAttention(ws);
-    const li = document.createElement("li");
-    li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "");
-    li.innerHTML =
-      `<span class="dot ${esc(ws.status)}"></span>` +
-      `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
-      `<span class="count">${(ws.panes || []).length}</span>`;
-    li.onclick = () => attach(ws.id, null);
-    ul.appendChild(li);
+  for (const [group, list] of groupedWorkspaces()) {
+    if (group) {
+      const h = document.createElement("li");
+      h.className = "group-hdr";
+      h.textContent = group.toUpperCase();
+      ul.appendChild(h);
+    }
+    for (const ws of list) ul.appendChild(wsRow(ws));
   }
 }
+
+// groupedWorkspaces buckets by shared group: ungrouped ("") first with no
+// header (daemon-only deployments where no Mac has pushed groups), then named
+// groups alphabetically; workspaces sort by name inside each.
+function groupedWorkspaces() {
+  const byGroup = new Map();
+  for (const ws of state.workspaces) {
+    const g = ws.group || "";
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(ws);
+  }
+  for (const list of byGroup.values()) {
+    list.sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
+  }
+  return [...byGroup.entries()].sort(([a], [b]) =>
+    a === "" ? -1 : b === "" ? 1 : a.localeCompare(b));
+}
+
+function wsRow(ws) {
+  const active = ws.id === state.wsId;
+  // Suppress the flash on the workspace you're already watching (mirrors the
+  // native "clear on watch"); other rows flash live from the firehose.
+  const att = active ? "" : wsAttention(ws);
+  const open = !!state.gitOpen[ws.id];
+  const running = (ws.panes || []).some((p) => p.attention === "running");
+  const li = document.createElement("li");
+  li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "");
+  li.innerHTML =
+    `<div class="ws-row">` +
+    `<span class="exp${ws.git ? (open ? " open" : " closed") : ""}"></span>` +
+    `<span class="dot ${esc(ws.status)}"></span>` +
+    `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
+    (running ? `<span class="bolt">⚡</span>` : "") +
+    gitBadges(ws.git) +
+    `</div>` +
+    (open ? gitDetail(ws) : "");
+  li.onclick = () => attach(ws.id, null);
+  if (ws.git) {
+    li.querySelector(".exp").onclick = (e) => {
+      e.stopPropagation();
+      state.gitOpen[ws.id] = !open;
+      renderList();
+    };
+  }
+  return li;
+}
+
+// --- git dashboard (daemon-computed; renders the same content as the Mac
+// sidebar's WorkspaceRow + GitDashboardContent) ---
+
+// gitBadges is the collapsed row's right side: branch, dirty count, tracking ↑↓.
+function gitBadges(g) {
+  if (!g || !g.isGitRepo) return "";
+  const files = changedFiles(g);
+  let out = `<span class="branch">${esc(g.branch)}</span>`;
+  if (files.length) out += `<span class="dirty">●${files.length}</span>`;
+  if (g.ahead) out += `<span class="ab">↑${g.ahead}</span>`;
+  if (g.behind) out += `<span class="ab">↓${g.behind}</span>`;
+  return out;
+}
+
+// gitDetail is the expanded block: repo path, tracking line, vs-default line,
+// then "Clean" or the changed-file sections.
+function gitDetail(ws) {
+  const g = ws.git;
+  let out = `<div class="git-detail">`;
+  out += `<div class="gd-path">${esc(abbrevPath(ws.repoPath))}</div>`;
+  if (!g.isGitRepo) {
+    return out + `<div class="gd-none">⊘ Not a git repository</div></div>`;
+  }
+  if (g.trackingBranch) {
+    out += `<div class="gd-track">${esc(g.branch)} → ${esc(g.trackingBranch)}` +
+      ab(g.ahead, g.behind) + `</div>`;
+  }
+  if (g.defaultBranch && g.branch !== g.defaultBranch) {
+    out += `<div class="gd-vsdef">vs ${esc(g.defaultBranch)}` +
+      ab(g.aheadOfDefault, g.behindDefault) + `</div>`;
+  }
+  const files = changedFiles(g);
+  if (!files.length) {
+    out += `<div class="gd-clean">✓ Clean — no changes</div>`;
+  } else {
+    out += fileSection("Staged", g.stagedFiles, "staged");
+    out += fileSection("Modified", g.modifiedFiles, "modified");
+    out += fileSection("Deleted", g.deletedFiles, "deleted");
+    out += fileSection("Untracked", g.untrackedFiles, "untracked");
+  }
+  return out + `</div>`;
+}
+
+function fileSection(title, files, cls) {
+  if (!files || !files.length) return "";
+  const rows = files
+    .map((f) => `<div class="gd-file" title="${esc(f.path)}">${esc(basename(f.path))}</div>`)
+    .join("");
+  return `<div class="gd-sect ${cls}">${title} (${files.length})</div>` + rows;
+}
+
+function ab(ahead, behind) {
+  return (ahead ? ` <span class="ab">↑${ahead}</span>` : "") +
+    (behind ? ` <span class="ab">↓${behind}</span>` : "");
+}
+
+function changedFiles(g) {
+  return [...(g.stagedFiles || []), ...(g.modifiedFiles || []), ...(g.deletedFiles || []), ...(g.untrackedFiles || [])];
+}
+
+function basename(p) { return p.split("/").pop(); }
+
+// abbrevPath shortens the daemon-side home prefix, like the Mac's "~" display.
+function abbrevPath(p) { return (p || "").replace(/^\/(?:Users|home)\/[^/]+/, "~"); }
 
 // Aggregate a workspace's per-pane firehose attention into one row signal:
 // needs_input wins over done. Only panes the workspace still lists count, so a
@@ -311,7 +421,7 @@ function onFirehose(ev) {
     for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state);
   } else if (m.t === "attention") {
     noteAttention(m.workspace, m.pane, m.state);
-  } else if (m.t === "workspace-added" || m.t === "workspace-removed" || m.t === "workspace-status") {
+  } else if (m.t === "workspace-added" || m.t === "workspace-removed" || m.t === "workspace-status" || m.t === "workspace-git") {
     fetchWorkspaces(); // a workspace changed elsewhere — refresh now, don't wait for the poll
     return;
   } else {
@@ -325,15 +435,65 @@ function noteAttention(wsId, paneId, stateStr) {
   (state.attn[wsId] || (state.attn[wsId] = {}))[paneId] = stateStr;
 }
 
-// --- new workspace ---
-async function newWorkspace() {
-  const repoPath = prompt("Repo path on the host:", "");
-  if (!repoPath) return;
-  const startupCommand = prompt("Startup command (optional, e.g. claude):", "") || "";
+// --- new workspace: browse the daemon's projects root and pick a folder. The
+// folders live on the daemon's filesystem (which may be a remote server), so
+// the picker is fed from GET /v1/projects — never a locally typed path.
+// Tapping a row drills into that folder (projects can nest); the row's +
+// creates the workspace there. ".." walks back up. ---
+function newWorkspace() { browseProjects(""); }
+
+async function browseProjects(relPath) {
+  const status = $("project-status"), list = $("project-list"), crumb = $("project-path");
+  $("project-modal").classList.remove("hidden");
+  list.innerHTML = "";
+  crumb.textContent = "/" + relPath;
+  status.textContent = "Loading…";
+  status.classList.remove("hidden");
+  let resp;
+  try {
+    const r = await fetch("/v1/projects?path=" + encodeURIComponent(relPath));
+    if (!r.ok) throw new Error((await r.text()).trim());
+    resp = await r.json();
+  } catch (e) {
+    status.textContent = "Couldn't list projects: " + e.message;
+    return;
+  }
+  const projects = resp.projects || [];
+  if (relPath !== "") {
+    const up = document.createElement("li");
+    up.className = "up";
+    up.innerHTML = '<span class="name">‹ back</span>';
+    up.onclick = () => browseProjects(resp.parent || "");
+    list.appendChild(up);
+  }
+  if (!projects.length) {
+    status.textContent = "No folders in here.";
+  } else {
+    status.classList.add("hidden");
+  }
+  for (const p of projects) {
+    const li = document.createElement("li");
+    li.innerHTML =
+      `<span class="name">${esc(p.name)}</span>` +
+      (p.git ? '<span class="git">git</span>' : "") +
+      `<button class="mk" title="New workspace in ${esc(p.name)}">+</button>`;
+    li.onclick = () => browseProjects(relPath ? relPath + "/" + p.name : p.name);
+    li.querySelector(".mk").onclick = (e) => {
+      e.stopPropagation();
+      closeProjectModal();
+      createWorkspace(p);
+    };
+    list.appendChild(li);
+  }
+}
+
+function closeProjectModal() { $("project-modal").classList.add("hidden"); }
+
+async function createWorkspace(p) {
   const r = await fetch("/v1/workspaces", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: repoPath.split("/").pop(), repoPath, startupCommand, createdBy: "web" }),
+    body: JSON.stringify({ name: p.name, repoPath: p.path, startupCommand: "claude", createdBy: "web" }),
   });
   if (!r.ok) { alert("create failed: " + (await r.text())); return; }
   const ws = await r.json();
@@ -350,6 +510,8 @@ function bootDeepLink() {
 // --- boot ---
 window.ccmux = { attach, getUser }; // push.js deep-links + shares the presence name
 $("new-ws").onclick = newWorkspace;
+$("project-close").onclick = closeProjectModal;
+$("project-modal").onclick = (e) => { if (e.target.id === "project-modal") closeProjectModal(); };
 $("menu-toggle").onclick = toggleDrawer;
 $("drawer-backdrop").onclick = closeDrawer;
 $("takeover").onclick = takeOver;

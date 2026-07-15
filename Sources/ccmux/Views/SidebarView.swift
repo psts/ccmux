@@ -8,8 +8,6 @@ struct SidebarView: View {
     let onAddWorkspace: () -> Void
     let onDetachWorkspace: (UUID) -> Void
     let onSelectWorkspace: (UUID) -> Void
-    /// Selecting a hosted workspace just displays it (no local ownership machinery).
-    let onSelectHosted: (UUID) -> Void
     let onReopenWorkspace: (UUID) -> Void
     let onMoveToThisWindow: (UUID) -> Void
     var currentWindowId: UUID?
@@ -17,10 +15,17 @@ struct SidebarView: View {
     var onRestoreWindow: ((UUID) -> Void)?
     var onNewHostedSession: (() -> Void)?
 
-    /// Workspaces belonging to this window
+    /// Workspaces belonging to this window — local and hosted alike; a hosted
+    /// workspace lives in whatever window group the user put it in, marked only
+    /// by its beacon icon.
     private var thisWindowWorkspaces: [Workspace] {
-        manager.workspaces
-            .filter { windowContext.ownedWorkspaceIds.contains($0.id) }
+        workspaces(ownedBy: windowContext.ownedWorkspaceIds)
+    }
+
+    /// Local + hosted workspaces owned by the given window, sorted by name.
+    private func workspaces(ownedBy ids: some Collection<UUID>) -> [Workspace] {
+        (manager.workspaces + remoteService.workspaces)
+            .filter { ids.contains($0.id) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -32,66 +37,14 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             List {
-                // Hosted (ccmuxd-backed) sessions — persistent, multi-dev, attach-from-anywhere.
-                if !remoteService.workspaces.isEmpty {
-                    Section {
-                        ForEach(remoteService.workspaces) { workspace in
-                            let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
-                            HostedWorkspaceRow(
-                                workspace: workspace,
-                                isActive: isDisplayed,
-                                connectionState: remoteService.connectionState(for: workspace.id),
-                                onSelect: { onSelectHosted(workspace.id) }
-                            )
-                            .listRowBackground(
-                                AttentionRowBackground(
-                                    monitor: remoteService.attentionMonitors[workspace.id] ?? .empty,
-                                    isDisplayed: isDisplayed,
-                                    onTap: { onSelectHosted(workspace.id) }
-                                )
-                            )
-                            .contextMenu {
-                                Button("Remove Session", role: .destructive) {
-                                    Task { await remoteService.deleteWorkspace(workspace.id) }
-                                }
-                            }
-                        }
-                    } header: {
-                        windowSectionHeader(name: "HOSTED", isCurrentWindow: false)
-                    }
-                }
-
                 // This window's workspaces
                 if !thisWindowWorkspaces.isEmpty {
                     Section {
                         ForEach(thisWindowWorkspaces) { workspace in
-                            let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
-                            WorkspaceRow(
-                                workspace: workspace,
-                                monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
-                                claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
-                                isActive: isDisplayed,
-                                isInOtherWindow: false,
-                                isExpanded: currentWindowExpansionBinding(for: workspace.id),
-                                onSelect: { onSelectWorkspace(workspace.id) },
-                                onFileClicked: { filePath in
-                                    if let ctrl = manager.controllers[workspace.id] {
-                                        if !isDisplayed {
-                                            onSelectWorkspace(workspace.id)
-                                        }
-                                        _ = ctrl.openFileInExplorer(relativePath: filePath)
-                                    }
-                                }
-                            )
-                            .listRowBackground(
-                                AttentionRowBackground(
-                                    monitor: manager.attentionMonitors[workspace.id] ?? .empty,
-                                    isDisplayed: isDisplayed,
-                                    onTap: { onSelectWorkspace(workspace.id) }
-                                )
-                            )
-                            .contextMenu {
-                                workspaceContextMenu(for: workspace)
+                            if workspace.mode == .hosted {
+                                hostedRow(workspace, dimmed: false)
+                            } else {
+                                localRow(workspace)
                             }
                         }
                     } header: {
@@ -108,34 +61,14 @@ struct SidebarView: View {
 
                 // Other windows — each as its own section
                 ForEach(windowContext.otherWindowGroups) { group in
-                    let groupWorkspaces = manager.workspaces
-                        .filter { group.workspaceIds.contains($0.id) }
-                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    let groupWorkspaces = workspaces(ownedBy: group.workspaceIds)
                     if !groupWorkspaces.isEmpty {
                         Section {
                             ForEach(groupWorkspaces) { workspace in
-                                OtherWindowWorkspaceRow(
-                                    workspace: workspace,
-                                    monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
-                                    claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
-                                    onSelect: { onSelectWorkspace(workspace.id) },
-                                    onFileClicked: { filePath in
-                                        if let ctrl = manager.controllers[workspace.id] {
-                                            onSelectWorkspace(workspace.id)
-                                            _ = ctrl.openFileInExplorer(relativePath: filePath)
-                                        }
-                                    }
-                                )
-                                .opacity(0.7)
-                                .listRowBackground(
-                                    AttentionRowBackground(
-                                        monitor: manager.attentionMonitors[workspace.id] ?? .empty,
-                                        isDisplayed: false,
-                                        onTap: { onSelectWorkspace(workspace.id) }
-                                    )
-                                )
-                                .contextMenu {
-                                    workspaceContextMenu(for: workspace)
+                                if workspace.mode == .hosted {
+                                    hostedRow(workspace, dimmed: true)
+                                } else {
+                                    otherWindowLocalRow(workspace)
                                 }
                             }
                         } header: {
@@ -261,6 +194,111 @@ struct SidebarView: View {
         .background(Color(nsColor: NSColor(red: 0.15, green: 0.16, blue: 0.17, alpha: 1.0)))
     }
 
+    // MARK: - Row builders
+
+    /// A hosted (daemon-backed) workspace row in whatever window group owns it.
+    /// Renders through the SAME `WorkspaceRow` dashboard as local rows (branch,
+    /// ahead/behind, changed files — daemon-computed, remote-fed monitors); only
+    /// the beacon icon + connection dot mark it as hosted. `dimmed` matches
+    /// other-window styling. File clicks are inert: the files live on the
+    /// daemon's host and hosted panes are terminal-only.
+    @ViewBuilder
+    private func hostedRow(_ workspace: Workspace, dimmed: Bool) -> some View {
+        let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
+        Group {
+            if dimmed {
+                OtherWindowWorkspaceRow(
+                    workspace: workspace,
+                    monitor: remoteService.gitMonitors[workspace.id] ?? GitStatusMonitor.empty,
+                    claudeMonitor: remoteService.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
+                    onSelect: { onSelectWorkspace(workspace.id) },
+                    hostedConnection: remoteService.connectionState(for: workspace.id)
+                )
+                .opacity(0.7)
+            } else {
+                WorkspaceRow(
+                    workspace: workspace,
+                    monitor: remoteService.gitMonitors[workspace.id] ?? GitStatusMonitor.empty,
+                    claudeMonitor: remoteService.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
+                    isActive: isDisplayed,
+                    isInOtherWindow: false,
+                    isExpanded: currentWindowExpansionBinding(for: workspace.id),
+                    onSelect: { onSelectWorkspace(workspace.id) },
+                    hostedConnection: remoteService.connectionState(for: workspace.id)
+                )
+            }
+        }
+        .listRowBackground(
+            AttentionRowBackground(
+                monitor: remoteService.attentionMonitors[workspace.id] ?? .empty,
+                isDisplayed: isDisplayed && !dimmed,
+                onTap: { onSelectWorkspace(workspace.id) }
+            )
+        )
+        .contextMenu {
+            hostedContextMenu(for: workspace)
+        }
+    }
+
+    @ViewBuilder
+    private func localRow(_ workspace: Workspace) -> some View {
+        let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
+        WorkspaceRow(
+            workspace: workspace,
+            monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
+            claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
+            isActive: isDisplayed,
+            isInOtherWindow: false,
+            isExpanded: currentWindowExpansionBinding(for: workspace.id),
+            onSelect: { onSelectWorkspace(workspace.id) },
+            onFileClicked: { filePath in
+                if let ctrl = manager.controllers[workspace.id] {
+                    if !isDisplayed {
+                        onSelectWorkspace(workspace.id)
+                    }
+                    _ = ctrl.openFileInExplorer(relativePath: filePath)
+                }
+            }
+        )
+        .listRowBackground(
+            AttentionRowBackground(
+                monitor: manager.attentionMonitors[workspace.id] ?? .empty,
+                isDisplayed: isDisplayed,
+                onTap: { onSelectWorkspace(workspace.id) }
+            )
+        )
+        .contextMenu {
+            workspaceContextMenu(for: workspace)
+        }
+    }
+
+    @ViewBuilder
+    private func otherWindowLocalRow(_ workspace: Workspace) -> some View {
+        OtherWindowWorkspaceRow(
+            workspace: workspace,
+            monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,
+            claudeMonitor: manager.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
+            onSelect: { onSelectWorkspace(workspace.id) },
+            onFileClicked: { filePath in
+                if let ctrl = manager.controllers[workspace.id] {
+                    onSelectWorkspace(workspace.id)
+                    _ = ctrl.openFileInExplorer(relativePath: filePath)
+                }
+            }
+        )
+        .opacity(0.7)
+        .listRowBackground(
+            AttentionRowBackground(
+                monitor: manager.attentionMonitors[workspace.id] ?? .empty,
+                isDisplayed: false,
+                onTap: { onSelectWorkspace(workspace.id) }
+            )
+        )
+        .contextMenu {
+            workspaceContextMenu(for: workspace)
+        }
+    }
+
     @ViewBuilder
     private func windowSectionHeader(name: String, isCurrentWindow: Bool) -> some View {
         Text(name)
@@ -287,6 +325,26 @@ struct SidebarView: View {
                 manager.scheduleSaveFromWindow()
             }
         )
+    }
+
+    /// Context menu for hosted rows: same window plumbing as local ones, but the
+    /// destructive action removes the session on the daemon (no local file
+    /// affordances — the folder lives on the daemon's host).
+    @ViewBuilder
+    private func hostedContextMenu(for workspace: Workspace) -> some View {
+        if windowContext.otherWindowWorkspaceIds.contains(workspace.id) {
+            Button("Move to This Window") {
+                onMoveToThisWindow(workspace.id)
+            }
+            Divider()
+        }
+        Button("Open in New Window") {
+            onDetachWorkspace(workspace.id)
+        }
+        Divider()
+        Button("Remove Session", role: .destructive) {
+            Task { await remoteService.deleteWorkspace(workspace.id) }
+        }
     }
 
     @ViewBuilder
@@ -373,47 +431,29 @@ private struct AttentionRowBackground: View {
     }
 }
 
-// MARK: - Hosted Workspace Row
+// MARK: - Hosted adornments
 
-/// Sidebar row for a ccmuxd-backed (hosted) workspace. Leaner than the local
-/// `WorkspaceRow` — no local git dashboard (v1 hosted scope is terminal-only) —
-/// plus a connection dot reflecting the attach WebSocket's health.
-private struct HostedWorkspaceRow: View {
-    let workspace: Workspace
-    let isActive: Bool
-    let connectionState: DaemonConnectionState
-    let onSelect: () -> Void
+/// The attach-connection health dot on a hosted row.
+private struct ConnectionDot: View {
+    let state: DaemonConnectionState
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-            Text(workspace.name)
-                .font(.system(size: 12, weight: isActive ? .semibold : .regular))
-                .foregroundColor(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            Circle()
-                .fill(connectionColor)
-                .frame(width: 6, height: 6)
-                .help(connectionHelp)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .help(help)
     }
 
-    private var connectionColor: Color {
-        switch connectionState {
+    private var color: Color {
+        switch state {
         case .connected: return .green
         case .connecting, .reconnecting: return .yellow
         case .closed: return .red
         }
     }
 
-    private var connectionHelp: String {
-        switch connectionState {
+    private var help: String {
+        switch state {
         case .connected: return "Attached"
         case .connecting: return "Connecting…"
         case .reconnecting: return "Reconnecting…"
@@ -433,6 +473,9 @@ private struct WorkspaceRow: View {
     @Binding var isExpanded: Bool
     var onSelect: (() -> Void)?
     var onFileClicked: ((String) -> Void)?
+    /// Non-nil marks a hosted (daemon-backed) workspace: beacon icon before the
+    /// name, attach-connection dot after the badges.
+    var hostedConnection: DaemonConnectionState?
 
     private var status: GitStatusInfo {
         monitor.status
@@ -475,6 +518,13 @@ private struct WorkspaceRow: View {
         } label: {
             // Workspace name + git status badges
             HStack(spacing: 5) {
+                if hostedConnection != nil {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .help("Hosted session")
+                }
+
                 Text(workspace.name)
                     .font(.system(size: 12, weight: isActive ? .semibold : .regular))
                     .foregroundColor(.primary)
@@ -529,6 +579,10 @@ private struct WorkspaceRow: View {
                         .foregroundColor(.secondary)
                         .help("Open in another window")
                 }
+
+                if let hostedConnection {
+                    ConnectionDot(state: hostedConnection)
+                }
             }
         }
     }
@@ -553,6 +607,7 @@ private struct OtherWindowWorkspaceRow: View {
     @ObservedObject var claudeMonitor: ClaudeProcessMonitor
     var onSelect: (() -> Void)?
     var onFileClicked: ((String) -> Void)?
+    var hostedConnection: DaemonConnectionState?
 
     @State private var isExpanded = false
 
@@ -565,7 +620,8 @@ private struct OtherWindowWorkspaceRow: View {
             isInOtherWindow: true,
             isExpanded: $isExpanded,
             onSelect: onSelect,
-            onFileClicked: onFileClicked
+            onFileClicked: onFileClicked,
+            hostedConnection: hostedConnection
         )
     }
 }

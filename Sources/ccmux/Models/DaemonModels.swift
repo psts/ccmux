@@ -55,6 +55,12 @@ struct DaemonWorkspace: Codable, Identifiable {
     var layoutJson: String?
     var layoutVersion: Int?
     var panes: [DaemonPane]
+    /// Daemon-computed git dashboard (the repo lives on the daemon's host).
+    /// nil until the daemon's first collection (~5s after a workspace goes live).
+    var git: DaemonGitStatus?
+    /// Shared sidebar group (this Mac pushes its window names here; see
+    /// WindowManager.syncHostedGroups). "" = ungrouped.
+    var group: String
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -69,9 +75,87 @@ struct DaemonWorkspace: Codable, Identifiable {
         layoutVersion = try c.decodeIfPresent(Int.self, forKey: .layoutVersion)
         // Go marshals a nil slice as `null`, so tolerate both null and absent.
         panes = try c.decodeIfPresent([DaemonPane].self, forKey: .panes) ?? []
+        git = try c.decodeIfPresent(DaemonGitStatus.self, forKey: .git)
+        group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
     }
 
     var isLive: Bool { status == .live }
+}
+
+/// One changed file in a hosted repo's dashboard (gitstatus.File).
+struct DaemonGitFile: Codable {
+    let path: String
+    let status: String
+
+    private enum CodingKeys: String, CodingKey { case path, status }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "M"
+    }
+
+    var asFileChange: GitStatusInfo.FileChange {
+        .init(path: path, status: GitStatusInfo.Status(rawValue: status) ?? .modified)
+    }
+}
+
+/// The daemon-computed git dashboard for a hosted workspace (gitstatus.Status).
+/// Field names mirror `GitStatusInfo` 1:1, so mapping is mechanical — hosted
+/// rows render through the exact same dashboard views as local ones.
+struct DaemonGitStatus: Codable {
+    var isGitRepo = false
+    var branch = ""
+    var trackingBranch: String?
+    var ahead = 0
+    var behind = 0
+    var defaultBranch: String?
+    var aheadOfDefault = 0
+    var behindDefault = 0
+    var stagedFiles: [DaemonGitFile] = []
+    var modifiedFiles: [DaemonGitFile] = []
+    var deletedFiles: [DaemonGitFile] = []
+    var untrackedFiles: [DaemonGitFile] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case isGitRepo, branch, trackingBranch, ahead, behind
+        case defaultBranch, aheadOfDefault, behindDefault
+        case stagedFiles, modifiedFiles, deletedFiles, untrackedFiles
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isGitRepo = try c.decodeIfPresent(Bool.self, forKey: .isGitRepo) ?? false
+        branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
+        trackingBranch = try c.decodeIfPresent(String.self, forKey: .trackingBranch)
+        ahead = try c.decodeIfPresent(Int.self, forKey: .ahead) ?? 0
+        behind = try c.decodeIfPresent(Int.self, forKey: .behind) ?? 0
+        defaultBranch = try c.decodeIfPresent(String.self, forKey: .defaultBranch)
+        aheadOfDefault = try c.decodeIfPresent(Int.self, forKey: .aheadOfDefault) ?? 0
+        behindDefault = try c.decodeIfPresent(Int.self, forKey: .behindDefault) ?? 0
+        stagedFiles = try c.decodeIfPresent([DaemonGitFile].self, forKey: .stagedFiles) ?? []
+        modifiedFiles = try c.decodeIfPresent([DaemonGitFile].self, forKey: .modifiedFiles) ?? []
+        deletedFiles = try c.decodeIfPresent([DaemonGitFile].self, forKey: .deletedFiles) ?? []
+        untrackedFiles = try c.decodeIfPresent([DaemonGitFile].self, forKey: .untrackedFiles) ?? []
+    }
+
+    /// Map onto the app's `GitStatusInfo` so the local dashboard renders it as-is.
+    var asInfo: GitStatusInfo {
+        var info = GitStatusInfo()
+        info.isGitRepo = isGitRepo
+        info.branch = branch
+        info.trackingBranch = trackingBranch
+        info.ahead = ahead
+        info.behind = behind
+        info.defaultBranch = defaultBranch
+        info.aheadOfDefault = aheadOfDefault
+        info.behindDefault = behindDefault
+        info.stagedFiles = stagedFiles.map(\.asFileChange)
+        info.modifiedFiles = modifiedFiles.map(\.asFileChange)
+        info.deletedFiles = deletedFiles.map(\.asFileChange)
+        info.untrackedFiles = untrackedFiles.map(\.asFileChange)
+        return info
+    }
 }
 
 /// A daemon pane = one tmux window (single tmux pane). `id` is the stable
@@ -94,6 +178,46 @@ struct DaemonPane: Codable, Identifiable {
         attention = try c.decodeIfPresent(DaemonAttention.self, forKey: .attention)
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
+    }
+}
+
+/// One selectable folder under the daemon's projects root (api.projectEntry).
+/// Hosted workspaces are always created from one of these — the folders live on
+/// the daemon's filesystem, which may be a remote server.
+struct DaemonProject: Decodable, Identifiable, Hashable {
+    let name: String
+    let path: String
+    let git: Bool
+
+    var id: String { path }
+
+    private enum CodingKeys: String, CodingKey { case name, path, git }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        path = try c.decode(String.self, forKey: .path)
+        git = try c.decodeIfPresent(Bool.self, forKey: .git) ?? false
+    }
+}
+
+/// GET /v1/projects response: one browsable folder inside the projects root.
+/// `path` is the listed folder relative to the root ("" at the root); `parent`
+/// is one level up (nil at the root) — together they drive picker navigation.
+struct DaemonProjectList: Decodable {
+    let root: String
+    let path: String
+    let parent: String?
+    let projects: [DaemonProject]
+
+    private enum CodingKeys: String, CodingKey { case root, path, parent, projects }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        root = try c.decodeIfPresent(String.self, forKey: .root) ?? ""
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        parent = try c.decodeIfPresent(String.self, forKey: .parent)
+        projects = try c.decodeIfPresent([DaemonProject].self, forKey: .projects) ?? []
     }
 }
 
@@ -255,7 +379,7 @@ enum DaemonFirehoseEvent {
             self = .hello(entries: frame.attention ?? [])
         case "attention":
             self = .attention(workspace: frame.workspace ?? "", pane: frame.pane ?? "", state: frame.state ?? .unknown)
-        case "workspace-added", "workspace-removed", "workspace-status":
+        case "workspace-added", "workspace-removed", "workspace-status", "workspace-git":
             self = .workspaceChanged(kind: frame.t, workspace: frame.workspace ?? "")
         default:
             self = .unknown(frame.t)

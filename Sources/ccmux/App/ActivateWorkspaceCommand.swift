@@ -19,8 +19,9 @@ class ActivateWorkspaceCommand: NSScriptCommand {
             return nil
         }
 
-        // Find the workspace by name (case-insensitive)
-        guard let workspace = windowManager.workspaceManager.workspaces.first(where: {
+        // Find the workspace by name (case-insensitive) — local or hosted
+        let all = windowManager.workspaceManager.workspaces + RemoteSessionService.shared.workspaces
+        guard let workspace = all.first(where: {
             $0.name.caseInsensitiveCompare(workspaceName) == .orderedSame
         }) else {
             scriptErrorNumber = errOSACantAccess
@@ -62,7 +63,7 @@ class ListWorkspacesCommand: NSScriptCommand {
         for wc in windowManager.windowControllers {
             let windowName = wc.windowContext.windowName ?? wc.window?.title ?? "Window"
             let ownedIds = wc.windowContext.ownedWorkspaceIds
-            let workspaces = windowManager.workspaceManager.workspaces
+            let workspaces = (windowManager.workspaceManager.workspaces + RemoteSessionService.shared.workspaces)
                 .filter { ownedIds.contains($0.id) }
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 

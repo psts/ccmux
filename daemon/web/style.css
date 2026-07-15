@@ -44,16 +44,70 @@ body {
 .hdr-actions button:hover { background: #3a3e44; }
 #ws-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
 .ws {
-  display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-radius: 6px; cursor: pointer;
 }
 .ws:hover { background: #22262b; }
 .ws.active { background: #262b31; }
+.ws .ws-row { display: flex; align-items: center; gap: 8px; }
 .ws .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws .count { color: var(--muted); font-variant-numeric: tabular-nums; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
 .dot.live { background: var(--accent); }
 .dot.cold { background: #55585d; }
+
+/* window-group headers (shared groups pushed by the Mac app) */
+.group-hdr {
+  list-style: none; margin: 10px 4px 2px; font-size: 9px; font-weight: 600;
+  letter-spacing: 1.2px; color: var(--muted); opacity: .75; cursor: default;
+}
+.group-hdr:first-child { margin-top: 2px; }
+
+/* per-row git dashboard (daemon-computed; mirrors the Mac WorkspaceRow) */
+.ws .exp {
+  /* Disclosure chevron drawn in CSS — the Unicode small-triangle glyphs
+     (▸/▾) rasterize as unclickable specks in some font stacks. The negative
+     margin + padding give it a full-row-height hit area without growing the
+     row. */
+  width: 22px; flex: 0 0 auto; color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+  margin: -8px 0 -8px -6px; padding: 8px 0; align-self: stretch;
+}
+.ws .exp.closed, .ws .exp.open { cursor: pointer; }
+.ws .exp.closed::before, .ws .exp.open::before {
+  /* A caret matching the Mac disclosure chevron's weight (thin two-stroke). */
+  content: ""; display: block; width: 5px; height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg) translate(-1px, 1px); /* points right */
+  transition: transform .12s ease;
+}
+.ws .exp.open::before { transform: rotate(45deg) translate(-1px, -1px); } /* points down */
+.ws .exp:hover { color: var(--fg); }
+.ws .bolt { font-size: 9px; flex: 0 0 auto; }
+.ws .branch {
+  font-family: Menlo, Monaco, monospace; font-size: 10px; color: var(--muted);
+  max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1 auto;
+}
+.ws .dirty, .ws .ab, .git-detail .ab { color: var(--needs); font-size: 10px; flex: 0 0 auto; }
+.git-detail {
+  margin: 4px 0 2px 20px; font-size: 10.5px; color: var(--muted);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.git-detail .gd-path, .git-detail .gd-track, .git-detail .gd-vsdef {
+  font-family: Menlo, Monaco, monospace; font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.git-detail .gd-none { color: #55585d; }
+.git-detail .gd-clean { color: var(--done); }
+.git-detail .gd-sect { font-weight: 600; font-size: 9.5px; margin-top: 2px; }
+.git-detail .gd-sect.staged { color: var(--done); }
+.git-detail .gd-sect.modified { color: var(--needs); }
+.git-detail .gd-sect.deleted { color: #e06c75; }
+.git-detail .gd-sect.untracked { color: var(--muted); }
+.git-detail .gd-file {
+  color: var(--fg); opacity: .85; padding-left: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* firehose attention on the session list — flashes a row that needs you even
    when it isn't attached (mirrors the native AttentionRowBackground). */
@@ -138,9 +192,36 @@ body {
 }
 .sheet header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .sheet header span { font-weight: 600; }
-#settings-close {
+#settings-close, #project-close {
   background: transparent; color: var(--muted); border: 0;
   font-size: 22px; line-height: 1; cursor: pointer;
+}
+.project-list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: min(50vh, 400px); overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.project-list li {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; cursor: pointer; font-size: 13px;
+}
+.project-list li + li { border-top: 1px solid var(--line); }
+.project-list li:hover { background: var(--line); }
+.project-list .name { flex: 1; }
+.project-list .git {
+  font-size: 10px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+}
+.project-list .mk {
+  margin-left: 8px; width: 26px; height: 26px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 14px;
+}
+.project-list .mk:hover { background: var(--accent); border-color: var(--accent); color: #10231a; }
+.project-list .up .name { color: var(--muted); }
+.crumb {
+  margin: 0 0 8px; font-size: 11px; color: var(--muted);
+  font-family: Menlo, Monaco, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sheet .status { color: var(--fg); margin: 0 0 12px; }
 .sheet .hint {

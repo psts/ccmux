@@ -15,6 +15,14 @@ class GitStatusMonitor: ObservableObject {
     /// A no-op monitor for use as a fallback when no monitor exists.
     static let empty = GitStatusMonitor()
 
+    /// A remote-fed monitor for a hosted workspace: the repo lives on the
+    /// daemon's host, so the daemon computes status and `apply(_:)` publishes
+    /// it here. No FSEvents watcher; `refresh()` is a no-op.
+    static func remoteFed() -> GitStatusMonitor { GitStatusMonitor() }
+
+    /// Publish daemon-computed status (main thread — called from reconcile).
+    func apply(_ new: GitStatusInfo) { status = new }
+
     private let repoPath: String
     private var watcher: RepoWatcher?
     private var isActive = true

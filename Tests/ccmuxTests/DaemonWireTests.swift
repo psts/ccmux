@@ -12,12 +12,13 @@ final class DaemonWireTests: XCTestCase {
         let json = """
         {"id":"ws-1","name":"ccmux","repoPath":"/repo","createdBy":"patric",
          "createdAt":1720000000000,"tmuxSession":"ccmux-ccmux-abcd1234","status":"live",
-         "layoutVersion":0,
+         "layoutVersion":0,"group":"ChartLabs",
          "panes":[{"id":"pane-1","workspaceId":"ws-1","title":"claude","cwd":"/repo",
                    "status":"live","attention":"needs_input"}]}
         """
         let ws = try JSONDecoder().decode(DaemonWorkspace.self, from: Data(json.utf8))
         XCTAssertEqual(ws.id, "ws-1")
+        XCTAssertEqual(ws.group, "ChartLabs")
         XCTAssertTrue(ws.isLive)
         XCTAssertEqual(ws.panes.count, 1)
         XCTAssertEqual(ws.panes[0].id, "pane-1")
@@ -38,6 +39,78 @@ final class DaemonWireTests: XCTestCase {
         let p = try JSONDecoder().decode(DaemonPane.self, from: Data(json.utf8))
         XCTAssertEqual(p.status, .unknown)
         XCTAssertEqual(p.attention, .unknown)
+    }
+
+    // MARK: - Git dashboard (workspace.git) decode
+
+    func testWorkspaceGitDecodesAndMapsToInfo() throws {
+        let json = """
+        {"id":"ws-g","name":"x","repoPath":"/r","status":"live","layoutVersion":0,"panes":null,
+         "git":{"isGitRepo":true,"branch":"feature","trackingBranch":"origin/feature",
+                "ahead":2,"behind":1,"defaultBranch":"main","aheadOfDefault":4,
+                "modifiedFiles":[{"path":"a/b.txt","status":"M"}],
+                "untrackedFiles":[{"path":"new.log","status":"?"}]}}
+        """
+        let ws = try JSONDecoder().decode(DaemonWorkspace.self, from: Data(json.utf8))
+        let info = try XCTUnwrap(ws.git).asInfo
+        XCTAssertTrue(info.isGitRepo)
+        XCTAssertEqual(info.branch, "feature")
+        XCTAssertEqual(info.trackingBranch, "origin/feature")
+        XCTAssertEqual(info.ahead, 2)
+        XCTAssertEqual(info.behind, 1)
+        XCTAssertEqual(info.defaultBranch, "main")
+        XCTAssertEqual(info.aheadOfDefault, 4)
+        XCTAssertEqual(info.behindDefault, 0, "omitted count defaults to 0")
+        XCTAssertEqual(info.modifiedFiles.map(\.path), ["a/b.txt"])
+        XCTAssertEqual(info.untrackedFiles.first?.status, .untracked)
+        XCTAssertEqual(info.totalChanges, 2)
+    }
+
+    func testWorkspaceWithoutGitDecodes() throws {
+        // Daemon hasn't collected yet (git omitted) — old-daemon compat too.
+        let json = #"{"id":"ws-h","name":"x","repoPath":"/r","status":"live","layoutVersion":0,"panes":null}"#
+        let ws = try JSONDecoder().decode(DaemonWorkspace.self, from: Data(json.utf8))
+        XCTAssertNil(ws.git)
+    }
+
+    func testFirehoseWorkspaceGitKindTriggersRefetch() {
+        let text = #"{"t":"workspace-git","workspace":"ws-1"}"#
+        guard case .workspaceChanged(let kind, let ws)? = DaemonFirehoseEvent.decode(text: text) else {
+            return XCTFail("expected workspaceChanged")
+        }
+        XCTAssertEqual(kind, "workspace-git")
+        XCTAssertEqual(ws, "ws-1")
+    }
+
+    // MARK: - Projects (GET /v1/projects) decode
+
+    func testProjectListDecodes() throws {
+        let json = """
+        {"root":"/srv/projects","path":"","projects":[
+          {"name":"alpha","path":"/srv/projects/alpha","git":true},
+          {"name":"beta","path":"/srv/projects/beta","git":false}]}
+        """
+        let list = try JSONDecoder().decode(DaemonProjectList.self, from: Data(json.utf8))
+        XCTAssertEqual(list.root, "/srv/projects")
+        XCTAssertEqual(list.path, "")
+        XCTAssertNil(list.parent, "no parent at the root")
+        XCTAssertEqual(list.projects.map(\.name), ["alpha", "beta"])
+        XCTAssertTrue(list.projects[0].git)
+        XCTAssertEqual(list.projects[1].id, "/srv/projects/beta")
+    }
+
+    func testProjectListDecodesSubpathWithParent() throws {
+        let json = #"{"root":"/srv/projects","path":"group/inner","parent":"group","projects":[]}"#
+        let list = try JSONDecoder().decode(DaemonProjectList.self, from: Data(json.utf8))
+        XCTAssertEqual(list.path, "group/inner")
+        XCTAssertEqual(list.parent, "group")
+    }
+
+    func testProjectListToleratesNullProjects() throws {
+        // Defensive: a Go nil slice would marshal as `null`.
+        let json = #"{"root":"/srv/projects","projects":null}"#
+        let list = try JSONDecoder().decode(DaemonProjectList.self, from: Data(json.utf8))
+        XCTAssertTrue(list.projects.isEmpty)
     }
 
     // MARK: - Attention → app flash mapping

@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"tailscale.com/tsnet"
 
@@ -39,6 +40,7 @@ func main() {
 	tsnetEnabled := flag.Bool("tsnet", false, "serve as an own tailnet node (HTTPS on :443, in-process WhoIs identity); needs TS_AUTHKEY on first run")
 	tsnetHostname := flag.String("tsnet-hostname", "ccmuxd", "tailnet node name (→ <name>.<tailnet>.ts.net)")
 	tsnetDir := flag.String("tsnet-dir", defaultTsnetDir(), "tsnet node state directory")
+	projectsRoot := flag.String("projects-root", defaultProjectsRoot(), "folder whose subdirectories are offered as hosted-workspace locations (GET /v1/projects)")
 	flag.Parse()
 
 	cfgPath := filepath.Join(os.TempDir(), "ccmux-tmux.conf")
@@ -64,6 +66,9 @@ func main() {
 	if err := mgr.Start(); err != nil {
 		log.Fatalf("manager start: %v", err)
 	}
+	// Daemon-side git dashboard (branch/ahead-behind/changed files) for every
+	// live workspace — lenses render it; they can't read the daemon's repos.
+	mgr.StartGitStatus(5 * time.Second)
 
 	// Claude Code hooks → attention fan-out. The daemon owns a DISTINCT socket
 	// (default /tmp/ccmuxd-hooks.sock) from the native app's /tmp/ccmux-hooks.sock,
@@ -78,6 +83,7 @@ func main() {
 	}
 
 	apiSrv := api.NewServer(mgr)
+	apiSrv.SetProjectsRoot(*projectsRoot)
 
 	// Web push: generate + persist a VAPID keypair on first run, then wire the
 	// push endpoints + attention notifier. Non-fatal — the daemon still serves
@@ -170,6 +176,16 @@ func defaultVAPIDPath() string { return filepath.Join(configDir(), "vapid.json")
 
 // defaultTsnetDir returns the tsnet node's state directory beside the registry.
 func defaultTsnetDir() string { return filepath.Join(configDir(), "tsnet") }
+
+// defaultProjectsRoot is the daemon user's home — a server deployment narrows it
+// with -projects-root (e.g. /srv/projects).
+func defaultProjectsRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
 
 func configDir() string {
 	dir, err := os.UserConfigDir()

@@ -93,6 +93,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         service.onAttention = { [weak self] workspace, state in
             self?.attentionNotifier.post(for: workspace, state: state)
         }
+        // Hosted workspaces sit in the same sidebar window groups as local ones:
+        // adopt newly appeared ones (created by another lens) into a window, and
+        // drop removed ones from every window.
+        service.onWorkspacesChanged = { [weak self] in
+            self?.windowManager?.adoptOrphanHostedWorkspaces()
+        }
+        service.onWorkspaceRemoved = { [weak self] id in
+            self?.windowManager?.hostedWorkspaceRemoved(id: id)
+        }
         service.onFileLink = { wsId, absolutePath in
             // Hosted panes are terminal-only in v1; reveal a clicked file in the local
             // clone rather than mutating the daemon-driven layout.

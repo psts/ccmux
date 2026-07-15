@@ -30,6 +30,13 @@ final class RemoteSessionService: ObservableObject {
 
     private(set) var controllers: [UUID: SplitTreeController] = [:]
     private(set) var attentionMonitors: [UUID: ClaudeAttentionMonitor] = [:]
+    /// Remote-fed monitors driving the hosted rows' git dashboard and bolt icon —
+    /// same observable types the local sidebar rows use, fed from daemon data.
+    private(set) var gitMonitors: [UUID: GitStatusMonitor] = [:]
+    private(set) var claudeMonitors: [UUID: ClaudeProcessMonitor] = [:]
+    /// Last-known shared sidebar group per hosted workspace (from the daemon).
+    /// WindowManager diffs its window names against this before pushing.
+    private(set) var groups: [UUID: String] = [:]
 
     private var attachments: [UUID: WorkspaceAttachment] = [:]
     private var paneSignatures: [UUID: [String]] = [:]
@@ -54,6 +61,12 @@ final class RemoteSessionService: ObservableObject {
     var onAttention: ((Workspace, AttentionState) -> Void)?
     /// A clicked file link (absolute local path) in a hosted pane, surfaced to the app.
     var onFileLink: ((UUID, String) -> Void)?
+    /// Fired after each reconcile — the window layer adopts hosted workspaces that
+    /// no window owns yet (created by another lens) into a sidebar group.
+    var onWorkspacesChanged: (() -> Void)?
+    /// Fired when a hosted workspace is genuinely gone from the daemon (removed by
+    /// some lens) — NOT on a mere pane-change rebuild, which keeps the same id.
+    var onWorkspaceRemoved: ((UUID) -> Void)?
 
     private let session = URLSession(configuration: .default)
     private var pollTimer: Timer?
@@ -174,16 +187,48 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
+    /// Fetch the selectable folders at `path` (relative to the daemon's projects
+    /// root; "" = the root itself). Throws so the picker can say *why* the list
+    /// is empty (daemon down, no root).
+    func fetchProjects(path: String = "") async throws -> DaemonProjectList {
+        var comps = URLComponents(string: "\(DaemonConfig.baseURL)/v1/projects")
+        if !path.isEmpty {
+            comps?.queryItems = [URLQueryItem(name: "path", value: path)]
+        }
+        guard let url = comps?.url else {
+            throw URLError(.badURL)
+        }
+        let (data, resp) = try await session.data(from: url)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(DaemonProjectList.self, from: data)
+    }
+
+    /// Create a hosted workspace and return its app-side id (nil on failure), so
+    /// the creating window can claim it into its sidebar group.
     @discardableResult
-    func createWorkspace(name: String, repoPath: String, cwd: String? = nil, startupCommand: String? = nil) async -> Bool {
+    func createWorkspace(name: String, repoPath: String, cwd: String? = nil, startupCommand: String? = nil) async -> UUID? {
         let body: [String: Any] = [
             "name": name, "repoPath": repoPath,
             "cwd": cwd ?? repoPath, "startupCommand": startupCommand ?? "",
             "createdBy": DaemonConfig.selfUser,
         ]
-        let ok = await post("/v1/workspaces", body: body, expect: 201)
-        if ok { await refresh() }
-        return ok
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 201 else { return nil }
+            let dw = try JSONDecoder().decode(DaemonWorkspace.self, from: data)
+            await refresh()
+            return RemoteWorkspaceBuilder.workspaceUUID(dw.id)
+        } catch {
+            await MainActor.run { self.lastError = error.localizedDescription }
+            return nil
+        }
     }
 
     @discardableResult
@@ -280,6 +325,7 @@ final class RemoteSessionService: ObservableObject {
         let liveIds = Set(live.map { RemoteWorkspaceBuilder.workspaceUUID($0.id) })
         for appId in Array(attachments.keys) where !liveIds.contains(appId) {
             removeWorkspace(appId)
+            onWorkspaceRemoved?(appId)
         }
         var rebuilt: [Workspace] = []
         for dw in live {
@@ -294,6 +340,33 @@ final class RemoteSessionService: ObservableObject {
         }
         workspaces = rebuilt
         coldWorkspaces = list.filter { !$0.isLive }
+        applyGitAndActivity(live)
+        onWorkspacesChanged?()
+    }
+
+    /// Feed each live workspace's daemon-computed git dashboard + claude-running
+    /// state into its remote-fed monitors. Runs every reconcile (poll or
+    /// firehose-triggered), independent of pane-signature rebuilds — git status
+    /// and attention change without the pane set changing.
+    private func applyGitAndActivity(_ live: [DaemonWorkspace]) {
+        for dw in live {
+            let appId = RemoteWorkspaceBuilder.workspaceUUID(dw.id)
+            groups[appId] = dw.group
+            if let git = dw.git {
+                let monitor = gitMonitors[appId] ?? {
+                    let m = GitStatusMonitor.remoteFed()
+                    gitMonitors[appId] = m
+                    return m
+                }()
+                monitor.apply(git.asInfo)
+            }
+            let claude = claudeMonitors[appId] ?? {
+                let m = ClaudeProcessMonitor.remoteFed()
+                claudeMonitors[appId] = m
+                return m
+            }()
+            claude.apply(isRunning: dw.panes.contains { $0.attention == .running })
+        }
     }
 
     private func addWorkspace(_ dw: DaemonWorkspace, appId: UUID) -> Workspace? {
@@ -345,7 +418,24 @@ final class RemoteSessionService: ObservableObject {
         paneSignatures.removeValue(forKey: appId)
         daemonIds.removeValue(forKey: appId)
         connectionStates.removeValue(forKey: appId)
+        gitMonitors.removeValue(forKey: appId)
+        claudeMonitors.removeValue(forKey: appId)
+        groups.removeValue(forKey: appId)
         workspaces.removeAll { $0.id == appId }
+    }
+
+    // MARK: - Shared sidebar group
+
+    /// Push a hosted workspace's sidebar group to the daemon (the owning window's
+    /// name — this Mac is the source of truth; web/phone render the same groups).
+    /// The local cache updates optimistically so the diff-based sync stays quiet
+    /// until the next reconcile confirms.
+    func setGroup(_ appId: UUID, to name: String) async {
+        guard let daemonId = daemonIds[appId] else { return }
+        let body = try? JSONSerialization.data(withJSONObject: ["group": name])
+        if await send("PUT", path: "/v1/workspaces/\(daemonId)/group", body: body, expect: 204) {
+            await MainActor.run { self.groups[appId] = name }
+        }
     }
 
     // MARK: - HTTP helpers

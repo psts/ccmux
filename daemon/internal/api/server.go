@@ -34,6 +34,11 @@ type Server struct {
 	// /v1/push/* handlers then answer 503 and no notifier runs).
 	sender    pushSender
 	pushStore pushStore
+
+	// projectsRoot is the one folder whose direct subdirectories are offered as
+	// hosted-workspace locations (GET /v1/projects). Empty disables the listing
+	// (503) — main always sets it.
+	projectsRoot string
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -52,6 +57,9 @@ func NewServer(mgr *manager.Manager) *Server {
 // default (NewServer) is the `tailscale whois` CLI resolver for a direct-tailnet
 // or dev deployment.
 func (s *Server) SetIdentityResolver(r whoisResolver) { s.identity = r }
+
+// SetProjectsRoot sets the folder GET /v1/projects lists (see projectsRoot).
+func (s *Server) SetProjectsRoot(root string) { s.projectsRoot = root }
 
 // EnablePush wires Web Push: it stores the sender + subscription store the
 // /v1/push/* handlers use, and starts a notifier that pushes on attention (with
@@ -74,12 +82,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
+	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
 	mux.HandleFunc("POST /v1/workspaces", s.createWorkspace)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
+	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.paneSnapshot)
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
@@ -157,6 +167,22 @@ func (s *Server) reviveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+// putGroup sets a workspace's shared sidebar group (the owning Mac window's
+// name); the change is broadcast so every lens re-groups its list.
+func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Group string `json:"group"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.mgr.SetGroup(r.PathValue("id"), req.Group); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type layoutReq struct {
