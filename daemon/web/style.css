@@ -24,10 +24,14 @@ body {
   background: var(--bg2);
   border-right: 1px solid var(--line);
   display: flex; flex-direction: column;
+  /* clear a side Dynamic Island / notch when rotated (0 on non-notched devices) */
+  padding-left: env(safe-area-inset-left);
 }
 #sidebar header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 14px; border-bottom: 1px solid var(--line);
+  /* extra top padding keeps the logo + gear below the Dynamic Island in portrait */
+  padding: calc(12px + env(safe-area-inset-top)) 14px 12px;
+  border-bottom: 1px solid var(--line);
 }
 .logo { font-weight: 600; letter-spacing: .04em; }
 .hdr-actions { display: flex; gap: 6px; align-items: center; }
@@ -66,7 +70,11 @@ body {
 
 /* main */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
-#bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); min-height: 38px; }
+#bar {
+  display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); min-height: 38px;
+  /* clear the island above (portrait) and to the right (rotated) */
+  padding: calc(6px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) 6px 8px;
+}
 #tabs { display: flex; gap: 4px; }
 #presence { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .chip {
@@ -88,7 +96,7 @@ body {
 .tab::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: transparent; }
 .tab.att-needs_input::before { background: var(--needs); box-shadow: 0 0 6px var(--needs); }
 .tab.att-done::before { background: var(--done); }
-#terminal { flex: 1; padding: 6px 8px; min-height: 0; }
+#terminal { flex: 1; min-height: 0; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)) 8px; }
 .empty {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); pointer-events: none;

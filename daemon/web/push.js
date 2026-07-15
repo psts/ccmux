@@ -7,6 +7,8 @@
 (function () {
   const swSupported = "serviceWorker" in navigator;
   const pushSupported = swSupported && "PushManager" in window && "Notification" in window;
+  const NAV_CACHE = "ccmux-nav";
+  const PENDING_NAV = "/__ccmux_pending_nav";
   let reg = null;
 
   async function boot() {
@@ -17,17 +19,39 @@
         console.warn("[ccmux] service worker registration failed", e);
       }
       navigator.serviceWorker.addEventListener("message", onSWMessage);
+      // Frozen/backgrounded PWAs (iOS) can drop the postMessage above, so also
+      // pull any deep-link the SW stashed — on load and each time we're shown.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") consumePendingNav();
+      });
+      consumePendingNav();
     }
     wireSettings();
   }
 
-  // Notification tap → the SW asks an open window to deep-link to the workspace.
+  // Attach to the workspace named by a deep-link URL (/?ws=<id>).
+  function navToURL(url) {
+    if (!url) return;
+    const ws = new URL(url, location.origin).searchParams.get("ws");
+    if (ws && window.ccmux) window.ccmux.attach(ws, null);
+  }
+
+  // Notification tap → the SW asks an open window to deep-link (fast path).
   function onSWMessage(ev) {
     const m = ev.data || {};
-    if (m.type === "ccmux-navigate" && m.url) {
-      const ws = new URL(m.url, location.origin).searchParams.get("ws");
-      if (ws && window.ccmux) window.ccmux.attach(ws, null);
-    }
+    if (m.type === "ccmux-navigate") navToURL(m.url);
+  }
+
+  // Read + clear a deep-link the SW stashed for a client that may have dropped
+  // the postMessage. Idempotent: the entry is deleted once consumed.
+  async function consumePendingNav() {
+    try {
+      const cache = await caches.open(NAV_CACHE);
+      const resp = await cache.match(PENDING_NAV);
+      if (!resp) return;
+      await cache.delete(PENDING_NAV);
+      navToURL(await resp.text());
+    } catch (_) {}
   }
 
   // --- settings sheet ---

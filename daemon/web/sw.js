@@ -3,7 +3,12 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v2";
+const CACHE = "ccmux-shell-v3";
+// A pending deep-link target, stashed on notificationclick so a client that was
+// frozen/backgrounded (and may drop the postMessage) can still pick it up when it
+// regains visibility. Kept in its own cache so shell-cache cleanup never purges it.
+const NAV_CACHE = "ccmux-nav";
+const PENDING_NAV = "/__ccmux_pending_nav";
 
 // The app shell: everything needed to boot the lens offline. Session bytes are
 // never cached (they come over /v1/attach, which the fetch handler leaves alone).
@@ -28,7 +33,10 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(
+        // Purge only superseded shell caches; keep NAV_CACHE (pending deep-link).
+        keys.filter((k) => k.startsWith("ccmux-shell-") && k !== CACHE).map((k) => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });
@@ -83,20 +91,25 @@ self.addEventListener("push", (e) => {
   );
 });
 
-// Tapping the notification deep-links to the workspace: focus an existing lens
-// window (asking it to navigate) or open a new one at the deep link.
+// Tapping the notification deep-links to the workspace. iOS PWAs are unreliable
+// here — a backgrounded page may be frozen and drop a postMessage — so we cover
+// every case: (1) stash the target in NAV_CACHE, which the page reads when it
+// regains visibility (survives a dropped message or a relaunch); (2) postMessage
+// every client as the fast path; (3) focus an existing window, else open a new
+// one at the deep-link URL (its ?ws= is consumed on boot).
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const url = (e.notification.data && e.notification.data.url) || "/";
   e.waitUntil(
     (async () => {
+      try {
+        const cache = await caches.open(NAV_CACHE);
+        await cache.put(PENDING_NAV, new Response(url));
+      } catch (_) {}
       const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const c of wins) c.postMessage({ type: "ccmux-navigate", url });
       for (const c of wins) {
-        if ("focus" in c) {
-          await c.focus();
-          c.postMessage({ type: "ccmux-navigate", url });
-          return;
-        }
+        if ("focus" in c) { await c.focus(); return; }
       }
       if (self.clients.openWindow) await self.clients.openWindow(url);
     })()
