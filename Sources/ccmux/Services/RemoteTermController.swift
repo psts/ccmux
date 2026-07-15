@@ -59,10 +59,16 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
         terminalView.feed(byteArray: bytes[...])
     }
 
-    /// Push the current grid size to the daemon (used to force a resize after
-    /// (re)attach even when the view size didn't change).
+    /// Push the current grid size to the daemon, FORCING a re-send even when the
+    /// grid size is unchanged (it resets the de-dupe first). Used after (re)attach
+    /// and when the app window becomes key: another lens (e.g. a phone) may have
+    /// resized the shared tmux pane while this window was in the background, so
+    /// returning to it must re-assert what this window actually shows — otherwise
+    /// the Mac keeps rendering the crushed, phone-driven width.
     func sendCurrentSize() {
         let t = terminalView.getTerminal()
+        lastSentCols = -1
+        lastSentRows = -1
         forwardResize(cols: t.cols, rows: t.rows)
     }
 

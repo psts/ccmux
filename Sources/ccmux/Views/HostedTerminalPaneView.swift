@@ -79,6 +79,7 @@ final class HostedTerminalContainerView: NSView {
     let paneId: String
     let workingDirectory: String
     private var hasAssertedSize = false
+    private var keyObserver: NSObjectProtocol?
 
     init(paneId: String, workingDirectory: String) {
         self.paneId = paneId
@@ -87,6 +88,10 @@ final class HostedTerminalContainerView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+    }
 
     private var controller: RemoteTermController? {
         RemoteSessionService.shared.hostedController(paneId: paneId, workingDirectory: workingDirectory)
@@ -116,7 +121,27 @@ final class HostedTerminalContainerView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { ensureEmbedded() }
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver); self.keyObserver = nil }
+        guard let window else { return }
+        ensureEmbedded()
+        // Re-assert this pane's size when its window becomes key. Another lens (a
+        // phone) may have driven the shared tmux pane narrow while this window was
+        // in the background; returning to it must un-crush the pane to what this
+        // window shows. sendCurrentSize() forces the resend even though the Mac
+        // view's own grid never changed. (The live drag-resize case stays with
+        // RemoteTermController.sizeChanged.)
+        keyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            self?.reassertSizeOnFocus()
+        }
+    }
+
+    /// Force-push this on-screen pane's size to the daemon (window became key).
+    private func reassertSizeOnFocus() {
+        guard bounds.width > 0, bounds.height > 0,
+              let controller, controller.terminalView.superview === self else { return }
+        controller.sendCurrentSize()
     }
 
     /// Once embedded at a real size, push the grid dimensions to the daemon so tmux
