@@ -102,13 +102,23 @@ function ensureTerm() {
   state.term.loadAddon(state.fit);
   state.term.open($("terminal"));
   state.term.onData((d) => sendInput(d));
-  window.addEventListener("resize", doFit);
-  // Focus reporting powers push suppression: while this lens is actively watching
-  // the daemon holds back notifications; when the tab is hidden or blurred we
-  // clear focus so a "needs input" push comes through.
-  document.addEventListener("visibilitychange", reportFocus);
-  window.addEventListener("focus", reportFocus);
-  window.addEventListener("blur", reportFocus);
+  window.addEventListener("resize", scheduleFit);
+  // visibility/focus does double duty:
+  //  - push suppression: while actively watching, the daemon holds notifications;
+  //    hidden/blurred clears focus so a "needs input" push comes through.
+  //  - sizing: when THIS device becomes the active view, re-fit and re-drive its
+  //    size so the pane matches this screen. Switching back to a desktop after
+  //    driving from a phone must never leave the pane crushed.
+  document.addEventListener("visibilitychange", onActivity);
+  window.addEventListener("focus", onActivity);
+  window.addEventListener("blur", onActivity);
+}
+
+// onActivity fires on visibility/focus/blur: always report focus (suppression),
+// and when this device is the active view, re-fit its size.
+function onActivity() {
+  reportFocus();
+  if (document.visibilityState === "visible" && document.hasFocus()) scheduleFit();
 }
 
 function reportFocus() {
@@ -116,14 +126,34 @@ function reportFocus() {
   send({ t: "focus", pane: watching ? state.paneId : "" });
 }
 
+// Below this the pane is considered broken, not a real request — a transient
+// zero-size layout pass or a pathologically narrow container. We skip driving the
+// shared pane to it (leave it at its current width) rather than crush everyone.
+const MIN_COLS = 20;
+let fitTimer = null;
+
+// scheduleFit debounces fit() so a burst of resize/visibility events collapses
+// into one resize frame.
+function scheduleFit() {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(doFit, 80);
+}
+
 function doFit() {
   if (!state.fit || !state.term) return;
   try { state.fit.fit(); } catch (_) {}
-  send({ t: "resize", pane: state.paneId, cols: state.term.cols, rows: state.term.rows });
+  const { cols, rows } = state.term;
+  if (!cols || !rows || cols < MIN_COLS) return;
+  send({ t: "resize", pane: state.paneId, cols, rows });
 }
+
+// --- mobile session drawer (off-canvas sidebar) ---
+function closeDrawer() { document.getElementById("app").classList.remove("drawer-open"); }
+function toggleDrawer() { document.getElementById("app").classList.toggle("drawer-open"); }
 
 // --- attach / websocket ---
 function attach(wsId, wantPane) {
+  closeDrawer(); // selecting a session on mobile dismisses the drawer
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = wsId;
   state.wantPane = wantPane;
@@ -137,7 +167,7 @@ function attach(wsId, wantPane) {
   const q = `workspace=${wsId}&user=${encodeURIComponent(getUser())}&device=web`;
   const conn = new WebSocket(`${proto}://${location.host}/v1/attach?${q}`);
   conn.onmessage = onMessage;
-  conn.onopen = () => doFit();
+  conn.onopen = () => scheduleFit();
   state.conn = conn;
 }
 
@@ -149,7 +179,7 @@ function onMessage(ev) {
       state.paneId = state.wantPane || (state.panes[0] && state.panes[0].id) || null;
       state.wantPane = null;
       renderTabs();
-      doFit();
+      scheduleFit();
       reportFocus();
       break;
     case "snapshot":
@@ -269,6 +299,8 @@ function bootDeepLink() {
 // --- boot ---
 window.ccmux = { attach, getUser }; // push.js deep-links + shares the presence name
 $("new-ws").onclick = newWorkspace;
+$("menu-toggle").onclick = toggleDrawer;
+$("drawer-backdrop").onclick = closeDrawer;
 fetchWorkspaces().then(bootDeepLink);
 connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes
