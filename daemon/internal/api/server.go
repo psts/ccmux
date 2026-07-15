@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gorilla/websocket"
 
@@ -79,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
+	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.paneSnapshot)
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
 	mux.HandleFunc("GET /v1/push/subscriptions", s.listSubscriptions)
@@ -185,6 +187,37 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"version": newV})
 	}
+}
+
+// paneSnapshot returns a pane's current screen as escape-preserving bytes
+// (base64 in "data"), the same seed an attach delivers — for a lens that wants a
+// preview without opening an attach WebSocket. An optional ?history=N prepends N
+// lines of scrollback. 404 if the pane is unknown; 409 if its workspace is cold
+// (no live tmux to capture).
+func (s *Server) paneSnapshot(w http.ResponseWriter, r *http.Request) {
+	paneID := r.PathValue("id")
+	wsID := s.mgr.WorkspaceForPane(paneID)
+	if wsID == "" {
+		writeError(w, http.StatusNotFound, "unknown pane")
+		return
+	}
+	ctrl := s.mgr.Controller(wsID)
+	if ctrl == nil {
+		writeError(w, http.StatusConflict, "workspace not live")
+		return
+	}
+	history := 0
+	if h := r.URL.Query().Get("history"); h != "" {
+		if n, err := strconv.Atoi(h); err == nil && n > 0 {
+			history = n
+		}
+	}
+	b, err := ctrl.Capture(paneID, history)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"pane": paneID, "data": b64(b)})
 }
 
 // paneDriver reports the human currently driving a pane's workspace, for the git
