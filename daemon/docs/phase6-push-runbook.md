@@ -5,7 +5,12 @@ subscription CRUD, SW registration, manifest, and focus-aware suppression — th
 last proven end-to-end against a live capture endpoint). The one thing that
 needs a real device is **physical push delivery**. This runbook covers it.
 
-Host: `mbp.tailb9053d.ts.net` · tailnet `sandelin@gmail.com` · daemon `:7900`.
+Origin: `https://ccmuxd.tailb9053d.ts.net` · tailnet `sandelin@gmail.com`.
+
+The daemon now serves as **its own tailnet node** (`ccmuxd`) via tsnet — no
+`tailscale serve`, no Caddy contention, no `:443` collision (the node has its own
+IP + `:443`). The `tailscale serve` + `mbp`-origin setup this runbook first
+described is superseded.
 
 ---
 
@@ -13,50 +18,44 @@ Host: `mbp.tailb9053d.ts.net` · tailnet `sandelin@gmail.com` · daemon `:7900`.
 
 - **Daemon** serves the push API + PWA. VAPID keypair is generated and persisted
   on first run at `~/Library/Application Support/ccmuxd/vapid.json` (0600).
-- **`tailscale serve`** fronts the daemon: `https://mbp.tailb9053d.ts.net/` →
-  `http://127.0.0.1:7900`. TLS cert issued (`tailscale cert` succeeds).
-- Verified over the real HTTPS origin: `/v1/health`, `/v1/push/vapid`,
-  `/manifest.webmanifest` (`application/manifest+json`), `/sw.js`, icons, and a
-  secure-context service-worker registration all return 200.
+- **tsnet node**: with `-tsnet` the daemon comes up as `ccmuxd.<tailnet>.ts.net`,
+  terminating TLS on its own `:443` with a tailnet-issued cert and resolving
+  caller identity in-process via WhoIs. Verified live (S5): node up on its own IP,
+  HTTPS with a valid cert, WhoIs returns the connecting peer's tailnet login.
+- The push API + PWA (`/v1/health`, `/v1/push/vapid`, `/manifest.webmanifest`,
+  `/sw.js`, icons, secure-context SW registration) were all verified over HTTPS.
 
-### ⚠️ Caddy coexistence (temporary — goes away with tsnet)
-
-Caddy owns `:443` (wildcard) for your `*.dev.chartlabs.io` dev domains and has no
-route for the ts.net name, so **while Caddy runs it shadows `tailscale serve` and
-the ts.net origin breaks**. This collision only exists in the current interim
-setup (`tailscale serve` fronting a loopback daemon on the shared `mbp` node).
-The **tsnet target removes it entirely**: the daemon becomes its own tailnet node
-(`ccmuxd.<tailnet>.ts.net`) that terminates TLS itself, so it never touches the
-`mbp` host's `:443` and Caddy is unaffected.
-
-**For now, just keep Caddy stopped while you run the phone test** and restart it
-when you need the dev domains. No config change needed.
-
-Reset serve if you ever want it gone: `tailscale serve --https=443 off`.
+Caddy is **irrelevant now** — the tsnet node never touches the host's `:443`, so
+Caddy can run its dev domains undisturbed. Nothing to stop or reconfigure.
 
 ---
 
-## 1. Run the daemon persistently on :7900
+## 1. Run the daemon as the tsnet node
 
-The agent's daemon dies when its session ends, so start your own:
+The agent's daemon dies when its session ends, so start your own. First run needs
+the node authorized — set your reusable `TS_AUTHKEY` (generate one at
+`login.tailscale.com/admin/settings/keys`); after that, node state persists in
+`~/Library/Application Support/ccmuxd/tsnet/` and the key isn't needed again.
 
 ```sh
 cd ~/Work/Coding/ccmux/daemon
 go build -o /tmp/ccmuxd ./cmd/ccmuxd
-/tmp/ccmuxd -addr 127.0.0.1:7900          # foreground; or a launchd LaunchAgent for reboot-survival
+export TS_AUTHKEY=tskey-...              # only needed on first run / fresh state
+/tmp/ccmuxd -tsnet -addr 127.0.0.1:7900  # tsnet node + loopback (hooks); launchd for reboot-survival
 ```
 
-For the **push test to fire from real activity**, the daemon must own the hooks
-socket `/tmp/ccmux-hooks.sock`. The local ccmux *app* also binds it and, if
-launched after the daemon, steals it (known deferred bug). So either quit the app
-during the test, or use the synthetic hook in step 4b.
+The `-addr` loopback listener still runs for on-host hooks and health; lenses use
+the ts.net origin. For the **push test to fire from real activity**, the daemon
+must own the hooks socket `/tmp/ccmux-hooks.sock` — the local ccmux *app* also
+binds it and, if launched after the daemon, steals it (known deferred bug). So
+either quit the app during the test, or use the synthetic hook in step 4b.
 
 ---
 
 ## 2. Install the PWA on the iPhone
 
 1. iPhone on the **same tailnet**, iOS **16.4+**, **Tailscale on** (green, connected).
-2. Open **Safari** → `https://mbp.tailb9053d.ts.net/`. The session list loads.
+2. Open **Safari** → `https://ccmuxd.tailb9053d.ts.net/`. The session list loads.
 3. **Share** (□↑) → **Add to Home Screen** → Add.
 4. **Open ccmux from the new Home-Screen icon** (not Safari — push only works from
    the standalone install).
@@ -111,7 +110,7 @@ PY
 
 | Symptom | Fix |
 |---|---|
-| ts.net URL won't load / TLS error | Caddy is running and shadowing `:443` — see §0. |
+| ts.net URL won't load / TLS error | Node not up: check the daemon started with `-tsnet` and (first run) a valid `TS_AUTHKEY`; first HTTPS hit provisions the cert (retry after a few seconds). |
 | Sheet stuck on "Add to Home Screen" | You're in Safari, not the installed app. Open from the Home-Screen icon. |
 | "Notifications are blocked" | You tapped Don't Allow once. iOS Settings → ccmux → Notifications → Allow (or remove + re-add the PWA). |
 | Enabled but no push arrives | Confirm you're not attached+focused on that workspace; confirm the daemon (not the app) owns `/tmp/ccmux-hooks.sock` (`lsof /tmp/ccmux-hooks.sock`); check the daemon log for the send. |
@@ -120,7 +119,7 @@ PY
 ## Quick reference
 
 ```sh
-tailscale serve status                       # should show / → http://127.0.0.1:7900
-curl -s https://mbp.tailb9053d.ts.net/v1/push/vapid   # VAPID public key (needs Caddy stopped)
+tailscale status | grep ccmuxd                        # the daemon's own node should be listed
+curl -s https://ccmuxd.tailb9053d.ts.net/v1/push/vapid   # VAPID public key over the node's HTTPS
 curl -s http://127.0.0.1:7900/v1/push/subscriptions?user=<you>   # your registered devices
 ```
