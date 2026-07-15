@@ -33,7 +33,7 @@ func main() {
 	socket := flag.String("socket", "ccmux", "tmux server socket name (-L)")
 	addr := flag.String("addr", "127.0.0.1:7890", "HTTP listen address")
 	dbPath := flag.String("db", defaultDBPath(), "registry SQLite path")
-	hooksSock := flag.String("hooks-socket", "/tmp/ccmux-hooks.sock", "Claude Code hooks Unix socket")
+	hooksSock := flag.String("hooks-socket", "/tmp/ccmuxd-hooks.sock", "Claude Code hooks Unix socket (distinct from the native app's /tmp/ccmux-hooks.sock; injected into hosted panes as CCMUX_HOOKS_SOCK)")
 	vapidPath := flag.String("vapid", defaultVAPIDPath(), "VAPID keypair JSON path (web push)")
 	pushSubject := flag.String("push-subject", "https://ccmux.dev", "VAPID subject: a real contact email or https: URL identifying this server (Apple rejects unroutable domains like .local)")
 	tsnetEnabled := flag.Bool("tsnet", false, "serve as an own tailnet node (HTTPS on :443, in-process WhoIs identity); needs TS_AUTHKEY on first run")
@@ -60,12 +60,16 @@ func main() {
 	srv := &tmux.Server{Socket: *socket, ConfigPath: cfgPath}
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
+	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
 	if err := mgr.Start(); err != nil {
 		log.Fatalf("manager start: %v", err)
 	}
 
-	// Claude Code hooks → attention fan-out. Non-fatal if the socket is taken
-	// (e.g. a local ccmux app already bound it); the daemon still serves.
+	// Claude Code hooks → attention fan-out. The daemon owns a DISTINCT socket
+	// (default /tmp/ccmuxd-hooks.sock) from the native app's /tmp/ccmux-hooks.sock,
+	// and injects its path into hosted panes as CCMUX_HOOKS_SOCK — so hosted hooks
+	// reach the daemon even when the app is running (no more last-binder-steals).
+	// Still non-fatal if the socket is somehow taken; the daemon serves regardless.
 	if hl, err := hooks.Listen(*hooksSock, mgr); err != nil {
 		log.Printf("hooks listener disabled: %v", err)
 	} else {

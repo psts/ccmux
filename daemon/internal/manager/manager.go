@@ -40,6 +40,14 @@ type Manager struct {
 	// (the git co-author trailer) reach the daemon with zero config. Empty = omit.
 	LocalURL string
 
+	// HooksSocket is the daemon's Claude Code hooks Unix socket path, injected into
+	// every hosted pane's env as CCMUX_HOOKS_SOCK so ccmux-notify.sh sends hosted
+	// panes' attention to the DAEMON — not to the native app, which listens on its
+	// own /tmp/ccmux-hooks.sock for local panes. This keeps the two hook streams
+	// separate: without it the last binder of a shared path stole the other's
+	// hooks (hosted attention flash died whenever the app ran). Empty = omit.
+	HooksSocket string
+
 	mu   sync.RWMutex
 	byID map[string]*entry
 }
@@ -397,6 +405,9 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 	env := shellint.EnvForPane(paneID)
 	if m.LocalURL != "" {
 		env["CCMUX_DAEMON_URL"] = m.LocalURL
+	}
+	if m.HooksSocket != "" {
+		env["CCMUX_HOOKS_SOCK"] = m.HooksSocket
 	}
 	return env
 }

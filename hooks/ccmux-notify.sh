@@ -4,16 +4,23 @@
 # Registered in ~/.claude/settings.json (see install-hooks.sh), alongside any other
 # hooks — Claude Code runs every command registered for an event. Reads the hook's
 # JSON payload on stdin and forwards a compact {type, cwd, notification_type} message
-# to the running ccmux app over its Unix domain socket.
+# to the listening ccmux endpoint over its Unix domain socket.
 #
-# Exits 0 fast and silently when ccmux isn't listening, so it never blocks or fails
+# Socket selection: hosted panes (spawned by the daemon) inherit CCMUX_HOOKS_SOCK
+# pointing at the DAEMON's socket, so their hooks reach the daemon. Local panes
+# (driven by the native app) have no CCMUX_HOOKS_SOCK and fall back to the app's
+# /tmp/ccmux-hooks.sock. This keeps the two streams separate — before, both bound
+# the same path and whoever bound last stole the other's hooks (hosted attention
+# flash died whenever the app ran).
+#
+# Exits 0 fast and silently when nothing is listening, so it never blocks or fails
 # a Claude turn.
 #
 # Usage:  ccmux-notify.sh <event-name>
 #   where <event-name> is one of: notification, permission-request,
 #   ask-user-question, stop, user-prompt-submit, session-end
 
-SOCKET_PATH="/tmp/ccmux-hooks.sock"
+SOCKET_PATH="${CCMUX_HOOKS_SOCK:-/tmp/ccmux-hooks.sock}"
 [[ -S "$SOCKET_PATH" ]] || exit 0
 
 # Map the CLI event arg to the canonical type string ccmux's listener expects.

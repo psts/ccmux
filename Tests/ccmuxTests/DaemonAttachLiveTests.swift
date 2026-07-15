@@ -88,10 +88,11 @@ final class DaemonAttachLiveTests: XCTestCase {
     /// End-to-end proof of the headline feature: fire a real Claude Code hook at the
     /// daemon's hooks socket and assert the native firehose client sees the resulting
     /// `needs_input` attention change for the workspace — *without any attach*. Needs
-    /// `CCMUX_HOOKS_SOCK` (defaults to the daemon's `/tmp/ccmux-hooks.sock`).
+    /// `CCMUX_HOOKS_SOCK` (defaults to the daemon's `/tmp/ccmuxd-hooks.sock` — the
+    /// daemon owns a socket distinct from the app's `/tmp/ccmux-hooks.sock`).
     func testFirehoseDeliversHookAttentionChange() throws {
         let wsId = try liveWorkspace()
-        let hookSock = ProcessInfo.processInfo.environment["CCMUX_HOOKS_SOCK"] ?? "/tmp/ccmux-hooks.sock"
+        let hookSock = ProcessInfo.processInfo.environment["CCMUX_HOOKS_SOCK"] ?? "/tmp/ccmuxd-hooks.sock"
         let client = DaemonEventsClient()
 
         let sawNeedsInput = expectation(description: "firehose reports needs_input from a hook")
