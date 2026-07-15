@@ -29,6 +29,28 @@ type Sub struct {
 // snapshot before continuing to stream.
 func (s *Sub) Lagged() bool { return s.inner.lagged.Swap(false) }
 
+// Drain removes every event currently queued for this subscriber, discarding
+// "output" events and returning the rest in FIFO order. It is called on the lag
+// path: once a drop has occurred the queued output bytes are stale and about to
+// be superseded by a fresh snapshot reseed, so replaying them would corrupt the
+// screen (stale deltas layered on top of the current capture). Control events
+// (attention/presence/layout/pane lifecycle) are NOT reseed-recoverable — a
+// snapshot only carries pane bytes — so they are preserved and handed back for
+// the consumer to deliver after the reseed.
+func (s *Sub) Drain() []Event {
+	var kept []Event
+	for {
+		select {
+		case ev := <-s.inner.ch:
+			if ev.Kind != "output" {
+				kept = append(kept, ev)
+			}
+		default:
+			return kept
+		}
+	}
+}
+
 // Close unsubscribes.
 func (s *Sub) Close() {
 	s.ctrl.mu.Lock()

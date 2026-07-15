@@ -94,8 +94,13 @@ func sendSnapshots(conn *websocket.Conn, ctrl *session.Controller, ws *model.Wor
 	}
 }
 
-// writeLoop forwards pane output to the client, re-seeding a lagged subscriber
-// from a fresh capture rather than replaying a corrupted byte stream.
+// writeLoop forwards pane output to the client. When the subscriber has lagged
+// (a drop occurred), the queued backlog is stale terminal bytes: replaying it
+// would layer stale deltas on top of the current screen, so we discard the
+// backlog and reseed each pane from a fresh capture instead. The triggering
+// event and any buffered control events (attention/presence/layout/pane
+// lifecycle) are NOT reseed-recoverable — a snapshot carries only pane bytes —
+// so those are delivered after the reseed; only stale "output" is dropped.
 func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controller, ws *model.Workspace, sub *session.Sub) {
 	for {
 		select {
@@ -106,7 +111,17 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 				return
 			}
 			if sub.Lagged() {
+				pending := sub.Drain()
+				if ev.Kind != "output" {
+					pending = append([]session.Event{ev}, pending...)
+				}
 				sendSnapshots(conn, ctrl, ws)
+				for _, pe := range pending {
+					if err := conn.WriteJSON(frameFor(pe)); err != nil {
+						return
+					}
+				}
+				continue
 			}
 			if err := conn.WriteJSON(frameFor(ev)); err != nil {
 				return
