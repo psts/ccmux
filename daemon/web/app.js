@@ -122,7 +122,12 @@ function ensureTerm() {
 // width a desktop had set (distorted). Re-fitting on visible auto-corrects it.
 function onActivity() {
   reportFocus();
-  if (document.visibilityState === "visible") scheduleFit();
+  if (document.visibilityState === "visible") {
+    scheduleFit();
+    // Returning to the view should land on the latest output, not mid-scroll.
+    // Run after the debounced fit reflows (fit can shift the scroll position).
+    setTimeout(scrollBottom, 140);
+  }
 }
 
 function reportFocus() {
@@ -155,16 +160,17 @@ function doFit() {
   updateTakeover();
 }
 
-// --- "take over" (mobile): reclaim the shared pane's size when another lens (a
-// desktop) drove it wider than this phone shows. Shown only when the daemon's
-// authoritative pane width differs from what this view can display 1:1. ---
-function isMobile() { return window.matchMedia("(max-width: 700px)").matches; }
-
+// --- "take over": reclaim the shared pane's size when another lens drove it to a
+// width this view can't show 1:1. Available on every platform (a phone drives it
+// narrow, a desktop drives it wide) — shown whenever the daemon's authoritative
+// pane width differs from what this view fits. ---
 function updateTakeover() {
-  const stale = isMobile() && !!state.paneId && !!state.term &&
+  const stale = !!state.paneId && !!state.term &&
     state.term.cols > 0 && state.paneCols > 0 && state.paneCols !== state.term.cols;
   document.getElementById("app").classList.toggle("stale", stale);
 }
+
+function scrollBottom() { try { state.term && state.term.scrollToBottom(); } catch (_) {} }
 
 // Reclaim: re-attach the current pane, which resets + re-seeds and re-fits to this
 // screen's width (the same thing selecting the session in the drawer does).
@@ -219,7 +225,14 @@ function onMessage(ev) {
       break;
     case "snapshot":
     case "output":
-      if (m.pane === state.paneId && m.data) state.term.write(b64ToBytes(m.data));
+      if (m.pane === state.paneId && m.data) {
+        const bytes = b64ToBytes(m.data);
+        // A snapshot is a fresh screen (attach or lag-reseed): jump to the bottom so
+        // we land on the latest output, not mid-scrollback. Plain output preserves
+        // the user's scroll position (xterm only auto-follows when already at bottom).
+        if (m.t === "snapshot") state.term.write(bytes, scrollBottom);
+        else state.term.write(bytes);
+      }
       break;
     case "pane-size":
       if (m.pane === state.paneId) { state.paneCols = m.cols || 0; updateTakeover(); }
