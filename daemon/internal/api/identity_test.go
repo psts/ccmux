@@ -9,7 +9,8 @@ import (
 	"ccmux.dev/ccmuxd/internal/manager"
 )
 
-// fakeResolver stands in for tailscale whois so tests never shell out.
+// fakeResolver stands in for the tsnet WhoIs backend so tests never touch the
+// network or shell out.
 type fakeResolver struct {
 	login, display string
 	ok             bool
@@ -23,62 +24,38 @@ func newIdentityServer(res whoisResolver) *Server {
 	return s
 }
 
-func req(remoteAddr string, headers map[string]string, query string) *http.Request {
+func req(remoteAddr, query string) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/v1/attach"+query, nil)
 	r.RemoteAddr = remoteAddr
-	for k, v := range headers {
-		r.Header.Set(k, v)
-	}
 	return r
 }
 
-func TestResolveIdentity_TrustsServeHeadersFromLoopback(t *testing.T) {
-	// Behind `tailscale serve` the request is loopback and carries injected
-	// identity headers → trusted as the verified login.
-	s := newIdentityServer(fakeResolver{ok: false})
-	id := s.resolveIdentity(req("127.0.0.1:5000",
-		map[string]string{"Tailscale-User-Login": "patric@example.com", "Tailscale-User-Name": "Patric Sandelin"},
-		"?user=spoofed"))
-	if id.Login != "patric@example.com" || id.Email != "patric@example.com" || !id.Verified {
-		t.Fatalf("serve-header identity = %+v; want verified patric@example.com", id)
-	}
-	if id.Display != "Patric Sandelin" {
-		t.Errorf("display = %q, want the tailnet name", id.Display)
-	}
-}
-
-func TestResolveIdentity_IgnoresSpoofedHeadersFromNonLoopback(t *testing.T) {
-	// A DIRECT tailnet client (non-loopback) must NOT be able to set the identity
-	// header itself — those headers are only trusted from the serve proxy. Here
-	// whois fails, so it falls back to the self-declared name, NOT the header.
-	s := newIdentityServer(fakeResolver{ok: false})
-	id := s.resolveIdentity(req("100.64.0.9:5000",
-		map[string]string{"Tailscale-User-Login": "attacker@evil.com"},
-		"?user=bob"))
-	if id.Verified {
-		t.Fatalf("must not verify a spoofed header from a direct client: %+v", id)
-	}
-	if id.Login != "bob" {
-		t.Errorf("login = %q, want the self-declared bob (header ignored)", id.Login)
-	}
-}
-
-func TestResolveIdentity_WhoisForDirectTailnetClient(t *testing.T) {
+func TestResolveIdentity_VerifiedFromWhois(t *testing.T) {
+	// A lens over the tailnet resolves to its verified login; the self-declared
+	// ?user= is ignored in favor of the verified identity.
 	s := newIdentityServer(fakeResolver{login: "carol@example.com", display: "Carol", ok: true})
-	id := s.resolveIdentity(req("100.64.0.9:5000", nil, "?user=ignored"))
+	id := s.resolveIdentity(req("100.64.0.9:5000", "?user=ignored"))
 	if id.Login != "carol@example.com" || id.Email != "carol@example.com" || !id.Verified || id.Display != "Carol" {
 		t.Fatalf("whois identity = %+v; want verified Carol", id)
 	}
 }
 
+func TestResolveIdentity_DisplayFallsBackToLogin(t *testing.T) {
+	// A verified user with no display name shows their login as the display.
+	s := newIdentityServer(fakeResolver{login: "dave@example.com", ok: true})
+	if id := s.resolveIdentity(req("100.64.0.9:5000", "")); id.Display != "dave@example.com" {
+		t.Errorf("display = %q, want the login as fallback", id.Display)
+	}
+}
+
 func TestResolveIdentity_SelfDeclaredFallback(t *testing.T) {
+	// Loopback (hooks) or an unresolvable peer → unverified self-declared name.
 	s := newIdentityServer(fakeResolver{ok: false})
-	id := s.resolveIdentity(req("100.64.0.9:5000", nil, "?user=dave"))
+	id := s.resolveIdentity(req("127.0.0.1:5000", "?user=dave"))
 	if id.Verified || id.Email != "" || id.Login != "dave" {
 		t.Fatalf("fallback identity = %+v; want unverified dave, no email", id)
 	}
-	// No user param → anon.
-	if got := s.resolveIdentity(req("100.64.0.9:5000", nil, "")); got.Login != "anon" {
+	if got := s.resolveIdentity(req("127.0.0.1:5000", "")); got.Login != "anon" {
 		t.Errorf("missing user → login %q, want anon", got.Login)
 	}
 }

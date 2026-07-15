@@ -1,12 +1,14 @@
 // Command ccmuxd is the ccmux daemon: it owns a dedicated tmux server that holds
 // persistent Claude Code sessions and serves a REST + WebSocket API that lenses
-// (native app, web, phone) attach to. v1 binds localhost only; Tailscale
-// identity lands in a later phase.
+// (native app, web, phone) attach to. With -tsnet it comes up as its own tailnet
+// node (own name, own :443 with a tailnet-issued cert, in-process WhoIs identity);
+// it always keeps a loopback listener for on-host hooks and health.
 package main
 
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -15,12 +17,15 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"tailscale.com/tsnet"
+
 	"ccmux.dev/ccmuxd/config"
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/push"
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
 
@@ -31,6 +36,9 @@ func main() {
 	hooksSock := flag.String("hooks-socket", "/tmp/ccmux-hooks.sock", "Claude Code hooks Unix socket")
 	vapidPath := flag.String("vapid", defaultVAPIDPath(), "VAPID keypair JSON path (web push)")
 	pushSubject := flag.String("push-subject", "mailto:ccmux@ccmux.local", "VAPID subject (mailto:/https: identifying this server)")
+	tsnetEnabled := flag.Bool("tsnet", false, "serve as an own tailnet node (HTTPS on :443, in-process WhoIs identity); needs TS_AUTHKEY on first run")
+	tsnetHostname := flag.String("tsnet-hostname", "ccmuxd", "tailnet node name (→ <name>.<tailnet>.ts.net)")
+	tsnetDir := flag.String("tsnet-dir", defaultTsnetDir(), "tsnet node state directory")
 	flag.Parse()
 
 	cfgPath := filepath.Join(os.TempDir(), "ccmux-tmux.conf")
@@ -77,7 +85,20 @@ func main() {
 		log.Printf("web push enabled (vapid %s)", *vapidPath)
 	}
 
-	httpSrv := &http.Server{Addr: *addr, Handler: apiSrv.Handler()}
+	handler := apiSrv.Handler()
+
+	// Own tailnet node: HTTPS on its node's :443 (tailnet cert) with in-process
+	// WhoIs identity, replacing `tailscale serve` + the whois CLI. The loopback
+	// listener below still runs, so on-host hooks reach the daemon unchanged.
+	if *tsnetEnabled {
+		ts, err := serveTailnet(ctx, apiSrv, handler, *tsnetHostname, *tsnetDir)
+		if err != nil {
+			log.Fatalf("tsnet: %v", err)
+		}
+		defer ts.Close()
+	}
+
+	httpSrv := &http.Server{Addr: *addr, Handler: handler}
 	go func() {
 		<-ctx.Done()
 		shutCtx, c := context.WithTimeout(context.Background(), 3e9)
@@ -85,11 +106,41 @@ func main() {
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
-	log.Printf("ccmuxd listening on http://%s (tmux -L %s, db %s)", *addr, *socket, *dbPath)
+	log.Printf("ccmuxd loopback listening on http://%s (tmux -L %s, db %s)", *addr, *socket, *dbPath)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}
 	log.Print("ccmuxd stopped")
+}
+
+// serveTailnet brings the daemon up as its own tailnet node, swaps the API's
+// identity backend to the node's in-process WhoIs, and serves the handler over
+// HTTPS on the node's :443 (background). The auth key comes from TS_AUTHKEY (or
+// prior persisted state in dir); first unauthenticated run logs a login URL.
+func serveTailnet(ctx context.Context, apiSrv *api.Server, handler http.Handler, hostname, dir string) (*tsnet.Server, error) {
+	ts := &tsnet.Server{Hostname: hostname, Dir: dir, UserLogf: log.Printf}
+	if _, err := ts.Up(ctx); err != nil {
+		return nil, fmt.Errorf("node up: %w", err)
+	}
+	lc, err := ts.LocalClient()
+	if err != nil {
+		ts.Close()
+		return nil, fmt.Errorf("local client: %w", err)
+	}
+	apiSrv.SetIdentityResolver(tailnet.NewLocalResolver(lc))
+	ln, err := ts.ListenTLS("tcp", ":443")
+	if err != nil {
+		ts.Close()
+		return nil, fmt.Errorf("listen tls (enable HTTPS certs in the tailnet admin console): %w", err)
+	}
+	ip4, _ := ts.TailscaleIPs()
+	log.Printf("tsnet node up: %s (ip %s), https on the tailnet, cert domains %v", hostname, ip4, ts.CertDomains())
+	go func() {
+		if err := http.Serve(ln, handler); err != nil && err != http.ErrServerClosed {
+			log.Printf("tsnet serve stopped: %v", err)
+		}
+	}()
+	return ts, nil
 }
 
 // loopbackURL turns a listen address into a base URL an on-host hook can reach.
@@ -112,6 +163,9 @@ func defaultDBPath() string { return filepath.Join(configDir(), "ccmuxd.db") }
 
 // defaultVAPIDPath returns the VAPID keypair path beside the registry.
 func defaultVAPIDPath() string { return filepath.Join(configDir(), "vapid.json") }
+
+// defaultTsnetDir returns the tsnet node's state directory beside the registry.
+func defaultTsnetDir() string { return filepath.Join(configDir(), "tsnet") }
 
 func configDir() string {
 	dir, err := os.UserConfigDir()

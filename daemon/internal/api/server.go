@@ -46,6 +46,12 @@ func NewServer(mgr *manager.Manager) *Server {
 	}
 }
 
+// SetIdentityResolver swaps the identity backend. main injects a tsnet
+// LocalClient-backed resolver once the daemon's own tailnet node is up; the
+// default (NewServer) is the `tailscale whois` CLI resolver for a direct-tailnet
+// or dev deployment.
+func (s *Server) SetIdentityResolver(r whoisResolver) { s.identity = r }
+
 // EnablePush wires Web Push: it stores the sender + subscription store the
 // /v1/push/* handlers use, and starts a notifier that pushes on attention (with
 // per-dev suppression) for the lifetime of ctx. Idempotent-safe to call once at
