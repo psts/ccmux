@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,11 @@ type Manager struct {
 	// separate: without it the last binder of a shared path stole the other's
 	// hooks (hosted attention flash died whenever the app ran). Empty = omit.
 	HooksSocket string
+
+	// ExtraPaneEnv, when set, contributes additional per-pane env vars (the peers
+	// bus injects its bearer token here). Set once at startup, before any pane is
+	// created. Nil = no extras.
+	ExtraPaneEnv func(paneID string) map[string]string
 
 	mu   sync.RWMutex
 	byID map[string]*entry
@@ -136,7 +142,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy str
 		return nil, err
 	}
 	_ = ctrl.Resize(pane0.ID, defaultCols, defaultRows)
-	m.deliverStartup(ctrl, pane0)
+	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand)
 
 	ws := &model.Workspace{
 		ID: wsID, Name: name, RepoPath: repoPath, CreatedBy: createdBy,
@@ -158,6 +164,21 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy str
 
 // SpawnPane adds a pane (tmux window) to a live workspace.
 func (m *Manager) SpawnPane(wsID, cwd, startupCmd, createdBy string) (*model.Pane, error) {
+	return m.spawnPane(wsID, cwd, startupCmd, startupCmd, createdBy)
+}
+
+// SpawnEphemeralPane adds a pane whose startup command is delivered once but
+// never persisted: a revive brings the pane back as a plain shell. This is the
+// peers-bus teammate spawn — the birth prompt must fire exactly once.
+func (m *Manager) SpawnEphemeralPane(wsID, cwd, oneShotCmd, createdBy string) error {
+	_, err := m.spawnPane(wsID, cwd, "", oneShotCmd, createdBy)
+	return err
+}
+
+// spawnPane creates the pane with persistCmd on record while deliverCmd is what
+// actually types into the new shell — equal for normal panes, split for
+// ephemeral ones.
+func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy string) (*model.Pane, error) {
 	e := m.entry(wsID)
 	if e == nil || e.ctrl == nil {
 		return nil, fmt.Errorf("workspace %s not live", wsID)
@@ -165,12 +186,12 @@ func (m *Manager) SpawnPane(wsID, cwd, startupCmd, createdBy string) (*model.Pan
 	if cwd == "" {
 		cwd = e.ws.RepoPath
 	}
-	p := m.newPane(wsID, cwd, startupCmd, createdBy)
+	p := m.newPane(wsID, cwd, persistCmd, createdBy)
 	if err := e.ctrl.SpawnWindow(p.ID, cwd, m.paneEnv(p.ID)); err != nil {
 		return nil, err
 	}
 	_ = e.ctrl.Resize(p.ID, defaultCols, defaultRows)
-	m.deliverStartup(e.ctrl, p)
+	m.deliverStartup(e.ctrl, p.ID, deliverCmd)
 
 	m.mu.Lock()
 	e.ws.Panes = append(e.ws.Panes, p)
@@ -213,7 +234,7 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 		return nil, err
 	}
 	_ = ctrl.Resize(pane0.ID, defaultCols, defaultRows)
-	m.deliverStartup(ctrl, pane0)
+	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand)
 
 	for _, p := range ws.Panes[1:] {
 		if err := ctrl.SpawnWindow(p.ID, p.CWD, m.paneEnv(p.ID)); err != nil {
@@ -221,7 +242,7 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 			return nil, err
 		}
 		_ = ctrl.Resize(p.ID, defaultCols, defaultRows)
-		m.deliverStartup(ctrl, p)
+		m.deliverStartup(ctrl, p.ID, p.StartupCommand)
 		p.Status = model.StatusLive
 	}
 	pane0.Status = model.StatusLive
@@ -263,9 +284,13 @@ func (m *Manager) KillWorkspace(wsID string) error {
 	return m.store.DeleteWorkspace(wsID)
 }
 
-// Controller returns the live control connection for a workspace, if any.
+// Controller returns the live control connection for a workspace, if any. The
+// ctrl field must be read under the lock — markCold nils it from the watch
+// goroutine (a race the peers-bus -race suite surfaced).
 func (m *Manager) Controller(wsID string) *session.Controller {
-	if e := m.entry(wsID); e != nil {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e := m.byID[wsID]; e != nil {
 		return e.ctrl
 	}
 	return nil
@@ -469,6 +494,11 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 	if m.HooksSocket != "" {
 		env["CCMUX_HOOKS_SOCK"] = m.HooksSocket
 	}
+	if m.ExtraPaneEnv != nil {
+		for k, v := range m.ExtraPaneEnv(paneID) {
+			env[k] = v
+		}
+	}
 	return env
 }
 
@@ -482,17 +512,54 @@ func (m *Manager) WorkspaceForPane(paneID string) string {
 	return ""
 }
 
+// GroupForPane returns the sidebar group of the workspace owning a pane ("" for
+// an ungrouped workspace) and whether the pane is known at all. The peers bus
+// resolves a pane peer's group through this at operation time, so a window
+// rename or move re-groups live sessions immediately.
+func (m *Manager) GroupForPane(paneID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, _ := m.findPaneLocked(paneID); e != nil {
+		return e.ws.Group, true
+	}
+	return "", false
+}
+
+// LiveWorkspaceForRepo finds a live workspace in the given sidebar group whose
+// repo directory's basename matches name — the peers-bus native spawn target.
+func (m *Manager) LiveWorkspaceForRepo(group, name string) (wsID, repoPath string, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, e := range m.byID {
+		if e.ctrl == nil || e.ws.Group != group {
+			continue
+		}
+		if e.ws.RepoPath != "" && baseName(e.ws.RepoPath) == name {
+			return e.ws.ID, e.ws.RepoPath, true
+		}
+	}
+	return "", "", false
+}
+
+// baseName is filepath.Base without treating "" as ".".
+func baseName(p string) string {
+	if p == "" {
+		return ""
+	}
+	return filepath.Base(p)
+}
+
 // deliverStartup sends a pane's startup command as keystrokes (the sanctioned
 // startup mechanism — not mid-session injection). Sizing is already set, so no
 // wrap dance is needed. Because a startup command may launch a dev-channels
 // claude (possibly via a shell alias), we arm the hands-free auto-confirm
 // watcher for the pane's first ~120s.
-func (m *Manager) deliverStartup(ctrl *session.Controller, p *model.Pane) {
-	if p.StartupCommand == "" {
+func (m *Manager) deliverStartup(ctrl *session.Controller, paneID, cmd string) {
+	if cmd == "" {
 		return
 	}
-	_ = ctrl.SendInput(p.ID, []byte(p.StartupCommand+"\r"))
-	go autoconfirm.Watch(m.ctx, ctrl, p.ID)
+	_ = ctrl.SendInput(paneID, []byte(cmd+"\r"))
+	go autoconfirm.Watch(m.ctx, ctrl, paneID)
 }
 
 // watch consumes a controller's notices and reflects them into the registry:

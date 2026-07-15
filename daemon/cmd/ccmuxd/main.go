@@ -24,6 +24,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/push"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tailnet"
@@ -63,6 +64,19 @@ func main() {
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
+
+	// Built-in peers bus: pane env gets the bearer token (must be wired before
+	// any pane is created), pane-less sessions discover url+token via the info
+	// file. Non-fatal — the daemon serves terminals even if the bus can't come up.
+	var peersSvc *peers.Service
+	if secret, err := peers.LoadOrCreateSecret(filepath.Join(configDir(), "peers-secret")); err != nil {
+		log.Printf("peers bus disabled: %v", err)
+	} else {
+		peersSvc = peers.NewService(st, mgr, secret)
+		mgr.ExtraPaneEnv = peersSvc.PaneEnv
+		peersSvc.Start(ctx)
+	}
+
 	if err := mgr.Start(); err != nil {
 		log.Fatalf("manager start: %v", err)
 	}
@@ -84,6 +98,15 @@ func main() {
 
 	apiSrv := api.NewServer(mgr)
 	apiSrv.SetProjectsRoot(*projectsRoot)
+	if peersSvc != nil {
+		apiSrv.EnablePeers(peersSvc)
+		infoPath := filepath.Join(configDir(), "peers.json")
+		if err := peers.WriteDaemonInfo(infoPath, loopbackURL(*addr), peersSvc.PanelessToken()); err != nil {
+			log.Printf("peers daemon-info write failed (pane-less sessions won't connect): %v", err)
+		} else {
+			log.Printf("peers bus enabled (pane-less info %s)", infoPath)
+		}
+	}
 
 	// Web push: generate + persist a VAPID keypair on first run, then wire the
 	// push endpoints + attention notifier. Non-fatal — the daemon still serves

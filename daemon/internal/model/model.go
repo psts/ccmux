@@ -64,6 +64,38 @@ type PushSubscription struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
+// PeerEvent is one entry in the peers bus event log: a chat message between
+// Claude Code peers, or a permission verdict routed to a worker whose tool
+// dialog a delegator answered remotely. Events are addressed to exactly one
+// peer and delivered in seq order; a per-peer cursor (highest cumulatively
+// acked seq) makes replay-on-subscribe lossless and duplicate-free.
+type PeerEvent struct {
+	Seq         int64  `json:"seq"`
+	Kind        string `json:"kind"` // "message" | "permission_verdict"
+	FromID      string `json:"from_id"`
+	FromName    string `json:"from_name"`
+	FromSummary string `json:"from_summary"`
+	FromCWD     string `json:"from_cwd"`
+	ToID        string `json:"to_id"`
+	ToName      string `json:"to_name"`
+	// Group is the SENDER's group snapshotted at send time, so group history
+	// (the read-only viewer) survives peers that have since left.
+	Group string `json:"group"`
+	// Text is the raw message text. For verdicts it still holds the raw reply
+	// ("yes abcde") so viewers show what was actually said; the structured
+	// fields below are what the worker's client consumes.
+	Text      string `json:"text"`
+	RequestID string `json:"request_id,omitempty"` // verdicts only
+	Behavior  string `json:"behavior,omitempty"`   // verdicts only: "allow" | "deny"
+	SentAt    int64  `json:"sent_at"`              // unix millis
+}
+
+// PeerEventMessage and PeerEventVerdict are the two PeerEvent kinds.
+const (
+	PeerEventMessage = "message"
+	PeerEventVerdict = "permission_verdict"
+)
+
 // Pane is one terminal (a tmux window with a single pane).
 type Pane struct {
 	ID             string    `json:"id"` // stable uuid → tmux @ccmux_pane_id

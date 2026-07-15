@@ -27,6 +27,15 @@ type Store interface {
 	ListPushSubscriptions() ([]*model.PushSubscription, error)
 	DeletePushSubscription(id string) error
 
+	// Peers bus event log + per-peer delivery cursors (see model.PeerEvent).
+	AppendPeerEvent(*model.PeerEvent) (int64, error)
+	PeerEventsAfter(toID string, afterSeq int64) ([]*model.PeerEvent, error)
+	PeerCursor(peerID string) (int64, error)
+	AdvancePeerCursor(peerID string, seq int64) error
+	RecentPeerSenders(toID string, sinceMillis int64) ([]string, error)
+	PeerGroupMessages(group string, sinceMillis int64, limit int) ([]*model.PeerEvent, error)
+	PrunePeerEvents(beforeMillis int64) (int64, error)
+
 	io.Closer
 }
 
@@ -50,7 +59,18 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   id TEXT PRIMARY KEY, login TEXT, transport TEXT,
   address TEXT, prefs TEXT, created_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS push_by_login ON push_subscriptions(login);`
+CREATE INDEX IF NOT EXISTS push_by_login ON push_subscriptions(login);
+CREATE TABLE IF NOT EXISTS peer_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT, from_id TEXT, from_name TEXT, from_summary TEXT, from_cwd TEXT,
+  to_id TEXT, to_name TEXT, grp TEXT, text TEXT,
+  request_id TEXT DEFAULT '', behavior TEXT DEFAULT '', sent_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS peer_events_by_to ON peer_events(to_id, seq);
+CREATE INDEX IF NOT EXISTS peer_events_by_grp ON peer_events(grp, seq);
+CREATE TABLE IF NOT EXISTS peer_cursors (
+  peer_id TEXT PRIMARY KEY, acked_seq INTEGER
+);`
 
 // Open opens (creating if needed) the registry at path.
 func Open(path string) (*SQLite, error) {

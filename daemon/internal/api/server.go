@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/web"
 )
@@ -39,6 +40,10 @@ type Server struct {
 	// hosted-workspace locations (GET /v1/projects). Empty disables the listing
 	// (503) — main always sets it.
 	projectsRoot string
+
+	// peersSvc is the built-in peers messaging bus, wired by EnablePeers; nil
+	// when disabled (the /v1/peers/* handlers then answer 503).
+	peersSvc *peers.Service
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -98,6 +103,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/push/subscriptions", s.deleteSubscription)
 	mux.HandleFunc("GET /v1/attach", s.attach)
 	mux.HandleFunc("GET /v1/events", s.events)
+	mux.HandleFunc("POST /v1/peers/register", s.peersRegister)
+	mux.HandleFunc("POST /v1/peers/send", s.peersSend)
+	mux.HandleFunc("POST /v1/peers/list", s.peersList)
+	mux.HandleFunc("POST /v1/peers/summary", s.peersSummary)
+	mux.HandleFunc("POST /v1/peers/unregister", s.peersUnregister)
+	mux.HandleFunc("POST /v1/peers/poll", s.peersPoll)
+	mux.HandleFunc("POST /v1/peers/permission-request", s.peersPermissionRequest)
+	mux.HandleFunc("GET /v1/peers/ws", s.peersWS)
+	mux.HandleFunc("GET /v1/peers/messages", s.peersGroupMessages)
+	mux.HandleFunc("GET /v1/peers", s.peersGroupPeers)
 	// The web lens (served from the embedded bundle) catches everything not
 	// matched by a more specific /v1 pattern.
 	mux.Handle("GET /", http.FileServerFS(web.Files))
