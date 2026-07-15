@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // LoadOrCreateSecret reads the daemon's peers secret, minting (0600) a fresh
@@ -29,6 +30,11 @@ func LoadOrCreateSecret(path string) ([]byte, error) {
 	}
 	sec := make([]byte, 32)
 	if _, err := rand.Read(sec); err != nil {
+		return nil, err
+	}
+	// First run may precede any other config-dir writer (e.g. with a custom -db
+	// path the db's MkdirAll doesn't cover this directory).
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(path, []byte(hex.EncodeToString(sec)), 0o600); err != nil {
@@ -65,6 +71,9 @@ type DaemonInfo struct {
 func WriteDaemonInfo(path, url, token string) error {
 	b, err := json.Marshal(DaemonInfo{URL: url, Token: token})
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	return os.WriteFile(path, b, 0o600)
