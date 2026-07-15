@@ -58,8 +58,44 @@ body {
 .group-hdr {
   list-style: none; margin: 10px 4px 2px; font-size: 9px; font-weight: 600;
   letter-spacing: 1.2px; color: var(--muted); opacity: .75; cursor: default;
+  display: flex; align-items: center; justify-content: space-between;
 }
 .group-hdr:first-child { margin-top: 2px; }
+.group-hdr .grp-msgs {
+  background: transparent; border: 0; cursor: pointer; padding: 0 2px;
+  font-size: 11px; line-height: 1; opacity: .55;
+}
+.group-hdr .grp-msgs:hover { opacity: 1; }
+
+/* peer-messages viewer (read-only; fed by /v1/peers/*) */
+.peers-sheet { max-width: 460px; display: flex; flex-direction: column; max-height: min(80vh, 640px); }
+#peers-close {
+  background: transparent; color: var(--muted); border: 0;
+  font-size: 22px; line-height: 1; cursor: pointer;
+}
+.peers-list {
+  list-style: none; display: flex; gap: 6px; overflow-x: auto;
+  margin: 0 0 10px; padding: 0 0 4px;
+}
+.peers-list:empty { display: none; }
+.peer-chip {
+  display: flex; align-items: center; gap: 5px; flex: 0 0 auto; max-width: 220px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 11px;
+}
+.peer-chip .pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.peer-chip.off .pdot { background: var(--muted); }
+.peer-chip .pname { font-weight: 600; }
+.peer-chip .psum {
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.peers-msgs { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.peer-msg { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+.peer-msg .pm-head { display: flex; gap: 6px; align-items: baseline; font-size: 10px; margin-bottom: 3px; }
+.peer-msg .pm-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.peer-msg .pm-from { color: #7a91e0; font-weight: 600; }
+.peer-msg .pm-arrow { color: var(--muted); }
+.peer-msg .pm-to { color: #d9a05b; font-weight: 600; }
+.peer-msg .pm-text { font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 
 /* per-row git dashboard (daemon-computed; mirrors the Mac WorkspaceRow) */
 .ws .exp {

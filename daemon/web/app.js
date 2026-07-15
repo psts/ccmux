@@ -66,7 +66,12 @@ function renderList() {
     if (group) {
       const h = document.createElement("li");
       h.className = "group-hdr";
-      h.textContent = group.toUpperCase();
+      h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
+        `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>`;
+      h.querySelector(".grp-msgs").onclick = (e) => {
+        e.stopPropagation();
+        window.ccmuxPeers.open(group);
+      };
       ul.appendChild(h);
     }
     for (const ws of list) ul.appendChild(wsRow(ws));

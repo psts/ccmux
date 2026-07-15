@@ -8,7 +8,7 @@ import (
 	"mime"
 )
 
-//go:embed index.html app.js push.js sw.js style.css manifest.webmanifest vendor icons
+//go:embed index.html app.js peers.js push.js sw.js style.css manifest.webmanifest vendor icons
 var Files embed.FS
 
 func init() {

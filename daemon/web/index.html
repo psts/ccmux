@@ -52,6 +52,18 @@
     </div>
   </div>
 
+  <div id="peers-modal" class="modal hidden">
+    <div class="sheet peers-sheet">
+      <header>
+        <span id="peers-title">Messages</span>
+        <button id="peers-close" title="Close">&times;</button>
+      </header>
+      <ul id="peers-list" class="peers-list"></ul>
+      <p id="peers-status" class="status hidden"></p>
+      <div id="peers-msgs" class="peers-msgs"></div>
+    </div>
+  </div>
+
   <div id="settings-modal" class="modal hidden">
     <div class="sheet">
       <header>
@@ -70,6 +82,7 @@
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <script src="/app.js"></script>
+  <script src="/peers.js"></script>
   <script src="/push.js"></script>
 </body>
 </html>
