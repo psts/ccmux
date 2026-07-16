@@ -5,16 +5,26 @@ import SwiftUI
 /// source of truth (the web lens edits the same values), so this view is a
 /// thin editor over GET/PUT /v1/settings — nothing is stored app-side.
 struct DaemonSettingsView: View {
+    /// Called after a fully successful save (cert ready when a domain is set);
+    /// the owner closes the window.
+    var onDone: (() -> Void)?
+
     @State private var command = ""
     @State private var rules: [EditableRule] = []
     @State private var status = ""
+    @State private var saving = false
     @State private var loaded = false
     @State private var devDomain = ""
-    @State private var cloudflareToken = ""    // typed value only; "" = leave unchanged
-    @State private var tailscaleAuthKey = ""   // typed value only; "" = leave unchanged
+    @State private var cloudflareToken = ""
+    @State private var tailscaleAuthKey = ""
     @State private var cloudflareTokenSet = false
     @State private var tailscaleAuthKeySet = false
     @State private var devCertStatus = "unset"
+
+    /// Stands in for a stored secret the daemon never echoes back: renders as
+    /// dots so the field doesn't look mysteriously wiped after save. Untouched
+    /// sentinel = leave unchanged; emptied field = clear; anything else = replace.
+    private static let secretSentinel = "••••••••"
 
     struct EditableRule: Identifiable {
         let id = UUID()
@@ -76,10 +86,10 @@ struct DaemonSettingsView: View {
                 TextField("dev.sanlabs.io (empty = ts.net mode)", text: $devDomain)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
-                SecureField(cloudflareTokenSet ? "Cloudflare API token (set — type to replace)" : "Cloudflare API token", text: $cloudflareToken)
+                SecureField("Cloudflare API token", text: $cloudflareToken)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
-                SecureField(tailscaleAuthKeySet ? "Tailscale auth key (set — type to replace)" : "Tailscale auth key (optional, ts.net mode)", text: $tailscaleAuthKey)
+                SecureField("Tailscale auth key (optional, ts.net mode)", text: $tailscaleAuthKey)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                 if devCertStatus != "unset" {
@@ -89,14 +99,19 @@ struct DaemonSettingsView: View {
                 }
             }
 
-            HStack {
+            HStack(spacing: 6) {
+                if saving {
+                    ProgressView()
+                        .controlSize(.small)
+                }
                 Text(status)
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(statusColor)
+                    .lineLimit(2)
                 Spacer()
                 Button("Save") { Task { await save() } }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!loaded)
+                    .disabled(!loaded || saving)
             }
         }
         .padding(18)
@@ -114,20 +129,64 @@ struct DaemonSettingsView: View {
         }
     }
 
+    private var statusColor: Color {
+        if status.hasPrefix("✓") { return .green }
+        if status.hasPrefix("✗") { return .red }
+        return .secondary
+    }
+
+    /// What to send for a secret field: untouched sentinel = nil (unchanged),
+    /// emptied-after-set = "" (clear), anything else = the new value.
+    private func outgoingSecret(_ field: String, wasSet: Bool) -> String? {
+        if field == Self.secretSentinel { return nil }
+        if field.isEmpty { return wasSet ? "" : nil }
+        return field
+    }
+
+    /// Save, then (when a domain is set) wait for the wildcard cert verdict —
+    /// spinner while issuing, ✓ then auto-close on success, ✗ stays open.
     private func save() async {
+        saving = true
+        defer { saving = false }
+        status = "Saving…"
         let outgoing = rules.map { DaemonStartupRule(pathPrefix: $0.pathPrefix, command: $0.command) }
-        // Secrets are write-only: an untouched field stays nil (unchanged on the
-        // daemon); typed text replaces. The domain is plain state, always sent.
         guard let saved = await RemoteSessionService.shared.updateSettings(
             startupCommand: command, startupRules: outgoing,
             devDomain: devDomain,
-            cloudflareToken: cloudflareToken.isEmpty ? nil : cloudflareToken,
-            tailscaleAuthKey: tailscaleAuthKey.isEmpty ? nil : tailscaleAuthKey) else {
-            status = "Couldn't save — a domain needs a Cloudflare token, and the daemon must be running."
+            cloudflareToken: outgoingSecret(cloudflareToken, wasSet: cloudflareTokenSet),
+            tailscaleAuthKey: outgoingSecret(tailscaleAuthKey, wasSet: tailscaleAuthKeySet)) else {
+            status = "✗ Couldn't save — a domain needs a Cloudflare token, and the daemon must be running."
             return
         }
         apply(saved) // show the resolved command + the rules that survived validation
-        status = "Saved."
+        if !saved.devDomain.isEmpty && !isCertVerdict(saved.devCertStatus) {
+            status = "Issuing wildcard cert — usually well under a minute…"
+            devCertStatus = await pollCertStatus()
+        }
+        if devCertStatus.hasPrefix("error") {
+            status = "✗ \(devCertStatus)"
+            return
+        }
+        if !devDomain.isEmpty && devCertStatus != "ready" {
+            status = "Cert still issuing — it finishes in the background; reopen Settings to check."
+            return
+        }
+        status = "✓ Saved"
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        onDone?()
+    }
+
+    private func isCertVerdict(_ s: String) -> Bool { s == "ready" || s.hasPrefix("error") }
+
+    /// Poll the daemon until the cert reaches a verdict (~2 min cap — DNS-01
+    /// with pinned public resolvers normally lands in seconds).
+    private func pollCertStatus() async -> String {
+        for _ in 0..<60 {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let s = try? await RemoteSessionService.shared.fetchSettings() else { continue }
+            if isCertVerdict(s.devCertStatus) { return s.devCertStatus }
+        }
+        return "pending"
     }
 
     private func apply(_ settings: DaemonSettings) {
@@ -137,7 +196,9 @@ struct DaemonSettingsView: View {
         cloudflareTokenSet = settings.cloudflareTokenSet
         tailscaleAuthKeySet = settings.tailscaleAuthKeySet
         devCertStatus = settings.devCertStatus
-        cloudflareToken = ""
-        tailscaleAuthKey = ""
+        // Stored secrets render as dots (the daemon never echoes them); an
+        // untouched sentinel round-trips as "unchanged".
+        cloudflareToken = cloudflareTokenSet ? Self.secretSentinel : ""
+        tailscaleAuthKey = tailscaleAuthKeySet ? Self.secretSentinel : ""
     }
 }

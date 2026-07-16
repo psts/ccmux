@@ -240,7 +240,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// per-folder rules); one lazily-created window, reused across opens.
     @objc private func openDaemonSettings() {
         if settingsWindow == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: DaemonSettingsView()))
+            let settings = DaemonSettingsView(onDone: { [weak self] in self?.settingsWindow?.close() })
+            let window = NSWindow(contentViewController: NSHostingController(rootView: settings))
             window.title = "Settings"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
