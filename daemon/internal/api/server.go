@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/web"
@@ -45,6 +46,10 @@ type Server struct {
 	// peersSvc is the built-in peers messaging bus, wired by EnablePeers; nil
 	// when disabled (the /v1/peers/* handlers then answer 503).
 	peersSvc *peers.Service
+
+	// devStatus reports the dev-hostname wildcard-cert lifecycle for the
+	// settings UI, wired by SetDevhostStatus; nil when dev serving is off.
+	devStatus func() string
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -66,6 +71,9 @@ func (s *Server) SetIdentityResolver(r whoisResolver) { s.identity = r }
 
 // SetProjectsRoot sets the folder GET /v1/projects lists (see projectsRoot).
 func (s *Server) SetProjectsRoot(root string) { s.projectsRoot = root }
+
+// SetDevhostStatus wires the devhost server's cert-status reporter (see devStatus).
+func (s *Server) SetDevhostStatus(f func() string) { s.devStatus = f }
 
 // EnablePush wires Web Push: it stores the sender + subscription store the
 // /v1/push/* handlers use, and starts a notifier that pushes on attention (with
@@ -98,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
+	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.putHostnames)
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.paneSnapshot)
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
@@ -136,6 +145,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"startupCommand": s.mgr.DefaultStartupCommand(),
 		"startupRules":   s.mgr.StartupRules(),
+		// Dev hostnames: secrets are write-only — GET reports presence, never values.
+		"devDomain":           s.mgr.DevDomain(),
+		"cloudflareTokenSet":  s.mgr.CloudflareToken() != "",
+		"tailscaleAuthKeySet": s.mgr.TailscaleAuthKey() != "",
+		"devCertStatus":       s.devCertStatus(),
 	}
 	if repo := r.URL.Query().Get("repoPath"); repo != "" {
 		resp["resolvedStartupCommand"] = s.mgr.StartupCommandFor(repo)
@@ -143,13 +157,59 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// devCertStatus reports the wildcard-cert lifecycle for the settings UI. The
+// devhost server injects the live reporter; without one (tests, -tsnet off)
+// only the unset/unknown distinction is available.
+func (s *Server) devCertStatus() string {
+	if s.devStatus != nil {
+		return s.devStatus()
+	}
+	if s.mgr.DevDomain() == "" {
+		return "unset"
+	}
+	return "unknown"
+}
+
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		StartupCommand *string                `json:"startupCommand"`
-		StartupRules   *[]manager.StartupRule `json:"startupRules"`
+		StartupCommand   *string                `json:"startupCommand"`
+		StartupRules     *[]manager.StartupRule `json:"startupRules"`
+		DevDomain        *string                `json:"devDomain"`
+		CloudflareToken  *string                `json:"cloudflareToken"`
+		TailscaleAuthKey *string                `json:"tailscaleAuthKey"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	// Custom-domain mode is unusable without a token to issue certs with, so
+	// reject the combination before persisting anything.
+	domain, token := s.mgr.DevDomain(), s.mgr.CloudflareToken()
+	if req.DevDomain != nil {
+		domain = strings.TrimSpace(*req.DevDomain)
+	}
+	if req.CloudflareToken != nil {
+		token = strings.TrimSpace(*req.CloudflareToken)
+	}
+	if domain != "" && token == "" {
+		writeError(w, http.StatusBadRequest, "devDomain requires a cloudflareToken for DNS-01 certs")
+		return
+	}
+	setters := []struct {
+		val *string
+		set func(string) error
+	}{
+		{req.DevDomain, s.mgr.SetDevDomain},
+		{req.CloudflareToken, s.mgr.SetCloudflareToken},
+		{req.TailscaleAuthKey, s.mgr.SetTailscaleAuthKey},
+	}
+	for _, f := range setters {
+		if f.val == nil {
+			continue
+		}
+		if err := f.set(*f.val); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if req.StartupCommand != nil {
 		if err := s.mgr.SetDefaultStartupCommand(strings.TrimSpace(*req.StartupCommand)); err != nil {
@@ -164,6 +224,28 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.getSettings(w, r)
+}
+
+// putHostnames replaces a workspace's dev-hostname mappings ({name, port}
+// rows from the app's Hostnames sheet). Validation and the tailnet-wide
+// uniqueness check live in the manager; success returns the updated workspace.
+func (s *Server) putHostnames(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Hostnames []model.Hostname `json:"hostnames"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ws, err := s.mgr.SetHostnames(r.PathValue("id"), req.Hostnames)
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, manager.ErrUnknownWorkspace) {
+			code = http.StatusNotFound
+		}
+		writeError(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ws)
 }
 
 type createWorkspaceReq struct {

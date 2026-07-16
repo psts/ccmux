@@ -45,11 +45,55 @@ enum DaemonAttention: String, Codable {
 
 /// A daemon workspace = one tmux session, N panes. GET /v1/workspaces returns these.
 /// Daemon-wide lens settings (GET/PUT /v1/settings): the startup command typed
-/// into a new hosted workspace's first pane, plus per-folder overrides
-/// (longest matching pathPrefix wins).
+/// into a new hosted workspace's first pane, per-folder overrides (longest
+/// matching pathPrefix wins), and the dev-hostname serving config. Secrets are
+/// write-only on the daemon: GET carries only the `…Set` presence flags.
 struct DaemonSettings: Codable {
     var startupCommand: String
     var startupRules: [DaemonStartupRule]
+    /// Custom dev domain (e.g. "dev.sanlabs.io"); "" = ts.net fallback mode.
+    var devDomain: String
+    var cloudflareTokenSet: Bool
+    var tailscaleAuthKeySet: Bool
+    /// Wildcard-cert lifecycle: unset | pending | ready | error: <cause> | unknown.
+    var devCertStatus: String
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand) ?? ""
+        startupRules = try c.decodeIfPresent([DaemonStartupRule].self, forKey: .startupRules) ?? []
+        devDomain = try c.decodeIfPresent(String.self, forKey: .devDomain) ?? ""
+        cloudflareTokenSet = try c.decodeIfPresent(Bool.self, forKey: .cloudflareTokenSet) ?? false
+        tailscaleAuthKeySet = try c.decodeIfPresent(Bool.self, forKey: .tailscaleAuthKeySet) ?? false
+        devCertStatus = try c.decodeIfPresent(String.self, forKey: .devCertStatus) ?? "unset"
+    }
+}
+
+/// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on
+/// the tailnet → localhost:<port> on the daemon host. `url`/`listening` are
+/// runtime-only, stamped by the daemon's devhost server.
+struct DaemonHostname: Codable, Identifiable, Equatable {
+    var name: String
+    var port: Int
+    var url: String?
+    var listening: Bool
+
+    var id: String { name }
+
+    init(name: String, port: Int, url: String? = nil, listening: Bool = false) {
+        self.name = name
+        self.port = port
+        self.url = url
+        self.listening = listening
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        listening = try c.decodeIfPresent(Bool.self, forKey: .listening) ?? false
+    }
 }
 
 struct DaemonStartupRule: Codable {
@@ -74,6 +118,8 @@ struct DaemonWorkspace: Codable, Identifiable {
     /// Shared sidebar group (this Mac pushes its window names here; see
     /// WindowManager.syncHostedGroups). "" = ungrouped.
     var group: String
+    /// Dev-hostname mappings (right-click → Hostnames…).
+    var hostnames: [DaemonHostname]
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -90,6 +136,7 @@ struct DaemonWorkspace: Codable, Identifiable {
         panes = try c.decodeIfPresent([DaemonPane].self, forKey: .panes) ?? []
         git = try c.decodeIfPresent(DaemonGitStatus.self, forKey: .git)
         group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
+        hostnames = try c.decodeIfPresent([DaemonHostname].self, forKey: .hostnames) ?? []
     }
 
     var isLive: Bool { status == .live }

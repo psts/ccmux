@@ -55,6 +55,11 @@ type Manager struct {
 	// created. Nil = no extras.
 	ExtraPaneEnv func(paneID string) map[string]string
 
+	// OnDevhostChange, when set, is invoked (on its own goroutine) after any
+	// dev-hostname or dev-setting mutation so the devhost server reconciles.
+	// Set once at startup. Nil = no dev serving.
+	OnDevhostChange func()
+
 	mu   sync.RWMutex
 	byID map[string]*entry
 }

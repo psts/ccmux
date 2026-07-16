@@ -9,6 +9,12 @@ struct DaemonSettingsView: View {
     @State private var rules: [EditableRule] = []
     @State private var status = ""
     @State private var loaded = false
+    @State private var devDomain = ""
+    @State private var cloudflareToken = ""    // typed value only; "" = leave unchanged
+    @State private var tailscaleAuthKey = ""   // typed value only; "" = leave unchanged
+    @State private var cloudflareTokenSet = false
+    @State private var tailscaleAuthKeySet = false
+    @State private var devCertStatus = "unset"
 
     struct EditableRule: Identifiable {
         let id = UUID()
@@ -60,6 +66,29 @@ struct DaemonSettingsView: View {
                 .controlSize(.small)
             }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Dev hostnames")
+                    .font(.headline)
+                Text("Serves workspace dev servers over the tailnet (right-click a hosted workspace → Hostnames…). With a domain: https://<name>.<domain> via one wildcard cert (needs a Cloudflare DNS-edit token for the zone). Without: one ts.net node per hostname (the auth key registers them silently).")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField("dev.sanlabs.io (empty = ts.net mode)", text: $devDomain)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                SecureField(cloudflareTokenSet ? "Cloudflare API token (set — type to replace)" : "Cloudflare API token", text: $cloudflareToken)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                SecureField(tailscaleAuthKeySet ? "Tailscale auth key (set — type to replace)" : "Tailscale auth key (optional, ts.net mode)", text: $tailscaleAuthKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                if devCertStatus != "unset" {
+                    Text("Wildcard cert: \(devCertStatus)")
+                        .font(.system(size: 11))
+                        .foregroundColor(devCertStatus == "ready" ? .green : devCertStatus.hasPrefix("error") ? .red : .secondary)
+                }
+            }
+
             HStack {
                 Text(status)
                     .font(.system(size: 11))
@@ -87,9 +116,14 @@ struct DaemonSettingsView: View {
 
     private func save() async {
         let outgoing = rules.map { DaemonStartupRule(pathPrefix: $0.pathPrefix, command: $0.command) }
+        // Secrets are write-only: an untouched field stays nil (unchanged on the
+        // daemon); typed text replaces. The domain is plain state, always sent.
         guard let saved = await RemoteSessionService.shared.updateSettings(
-            startupCommand: command, startupRules: outgoing) else {
-            status = "Couldn't save — is the daemon running?"
+            startupCommand: command, startupRules: outgoing,
+            devDomain: devDomain,
+            cloudflareToken: cloudflareToken.isEmpty ? nil : cloudflareToken,
+            tailscaleAuthKey: tailscaleAuthKey.isEmpty ? nil : tailscaleAuthKey) else {
+            status = "Couldn't save — a domain needs a Cloudflare token, and the daemon must be running."
             return
         }
         apply(saved) // show the resolved command + the rules that survived validation
@@ -99,5 +133,11 @@ struct DaemonSettingsView: View {
     private func apply(_ settings: DaemonSettings) {
         command = settings.startupCommand
         rules = settings.startupRules.map { EditableRule(pathPrefix: $0.pathPrefix, command: $0.command) }
+        devDomain = settings.devDomain
+        cloudflareTokenSet = settings.cloudflareTokenSet
+        tailscaleAuthKeySet = settings.tailscaleAuthKeySet
+        devCertStatus = settings.devCertStatus
+        cloudflareToken = ""
+        tailscaleAuthKey = ""
     }
 }

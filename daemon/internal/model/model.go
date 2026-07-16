@@ -4,7 +4,11 @@
 // lens-side concept the daemon stores as an opaque versioned JSON blob.
 package model
 
-import "ccmux.dev/ccmuxd/internal/gitstatus"
+import (
+	"encoding/json"
+
+	"ccmux.dev/ccmuxd/internal/gitstatus"
+)
 
 // Status is a workspace/pane lifecycle state.
 type Status string
@@ -30,16 +34,16 @@ const (
 
 // Workspace is a project working context: one tmux session, N panes.
 type Workspace struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	RepoPath      string   `json:"repoPath"`
-	CreatedBy     string   `json:"createdBy"`
-	CreatedAt     int64    `json:"createdAt"` // unix millis
-	TmuxSession   string   `json:"tmuxSession"`
-	Status        Status   `json:"status"`
-	LayoutJSON    string   `json:"layoutJson,omitempty"`
-	LayoutVersion int      `json:"layoutVersion"`
-	Panes         []*Pane  `json:"panes"`
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	RepoPath      string  `json:"repoPath"`
+	CreatedBy     string  `json:"createdBy"`
+	CreatedAt     int64   `json:"createdAt"` // unix millis
+	TmuxSession   string  `json:"tmuxSession"`
+	Status        Status  `json:"status"`
+	LayoutJSON    string  `json:"layoutJson,omitempty"`
+	LayoutVersion int     `json:"layoutVersion"`
+	Panes         []*Pane `json:"panes"`
 	// Git is the repo's dashboard status (branch, ahead/behind, changed files),
 	// computed daemon-side by the manager's collector — the repo lives on the
 	// daemon's host, so lenses can't read it locally. Runtime-only (not stored);
@@ -49,6 +53,57 @@ type Workspace struct {
 	// is the source of truth: it pushes the owning window's name here so the
 	// web/phone lens renders the same grouping. Empty = ungrouped.
 	Group string `json:"group,omitempty"`
+	// Hostnames are the workspace's dev-hostname mappings (see model.Hostname).
+	Hostnames []Hostname `json:"hostnames,omitempty"`
+}
+
+// Hostname is one dev-hostname mapping: https://<Name>.<suffix> over the
+// tailnet reverse-proxies to 127.0.0.1:Port on the daemon host. Name is the
+// bare DNS label ("chartlabs-app"); the daemon's serving mode picks the suffix
+// (the configured dev domain, else per-hostname tsnet nodes on ts.net). Name
+// and Port are persisted; URL and Listening are runtime-only, stamped by the
+// devhost server (the resolved https URL, and whether the port currently
+// accepts connections).
+type Hostname struct {
+	Name      string `json:"name"`
+	Port      int    `json:"port"`
+	URL       string `json:"url,omitempty"`
+	Listening bool   `json:"listening,omitempty"`
+}
+
+// MarshalHostnames serializes mappings for the registry, keeping only the
+// persisted fields ("" for none — the column default). UnmarshalHostnames is
+// its inverse; malformed blobs load as no mappings rather than failing the
+// whole registry.
+func MarshalHostnames(hs []Hostname) string {
+	if len(hs) == 0 {
+		return ""
+	}
+	type persisted struct {
+		Name string `json:"name"`
+		Port int    `json:"port"`
+	}
+	out := make([]persisted, len(hs))
+	for i, h := range hs {
+		out[i] = persisted{Name: h.Name, Port: h.Port}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// UnmarshalHostnames parses a registry blob written by MarshalHostnames.
+func UnmarshalHostnames(raw string) []Hostname {
+	if raw == "" {
+		return nil
+	}
+	var hs []Hostname
+	if json.Unmarshal([]byte(raw), &hs) != nil {
+		return nil
+	}
+	return hs
 }
 
 // PushSubscription is a stored notification target, keyed by tailnet login and

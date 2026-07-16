@@ -37,6 +37,8 @@ final class RemoteSessionService: ObservableObject {
     /// Last-known shared sidebar group per hosted workspace (from the daemon).
     /// WindowManager diffs its window names against this before pushing.
     private(set) var groups: [UUID: String] = [:]
+    /// Dev-hostname mappings per hosted workspace (daemon-stamped url/listening).
+    @Published private(set) var hostnames: [UUID: [DaemonHostname]] = [:]
 
     private var attachments: [UUID: WorkspaceAttachment] = [:]
     private var paneSignatures: [UUID: [String]] = [:]
@@ -217,14 +219,21 @@ final class RemoteSessionService: ObservableObject {
 
     /// Update the daemon-wide settings; nil fields are left unchanged. Returns
     /// the daemon's resolved view (e.g. an empty command comes back as the
-    /// built-in default) or nil on failure.
+    /// built-in default) or nil on failure. Secrets (cloudflareToken,
+    /// tailscaleAuthKey) are write-only: pass a value to replace, "" to clear.
     @discardableResult
-    func updateSettings(startupCommand: String? = nil, startupRules: [DaemonStartupRule]? = nil) async -> DaemonSettings? {
+    func updateSettings(
+        startupCommand: String? = nil, startupRules: [DaemonStartupRule]? = nil,
+        devDomain: String? = nil, cloudflareToken: String? = nil, tailscaleAuthKey: String? = nil
+    ) async -> DaemonSettings? {
         var body: [String: Any] = [:]
         if let startupCommand { body["startupCommand"] = startupCommand }
         if let startupRules {
             body["startupRules"] = startupRules.map { ["pathPrefix": $0.pathPrefix, "command": $0.command] }
         }
+        if let devDomain { body["devDomain"] = devDomain }
+        if let cloudflareToken { body["cloudflareToken"] = cloudflareToken }
+        if let tailscaleAuthKey { body["tailscaleAuthKey"] = tailscaleAuthKey }
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
@@ -385,6 +394,7 @@ final class RemoteSessionService: ObservableObject {
         for dw in live {
             let appId = RemoteWorkspaceBuilder.workspaceUUID(dw.id)
             groups[appId] = dw.group
+            hostnames[appId] = dw.hostnames
             if let git = dw.git {
                 let monitor = gitMonitors[appId] ?? {
                     let m = GitStatusMonitor.remoteFed()
@@ -454,6 +464,7 @@ final class RemoteSessionService: ObservableObject {
         gitMonitors.removeValue(forKey: appId)
         claudeMonitors.removeValue(forKey: appId)
         groups.removeValue(forKey: appId)
+        hostnames.removeValue(forKey: appId)
         workspaces.removeAll { $0.id == appId }
     }
 
@@ -468,6 +479,38 @@ final class RemoteSessionService: ObservableObject {
         let body = try? JSONSerialization.data(withJSONObject: ["group": name])
         if await send("PUT", path: "/v1/workspaces/\(daemonId)/group", body: body, expect: 204) {
             await MainActor.run { self.groups[appId] = name }
+        }
+    }
+
+    // MARK: - Dev hostnames
+
+    /// Replace a hosted workspace's dev-hostname mappings (the Hostnames…
+    /// sheet's Save). Returns nil on success or the daemon's error text
+    /// (invalid label, name taken by another workspace) for the sheet to show.
+    func setHostnames(_ appId: UUID, hostnames: [DaemonHostname]) async -> String? {
+        guard let daemonId = daemonIds[appId] else { return "workspace is not hosted" }
+        let body: [String: Any] = [
+            "hostnames": hostnames.map { ["name": $0.name, "port": $0.port] }
+        ]
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/hostnames") else {
+            return "bad daemon URL"
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
+            if code == 200 {
+                let dw = try? JSONDecoder().decode(DaemonWorkspace.self, from: data)
+                await MainActor.run { self.hostnames[appId] = dw?.hostnames ?? hostnames }
+                return nil
+            }
+            struct APIError: Decodable { let error: String }
+            return (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
+        } catch {
+            return error.localizedDescription
         }
     }
 

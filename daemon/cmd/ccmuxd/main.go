@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 
 	"ccmux.dev/ccmuxd/config"
 	"ccmux.dev/ccmuxd/internal/api"
+	"ccmux.dev/ccmuxd/internal/devhost"
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/peers"
@@ -123,12 +126,15 @@ func main() {
 	// Own tailnet node: HTTPS on its node's :443 (tailnet cert) with in-process
 	// WhoIs identity, replacing `tailscale serve` + the whois CLI. The loopback
 	// listener below still runs, so on-host hooks reach the daemon unchanged.
+	// Dev hostnames ride the same listener: the devhost server wraps the handler
+	// (Host dispatch) and the TLS config (SNI dispatch) — see internal/devhost.
 	if *tsnetEnabled {
-		ts, err := serveTailnet(ctx, apiSrv, handler, *tsnetHostname, *tsnetDir)
+		ts, dh, err := serveTailnet(ctx, mgr, apiSrv, handler, *tsnetHostname, *tsnetDir)
 		if err != nil {
 			log.Fatalf("tsnet: %v", err)
 		}
 		defer ts.Close()
+		handler = dh.Handler(handler) // loopback gets the same dispatch (harmless, testable)
 	}
 
 	httpSrv := &http.Server{Addr: *addr, Handler: handler}
@@ -147,33 +153,57 @@ func main() {
 }
 
 // serveTailnet brings the daemon up as its own tailnet node, swaps the API's
-// identity backend to the node's in-process WhoIs, and serves the handler over
-// HTTPS on the node's :443 (background). The auth key comes from TS_AUTHKEY (or
-// prior persisted state in dir); first unauthenticated run logs a login URL.
-func serveTailnet(ctx context.Context, apiSrv *api.Server, handler http.Handler, hostname, dir string) (*tsnet.Server, error) {
+// identity backend to the node's in-process WhoIs, wires the devhost server,
+// and serves over HTTPS on the node's :443 (background). TLS certs dispatch by
+// SNI — dev-domain names get the certmagic wildcard, the node's own name its
+// ts.net cert — and requests dispatch by Host. The auth key comes from
+// TS_AUTHKEY (or prior persisted state in dir); first unauthenticated run logs
+// a login URL.
+func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname, dir string) (*tsnet.Server, *devhost.Server, error) {
 	ts := &tsnet.Server{Hostname: hostname, Dir: dir, UserLogf: log.Printf}
 	if _, err := ts.Up(ctx); err != nil {
-		return nil, fmt.Errorf("node up: %w", err)
+		return nil, nil, fmt.Errorf("node up: %w", err)
 	}
 	lc, err := ts.LocalClient()
 	if err != nil {
 		ts.Close()
-		return nil, fmt.Errorf("local client: %w", err)
+		return nil, nil, fmt.Errorf("local client: %w", err)
 	}
 	apiSrv.SetIdentityResolver(tailnet.NewLocalResolver(lc))
-	ln, err := ts.ListenTLS("tcp", ":443")
+
+	ip4, _ := ts.TailscaleIPs()
+	dh := devhost.NewServer(ctx, mgr, filepath.Join(configDir(), "devhost"), tsSuffix(ts, hostname), ip4)
+	mgr.OnDevhostChange = dh.Refresh
+	apiSrv.SetDevhostStatus(dh.CertStatus)
+	dh.Refresh()
+	dh.StartProbe(5 * time.Second)
+
+	rawLn, err := ts.Listen("tcp", ":443")
 	if err != nil {
 		ts.Close()
-		return nil, fmt.Errorf("listen tls (enable HTTPS certs in the tailnet admin console): %w", err)
+		return nil, nil, fmt.Errorf("listen: %w", err)
 	}
-	ip4, _ := ts.TailscaleIPs()
+	// lc.GetCertificate fails unless HTTPS certs are enabled in the tailnet
+	// admin console — same requirement the old ListenTLS carried.
+	ln := tls.NewListener(rawLn, dh.TLSConfig(lc.GetCertificate))
 	log.Printf("tsnet node up: %s (ip %s), https on the tailnet, cert domains %v", hostname, ip4, ts.CertDomains())
 	go func() {
-		if err := http.Serve(ln, handler); err != nil && err != http.ErrServerClosed {
+		if err := http.Serve(ln, dh.Handler(handler)); err != nil && err != http.ErrServerClosed {
 			log.Printf("tsnet serve stopped: %v", err)
 		}
 	}()
-	return ts, nil
+	return ts, dh, nil
+}
+
+// tsSuffix derives the tailnet's MagicDNS suffix (e.g. tailb9053d.ts.net) from
+// the node's cert domain, for fallback-mode URLs.
+func tsSuffix(ts *tsnet.Server, hostname string) string {
+	for _, d := range ts.CertDomains() {
+		if s, ok := strings.CutPrefix(d, hostname+"."); ok {
+			return s
+		}
+	}
+	return "ts.net" // unreachable in practice; keeps URLs recognizably wrong, not empty
 }
 
 // loopbackURL turns a listen address into a base URL an on-host hook can reach.

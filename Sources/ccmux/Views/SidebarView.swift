@@ -14,6 +14,7 @@ struct SidebarView: View {
     var onRenameWindow: ((UUID, String) -> Void)?
     var onRestoreWindow: ((UUID) -> Void)?
     var onNewHostedSession: (() -> Void)?
+    var onWorkspaceHostnames: ((UUID) -> Void)?
 
     /// Workspaces belonging to this window — local and hosted alike; a hosted
     /// workspace lives in whatever window group the user put it in, marked only
@@ -224,7 +225,8 @@ struct SidebarView: View {
                     isInOtherWindow: false,
                     isExpanded: currentWindowExpansionBinding(for: workspace.id),
                     onSelect: { onSelectWorkspace(workspace.id) },
-                    hostedConnection: remoteService.connectionState(for: workspace.id)
+                    hostedConnection: remoteService.connectionState(for: workspace.id),
+                    hostnames: remoteService.hostnames[workspace.id] ?? []
                 )
             }
         }
@@ -342,8 +344,36 @@ struct SidebarView: View {
             onDetachWorkspace(workspace.id)
         }
         Divider()
+        Button("Hostnames…") {
+            onWorkspaceHostnames?(workspace.id)
+        }
+        ForEach(remoteService.hostnames[workspace.id] ?? []) { hostname in
+            hostnameMenu(hostname)
+        }
+        Divider()
         Button("Remove Session", role: .destructive) {
             Task { await remoteService.deleteWorkspace(workspace.id) }
+        }
+    }
+
+    /// One mapped hostname's menu entry: open / copy, with the dev server's
+    /// listening state in the icon (filled = answering, dashed = nothing on
+    /// the port yet).
+    @ViewBuilder
+    private func hostnameMenu(_ hostname: DaemonHostname) -> some View {
+        if let url = hostname.url {
+            Menu {
+                Button("Open") {
+                    if let u = URL(string: url) { NSWorkspace.shared.open(u) }
+                }
+                Button("Copy URL") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url, forType: .string)
+                }
+            } label: {
+                Label("\(hostname.name) : \(hostname.port)",
+                      systemImage: hostname.listening ? "circle.fill" : "circle.dashed")
+            }
         }
     }
 
@@ -476,6 +506,9 @@ private struct WorkspaceRow: View {
     /// Non-nil marks a hosted (daemon-backed) workspace: beacon icon before the
     /// name, attach-connection dot after the badges.
     var hostedConnection: DaemonConnectionState?
+    /// Dev-hostname mappings (hosted only): each renders as a clickable https
+    /// URL in the expanded dashboard, with a listening dot from the daemon's probe.
+    var hostnames: [DaemonHostname] = []
 
     private var status: GitStatusInfo {
         monitor.status
@@ -496,6 +529,28 @@ private struct WorkspaceRow: View {
                         .truncationMode(.middle)
                 }
                 .padding(.leading, 4)
+
+                // Dev hostnames (hosted): daemon-stamped URL + listening probe
+                ForEach(hostnames) { hostname in
+                    if let url = hostname.url {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(hostname.listening ? Color.green : Color.secondary.opacity(0.4))
+                                .frame(width: 5, height: 5)
+                                .help(hostname.listening ? "Dev server answering on port \(hostname.port)" : "Nothing listening on port \(hostname.port)")
+                            Text(url.replacingOccurrences(of: "https://", with: ""))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .onTapGesture {
+                                    if let u = URL(string: url) { NSWorkspace.shared.open(u) }
+                                }
+                                .help("Open \(url)")
+                        }
+                        .padding(.leading, 4)
+                    }
+                }
 
                 // Git dashboard
                 if status.isGitRepo {

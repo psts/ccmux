@@ -83,6 +83,31 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.beginSheet(sheetWindow)
     }
 
+    /// Sheet editing a hosted workspace's dev-hostname mappings ({name, port} →
+    /// https URL over the tailnet). Save PUTs to the daemon and closes only on
+    /// success — validation errors (bad label, name taken) stay in the sheet.
+    func showHostnamesSheet(for workspaceId: UUID) {
+        guard let window else { return }
+        let service = RemoteSessionService.shared
+        let name = service.workspaces.first(where: { $0.id == workspaceId })?.name ?? "workspace"
+        var sheet: NSWindow?
+        let editor = HostnamesSheetView(
+            workspaceName: name,
+            current: service.hostnames[workspaceId] ?? [],
+            onSave: { hostnames in
+                if let error = await service.setHostnames(workspaceId, hostnames: hostnames) {
+                    return error
+                }
+                await MainActor.run { if let sheet { window.endSheet(sheet) } }
+                return nil
+            },
+            onCancel: { if let sheet { window.endSheet(sheet) } }
+        )
+        let sheetWindow = NSWindow(contentViewController: NSHostingController(rootView: editor))
+        sheet = sheetWindow
+        window.beginSheet(sheetWindow)
+    }
+
     private func setupSplitView() {
         let splitVC = NSSplitViewController()
 
@@ -117,6 +142,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             },
             onNewHostedSession: { [weak self] in
                 self?.showAddHostedWorkspacePanel()
+            },
+            onWorkspaceHostnames: { [weak self] id in
+                self?.showHostnamesSheet(for: id)
             }
         )
         let sidebarHosting = NSHostingController(rootView: sidebarView)
