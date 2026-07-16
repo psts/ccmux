@@ -56,6 +56,11 @@ class WindowManager {
     private var pendingSpaceWindows: [size_t: [WorkspaceWindowController]] = [:]
     private var spaceChangeObserver: NSObjectProtocol?
 
+    // Local-pane→window map sync state (see syncLocalPaneGroups).
+    private var localGroupsTimer: Timer?
+    private var lastLocalGroups: [String: String] = [:]
+    private var lastLocalGroupsPush: Date = .distantPast
+
     init(workspaceManager: WorkspaceManager) {
         self.workspaceManager = workspaceManager
         setupSpaceChangeObserver()
@@ -63,6 +68,13 @@ class WindowManager {
         // When a workspace is removed, clear any window that was showing it
         workspaceManager.onWorkspaceRemoved = { [weak self] removedId in
             self?.handleWorkspaceRemoved(id: removedId)
+        }
+
+        // Local-pane group sync also runs on a timer: pane splits/closes don't
+        // pass through refreshOtherWindowIds, and a periodic push re-seeds a
+        // restarted daemon (the map is daemon-memory only).
+        localGroupsTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.syncLocalPaneGroups()
         }
     }
 
@@ -458,6 +470,7 @@ class WindowManager {
             }
         }
         syncHostedGroups()
+        syncLocalPaneGroups()
     }
 
     /// Push each hosted workspace's owning-window name to the daemon as its
@@ -474,6 +487,35 @@ class WindowManager {
                 Task { await service.setGroup(wsId, to: name) }
             }
         }
+    }
+
+    /// Push the complete local-pane→window-name map to the daemon's peers bus,
+    /// so sessions in Mac-local (driver-mode) panes get window grouping too —
+    /// the same source-of-truth pattern as syncHostedGroups, keyed by the pane
+    /// UUID the session's thin client reads from CCMUX_CMD_FILE. Diff-gated,
+    /// with a periodic unconditional push so a restarted daemon (in-memory map)
+    /// re-seeds within a minute.
+    func syncLocalPaneGroups() {
+        var map: [String: String] = [:]
+        for wc in windowControllers {
+            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
+            for wsId in wc.windowContext.ownedWorkspaceIds {
+                guard let ws = workspaceManager.workspaces.first(where: { $0.id == wsId }),
+                      ws.mode == .local else { continue }
+                for leaf in ws.layout.allLeaves {
+                    for tab in leaf.content.tabs {
+                        if case .terminal(let cfg) = tab {
+                            map[cfg.id.uuidString] = name
+                        }
+                    }
+                }
+            }
+        }
+        let stale = Date().timeIntervalSince(lastLocalGroupsPush) > 60
+        guard map != lastLocalGroups || stale else { return }
+        lastLocalGroups = map
+        lastLocalGroupsPush = Date()
+        Task { await PeerBrokerService.shared.pushLocalGroups(map) }
     }
 
     /// Rename a window.

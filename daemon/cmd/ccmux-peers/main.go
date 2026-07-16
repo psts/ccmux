@@ -30,6 +30,7 @@ type app struct {
 	daemon      *daemonClient
 	channelMode bool
 	paneID      string
+	localPaneID string // Mac driver-mode pane UUID (from CCMUX_CMD_FILE)
 	name        string
 	cwd         string
 	gitRoot     string
@@ -49,6 +50,7 @@ func main() {
 	a.gitRoot = gitRoot(a.cwd)
 	a.name = os.Getenv("CLAUDE_PEERS_NAME")
 	a.paneID = os.Getenv("CCMUX_PANE_ID")
+	a.localPaneID = localPaneID(os.Getenv("CCMUX_CMD_FILE"))
 
 	url, token := os.Getenv("CCMUX_DAEMON_URL"), os.Getenv("CCMUX_PANE_TOKEN")
 	if a.paneID == "" || url == "" || token == "" {
@@ -97,7 +99,7 @@ func main() {
 func (a *app) register() error {
 	a.mu.Lock()
 	req := map[string]any{
-		"pane_id": a.paneID, "pid": os.Getpid(),
+		"pane_id": a.paneID, "local_pane_id": a.localPaneID, "pid": os.Getpid(),
 		"cwd": a.cwd, "git_root": a.gitRoot,
 		"name": a.name, "requested_id": a.id,
 	}
@@ -216,4 +218,16 @@ func gitRoot(cwd string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// localPaneID extracts the Mac driver-mode pane UUID from a CCMUX_CMD_FILE
+// path (/tmp/ccmux-cmd-<uuid>) — the identity the app's live local-pane→window
+// map is keyed by. Hosted panes have the same env var, but their CCMUX_PANE_ID
+// takes precedence during registration, so passing both is harmless.
+func localPaneID(cmdFile string) string {
+	base := filepath.Base(cmdFile)
+	if id, ok := strings.CutPrefix(base, "ccmux-cmd-"); ok && id != "" {
+		return id
+	}
+	return ""
 }

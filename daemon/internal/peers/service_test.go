@@ -424,6 +424,54 @@ func TestSpawn_DeepLinkTeammateJoinsRequestersGroup(t *testing.T) {
 	}
 }
 
+func TestLocalPaneGroups_LiveWindowGroupingForDriverPanes(t *testing.T) {
+	svc, _ := newTestService(t)
+
+	// A Mac-local pane session registers pane-less but with its pane UUID.
+	uuid := "C94A648A-D8B2-4A36-93FB-CED728437CED"
+	got := svc.Register(RegisterReq{LocalPaneID: uuid, PID: os.Getpid(),
+		CWD: "/w/ChartLabs/backend", GitRoot: "/w/ChartLabs/backend"})
+	if got.Group != "/w/ChartLabs" {
+		t.Fatalf("before map push: group = %q, want dirname fallback", got.Group)
+	}
+	// Stable id derived from the pane UUID: an MCP-server restart keeps it.
+	again := svc.Register(RegisterReq{LocalPaneID: uuid, PID: os.Getpid(),
+		CWD: "/w/ChartLabs/backend", GitRoot: "/w/ChartLabs/backend"})
+	if again.PeerID != got.PeerID {
+		t.Fatalf("local-pane peer id changed across re-register: %s → %s", got.PeerID, again.PeerID)
+	}
+
+	// The Mac app pushes its map (lowercase-insensitive) → group flips LIVE,
+	// no re-registration.
+	svc.SetLocalPaneGroups(map[string]string{uuid: "CHARTLABS"})
+	other := svc.Register(RegisterReq{LocalPaneID: "AAAA1111-0000-0000-0000-000000000000",
+		PID: os.Getpid(), CWD: "/w/ChartLabs/admin", GitRoot: "/w/ChartLabs/admin"})
+	svc.SetLocalPaneGroups(map[string]string{
+		uuid: "CHARTLABS",
+		"aaaa1111-0000-0000-0000-000000000000": "CHARTLABS",
+	})
+	if resp := svc.Send(SendReq{FromID: got.PeerID, ToName: "admin", Text: "hi"}); !resp.OK {
+		t.Fatalf("same-window (via map) send failed: %+v", resp)
+	}
+	if evs, _ := svc.Poll(other.PeerID); len(evs) != 1 || evs[0].Group != "CHARTLABS" {
+		t.Fatalf("event = %+v, want group snapshot CHARTLABS", evs)
+	}
+
+	// Window rename: app pushes a replacement map → both re-group instantly.
+	svc.SetLocalPaneGroups(map[string]string{
+		uuid: "RENAMED",
+		"aaaa1111-0000-0000-0000-000000000000": "ELSEWHERE",
+	})
+	if resp := svc.Send(SendReq{FromID: got.PeerID, ToID: other.PeerID, Text: "blocked"}); resp.OK {
+		t.Fatal("send should fail after panes moved to different window groups")
+	}
+	// Map entry gone (pane closed / app quit) → dirname fallback returns.
+	svc.SetLocalPaneGroups(map[string]string{})
+	if g := svc.groupOfLocked(svc.peers[got.PeerID]); g != "/w/ChartLabs" {
+		t.Fatalf("after map clear: group = %q, want dirname fallback", g)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

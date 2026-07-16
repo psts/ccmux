@@ -9,6 +9,35 @@ class PeerBrokerService {
     private var baseURL: String { DaemonConfig.baseURL }
     private var wsBaseURL: String { DaemonConfig.wsBaseURL }
 
+    /// Shared pane-less bearer token from the daemon's info file — authorizes
+    /// the local-pane group push (0600, same-user only). Cached after first read;
+    /// cleared on auth failure so a daemon re-mint gets picked up.
+    private var cachedToken: String?
+    private func panelessToken() -> String? {
+        if let t = cachedToken { return t }
+        let path = ("~/Library/Application Support/ccmuxd/peers.json" as NSString).expandingTildeInPath
+        guard let data = FileManager.default.contents(atPath: path),
+              let info = try? JSONDecoder().decode([String: String].self, from: data),
+              let token = info["token"] else { return nil }
+        cachedToken = token
+        return token
+    }
+
+    /// Push the complete local-pane→window-name map (window grouping for
+    /// driver-mode panes ccmuxd doesn't host). Fire-and-forget; the caller
+    /// re-pushes periodically so a lost push self-heals.
+    func pushLocalGroups(_ groups: [String: String]) async {
+        guard let token = panelessToken(),
+              let url = URL(string: "\(baseURL)/v1/peers/local-groups") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONEncoder().encode(["groups": groups])
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return }
+        if (resp as? HTTPURLResponse)?.statusCode == 401 { cachedToken = nil }
+    }
+
     func fetchMessages(group: String, limit: Int = 50, since: Date? = nil) async throws -> [PeerMessage] {
         var components = URLComponents(string: "\(baseURL)/v1/peers/messages")!
         var queryItems = [URLQueryItem(name: "group", value: group)]

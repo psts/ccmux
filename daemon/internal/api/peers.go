@@ -253,6 +253,27 @@ func (s *Server) peersGroupMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, msgs)
 }
 
+// peersLocalGroups receives the Mac app's live local-pane→window map (the
+// window grouping source of truth for driver-mode panes the daemon doesn't
+// host). Full-replace semantics; authed with the shared pane-less token.
+func (s *Server) peersLocalGroups(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) || !requireLoopback(w, r) {
+		return
+	}
+	if !s.peersSvc.AuthorizeLocalGroups(bearerToken(r)) {
+		writeError(w, http.StatusUnauthorized, "invalid token")
+		return
+	}
+	var req struct {
+		Groups map[string]string `json:"groups"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	s.peersSvc.SetLocalPaneGroups(req.Groups)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(req.Groups)})
+}
+
 // peersGroupPeers is the read-only peers listing for viewers: GET /v1/peers?group=.
 func (s *Server) peersGroupPeers(w http.ResponseWriter, r *http.Request) {
 	if !s.peersEnabled(w) {

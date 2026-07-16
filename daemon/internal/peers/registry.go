@@ -4,13 +4,17 @@ package peers
 import (
 	"crypto/hmac"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
 // RegisterReq is the thin client's registration payload. The daemon derives
 // everything derivable (name, group, id) so clients stay dumb.
 type RegisterReq struct {
-	PaneID      string `json:"pane_id"`
+	PaneID string `json:"pane_id"`
+	// LocalPaneID identifies a Mac-local (driver-mode) pane, derived from
+	// CCMUX_CMD_FILE; only meaningful when PaneID is empty.
+	LocalPaneID string `json:"local_pane_id"`
 	PID         int    `json:"pid"`
 	CWD         string `json:"cwd"`
 	GitRoot     string `json:"git_root"`
@@ -45,8 +49,11 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 	id := s.assignIDLocked(req)
 	// A pane-less MCP server restarting in the same terminal re-registers with
 	// a new peer id but the same pid; drop the stale record so it can't linger.
+	// A record carrying a DIFFERENT local-pane identity is someone else's —
+	// never evict it on pid alone.
 	for otherID, p := range s.peers {
-		if p.PaneID == "" && p.PID == req.PID && otherID != id {
+		if p.PaneID == "" && p.PID == req.PID && otherID != id &&
+			(p.LocalPaneID == "" || strings.EqualFold(p.LocalPaneID, req.LocalPaneID)) {
 			delete(s.peers, otherID)
 		}
 	}
@@ -56,8 +63,8 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 		summary = prev.Summary
 	}
 	peer := &Peer{
-		ID: id, Name: name, PaneID: req.PaneID, PID: req.PID,
-		CWD: req.CWD, GitRoot: req.GitRoot, Summary: summary,
+		ID: id, Name: name, PaneID: req.PaneID, LocalPaneID: req.LocalPaneID,
+		PID: req.PID, CWD: req.CWD, GitRoot: req.GitRoot, Summary: summary,
 		RegisteredAt: s.Now().UnixMilli(),
 	}
 	s.peers[id] = peer
@@ -73,6 +80,14 @@ func (s *Service) assignIDLocked(req RegisterReq) string {
 			return id
 		}
 		return randomID() // hash collision with a different pane — vanishingly rare
+	}
+	if req.LocalPaneID != "" {
+		// Mac-local panes get the same stable-by-construction ids as hosted ones.
+		id := derivedID("local:" + strings.ToLower(req.LocalPaneID))
+		if p := s.peers[id]; p == nil || strings.EqualFold(p.LocalPaneID, req.LocalPaneID) {
+			return id
+		}
+		return randomID()
 	}
 	if req.RequestedID != "" {
 		// Free, ours already, or held by a dead peer → honor the request.
@@ -208,6 +223,12 @@ func (s *Service) AuthorizeRegister(req RegisterReq, token string) bool {
 		want = TokenForPane(s.secret, req.PaneID)
 	}
 	return hmac.Equal([]byte(token), []byte(want))
+}
+
+// AuthorizeLocalGroups gates the Mac app's local-pane map push: it presents
+// the shared pane-less token (readable only by the user via the 0600 info file).
+func (s *Service) AuthorizeLocalGroups(token string) bool {
+	return hmac.Equal([]byte(token), []byte(PanelessToken(s.secret)))
 }
 
 // AuthorizePeer checks that a token is valid for acting as an existing peer —

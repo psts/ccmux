@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,9 +42,14 @@ type Store interface {
 // Peer is one registered session. Live connection state is tracked separately
 // in Service.conns so a WS drop doesn't unregister the peer.
 type Peer struct {
-	ID           string
-	Name         string
-	PaneID       string // "" for sessions outside ccmux
+	ID     string
+	Name   string
+	PaneID string // "" for sessions outside ccmux
+	// LocalPaneID is the Mac app's driver-mode pane UUID (derived from
+	// CCMUX_CMD_FILE) for sessions in local panes the daemon doesn't host.
+	// The app pushes a live localPaneID→window-name map, giving these panes
+	// window grouping too.
+	LocalPaneID  string
 	PID          int
 	CWD          string
 	GitRoot      string
@@ -105,6 +111,12 @@ type Service struct {
 	listeners map[*listenConn]struct{}
 	perms     map[string]*permRequest
 	spawns    map[string]*pendingSpawn
+	// localGroups maps a Mac-local pane's UUID (lowercased) to its owning
+	// window's name. The Mac app is the source of truth and pushes the full map
+	// on every window/ownership change, so resolution stays live for driver-mode
+	// panes exactly like workspace groups do for hosted ones. Not persisted —
+	// the app re-pushes shortly after either side restarts.
+	localGroups map[string]string
 }
 
 // NewService builds the bus around the persisted event log, the manager hook,
@@ -120,6 +132,7 @@ func NewService(st Store, mgr Hook, secret []byte) *Service {
 		listeners:    map[*listenConn]struct{}{},
 		perms:        map[string]*permRequest{},
 		spawns:       map[string]*pendingSpawn{},
+		localGroups:  map[string]string{},
 	}
 }
 
@@ -152,12 +165,17 @@ func (s *Service) PaneEnv(paneID string) map[string]string {
 func (s *Service) PanelessToken() string { return PanelessToken(s.secret) }
 
 // groupOfLocked resolves a peer's group at operation time: the owning
-// workspace's window group when the pane is known and grouped, then a spawn
-// override, otherwise the legacy parent-directory fallback (dirname of git
-// root, or of cwd).
+// workspace's window group when the pane is known and grouped, then the Mac
+// app's local-pane map (driver-mode panes), then a spawn override, otherwise
+// the legacy parent-directory fallback (dirname of git root, or of cwd).
 func (s *Service) groupOfLocked(p *Peer) string {
 	if p.PaneID != "" {
 		if g, ok := s.mgr.GroupForPane(p.PaneID); ok && g != "" {
+			return g
+		}
+	}
+	if p.LocalPaneID != "" {
+		if g := s.localGroups[strings.ToLower(p.LocalPaneID)]; g != "" {
 			return g
 		}
 	}
@@ -165,6 +183,18 @@ func (s *Service) groupOfLocked(p *Peer) string {
 		return p.GroupOverride
 	}
 	return fallbackGroup(p.GitRoot, p.CWD)
+}
+
+// SetLocalPaneGroups replaces the local-pane→window map (the Mac app always
+// pushes its complete current view).
+func (s *Service) SetLocalPaneGroups(groups map[string]string) {
+	normalized := make(map[string]string, len(groups))
+	for id, g := range groups {
+		normalized[strings.ToLower(id)] = g
+	}
+	s.mu.Lock()
+	s.localGroups = normalized
+	s.mu.Unlock()
 }
 
 func fallbackGroup(gitRoot, cwd string) string {

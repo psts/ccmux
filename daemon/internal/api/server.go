@@ -110,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/peers/unregister", s.peersUnregister)
 	mux.HandleFunc("POST /v1/peers/poll", s.peersPoll)
 	mux.HandleFunc("POST /v1/peers/permission-request", s.peersPermissionRequest)
+	mux.HandleFunc("PUT /v1/peers/local-groups", s.peersLocalGroups)
 	mux.HandleFunc("GET /v1/peers/ws", s.peersWS)
 	mux.HandleFunc("GET /v1/peers/messages", s.peersGroupMessages)
 	mux.HandleFunc("GET /v1/peers", s.peersGroupPeers)
