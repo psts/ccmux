@@ -108,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.putHostnames)
 	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.portSuggestions)
+	mux.HandleFunc("POST /v1/workspaces/{id}/dev-server", s.devServer)
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.paneSnapshot)
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
@@ -228,16 +229,21 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // putHostnames replaces a workspace's dev-hostname mappings ({name, port}
-// rows from the app's Hostnames sheet). Validation and the tailnet-wide
-// uniqueness check live in the manager; success returns the updated workspace.
+// rows from the app's Hostnames sheet) and, when present, its dev-server
+// command override. Validation and the tailnet-wide uniqueness check live in
+// the manager; success returns the updated workspace.
 func (s *Server) putHostnames(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Hostnames []model.Hostname `json:"hostnames"`
+		Hostnames  []model.Hostname `json:"hostnames"`
+		DevCommand *string          `json:"devCommand"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	ws, err := s.mgr.SetHostnames(r.PathValue("id"), req.Hostnames)
+	if err == nil && req.DevCommand != nil {
+		err = s.mgr.SetDevCommand(r.PathValue("id"), *req.DevCommand)
+	}
 	if err != nil {
 		code := http.StatusBadRequest
 		if errors.Is(err, manager.ErrUnknownWorkspace) {
@@ -249,15 +255,51 @@ func (s *Server) putHostnames(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ws)
 }
 
-// portSuggestions proposes {name, port, source} rows for the Hostnames sheet,
-// detected from the workspace repo's config files (never executed).
+// devServer starts or stops the workspace's dev-server pane.
+func (s *Server) devServer(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action string `json:"action"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	var ws *model.Workspace
+	var err error
+	switch req.Action {
+	case "start":
+		ws, err = s.mgr.StartDevServer(r.PathValue("id"))
+	case "stop":
+		ws, err = s.mgr.StopDevServer(r.PathValue("id"))
+	default:
+		writeError(w, http.StatusBadRequest, "action must be start or stop")
+		return
+	}
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, manager.ErrUnknownWorkspace) {
+			code = http.StatusNotFound
+		}
+		writeError(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ws)
+}
+
+// portSuggestions proposes {name, port, source} rows plus the resolved dev
+// command for the Hostnames sheet, detected from the workspace repo's config
+// files (never executed).
 func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
 	suggestions, err := s.mgr.PortSuggestions(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"suggestions": suggestions})
+	command, source, _ := s.mgr.ResolveDevCommand(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"suggestions":      suggestions,
+		"devCommand":       command,
+		"devCommandSource": source,
+	})
 }
 
 type createWorkspaceReq struct {

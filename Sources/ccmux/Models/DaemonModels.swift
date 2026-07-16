@@ -78,6 +78,14 @@ struct DaemonPortSuggestion: Decodable {
     let source: String
 }
 
+/// The full port-suggestions payload: prefill rows plus the resolved dev-server
+/// command (stored override or detection) with its provenance.
+struct DaemonSuggestionsResponse: Decodable {
+    let suggestions: [DaemonPortSuggestion]?
+    let devCommand: String?
+    let devCommandSource: String?
+}
+
 /// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on
 /// the tailnet → localhost:<port> on the daemon host. `url`/`listening` are
 /// runtime-only, stamped by the daemon's devhost server.
@@ -129,6 +137,8 @@ struct DaemonWorkspace: Codable, Identifiable {
     var group: String
     /// Dev-hostname mappings (right-click → Hostnames…).
     var hostnames: [DaemonHostname]
+    /// Dev-server command override ("" = daemon detects from repo config).
+    var devCommand: String
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -146,6 +156,7 @@ struct DaemonWorkspace: Codable, Identifiable {
         git = try c.decodeIfPresent(DaemonGitStatus.self, forKey: .git)
         group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
         hostnames = try c.decodeIfPresent([DaemonHostname].self, forKey: .hostnames) ?? []
+        devCommand = try c.decodeIfPresent(String.self, forKey: .devCommand) ?? ""
     }
 
     var isLive: Bool { status == .live }
@@ -237,6 +248,8 @@ struct DaemonPane: Codable, Identifiable {
     var attention: DaemonAttention?
     var startupCommand: String?
     var workspaceId: String?
+    /// True for the workspace's dev-server pane (spawned by ▶).
+    var devServer: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -247,6 +260,7 @@ struct DaemonPane: Codable, Identifiable {
         attention = try c.decodeIfPresent(DaemonAttention.self, forKey: .attention)
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
+        devServer = try c.decodeIfPresent(Bool.self, forKey: .devServer) ?? false
     }
 }
 

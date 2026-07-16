@@ -156,6 +156,65 @@ func TestPortSuggestions(t *testing.T) {
 	}
 }
 
+// TestDevCommand pins resolution (override beats detection), persistence, and
+// the cold-workspace start/stop edges (spawn requires a live tmux session;
+// stop without a running pane is a no-op).
+func TestDevCommand(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+
+	repo := filepath.Join(t.TempDir(), "website")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkg := `{"scripts": {"dev": "next dev -p 3003"}}`
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws := &model.Workspace{ID: "w1", Name: "website", RepoPath: repo}
+	if err := st.SaveWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	m.adopt(ws, false)
+
+	// Detection (no lockfile → npm), then override, then back to detection.
+	if cmd, src, _ := m.ResolveDevCommand("w1"); cmd != "npm run dev" || src != "package.json" {
+		t.Fatalf("detected = %q/%q", cmd, src)
+	}
+	if err := m.SetDevCommand("w1", "make dev"); err != nil {
+		t.Fatal(err)
+	}
+	if cmd, src, _ := m.ResolveDevCommand("w1"); cmd != "make dev" || src != "workspace setting" {
+		t.Fatalf("override = %q/%q", cmd, src)
+	}
+	loaded, _ := st.Load()
+	if loaded[0].DevCommand != "make dev" {
+		t.Fatalf("persisted = %q", loaded[0].DevCommand)
+	}
+	if err := m.SetDevCommand("w1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if cmd, _, _ := m.ResolveDevCommand("w1"); cmd != "npm run dev" {
+		t.Fatalf("after clear = %q", cmd)
+	}
+
+	// Start on a cold workspace fails at the spawn (no live tmux session);
+	// stop is an idempotent no-op.
+	if _, err := m.StartDevServer("w1"); err == nil {
+		t.Fatal("start on cold workspace should fail")
+	}
+	if _, err := m.StopDevServer("w1"); err != nil {
+		t.Fatalf("stop without pane: %v", err)
+	}
+	if _, err := m.StartDevServer("nope"); !errors.Is(err, ErrUnknownWorkspace) {
+		t.Fatalf("unknown ws start err = %v", err)
+	}
+}
+
 func TestStampHostnameRuntime(t *testing.T) {
 	m, _ := devhostManager(t)
 	if _, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 3001}}); err != nil {

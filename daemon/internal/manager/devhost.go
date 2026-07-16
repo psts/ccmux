@@ -198,6 +198,108 @@ func suggestionLabel(slug, service string) string {
 	return slug + "-" + service
 }
 
+// SetDevCommand persists the workspace's dev-server command override ("" =
+// back to detection) and broadcasts so lenses refresh.
+func (m *Manager) SetDevCommand(wsID, cmd string) error {
+	m.mu.Lock()
+	e := m.byID[wsID]
+	if e == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+	}
+	cmd = strings.TrimSpace(cmd)
+	if e.ws.DevCommand == cmd {
+		m.mu.Unlock()
+		return nil
+	}
+	e.ws.DevCommand = cmd
+	m.mu.Unlock()
+	if err := m.store.SetWorkspaceDevCommand(wsID, cmd); err != nil {
+		return err
+	}
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return nil
+}
+
+// ResolveDevCommand returns what ▶ would run: the stored override, else
+// detection from the repo's config files. source explains the choice for the
+// sheet ("" when nothing was found).
+func (m *Manager) ResolveDevCommand(wsID string) (command, source string, err error) {
+	ws := m.Workspace(wsID)
+	if ws == nil {
+		return "", "", fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+	}
+	if ws.DevCommand != "" {
+		return ws.DevCommand, "workspace setting", nil
+	}
+	command, source = portdetect.DetectCommand(ws.RepoPath)
+	return command, source, nil
+}
+
+// StartDevServer spawns the workspace's dev-server pane running the resolved
+// command. The pane IS the log surface: stdout/colors/interactivity render in
+// every lens, tmux keeps it across daemon restarts, and revive replays it.
+func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
+	if pane := m.devPane(wsID); pane != nil {
+		return m.Workspace(wsID), nil // already running — idempotent
+	}
+	command, _, err := m.ResolveDevCommand(wsID)
+	if err != nil {
+		return nil, err
+	}
+	if command == "" {
+		return nil, fmt.Errorf("no dev command: none stored and none detected in the repo")
+	}
+	pane, err := m.SpawnPane(wsID, "", command, "devhost")
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	pane.DevServer = true
+	pane.Title = "dev ▸ " + command
+	m.mu.Unlock()
+	_ = m.store.SavePane(pane)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return m.Workspace(wsID), nil
+}
+
+// StopDevServer kills the dev-server pane (SIGTERM through tmux — compose and
+// friends shut down cleanly). Idempotent: no pane, no error.
+func (m *Manager) StopDevServer(wsID string) (*model.Workspace, error) {
+	e := m.entry(wsID)
+	if e == nil {
+		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+	}
+	pane := m.devPane(wsID)
+	if pane == nil {
+		return e.ws, nil
+	}
+	if e.ctrl != nil {
+		if err := e.ctrl.KillPane(pane.ID); err != nil {
+			return nil, err
+		}
+	}
+	m.dropPane(wsID, pane.ID)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return m.Workspace(wsID), nil
+}
+
+// devPane returns the workspace's dev-server pane, nil when none is running.
+func (m *Manager) devPane(wsID string) *model.Pane {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e := m.byID[wsID]
+	if e == nil {
+		return nil
+	}
+	for _, p := range e.ws.Panes {
+		if p.DevServer {
+			return p
+		}
+	}
+	return nil
+}
+
 // StampHostnameRuntime fills the runtime URL/Listening fields on every mapping
 // (mirrors the git collector: runtime data lives on the model under m.mu, and a
 // change broadcasts so lenses refetch). urlFor maps a bare name to its https

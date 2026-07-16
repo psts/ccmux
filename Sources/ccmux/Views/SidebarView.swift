@@ -226,7 +226,9 @@ struct SidebarView: View {
                     isExpanded: currentWindowExpansionBinding(for: workspace.id),
                     onSelect: { onSelectWorkspace(workspace.id) },
                     hostedConnection: remoteService.connectionState(for: workspace.id),
-                    hostnames: remoteService.hostnames[workspace.id] ?? []
+                    hostnames: remoteService.hostnames[workspace.id] ?? [],
+                    devRunning: remoteService.devRunning[workspace.id] ?? false,
+                    onToggleDevServer: { toggleDevServer(workspace.id) }
                 )
             }
         }
@@ -347,6 +349,11 @@ struct SidebarView: View {
         Button("Hostnames…") {
             onWorkspaceHostnames?(workspace.id)
         }
+        if !(remoteService.hostnames[workspace.id] ?? []).isEmpty {
+            Button(remoteService.devRunning[workspace.id] == true ? "Stop Dev Server" : "Start Dev Server") {
+                toggleDevServer(workspace.id)
+            }
+        }
         ForEach(remoteService.hostnames[workspace.id] ?? []) { hostname in
             hostnameMenu(hostname)
         }
@@ -354,6 +361,12 @@ struct SidebarView: View {
         Button("Remove Session", role: .destructive) {
             Task { await remoteService.deleteWorkspace(workspace.id) }
         }
+    }
+
+    /// Flip the workspace's dev server: the daemon spawns/kills its dev pane.
+    private func toggleDevServer(_ id: UUID) {
+        let running = remoteService.devRunning[id] ?? false
+        Task { await remoteService.setDevServer(id, running: !running) }
     }
 
     /// One mapped hostname's menu entry: open / copy, with the dev server's
@@ -509,6 +522,9 @@ private struct WorkspaceRow: View {
     /// Dev-hostname mappings (hosted only): each renders as a clickable https
     /// URL in the expanded dashboard, with a listening dot from the daemon's probe.
     var hostnames: [DaemonHostname] = []
+    /// Dev-server pane state + toggle (hosted only): ▶/■ on the first hostname row.
+    var devRunning: Bool = false
+    var onToggleDevServer: (() -> Void)?
 
     private var status: GitStatusInfo {
         monitor.status
@@ -530,8 +546,9 @@ private struct WorkspaceRow: View {
                 }
                 .padding(.leading, 4)
 
-                // Dev hostnames (hosted): daemon-stamped URL + listening probe
-                ForEach(hostnames) { hostname in
+                // Dev hostnames (hosted): daemon-stamped URL + listening probe;
+                // the first row carries the dev-server ▶/■ toggle.
+                ForEach(Array(hostnames.enumerated()), id: \.element.id) { index, hostname in
                     if let url = hostname.url {
                         HStack(spacing: 4) {
                             Circle()
@@ -547,6 +564,16 @@ private struct WorkspaceRow: View {
                                     if let u = URL(string: url) { NSWorkspace.shared.open(u) }
                                 }
                                 .help("Open \(url)")
+                            if index == 0, let onToggleDevServer {
+                                Spacer(minLength: 4)
+                                Button(action: onToggleDevServer) {
+                                    Image(systemName: devRunning ? "stop.fill" : "play.fill")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(devRunning ? .orange : .secondary)
+                                }
+                                .buttonStyle(.borderless)
+                                .help(devRunning ? "Stop the dev server (kills its pane)" : "Start the dev server (spawns a pane)")
+                            }
                         }
                         .padding(.leading, 4)
                     }

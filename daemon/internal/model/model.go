@@ -55,6 +55,10 @@ type Workspace struct {
 	Group string `json:"group,omitempty"`
 	// Hostnames are the workspace's dev-hostname mappings (see model.Hostname).
 	Hostnames []Hostname `json:"hostnames,omitempty"`
+	// DevCommand starts this workspace's dev server (the ▶ on a hostname row).
+	// Empty = resolve by detection (portdetect.DetectCommand) at start time;
+	// set = the user's explicit override from the Hostnames sheet.
+	DevCommand string `json:"devCommand,omitempty"`
 }
 
 // Hostname is one dev-hostname mapping: https://<Name>.<suffix> over the
@@ -164,6 +168,9 @@ type Pane struct {
 	CreatedAt      int64     `json:"createdAt"`
 	Status         Status    `json:"status"`
 	Attention      Attention `json:"attention"`
+	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
+	// ■). Its presence is the "running" signal lenses render.
+	DevServer bool `json:"devServer,omitempty"`
 	// Cols/Rows are the pane's current tmux size (runtime-only; the daemon owns it
 	// via resize-window). Lenses use it to detect when another lens drove the shared
 	// pane to a different width — e.g. a phone showing a "take over" control.

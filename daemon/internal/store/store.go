@@ -22,6 +22,7 @@ type Store interface {
 	SetWorkspaceStatus(id string, status model.Status) error
 	SetWorkspaceGroup(id, group string) error
 	SetWorkspaceHostnames(id, hostnamesJSON string) error
+	SetWorkspaceDevCommand(id, cmd string) error
 	Load() ([]*model.Workspace, error)
 
 	// Push notification subscriptions (transport-generic, keyed by login).
@@ -54,12 +55,12 @@ CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, name TEXT, repo_path TEXT, created_by TEXT,
   created_at INTEGER, tmux_session TEXT, status TEXT,
   layout_json TEXT, layout_version INTEGER, ws_group TEXT DEFAULT '',
-  hostnames_json TEXT DEFAULT ''
+  hostnames_json TEXT DEFAULT '', dev_command TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS panes (
   id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, cwd TEXT,
   startup_command TEXT, created_by TEXT, created_at INTEGER,
-  status TEXT, attention TEXT
+  status TEXT, attention TEXT, is_dev INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -97,28 +98,32 @@ func Open(path string) (*SQLite, error) {
 	// keeps existing rows scannable into a plain string.
 	_, _ = db.Exec(`ALTER TABLE workspaces ADD COLUMN ws_group TEXT DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE workspaces ADD COLUMN hostnames_json TEXT DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE workspaces ADD COLUMN dev_command TEXT DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE panes ADD COLUMN is_dev INTEGER DEFAULT 0`)
 	return &SQLite{db: db}, nil
 }
 
 func (s *SQLite) SaveWorkspace(w *model.Workspace) error {
 	_, err := s.db.Exec(`
-INSERT INTO workspaces (id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json)
-VALUES (?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO workspaces (id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json,dev_command)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
   tmux_session=excluded.tmux_session, status=excluded.status,
   layout_json=excluded.layout_json, layout_version=excluded.layout_version,
-  ws_group=excluded.ws_group, hostnames_json=excluded.hostnames_json`,
-		w.ID, w.Name, w.RepoPath, w.CreatedBy, w.CreatedAt, w.TmuxSession, w.Status, w.LayoutJSON, w.LayoutVersion, w.Group, model.MarshalHostnames(w.Hostnames))
+  ws_group=excluded.ws_group, hostnames_json=excluded.hostnames_json,
+  dev_command=excluded.dev_command`,
+		w.ID, w.Name, w.RepoPath, w.CreatedBy, w.CreatedAt, w.TmuxSession, w.Status, w.LayoutJSON, w.LayoutVersion, w.Group, model.MarshalHostnames(w.Hostnames), w.DevCommand)
 	return err
 }
 
 func (s *SQLite) SavePane(p *model.Pane) error {
 	_, err := s.db.Exec(`
-INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention)
-VALUES (?,?,?,?,?,?,?,?,?)
+INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev)
+VALUES (?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
-  startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention`,
-		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention)
+  startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention,
+  is_dev=excluded.is_dev`,
+		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer)
 	return err
 }
 
@@ -200,9 +205,14 @@ func (s *SQLite) SetWorkspaceHostnames(id, hostnamesJSON string) error {
 	return err
 }
 
+func (s *SQLite) SetWorkspaceDevCommand(id, cmd string) error {
+	_, err := s.db.Exec(`UPDATE workspaces SET dev_command=? WHERE id=?`, cmd, id)
+	return err
+}
+
 // Load returns all workspaces with their panes attached.
 func (s *SQLite) Load() ([]*model.Workspace, error) {
-	rows, err := s.db.Query(`SELECT id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json FROM workspaces`)
+	rows, err := s.db.Query(`SELECT id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json,dev_command FROM workspaces`)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +221,7 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 	for rows.Next() {
 		w := &model.Workspace{}
 		var hostnamesJSON string
-		if err := rows.Scan(&w.ID, &w.Name, &w.RepoPath, &w.CreatedBy, &w.CreatedAt, &w.TmuxSession, &w.Status, &w.LayoutJSON, &w.LayoutVersion, &w.Group, &hostnamesJSON); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.RepoPath, &w.CreatedBy, &w.CreatedAt, &w.TmuxSession, &w.Status, &w.LayoutJSON, &w.LayoutVersion, &w.Group, &hostnamesJSON, &w.DevCommand); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -227,14 +237,14 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 }
 
 func (s *SQLite) attachPanes(byID map[string]*model.Workspace) error {
-	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention FROM panes ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev FROM panes ORDER BY created_at`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		p := &model.Pane{}
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer); err != nil {
 			return err
 		}
 		if w := byID[p.WorkspaceID]; w != nil {

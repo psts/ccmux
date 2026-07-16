@@ -94,8 +94,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let editor = HostnamesSheetView(
             workspaceName: name,
             current: service.hostnames[workspaceId] ?? [],
-            onSave: { hostnames in
-                if let error = await service.setHostnames(workspaceId, hostnames: hostnames) {
+            devCommand: service.devCommands[workspaceId] ?? "",
+            onSave: { hostnames, devCommand in
+                if let error = await service.setHostnames(workspaceId, hostnames: hostnames, devCommand: devCommand) {
                     return error
                 }
                 await MainActor.run { if let sheet { window.endSheet(sheet) } }

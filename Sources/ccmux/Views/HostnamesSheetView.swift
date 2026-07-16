@@ -6,13 +6,15 @@ import SwiftUI
 /// text shows verbatim. Save replaces the whole list (PUT semantics).
 struct HostnamesSheetView: View {
     let workspaceName: String
-    let onSave: ([DaemonHostname]) async -> String? // nil = saved, else error text
+    let onSave: ([DaemonHostname], String) async -> String? // (rows, devCommand) → nil or error text
     let onCancel: () -> Void
-    /// Detected {name, port} rows from the repo's config files; prefilled when
-    /// the workspace has no mappings yet. nil = no detection (tests/previews).
-    var fetchSuggestions: (() async -> [DaemonPortSuggestion])?
+    /// Detected rows + dev command from the repo's config files; prefilled when
+    /// the workspace has nothing stored yet. nil = no detection (tests/previews).
+    var fetchSuggestions: (() async -> DaemonSuggestionsResponse?)?
 
     @State private var rows: [EditableHostname]
+    @State private var devCommand: String
+    @State private var devCommandCaption = ""
     @State private var status = ""
     @State private var saving = false
 
@@ -26,9 +28,9 @@ struct HostnamesSheetView: View {
         var source: String?
     }
 
-    init(workspaceName: String, current: [DaemonHostname],
-         onSave: @escaping ([DaemonHostname]) async -> String?, onCancel: @escaping () -> Void,
-         fetchSuggestions: (() async -> [DaemonPortSuggestion])? = nil) {
+    init(workspaceName: String, current: [DaemonHostname], devCommand: String = "",
+         onSave: @escaping ([DaemonHostname], String) async -> String?, onCancel: @escaping () -> Void,
+         fetchSuggestions: (() async -> DaemonSuggestionsResponse?)? = nil) {
         self.workspaceName = workspaceName
         self.onSave = onSave
         self.onCancel = onCancel
@@ -36,6 +38,7 @@ struct HostnamesSheetView: View {
         _rows = State(initialValue: current.map {
             EditableHostname(name: $0.name, port: String($0.port), url: $0.url)
         })
+        _devCommand = State(initialValue: devCommand)
     }
 
     var body: some View {
@@ -79,6 +82,24 @@ struct HostnamesSheetView: View {
             }
             .controlSize(.small)
 
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Dev server command")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Runs in a workspace pane when you press ▶ on a hostname row — the pane is the log view. Leave empty to auto-detect.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField("pnpm dev", text: $devCommand)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                if !devCommandCaption.isEmpty {
+                    Text(devCommandCaption)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 2)
+                }
+            }
+
             HStack {
                 Text(status)
                     .font(.system(size: 11))
@@ -98,12 +119,21 @@ struct HostnamesSheetView: View {
     }
 
     /// Prefill an empty sheet with rows detected from the repo's config files
-    /// (compose service names/ports, package.json dev scripts, EXPOSE). Rows
-    /// are ordinary editable rows — delete or rename before saving as usual.
+    /// (compose service names/ports, package.json dev scripts, EXPOSE) and the
+    /// resolved dev command. Rows are ordinary editable rows — delete or rename
+    /// before saving as usual. The command field shows the DETECTED command as
+    /// placeholder-like prefill only when nothing is stored, so saving without
+    /// touching it keeps auto-detection ("" on the daemon).
     private func prefill() async {
-        guard rows.isEmpty, let fetchSuggestions else { return }
-        rows = (await fetchSuggestions()).map {
-            EditableHostname(name: $0.name, port: String($0.port), source: $0.source)
+        guard let fetchSuggestions, let detected = await fetchSuggestions() else { return }
+        if rows.isEmpty {
+            rows = (detected.suggestions ?? []).map {
+                EditableHostname(name: $0.name, port: String($0.port), source: $0.source)
+            }
+        }
+        if let source = detected.devCommandSource, !source.isEmpty, devCommand.isEmpty,
+           let command = detected.devCommand, !command.isEmpty, source != "workspace setting" {
+            devCommandCaption = "detected: \(command)  (from \(source))"
         }
     }
 
@@ -130,7 +160,7 @@ struct HostnamesSheetView: View {
         }
         saving = true
         defer { saving = false }
-        if let error = await onSave(outgoing) {
+        if let error = await onSave(outgoing, devCommand.trimmingCharacters(in: .whitespaces)) {
             status = error
         }
     }

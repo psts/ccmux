@@ -39,6 +39,10 @@ final class RemoteSessionService: ObservableObject {
     private(set) var groups: [UUID: String] = [:]
     /// Dev-hostname mappings per hosted workspace (daemon-stamped url/listening).
     @Published private(set) var hostnames: [UUID: [DaemonHostname]] = [:]
+    /// Whether the workspace's dev-server pane is running (▶/■ state).
+    @Published private(set) var devRunning: [UUID: Bool] = [:]
+    /// Stored dev-command override per workspace ("" = daemon detects).
+    private(set) var devCommands: [UUID: String] = [:]
 
     private var attachments: [UUID: WorkspaceAttachment] = [:]
     private var paneSignatures: [UUID: [String]] = [:]
@@ -395,6 +399,8 @@ final class RemoteSessionService: ObservableObject {
             let appId = RemoteWorkspaceBuilder.workspaceUUID(dw.id)
             groups[appId] = dw.group
             hostnames[appId] = dw.hostnames
+            devRunning[appId] = dw.panes.contains { $0.devServer }
+            devCommands[appId] = dw.devCommand
             if let git = dw.git {
                 let monitor = gitMonitors[appId] ?? {
                     let m = GitStatusMonitor.remoteFed()
@@ -465,6 +471,8 @@ final class RemoteSessionService: ObservableObject {
         claudeMonitors.removeValue(forKey: appId)
         groups.removeValue(forKey: appId)
         hostnames.removeValue(forKey: appId)
+        devRunning.removeValue(forKey: appId)
+        devCommands.removeValue(forKey: appId)
         workspaces.removeAll { $0.id == appId }
     }
 
@@ -487,11 +495,12 @@ final class RemoteSessionService: ObservableObject {
     /// Replace a hosted workspace's dev-hostname mappings (the Hostnames…
     /// sheet's Save). Returns nil on success or the daemon's error text
     /// (invalid label, name taken by another workspace) for the sheet to show.
-    func setHostnames(_ appId: UUID, hostnames: [DaemonHostname]) async -> String? {
+    func setHostnames(_ appId: UUID, hostnames: [DaemonHostname], devCommand: String? = nil) async -> String? {
         guard let daemonId = daemonIds[appId] else { return "workspace is not hosted" }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "hostnames": hostnames.map { ["name": $0.name, "port": $0.port] }
         ]
+        if let devCommand { body["devCommand"] = devCommand }
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/hostnames") else {
             return "bad daemon URL"
         }
@@ -504,7 +513,10 @@ final class RemoteSessionService: ObservableObject {
             guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
             if code == 200 {
                 let dw = try? JSONDecoder().decode(DaemonWorkspace.self, from: data)
-                await MainActor.run { self.hostnames[appId] = dw?.hostnames ?? hostnames }
+                await MainActor.run {
+                    self.hostnames[appId] = dw?.hostnames ?? hostnames
+                    if let devCommand { self.devCommands[appId] = devCommand }
+                }
                 return nil
             }
             struct APIError: Decodable { let error: String }
@@ -514,15 +526,44 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
-    /// Detected port suggestions for the Hostnames sheet (empty on any failure —
-    /// the sheet just starts blank).
-    func fetchPortSuggestions(_ appId: UUID) async -> [DaemonPortSuggestion] {
+    /// Detected suggestions for the Hostnames sheet — port rows plus the
+    /// resolved dev command (nil payload on any failure; the sheet starts blank).
+    func fetchPortSuggestions(_ appId: UUID) async -> DaemonSuggestionsResponse? {
         guard let daemonId = daemonIds[appId],
               let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/port-suggestions"),
               let (data, resp) = try? await session.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200 else { return [] }
-        struct Response: Decodable { let suggestions: [DaemonPortSuggestion]? }
-        return (try? JSONDecoder().decode(Response.self, from: data))?.suggestions ?? []
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONDecoder().decode(DaemonSuggestionsResponse.self, from: data)
+    }
+
+    /// Start/stop the workspace's dev-server pane (the ▶/■ on its hostname
+    /// row). The daemon spawns/kills a tmux pane running the resolved command —
+    /// the pane itself is the log view. Returns the daemon's error text or nil.
+    @discardableResult
+    func setDevServer(_ appId: UUID, running: Bool) async -> String? {
+        guard let daemonId = daemonIds[appId],
+              let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/dev-server") else {
+            return "workspace is not hosted"
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["action": running ? "start" : "stop"])
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
+            if code == 200 {
+                await MainActor.run { self.devRunning[appId] = running }
+                await refresh() // the new/removed pane changes the workspace tree
+                return nil
+            }
+            struct APIError: Decodable { let error: String }
+            let message = (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
+            await MainActor.run { self.lastError = message }
+            return message
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     // MARK: - HTTP helpers
