@@ -69,6 +69,15 @@ struct DaemonSettings: Codable {
     }
 }
 
+/// One detected port suggestion for the Hostnames sheet (GET
+/// /v1/workspaces/{id}/port-suggestions): name/port prefilled from the repo's
+/// compose / package.json / Dockerfile, `source` says which file.
+struct DaemonPortSuggestion: Decodable {
+    let name: String
+    let port: Int
+    let source: String
+}
+
 /// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on
 /// the tailnet → localhost:<port> on the daemon host. `url`/`listening` are
 /// runtime-only, stamped by the daemon's devhost server.

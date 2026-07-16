@@ -8,6 +8,9 @@ struct HostnamesSheetView: View {
     let workspaceName: String
     let onSave: ([DaemonHostname]) async -> String? // nil = saved, else error text
     let onCancel: () -> Void
+    /// Detected {name, port} rows from the repo's config files; prefilled when
+    /// the workspace has no mappings yet. nil = no detection (tests/previews).
+    var fetchSuggestions: (() async -> [DaemonPortSuggestion])?
 
     @State private var rows: [EditableHostname]
     @State private var status = ""
@@ -18,13 +21,18 @@ struct HostnamesSheetView: View {
         var name: String
         var port: String
         var url: String?
+        /// Which file a prefilled row came from ("docker-compose.yml") —
+        /// shown as a caption so a detected guess is distinguishable.
+        var source: String?
     }
 
     init(workspaceName: String, current: [DaemonHostname],
-         onSave: @escaping ([DaemonHostname]) async -> String?, onCancel: @escaping () -> Void) {
+         onSave: @escaping ([DaemonHostname]) async -> String?, onCancel: @escaping () -> Void,
+         fetchSuggestions: (() async -> [DaemonPortSuggestion])? = nil) {
         self.workspaceName = workspaceName
         self.onSave = onSave
         self.onCancel = onCancel
+        self.fetchSuggestions = fetchSuggestions
         _rows = State(initialValue: current.map {
             EditableHostname(name: $0.name, port: String($0.port), url: $0.url)
         })
@@ -58,8 +66,8 @@ struct HostnamesSheetView: View {
                         .buttonStyle(.borderless)
                         .help("Remove hostname")
                     }
-                    if let url = row.url {
-                        Text(url)
+                    if let caption = row.url ?? row.source.map({ "detected from \($0)" }) {
+                        Text(caption)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.secondary)
                             .padding(.leading, 2)
@@ -86,6 +94,17 @@ struct HostnamesSheetView: View {
         }
         .padding(18)
         .frame(width: 460)
+        .task { await prefill() }
+    }
+
+    /// Prefill an empty sheet with rows detected from the repo's config files
+    /// (compose service names/ports, package.json dev scripts, EXPOSE). Rows
+    /// are ordinary editable rows — delete or rename before saving as usual.
+    private func prefill() async {
+        guard rows.isEmpty, let fetchSuggestions else { return }
+        rows = (await fetchSuggestions()).map {
+            EditableHostname(name: $0.name, port: String($0.port), source: $0.source)
+        }
     }
 
     /// Default first-row name: the workspace slug ("ChartLabs" → "chartlabs-app").

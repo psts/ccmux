@@ -107,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.putHostnames)
+	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.portSuggestions)
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.paneSnapshot)
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
@@ -246,6 +247,17 @@ func (s *Server) putHostnames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+// portSuggestions proposes {name, port, source} rows for the Hostnames sheet,
+// detected from the workspace repo's config files (never executed).
+func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
+	suggestions, err := s.mgr.PortSuggestions(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"suggestions": suggestions})
 }
 
 type createWorkspaceReq struct {

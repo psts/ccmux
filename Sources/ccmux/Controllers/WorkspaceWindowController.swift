@@ -101,7 +101,8 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                 await MainActor.run { if let sheet { window.endSheet(sheet) } }
                 return nil
             },
-            onCancel: { if let sheet { window.endSheet(sheet) } }
+            onCancel: { if let sheet { window.endSheet(sheet) } },
+            fetchSuggestions: { await service.fetchPortSuggestions(workspaceId) }
         )
         let sheetWindow = NSWindow(contentViewController: NSHostingController(rootView: editor))
         sheet = sheetWindow

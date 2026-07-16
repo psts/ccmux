@@ -514,6 +514,17 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
+    /// Detected port suggestions for the Hostnames sheet (empty on any failure —
+    /// the sheet just starts blank).
+    func fetchPortSuggestions(_ appId: UUID) async -> [DaemonPortSuggestion] {
+        guard let daemonId = daemonIds[appId],
+              let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/port-suggestions"),
+              let (data, resp) = try? await session.data(from: url),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+        struct Response: Decodable { let suggestions: [DaemonPortSuggestion]? }
+        return (try? JSONDecoder().decode(Response.self, from: data))?.suggestions ?? []
+    }
+
     // MARK: - HTTP helpers
 
     private func post(_ path: String, body: [String: Any], expect: Int) async -> Bool {

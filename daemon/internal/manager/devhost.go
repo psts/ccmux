@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/portdetect"
 )
 
 // Dev-hostname state: per-workspace {name, port} mappings plus the daemon-wide
@@ -140,6 +142,60 @@ func (m *Manager) AllHostnames() map[string]int {
 		}
 	}
 	return out
+}
+
+// PortSuggestions proposes hostname mappings for a workspace by scanning its
+// repo config (compose / package.json / Dockerfile — see internal/portdetect).
+// Detected service labels merge with the repo slug ("api" in repo "admin" →
+// "admin-api"; the main service is just "admin"), and anything colliding with
+// an existing mapping's name or the workspace's already-mapped ports is
+// dropped — the sheet only sees rows it could actually save.
+func (m *Manager) PortSuggestions(wsID string) ([]portdetect.Suggestion, error) {
+	ws := m.Workspace(wsID)
+	if ws == nil {
+		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+	}
+	usedName := map[string]bool{}
+	for name := range m.AllHostnames() {
+		usedName[name] = true
+	}
+	usedPort := map[int]bool{}
+	for _, h := range ws.Hostnames {
+		usedPort[h.Port] = true
+	}
+
+	slug := model.Slug(ws.RepoPath)
+	out := []portdetect.Suggestion{}
+	for _, s := range portdetect.Detect(ws.RepoPath) {
+		if usedPort[s.Port] {
+			continue
+		}
+		name := suggestionLabel(slug, s.Name)
+		if usedName[name] {
+			name = name + "-" + strconv.Itoa(s.Port)
+		}
+		if usedName[name] || !hostnameLabel.MatchString(name) {
+			continue
+		}
+		usedName[name], usedPort[s.Port] = true, true
+		out = append(out, portdetect.Suggestion{Name: name, Port: s.Port, Source: s.Source})
+	}
+	return out, nil
+}
+
+// suggestionLabel merges a detected service label into the repo slug: the
+// repo's "main" service keeps the bare slug, secondary services suffix it.
+// The empty check comes first — model.Slug's "repo" fallback for degenerate
+// input must not leak into labels ("backend-repo").
+func suggestionLabel(slug, service string) string {
+	if service == "" {
+		return slug
+	}
+	service = strings.Trim(model.Slug(service), "-")
+	if service == "" || service == "web" || service == "app" || service == slug {
+		return slug
+	}
+	return slug + "-" + service
 }
 
 // StampHostnameRuntime fills the runtime URL/Listening fields on every mapping
