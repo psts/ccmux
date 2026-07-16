@@ -14,6 +14,22 @@ type Suggestion struct {
 	Source string `json:"source"`
 }
 
+// nonHTTPPorts are well-known raw-TCP protocol defaults (databases, queues,
+// VNC) that compose files publish for infra services. The devhost proxy speaks
+// HTTP, so a hostname mapped to one of these could never work — never suggest
+// them.
+var nonHTTPPorts = map[int]bool{
+	1433:  true, // mssql
+	3306:  true, // mysql
+	5432:  true, // postgres
+	5672:  true, // amqp
+	5900:  true, // vnc
+	6379:  true, // redis
+	9092:  true, // kafka
+	11211: true, // memcached
+	27017: true, // mongodb
+}
+
 // Detect scans repoPath and returns deduped suggestions, strongest source
 // first. A port seen by a stronger source hides the same port from weaker
 // ones (compose knows the service name; EXPOSE knows nothing). Dockerfile
@@ -25,7 +41,7 @@ func Detect(repoPath string) []Suggestion {
 	seen := map[int]bool{}
 	add := func(batch []Suggestion) {
 		for _, s := range batch {
-			if s.Port < 1 || s.Port > 65535 || seen[s.Port] {
+			if s.Port < 1 || s.Port > 65535 || seen[s.Port] || nonHTTPPorts[s.Port] {
 				continue
 			}
 			seen[s.Port] = true

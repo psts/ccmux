@@ -55,9 +55,10 @@ func TestDetect_FrameworkDefaultsAndPortEnv(t *testing.T) {
 	}
 }
 
-// Modeled on the `admin` repo: compose with two services (one holding a second
-// env-interpolated port), a portless turbo root script, and monorepo apps/*
-// whose ports duplicate compose (dedup keeps the compose entry and its name).
+// Modeled on the `admin` repo: compose with two services (one publishing an
+// extra env-interpolated VNC port — raw TCP, filtered: the HTTP proxy could
+// never serve it), a portless turbo root script, and monorepo apps/* whose
+// ports duplicate compose (dedup keeps the compose entry and its name).
 func TestDetect_ComposeMonorepo(t *testing.T) {
 	dir := write(t, map[string]string{
 		"docker-compose.yml": `
@@ -78,9 +79,28 @@ volumes:
 	})
 	want := []Suggestion{
 		{Name: "api", Port: 8001, Source: "docker-compose.yml"},
-		{Name: "api-5900", Port: 5900, Source: "docker-compose.yml"},
 		{Name: "web", Port: 3001, Source: "docker-compose.yml"},
 	}
+	if got := Detect(dir); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// Infra services' protocol ports (postgres, redis, …) are never suggested —
+// only the app's HTTP port survives.
+func TestDetect_NonHTTPPortsFiltered(t *testing.T) {
+	dir := write(t, map[string]string{
+		"docker-compose.yml": `
+services:
+  db:
+    ports: ["5432:5432"]
+  cache:
+    ports: ["6379:6379"]
+  web:
+    ports: ["3000:3000"]
+`,
+	})
+	want := []Suggestion{{Name: "web", Port: 3000, Source: "docker-compose.yml"}}
 	if got := Detect(dir); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
