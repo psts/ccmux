@@ -79,7 +79,24 @@ body {
   border: 1px solid var(--line); border-radius: 8px;
 }
 .setting-input:focus { outline: none; border-color: var(--accent); }
-.setting-hint { margin: 6px 0 2px; }
+/* status line, not a boxed callout — undo .sheet .hint's border/padding */
+.setting-hint { margin: 6px 0 2px; background: transparent; border: 0; padding: 0; }
+.rules-list { display: flex; flex-direction: column; gap: 6px; }
+.rule-row { display: flex; gap: 6px; align-items: center; }
+.rule-row .rule-prefix { flex: 3; }
+.rule-row .rule-cmd { flex: 2; }
+.rule-del {
+  background: transparent; border: 0; color: var(--muted);
+  font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.rule-del:hover { color: var(--fg); }
+.rule-add {
+  margin-top: 6px; align-self: flex-start; cursor: pointer;
+  background: transparent; border: 1px dashed var(--line); border-radius: 6px;
+  color: var(--muted); font-size: 11px; padding: 4px 8px;
+}
+.rule-add:hover { color: var(--fg); border-color: var(--muted); }
+.project-cmd { margin-top: 10px; }
 
 /* peer-messages viewer (read-only; fed by /v1/peers/*) */
 .peers-sheet { max-width: 460px; display: flex; flex-direction: column; max-height: min(80vh, 640px); }

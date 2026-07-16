@@ -205,6 +205,36 @@ final class RemoteSessionService: ObservableObject {
         return try JSONDecoder().decode(DaemonProjectList.self, from: data)
     }
 
+    /// Fetch the daemon-wide lens settings (new-workspace startup command +
+    /// per-folder rules).
+    func fetchSettings() async throws -> DaemonSettings {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else {
+            throw URLError(.badURL)
+        }
+        let (data, _) = try await session.data(from: url)
+        return try JSONDecoder().decode(DaemonSettings.self, from: data)
+    }
+
+    /// Update the daemon-wide settings; nil fields are left unchanged. Returns
+    /// the daemon's resolved view (e.g. an empty command comes back as the
+    /// built-in default) or nil on failure.
+    @discardableResult
+    func updateSettings(startupCommand: String? = nil, startupRules: [DaemonStartupRule]? = nil) async -> DaemonSettings? {
+        var body: [String: Any] = [:]
+        if let startupCommand { body["startupCommand"] = startupCommand }
+        if let startupRules {
+            body["startupRules"] = startupRules.map { ["pathPrefix": $0.pathPrefix, "command": $0.command] }
+        }
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, resp) = try? await session.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONDecoder().decode(DaemonSettings.self, from: data)
+    }
+
     /// Create a hosted workspace and return its app-side id (nil on failure), so
     /// the creating window can claim it into its sidebar group.
     /// startupCommand nil = OMIT the field, so the daemon applies its configured

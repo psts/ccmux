@@ -5,6 +5,7 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -136,6 +137,66 @@ func (m *Manager) DefaultStartupCommand() string {
 // SetDefaultStartupCommand persists the setting; empty resets to the fallback.
 func (m *Manager) SetDefaultStartupCommand(cmd string) error {
 	return m.store.SetSetting(settingStartupCommand, cmd)
+}
+
+const settingStartupRules = "startup_rules"
+
+// StartupRule maps a folder subtree to its own new-workspace startup command:
+// a rule for ~/Work/Coding/ChartLabs covers every repo under it. Rules beat
+// the global default; the longest matching prefix wins among rules.
+type StartupRule struct {
+	PathPrefix string `json:"pathPrefix"`
+	Command    string `json:"command"`
+}
+
+// StartupRules returns the configured per-folder rules (empty when unset).
+func (m *Manager) StartupRules() []StartupRule {
+	raw, err := m.store.GetSetting(settingStartupRules)
+	if err != nil || raw == "" {
+		return []StartupRule{}
+	}
+	var rules []StartupRule
+	if json.Unmarshal([]byte(raw), &rules) != nil {
+		return []StartupRule{}
+	}
+	return rules
+}
+
+// SetStartupRules persists the rules, dropping rows with an empty prefix or
+// command (half-filled editor rows, not meaningful rules).
+func (m *Manager) SetStartupRules(rules []StartupRule) error {
+	kept := make([]StartupRule, 0, len(rules))
+	for _, r := range rules {
+		r.PathPrefix = strings.TrimRight(strings.TrimSpace(r.PathPrefix), "/")
+		r.Command = strings.TrimSpace(r.Command)
+		if r.PathPrefix != "" && r.Command != "" {
+			kept = append(kept, r)
+		}
+	}
+	b, err := json.Marshal(kept)
+	if err != nil {
+		return err
+	}
+	return m.store.SetSetting(settingStartupRules, string(b))
+}
+
+// StartupCommandFor resolves the startup command for a new workspace at
+// repoPath: longest matching folder rule → global default → built-in fallback.
+func (m *Manager) StartupCommandFor(repoPath string) string {
+	repoPath = strings.TrimRight(repoPath, "/")
+	best, bestLen := "", -1
+	for _, r := range m.StartupRules() {
+		if len(r.PathPrefix) <= bestLen {
+			continue
+		}
+		if repoPath == r.PathPrefix || strings.HasPrefix(repoPath, r.PathPrefix+"/") {
+			best, bestLen = r.Command, len(r.PathPrefix)
+		}
+	}
+	if bestLen >= 0 {
+		return best
+	}
+	return m.DefaultStartupCommand()
 }
 
 // CreateWorkspace creates a new hosted workspace with an initial pane.

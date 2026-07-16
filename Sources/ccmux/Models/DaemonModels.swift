@@ -44,6 +44,19 @@ enum DaemonAttention: String, Codable {
 }
 
 /// A daemon workspace = one tmux session, N panes. GET /v1/workspaces returns these.
+/// Daemon-wide lens settings (GET/PUT /v1/settings): the startup command typed
+/// into a new hosted workspace's first pane, plus per-folder overrides
+/// (longest matching pathPrefix wins).
+struct DaemonSettings: Codable {
+    var startupCommand: String
+    var startupRules: [DaemonStartupRule]
+}
+
+struct DaemonStartupRule: Codable {
+    var pathPrefix: String
+    var command: String
+}
+
 struct DaemonWorkspace: Codable, Identifiable {
     let id: String
     var name: String

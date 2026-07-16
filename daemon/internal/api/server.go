@@ -127,22 +127,38 @@ func (s *Server) listWorkspaces(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.mgr.List())
 }
 
-// getSettings/putSettings expose the daemon-wide lens settings. Currently one:
-// the startup command typed into a new hosted workspace's first pane. Setting
-// it to "" resets to the built-in default, which GET always reports resolved.
-func (s *Server) getSettings(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"startupCommand": s.mgr.DefaultStartupCommand()})
+// getSettings/putSettings expose the daemon-wide lens settings: the global
+// new-workspace startup command plus per-folder rules. Setting the command to
+// "" resets to the built-in default, which GET always reports resolved. An
+// optional ?repoPath= adds resolvedStartupCommand — what a workspace created
+// there would actually run — for creation-time previews in the pickers.
+func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{
+		"startupCommand": s.mgr.DefaultStartupCommand(),
+		"startupRules":   s.mgr.StartupRules(),
+	}
+	if repo := r.URL.Query().Get("repoPath"); repo != "" {
+		resp["resolvedStartupCommand"] = s.mgr.StartupCommandFor(repo)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		StartupCommand *string `json:"startupCommand"`
+		StartupCommand *string                `json:"startupCommand"`
+		StartupRules   *[]manager.StartupRule `json:"startupRules"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.StartupCommand != nil {
 		if err := s.mgr.SetDefaultStartupCommand(strings.TrimSpace(*req.StartupCommand)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if req.StartupRules != nil {
+		if err := s.mgr.SetStartupRules(*req.StartupRules); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -169,7 +185,7 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "repoPath required")
 		return
 	}
-	startupCmd := s.mgr.DefaultStartupCommand()
+	startupCmd := s.mgr.StartupCommandFor(req.RepoPath)
 	if req.StartupCommand != nil {
 		startupCmd = *req.StartupCommand
 	}

@@ -1,10 +1,12 @@
 import AppKit
+import SwiftUI
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
     private let workspaceManager = WorkspaceManager()
     private var quitConfirmationController: QuitConfirmationController?
+    private var settingsWindow: NSWindow?
 
     /// Listens for Claude Code hook events and drives the sidebar attention flash.
     private var hookListener: ClaudeHookListener?
@@ -234,6 +236,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wc.togglePeerMessages()
     }
 
+    /// Settings… (⌘,) — edits the daemon-wide settings (startup command +
+    /// per-folder rules); one lazily-created window, reused across opens.
+    @objc private func openDaemonSettings() {
+        if settingsWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: DaemonSettingsView()))
+            window.title = "Settings"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func closeFocusedPane() {
         guard let ctrl = activeController, let id = ctrl.focusedPaneId else { return }
         ctrl.closePane(id: id)
@@ -299,6 +316,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
         appMenu.addItem(withTitle: "About ccmux", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openDaemonSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit ccmux", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
 

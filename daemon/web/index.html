@@ -49,6 +49,8 @@
       <p id="project-path" class="crumb"></p>
       <p id="project-status" class="status hidden"></p>
       <ul id="project-list" class="project-list"></ul>
+      <input id="project-cmd" class="setting-input project-cmd" type="text" spellcheck="false"
+             autocomplete="off" placeholder="startup command — empty = default">
     </div>
   </div>
 
@@ -73,6 +75,9 @@
       <label class="setting-label" for="startup-cmd">New workspace startup command</label>
       <input id="startup-cmd" class="setting-input" type="text" spellcheck="false"
              placeholder="claude …" autocomplete="off">
+      <label class="setting-label">Per-folder overrides (longest match wins)</label>
+      <div id="startup-rules" class="rules-list"></div>
+      <button id="startup-rule-add" class="rule-add" type="button">+ Add folder rule</button>
       <p id="startup-cmd-state" class="hint setting-hint"></p>
       <p class="setting-label">Notifications</p>
       <p id="notif-status" class="status"></p>

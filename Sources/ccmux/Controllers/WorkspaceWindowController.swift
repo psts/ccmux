@@ -64,11 +64,11 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         var sheet: NSWindow?
         let picker = HostedProjectPickerView(
-            onPick: { [weak self] project in
+            onPick: { [weak self] project, commandOverride in
                 if let sheet { window.endSheet(sheet) }
                 Task { @MainActor in
                     guard let newId = await RemoteSessionService.shared.createWorkspace(
-                        name: project.name, repoPath: project.path),
+                        name: project.name, repoPath: project.path, startupCommand: commandOverride),
                         let self else { return }
                     self.windowContext.ownedWorkspaceIds.insert(newId)
                     self.windowContext.displayedWorkspaceId = newId

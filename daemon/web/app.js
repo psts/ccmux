@@ -445,7 +445,14 @@ function noteAttention(wsId, paneId, stateStr) {
 // the picker is fed from GET /v1/projects — never a locally typed path.
 // Tapping a row drills into that folder (projects can nest); the row's +
 // creates the workspace there. ".." walks back up. ---
-function newWorkspace() { browseProjects(""); }
+function newWorkspace() {
+  $("project-cmd").value = "";
+  // Show what a workspace would run by default, as the override placeholder.
+  fetch("/v1/settings").then((r) => r.json()).then((cfg) => {
+    $("project-cmd").placeholder = `startup command — empty = default (${cfg.startupCommand || "shell"})`;
+  }).catch(() => {});
+  browseProjects("");
+}
 
 async function browseProjects(relPath) {
   const status = $("project-status"), list = $("project-list"), crumb = $("project-path");
@@ -495,12 +502,15 @@ async function browseProjects(relPath) {
 function closeProjectModal() { $("project-modal").classList.add("hidden"); }
 
 async function createWorkspace(p) {
-  // startupCommand deliberately omitted: the daemon applies its configured
-  // default (editable in Settings), shared by every lens.
+  // startupCommand omitted = the daemon resolves it (per-folder rules, then
+  // the Settings default); the picker's field is a one-off override.
+  const body = { name: p.name, repoPath: p.path, createdBy: "web" };
+  const override = ($("project-cmd").value || "").trim();
+  if (override) body.startupCommand = override;
   const r = await fetch("/v1/workspaces", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: p.name, repoPath: p.path, createdBy: "web" }),
+    body: JSON.stringify(body),
   });
   if (!r.ok) { alert("create failed: " + (await r.text())); return; }
   const ws = await r.json();
@@ -508,38 +518,85 @@ async function createWorkspace(p) {
   attach(ws.id, null);
 }
 
-// --- settings: the daemon-wide startup command for new hosted workspaces.
-// Loaded when the settings sheet opens; saved on change/Enter. addEventListener
-// (not onclick) so push.js's own open handler coexists. ---
+// --- settings: the daemon-wide startup command + per-folder rules for new
+// hosted workspaces. Loaded when the settings sheet opens; saved on change.
+// addEventListener (not onclick) so push.js's own open handler coexists. ---
 function wireStartupCommandSetting() {
   const input = $("startup-cmd"), state = $("startup-cmd-state");
+  const rulesBox = $("startup-rules"), addBtn = $("startup-rule-add");
   if (!input) return;
+
+  function ruleRow(rule) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+    row.innerHTML =
+      `<input class="setting-input rule-prefix" type="text" spellcheck="false" placeholder="/path/to/folder" value="${esc(rule.pathPrefix || "")}">` +
+      `<input class="setting-input rule-cmd" type="text" spellcheck="false" placeholder="command" value="${esc(rule.command || "")}">` +
+      `<button class="rule-del" type="button" title="Remove rule">&times;</button>`;
+    for (const el of row.querySelectorAll("input")) {
+      el.addEventListener("change", saveRules);
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
+    }
+    row.querySelector(".rule-del").onclick = () => { row.remove(); saveRules(); };
+    return row;
+  }
+
+  function collectRules() {
+    return [...rulesBox.querySelectorAll(".rule-row")].map((row) => ({
+      pathPrefix: row.querySelector(".rule-prefix").value.trim(),
+      command: row.querySelector(".rule-cmd").value.trim(),
+    }));
+  }
+
   async function load() {
     try {
       const r = await fetch("/v1/settings");
-      input.value = (await r.json()).startupCommand || "";
+      const cfg = await r.json();
+      input.value = cfg.startupCommand || "";
+      rulesBox.innerHTML = "";
+      for (const rule of cfg.startupRules || []) rulesBox.appendChild(ruleRow(rule));
       state.textContent = "Typed into every new hosted workspace's terminal (all lenses).";
     } catch (_) {
-      state.textContent = "Couldn't load the current setting.";
+      state.textContent = "Couldn't load the current settings.";
     }
   }
-  async function save() {
+
+  async function put(body) {
+    const r = await fetch("/v1/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return r.json();
+  }
+
+  async function saveCommand() {
     try {
-      const r = await fetch("/v1/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startupCommand: input.value }),
-      });
-      const resolved = (await r.json()).startupCommand || "";
-      input.value = resolved; // empty resets to the built-in default — show it
+      const cfg = await put({ startupCommand: input.value });
+      input.value = cfg.startupCommand || ""; // empty resets to built-in — show it
       state.textContent = "Saved.";
     } catch (_) {
       state.textContent = "Couldn't save — is the daemon reachable?";
     }
   }
+
+  async function saveRules() {
+    try {
+      await put({ startupRules: collectRules() });
+      // Don't re-render: half-filled rows stay editable (the daemon drops them).
+      state.textContent = "Saved.";
+    } catch (_) {
+      state.textContent = "Couldn't save — is the daemon reachable?";
+    }
+  }
+
   $("open-settings").addEventListener("click", load);
-  input.addEventListener("change", save);
+  input.addEventListener("change", saveCommand);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+  addBtn.addEventListener("click", () => {
+    rulesBox.appendChild(ruleRow({ pathPrefix: "", command: "" }));
+    rulesBox.lastChild.querySelector(".rule-prefix").focus();
+  });
 }
 wireStartupCommandSetting();
 

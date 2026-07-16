@@ -9,7 +9,9 @@ import SwiftUI
 /// can nest below the root — the back button walks up, and **Add** creates the
 /// hosted session from the selected folder.
 struct HostedProjectPickerView: View {
-    let onPick: (DaemonProject) -> Void
+    /// Second argument: a one-off startup-command override (nil = the daemon
+    /// resolves it from per-folder rules / the Settings default).
+    let onPick: (DaemonProject, String?) -> Void
     let onCancel: () -> Void
 
     @State private var phase: Phase = .loading
@@ -18,6 +20,8 @@ struct HostedProjectPickerView: View {
     @State private var parent: String?  // one level up; nil at the root
     @State private var filter = ""
     @State private var selection: DaemonProject.ID?
+    @State private var commandOverride = ""
+    @State private var defaultCommand = ""
 
     enum Phase: Equatable {
         case loading
@@ -42,8 +46,11 @@ struct HostedProjectPickerView: View {
             footer
         }
         .padding(16)
-        .frame(width: 440, height: 400)
-        .task { await load(path: "") }
+        .frame(width: 440, height: 440)
+        .task {
+            await load(path: "")
+            defaultCommand = (try? await RemoteSessionService.shared.fetchSettings())?.startupCommand ?? ""
+        }
     }
 
     private var header: some View {
@@ -138,16 +145,31 @@ struct HostedProjectPickerView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Spacer()
-            Button("Cancel", action: onCancel)
-                .keyboardShortcut(.cancelAction)
-            Button("Add") {
-                if let project = selectedProject { onPick(project) }
+        VStack(alignment: .leading, spacing: 8) {
+            TextField(overridePlaceholder, text: $commandOverride)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .help("One-off startup command for this workspace; empty uses the daemon's default (per-folder rules apply).")
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    if let project = selectedProject {
+                        let trimmed = commandOverride.trimmingCharacters(in: .whitespaces)
+                        onPick(project, trimmed.isEmpty ? nil : trimmed)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedProject == nil)
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(selectedProject == nil)
         }
+    }
+
+    private var overridePlaceholder: String {
+        defaultCommand.isEmpty
+            ? "startup command — empty = default"
+            : "startup command — empty = default (\(defaultCommand))"
     }
 
     private func centered<V: View>(@ViewBuilder _ inner: () -> V) -> some View {
