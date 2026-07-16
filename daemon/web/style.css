@@ -67,6 +67,20 @@ body {
 }
 .group-hdr .grp-msgs:hover { opacity: 1; }
 
+/* settings sheet */
+.setting-label {
+  display: block; margin: 10px 0 6px; font-size: 11px; font-weight: 600;
+  color: var(--muted); letter-spacing: .3px;
+}
+.setting-input {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 12px;
+  font-family: Menlo, Monaco, monospace;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.setting-input:focus { outline: none; border-color: var(--accent); }
+.setting-hint { margin: 6px 0 2px; }
+
 /* peer-messages viewer (read-only; fed by /v1/peers/*) */
 .peers-sheet { max-width: 460px; display: flex; flex-direction: column; max-height: min(80vh, 640px); }
 #peers-close {

@@ -207,13 +207,16 @@ final class RemoteSessionService: ObservableObject {
 
     /// Create a hosted workspace and return its app-side id (nil on failure), so
     /// the creating window can claim it into its sidebar group.
+    /// startupCommand nil = OMIT the field, so the daemon applies its configured
+    /// default (the Settings-editable command); "" explicitly means a bare shell.
     @discardableResult
     func createWorkspace(name: String, repoPath: String, cwd: String? = nil, startupCommand: String? = nil) async -> UUID? {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "name": name, "repoPath": repoPath,
-            "cwd": cwd ?? repoPath, "startupCommand": startupCommand ?? "",
+            "cwd": cwd ?? repoPath,
             "createdBy": DaemonConfig.selfUser,
         ]
+        if let startupCommand { body["startupCommand"] = startupCommand }
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/websocket"
 
@@ -88,6 +89,8 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
+	mux.HandleFunc("GET /v1/settings", s.getSettings)
+	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
 	mux.HandleFunc("POST /v1/workspaces", s.createWorkspace)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
@@ -124,12 +127,37 @@ func (s *Server) listWorkspaces(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.mgr.List())
 }
 
+// getSettings/putSettings expose the daemon-wide lens settings. Currently one:
+// the startup command typed into a new hosted workspace's first pane. Setting
+// it to "" resets to the built-in default, which GET always reports resolved.
+func (s *Server) getSettings(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"startupCommand": s.mgr.DefaultStartupCommand()})
+}
+
+func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		StartupCommand *string `json:"startupCommand"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.StartupCommand != nil {
+		if err := s.mgr.SetDefaultStartupCommand(strings.TrimSpace(*req.StartupCommand)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	s.getSettings(w, r)
+}
+
 type createWorkspaceReq struct {
-	Name           string `json:"name"`
-	RepoPath       string `json:"repoPath"`
-	CWD            string `json:"cwd"`
-	StartupCommand string `json:"startupCommand"`
-	CreatedBy      string `json:"createdBy"`
+	Name     string `json:"name"`
+	RepoPath string `json:"repoPath"`
+	CWD      string `json:"cwd"`
+	// StartupCommand is a pointer so lenses can OMIT it to get the daemon's
+	// configured default; an explicit "" still means "no command, bare shell".
+	StartupCommand *string `json:"startupCommand"`
+	CreatedBy      string  `json:"createdBy"`
 }
 
 func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +169,11 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "repoPath required")
 		return
 	}
-	ws, err := s.mgr.CreateWorkspace(req.Name, req.RepoPath, req.CWD, req.StartupCommand, req.CreatedBy)
+	startupCmd := s.mgr.DefaultStartupCommand()
+	if req.StartupCommand != nil {
+		startupCmd = *req.StartupCommand
+	}
+	ws, err := s.mgr.CreateWorkspace(req.Name, req.RepoPath, req.CWD, startupCmd, req.CreatedBy)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -495,16 +495,53 @@ async function browseProjects(relPath) {
 function closeProjectModal() { $("project-modal").classList.add("hidden"); }
 
 async function createWorkspace(p) {
+  // startupCommand deliberately omitted: the daemon applies its configured
+  // default (editable in Settings), shared by every lens.
   const r = await fetch("/v1/workspaces", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: p.name, repoPath: p.path, startupCommand: "claude", createdBy: "web" }),
+    body: JSON.stringify({ name: p.name, repoPath: p.path, createdBy: "web" }),
   });
   if (!r.ok) { alert("create failed: " + (await r.text())); return; }
   const ws = await r.json();
   await fetchWorkspaces();
   attach(ws.id, null);
 }
+
+// --- settings: the daemon-wide startup command for new hosted workspaces.
+// Loaded when the settings sheet opens; saved on change/Enter. addEventListener
+// (not onclick) so push.js's own open handler coexists. ---
+function wireStartupCommandSetting() {
+  const input = $("startup-cmd"), state = $("startup-cmd-state");
+  if (!input) return;
+  async function load() {
+    try {
+      const r = await fetch("/v1/settings");
+      input.value = (await r.json()).startupCommand || "";
+      state.textContent = "Typed into every new hosted workspace's terminal (all lenses).";
+    } catch (_) {
+      state.textContent = "Couldn't load the current setting.";
+    }
+  }
+  async function save() {
+    try {
+      const r = await fetch("/v1/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ startupCommand: input.value }),
+      });
+      const resolved = (await r.json()).startupCommand || "";
+      input.value = resolved; // empty resets to the built-in default — show it
+      state.textContent = "Saved.";
+    } catch (_) {
+      state.textContent = "Couldn't save — is the daemon reachable?";
+    }
+  }
+  $("open-settings").addEventListener("click", load);
+  input.addEventListener("change", save);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+}
+wireStartupCommandSetting();
 
 // Opened from a notification tap (/?ws=<id>): attach straight to that workspace.
 function bootDeepLink() {

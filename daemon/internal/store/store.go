@@ -5,6 +5,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 
@@ -26,6 +27,10 @@ type Store interface {
 	SavePushSubscription(*model.PushSubscription) error
 	ListPushSubscriptions() ([]*model.PushSubscription, error)
 	DeletePushSubscription(id string) error
+
+	// Small daemon-wide key/value settings (e.g. the default startup command).
+	GetSetting(key string) (string, error)
+	SetSetting(key, value string) error
 
 	// Peers bus event log + per-peer delivery cursors (see model.PeerEvent).
 	AppendPeerEvent(*model.PeerEvent) (int64, error)
@@ -70,6 +75,9 @@ CREATE INDEX IF NOT EXISTS peer_events_by_to ON peer_events(to_id, seq);
 CREATE INDEX IF NOT EXISTS peer_events_by_grp ON peer_events(grp, seq);
 CREATE TABLE IF NOT EXISTS peer_cursors (
   peer_id TEXT PRIMARY KEY, acked_seq INTEGER
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY, value TEXT
 );`
 
 // Open opens (creating if needed) the registry at path.
@@ -153,6 +161,24 @@ func (s *SQLite) ListPushSubscriptions() ([]*model.PushSubscription, error) {
 
 func (s *SQLite) DeletePushSubscription(id string) error {
 	_, err := s.db.Exec(`DELETE FROM push_subscriptions WHERE id=?`, id)
+	return err
+}
+
+// GetSetting returns a stored setting ("" when unset).
+func (s *SQLite) GetSetting(key string) (string, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetSetting stores (or replaces) a setting value.
+func (s *SQLite) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`
+INSERT INTO settings (key, value) VALUES (?,?)
+ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
 }
 

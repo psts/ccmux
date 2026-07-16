@@ -68,7 +68,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                 if let sheet { window.endSheet(sheet) }
                 Task { @MainActor in
                     guard let newId = await RemoteSessionService.shared.createWorkspace(
-                        name: project.name, repoPath: project.path, startupCommand: "claude"),
+                        name: project.name, repoPath: project.path),
                         let self else { return }
                     self.windowContext.ownedWorkspaceIds.insert(newId)
                     self.windowContext.displayedWorkspaceId = newId

@@ -116,6 +116,28 @@ func (m *Manager) adopt(ws *model.Workspace, isLive bool) {
 	go m.watch(ws.ID, ctrl)
 }
 
+// FallbackStartupCommand is what a new hosted workspace's first pane runs when
+// no default has been configured: a peers-enabled claude, so ccmux-created
+// sessions get live channel push out of the box (plain `claude` would load the
+// peer tools but silently drop pushed messages).
+const FallbackStartupCommand = "claude --dangerously-load-development-channels server:claude-peers"
+
+const settingStartupCommand = "default_startup_command"
+
+// DefaultStartupCommand returns the configured new-workspace startup command
+// (a daemon-wide setting shared by every lens), or the fallback when unset.
+func (m *Manager) DefaultStartupCommand() string {
+	if v, err := m.store.GetSetting(settingStartupCommand); err == nil && v != "" {
+		return v
+	}
+	return FallbackStartupCommand
+}
+
+// SetDefaultStartupCommand persists the setting; empty resets to the fallback.
+func (m *Manager) SetDefaultStartupCommand(cmd string) error {
+	return m.store.SetSetting(settingStartupCommand, cmd)
+}
+
 // CreateWorkspace creates a new hosted workspace with an initial pane.
 func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy string) (*model.Workspace, error) {
 	wsID := uuid.NewString()
