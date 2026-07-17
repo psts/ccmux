@@ -526,6 +526,9 @@ class WindowManager {
         }
         syncHostedGroups()
         syncLocalPaneGroups()
+        // Displayed workspaces may have changed — keep the daemon focus frames
+        // (phone-push suppression) truthful.
+        RemoteSessionService.shared.syncFocusFrames()
     }
 
     /// Push each hosted workspace's owning-window name to the daemon as its

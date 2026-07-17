@@ -63,6 +63,11 @@ final class RemoteSessionService: ObservableObject {
 
     /// True while the user is watching this hosted workspace (suppresses the flash).
     var isWatched: (UUID) -> Bool = { _ in false }
+    /// The hosted workspaces currently displayed in some window — combined with
+    /// user presence to drive the daemon focus frames (phone-push suppression).
+    var displayedHostedWorkspaceIds: () -> Set<UUID> = { [] }
+    /// At-the-Mac detection (screen unlocked, no screensaver, displays awake).
+    private let presenceMonitor = PresenceMonitor()
     /// Fired for a needs-input/done transition on an unwatched hosted workspace.
     var onAttention: ((Workspace, AttentionState) -> Void)?
     /// A clicked file link (absolute local path) in a hosted pane, surfaced to the app.
@@ -90,6 +95,22 @@ final class RemoteSessionService: ObservableObject {
 
         events.onEvent = { [weak self] in self?.handleFirehose($0) }
         events.connect()
+
+        presenceMonitor.onChange = { [weak self] _ in self?.syncFocusFrames() }
+    }
+
+    /// Report focus to the daemon for every attached workspace: the displayed
+    /// ones carry a pane id while the user is at this Mac; everything else
+    /// clears. This is what keeps phone pushes quiet at the desk (the daemon
+    /// suppresses all pushes for a login with any focused lens) — and lets them
+    /// through the moment the screen locks, the screensaver starts, or the Mac
+    /// sleeps (sleep drops the connections outright).
+    func syncFocusFrames() {
+        let displayed = presenceMonitor.isPresent ? displayedHostedWorkspaceIds() : []
+        for (appId, attachment) in attachments {
+            let focused = displayed.contains(appId)
+            attachment.reportFocus(paneId: focused ? (attachment.anyPaneId ?? "") : "")
+        }
     }
 
     func stop() {
@@ -448,6 +469,7 @@ final class RemoteSessionService: ObservableObject {
         workspaces = rebuilt
         coldWorkspaces = list.filter { !$0.isLive }
         applyGitAndActivity(live)
+        syncFocusFrames() // fresh attachments start unfocused; keep them truthful
         onWorkspacesChanged?()
     }
 

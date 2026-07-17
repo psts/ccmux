@@ -54,6 +54,22 @@ final class WorkspaceAttachment {
     /// a hosted pane view does to find its controller/connection state).
     func hasPane(_ paneId: String) -> Bool { controllers[paneId] != nil }
 
+    /// Last focus frame sent ("" = explicitly unfocused; nil = never reported).
+    private(set) var lastReportedFocus: String?
+
+    /// Any pane id of this workspace — the focus frame needs one; nil when empty.
+    var anyPaneId: String? { controllers.keys.first }
+
+    /// Report this lens's focus to the daemon's presence hub (drives phone-push
+    /// suppression): a non-empty pane id means "the user is watching this
+    /// workspace at this screen"; "" clears it. Deduped; re-sent after every
+    /// reconnect because presence is per-connection.
+    func reportFocus(paneId: String) {
+        guard paneId != lastReportedFocus else { return }
+        lastReportedFocus = paneId
+        attach.send(.focus(pane: paneId))
+    }
+
     /// Reconcile per-pane controllers after a daemon-side pane change, keeping the
     /// WS connection up: pre-create controllers for new panes (same warm-start as
     /// init — the attach streams every pane of the workspace, so a new pane's first
@@ -89,6 +105,11 @@ final class WorkspaceAttachment {
         case .hello(let panes):
             for p in panes where p.cols > 0 {
                 controller(forPane: p.id, workingDirectory: p.cwd).setAuthoritativeSize(cols: p.cols, rows: p.rows)
+            }
+            // A hello means a (re)connect: the daemon's presence entry for this
+            // connection is fresh, so replay our focus state.
+            if let focus = lastReportedFocus, !focus.isEmpty {
+                attach.send(.focus(pane: focus))
             }
         case .paneSize(let pane, let cols, let rows):
             controller(forPane: pane, workingDirectory: repoPath).setAuthoritativeSize(cols: cols, rows: rows)

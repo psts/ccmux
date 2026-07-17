@@ -24,10 +24,11 @@ type pushStore interface {
 	DeletePushSubscription(id string) error
 }
 
-// focusOracle reports which devs are actively watching a workspace (attached +
-// focused), whose pushes the notifier suppresses. *presenceHub satisfies it.
+// focusOracle reports which devs currently have a focused lens anywhere —
+// they're at a screen, so the notifier suppresses their pushes entirely.
+// *presenceHub satisfies it.
 type focusOracle interface {
-	FocusedOwners(wsID string) map[string]bool
+	ActiveOwners() map[string]bool
 }
 
 // workspaceNamer resolves a workspace id to metadata for the notification title.
@@ -37,9 +38,10 @@ type workspaceNamer interface {
 }
 
 // notifier turns pane-attention changes into Web Push notifications with per-dev
-// suppression: a dev already watching the workspace (a lens attached AND focused)
-// is skipped, because their lens is flashing the attention in-app. Subscriptions
-// the push service reports as gone (404/410) are pruned.
+// suppression: a dev with any focused lens (they're at a screen — Mac app
+// frontage or a visible web tab) is skipped for ALL workspaces, because the lens
+// in front of them flashes or notifies locally. Subscriptions the push service
+// reports as gone (404/410) are pruned.
 type notifier struct {
 	sender pushSender
 	subs   pushStore
@@ -73,7 +75,7 @@ func (n *notifier) onAttention(ctx context.Context, wsID string, att model.Atten
 	if err != nil || len(subs) == 0 {
 		return
 	}
-	suppressed := n.focus.FocusedOwners(wsID)
+	suppressed := n.focus.ActiveOwners()
 	body, _ := json.Marshal(n.payloadFor(wsID, att))
 	topic := push.Topic(wsID)
 	for _, sub := range subs {

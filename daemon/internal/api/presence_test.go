@@ -37,20 +37,22 @@ func TestPresence_DriverTracksLastNonReadonlyTypist(t *testing.T) {
 	}
 }
 
-func TestPresence_FocusedOwnersDrivePushSuppression(t *testing.T) {
+func TestPresence_ActiveOwnersDrivePushSuppression(t *testing.T) {
 	h := newTestHub()
 	alice := h.Join("ws1", ClientInfo{User: "Alice", Verified: true}, "alice@example.com", "alice@example.com")
-	h.Join("ws1", ClientInfo{User: "Bob"}, "Bob", "") // attached but never focuses
+	h.Join("ws2", ClientInfo{User: "Bob"}, "Bob", "") // attached elsewhere, never focuses
 
-	// No one has focused a pane yet → nobody is suppressed.
-	if owners := h.FocusedOwners("ws1"); len(owners) != 0 {
+	// No one has focused a pane anywhere → nobody is suppressed.
+	if owners := h.ActiveOwners(); len(owners) != 0 {
 		t.Fatalf("owners before any focus = %v, want empty", owners)
 	}
 
-	// Alice focuses a pane → her login (email) is suppressed. The display name is
-	// deliberately NOT a key (it would falsely collide with a self-declared "Alice").
+	// Alice focuses a pane in ws1 → she is demonstrably at a screen, so ALL her
+	// pushes are suppressed — including attention from other workspaces (the
+	// lens in front of her flashes those). Keyed by login, not display name
+	// (which would falsely collide with a self-declared "Alice").
 	h.Focus("ws1", alice, "pane-1")
-	owners := h.FocusedOwners("ws1")
+	owners := h.ActiveOwners()
 	if !owners["alice@example.com"] {
 		t.Errorf("owners = %v, want Alice keyed by her login", owners)
 	}
@@ -58,20 +60,13 @@ func TestPresence_FocusedOwnersDrivePushSuppression(t *testing.T) {
 		t.Error("display name must not be a suppression key")
 	}
 	if owners["Bob"] {
-		t.Error("Bob has no focused pane but was marked focused")
+		t.Error("Bob has no focused pane anywhere but was marked active")
 	}
 
-	// Alice clears focus (tab hidden) → suppression lifts.
+	// Alice clears focus (screen locked / tab hidden) → suppression lifts.
 	h.Focus("ws1", alice, "")
-	if owners := h.FocusedOwners("ws1"); len(owners) != 0 {
+	if owners := h.ActiveOwners(); len(owners) != 0 {
 		t.Errorf("owners after focus cleared = %v, want empty", owners)
-	}
-}
-
-func TestPresence_FocusedOwnersUnknownWorkspace(t *testing.T) {
-	h := newTestHub()
-	if owners := h.FocusedOwners("nope"); owners != nil {
-		t.Fatalf("unknown workspace owners = %v, want nil", owners)
 	}
 }
 

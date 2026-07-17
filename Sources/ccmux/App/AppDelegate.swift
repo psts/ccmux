@@ -92,6 +92,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRemoteSessions() {
         let service = RemoteSessionService.shared
         service.isWatched = { [weak self] id in self?.isWatchingWorkspace(id) ?? false }
+        // Displayed hosted workspaces get a daemon focus frame while the user is
+        // at this Mac — that's what keeps phone pushes quiet at the desk.
+        service.displayedHostedWorkspaceIds = { [weak self] in
+            guard let wm = self?.windowManager else { return [] }
+            return Set(wm.windowControllers
+                .compactMap { $0.windowContext.displayedWorkspaceId }
+                .filter { RemoteSessionService.shared.isHosted($0) })
+        }
         service.onAttention = { [weak self] workspace, state in
             self?.attentionNotifier.post(for: workspace, state: state)
         }

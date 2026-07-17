@@ -28,4 +28,17 @@ final class WorkspaceAttachmentTests: XCTestCase {
         XCTAssertEqual(att.syncPanes([pane("p1")]), [])
         XCTAssertTrue(att.hasPane("p1"))
     }
+
+    func testReportFocusDedupesAndTracksState() {
+        let att = WorkspaceAttachment(workspaceId: UUID(), daemonId: "w1", repoPath: "/r", panes: [pane("p1")])
+        XCTAssertNil(att.lastReportedFocus, "nothing reported until asked")
+        XCTAssertEqual(att.anyPaneId, "p1")
+
+        att.reportFocus(paneId: "p1")
+        XCTAssertEqual(att.lastReportedFocus, "p1")
+        att.reportFocus(paneId: "p1")   // dedupe — no state churn
+        XCTAssertEqual(att.lastReportedFocus, "p1")
+        att.reportFocus(paneId: "")     // unfocus (screen locked / not displayed)
+        XCTAssertEqual(att.lastReportedFocus, "")
+    }
 }

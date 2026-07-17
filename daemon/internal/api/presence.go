@@ -95,26 +95,26 @@ func (h *presenceHub) Driver(wsID string) (DriverIdentity, bool) {
 	return DriverIdentity{User: c.info.User, Email: c.email, Device: c.info.Device, Verified: c.info.Verified}, true
 }
 
-// FocusedOwners returns the set of identity logins currently attached to wsID
-// with a focused pane — the devs actively watching this workspace, whose push
-// notifications the notifier suppresses. The key is each client's canonical
-// login, the same key a subscription is stored under (resolveIdentity produces
-// both), so suppression matches exactly and never keys on the collision-prone
-// display name. A client with no focused pane (e.g. a backgrounded PWA tab that
-// cleared focus) is deliberately excluded, so it still gets pushed.
-func (h *presenceHub) FocusedOwners(wsID string) map[string]bool {
+// ActiveOwners returns every identity login with at least one focused lens on
+// ANY workspace — devs demonstrably at a screen right now. The notifier
+// suppresses ALL pushes for these users, whatever workspace the attention came
+// from: the lens in front of them does the notifying (sidebar flash, macOS
+// notification), so buzzing their phone too is noise. The key is each client's
+// canonical login, the same key a subscription is stored under (resolveIdentity
+// produces both), never the collision-prone display name. A client with no
+// focused pane (backgrounded PWA tab, locked Mac) doesn't count, so its owner
+// still gets pushed.
+func (h *presenceHub) ActiveOwners() map[string]bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	wp := h.byWS[wsID]
-	if wp == nil {
-		return nil
-	}
 	owners := map[string]bool{}
-	for _, c := range wp.clients {
-		if c.info.Focused == "" || c.login == "" {
-			continue
+	for _, wp := range h.byWS {
+		for _, c := range wp.clients {
+			if c.info.Focused == "" || c.login == "" {
+				continue
+			}
+			owners[c.login] = true
 		}
-		owners[c.login] = true
 	}
 	return owners
 }

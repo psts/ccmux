@@ -44,7 +44,7 @@ func (f *fakeStore) DeletePushSubscription(id string) error {
 
 type fakeFocus map[string]bool
 
-func (f fakeFocus) FocusedOwners(string) map[string]bool { return f }
+func (f fakeFocus) ActiveOwners() map[string]bool { return f }
 
 type fakeNamer struct{ ws *model.Workspace }
 
@@ -60,7 +60,8 @@ func TestNotifier_NeedsInputPushesUnfocusedDevsOnly(t *testing.T) {
 		{ID: "a", Login: "alice@example.com", Address: `{"endpoint":"e-alice"}`},
 		{ID: "b", Login: "bob@example.com", Address: `{"endpoint":"e-bob"}`},
 	}}
-	// Alice is attached + focused on this workspace → suppress her push; Bob isn't.
+	// Alice has a focused lens somewhere (she's at a screen) → suppress her
+	// push for ANY workspace's attention; Bob has none.
 	focus := fakeFocus{"alice@example.com": true}
 
 	newNotifier(sender, store, focus).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
