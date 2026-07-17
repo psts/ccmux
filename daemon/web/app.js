@@ -129,7 +129,7 @@ function wsRow(ws) {
     (cold ? `<span class="cold-tag">zzz</span>` : gitBadges(ws.git)) +
     `<button class="more" title="Session menu">⋯</button>` +
     `</div>` +
-    (open ? gitDetail(ws) + actionsRow(ws) : "");
+    (open ? gitDetail(ws) : "");
   // A cold session has nothing to attach to — clicking revives it in place.
   li.onclick = cold ? () => reviveWorkspace(ws.id) : () => attach(ws.id, null);
   li.querySelector(".exp").onclick = (e) => {
@@ -147,7 +147,6 @@ function wsRow(ws) {
     const r = e.target.getBoundingClientRect();
     openWsMenu(ws, r.left, r.bottom + 2);
   };
-  if (open) wireActions(li, ws);
   return li;
 }
 
@@ -273,26 +272,6 @@ async function saveHostnames() {
   }
   $("hostnames-modal").classList.add("hidden");
   fetchWorkspaces();
-}
-
-// actionsRow renders the expanded block's session controls: Close keeps the
-// recipe (cold + revivable), Remove purges after a confirm, Revive wakes a
-// cold session.
-function actionsRow(ws) {
-  const buttons = ws.status === "cold"
-    ? `<button class="act-revive">Revive</button>`
-    : `<button class="act-close">Close session</button>`;
-  return `<div class="gd-actions">${buttons}<button class="act-remove">Remove…</button></div>`;
-}
-
-function wireActions(li, ws) {
-  const on = (cls, fn) => {
-    const b = li.querySelector(cls);
-    if (b) b.onclick = (e) => { e.stopPropagation(); fn(); };
-  };
-  on(".act-revive", () => reviveWorkspace(ws.id));
-  on(".act-close", () => closeSession(ws.id));
-  on(".act-remove", () => removeSession(ws));
 }
 
 async function reviveWorkspace(id) {
