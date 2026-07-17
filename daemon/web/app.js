@@ -300,7 +300,8 @@ async function removeSession(ws) {
   fetchWorkspaces();
 }
 
-// detachIfCurrent drops the attach when the workspace we're watching goes away.
+// detachIfCurrent drops the attach when the workspace we're watching goes away
+// (closed/removed) — back to the empty state, so re-surface the session list.
 function detachIfCurrent(id) {
   if (state.wsId !== id) return;
   if (state.conn) { state.conn.close(); state.conn = null; }
@@ -308,6 +309,7 @@ function detachIfCurrent(id) {
   state.panes = [];
   renderTabs();
   $("empty").style.display = "";
+  openDrawer();
 }
 
 // --- git dashboard (daemon-computed; renders the same content as the Mac
@@ -483,6 +485,8 @@ function takeOver() {
 // --- mobile session drawer (off-canvas sidebar) ---
 function closeDrawer() { document.getElementById("app").classList.remove("drawer-open"); }
 function toggleDrawer() { document.getElementById("app").classList.toggle("drawer-open"); }
+// Desktop is unaffected (drawer-open only acts inside the mobile media query).
+function openDrawer() { document.getElementById("app").classList.add("drawer-open"); }
 
 // paneColsOf returns a pane's daemon-reported width (0 if unknown).
 function paneColsOf(paneId) {
@@ -799,9 +803,12 @@ function wireStartupCommandSetting() {
 wireStartupCommandSetting();
 
 // Opened from a notification tap (/?ws=<id>): attach straight to that workspace.
+// Without a deep link there's nothing on screen but "Select a workspace", so
+// surface the session list (the flyout drawer on mobile) instead of a dead end.
 function bootDeepLink() {
   const ws = new URLSearchParams(location.search).get("ws");
   if (ws) attach(ws, null);
+  else openDrawer();
 }
 
 // --- boot ---
