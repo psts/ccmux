@@ -22,7 +22,7 @@ func TestAPI_Soak_TwoClientsFourPanes(t *testing.T) {
 	}
 	mgr, base := floodStack(t, "ccmux-soak-itest")
 
-	ws, err := mgr.CreateWorkspace("soak", "/tmp", "/tmp", "", "tester")
+	ws, err := mgr.CreateWorkspace("soak", "/tmp", "/tmp", "", "tester", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

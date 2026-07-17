@@ -43,7 +43,7 @@ func TestAPI_DaemonRestartAdoption(t *testing.T) {
 	if err := mgr1.Start(); err != nil {
 		t.Fatalf("mgr1 start: %v", err)
 	}
-	ws, err := mgr1.CreateWorkspace("t", "/tmp", "/tmp", "", "tester")
+	ws, err := mgr1.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

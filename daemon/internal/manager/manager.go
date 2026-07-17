@@ -211,8 +211,10 @@ func (m *Manager) StartupCommandFor(repoPath string) string {
 	return m.DefaultStartupCommand()
 }
 
-// CreateWorkspace creates a new hosted workspace with an initial pane.
-func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy string) (*model.Workspace, error) {
+// CreateWorkspace creates a new hosted workspace with an initial pane. group
+// ("" = none) is the shared sidebar group it starts in — set before the
+// workspace-added publish so a Mac's adoption sweep can honor it immediately.
+func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy, group string) (*model.Workspace, error) {
 	wsID := uuid.NewString()
 	sessionName := model.SessionName(model.Slug(repoPath), wsID)
 	if cwd == "" {
@@ -242,7 +244,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy str
 	ws := &model.Workspace{
 		ID: wsID, Name: name, RepoPath: repoPath, CreatedBy: createdBy,
 		CreatedAt: nowMillis(), TmuxSession: sessionName, Status: model.StatusLive,
-		Panes: []*model.Pane{pane0},
+		Group: group, Panes: []*model.Pane{pane0},
 	}
 	if err := m.store.SaveWorkspace(ws); err != nil {
 		return nil, err

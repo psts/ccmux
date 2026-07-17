@@ -38,7 +38,7 @@ func TestManager_ReviveReplaysStartup(t *testing.T) {
 	}
 
 	marker := "REVIVE_MARKER_7788"
-	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "printf "+marker, "tester")
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "printf "+marker, "tester", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

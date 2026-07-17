@@ -466,6 +466,16 @@ function newWorkspace() {
   fetch("/v1/settings").then((r) => r.json()).then((cfg) => {
     $("project-cmd").placeholder = `startup command — empty = default (${cfg.startupCommand || "shell"})`;
   }).catch(() => {});
+  // Offer the existing window groups; free text makes a new one. Empty = auto
+  // (the first Mac window adopts it).
+  $("project-group").value = "";
+  const options = $("project-group-options");
+  options.innerHTML = "";
+  for (const g of [...new Set(state.workspaces.map((w) => w.group).filter(Boolean))].sort()) {
+    const o = document.createElement("option");
+    o.value = g;
+    options.appendChild(o);
+  }
   browseProjects("");
 }
 
@@ -522,6 +532,8 @@ async function createWorkspace(p) {
   const body = { name: p.name, repoPath: p.path, createdBy: "web" };
   const override = ($("project-cmd").value || "").trim();
   if (override) body.startupCommand = override;
+  const group = ($("project-group").value || "").trim();
+  if (group) body.group = group;
   const r = await fetch("/v1/workspaces", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

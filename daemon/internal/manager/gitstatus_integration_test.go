@@ -59,7 +59,7 @@ func TestManager_GitStatusCollector(t *testing.T) {
 	id, ch := mgr.SubscribeEvents()
 	defer mgr.UnsubscribeEvents(id)
 
-	ws, err := mgr.CreateWorkspace("t", repo, repo, "", "tester")
+	ws, err := mgr.CreateWorkspace("t", repo, repo, "", "tester", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

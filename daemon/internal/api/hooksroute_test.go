@@ -71,7 +71,7 @@ func TestAPI_HostedHookRoutesToDaemonSocket(t *testing.T) {
 	hs := httptest.NewServer(NewServer(mgr).Handler())
 	defer hs.Close()
 
-	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester")
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

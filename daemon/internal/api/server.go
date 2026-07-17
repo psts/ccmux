@@ -311,6 +311,9 @@ type createWorkspaceReq struct {
 	// configured default; an explicit "" still means "no command, bare shell".
 	StartupCommand *string `json:"startupCommand"`
 	CreatedBy      string  `json:"createdBy"`
+	// Group is the shared sidebar group ("window") the workspace starts in;
+	// "" lets the first Mac window adopt it.
+	Group string `json:"group"`
 }
 
 func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +329,7 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.StartupCommand != nil {
 		startupCmd = *req.StartupCommand
 	}
-	ws, err := s.mgr.CreateWorkspace(req.Name, req.RepoPath, req.CWD, startupCmd, req.CreatedBy)
+	ws, err := s.mgr.CreateWorkspace(req.Name, req.RepoPath, req.CWD, startupCmd, req.CreatedBy, req.Group)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

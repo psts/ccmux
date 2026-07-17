@@ -447,8 +447,10 @@ class WindowManager {
         guard pendingHostedCreates == 0 else { return } // a local create is claiming; don't race it
         guard let resolved = Self.reconcileHostedOwnership(
             workspaceIds: RemoteSessionService.shared.workspaces.map(\.id),
+            groups: RemoteSessionService.shared.groups,
             owned: windowControllers.map { $0.windowContext.ownedWorkspaceIds },
-            displayed: windowControllers.map { $0.windowContext.displayedWorkspaceId })
+            displayed: windowControllers.map { $0.windowContext.displayedWorkspaceId },
+            windowNames: windowControllers.map { $0.windowContext.windowName ?? autoWindowName(for: $0) })
         else { return }
         for (wc, ids) in zip(windowControllers, resolved) where wc.windowContext.ownedWorkspaceIds != ids {
             wc.windowContext.ownedWorkspaceIds = ids
@@ -457,11 +459,14 @@ class WindowManager {
     }
 
     /// Pure ownership resolution (index = window order): every listed workspace
-    /// ends up owned by exactly one window. Orphans go to the first window; a
-    /// multiply-owned workspace keeps the window displaying it, else its first
-    /// owner. Returns nil when nothing changes.
+    /// ends up owned by exactly one window. Orphans go to the window whose name
+    /// matches their shared group (so a web/phone-created session lands in the
+    /// group the user picked), else the first window; a multiply-owned workspace
+    /// keeps the window displaying it, else its first owner. Returns nil when
+    /// nothing changes.
     static func reconcileHostedOwnership(
-        workspaceIds: [UUID], owned: [Set<UUID>], displayed: [UUID?]
+        workspaceIds: [UUID], groups: [UUID: String], owned: [Set<UUID>], displayed: [UUID?],
+        windowNames: [String]
     ) -> [Set<UUID>]? {
         guard !owned.isEmpty else { return nil }
         var result = owned
@@ -469,7 +474,8 @@ class WindowManager {
         for id in workspaceIds {
             let owners = result.indices.filter { result[$0].contains(id) }
             if owners.isEmpty {
-                result[0].insert(id)
+                let target = groups[id].flatMap { windowNames.firstIndex(of: $0) } ?? 0
+                result[target].insert(id)
                 changed = true
             } else if owners.count > 1 {
                 let keeper = owners.first { displayed[$0] == id } ?? owners[0]
