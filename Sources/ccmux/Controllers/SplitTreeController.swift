@@ -15,6 +15,18 @@ class SplitTreeController: ObservableObject {
     /// Runtime state for file explorer tabs, keyed by the FileExplorerConfig UUID.
     var fileExplorerStates: [UUID: FileExplorerState] = [:]
 
+    // MARK: - Hosted-workspace hooks (set by RemoteSessionService; nil for local)
+
+    /// Intercepts terminal creation: in a hosted workspace a new terminal must be
+    /// a daemon tmux pane, not a local child shell. Args: target leaf, split
+    /// direction (nil = append as a tab). The service spawns the pane and inserts
+    /// the hosted tab/split itself.
+    var onHostedTerminalRequest: ((UUID, SplitDirection?) -> Void)?
+    /// Fired with the daemon pane id of every hosted terminal tab the user closes,
+    /// so the service kills the remote pane (otherwise it would keep running and
+    /// the next reconcile's merge would resurface it).
+    var onHostedPaneClosed: ((String) -> Void)?
+
     init(workingDirectory: String) {
         self.workingDirectory = workingDirectory
         let initialContent = PaneContent.defaultTerminal(workingDirectory: workingDirectory)
@@ -26,6 +38,10 @@ class SplitTreeController: ObservableObject {
     // MARK: - Pane Mutations
 
     func splitPane(id: UUID, direction: SplitDirection) {
+        if let onHostedTerminalRequest {
+            onHostedTerminalRequest(id, direction)
+            return
+        }
         let newContent = PaneContent.defaultTerminal(workingDirectory: workingDirectory)
         let newTabs = PaneTabs(single: newContent)
         tree = tree.splitLeaf(targetId: id, direction: direction, newContent: newTabs)
@@ -108,8 +124,15 @@ class SplitTreeController: ObservableObject {
 
     // MARK: - Tab Mutations
 
-    /// Append a new tab to an existing pane and activate it.
+    /// Append a new tab to an existing pane and activate it. A *local* terminal
+    /// request in a hosted workspace is routed to the daemon instead; hosted
+    /// content (the service inserting the spawned pane) and non-terminal tabs
+    /// pass straight through.
     func addTab(leafId: UUID, newContent: PaneContent) {
+        if let onHostedTerminalRequest, case .terminal(let cfg) = newContent, !cfg.host.isHosted {
+            onHostedTerminalRequest(leafId, nil)
+            return
+        }
         guard var pane = tree.findLeaf(id: leafId) else { return }
         pane.addTab(newContent)
         tree = tree.replaceContent(leafId: leafId, newContent: pane)
@@ -153,7 +176,11 @@ class SplitTreeController: ObservableObject {
     private func cleanupResources(for content: PaneContent) {
         switch content {
         case .terminal(let config):
-            TerminalStore.shared.remove(paneId: config.id)
+            if let paneId = config.host.hostedPaneId {
+                onHostedPaneClosed?(paneId)   // remote pane — kill it on the daemon
+            } else {
+                TerminalStore.shared.remove(paneId: config.id)
+            }
         case .fileExplorer(let config):
             fileExplorerStates.removeValue(forKey: config.id)
         default:

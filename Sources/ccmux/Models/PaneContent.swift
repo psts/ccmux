@@ -22,7 +22,7 @@ enum PaneContent: Identifiable, Codable {
 
     var displayName: String {
         switch self {
-        case .terminal: return "Terminal"
+        case .terminal(let c): return c.title ?? "Terminal"
         case .browser: return "Browser"
         case .editor(let c): return (c.filePath as NSString).lastPathComponent
         case .diff: return "Diff"

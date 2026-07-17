@@ -280,13 +280,58 @@ final class RemoteSessionService: ObservableObject {
     @discardableResult
     func spawnPane(workspace id: UUID, cwd: String? = nil, startupCommand: String? = nil) async -> Bool {
         guard let daemonId = daemonIds[id] else { return false }
-        let body: [String: Any] = [
-            "cwd": cwd ?? "", "startupCommand": startupCommand ?? "",
-            "createdBy": DaemonConfig.selfUser,
-        ]
-        let ok = await post("/v1/workspaces/\(daemonId)/panes", body: body, expect: 201)
-        if ok { await refresh() }
-        return ok
+        guard await postSpawnPane(daemonId: daemonId, cwd: cwd ?? "", startupCommand: startupCommand ?? "") != nil else {
+            return false
+        }
+        await refresh()
+        return true
+    }
+
+    /// POST a new pane to the daemon and decode the created pane (nil on failure).
+    private func postSpawnPane(daemonId: String, cwd: String = "", startupCommand: String = "") async -> DaemonPane? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/panes") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "cwd": cwd, "startupCommand": startupCommand, "createdBy": DaemonConfig.selfUser,
+        ])
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 201 else { return nil }
+            return try JSONDecoder().decode(DaemonPane.self, from: data)
+        } catch {
+            await MainActor.run { self.lastError = error.localizedDescription }
+            return nil
+        }
+    }
+
+    /// New Terminal Tab / Split in a hosted workspace: the terminal must live on
+    /// the daemon (a tmux pane every lens sees), never as a local child shell.
+    /// Spawn it, then land it exactly where the user asked. The final refresh
+    /// converges the pane signature; the patch path makes it churn-free.
+    private func placeSpawnedTerminal(appId: UUID, leafId: UUID, direction: SplitDirection?) async {
+        guard let daemonId = daemonIds[appId],
+              let pane = await postSpawnPane(daemonId: daemonId) else { return }
+        await MainActor.run {
+            guard let controller = controllers[appId], let attachment = attachments[appId] else { return }
+            _ = attachment.controller(forPane: pane.id, workingDirectory: pane.cwd) // warm before the view asks
+            if let placed = RemoteWorkspaceBuilder.insertingPane(
+                pane, into: controller.tree, at: leafId, direction: direction, repoPath: attachment.repoPath) {
+                controller.tree = placed.tree
+                controller.focusedPaneId = placed.focusLeafId
+            }
+        }
+        await refresh()
+    }
+
+    /// Kill a hosted pane on the daemon (a hosted tab's ✕ — the tab is already
+    /// gone locally). If the kill fails, the next reconcile's merge resurfaces
+    /// the still-running pane rather than leaving it silently headless.
+    private func killHostedPane(appId: UUID, paneId: String) async {
+        guard let daemonId = daemonIds[appId] else { return }
+        _ = await send("DELETE", path: "/v1/workspaces/\(daemonId)/panes/\(paneId)", body: nil, expect: 204)
+        await refresh()
     }
 
     @discardableResult
@@ -379,6 +424,8 @@ final class RemoteSessionService: ObservableObject {
             if let existing = workspaces.first(where: { $0.id == appId }),
                paneSignatures[appId] == RemoteWorkspaceBuilder.paneSignature(dw.panes) {
                 rebuilt.append(existing)               // unchanged — keep the live connection
+            } else if let patched = patchWorkspace(dw, appId: appId) {
+                rebuilt.append(patched)                // pane set changed — patch the live tree in place
             } else {
                 if attachments[appId] != nil { removeWorkspace(appId) }
                 if let ws = addWorkspace(dw, appId: appId) { rebuilt.append(ws) }
@@ -401,6 +448,12 @@ final class RemoteSessionService: ObservableObject {
             hostnames[appId] = dw.hostnames
             devRunning[appId] = dw.panes.contains { $0.devServer }
             devCommands[appId] = dw.devCommand
+            // Pane titles change without the pane set changing (the daemon re-derives
+            // them from tmux as programs start/stop) — fold them into the tab chips.
+            if let controller = controllers[appId],
+               let retitled = RemoteWorkspaceBuilder.updatingTitles(controller.tree, panes: dw.panes) {
+                controller.tree = retitled
+            }
             if let git = dw.git {
                 let monitor = gitMonitors[appId] ?? {
                     let m = GitStatusMonitor.remoteFed()
@@ -418,6 +471,31 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
+    /// Apply a daemon-side pane change (dev-server start/stop, teammate spawn,
+    /// another lens) to an already-attached workspace without tearing it down:
+    /// merge the live tree, sync the attachment's per-pane controllers, and advance
+    /// the signature. The attach socket, monitors, and unrelated panes never blink,
+    /// and sub-debounce local edits survive (the live tree beats the daemon blob).
+    /// The layout observer then pushes the merged arrangement like any local edit.
+    /// Nil (→ caller rebuilds from scratch) when the workspace isn't fully live
+    /// here or the merge leaves no tree.
+    private func patchWorkspace(_ dw: DaemonWorkspace, appId: UUID) -> Workspace? {
+        guard var existing = workspaces.first(where: { $0.id == appId }),
+              let controller = controllers[appId],
+              let attachment = attachments[appId],
+              let merged = RemoteWorkspaceBuilder.mergedTree(controller.tree, panes: dw.panes, repoPath: dw.repoPath)
+        else { return nil }
+        controller.tree = merged
+        if let focused = controller.focusedPaneId, merged.findLeaf(id: focused) == nil {
+            controller.focusedPaneId = merged.allLeaves.first?.id
+        }
+        stalePanes.subtract(attachment.syncPanes(dw.panes))
+        paneSignatures[appId] = RemoteWorkspaceBuilder.paneSignature(dw.panes)
+        existing.layout = merged
+        existing.focusedPaneId = controller.focusedPaneId
+        return existing
+    }
+
     private func addWorkspace(_ dw: DaemonWorkspace, appId: UUID) -> Workspace? {
         guard let (tree, focused) = RemoteWorkspaceBuilder.buildTree(panes: dw.panes, repoPath: dw.repoPath, layoutBlob: dw.layoutJson)
         else { return nil }
@@ -432,6 +510,12 @@ final class RemoteSessionService: ObservableObject {
         let controller = SplitTreeController(workingDirectory: dw.repoPath)
         controller.tree = tree
         controller.focusedPaneId = focused
+        controller.onHostedTerminalRequest = { [weak self] leafId, direction in
+            Task { await self?.placeSpawnedTerminal(appId: appId, leafId: leafId, direction: direction) }
+        }
+        controller.onHostedPaneClosed = { [weak self] paneId in
+            Task { await self?.killHostedPane(appId: appId, paneId: paneId) }
+        }
         controllers[appId] = controller
         daemonIds[appId] = dw.id
         paneSignatures[appId] = RemoteWorkspaceBuilder.paneSignature(dw.panes)

@@ -54,6 +54,21 @@ final class WorkspaceAttachment {
     /// a hosted pane view does to find its controller/connection state).
     func hasPane(_ paneId: String) -> Bool { controllers[paneId] != nil }
 
+    /// Reconcile per-pane controllers after a daemon-side pane change, keeping the
+    /// WS connection up: pre-create controllers for new panes (same warm-start as
+    /// init — the attach streams every pane of the workspace, so a new pane's first
+    /// frames arrive on this very socket) and drop dead ones. Returns the removed
+    /// pane ids so the service can clear derived per-pane state.
+    func syncPanes(_ panes: [DaemonPane]) -> [String] {
+        for pane in panes where controllers[pane.id] == nil {
+            _ = makeController(paneId: pane.id, workingDirectory: pane.cwd)
+        }
+        let live = Set(panes.map { $0.id })
+        let dead = controllers.keys.filter { !live.contains($0) }
+        for id in dead { controllers.removeValue(forKey: id) }
+        return dead
+    }
+
     private func makeController(paneId: String, workingDirectory: String) -> RemoteTermController {
         let cwd = workingDirectory.isEmpty ? repoPath : workingDirectory
         let c = RemoteTermController(paneId: paneId, workingDirectory: cwd, attach: attach)
