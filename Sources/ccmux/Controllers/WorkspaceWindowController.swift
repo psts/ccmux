@@ -67,13 +67,18 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             onPick: { [weak self] project, commandOverride in
                 if let sheet { window.endSheet(sheet) }
                 Task { @MainActor in
+                    // Pause orphan adoption while the create is in flight — the racing
+                    // reconcile would otherwise adopt the new session into the FIRST
+                    // window before this one claims it (double ownership).
+                    let manager = self?.windowManager
+                    manager?.beginHostedCreate()
+                    defer { manager?.endHostedCreate() }
                     guard let newId = await RemoteSessionService.shared.createWorkspace(
                         name: project.name, repoPath: project.path, startupCommand: commandOverride),
                         let self else { return }
-                    self.windowContext.ownedWorkspaceIds.insert(newId)
                     self.windowContext.displayedWorkspaceId = newId
                     self.updateWindowTitle()
-                    self.windowManager?.refreshOtherWindowIds()
+                    self.windowManager?.claimHostedWorkspace(newId, into: self)
                 }
             },
             onCancel: { if let sheet { window.endSheet(sheet) } }

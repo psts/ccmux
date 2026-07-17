@@ -419,18 +419,67 @@ class WindowManager {
         schedulePendingWindowFallback()
     }
 
-    /// Give every hosted workspace a window: any id no window owns yet is adopted
-    /// by the first window (mirroring the unowned-local assignment in
-    /// `restoreWindows`). Called after each daemon reconcile, so sessions created
-    /// by other lenses (web, phone, another Mac) always land in a sidebar group.
-    func adoptOrphanHostedWorkspaces() {
-        guard let firstWc = windowControllers.first else { return }
-        var adopted = false
-        for ws in RemoteSessionService.shared.workspaces where windowOwning(workspaceId: ws.id) == nil {
-            firstWc.windowContext.ownedWorkspaceIds.insert(ws.id)
-            adopted = true
+    /// Windows with a hosted-session create in flight. While non-zero, the orphan
+    /// sweep pauses so a racing reconcile (createWorkspace's own refresh, or the
+    /// workspace-added firehose) can't adopt the new session into the FIRST window
+    /// before the creating window claims it. Other-lens orphans wait one cycle.
+    private var pendingHostedCreates = 0
+    func beginHostedCreate() { pendingHostedCreates += 1 }
+    func endHostedCreate() { pendingHostedCreates = max(0, pendingHostedCreates - 1) }
+
+    /// Claim a hosted workspace for one window EXCLUSIVELY: every other window
+    /// drops it. Used after creating a session, in case an adoption sweep grabbed
+    /// it mid-create anyway.
+    func claimHostedWorkspace(_ id: UUID, into controller: WorkspaceWindowController) {
+        for wc in windowControllers where wc !== controller {
+            wc.windowContext.ownedWorkspaceIds.remove(id)
         }
-        if adopted { refreshOtherWindowIds() }
+        controller.windowContext.ownedWorkspaceIds.insert(id)
+        refreshOtherWindowIds()
+    }
+
+    /// Keep hosted-workspace ownership consistent after each daemon reconcile:
+    /// orphans (sessions created by other lenses, or left behind by a closed
+    /// window) are adopted by the first window, and a workspace owned by SEVERAL
+    /// windows — the create/adopt race, possibly persisted by older builds — is
+    /// deduped to exactly one.
+    func adoptOrphanHostedWorkspaces() {
+        guard pendingHostedCreates == 0 else { return } // a local create is claiming; don't race it
+        guard let resolved = Self.reconcileHostedOwnership(
+            workspaceIds: RemoteSessionService.shared.workspaces.map(\.id),
+            owned: windowControllers.map { $0.windowContext.ownedWorkspaceIds },
+            displayed: windowControllers.map { $0.windowContext.displayedWorkspaceId })
+        else { return }
+        for (wc, ids) in zip(windowControllers, resolved) where wc.windowContext.ownedWorkspaceIds != ids {
+            wc.windowContext.ownedWorkspaceIds = ids
+        }
+        refreshOtherWindowIds()
+    }
+
+    /// Pure ownership resolution (index = window order): every listed workspace
+    /// ends up owned by exactly one window. Orphans go to the first window; a
+    /// multiply-owned workspace keeps the window displaying it, else its first
+    /// owner. Returns nil when nothing changes.
+    static func reconcileHostedOwnership(
+        workspaceIds: [UUID], owned: [Set<UUID>], displayed: [UUID?]
+    ) -> [Set<UUID>]? {
+        guard !owned.isEmpty else { return nil }
+        var result = owned
+        var changed = false
+        for id in workspaceIds {
+            let owners = result.indices.filter { result[$0].contains(id) }
+            if owners.isEmpty {
+                result[0].insert(id)
+                changed = true
+            } else if owners.count > 1 {
+                let keeper = owners.first { displayed[$0] == id } ?? owners[0]
+                for i in owners where i != keeper {
+                    result[i].remove(id)
+                    changed = true
+                }
+            }
+        }
+        return changed ? result : nil
     }
 
     /// A hosted workspace is genuinely gone from the daemon (removed by some lens):
