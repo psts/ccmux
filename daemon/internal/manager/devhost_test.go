@@ -73,6 +73,43 @@ func TestSetHostnames_RoundtripAndUniqueness(t *testing.T) {
 	}
 }
 
+// TestKillPane pins the generic close-a-pane path (a hosted tab's ✕ in a lens):
+// the pane leaves the workspace and the store; a pane the workspace doesn't
+// hold is a no-op and an unknown workspace errors.
+func TestKillPane(t *testing.T) {
+	m, st := devhostManager(t)
+	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1", CWD: "/r1"}
+	if err := st.SavePane(p); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
+	m.mu.Unlock()
+
+	if err := m.KillPane("w1", "pane-1"); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if got := m.Workspace("w1").Panes; len(got) != 0 {
+		t.Fatalf("panes = %+v, want none", got)
+	}
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range loaded {
+		if l.ID == "w1" && len(l.Panes) != 0 {
+			t.Fatalf("persisted panes = %+v, want none", l.Panes)
+		}
+	}
+
+	if err := m.KillPane("w1", "pane-1"); err != nil {
+		t.Fatalf("second kill should be a no-op, got %v", err)
+	}
+	if err := m.KillPane("nope", "pane-1"); !errors.Is(err, ErrUnknownWorkspace) {
+		t.Fatalf("err = %v, want ErrUnknownWorkspace", err)
+	}
+}
+
 func TestSetHostnames_UnknownWorkspace(t *testing.T) {
 	m, _ := devhostManager(t)
 	_, err := m.SetHostnames("nope", []model.Hostname{{Name: "app", Port: 1}})

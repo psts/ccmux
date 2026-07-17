@@ -53,7 +53,22 @@ async function fetchWorkspaces() {
   } catch (_) {
     state.workspaces = [];
   }
+  syncPaneTitles();
   renderList();
+}
+
+// Pane titles change while attached (the daemon re-derives them from tmux as
+// programs start and stop); fold the refreshed titles into the open session's
+// tabs. Pane add/close still re-attaches via the pane-added/pane-closed frames.
+function syncPaneTitles() {
+  const ws = state.workspaces.find((w) => w.id === state.wsId);
+  if (!ws || !ws.panes) return;
+  let changed = false;
+  for (const p of state.panes) {
+    const q = ws.panes.find((x) => x.id === p.id);
+    if (q && q.title !== p.title) { p.title = q.title; changed = true; }
+  }
+  if (changed) renderTabs();
 }
 
 // renderList mirrors the Mac sidebar: workspaces grouped under their window's

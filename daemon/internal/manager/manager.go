@@ -60,13 +60,20 @@ type Manager struct {
 	// Set once at startup. Nil = no dev serving.
 	OnDevhostChange func()
 
+	// paneTitleDefaults holds the #{pane_title} values that mean "no program set
+	// a title" (the tmux host's name) — see panetitle.go.
+	paneTitleDefaults map[string]bool
+
 	mu   sync.RWMutex
 	byID map[string]*entry
 }
 
 // New builds a Manager. ctx bounds the lifetime of spawned control connections.
 func New(ctx context.Context, server *tmux.Server, st store.Store) *Manager {
-	return &Manager{server: server, store: st, ctx: ctx, events: newFirehose(), byID: map[string]*entry{}}
+	return &Manager{
+		server: server, store: st, ctx: ctx, events: newFirehose(),
+		byID: map[string]*entry{}, paneTitleDefaults: defaultPaneTitles(),
+	}
 }
 
 // SubscribeEvents registers a global firehose consumer (the /v1/events endpoint).
@@ -253,6 +260,36 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy str
 // SpawnPane adds a pane (tmux window) to a live workspace.
 func (m *Manager) SpawnPane(wsID, cwd, startupCmd, createdBy string) (*model.Pane, error) {
 	return m.spawnPane(wsID, cwd, startupCmd, startupCmd, createdBy)
+}
+
+// KillPane kills one pane (SIGTERM through tmux) and drops it from the
+// workspace — the generic close-a-pane path behind a hosted tab's ✕ in any
+// lens. Idempotent: a pane the workspace doesn't hold is a no-op.
+func (m *Manager) KillPane(wsID, paneID string) error {
+	e := m.entry(wsID)
+	if e == nil {
+		return fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+	}
+	m.mu.RLock()
+	held := false
+	for _, p := range e.ws.Panes {
+		if p.ID == paneID {
+			held = true
+			break
+		}
+	}
+	m.mu.RUnlock()
+	if !held {
+		return nil
+	}
+	if e.ctrl != nil {
+		if err := e.ctrl.KillPane(paneID); err != nil {
+			return err
+		}
+	}
+	m.dropPane(wsID, paneID)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return nil
 }
 
 // SpawnEphemeralPane adds a pane whose startup command is delivered once but
@@ -534,6 +571,7 @@ func (m *Manager) newPane(wsID, cwd, startupCmd, createdBy string) *model.Pane {
 		ID: uuid.NewString(), WorkspaceID: wsID, CWD: cwd, StartupCommand: startupCmd,
 		CreatedBy: createdBy, CreatedAt: nowMillis(), Status: model.StatusLive,
 		Attention: model.AttentionIdle,
+		Title:     initialPaneTitle(startupCmd), // refined live by tmux signals
 		Cols:      defaultCols, Rows: defaultRows, // matches the initial ctrl.Resize
 	}
 }
@@ -657,6 +695,8 @@ func (m *Manager) watch(wsID string, ctrl *session.Controller) {
 		switch n.Kind {
 		case "window-close":
 			m.dropPane(wsID, n.PaneID)
+		case "pane-title", "pane-command":
+			m.applyPaneTitleSignal(wsID, n.PaneID, n.Kind, n.Value)
 		case "exit":
 			m.markCold(wsID)
 			return

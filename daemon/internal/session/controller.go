@@ -36,11 +36,13 @@ type paneRef struct {
 }
 
 // Notice is a non-output control-mode event surfaced to the manager (window
-// lifecycle, session exit) so it can update the registry and notify lenses.
+// lifecycle, pane title/command signals, session exit) so it can update the
+// registry and notify lenses.
 type Notice struct {
-	Kind   string // "window-close" | "exit"
+	Kind   string // "window-close" | "pane-title" | "pane-command" | "exit"
 	Window string // @N when applicable
 	PaneID string // ccmux pane id when resolvable
+	Value  string // new value for pane-title / pane-command
 }
 
 // Controller manages a single session's control connection.
@@ -85,7 +87,24 @@ func Open(ctx context.Context, server *tmux.Server, session, wsID string) (*Cont
 		client.Close()
 		return nil, err
 	}
+	if err := c.subscribeTitles(); err != nil {
+		client.Close()
+		return nil, err
+	}
 	return c, nil
+}
+
+// subscribeTitles registers control-mode format subscriptions so tmux pushes a
+// %subscription-changed whenever any pane's title or foreground command changes.
+// Verified on tmux 3.6b: current values arrive immediately on subscribe (seeding
+// adopt/restart) and panes created later report automatically (%* is dynamic).
+// Runs after discover() so the initial burst resolves against registered panes.
+func (c *Controller) subscribeTitles() error {
+	if _, err := c.client.Command("refresh-client", "-B", "ccmux-title:%*:#{pane_title}"); err != nil {
+		return err
+	}
+	_, err := c.client.Command("refresh-client", "-B", "ccmux-cmd:%*:#{pane_current_command}")
+	return err
 }
 
 func (c *Controller) stampSession() error {

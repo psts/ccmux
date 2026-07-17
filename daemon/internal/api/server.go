@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces", s.createWorkspace)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/panes/{paneId}", s.killPane)
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
@@ -358,6 +359,16 @@ func (s *Server) spawnPane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// killPane force-closes one pane — a hosted tab's ✕ in some lens. 204 whether
+// or not the pane still existed (close is idempotent).
+func (s *Server) killPane(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.KillPane(r.PathValue("id"), r.PathValue("paneId")); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) reviveWorkspace(w http.ResponseWriter, r *http.Request) {

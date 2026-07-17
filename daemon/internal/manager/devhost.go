@@ -274,13 +274,9 @@ func (m *Manager) StopDevServer(wsID string) (*model.Workspace, error) {
 	if pane == nil {
 		return e.ws, nil
 	}
-	if e.ctrl != nil {
-		if err := e.ctrl.KillPane(pane.ID); err != nil {
-			return nil, err
-		}
+	if err := m.KillPane(wsID, pane.ID); err != nil {
+		return nil, err
 	}
-	m.dropPane(wsID, pane.ID)
-	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return m.Workspace(wsID), nil
 }
 

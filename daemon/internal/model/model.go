@@ -171,6 +171,10 @@ type Pane struct {
 	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
 	// ■). Its presence is the "running" signal lenses render.
 	DevServer bool `json:"devServer,omitempty"`
+	// RawTitle/RawCommand are the tmux runtime signals (#{pane_title},
+	// #{pane_current_command}) that Title is derived from. Runtime-only.
+	RawTitle   string `json:"-"`
+	RawCommand string `json:"-"`
 	// Cols/Rows are the pane's current tmux size (runtime-only; the daemon owns it
 	// via resize-window). Lenses use it to detect when another lens drove the shared
 	// pane to a different width — e.g. a phone showing a "take over" control.

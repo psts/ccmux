@@ -107,9 +107,44 @@ func (c *Controller) OnNotification(kind, rest string) {
 	switch kind {
 	case "window-close", "unlinked-window-close":
 		c.handleWindowClose(strings.TrimSpace(rest))
+	case "subscription-changed":
+		c.handleSubscription(rest)
 	case "exit":
 		c.emit(Notice{Kind: "exit"})
 	}
+}
+
+// handleSubscription routes a %subscription-changed line from the title/command
+// format subscriptions (subscribeTitles). Wire format on tmux 3.6b (verified):
+//
+//	name $session @window window-index %pane : value
+//
+// The value may itself contain " : ", so only the first separator splits.
+func (c *Controller) handleSubscription(rest string) {
+	parts := strings.SplitN(rest, " : ", 2)
+	if len(parts) != 2 {
+		return
+	}
+	f := strings.Fields(parts[0])
+	if len(f) < 5 {
+		return
+	}
+	var kind string
+	switch f[0] {
+	case "ccmux-title":
+		kind = "pane-title"
+	case "ccmux-cmd":
+		kind = "pane-command"
+	default:
+		return
+	}
+	c.mu.RLock()
+	ref := c.byTmuxPane[f[4]]
+	c.mu.RUnlock()
+	if ref == nil {
+		return // pane not (yet) registered; a later change re-fires
+	}
+	c.emit(Notice{Kind: kind, PaneID: ref.id, Value: parts[1]})
 }
 
 func (c *Controller) handleWindowClose(window string) {
