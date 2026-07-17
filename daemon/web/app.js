@@ -127,6 +127,7 @@ function wsRow(ws) {
     `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
     (running ? `<span class="bolt">⚡</span>` : "") +
     (cold ? `<span class="cold-tag">zzz</span>` : gitBadges(ws.git)) +
+    `<button class="more" title="Session menu">⋯</button>` +
     `</div>` +
     (open ? gitDetail(ws) + actionsRow(ws) : "");
   // A cold session has nothing to attach to — clicking revives it in place.
@@ -136,8 +137,142 @@ function wsRow(ws) {
     state.gitOpen[ws.id] = !open;
     renderList();
   };
+  li.oncontextmenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openWsMenu(ws, e.clientX, e.clientY);
+  };
+  li.querySelector(".more").onclick = (e) => {
+    e.stopPropagation();
+    const r = e.target.getBoundingClientRect();
+    openWsMenu(ws, r.left, r.bottom + 2);
+  };
   if (open) wireActions(li, ws);
   return li;
+}
+
+// --- workspace context menu: mirrors the Mac hosted row's menu. Right-click
+// on desktop; the row's ⋯ covers touch (iOS fires no contextmenu event). ---
+function openWsMenu(ws, x, y) {
+  const menu = $("ctx-menu");
+  menu.innerHTML = "";
+  const add = (label, fn, cls) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = () => { closeWsMenu(); fn(); };
+    menu.appendChild(b);
+  };
+  const sep = () => menu.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
+
+  add("Open in New Tab", () => window.open(`/?ws=${ws.id}`, "_blank"));
+  sep();
+  if (ws.status === "cold") {
+    add("Revive", () => reviveWorkspace(ws.id));
+  } else {
+    add("Hostnames…", () => openHostnamesModal(ws));
+    const hostnames = ws.hostnames || [];
+    if (hostnames.length) {
+      const running = (ws.panes || []).some((p) => p.devServer);
+      add(running ? "Stop Dev Server" : "Start Dev Server", () => setDevServer(ws.id, !running));
+    }
+    for (const h of hostnames.filter((h) => h.url)) {
+      add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}`, () => window.open(h.url, "_blank"));
+    }
+    sep();
+    add("Close Session", () => closeSession(ws.id));
+  }
+  add("Remove Session…", () => removeSession(ws), "danger");
+
+  // Show first so it has a size, then clamp into the viewport.
+  menu.classList.remove("hidden");
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+}
+
+function closeWsMenu() { $("ctx-menu").classList.add("hidden"); }
+
+async function setDevServer(id, start) {
+  const r = await fetch(`/v1/workspaces/${id}/dev-server`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: start ? "start" : "stop" }),
+  });
+  if (!r.ok) alert("dev server: " + (await r.text()));
+  fetchWorkspaces();
+}
+
+// --- hostnames editor: {name, port} rows + the ▶ dev command. An empty sheet
+// prefills from the daemon's repo-config detection, like the Mac sheet. Save
+// PUTs and closes only on success; daemon validation errors stay inline. ---
+let hostnamesWsId = null;
+
+async function openHostnamesModal(ws) {
+  hostnamesWsId = ws.id;
+  $("hostnames-title").textContent = `Hostnames — ${ws.name}`;
+  $("hostnames-error").classList.add("hidden");
+  const rows = $("hostnames-rows");
+  rows.innerHTML = "";
+  let mappings = (ws.hostnames || []).map((h) => ({ name: h.name, port: h.port }));
+  let cmd = ws.devCommand || "";
+  if (!mappings.length || !cmd) {
+    try {
+      const s = await (await fetch(`/v1/workspaces/${ws.id}/port-suggestions`)).json();
+      if (!mappings.length) mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: x.port }));
+      if (!cmd && s.devCommand) $("hostnames-cmd").placeholder = `dev command — detected: ${s.devCommand}`;
+    } catch (_) { /* suggestions are best-effort */ }
+  }
+  if (!mappings.length) mappings = [{ name: "", port: "" }];
+  for (const m of mappings) rows.appendChild(hostnameRow(m.name, m.port));
+  $("hostnames-cmd").value = cmd;
+  $("hostnames-modal").classList.remove("hidden");
+}
+
+function hostnameRow(name, port) {
+  const li = document.createElement("li");
+  const n = document.createElement("input");
+  n.className = "setting-input hn-name";
+  n.placeholder = "name";
+  n.spellcheck = false;
+  n.value = name || "";
+  const p = document.createElement("input");
+  p.className = "setting-input hn-port";
+  p.placeholder = "port";
+  p.inputMode = "numeric";
+  p.value = port || "";
+  const del = document.createElement("button");
+  del.className = "hn-del";
+  del.title = "Remove mapping";
+  del.textContent = "×";
+  del.onclick = () => li.remove();
+  li.append(n, p, del);
+  return li;
+}
+
+async function saveHostnames() {
+  const hostnames = [...$("hostnames-rows").children]
+    .map((li) => ({
+      name: li.querySelector(".hn-name").value.trim(),
+      port: parseInt(li.querySelector(".hn-port").value, 10) || 0,
+    }))
+    .filter((h) => h.name || h.port);
+  const body = { hostnames, devCommand: $("hostnames-cmd").value.trim() };
+  const r = await fetch(`/v1/workspaces/${hostnamesWsId}/hostnames`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let msg = "HTTP " + r.status;
+    try { msg = (await r.json()).error || msg; } catch (_) {}
+    const err = $("hostnames-error");
+    err.textContent = msg;
+    err.classList.remove("hidden");
+    return;
+  }
+  $("hostnames-modal").classList.add("hidden");
+  fetchWorkspaces();
 }
 
 // actionsRow renders the expanded block's session controls: Close keeps the
@@ -695,6 +830,12 @@ window.ccmux = { attach, getUser }; // push.js deep-links + shares the presence 
 $("new-ws").onclick = newWorkspace;
 $("project-close").onclick = closeProjectModal;
 $("project-modal").onclick = (e) => { if (e.target.id === "project-modal") closeProjectModal(); };
+$("hostnames-close").onclick = () => $("hostnames-modal").classList.add("hidden");
+$("hostnames-modal").onclick = (e) => { if (e.target.id === "hostnames-modal") $("hostnames-modal").classList.add("hidden"); };
+$("hostnames-add").onclick = () => $("hostnames-rows").appendChild(hostnameRow("", ""));
+$("hostnames-save").onclick = saveHostnames;
+document.addEventListener("click", (e) => { if (!$("ctx-menu").contains(e.target)) closeWsMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeWsMenu(); });
 $("menu-toggle").onclick = toggleDrawer;
 $("drawer-backdrop").onclick = closeDrawer;
 $("takeover").onclick = takeOver;

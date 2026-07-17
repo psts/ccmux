@@ -58,6 +58,26 @@
     </div>
   </div>
 
+  <!-- Workspace context menu (right-click / ⋯) — mirrors the Mac hosted menu. -->
+  <div id="ctx-menu" class="ctx-menu hidden"></div>
+
+  <!-- Hostnames editor — dev hostname↔port mappings + the ▶ dev command. -->
+  <div id="hostnames-modal" class="modal hidden">
+    <div class="sheet">
+      <header>
+        <span id="hostnames-title">Hostnames</span>
+        <button id="hostnames-close" title="Close">&times;</button>
+      </header>
+      <p class="crumb">Dev hostnames served over the tailnet, mapped to local ports.</p>
+      <ul id="hostnames-rows" class="hostname-rows"></ul>
+      <button id="hostnames-add" class="hn-add">+ add mapping</button>
+      <input id="hostnames-cmd" class="setting-input" type="text" spellcheck="false"
+             autocomplete="off" placeholder="dev command — what ▶ runs">
+      <p id="hostnames-error" class="status hidden"></p>
+      <div class="sheet-actions"><button id="hostnames-save">Save</button></div>
+    </div>
+  </div>
+
   <div id="peers-modal" class="modal hidden">
     <div class="sheet peers-sheet">
       <header>
