@@ -62,4 +62,70 @@ final class RemoteWorkspaceBuilderTests: XCTestCase {
         XCTAssertEqual(
             RemoteWorkspaceBuilder.paneSignature([pane("a"), pane("b")]), ["a", "b"])
     }
+
+    // MARK: - insertingPane (user-initiated hosted terminal placement)
+
+    private func twoLeafTree() -> SplitTree<PaneTabs> {
+        let a = PaneTabs(single: .terminal(RemoteWorkspaceBuilder.terminalConfig(for: pane("p1"), repoPath: "/r")))
+        let b = PaneTabs(single: .terminal(RemoteWorkspaceBuilder.terminalConfig(for: pane("p2"), repoPath: "/r")))
+        return .split(id: UUID(), direction: .horizontal, ratio: 0.5,
+                      first: .leaf(id: a.id, content: a), second: .leaf(id: b.id, content: b))
+    }
+
+    func testInsertingPaneAsTabOnClickedLeaf() throws {
+        let tree = twoLeafTree()
+        let firstLeaf = tree.allLeaves[0].id
+        let placed = try XCTUnwrap(RemoteWorkspaceBuilder.insertingPane(
+            pane("p3"), into: tree, at: firstLeaf, direction: nil, repoPath: "/r"))
+        XCTAssertEqual(placed.focusLeafId, firstLeaf)
+        let leaf = try XCTUnwrap(placed.tree.allLeaves.first { $0.id == firstLeaf })
+        XCTAssertEqual(leaf.content.tabs.count, 2, "tab appended to the clicked leaf, not the last one")
+        XCTAssertEqual(leaf.content.activeTabId, RemoteWorkspaceBuilder.paneUUID("p3"))
+    }
+
+    func testInsertingPaneAsSplitOfClickedLeaf() throws {
+        let tree = twoLeafTree()
+        let firstLeaf = tree.allLeaves[0].id
+        let placed = try XCTUnwrap(RemoteWorkspaceBuilder.insertingPane(
+            pane("p3"), into: tree, at: firstLeaf, direction: .vertical, repoPath: "/r"))
+        XCTAssertEqual(placed.tree.leafCount, 3)
+        let newLeaf = try XCTUnwrap(placed.tree.allLeaves.first { $0.id == placed.focusLeafId })
+        XCTAssertEqual(newLeaf.content.tabs.first?.id, RemoteWorkspaceBuilder.paneUUID("p3"), "focus lands on the new split leaf")
+    }
+
+    func testInsertingPaneDedupesWhenReconcileWonTheRace() {
+        let tree = twoLeafTree()
+        XCTAssertNil(RemoteWorkspaceBuilder.insertingPane(
+            pane("p2"), into: tree, at: tree.allLeaves[0].id, direction: nil, repoPath: "/r"),
+            "pane already merged in — leave it where the merge put it")
+    }
+
+    // MARK: - updatingTitles (live pane-title sync into the tree)
+
+    func testUpdatingTitlesRewritesChangedHostedTitles() throws {
+        let tree = twoLeafTree()
+        let renamed = try! JSONDecoder().decode(
+            DaemonPane.self, from: Data(#"{"id":"p1","cwd":"/r","title":"Claude"}"#.utf8))
+        let updated = try XCTUnwrap(RemoteWorkspaceBuilder.updatingTitles(tree, panes: [renamed, pane("p2")]))
+        guard case .terminal(let cfg) = updated.allLeaves[0].content.tabs[0] else { return XCTFail() }
+        XCTAssertEqual(cfg.title, "Claude")
+        guard case .terminal(let cfg2) = updated.allLeaves[1].content.tabs[0] else { return XCTFail() }
+        XCTAssertEqual(cfg2.title, nil, "empty daemon title stays nil")
+    }
+
+    func testUpdatingTitlesReturnsNilWhenNothingChanged() {
+        let tree = twoLeafTree()
+        XCTAssertNil(RemoteWorkspaceBuilder.updatingTitles(tree, panes: [pane("p1"), pane("p2")]),
+                     "no change → nil, so callers skip republishing")
+    }
+
+    func testInsertingPaneFallsBackToLastLeafWhenTargetVanished() throws {
+        let tree = twoLeafTree()
+        let placed = try XCTUnwrap(RemoteWorkspaceBuilder.insertingPane(
+            pane("p3"), into: tree, at: UUID(), direction: .vertical, repoPath: "/r"))
+        XCTAssertEqual(placed.tree.leafCount, 2, "vanished target → tab on the last leaf, no split")
+        let last = try XCTUnwrap(placed.tree.allLeaves.last)
+        XCTAssertEqual(last.content.tabs.count, 2)
+        XCTAssertEqual(placed.focusLeafId, last.id)
+    }
 }
