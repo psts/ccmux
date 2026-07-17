@@ -343,7 +343,21 @@ final class RemoteSessionService: ObservableObject {
 
     func deleteWorkspace(_ id: UUID) async {
         guard let daemonId = daemonIds[id] else { return }
+        await deleteWorkspace(daemonId: daemonId)
+    }
+
+    /// Delete by daemon id — cold workspaces aren't materialized as app
+    /// workspaces, so their rows act on the raw daemon id.
+    func deleteWorkspace(daemonId: String) async {
         _ = await send("DELETE", path: "/v1/workspaces/\(daemonId)", body: nil, expect: 204)
+        await refresh()
+    }
+
+    /// "Close Session": kill the tmux session but keep the recipe — the
+    /// workspace goes cold (revivable with layout, hostnames, dev command).
+    func archiveWorkspace(_ id: UUID) async {
+        guard let daemonId = daemonIds[id] else { return }
+        _ = await post("/v1/workspaces/\(daemonId)/archive", body: [:], expect: 200)
         await refresh()
     }
 

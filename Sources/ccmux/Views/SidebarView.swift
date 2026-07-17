@@ -82,6 +82,18 @@ struct SidebarView: View {
                         }
                     }
                 }
+
+                // Cold hosted sessions (archived, or the host restarted): the
+                // daemon keeps their full recipe — click revives in place.
+                if !remoteService.coldWorkspaces.isEmpty {
+                    Section {
+                        ForEach(remoteService.coldWorkspaces, id: \.id) { cold in
+                            coldRow(cold)
+                        }
+                    } header: {
+                        windowSectionHeader(name: "COLD SESSIONS", isCurrentWindow: false)
+                    }
+                }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
@@ -358,9 +370,55 @@ struct SidebarView: View {
             hostnameMenu(hostname)
         }
         Divider()
-        Button("Remove Session", role: .destructive) {
-            Task { await remoteService.deleteWorkspace(workspace.id) }
+        Button("Close Session") {
+            Task { await remoteService.archiveWorkspace(workspace.id) }
         }
+        Button("Remove Session…", role: .destructive) {
+            confirmRemoveSession(name: workspace.name) {
+                Task { await remoteService.deleteWorkspace(workspace.id) }
+            }
+        }
+    }
+
+    /// A cold hosted session: dimmed, with a moon icon; click (or the menu's
+    /// Revive) recreates the tmux session from the daemon's stored recipe.
+    private func coldRow(_ cold: DaemonWorkspace) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 11))
+            Text(cold.name)
+                .lineLimit(1)
+            Spacer()
+        }
+        .foregroundColor(.secondary)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Task { await remoteService.reviveWorkspace(daemonId: cold.id) }
+        }
+        .contextMenu {
+            Button("Revive") {
+                Task { await remoteService.reviveWorkspace(daemonId: cold.id) }
+            }
+            Divider()
+            Button("Remove Session…", role: .destructive) {
+                confirmRemoveSession(name: cold.name) {
+                    Task { await remoteService.deleteWorkspace(daemonId: cold.id) }
+                }
+            }
+        }
+    }
+
+    /// Guard the permanent purge behind an explicit confirmation — it kills the
+    /// session and erases the recipe (layout, hostnames, dev command), unlike
+    /// Close Session, which keeps everything for a later revive.
+    private func confirmRemoveSession(name: String, perform: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Remove “\(name)”?"
+        alert.informativeText = "This kills the session and permanently deletes its panes, layout, hostnames, and dev command. Use Close Session instead to keep them for a later revive."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { perform() }
     }
 
     /// Flip the workspace's dev server: the daemon spawns/kills its dev pane.

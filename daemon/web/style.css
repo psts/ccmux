@@ -160,6 +160,18 @@ body {
   margin: 4px 0 2px 20px; font-size: 10.5px; color: var(--muted);
   display: flex; flex-direction: column; gap: 3px;
 }
+/* Cold sessions: dimmed, labeled, still expandable for Revive/Remove. */
+.ws.cold .name { color: var(--muted); }
+.ws .cold-tag { color: #55585d; font-size: 9.5px; flex: 0 0 auto; }
+/* Expanded session controls: Close/Revive keep or wake the recipe; Remove purges. */
+.gd-actions { display: flex; gap: 6px; margin: 4px 0 4px 20px; }
+.gd-actions button {
+  background: none; border: 1px solid #3a3d42; border-radius: 4px;
+  color: var(--muted); font-size: 10px; padding: 2px 8px; cursor: pointer;
+}
+.gd-actions button:hover { color: var(--fg); border-color: var(--muted); }
+.gd-actions .act-remove { color: #e06c75; border-color: #5a3438; }
+.gd-actions .act-remove:hover { border-color: #e06c75; }
 .git-detail .gd-path, .git-detail .gd-track, .git-detail .gd-vsdef {
   font-family: Menlo, Monaco, monospace; font-size: 10px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

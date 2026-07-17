@@ -104,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/panes/{paneId}", s.killPane)
+	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
@@ -372,6 +373,17 @@ func (s *Server) killPane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// archiveWorkspace is the lenses' "Close Session": the tmux session dies but
+// the recipe stays cold and revivable — the non-destructive sibling of DELETE.
+func (s *Server) archiveWorkspace(w http.ResponseWriter, r *http.Request) {
+	ws, err := s.mgr.ArchiveWorkspace(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ws)
 }
 
 func (s *Server) reviveWorkspace(w http.ResponseWriter, r *http.Request) {

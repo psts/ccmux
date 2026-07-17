@@ -387,6 +387,33 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 	return ws, nil
 }
 
+// ArchiveWorkspace kills a workspace's tmux session but KEEPS its registry
+// recipe — panes with startup commands, layout blob, hostnames, dev command,
+// group — so it goes cold and can be revived later with everything intact.
+// Same end state as the tmux server dying ("Close Session" in the lenses).
+// Idempotent: an already-cold workspace is a no-op.
+func (m *Manager) ArchiveWorkspace(wsID string) (*model.Workspace, error) {
+	m.mu.Lock()
+	e := m.byID[wsID]
+	if e == nil {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("unknown workspace %s", wsID)
+	}
+	ctrl := e.ctrl
+	session := e.ws.TmuxSession
+	e.ctrl = nil // detach before killing so the close-triggered exit notice is a no-op
+	e.ws.Status = model.StatusCold
+	m.mu.Unlock()
+	if ctrl == nil {
+		return e.ws, nil // already cold
+	}
+	ctrl.Close()
+	_ = m.server.KillSession(session)
+	_ = m.store.SetWorkspaceStatus(wsID, model.StatusCold)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return e.ws, nil
+}
+
 // KillWorkspace tears down a workspace's tmux session and registry record. The
 // entry is removed *before* the controller is closed so the exit that closing
 // triggers doesn't race markCold into publishing a spurious cold-status for a

@@ -117,26 +117,83 @@ function wsRow(ws) {
   const att = active ? "" : wsAttention(ws);
   const open = !!state.gitOpen[ws.id];
   const running = (ws.panes || []).some((p) => p.attention === "running");
+  const cold = ws.status === "cold";
   const li = document.createElement("li");
-  li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "");
+  li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "") + (cold ? " cold" : "");
   li.innerHTML =
     `<div class="ws-row">` +
-    `<span class="exp${ws.git ? (open ? " open" : " closed") : ""}"></span>` +
+    `<span class="exp${open ? " open" : " closed"}"></span>` +
     `<span class="dot ${esc(ws.status)}"></span>` +
     `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
     (running ? `<span class="bolt">⚡</span>` : "") +
-    gitBadges(ws.git) +
+    (cold ? `<span class="cold-tag">zzz</span>` : gitBadges(ws.git)) +
     `</div>` +
-    (open ? gitDetail(ws) : "");
-  li.onclick = () => attach(ws.id, null);
-  if (ws.git) {
-    li.querySelector(".exp").onclick = (e) => {
-      e.stopPropagation();
-      state.gitOpen[ws.id] = !open;
-      renderList();
-    };
-  }
+    (open ? gitDetail(ws) + actionsRow(ws) : "");
+  // A cold session has nothing to attach to — clicking revives it in place.
+  li.onclick = cold ? () => reviveWorkspace(ws.id) : () => attach(ws.id, null);
+  li.querySelector(".exp").onclick = (e) => {
+    e.stopPropagation();
+    state.gitOpen[ws.id] = !open;
+    renderList();
+  };
+  if (open) wireActions(li, ws);
   return li;
+}
+
+// actionsRow renders the expanded block's session controls: Close keeps the
+// recipe (cold + revivable), Remove purges after a confirm, Revive wakes a
+// cold session.
+function actionsRow(ws) {
+  const buttons = ws.status === "cold"
+    ? `<button class="act-revive">Revive</button>`
+    : `<button class="act-close">Close session</button>`;
+  return `<div class="gd-actions">${buttons}<button class="act-remove">Remove…</button></div>`;
+}
+
+function wireActions(li, ws) {
+  const on = (cls, fn) => {
+    const b = li.querySelector(cls);
+    if (b) b.onclick = (e) => { e.stopPropagation(); fn(); };
+  };
+  on(".act-revive", () => reviveWorkspace(ws.id));
+  on(".act-close", () => closeSession(ws.id));
+  on(".act-remove", () => removeSession(ws));
+}
+
+async function reviveWorkspace(id) {
+  const r = await fetch(`/v1/workspaces/${id}/revive`, { method: "POST" });
+  if (!r.ok) { alert("revive failed: " + (await r.text())); return; }
+  await fetchWorkspaces();
+  attach(id, null);
+}
+
+async function closeSession(id) {
+  const r = await fetch(`/v1/workspaces/${id}/archive`, { method: "POST" });
+  if (!r.ok) { alert("close failed: " + (await r.text())); return; }
+  detachIfCurrent(id);
+  fetchWorkspaces();
+}
+
+async function removeSession(ws) {
+  const sure = confirm(
+    `Remove “${ws.name}”?\n\nThis kills the session and permanently deletes its ` +
+    `panes, layout, hostnames, and dev command. Use “Close session” instead to ` +
+    `keep them for a later revive.`);
+  if (!sure) return;
+  const r = await fetch(`/v1/workspaces/${ws.id}`, { method: "DELETE" });
+  if (!r.ok) { alert("remove failed: " + (await r.text())); return; }
+  detachIfCurrent(ws.id);
+  fetchWorkspaces();
+}
+
+// detachIfCurrent drops the attach when the workspace we're watching goes away.
+function detachIfCurrent(id) {
+  if (state.wsId !== id) return;
+  if (state.conn) { state.conn.close(); state.conn = null; }
+  state.wsId = null;
+  state.panes = [];
+  renderTabs();
+  $("empty").style.display = "";
 }
 
 // --- git dashboard (daemon-computed; renders the same content as the Mac
