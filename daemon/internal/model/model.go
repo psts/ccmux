@@ -49,6 +49,11 @@ type Workspace struct {
 	// daemon's host, so lenses can't read it locally. Runtime-only (not stored);
 	// nil until the first collection.
 	Git *gitstatus.Status `json:"git,omitempty"`
+	// Host is the MagicDNS label of the ccmuxd node this workspace lives on,
+	// stamped by the hub as it aggregates hosts (runtime-only, never persisted —
+	// a workspace's host is implicit in which daemon served it). A host daemon's
+	// own responses leave it ""; the hub fills it. See daemon/docs/multihost-plan.md.
+	Host string `json:"host,omitempty"`
 	// Group is the workspace's sidebar group, shared across lenses. The Mac app
 	// is the source of truth: it pushes the owning window's name here so the
 	// web/phone lens renders the same grouping. Empty = ungrouped.
@@ -180,4 +185,8 @@ type Pane struct {
 	// pane to a different width — e.g. a phone showing a "take over" control.
 	Cols int `json:"cols,omitempty"`
 	Rows int `json:"rows,omitempty"`
+	// Host mirrors Workspace.Host for panes that surface in flat, cross-workspace
+	// lists (peers, events, attach routing). Stamped by the hub; "" on a host
+	// daemon. Runtime-only. See daemon/docs/multihost-plan.md.
+	Host string `json:"host,omitempty"`
 }

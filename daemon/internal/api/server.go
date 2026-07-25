@@ -16,6 +16,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/tailnet"
+	"ccmux.dev/ccmuxd/internal/version"
 	"ccmux.dev/ccmuxd/web"
 )
 
@@ -93,9 +94,7 @@ func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore
 // Handler builds the routed HTTP handler (Go 1.22+ method+wildcard patterns).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	})
+	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
@@ -134,6 +133,17 @@ func (s *Server) Handler() http.Handler {
 	// matched by a more specific /v1 pattern.
 	mux.Handle("GET /", http.FileServerFS(web.Files))
 	return mux
+}
+
+// health reports liveness plus the federation handshake fields: the informational
+// build string and the wire-contract integer the hub gates host compatibility on
+// (see internal/version, daemon/docs/multihost-plan.md).
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"version":  version.Build,
+		"contract": version.Contract,
+	})
 }
 
 func (s *Server) listWorkspaces(w http.ResponseWriter, _ *http.Request) {
