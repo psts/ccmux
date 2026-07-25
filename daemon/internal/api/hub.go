@@ -1,28 +1,34 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/gorilla/websocket"
 
 	"ccmux.dev/ccmuxd/internal/hub"
 )
 
 // hubMode holds the hub-role dependencies: the member registry, the workspace
 // aggregator (+ ownership index), the tailnet client (fetch + reverse proxy),
-// and the hub node's own MagicDNS label. nil in host-only mode. See
+// the hub node's own MagicDNS label, and a tailnet WebSocket dialer used to fan
+// in each host's event firehose. nil in host-only mode. See
 // daemon/docs/multihost-plan.md.
 type hubMode struct {
 	reg    *hub.Registry
 	agg    *hub.Aggregator
 	client *hub.Client
 	selfID string
+	wsDial func(ctx context.Context, urlStr string) (*websocket.Conn, error)
 }
 
 // EnableHub switches the server into hub mode: GET /v1/workspaces aggregates
-// every listing host, GET /v1/hosts exposes the registry, and workspace/pane and
-// /v1/hosts/{host} routes reverse-proxy to the owning host (self runs local).
-func (s *Server) EnableHub(reg *hub.Registry, agg *hub.Aggregator, client *hub.Client, selfID string) {
-	s.hub = &hubMode{reg: reg, agg: agg, client: client, selfID: selfID}
+// every listing host, GET /v1/hosts exposes the registry, workspace/pane and
+// /v1/hosts/{host} routes reverse-proxy to the owning host (self runs local),
+// and GET /v1/events merges every host's firehose. wsDial must route the tailnet.
+func (s *Server) EnableHub(reg *hub.Registry, agg *hub.Aggregator, client *hub.Client, selfID string, wsDial func(context.Context, string) (*websocket.Conn, error)) {
+	s.hub = &hubMode{reg: reg, agg: agg, client: client, selfID: selfID, wsDial: wsDial}
 }
 
 // scoped applies hub owner-routing to a workspace/pane-{id}-scoped handler; in

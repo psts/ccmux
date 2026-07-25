@@ -36,6 +36,10 @@ type attnEntry struct {
 // mid-session immediately knows what needs input (retained-state parity with the
 // per-workspace attach hello).
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	if s.hub != nil {
+		s.hubEvents(w, r) // aggregate every member host's firehose
+		return
+	}
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return

@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 
@@ -234,7 +235,16 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	client := hub.NewClient(transport)
 	agg := hub.NewAggregator(selfID, reg, mgr, client.Workspaces)
 	reg.StartProbe(ctx, 5*time.Second)
-	apiSrv.EnableHub(reg, agg, client, selfID)
+
+	// WebSocket dialer for the event firehose fan-in — same tailnet dial as the
+	// REST transport so wss://<host>.ts.net/v1/events resolves and validates.
+	wsDialer := &websocket.Dialer{NetDialContext: ts.Dial, HandshakeTimeout: 10 * time.Second}
+	wsDial := func(dctx context.Context, urlStr string) (*websocket.Conn, error) {
+		conn, _, err := wsDialer.DialContext(dctx, urlStr, nil)
+		return conn, err
+	}
+
+	apiSrv.EnableHub(reg, agg, client, selfID, wsDial)
 	log.Printf("hub mode: self=%s, discovering %s peers", selfID, hub.CcmuxTag)
 	return nil
 }
