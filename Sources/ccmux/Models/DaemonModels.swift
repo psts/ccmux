@@ -43,6 +43,33 @@ enum DaemonAttention: String, Codable {
     }
 }
 
+/// One member node of the federation (GET /v1/hosts, hub mode only). `id` is the
+/// MagicDNS label (matches DaemonWorkspace.host); `addr` is the dialable authority
+/// used to attach the terminal stream direct to the owning host.
+struct DaemonHost: Decodable, Identifiable {
+    let id: String
+    let addr: String
+    let healthy: Bool
+    let compat: String
+    let reason: String
+    let isSelf: Bool
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        addr = try c.decodeIfPresent(String.self, forKey: .addr) ?? ""
+        healthy = try c.decodeIfPresent(Bool.self, forKey: .healthy) ?? false
+        compat = try c.decodeIfPresent(String.self, forKey: .compat) ?? "unknown"
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        isSelf = try c.decodeIfPresent(Bool.self, forKey: .isSelf) ?? false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, addr, healthy, compat, reason
+        case isSelf = "self"
+    }
+}
+
 /// A daemon workspace = one tmux session, N panes. GET /v1/workspaces returns these.
 /// Daemon-wide lens settings (GET/PUT /v1/settings): the startup command typed
 /// into a new hosted workspace's first pane, per-folder overrides (longest
@@ -139,6 +166,10 @@ struct DaemonWorkspace: Codable, Identifiable {
     var hostnames: [DaemonHostname]
     /// Dev-server command override ("" = daemon detects from repo config).
     var devCommand: String
+    /// Federation: the MagicDNS label of the ccmuxd node this workspace lives on,
+    /// stamped by the hub. "" in single-host mode (or the hub's own sessions).
+    /// Used to attach the terminal stream direct to the owning host.
+    var host: String
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -157,6 +188,7 @@ struct DaemonWorkspace: Codable, Identifiable {
         group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
         hostnames = try c.decodeIfPresent([DaemonHostname].self, forKey: .hostnames) ?? []
         devCommand = try c.decodeIfPresent(String.self, forKey: .devCommand) ?? ""
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
     }
 
     var isLive: Bool { status == .live }

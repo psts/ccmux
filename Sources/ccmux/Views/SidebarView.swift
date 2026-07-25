@@ -348,6 +348,12 @@ struct SidebarView: View {
     /// affordances — the folder lives on the daemon's host).
     @ViewBuilder
     private func hostedContextMenu(for workspace: Workspace) -> some View {
+        // Federation: the only place a workspace's host surfaces — a disabled line.
+        if !remoteService.hostLabel(for: workspace.id).isEmpty {
+            Button("⬡ \(remoteService.hostLabel(for: workspace.id))") {}
+                .disabled(true)
+            Divider()
+        }
         if windowContext.otherWindowWorkspaceIds.contains(workspace.id) {
             Button("Move to This Window") {
                 onMoveToThisWindow(workspace.id)

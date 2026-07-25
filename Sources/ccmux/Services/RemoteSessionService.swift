@@ -37,6 +37,12 @@ final class RemoteSessionService: ObservableObject {
     /// Last-known shared sidebar group per hosted workspace (from the daemon).
     /// WindowManager diffs its window names against this before pushing.
     private(set) var groups: [UUID: String] = [:]
+    /// Federation registry (GET /v1/hosts), label → host. Empty in single-host
+    /// mode. Resolves a workspace's owning host for direct attach + the context line.
+    @Published private(set) var hosts: [String: DaemonHost] = [:]
+    /// Owning-host label per hosted workspace (from dw.host) — surfaced read-only
+    /// in the sidebar context menu.
+    private(set) var hostLabels: [UUID: String] = [:]
     /// Dev-hostname mappings per hosted workspace (daemon-stamped url/listening).
     @Published private(set) var hostnames: [UUID: [DaemonHostname]] = [:]
     /// Whether the workspace's dev-server pane is running (▶/■ state).
@@ -172,6 +178,10 @@ final class RemoteSessionService: ObservableObject {
 
     func isHosted(_ id: UUID) -> Bool { controllers[id] != nil }
 
+    /// The owning-host label for a hosted workspace ("" in single-host mode) —
+    /// surfaced read-only in the sidebar context menu.
+    func hostLabel(for id: UUID) -> String { hostLabels[id] ?? "" }
+
     // MARK: - Reverse lookup by daemon pane id (hosted pane views)
 
     /// The controller for a hosted pane, found across all attachments (pane ids are
@@ -197,7 +207,27 @@ final class RemoteSessionService: ObservableObject {
 
     // MARK: - REST
 
+    /// Fetch the federation registry (hub mode). 404/empty in single-host mode
+    /// leaves the map empty, so attach falls back to the configured base.
+    func fetchHosts() async {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/hosts"),
+              let (data, resp) = try? await session.data(from: url),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let list = try? JSONDecoder().decode([DaemonHost].self, from: data) else { return }
+        let map = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        await MainActor.run { self.hosts = map }
+    }
+
+    /// The WS origin for a workspace's terminal stream. Federated workspaces attach
+    /// DIRECT to their owning host (wss://<host.addr>); an empty/unknown host falls
+    /// back to the configured base (single-host, or the hub's own sessions).
+    private func attachOrigin(for dw: DaemonWorkspace) -> String? {
+        guard !dw.host.isEmpty, let h = hosts[dw.host], !h.addr.isEmpty else { return nil }
+        return "wss://\(h.addr)"
+    }
+
     func refresh() async {
+        await fetchHosts() // resolve owning-host addresses before we (re)build attachments
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces") else { return }
         do {
             let (data, resp) = try await session.data(from: url)
@@ -481,6 +511,7 @@ final class RemoteSessionService: ObservableObject {
         for dw in live {
             let appId = RemoteWorkspaceBuilder.workspaceUUID(dw.id)
             groups[appId] = dw.group
+            hostLabels[appId] = dw.host
             hostnames[appId] = dw.hostnames
             devRunning[appId] = dw.panes.contains { $0.devServer }
             devCommands[appId] = dw.devCommand
@@ -558,7 +589,8 @@ final class RemoteSessionService: ObservableObject {
         observeLayout(appId: appId, controller: controller, tree: tree, version: dw.layoutVersion ?? 0)
 
         let attachment = WorkspaceAttachment(
-            workspaceId: appId, daemonId: dw.id, repoPath: dw.repoPath, panes: dw.panes)
+            workspaceId: appId, daemonId: dw.id, repoPath: dw.repoPath, panes: dw.panes,
+            wsOrigin: attachOrigin(for: dw))
         attachment.onConnectionState = { [weak self] state in self?.connectionStates[appId] = state }
         attachment.onFileLink = { [weak self] rel in self?.onFileLink?(appId, rel) }
         attachment.onPaneStale = { [weak self] pane, stale in
@@ -590,6 +622,7 @@ final class RemoteSessionService: ObservableObject {
         gitMonitors.removeValue(forKey: appId)
         claudeMonitors.removeValue(forKey: appId)
         groups.removeValue(forKey: appId)
+        hostLabels.removeValue(forKey: appId)
         hostnames.removeValue(forKey: appId)
         devRunning.removeValue(forKey: appId)
         devCommands.removeValue(forKey: appId)

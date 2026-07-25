@@ -38,9 +38,16 @@ final class DaemonAttachClient {
     private var closed = false
     private var reconnectAttempts = 0
 
-    init(workspaceId: String, readonly: Bool = false) {
+    /// WS origin for this workspace's terminal stream. Federation: a workspace on
+    /// a remote host attaches DIRECT to that host (wss://<host>.ts.net), never via
+    /// the hub — the Mac resolves the name over the tailnet's system MagicDNS.
+    /// Defaults to the configured base (single-host, or the hub's own sessions).
+    private let wsOrigin: String
+
+    init(workspaceId: String, readonly: Bool = false, wsOrigin: String? = nil) {
         self.workspaceId = workspaceId
         self.readonly = readonly
+        self.wsOrigin = wsOrigin ?? DaemonConfig.wsBaseURL
         self.session = URLSession(configuration: .default)
     }
 
@@ -72,7 +79,7 @@ final class DaemonAttachClient {
     // MARK: - Socket plumbing
 
     private var url: URL? {
-        var components = URLComponents(string: "\(DaemonConfig.wsBaseURL)/v1/attach")
+        var components = URLComponents(string: "\(wsOrigin)/v1/attach")
         var items = [
             URLQueryItem(name: "workspace", value: workspaceId),
             URLQueryItem(name: "user", value: DaemonConfig.selfUser),

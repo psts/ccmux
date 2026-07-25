@@ -29,11 +29,11 @@ final class WorkspaceAttachment {
 
     private(set) var connectionState: DaemonConnectionState = .connecting
 
-    init(workspaceId: UUID, daemonId: String, repoPath: String, panes: [DaemonPane]) {
+    init(workspaceId: UUID, daemonId: String, repoPath: String, panes: [DaemonPane], wsOrigin: String? = nil) {
         self.workspaceId = workspaceId
         self.daemonId = daemonId
         self.repoPath = repoPath
-        self.attach = DaemonAttachClient(workspaceId: daemonId)
+        self.attach = DaemonAttachClient(workspaceId: daemonId, wsOrigin: wsOrigin)
         for pane in panes { _ = makeController(paneId: pane.id, workingDirectory: pane.cwd) }
         attach.onEvent = { [weak self] in self?.handle($0) }
         attach.onStateChange = { [weak self] state in
