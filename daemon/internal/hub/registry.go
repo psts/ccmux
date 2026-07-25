@@ -148,6 +148,13 @@ func classify(hostContract, hubContract, floor int) (compat, reason string) {
 // refuses to proxy their mutating/feature endpoints.
 func (h Host) Serves() bool { return h.Healthy && h.Compat == CompatOK }
 
+// Lists reports whether a host's workspaces appear in the merged view: ok and
+// degraded hosts list (degraded is list-only + attach); unsupported and
+// unreachable hosts do not.
+func (h Host) Lists() bool {
+	return h.Healthy && (h.Compat == CompatOK || h.Compat == CompatDegraded)
+}
+
 // List returns the member hosts, self first then alphabetical, for GET /v1/hosts.
 func (r *Registry) List() []Host {
 	r.mu.RLock()

@@ -51,6 +51,11 @@ type Server struct {
 	// devStatus reports the dev-hostname wildcard-cert lifecycle for the
 	// settings UI, wired by SetDevhostStatus; nil when dev serving is off.
 	devStatus func() string
+
+	// hub, when set by EnableHub, makes this the federation hub: it aggregates
+	// every member host's workspaces and reverse-proxies host-scoped routes to
+	// the owning host. nil in host-only mode.
+	hub *hubMode
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -98,20 +103,31 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
-	mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
-	mux.HandleFunc("POST /v1/workspaces", s.createWorkspace)
-	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
-	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.spawnPane)
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/panes/{paneId}", s.killPane)
-	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveWorkspace)
-	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveWorkspace)
-	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.putLayout)
-	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
-	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.putHostnames)
-	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.portSuggestions)
-	mux.HandleFunc("POST /v1/workspaces/{id}/dev-server", s.devServer)
-	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.paneSnapshot)
-	mux.HandleFunc("GET /v1/panes/{id}/driver", s.paneDriver)
+	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.
+	// The hub also exposes the registry and explicit per-host create/projects.
+	if s.hub != nil {
+		mux.HandleFunc("GET /v1/hosts", s.hub.listHosts)
+		mux.HandleFunc("GET /v1/workspaces", s.hub.listWorkspaces)
+		mux.HandleFunc("GET /v1/hosts/{host}/projects", s.hub.hostScoped(s.listProjects, "/v1/projects"))
+		mux.HandleFunc("POST /v1/hosts/{host}/workspaces", s.hub.hostScoped(s.createWorkspace, "/v1/workspaces"))
+	} else {
+		mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
+	}
+	mux.HandleFunc("POST /v1/workspaces", s.createWorkspace) // bare = create on this node
+	// Workspace/pane-scoped routes: s.scoped proxies them to the owning host in
+	// hub mode (self runs local), and is a no-op in host-only mode.
+	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.scoped(s.deleteWorkspace))
+	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.scoped(s.spawnPane))
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/panes/{paneId}", s.scoped(s.killPane))
+	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.scoped(s.archiveWorkspace))
+	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.scoped(s.reviveWorkspace))
+	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.scoped(s.putLayout))
+	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.scoped(s.putGroup))
+	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.scoped(s.putHostnames))
+	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.scoped(s.portSuggestions))
+	mux.HandleFunc("POST /v1/workspaces/{id}/dev-server", s.scoped(s.devServer))
+	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.scoped(s.paneSnapshot))
+	mux.HandleFunc("GET /v1/panes/{id}/driver", s.scoped(s.paneDriver))
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
 	mux.HandleFunc("GET /v1/push/subscriptions", s.listSubscriptions)
 	mux.HandleFunc("POST /v1/push/subscriptions", s.createSubscription)

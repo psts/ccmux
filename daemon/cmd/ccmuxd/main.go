@@ -20,12 +20,14 @@ import (
 	"syscall"
 	"time"
 
+	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 
 	"ccmux.dev/ccmuxd/config"
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/devhost"
 	"ccmux.dev/ccmuxd/internal/hooks"
+	"ccmux.dev/ccmuxd/internal/hub"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/push"
@@ -45,7 +47,12 @@ func main() {
 	tsnetHostname := flag.String("tsnet-hostname", "ccmuxd", "tailnet node name (→ <name>.<tailnet>.ts.net)")
 	tsnetDir := flag.String("tsnet-dir", defaultTsnetDir(), "tsnet node state directory")
 	projectsRoot := flag.String("projects-root", defaultProjectsRoot(), "folder whose subdirectories are offered as hosted-workspace locations (GET /v1/projects)")
+	hubEnabled := flag.Bool("hub", false, "run hub-role services: aggregate every tag:ccmux host into one lens surface, own the peers bus + dev registrar + push (requires -tsnet)")
 	flag.Parse()
+
+	if *hubEnabled && !*tsnetEnabled {
+		log.Fatal("--hub requires --tsnet (the hub discovers member hosts over the tailnet)")
+	}
 
 	cfgPath := filepath.Join(os.TempDir(), "ccmux-tmux.conf")
 	if err := os.WriteFile(cfgPath, []byte(config.TmuxConf), 0o644); err != nil {
@@ -129,7 +136,7 @@ func main() {
 	// Dev hostnames ride the same listener: the devhost server wraps the handler
 	// (Host dispatch) and the TLS config (SNI dispatch) — see internal/devhost.
 	if *tsnetEnabled {
-		ts, dh, err := serveTailnet(ctx, mgr, apiSrv, handler, *tsnetHostname, *tsnetDir)
+		ts, dh, err := serveTailnet(ctx, mgr, apiSrv, handler, *tsnetHostname, *tsnetDir, *hubEnabled)
 		if err != nil {
 			log.Fatalf("tsnet: %v", err)
 		}
@@ -159,7 +166,7 @@ func main() {
 // ts.net cert — and requests dispatch by Host. The auth key comes from
 // TS_AUTHKEY (or prior persisted state in dir); first unauthenticated run logs
 // a login URL.
-func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname, dir string) (*tsnet.Server, *devhost.Server, error) {
+func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname, dir string, hubEnabled bool) (*tsnet.Server, *devhost.Server, error) {
 	ts := &tsnet.Server{Hostname: hostname, Dir: dir, UserLogf: log.Printf}
 	if _, err := ts.Up(ctx); err != nil {
 		return nil, nil, fmt.Errorf("node up: %w", err)
@@ -170,6 +177,14 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 		return nil, nil, fmt.Errorf("local client: %w", err)
 	}
 	apiSrv.SetIdentityResolver(tailnet.NewLocalResolver(lc))
+
+	// Hub role: aggregate every tag:ccmux member host. Non-fatal — if the node
+	// status isn't ready we log and serve host-only.
+	if hubEnabled {
+		if err := enableHub(ctx, ts, lc, mgr, apiSrv); err != nil {
+			log.Printf("hub mode disabled: %v", err)
+		}
+	}
 
 	ip4, _ := ts.TailscaleIPs()
 	dh := devhost.NewServer(ctx, mgr, filepath.Join(configDir(), "devhost"), tsSuffix(ts, hostname), ip4)
@@ -193,6 +208,44 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 		}
 	}()
 	return ts, dh, nil
+}
+
+// enableHub wires the hub-role services onto the API server: a member registry
+// discovered from the tailnet (tag:ccmux peers + self), a workspace aggregator
+// over a shared tailnet-dialing transport, and the periodic health probe. selfID
+// is the hub node's MagicDNS label, read from its own tailnet status.
+func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, apiSrv *api.Server) error {
+	st, err := lc.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("node status: %w", err)
+	}
+	if st.Self == nil || st.Self.DNSName == "" {
+		return fmt.Errorf("node has no MagicDNS name yet")
+	}
+	selfID := firstLabel(st.Self.DNSName)
+
+	transport := &http.Transport{DialContext: ts.Dial}
+	probeClient := &http.Client{Transport: transport}
+	reg := hub.NewRegistry(selfID, hub.DefaultFloor,
+		hub.TailnetDiscoverer(ctx, lc),
+		hub.HTTPProber(probeClient, 3*time.Second),
+		func() int64 { return time.Now().UnixMilli() },
+	)
+	client := hub.NewClient(transport)
+	agg := hub.NewAggregator(selfID, reg, mgr, client.Workspaces)
+	reg.StartProbe(ctx, 5*time.Second)
+	apiSrv.EnableHub(reg, agg, client, selfID)
+	log.Printf("hub mode: self=%s, discovering %s peers", selfID, hub.CcmuxTag)
+	return nil
+}
+
+// firstLabel returns the first DNS label of a MagicDNS FQDN (trailing-dot safe).
+func firstLabel(dnsName string) string {
+	name := strings.TrimSuffix(dnsName, ".")
+	if i := strings.IndexByte(name, '.'); i >= 0 {
+		return name[:i]
+	}
+	return name
 }
 
 // tsSuffix derives the tailnet's MagicDNS suffix (e.g. tailb9053d.ts.net) from
