@@ -86,7 +86,7 @@ type wireEvent struct {
 // and redials with backoff — cursor replay makes reconnects lossless.
 func (a *app) runPushLoop() {
 	delay := wsReconnectBase
-	for {
+	for isBusOwner() { // yield to busLoop if this process is no longer the session
 		if err := a.pushOnce(); err != nil {
 			logf("push channel: %v (reconnecting in %s)", err, delay)
 		}

@@ -68,32 +68,62 @@ func main() {
 
 	a.installHandlers()
 
-	// Register in the background with backoff — never block the MCP handshake.
-	go func() {
-		delay := time.Second
-		for a.peerID() == "" {
+	// Join the bus in the background — never block the MCP handshake. busLoop
+	// keeps us registered only while we're the pane's interactive session.
+	go a.busLoop()
+
+	// Serve stdio until the parent closes the pipe, then unregister and exit —
+	// an orphaned thin client must not hold a stale registration.
+	a.mcp.Serve()
+	a.unregister()
+	logf("stdin closed, exiting")
+}
+
+// busLoop keeps this process registered and connected to the peers bus only
+// while it is the pane's interactive session (isBusOwner). Sub-agents and warm
+// spares that share the pane's derived identity stay dormant here, re-checking
+// so a claimed spare promotes itself; a session that loses the pane's terminal
+// sheds its registration. Runs for the process lifetime.
+func (a *app) busLoop() {
+	const recheck = 3 * time.Second
+	delay := time.Second
+	for {
+		if !isBusOwner() {
+			a.unregister() // no-op unless we were the owner and just lost it
+			time.Sleep(recheck)
+			continue
+		}
+		if a.peerID() == "" {
 			if err := a.register(); err != nil {
 				logf("register: %v (retrying in %s)", err, delay)
 				time.Sleep(delay)
 				delay = min(delay*2, 15*time.Second)
 				continue
 			}
+			delay = time.Second
 			logf("registered as %s (name %s, group %s)", a.peerID(), a.name, a.group())
-			if a.channelMode {
-				go a.runPushLoop()
-			} else {
-				go a.keepRegistered()
-			}
 		}
-	}()
-
-	// Serve stdio until the parent closes the pipe, then unregister and exit —
-	// an orphaned thin client must not hold a stale registration.
-	a.mcp.Serve()
-	if id := a.peerID(); id != "" {
-		_ = a.daemon.post("/v1/peers/unregister", map[string]any{"peer_id": id}, nil)
-		logf("unregistered (stdin closed)")
+		// Hold the inbox until the channel drops or we lose ownership; both
+		// return here so we re-check and, if still owner, reconnect.
+		if a.channelMode {
+			a.runPushLoop()
+		} else {
+			a.keepRegistered()
+		}
 	}
+}
+
+// unregister releases our registration and clears our id (so busLoop re-joins if
+// we become the owner again). Safe to call when not registered.
+func (a *app) unregister() {
+	id := a.peerID()
+	if id == "" {
+		return
+	}
+	_ = a.daemon.post("/v1/peers/unregister", map[string]any{"peer_id": id}, nil)
+	a.mu.Lock()
+	a.id = ""
+	a.mu.Unlock()
 }
 
 func (a *app) register() error {
@@ -189,9 +219,15 @@ func (a *app) installHandlers() {
 
 // keepRegistered is the poll-only session's substitute for the push loop's
 // reconnect-and-re-register: a periodic idempotent re-register, so a daemon
-// restart doesn't strand the peer until its own process restarts.
+// restart doesn't strand the peer until its own process restarts. Returns to
+// busLoop if this process stops being the pane's session.
 func (a *app) keepRegistered() {
-	for range time.Tick(time.Minute) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for range t.C {
+		if !isBusOwner() {
+			return
+		}
 		if err := a.register(); err != nil {
 			logf("keepalive register: %v", err)
 		}

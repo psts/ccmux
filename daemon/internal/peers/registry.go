@@ -98,15 +98,23 @@ func (s *Service) assignIDLocked(req RegisterReq) string {
 	return randomID()
 }
 
-// Unregister drops a peer (thin client exiting on stdin EOF).
+// Unregister drops a peer's live connection when its thin client exits (stdin
+// EOF). A pane peer whose pane still exists is KEPT addressable — its record and
+// durable queue survive — so a message sent while its Claude session restarts is
+// queued and replays when the session returns (the "restart later and still get
+// it" guarantee). Only pane-less peers (where the process IS the client) and pane
+// peers whose pane is gone are fully removed.
 func (s *Service) Unregister(peerID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.peers, peerID)
 	if c := s.conns[peerID]; c != nil {
 		c.close()
 		delete(s.conns, peerID)
 	}
+	if p := s.peers[peerID]; p != nil && p.PaneID != "" && s.aliveLocked(p) {
+		return // pane still lives — stay addressable for the returning session
+	}
+	delete(s.peers, peerID)
 }
 
 // SetSummary updates a peer's work summary.
