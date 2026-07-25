@@ -5,6 +5,8 @@
 
 const state = {
   workspaces: [],
+  hosts: {},         // federation: host label -> {id, addr, ...} from GET /v1/hosts
+  createHost: "",    // host chosen in the New-workspace picker ("" = hub/self)
   wsId: null,
   paneId: null,      // currently rendered pane
   wantPane: null,    // pane to select after the next attach (for tab switches)
@@ -55,6 +57,31 @@ async function fetchWorkspaces() {
   }
   syncPaneTitles();
   renderList();
+}
+
+// fetchHosts loads the federation registry (hub mode). 404/empty in single-host
+// mode leaves the map empty, so attach falls back to same-origin. host label →
+// {id, addr, healthy, compat, ...}.
+async function fetchHosts() {
+  try {
+    const r = await fetch("/v1/hosts");
+    if (!r.ok) { state.hosts = {}; return; }
+    const list = (await r.json()) || [];
+    state.hosts = Object.fromEntries(list.map((h) => [h.id, h]));
+  } catch (_) {
+    state.hosts = {};
+  }
+}
+
+// attachOrigin returns the WS origin for a workspace's terminal stream. Terminal
+// bytes go DIRECT to the owning host (never relayed through the hub), so a
+// host-stamped workspace dials wss://<host.addr>; an empty/unknown host (single-
+// host, or the hub's own sessions) stays same-origin.
+function attachOrigin(ws) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const h = ws && ws.host && state.hosts[ws.host];
+  if (h && h.addr) return `${proto}://${h.addr}`;
+  return `${proto}://${location.host}`;
 }
 
 // Pane titles change while attached (the daemon re-derives them from tmux as
@@ -155,6 +182,13 @@ function wsRow(ws) {
 function openWsMenu(ws, x, y) {
   const menu = $("ctx-menu");
   menu.innerHTML = "";
+  // Federation: the only place a workspace's host is surfaced — a read-only line.
+  if (ws.host) {
+    const line = document.createElement("div");
+    line.className = "host-line";
+    line.textContent = "⬡ " + ws.host;
+    menu.appendChild(line);
+  }
   const add = (label, fn, cls) => {
     const b = document.createElement("button");
     b.textContent = label;
@@ -495,7 +529,7 @@ function paneColsOf(paneId) {
 }
 
 // --- attach / websocket ---
-function attach(wsId, wantPane) {
+async function attach(wsId, wantPane) {
   closeDrawer(); // selecting a session on mobile dismisses the drawer
   state.paneCols = 0;
   if (state.conn) { state.conn.close(); state.conn = null; }
@@ -507,9 +541,13 @@ function attach(wsId, wantPane) {
   state.term.reset();
   renderList();
 
-  const proto = location.protocol === "https:" ? "wss" : "ws";
+  // If the workspace names a host we don't know yet (joined after boot), refresh
+  // the registry so we can dial it directly rather than mis-routing to the hub.
+  const ws = state.workspaces.find((w) => w.id === wsId);
+  if (ws && ws.host && !state.hosts[ws.host]) await fetchHosts();
+
   const q = `workspace=${wsId}&user=${encodeURIComponent(getUser())}&device=web`;
-  const conn = new WebSocket(`${proto}://${location.host}/v1/attach?${q}`);
+  const conn = new WebSocket(`${attachOrigin(ws)}/v1/attach?${q}`);
   conn.onmessage = onMessage;
   conn.onopen = () => scheduleFit();
   state.conn = conn;
@@ -601,6 +639,7 @@ function setAttention(paneId, stateStr) {
 // --- global firehose (/v1/events): live sidebar attention for every workspace,
 // so a row flashes even when we're not attached to it. Read-only; reconnects. ---
 function connectFirehose() {
+  fetchHosts(); // refresh the registry on each (re)connect — a host may have joined/left
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const fh = new WebSocket(`${proto}://${location.host}/v1/events`);
   fh.onmessage = onFirehose;
@@ -635,8 +674,49 @@ function noteAttention(wsId, paneId, stateStr) {
 // the picker is fed from GET /v1/projects — never a locally typed path.
 // Tapping a row drills into that folder (projects can nest); the row's +
 // creates the workspace there. ".." walks back up. ---
+// createHostId is the host the New-workspace picker targets: the explicit choice,
+// else the hub's own node (self). "" only when there's no federation at all.
+function createHostId() {
+  if (state.createHost) return state.createHost;
+  const self = Object.values(state.hosts).find((h) => h.self);
+  return self ? self.id : "";
+}
+
+// Create endpoints route through the hub to the chosen host when federated
+// (self runs local), and hit the bare routes in single-host mode.
+function projectsURL(relPath) {
+  const host = createHostId();
+  const base = host ? `/v1/hosts/${encodeURIComponent(host)}/projects` : "/v1/projects";
+  return base + "?path=" + encodeURIComponent(relPath);
+}
+function createWorkspaceURL() {
+  const host = createHostId();
+  return host ? `/v1/hosts/${encodeURIComponent(host)}/workspaces` : "/v1/workspaces";
+}
+
+// populateHostPicker shows the host <select> only when there's more than one
+// member; picking a host re-browses that host's projects.
+function populateHostPicker() {
+  const sel = $("project-host");
+  const hosts = Object.values(state.hosts);
+  if (hosts.length < 2) { sel.classList.add("hidden"); return; }
+  sel.classList.remove("hidden");
+  sel.innerHTML = "";
+  for (const h of hosts.sort((a, b) => (a.self ? -1 : b.self ? 1 : a.id.localeCompare(b.id)))) {
+    const o = document.createElement("option");
+    o.value = h.id;
+    o.textContent = h.self ? `${h.id} (hub)` : h.id;
+    if (!h.healthy) o.textContent += " — offline";
+    sel.appendChild(o);
+  }
+  sel.value = createHostId();
+  sel.onchange = () => { state.createHost = sel.value; browseProjects(""); };
+}
+
 function newWorkspace() {
   $("project-cmd").value = "";
+  state.createHost = "";
+  populateHostPicker();
   // Show what a workspace would run by default, as the override placeholder.
   fetch("/v1/settings").then((r) => r.json()).then((cfg) => {
     $("project-cmd").placeholder = `startup command — empty = default (${cfg.startupCommand || "shell"})`;
@@ -663,7 +743,7 @@ async function browseProjects(relPath) {
   status.classList.remove("hidden");
   let resp;
   try {
-    const r = await fetch("/v1/projects?path=" + encodeURIComponent(relPath));
+    const r = await fetch(projectsURL(relPath));
     if (!r.ok) throw new Error((await r.text()).trim());
     resp = await r.json();
   } catch (e) {
@@ -709,7 +789,7 @@ async function createWorkspace(p) {
   if (override) body.startupCommand = override;
   const group = ($("project-group").value || "").trim();
   if (group) body.group = group;
-  const r = await fetch("/v1/workspaces", {
+  const r = await fetch(createWorkspaceURL(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -825,6 +905,6 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeWsMen
 $("menu-toggle").onclick = toggleDrawer;
 $("drawer-backdrop").onclick = closeDrawer;
 $("takeover").onclick = takeOver;
-fetchWorkspaces().then(bootDeepLink);
+fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-link attach dials direct
 connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes

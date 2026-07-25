@@ -178,6 +178,7 @@ body {
 .ctx-menu button:hover { background: #2a2e34; }
 .ctx-menu button.danger { color: #e06c75; }
 .ctx-menu .sep { height: 1px; background: #3a3d42; margin: 4px 6px; flex: 0 0 auto; }
+.ctx-menu .host-line { padding: 4px 10px 6px; font-size: 11px; opacity: 0.55; white-space: nowrap; }
 .ws .more {
   background: none; border: none; color: var(--muted); font-size: 13px;
   padding: 0 2px; cursor: pointer; flex: 0 0 auto; line-height: 1;
