@@ -106,6 +106,54 @@ func TestHub_HostnameConflict(t *testing.T) {
 	}
 }
 
+// TestHub_DevhostRouting: a dev-hostname owned by a remote member routes there;
+// unknown/local/non-dev hosts don't. (The wildcard cert + DNS that make it
+// reachable are the live-gated config; this is the routing decision.)
+func TestHub_DevhostRouting(t *testing.T) {
+	for host, want := range map[string]string{
+		"app.dev.foo.io": "app",
+		"a.b.dev.foo.io": "", // nested label — not a direct <label>.<suffix>
+		"app.other.io":   "", // wrong suffix
+	} {
+		if got := devLabel(host, "dev.foo.io"); got != want {
+			t.Errorf("devLabel(%q) = %q, want %q", host, got, want)
+		}
+	}
+	if devLabel("app.dev.foo.io", "") != "" {
+		t.Error("no dev suffix → no label")
+	}
+	if hostOnly("app.dev.foo.io:8443") != "app.dev.foo.io" {
+		t.Error("hostOnly must strip the port before devLabel sees the Host")
+	}
+
+	reg := hub.NewRegistry("hub", hub.DefaultFloor,
+		func() ([]hub.Node, error) {
+			return []hub.Node{{ID: "hub", Addr: "hub.ts.net"}, {ID: "remote", Addr: "remote.ts.net"}}, nil
+		},
+		func(string) (hub.Health, error) { return hub.Health{Contract: version.Contract}, nil },
+		func() int64 { return 1 },
+	)
+	reg.Refresh()
+	agg := hub.NewAggregator("hub", reg, fakeLister{}, func(_ context.Context, hh hub.Host) ([]*model.Workspace, error) {
+		if hh.ID == "remote" {
+			return []*model.Workspace{{ID: "wr", Hostnames: []model.Hostname{{Name: "app", Port: 3000}}}}, nil
+		}
+		return nil, nil
+	})
+	agg.Aggregate(context.Background())
+	h := &hubMode{reg: reg, agg: agg, selfID: "hub"}
+
+	if he, ok := h.remoteDevTarget("app.dev.foo.io", "dev.foo.io"); !ok || he.ID != "remote" {
+		t.Fatalf("remoteDevTarget(app) = %+v,%v; want the remote host", he, ok)
+	}
+	if _, ok := h.remoteDevTarget("nope.dev.foo.io", "dev.foo.io"); ok {
+		t.Error("an unclaimed hostname must not route to a member")
+	}
+	if _, ok := h.remoteDevTarget("app.dev.foo.io", ""); ok {
+		t.Error("no dev domain configured → no routing")
+	}
+}
+
 func TestHub_ListHostsAndWorkspaces(t *testing.T) {
 	h, _ := hubFixture(t, version.Contract)
 

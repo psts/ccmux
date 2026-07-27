@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 
@@ -148,6 +150,67 @@ func (h *hubMode) hostScoped(local http.HandlerFunc, targetPath string) http.Han
 		r.URL.Path = targetPath
 		h.client.ReverseProxy(host).ServeHTTP(w, r)
 	}
+}
+
+// WrapDevhost, in hub mode, catches a dev-hostname request owned by a REMOTE
+// member host and reverse-proxies it there over the tailnet — the hub terminates
+// the wildcard TLS (its existing devhost cert), the owner serves its localhost
+// port. Locally-owned hostnames and the API fall through to next. No-op off the
+// hub, so single-host dev serving is unchanged. See daemon/docs/multihost-plan.md
+// §4 (the wildcard A-record → hub and a shared devDomain across hosts are the live
+// config that makes the proxied request reachable/servable).
+func (s *Server) WrapDevhost(next http.Handler) http.Handler {
+	if s.hub == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if he, ok := s.hub.remoteDevTarget(hostOnly(r.Host), s.mgr.DevDomain()); ok {
+			s.hub.client.ReverseProxy(he).ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// remoteDevTarget returns the member host that should serve a dev-hostname request
+// for `host` (under `suffix`), when that host is a REMOTE, serving member. ok is
+// false for a locally-owned, unknown, non-dev, or non-serving target.
+func (h *hubMode) remoteDevTarget(host, suffix string) (hub.Host, bool) {
+	label := devLabel(host, suffix)
+	if label == "" {
+		return hub.Host{}, false
+	}
+	owner, _, ok := h.agg.HostnameOwner(label)
+	if !ok || owner == h.selfID {
+		return hub.Host{}, false
+	}
+	he, ok := h.reg.Get(owner)
+	if !ok || !he.Serves() {
+		return hub.Host{}, false
+	}
+	return he, true
+}
+
+// devLabel extracts the single dev-hostname label from a Host header under a dev
+// domain suffix ("app.dev.foo.io" + "dev.foo.io" → "app"); "" if it isn't a
+// direct <label>.<suffix>.
+func devLabel(host, suffix string) string {
+	if suffix == "" {
+		return ""
+	}
+	label, ok := strings.CutSuffix(host, "."+suffix)
+	if !ok || label == "" || strings.Contains(label, ".") {
+		return ""
+	}
+	return label
+}
+
+// hostOnly strips any :port from a Host header.
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
 }
 
 // allow enforces compat gating: ok hosts pass; degraded hosts pass GETs only

@@ -232,8 +232,11 @@ func serveTailnetHTTPS(ctx context.Context, ts *tsnet.Server, lc *local.Client, 
 	// admin console — same requirement the old ListenTLS carried.
 	ln := tls.NewListener(rawLn, dh.TLSConfig(lc.GetCertificate))
 	log.Printf("tsnet node up: %s (ip %s), https on the tailnet, cert domains %v", hostname, ip4, ts.CertDomains())
+	// In hub mode, WrapDevhost routes a dev-hostname owned by another host to it
+	// before local devhost dispatch (no-op off the hub).
+	served := apiSrv.WrapDevhost(dh.Handler(handler))
 	go func() {
-		if err := http.Serve(ln, dh.Handler(handler)); err != nil && err != http.ErrServerClosed {
+		if err := http.Serve(ln, served); err != nil && err != http.ErrServerClosed {
 			log.Printf("tsnet serve stopped: %v", err)
 		}
 	}()
