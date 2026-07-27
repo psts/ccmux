@@ -25,6 +25,10 @@ func NewClient(transport http.RoundTripper) *Client {
 	return &Client{transport: transport, http: &http.Client{Transport: transport}}
 }
 
+// Transport is the tailnet-routing round-tripper, for callers that build their
+// own timeout-bounded client (e.g. the hub's presence poller).
+func (c *Client) Transport() http.RoundTripper { return c.transport }
+
 // Workspaces fetches and decodes a host's GET /v1/workspaces (a RemoteFetcher).
 func (c *Client) Workspaces(ctx context.Context, host Host) ([]*model.Workspace, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host.Addr+"/v1/workspaces", nil)

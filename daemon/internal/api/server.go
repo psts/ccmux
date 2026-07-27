@@ -89,6 +89,15 @@ func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore
 	s.sender = sender
 	s.pushStore = ps
 	n := &notifier{sender: sender, subs: ps, focus: s.presence, names: s.mgr}
+	if s.hub != nil {
+		// Hub owns push: notify on attention across ALL member hosts (merged
+		// events) with merged presence suppression, so it never over-notifies a
+		// user watching a remote-host session directly. Member hosts' own
+		// notifiers stay inert (subscriptions live at the hub).
+		n.focus = s.newFederatedFocus(ctx)
+		go n.run(ctx, s.mergedNotifierEvents(ctx))
+		return
+	}
 	id, ch := s.mgr.SubscribeEvents()
 	go func() {
 		defer s.mgr.UnsubscribeEvents(id)
@@ -138,6 +147,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/push/subscriptions", s.deleteSubscription)
 	mux.HandleFunc("GET /v1/attach", s.attach)
 	mux.HandleFunc("GET /v1/events", s.events)
+	mux.HandleFunc("GET /v1/presence", s.presenceOwners) // hub polls members to union push suppression
 	mux.HandleFunc("POST /v1/peers/register", s.peersRegister)
 	mux.HandleFunc("POST /v1/peers/pane-token", s.peersMintPaneToken)
 	mux.HandleFunc("POST /v1/peers/send", s.peersSend)
