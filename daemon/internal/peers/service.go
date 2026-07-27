@@ -61,6 +61,11 @@ type Peer struct {
 	// would land in the dirname fallback group and the same-group guard would
 	// cut it off from its own requester.
 	GroupOverride string
+	// Host is the owning host's MagicDNS label (federation, hub mode): stamped at
+	// registration from the hub's aggregated view so list_peers can distinguish
+	// same-named peers on different hosts. "" for a pane on the hub itself or in
+	// single-host mode.
+	Host string
 }
 
 type permRequest struct {
@@ -117,6 +122,23 @@ type Service struct {
 	// panes exactly like workspace groups do for hosted ones. Not persisted —
 	// the app re-pushes shortly after either side restarts.
 	localGroups map[string]string
+	// globalGroups and hostForPane are the hub-mode federation resolvers, backed
+	// by the aggregator's cached maps (pure reads — never I/O under s.mu).
+	// globalGroups resolves a pane's window group across ALL member hosts,
+	// consulted after the local manager misses (so a peer on a remote host lands
+	// in its window group); hostForPane returns the pane's owning-host label,
+	// stamped onto Peer.Host. Both nil off the hub — single-host is unaffected.
+	globalGroups func(paneID string) (string, bool)
+	hostForPane  func(paneID string) (string, bool)
+}
+
+// EnableFederation wires the hub-mode resolvers (see the struct fields). Call
+// once at startup, after the aggregator exists and before panes register.
+func (s *Service) EnableFederation(groups, host func(string) (string, bool)) {
+	s.mu.Lock()
+	s.globalGroups = groups
+	s.hostForPane = host
+	s.mu.Unlock()
 }
 
 // NewService builds the bus around the persisted event log, the manager hook,
@@ -164,6 +186,12 @@ func (s *Service) PaneEnv(paneID string) map[string]string {
 // PanelessToken exposes the shared no-pane token for the daemon-info file.
 func (s *Service) PanelessToken() string { return PanelessToken(s.secret) }
 
+// MintPaneToken issues a pane's bearer token over THIS daemon's secret — the
+// hub-authority path (POST /v1/peers/pane-token) a member host calls so its panes
+// connect to the hub's bus without any secret being distributed. See
+// daemon/docs/multihost-plan.md ("Hosts hold no secret").
+func (s *Service) MintPaneToken(paneID string) string { return TokenForPane(s.secret, paneID) }
+
 // groupOfLocked resolves a peer's group at operation time: the owning
 // workspace's window group when the pane is known and grouped, then the Mac
 // app's local-pane map (driver-mode panes), then a spawn override, otherwise
@@ -172,6 +200,13 @@ func (s *Service) groupOfLocked(p *Peer) string {
 	if p.PaneID != "" {
 		if g, ok := s.mgr.GroupForPane(p.PaneID); ok && g != "" {
 			return g
+		}
+		// Federation: the pane may live on another host, unknown to the local
+		// manager — resolve its group across the whole federation (cached read).
+		if s.globalGroups != nil {
+			if g, ok := s.globalGroups(p.PaneID); ok && g != "" {
+				return g
+			}
 		}
 	}
 	if p.LocalPaneID != "" {

@@ -67,6 +67,13 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 		PID: req.PID, CWD: req.CWD, GitRoot: req.GitRoot, Summary: summary,
 		RegisteredAt: s.Now().UnixMilli(),
 	}
+	// Federation: stamp the owning host (hub mode) so list_peers distinguishes
+	// same-named peers across hosts. Cached read — safe under s.mu.
+	if s.hostForPane != nil && peer.PaneID != "" {
+		if h, ok := s.hostForPane(peer.PaneID); ok {
+			peer.Host = h
+		}
+	}
 	s.peers[id] = peer
 
 	s.fulfillPendingSpawnLocked(peer)
@@ -142,6 +149,8 @@ type ListEntry struct {
 	Summary   string `json:"summary"`
 	LastSeen  string `json:"last_seen"`
 	Connected bool   `json:"connected"`
+	// Host is the peer's owning-host label (federation, hub mode); "" single-host.
+	Host string `json:"host,omitempty"`
 }
 
 // List returns the caller's visible peers for a scope: "project" (the caller's
@@ -207,6 +216,7 @@ func (s *Service) listEntryLocked(p *Peer) ListEntry {
 		ID: p.ID, Name: p.Name, Group: g, Project: g,
 		PID: p.PID, CWD: p.CWD, GitRoot: p.GitRoot, Summary: p.Summary,
 		LastSeen: isoMillis(p.RegisteredAt), Connected: s.conns[p.ID] != nil,
+		Host: p.Host,
 	}
 }
 

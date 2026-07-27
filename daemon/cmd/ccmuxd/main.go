@@ -137,7 +137,7 @@ func main() {
 	// Dev hostnames ride the same listener: the devhost server wraps the handler
 	// (Host dispatch) and the TLS config (SNI dispatch) — see internal/devhost.
 	if *tsnetEnabled {
-		ts, dh, err := serveTailnet(ctx, mgr, apiSrv, handler, *tsnetHostname, *tsnetDir, *hubEnabled)
+		ts, dh, err := serveTailnet(ctx, mgr, apiSrv, handler, *tsnetHostname, *tsnetDir, *hubEnabled, peersSvc)
 		if err != nil {
 			log.Fatalf("tsnet: %v", err)
 		}
@@ -167,7 +167,7 @@ func main() {
 // ts.net cert — and requests dispatch by Host. The auth key comes from
 // TS_AUTHKEY (or prior persisted state in dir); first unauthenticated run logs
 // a login URL.
-func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname, dir string, hubEnabled bool) (*tsnet.Server, *devhost.Server, error) {
+func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname, dir string, hubEnabled bool, peersSvc *peers.Service) (*tsnet.Server, *devhost.Server, error) {
 	ts := &tsnet.Server{Hostname: hostname, Dir: dir, UserLogf: log.Printf}
 	if _, err := ts.Up(ctx); err != nil {
 		return nil, nil, fmt.Errorf("node up: %w", err)
@@ -182,7 +182,7 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 	// Hub role: aggregate every tag:ccmux member host. Non-fatal — if the node
 	// status isn't ready we log and serve host-only.
 	if hubEnabled {
-		if err := enableHub(ctx, ts, lc, mgr, apiSrv); err != nil {
+		if err := enableHub(ctx, ts, lc, mgr, apiSrv, peersSvc); err != nil {
 			log.Printf("hub mode disabled: %v", err)
 		}
 	}
@@ -215,7 +215,7 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 // discovered from the tailnet (tag:ccmux peers + self), a workspace aggregator
 // over a shared tailnet-dialing transport, and the periodic health probe. selfID
 // is the hub node's MagicDNS label, read from its own tailnet status.
-func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, apiSrv *api.Server) error {
+func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, apiSrv *api.Server, peersSvc *peers.Service) error {
 	st, err := lc.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("node status: %w", err)
@@ -235,6 +235,15 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	client := hub.NewClient(transport)
 	agg := hub.NewAggregator(selfID, reg, mgr, client.Workspaces)
 	reg.StartProbe(ctx, 5*time.Second)
+	agg.StartRefresh(ctx, 5*time.Second) // keep the pane→group/host indexes fresh for peers
+
+	// Peers federation (hub-side): resolve a remote pane's window group across all
+	// hosts and stamp its owning-host label. Cached-map reads only — no I/O under
+	// the bus lock. The remote-connection auth relaxation + host env redirect that
+	// actually route cross-host panes here are the live-test-gated follow-up.
+	if peersSvc != nil {
+		peersSvc.EnableFederation(agg.GroupForPane, agg.Owner)
+	}
 
 	// WebSocket dialer for the event firehose fan-in — same tailnet dial as the
 	// REST transport so wss://<host>.ts.net/v1/events resolves and validates.

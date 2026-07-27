@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"sync"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
 )
@@ -25,13 +26,36 @@ type Aggregator struct {
 	local  LocalLister
 	fetch  RemoteFetcher
 
-	mu    sync.RWMutex
-	owner map[string]string
+	mu     sync.RWMutex
+	owner  map[string]string // workspace id + pane id → owning host
+	groups map[string]string // pane id → owning workspace's group (for peers federation)
 }
 
 // NewAggregator builds an aggregator. selfID is the hub node's MagicDNS label.
 func NewAggregator(selfID string, reg *Registry, local LocalLister, fetch RemoteFetcher) *Aggregator {
-	return &Aggregator{selfID: selfID, reg: reg, local: local, fetch: fetch, owner: map[string]string{}}
+	return &Aggregator{
+		selfID: selfID, reg: reg, local: local, fetch: fetch,
+		owner:  map[string]string{},
+		groups: map[string]string{},
+	}
+}
+
+// StartRefresh re-aggregates on an interval so the ownership + pane→group indexes
+// stay fresh for the reverse proxy and the peers group resolver (which read the
+// cached maps — never triggering I/O under the bus lock). For the lifetime of ctx.
+func (a *Aggregator) StartRefresh(ctx context.Context, interval time.Duration) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				a.Aggregate(ctx)
+			}
+		}
+	}()
 }
 
 // Aggregate returns the merged, host-stamped workspace list and refreshes the
@@ -40,7 +64,8 @@ func NewAggregator(selfID string, reg *Registry, local LocalLister, fetch Remote
 func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 	all := stampAll(a.local.List(), a.selfID) // local always included
 	owner := map[string]string{}
-	indexInto(owner, all, a.selfID)
+	groups := map[string]string{}
+	indexInto(owner, groups, all, a.selfID)
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -58,7 +83,7 @@ func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 			stamped := stampAll(wss, h.ID)
 			mu.Lock()
 			all = append(all, stamped...)
-			indexInto(owner, stamped, h.ID)
+			indexInto(owner, groups, stamped, h.ID)
 			mu.Unlock()
 		}(h)
 	}
@@ -66,8 +91,19 @@ func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 
 	a.mu.Lock()
 	a.owner = owner
+	a.groups = groups
 	a.mu.Unlock()
 	return all
+}
+
+// GroupForPane returns the window group of a pane's owning workspace, from the
+// last aggregation — the hub's global group resolver for peers federation. ok is
+// false for an unknown pane (or before the first aggregation).
+func (a *Aggregator) GroupForPane(paneID string) (string, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	g, ok := a.groups[paneID]
+	return g, ok
 }
 
 // Owner returns the host that owns a workspace or pane id, from the last
@@ -89,12 +125,14 @@ func (a *Aggregator) OwnerOrRefresh(ctx context.Context, id string) (string, boo
 	return a.Owner(id)
 }
 
-// indexInto records each workspace's and pane's owning host.
-func indexInto(owner map[string]string, wss []*model.Workspace, hostID string) {
+// indexInto records each workspace's and pane's owning host, and each pane's
+// owning-workspace group (for the peers group resolver).
+func indexInto(owner, groups map[string]string, wss []*model.Workspace, hostID string) {
 	for _, ws := range wss {
 		owner[ws.ID] = hostID
 		for _, p := range ws.Panes {
 			owner[p.ID] = hostID
+			groups[p.ID] = ws.Group
 		}
 	}
 }

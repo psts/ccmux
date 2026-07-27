@@ -72,6 +72,28 @@ func TestAggregate_MergesStampsIndexes(t *testing.T) {
 	}
 }
 
+// TestAggregate_GroupForPane proves the peers group resolver: panes on DIFFERENT
+// hosts that share a window group both resolve to it — the cross-host-window case.
+func TestAggregate_GroupForPane(t *testing.T) {
+	localWS := &model.Workspace{ID: "wl", Group: "CHARTLABS", Panes: []*model.Pane{{ID: "pl"}}}
+	remoteWS := &model.Workspace{ID: "wr", Group: "CHARTLABS", Panes: []*model.Pane{{ID: "pr"}}}
+	agg := NewAggregator("hub", twoHostRegistry(t),
+		fakeLocal{wss: []*model.Workspace{localWS}},
+		func(_ context.Context, h Host) ([]*model.Workspace, error) {
+			return []*model.Workspace{remoteWS}, nil
+		})
+	agg.Aggregate(context.Background())
+
+	for pane, want := range map[string]string{"pl": "CHARTLABS", "pr": "CHARTLABS"} {
+		if g, ok := agg.GroupForPane(pane); !ok || g != want {
+			t.Errorf("GroupForPane(%q) = %q,%v; want %q", pane, g, ok, want)
+		}
+	}
+	if _, ok := agg.GroupForPane("nope"); ok {
+		t.Error("unknown pane should not resolve a group")
+	}
+}
+
 // TestAggregate_DegradedHostStillLists: a degraded host's workspaces still appear
 // (list-only), an unsupported host's do not.
 func TestAggregate_GatingByCompat(t *testing.T) {
