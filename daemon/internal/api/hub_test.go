@@ -52,6 +52,34 @@ func hubFixture(t *testing.T, remoteContract int) (*hubMode, *httptest.Server) {
 	return &hubMode{reg: reg, agg: agg, client: client, selfID: "hub"}, remote
 }
 
+// TestHandler_RegistersHubRoutesWhenEnabled guards the main-wiring order: EnableHub
+// must run before Handler() so the hub-conditional routes actually register. (A
+// direct hubMode construction can't catch this — it must go through Handler().)
+func TestHandler_RegistersHubRoutesWhenEnabled(t *testing.T) {
+	s := settingsServer(t)
+	reg := hub.NewRegistry("hub", hub.DefaultFloor,
+		func() ([]hub.Node, error) { return []hub.Node{{ID: "hub", Addr: "h.ts.net"}}, nil },
+		func(string) (hub.Health, error) { return hub.Health{Contract: version.Contract}, nil },
+		func() int64 { return 1 },
+	)
+	reg.Refresh()
+	agg := hub.NewAggregator("hub", reg, s.mgr, func(context.Context, hub.Host) ([]*model.Workspace, error) { return nil, nil })
+	s.EnableHub(reg, agg, hub.NewClient(nil), "hub", nil)
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/hosts", nil))
+	if rec.Code != 200 {
+		t.Fatalf("GET /v1/hosts via Handler() = %d, want 200 — hub routes must register in hub mode", rec.Code)
+	}
+
+	// Host-only: /v1/hosts is not a registry endpoint (falls through to the SPA).
+	rec2 := httptest.NewRecorder()
+	settingsServer(t).Handler().ServeHTTP(rec2, httptest.NewRequest("GET", "/v1/hosts", nil))
+	if rec2.Code == 200 {
+		t.Error("host-only mode must not serve /v1/hosts from the registry")
+	}
+}
+
 // TestHub_HostnameConflict: the global registrar rejects a label already claimed
 // by a DIFFERENT workspace anywhere, allows a re-claim by the same workspace, and
 // allows a free label.

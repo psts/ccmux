@@ -122,6 +122,20 @@ func main() {
 		}
 	}
 
+	// Bring the tailnet node up FIRST (if enabled): hub mode must be set before
+	// Handler() builds its routes (hub routes register conditionally) and before
+	// push wires its notifier (the hub picks the federated variant).
+	var ts *tsnet.Server
+	var lc *local.Client
+	if *tsnetEnabled {
+		var err error
+		ts, lc, err = setupTailnetNode(ctx, mgr, apiSrv, *tsnetHostname, *tsnetDir, *hubEnabled, peersSvc)
+		if err != nil {
+			log.Fatalf("tsnet: %v", err)
+		}
+		defer ts.Close()
+	}
+
 	// Web push: generate + persist a VAPID keypair on first run, then wire the
 	// push endpoints + attention notifier. Non-fatal — the daemon still serves
 	// terminals if push can't initialize.
@@ -134,18 +148,16 @@ func main() {
 
 	handler := apiSrv.Handler()
 
-	// Own tailnet node: HTTPS on its node's :443 (tailnet cert) with in-process
-	// WhoIs identity, replacing `tailscale serve` + the whois CLI. The loopback
-	// listener below still runs, so on-host hooks reach the daemon unchanged.
-	// Dev hostnames ride the same listener: the devhost server wraps the handler
-	// (Host dispatch) and the TLS config (SNI dispatch) — see internal/devhost.
+	// Serve the tailnet node's HTTPS :443 now that the handler is built. Dev
+	// hostnames ride the same listener: the devhost server wraps the handler (Host
+	// dispatch) and TLS config (SNI dispatch). The loopback listener below gets the
+	// same dispatch (harmless, testable).
 	if *tsnetEnabled {
-		ts, dh, err := serveTailnet(ctx, mgr, apiSrv, handler, *tsnetHostname, *tsnetDir, *hubEnabled, peersSvc)
+		dh, err := serveTailnetHTTPS(ctx, ts, lc, mgr, apiSrv, handler, *tsnetHostname)
 		if err != nil {
-			log.Fatalf("tsnet: %v", err)
+			log.Fatalf("tsnet serve: %v", err)
 		}
-		defer ts.Close()
-		handler = dh.Handler(handler) // loopback gets the same dispatch (harmless, testable)
+		handler = dh.Handler(handler)
 	}
 
 	httpSrv := &http.Server{Addr: *addr, Handler: handler}
@@ -170,7 +182,13 @@ func main() {
 // ts.net cert — and requests dispatch by Host. The auth key comes from
 // TS_AUTHKEY (or prior persisted state in dir); first unauthenticated run logs
 // a login URL.
-func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname, dir string, hubEnabled bool, peersSvc *peers.Service) (*tsnet.Server, *devhost.Server, error) {
+// setupTailnetNode brings the daemon up as its own tailnet node, swaps the API's
+// identity backend to the node's in-process WhoIs, and enables the hub role (or
+// host-side peers federation). This runs BEFORE the HTTP handler is built, so
+// hub-conditional routes register and push picks the federated notifier. The auth
+// key comes from TS_AUTHKEY (or prior persisted state in dir); a first
+// unauthenticated run logs a login URL.
+func setupTailnetNode(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, hostname, dir string, hubEnabled bool, peersSvc *peers.Service) (*tsnet.Server, *local.Client, error) {
 	ts := &tsnet.Server{Hostname: hostname, Dir: dir, UserLogf: log.Printf}
 	if _, err := ts.Up(ctx); err != nil {
 		return nil, nil, fmt.Errorf("node up: %w", err)
@@ -191,7 +209,14 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 	} else {
 		enableHostFederation(ctx, ts, lc, mgr, peersSvc)
 	}
+	return ts, lc, nil
+}
 
+// serveTailnetHTTPS serves the built handler over the node's :443 with a
+// tailnet-issued cert, wiring the devhost server (SNI + Host dispatch for dev
+// hostnames). Returns the devhost server so the loopback listener gets the same
+// dispatch.
+func serveTailnetHTTPS(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname string) (*devhost.Server, error) {
 	ip4, _ := ts.TailscaleIPs()
 	dh := devhost.NewServer(ctx, mgr, filepath.Join(configDir(), "devhost"), tsSuffix(ts, hostname), ip4)
 	mgr.OnDevhostChange = dh.Refresh
@@ -201,8 +226,7 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 
 	rawLn, err := ts.Listen("tcp", ":443")
 	if err != nil {
-		ts.Close()
-		return nil, nil, fmt.Errorf("listen: %w", err)
+		return nil, fmt.Errorf("listen: %w", err)
 	}
 	// lc.GetCertificate fails unless HTTPS certs are enabled in the tailnet
 	// admin console — same requirement the old ListenTLS carried.
@@ -213,7 +237,7 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 			log.Printf("tsnet serve stopped: %v", err)
 		}
 	}()
-	return ts, dh, nil
+	return dh, nil
 }
 
 // enableHub wires the hub-role services onto the API server: a member registry
