@@ -1,12 +1,14 @@
 # Multi-host plan (federation)
 
-> **Status (2026-07-25):** the control-plane core is built, tested, and committed —
-> hub role + discovery (§Roles), host registry + `Host` field (§1), aggregation +
-> reverse-proxy + gating (§2), version handshake (§2), merged event firehose (§2),
-> and both lenses' direct-attach (§7–8). **Pending, each needing live two-host
-> validation:** peers federation (§3), dev-hostname registrar (§4), settings cascade
-> (§5), push relocation (§6), and the Mac host-targeted create picker. Deployment of
-> what's live: `multihost-runbook.md`.
+> **Status (2026-07-27):** the control plane + peers federation are built, tested, and
+> committed — hub role + discovery (§Roles), host registry + `Host` field (§1),
+> aggregation + reverse-proxy + gating (§2), version handshake (§2), merged event
+> firehose (§2), both lenses' direct-attach (§7–8), and peers federation (§3: global
+> group resolve, host-stamped peers, host-side hub discovery + pane env redirect,
+> member-gated bus, no-secret token mint). Peers' end-to-end cross-host messaging still
+> needs a **live two-host validation** pass. **Pending:** dev-hostname registrar (§4),
+> settings cascade (§5), push relocation (§6), Mac host-targeted create picker.
+> Deployment: `multihost-runbook.md`.
 
 
 Run `ccmuxd` on many machines and see every host's sessions through one lens (Mac app,

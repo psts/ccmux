@@ -16,12 +16,16 @@ How to deploy the federation and what's live today. Design: `multihost-plan.md`.
   Web has the full host-targeted create picker + host context line; Mac has the host
   context line and direct-attach (host-targeted create is a follow-up — it creates on
   the hub by default).
+- **Cross-host peers bus** (built; **needs live two-host validation**): a non-hub host
+  discovers the hub (`tag:ccmux-hub`) and points its Claude panes' bus at it, so a peer
+  on host B can `send_message` to a peer on host A that shares a window group. The hub
+  owns the directory + global group resolution; it mints each pane's token (no secret
+  distributed) and accepts bus connections only from loopback or registered member-host
+  IPs. When no hub is found (or it's unreachable at spawn), a host falls back to its
+  local bus — so single-host is unchanged. Requires the hub tagged `tag:ccmux-hub`.
 
 ## Not yet federated (each host still owns these locally)
 
-- **Peers bus** — still per-daemon. Cross-host peer messaging needs the bus to move
-  to the hub (host-side hub discovery + hub-owned directory + global group resolution);
-  requires live two-host validation. Single-host peers is unchanged.
 - **Dev hostnames** — each host still serves its own; the global registrar + hub
   wildcard terminator (`multihost-plan.md` §4) is pending.
 - **Settings cascade** — `GET/PUT /v1/settings` is still per-daemon (hit each host
@@ -50,7 +54,8 @@ No secret is distributed to hosts: joining a host is *tag it + let it reach the 
 
 ### 2. The hub (one node — a normal host plus the hub role)
 
-Pick one node and add `-hub` (and, by convention, the tag `tag:ccmux-hub`):
+Pick one node, add `-hub`, and tag it `tag:ccmux-hub` (the tag is what member hosts
+discover to federate their peers bus — not optional if you want cross-host peers):
 
 ```
 ccmuxd -tsnet -tsnet-hostname hub -hub [-projects-root /srv/projects]
@@ -58,7 +63,8 @@ ccmuxd -tsnet -tsnet-hostname hub -hub [-projects-root /srv/projects]
 
 `-hub` requires `-tsnet`. The hub discovers members from the tailnet on a 5s probe;
 tag a new box `tag:ccmux` and it appears within one cycle. A single-machine install
-runs its one daemon as the hub (superset role) — nothing else to do.
+runs its one daemon as the hub (superset role) — nothing else to do. Member hosts
+need no hub config: they find `tag:ccmux-hub` themselves and mint pane tokens from it.
 
 ### 3. Point lenses at the hub
 
@@ -79,6 +85,11 @@ owning host (the lens resolves `host` → address from `GET /v1/hosts`).
    a WebSocket to that host directly (check the host's logs, not the hub's).
 4. Version skew: run one host built a `contract` behind the hub → it shows `degraded`
    in `/v1/hosts`, still lists + attaches, and a mutation returns 409 with the reason.
+5. Cross-host peers (the live-validation pass): a Claude on host B and one on host A in
+   the same window group — `list_peers` shows both with their `host`; `send_message` to
+   the other's name is delivered; a non-member tailnet node is refused at the bus. Check
+   host B's logs for `peers: federating to hub …` and that its panes carry
+   `CCMUX_PEERS_URL` (hub) while `CCMUX_DAEMON_URL` stays local.
 
 ## Notes
 
