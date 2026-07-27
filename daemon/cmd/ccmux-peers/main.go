@@ -52,7 +52,14 @@ func main() {
 	a.paneID = os.Getenv("CCMUX_PANE_ID")
 	a.localPaneID = localPaneID(os.Getenv("CCMUX_CMD_FILE"))
 
-	url, token := os.Getenv("CCMUX_DAEMON_URL"), os.Getenv("CCMUX_PANE_TOKEN")
+	// Federation: CCMUX_PEERS_URL points the bus at the hub while CCMUX_DAEMON_URL
+	// stays the local daemon (hooks — co-author, attention — must reach the pane's
+	// own host). Falls back to CCMUX_DAEMON_URL in single-host mode.
+	url := os.Getenv("CCMUX_PEERS_URL")
+	if url == "" {
+		url = os.Getenv("CCMUX_DAEMON_URL")
+	}
+	token := os.Getenv("CCMUX_PANE_TOKEN")
 	if a.paneID == "" || url == "" || token == "" {
 		// Not a fully-tokened hosted pane → register pane-less (dirname fallback
 		// group) with the daemon-info file's shared credentials.

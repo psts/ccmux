@@ -31,10 +31,12 @@ const (
 const DefaultFloor = 1
 
 // Node is a tailnet peer discovered as a ccmux host: its MagicDNS label (the
-// stable id that lands on Workspace.Host) and its dialable authority.
+// stable id that lands on Workspace.Host), its dialable authority, and its
+// tailnet IPs (used to authorize inbound peers-bus connections from members).
 type Node struct {
-	ID   string // MagicDNS label, e.g. "hostb"
-	Addr string // dialable authority, e.g. "hostb.tailb9053d.ts.net"
+	ID   string   // MagicDNS label, e.g. "hostb"
+	Addr string   // dialable authority, e.g. "hostb.tailb9053d.ts.net"
+	IPs  []string // tailnet IPs, e.g. ["100.x.y.z"]
 }
 
 // Health is what a host's GET /v1/health reports for the handshake.
@@ -46,9 +48,10 @@ type Health struct {
 // Host is one member node as the hub and lenses see it. Addr is hub-internal
 // (probe + proxy + the lens's direct-attach target); the rest is lens-facing.
 type Host struct {
-	ID       string `json:"id"`
-	Addr     string `json:"addr"`
-	Healthy  bool   `json:"healthy"`
+	ID       string   `json:"id"`
+	Addr     string   `json:"addr"`
+	IPs      []string `json:"-"` // hub-internal: authorizes inbound member peers-bus conns
+	Healthy  bool     `json:"healthy"`
 	Self     bool   `json:"self,omitempty"` // the hub node itself (also a host)
 	Version  string `json:"version,omitempty"`
 	Contract int    `json:"contract,omitempty"`
@@ -113,7 +116,7 @@ func (r *Registry) Refresh() {
 
 // probeOne health-probes one node and classifies it.
 func (r *Registry) probeOne(n Node) Host {
-	h := Host{ID: n.ID, Addr: n.Addr, Self: n.ID == r.selfID, LastSeen: r.now()}
+	h := Host{ID: n.ID, Addr: n.Addr, IPs: n.IPs, Self: n.ID == r.selfID, LastSeen: r.now()}
 	hp, err := r.probe("https://" + n.Addr)
 	if err != nil {
 		h.Healthy = false
@@ -196,6 +199,23 @@ func (r *Registry) Get(id string) (Host, bool) {
 	defer r.mu.RUnlock()
 	h, ok := r.hosts[id]
 	return h, ok
+}
+
+// IsMemberIP reports whether ip belongs to a discovered member host — the hub's
+// authorization for accepting an inbound peers-bus connection from a remote pane
+// (a member host's thin-client dialing over the tailnet). Unknown IPs are
+// rejected, so only tag:ccmux nodes reach the bus.
+func (r *Registry) IsMemberIP(ip string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, h := range r.hosts {
+		for _, hip := range h.IPs {
+			if hip == ip {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func abs(n int) int {

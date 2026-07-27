@@ -16,6 +16,45 @@ import (
 // host. The hub node itself is always a member (it's also a host), tagged or not.
 const CcmuxTag = "tag:ccmux"
 
+// HubTag marks the designated hub node, so a member host can discover where to
+// point its panes' peers bus (host-side hub discovery).
+const HubTag = "tag:ccmux-hub"
+
+// DiscoverHub returns the base URL of the tag:ccmux-hub node for a member host to
+// federate its peers bus to, or "" when no hub is found or this node is itself
+// the hub (selfID). A node must carry HubTag to be treated as the hub — Self is
+// not force-included here (unlike member discovery).
+func DiscoverHub(ctx context.Context, lc *local.Client, selfID string) string {
+	st, err := lc.Status(ctx)
+	if err != nil {
+		return ""
+	}
+	return hubURLFromStatus(st, selfID)
+}
+
+// hubURLFromStatus is DiscoverHub's pure core: the base URL of the tag:ccmux-hub
+// node other than selfID, or "".
+func hubURLFromStatus(st *ipnstate.Status, selfID string) string {
+	consider := func(ps *ipnstate.PeerStatus) string {
+		if ps == nil || ps.DNSName == "" || !hasTag(peerTags(ps), HubTag) {
+			return ""
+		}
+		if n := nodeOf(ps); n.ID != selfID {
+			return "https://" + n.Addr
+		}
+		return ""
+	}
+	if url := consider(st.Self); url != "" {
+		return url
+	}
+	for _, ps := range st.Peer {
+		if url := consider(ps); url != "" {
+			return url
+		}
+	}
+	return ""
+}
+
 // TailnetDiscoverer builds the registry's discover func from a tsnet LocalClient:
 // it reads the node status and returns self plus every peer carrying CcmuxTag.
 func TailnetDiscoverer(ctx context.Context, lc *local.Client) func() ([]Node, error) {
@@ -75,7 +114,11 @@ func nodesFromStatus(st *ipnstate.Status, wantTag string) []Node {
 
 func nodeOf(ps *ipnstate.PeerStatus) Node {
 	addr := strings.TrimSuffix(ps.DNSName, ".")
-	return Node{ID: magicDNSLabel(ps.DNSName), Addr: addr}
+	ips := make([]string, 0, len(ps.TailscaleIPs))
+	for _, ip := range ps.TailscaleIPs {
+		ips = append(ips, ip.String())
+	}
+	return Node{ID: magicDNSLabel(ps.DNSName), Addr: addr, IPs: ips}
 }
 
 // magicDNSLabel extracts the first label of a MagicDNS FQDN (which ends with a

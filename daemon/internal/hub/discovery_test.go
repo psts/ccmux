@@ -77,3 +77,46 @@ func TestNodesFromStatus(t *testing.T) {
 		t.Fatalf("untagged peer should be excluded, got %+v", got)
 	}
 }
+
+// TestHubURLFromStatus: a tag:ccmux-hub peer is the hub; an untagged/self node is not.
+func TestHubURLFromStatus(t *testing.T) {
+	hubPeer := &ipnstate.PeerStatus{DNSName: "hub.tail0.ts.net.", Tags: tagsPtr("tag:ccmux", "tag:ccmux-hub")}
+	plain := &ipnstate.PeerStatus{DNSName: "devbox.tail0.ts.net.", Tags: tagsPtr("tag:ccmux")}
+	st := &ipnstate.Status{
+		Self: plain, // this node is a plain member, not the hub
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{key.NewNode().Public(): hubPeer},
+	}
+	if got := hubURLFromStatus(st, "devbox"); got != "https://hub.tail0.ts.net" {
+		t.Fatalf("hub url = %q, want https://hub.tail0.ts.net", got)
+	}
+
+	// A node that is ITSELF the hub discovers no (other) hub.
+	stSelfHub := &ipnstate.Status{Self: &ipnstate.PeerStatus{DNSName: "hub.tail0.ts.net.", Tags: tagsPtr("tag:ccmux-hub")}}
+	if got := hubURLFromStatus(stSelfHub, "hub"); got != "" {
+		t.Fatalf("self-hub should find no other hub, got %q", got)
+	}
+
+	// No hub-tagged node anywhere.
+	stNone := &ipnstate.Status{Self: plain}
+	if got := hubURLFromStatus(stNone, "devbox"); got != "" {
+		t.Fatalf("no hub tag → %q, want empty", got)
+	}
+}
+
+func TestIsMemberIP(t *testing.T) {
+	r := NewRegistry("hub", 1,
+		func() ([]Node, error) {
+			return []Node{{ID: "hub", Addr: "hub.ts.net", IPs: []string{"100.0.0.1"}},
+				{ID: "b", Addr: "b.ts.net", IPs: []string{"100.0.0.2", "fd7a::2"}}}, nil
+		},
+		func(string) (Health, error) { return Health{Contract: 1}, nil },
+		func() int64 { return 1 },
+	)
+	r.Refresh()
+	if !r.IsMemberIP("100.0.0.2") || !r.IsMemberIP("fd7a::2") {
+		t.Error("member IPs should be recognized")
+	}
+	if r.IsMemberIP("100.9.9.9") {
+		t.Error("non-member IP must be rejected")
+	}
+}

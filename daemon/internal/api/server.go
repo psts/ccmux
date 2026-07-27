@@ -135,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/attach", s.attach)
 	mux.HandleFunc("GET /v1/events", s.events)
 	mux.HandleFunc("POST /v1/peers/register", s.peersRegister)
+	mux.HandleFunc("POST /v1/peers/pane-token", s.peersMintPaneToken)
 	mux.HandleFunc("POST /v1/peers/send", s.peersSend)
 	mux.HandleFunc("POST /v1/peers/list", s.peersList)
 	mux.HandleFunc("POST /v1/peers/summary", s.peersSummary)

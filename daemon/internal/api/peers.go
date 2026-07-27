@@ -39,10 +39,32 @@ func requireLoopback(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// requirePeer authorizes acting AS peerID: loopback plus a token bound to that
-// peer's identity.
+// peerConnAllowed authorizes a peers-bus connection's ORIGIN. Single-host (no
+// hub): loopback-only, exactly as before. Hub mode ALSO accepts connections from
+// a discovered member host — a remote pane's thin-client dialing over the tailnet
+// — so cross-host peers work. The bearer token still authorizes the specific peer
+// on top of this (defense in depth: a member can only act as panes it holds
+// hub-minted tokens for). A non-member tailnet node is rejected.
+func (s *Server) peerConnAllowed(w http.ResponseWriter, r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.IsLoopback() {
+				return true
+			}
+			if s.hub != nil && s.hub.reg.IsMemberIP(host) {
+				return true
+			}
+		}
+	}
+	writeError(w, http.StatusForbidden, "peers connection must be loopback or a member host")
+	return false
+}
+
+// requirePeer authorizes acting AS peerID: an allowed origin plus a token bound
+// to that peer's identity.
 func (s *Server) requirePeer(w http.ResponseWriter, r *http.Request, peerID string) bool {
-	if !requireLoopback(w, r) {
+	if !s.peerConnAllowed(w, r) {
 		return false
 	}
 	if peerID == "" || !s.peersSvc.AuthorizePeer(peerID, bearerToken(r)) {
@@ -53,7 +75,7 @@ func (s *Server) requirePeer(w http.ResponseWriter, r *http.Request, peerID stri
 }
 
 func (s *Server) peersRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.peersEnabled(w) || !requireLoopback(w, r) {
+	if !s.peersEnabled(w) || !s.peerConnAllowed(w, r) {
 		return
 	}
 	var req peers.RegisterReq
@@ -65,6 +87,29 @@ func (s *Server) peersRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.peersSvc.Register(req))
+}
+
+// peersMintPaneToken issues the bearer token a pane's sessions authenticate
+// with, over THIS daemon's secret — the hub-authority path a member host calls
+// (over the tailnet) so its panes join the hub's bus without any secret being
+// distributed. Gated by peerConnAllowed (loopback or member host); minting for
+// an arbitrary pane id is a plan-accepted risk (a compromised member is already
+// inside the trust boundary). See daemon/docs/multihost-plan.md.
+func (s *Server) peersMintPaneToken(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) || !s.peerConnAllowed(w, r) {
+		return
+	}
+	var req struct {
+		PaneID string `json:"pane_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.PaneID == "" {
+		writeError(w, http.StatusBadRequest, "pane_id required")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": s.peersSvc.MintPaneToken(req.PaneID)})
 }
 
 func (s *Server) peersSend(w http.ResponseWriter, r *http.Request) {

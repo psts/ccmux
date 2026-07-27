@@ -6,8 +6,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -17,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -185,6 +188,8 @@ func serveTailnet(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server,
 		if err := enableHub(ctx, ts, lc, mgr, apiSrv, peersSvc); err != nil {
 			log.Printf("hub mode disabled: %v", err)
 		}
+	} else {
+		enableHostFederation(ctx, ts, lc, mgr, peersSvc)
 	}
 
 	ip4, _ := ts.TailscaleIPs()
@@ -256,6 +261,85 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	apiSrv.EnableHub(reg, agg, client, selfID, wsDial)
 	log.Printf("hub mode: self=%s, discovering %s peers", selfID, hub.CcmuxTag)
 	return nil
+}
+
+// enableHostFederation points a non-hub host's Claude panes at the hub's peers
+// bus (discovered via tag:ccmux-hub), so they join the hub's directory and can
+// message peers on other hosts. It overrides ExtraPaneEnv to inject
+// CCMUX_PEERS_URL (the hub) + a hub-minted CCMUX_PANE_TOKEN, leaving
+// CCMUX_DAEMON_URL local so on-host hooks still reach this host. Discovery runs
+// in the background (the hub may start later); until a hub is found, and whenever
+// the hub can't be reached at spawn, panes fall back to the LOCAL bus — so a
+// single-host / no-hub node behaves exactly as before. No secret is distributed;
+// the hub mints each token.
+func enableHostFederation(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, peersSvc *peers.Service) {
+	if peersSvc == nil {
+		return
+	}
+	var hubURL atomic.Pointer[string]
+	empty := ""
+	hubURL.Store(&empty)
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			if st, err := lc.Status(ctx); err == nil && st.Self != nil {
+				if u := hub.DiscoverHub(ctx, lc, firstLabel(st.Self.DNSName)); u != "" && u != *hubURL.Load() {
+					hubURL.Store(&u)
+					log.Printf("peers: federating to hub %s", u)
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	}()
+
+	client := &http.Client{Transport: &http.Transport{DialContext: ts.Dial}, Timeout: 3 * time.Second}
+	localEnv := peersSvc.PaneEnv // fallback: local bus when there's no hub / it's unreachable
+	mgr.ExtraPaneEnv = func(paneID string) map[string]string {
+		u := *hubURL.Load()
+		if u == "" {
+			return localEnv(paneID)
+		}
+		token, err := mintHubPaneToken(client, u, paneID)
+		if err != nil {
+			log.Printf("peers: hub mint failed for pane %s (%v) — using local bus", paneID, err)
+			return localEnv(paneID)
+		}
+		return map[string]string{"CCMUX_PEERS_URL": u, "CCMUX_PANE_TOKEN": token}
+	}
+	log.Printf("peers: host federation armed (discovering %s)", hub.HubTag)
+}
+
+// mintHubPaneToken asks the hub to mint a pane's bus token (POST /v1/peers/pane-token).
+func mintHubPaneToken(client *http.Client, hubURL, paneID string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"pane_id": paneID})
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/v1/peers/pane-token", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("mint HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.Token == "" {
+		return "", fmt.Errorf("hub returned empty token")
+	}
+	return out.Token, nil
 }
 
 // firstLabel returns the first DNS label of a MagicDNS FQDN (trailing-dot safe).
