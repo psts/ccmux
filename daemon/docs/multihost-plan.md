@@ -5,10 +5,14 @@
 > aggregation + reverse-proxy + gating (§2), version handshake (§2), merged event
 > firehose (§2), both lenses' direct-attach (§7–8), and peers federation (§3: global
 > group resolve, host-stamped peers, host-side hub discovery + pane env redirect,
-> member-gated bus, no-secret token mint). Peers' end-to-end cross-host messaging still
-> needs a **live two-host validation** pass. **Pending:** dev-hostname registrar (§4),
-> settings cascade (§5), push relocation (§6), Mac host-targeted create picker.
-> Deployment: `multihost-runbook.md`.
+> member-gated bus, no-secret token mint), the **global dev-hostname registrar** (§4:
+> cross-host uniqueness at the hub) and **per-host settings access** (§5: GET/PUT
+> /v1/hosts/{host}/settings). Peers' end-to-end cross-host messaging still needs a
+> **live two-host validation** pass. **Pending (need live infra / a device):** the
+> dev-hostname wildcard-cert terminator that makes cross-host dev URLs *reachable*
+> (§4), the full settings cascade with hub-default inheritance (§5), push relocation
+> (§6, blocked on focus/presence aggregation to the hub), and the Mac host-targeted
+> create picker. Deployment: `multihost-runbook.md`.
 
 
 Run `ccmuxd` on many machines and see every host's sessions through one lens (Mac app,

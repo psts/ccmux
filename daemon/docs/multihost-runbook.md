@@ -24,13 +24,21 @@ How to deploy the federation and what's live today. Design: `multihost-plan.md`.
   IPs. When no hub is found (or it's unreachable at spawn), a host falls back to its
   local bus — so single-host is unchanged. Requires the hub tagged `tag:ccmux-hub`.
 
-## Not yet federated (each host still owns these locally)
+- **Per-host settings** + **global dev-hostname uniqueness** (built): the lens
+  configures any host via `GET/PUT /v1/hosts/{host}/settings`, and the hub rejects a
+  dev-hostname label already claimed by another workspace on any host ("taken on host X").
 
-- **Dev hostnames** — each host still serves its own; the global registrar + hub
-  wildcard terminator (`multihost-plan.md` §4) is pending.
-- **Settings cascade** — `GET/PUT /v1/settings` is still per-daemon (hit each host
-  directly); the hub-default + host-override cascade (§5) is pending.
-- **Push** — still per-daemon VAPID/notifier; the hub relocation (§6) is pending.
+## Not yet federated
+
+- **Dev-hostname reachability across hosts** — uniqueness is enforced, but the hub
+  wildcard-cert terminator that reverse-proxies `*.<devDomain>` to the owning host
+  (`multihost-plan.md` §4) is pending (needs live certs/DNS). Today a dev hostname is
+  only reachable on the host that serves it.
+- **Settings cascade** — per-host access works; hub-default → host-override inheritance
+  with scope tags (§5) is pending.
+- **Push** — still per-daemon VAPID/notifier; the hub relocation (§6) is pending and
+  blocked on aggregating focus/presence to the hub (so remote-session suppression stays
+  correct — otherwise unified push would over-notify).
 
 Because every unshipped piece is additive and gated behind hub mode, a single-host
 install behaves exactly as before.
