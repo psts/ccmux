@@ -1,18 +1,18 @@
 # Multi-host plan (federation)
 
-> **Status (2026-07-27):** the control plane + peers federation are built, tested, and
-> committed — hub role + discovery (§Roles), host registry + `Host` field (§1),
-> aggregation + reverse-proxy + gating (§2), version handshake (§2), merged event
-> firehose (§2), both lenses' direct-attach (§7–8), and peers federation (§3: global
-> group resolve, host-stamped peers, host-side hub discovery + pane env redirect,
-> member-gated bus, no-secret token mint), the **global dev-hostname registrar** (§4:
-> cross-host uniqueness at the hub) and **per-host settings access** (§5: GET/PUT
-> /v1/hosts/{host}/settings). Peers' end-to-end cross-host messaging still needs a
-> **live two-host validation** pass. **Pending (need live infra / a device):** the
-> dev-hostname wildcard-cert terminator that makes cross-host dev URLs *reachable*
-> (§4), the full settings cascade with hub-default inheritance (§5), push relocation
-> (§6, blocked on focus/presence aggregation to the hub), and the Mac host-targeted
-> create picker. Deployment: `multihost-runbook.md`.
+> **Status (2026-07-27):** every subsystem's daemon+lens logic is built, tested, and
+> committed. **Done & unit-tested:** hub role + discovery (§Roles); host registry +
+> `Host` field (§1); aggregation + reverse-proxy + gating + version handshake + merged
+> event firehose (§2); both lenses' direct-attach, host picker, context line (§7–8,
+> web + Mac); peers federation (§3: global group resolve, host-stamped peers,
+> host-side hub discovery + pane env redirect, member-gated bus, no-secret mint);
+> global dev-hostname registrar + cross-host wildcard *routing* (§4); per-host settings
+> access (§5); hub-owned push with merged attention + merged presence suppression (§6);
+> plus a critical fix (hub routes now register — EnableHub runs before Handler()).
+> **Remaining = live infra / a device only:** end-to-end validation of peers messaging
+> and push delivery (2 hosts + a phone); the dev-hostname wildcard cert/DNS config that
+> makes routed URLs reachable (§4); the full settings-cascade inheritance (§5, optional).
+> Nothing else is buildable without that hardware. Deployment: `multihost-runbook.md`.
 
 
 Run `ccmuxd` on many machines and see every host's sessions through one lens (Mac app,

@@ -24,21 +24,25 @@ How to deploy the federation and what's live today. Design: `multihost-plan.md`.
   IPs. When no hub is found (or it's unreachable at spawn), a host falls back to its
   local bus — so single-host is unchanged. Requires the hub tagged `tag:ccmux-hub`.
 
-- **Per-host settings** + **global dev-hostname uniqueness** (built): the lens
-  configures any host via `GET/PUT /v1/hosts/{host}/settings`, and the hub rejects a
-  dev-hostname label already claimed by another workspace on any host ("taken on host X").
+- **Per-host settings** + **global dev-hostname uniqueness/routing** (built): the lens
+  configures any host via `GET/PUT /v1/hosts/{host}/settings`; the hub rejects a
+  dev-hostname label already claimed by another workspace on any host ("taken on host
+  X") and reverse-proxies a hostname owned by another host to it.
+- **Hub-owned push** (built): the hub notifies on attention across every host (merged
+  events) and suppresses via merged presence (it polls each member's `GET /v1/presence`),
+  so a user watching a remote session directly still quiets their phone. Point the lens's
+  push subscription at the hub.
 
-## Not yet federated
+## Remaining — live config / a device only
 
-- **Dev-hostname reachability across hosts** — uniqueness is enforced, but the hub
-  wildcard-cert terminator that reverse-proxies `*.<devDomain>` to the owning host
-  (`multihost-plan.md` §4) is pending (needs live certs/DNS). Today a dev hostname is
-  only reachable on the host that serves it.
-- **Settings cascade** — per-host access works; hub-default → host-override inheritance
-  with scope tags (§5) is pending.
-- **Push** — still per-daemon VAPID/notifier; the hub relocation (§6) is pending and
-  blocked on aggregating focus/presence to the hub (so remote-session suppression stays
-  correct — otherwise unified push would over-notify).
+- **Dev-hostname reachability across hosts** — routing is built, but making a routed URL
+  actually resolve needs the wildcard `*.<devDomain>` A-record pointed at the hub, the
+  wildcard cert issued on the hub, and the SAME `devDomain` configured on every member
+  (so the owning host's devhost table matches the proxied Host). Live certs/DNS.
+- **Settings cascade inheritance** — per-host access works; hub-default → host-override
+  with scope tags (§5) is an optional refinement.
+- **End-to-end validation** — peers cross-host messaging and push delivery need two live
+  hosts + a phone (see Verify §5 and the push note).
 
 Because every unshipped piece is additive and gated behind hub mode, a single-host
 install behaves exactly as before.
