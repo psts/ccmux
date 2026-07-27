@@ -64,7 +64,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         var sheet: NSWindow?
         let picker = HostedProjectPickerView(
-            onPick: { [weak self] project, commandOverride in
+            onPick: { [weak self] project, commandOverride, host in
                 if let sheet { window.endSheet(sheet) }
                 Task { @MainActor in
                     // Pause orphan adoption while the create is in flight — the racing
@@ -74,7 +74,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                     manager?.beginHostedCreate()
                     defer { manager?.endHostedCreate() }
                     guard let newId = await RemoteSessionService.shared.createWorkspace(
-                        name: project.name, repoPath: project.path, startupCommand: commandOverride),
+                        host: host, name: project.name, repoPath: project.path, startupCommand: commandOverride),
                         let self else { return }
                     self.windowContext.displayedWorkspaceId = newId
                     self.updateWindowTitle()

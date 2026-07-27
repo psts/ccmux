@@ -10,8 +10,9 @@ import SwiftUI
 /// hosted session from the selected folder.
 struct HostedProjectPickerView: View {
     /// Second argument: a one-off startup-command override (nil = the daemon
-    /// resolves it from per-folder rules / the Settings default).
-    let onPick: (DaemonProject, String?) -> Void
+    /// resolves it from per-folder rules / the Settings default). Third: the host
+    /// label to create on ("" = the hub / single-host default).
+    let onPick: (DaemonProject, String?, String) -> Void
     let onCancel: () -> Void
 
     @State private var phase: Phase = .loading
@@ -22,6 +23,8 @@ struct HostedProjectPickerView: View {
     @State private var selection: DaemonProject.ID?
     @State private var commandOverride = ""
     @State private var defaultCommand = ""
+    @State private var selectedHost = ""              // "" until hosts load (federation)
+    private let hosts = RemoteSessionService.shared.hostList
 
     enum Phase: Equatable {
         case loading
@@ -48,6 +51,7 @@ struct HostedProjectPickerView: View {
         .padding(16)
         .frame(width: 440, height: 440)
         .task {
+            selectedHost = RemoteSessionService.shared.defaultCreateHost
             await load(path: "")
             defaultCommand = (try? await RemoteSessionService.shared.fetchSettings())?.startupCommand ?? ""
         }
@@ -57,6 +61,16 @@ struct HostedProjectPickerView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("New Hosted Session")
                 .font(.headline)
+            // Federation: pick which host to create on (only when there's a choice).
+            if hosts.count > 1 {
+                Picker("Host", selection: $selectedHost) {
+                    ForEach(hosts) { host in
+                        Text(host.isSelf ? "\(host.id) (hub)" : host.id).tag(host.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: selectedHost) { Task { await load(path: "") } }
+            }
             HStack(spacing: 4) {
                 if let parent {
                     Button {
@@ -157,7 +171,7 @@ struct HostedProjectPickerView: View {
                 Button("Add") {
                     if let project = selectedProject {
                         let trimmed = commandOverride.trimmingCharacters(in: .whitespaces)
-                        onPick(project, trimmed.isEmpty ? nil : trimmed)
+                        onPick(project, trimmed.isEmpty ? nil : trimmed, selectedHost)
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -185,7 +199,7 @@ struct HostedProjectPickerView: View {
         selection = nil
         filter = ""
         do {
-            let list = try await RemoteSessionService.shared.fetchProjects(path: newPath)
+            let list = try await RemoteSessionService.shared.fetchProjects(host: selectedHost, path: newPath)
             root = list.root
             path = list.path
             parent = list.parent

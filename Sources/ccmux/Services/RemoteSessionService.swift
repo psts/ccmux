@@ -244,11 +244,25 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
-    /// Fetch the selectable folders at `path` (relative to the daemon's projects
-    /// root; "" = the root itself). Throws so the picker can say *why* the list
-    /// is empty (daemon down, no root).
-    func fetchProjects(path: String = "") async throws -> DaemonProjectList {
-        var comps = URLComponents(string: "\(DaemonConfig.baseURL)/v1/projects")
+    /// Member hosts sorted self-first, for the New-session host picker. Empty in
+    /// single-host mode (no federation).
+    var hostList: [DaemonHost] {
+        hosts.values.sorted { a, b in
+            a.isSelf != b.isSelf ? a.isSelf : a.id < b.id
+        }
+    }
+
+    /// The host a new session defaults to: the hub's own node (self), else "".
+    var defaultCreateHost: String {
+        hosts.values.first(where: { $0.isSelf })?.id ?? ""
+    }
+
+    /// Fetch the selectable folders at `path` (relative to the projects root of
+    /// `host` — "" = the daemon this lens points at, i.e. the hub in federation).
+    /// Throws so the picker can say *why* the list is empty (daemon down, no root).
+    func fetchProjects(host: String = "", path: String = "") async throws -> DaemonProjectList {
+        let base = host.isEmpty ? "/v1/projects" : "/v1/hosts/\(host)/projects"
+        var comps = URLComponents(string: "\(DaemonConfig.baseURL)\(base)")
         if !path.isEmpty {
             comps?.queryItems = [URLQueryItem(name: "path", value: path)]
         }
@@ -304,14 +318,16 @@ final class RemoteSessionService: ObservableObject {
     /// startupCommand nil = OMIT the field, so the daemon applies its configured
     /// default (the Settings-editable command); "" explicitly means a bare shell.
     @discardableResult
-    func createWorkspace(name: String, repoPath: String, cwd: String? = nil, startupCommand: String? = nil) async -> UUID? {
+    func createWorkspace(host: String = "", name: String, repoPath: String, cwd: String? = nil, startupCommand: String? = nil) async -> UUID? {
         var body: [String: Any] = [
             "name": name, "repoPath": repoPath,
             "cwd": cwd ?? repoPath,
             "createdBy": DaemonConfig.selfUser,
         ]
         if let startupCommand { body["startupCommand"] = startupCommand }
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces") else { return nil }
+        // Federation: create on the chosen host (self runs local at the hub).
+        let base = host.isEmpty ? "/v1/workspaces" : "/v1/hosts/\(host)/workspaces"
+        guard let url = URL(string: "\(DaemonConfig.baseURL)\(base)") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
