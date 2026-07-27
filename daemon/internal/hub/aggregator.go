@@ -26,17 +26,25 @@ type Aggregator struct {
 	local  LocalLister
 	fetch  RemoteFetcher
 
-	mu     sync.RWMutex
-	owner  map[string]string // workspace id + pane id → owning host
-	groups map[string]string // pane id → owning workspace's group (for peers federation)
+	mu        sync.RWMutex
+	owner     map[string]string      // workspace id + pane id → owning host
+	groups    map[string]string      // pane id → owning workspace's group (for peers federation)
+	hostnames map[string]hostnameLoc // dev-hostname label → owning host + workspace (global registrar)
+}
+
+// hostnameLoc is which host + workspace currently owns a dev-hostname label.
+type hostnameLoc struct {
+	Host      string
+	Workspace string
 }
 
 // NewAggregator builds an aggregator. selfID is the hub node's MagicDNS label.
 func NewAggregator(selfID string, reg *Registry, local LocalLister, fetch RemoteFetcher) *Aggregator {
 	return &Aggregator{
 		selfID: selfID, reg: reg, local: local, fetch: fetch,
-		owner:  map[string]string{},
-		groups: map[string]string{},
+		owner:     map[string]string{},
+		groups:    map[string]string{},
+		hostnames: map[string]hostnameLoc{},
 	}
 }
 
@@ -65,7 +73,8 @@ func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 	all := stampAll(a.local.List(), a.selfID) // local always included
 	owner := map[string]string{}
 	groups := map[string]string{}
-	indexInto(owner, groups, all, a.selfID)
+	hostnames := map[string]hostnameLoc{}
+	indexInto(owner, groups, hostnames, all, a.selfID)
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -83,7 +92,7 @@ func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 			stamped := stampAll(wss, h.ID)
 			mu.Lock()
 			all = append(all, stamped...)
-			indexInto(owner, groups, stamped, h.ID)
+			indexInto(owner, groups, hostnames, stamped, h.ID)
 			mu.Unlock()
 		}(h)
 	}
@@ -92,8 +101,19 @@ func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 	a.mu.Lock()
 	a.owner = owner
 	a.groups = groups
+	a.hostnames = hostnames
 	a.mu.Unlock()
 	return all
+}
+
+// HostnameOwner returns which host + workspace currently claims a dev-hostname
+// label, from the last aggregation — the hub's global registrar for enforcing
+// uniqueness across hosts. ok is false for an unclaimed label.
+func (a *Aggregator) HostnameOwner(name string) (host, workspace string, ok bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	loc, ok := a.hostnames[name]
+	return loc.Host, loc.Workspace, ok
 }
 
 // GroupForPane returns the window group of a pane's owning workspace, from the
@@ -125,11 +145,16 @@ func (a *Aggregator) OwnerOrRefresh(ctx context.Context, id string) (string, boo
 	return a.Owner(id)
 }
 
-// indexInto records each workspace's and pane's owning host, and each pane's
-// owning-workspace group (for the peers group resolver).
-func indexInto(owner, groups map[string]string, wss []*model.Workspace, hostID string) {
+// indexInto records each workspace's and pane's owning host, each pane's
+// owning-workspace group (peers resolver), and each dev-hostname's owner (registrar).
+func indexInto(owner, groups map[string]string, hostnames map[string]hostnameLoc, wss []*model.Workspace, hostID string) {
 	for _, ws := range wss {
 		owner[ws.ID] = hostID
+		for _, hn := range ws.Hostnames {
+			if hn.Name != "" {
+				hostnames[hn.Name] = hostnameLoc{Host: hostID, Workspace: ws.ID}
+			}
+		}
 		for _, p := range ws.Panes {
 			owner[p.ID] = hostID
 			groups[p.ID] = ws.Group

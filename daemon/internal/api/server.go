@@ -110,6 +110,10 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /v1/workspaces", s.hub.listWorkspaces)
 		mux.HandleFunc("GET /v1/hosts/{host}/projects", s.hub.hostScoped(s.listProjects, "/v1/projects"))
 		mux.HandleFunc("POST /v1/hosts/{host}/workspaces", s.hub.hostScoped(s.createWorkspace, "/v1/workspaces"))
+		// Per-host settings: the lens configures any member host's startup command,
+		// dev domain, tokens, etc. through the hub (self runs local).
+		mux.HandleFunc("GET /v1/hosts/{host}/settings", s.hub.hostScoped(s.getSettings, "/v1/settings"))
+		mux.HandleFunc("PUT /v1/hosts/{host}/settings", s.hub.hostScoped(s.putSettings, "/v1/settings"))
 	} else {
 		mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
 	}
@@ -123,7 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.scoped(s.reviveWorkspace))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.scoped(s.putLayout))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.scoped(s.putGroup))
-	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.scoped(s.putHostnames))
+	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.hostnamesRoute(s.putHostnames))
 	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.scoped(s.portSuggestions))
 	mux.HandleFunc("POST /v1/workspaces/{id}/dev-server", s.scoped(s.devServer))
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.scoped(s.paneSnapshot))

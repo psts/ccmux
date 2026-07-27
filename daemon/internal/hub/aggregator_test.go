@@ -94,6 +94,29 @@ func TestAggregate_GroupForPane(t *testing.T) {
 	}
 }
 
+// TestAggregate_HostnameOwner: the global dev-hostname registrar maps each label
+// to its owning host + workspace across the federation.
+func TestAggregate_HostnameOwner(t *testing.T) {
+	localWS := &model.Workspace{ID: "wl", Hostnames: []model.Hostname{{Name: "hub-app", Port: 3000}}}
+	remoteWS := &model.Workspace{ID: "wr", Hostnames: []model.Hostname{{Name: "box-app", Port: 4000}}}
+	agg := NewAggregator("hub", twoHostRegistry(t),
+		fakeLocal{wss: []*model.Workspace{localWS}},
+		func(_ context.Context, h Host) ([]*model.Workspace, error) {
+			return []*model.Workspace{remoteWS}, nil
+		})
+	agg.Aggregate(context.Background())
+
+	if host, ws, ok := agg.HostnameOwner("hub-app"); !ok || host != "hub" || ws != "wl" {
+		t.Errorf(`HostnameOwner("hub-app") = %q,%q,%v; want hub,wl`, host, ws, ok)
+	}
+	if host, ws, ok := agg.HostnameOwner("box-app"); !ok || host != "remote" || ws != "wr" {
+		t.Errorf(`HostnameOwner("box-app") = %q,%q,%v; want remote,wr`, host, ws, ok)
+	}
+	if _, _, ok := agg.HostnameOwner("unclaimed"); ok {
+		t.Error("unclaimed label should not resolve")
+	}
+}
+
 // TestAggregate_DegradedHostStillLists: a degraded host's workspaces still appear
 // (list-only), an unsupported host's do not.
 func TestAggregate_GatingByCompat(t *testing.T) {

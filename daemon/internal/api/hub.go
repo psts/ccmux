@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/gorilla/websocket"
@@ -38,6 +41,53 @@ func (s *Server) scoped(local http.HandlerFunc) http.HandlerFunc {
 		return local
 	}
 	return s.hub.ownerRoute(local)
+}
+
+// hostnamesRoute enforces GLOBAL dev-hostname uniqueness across every member
+// host (hub mode) before delegating to the owner-routed handler: a label already
+// claimed by a DIFFERENT workspace anywhere is rejected with which host holds it
+// (the "pick anything, warn on collision" registrar). Off the hub it's unchanged.
+func (s *Server) hostnamesRoute(local http.HandlerFunc) http.HandlerFunc {
+	if s.hub == nil {
+		return local
+	}
+	owned := s.hub.ownerRoute(local)
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body)) // let the downstream handler re-read
+		if conflict := s.hub.hostnameConflict(r.PathValue("id"), body); conflict != "" {
+			writeError(w, http.StatusConflict, conflict)
+			return
+		}
+		owned(w, r)
+	}
+}
+
+// hostnameConflict returns a message when any requested dev-hostname label is
+// already claimed by a DIFFERENT workspace on any host, else "". A malformed body
+// passes through so the owner handler returns its own validation error.
+func (h *hubMode) hostnameConflict(wsID string, body []byte) string {
+	var req struct {
+		Hostnames []struct {
+			Name string `json:"name"`
+		} `json:"hostnames"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return ""
+	}
+	for _, hn := range req.Hostnames {
+		if hn.Name == "" {
+			continue
+		}
+		if host, ownerWs, ok := h.agg.HostnameOwner(hn.Name); ok && ownerWs != wsID {
+			return fmt.Sprintf("hostname %q is already taken on host %s", hn.Name, host)
+		}
+	}
+	return ""
 }
 
 // listHosts serves GET /v1/hosts: the federation registry, self first.

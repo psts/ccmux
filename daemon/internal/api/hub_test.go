@@ -52,6 +52,32 @@ func hubFixture(t *testing.T, remoteContract int) (*hubMode, *httptest.Server) {
 	return &hubMode{reg: reg, agg: agg, client: client, selfID: "hub"}, remote
 }
 
+// TestHub_HostnameConflict: the global registrar rejects a label already claimed
+// by a DIFFERENT workspace anywhere, allows a re-claim by the same workspace, and
+// allows a free label.
+func TestHub_HostnameConflict(t *testing.T) {
+	reg := hub.NewRegistry("hub", hub.DefaultFloor,
+		func() ([]hub.Node, error) { return []hub.Node{{ID: "hub", Addr: "hub.ts.net"}}, nil },
+		func(string) (hub.Health, error) { return hub.Health{Contract: version.Contract}, nil },
+		func() int64 { return 1 },
+	)
+	reg.Refresh()
+	local := fakeLister{wss: []*model.Workspace{{ID: "wl", Hostnames: []model.Hostname{{Name: "app", Port: 3000}}}}}
+	agg := hub.NewAggregator("hub", reg, local, func(context.Context, hub.Host) ([]*model.Workspace, error) { return nil, nil })
+	agg.Aggregate(context.Background())
+	h := &hubMode{reg: reg, agg: agg, selfID: "hub"}
+
+	if msg := h.hostnameConflict("wr", []byte(`{"hostnames":[{"name":"app","port":3001}]}`)); msg == "" {
+		t.Error("expected a conflict: 'app' is claimed by another workspace")
+	}
+	if msg := h.hostnameConflict("wl", []byte(`{"hostnames":[{"name":"app","port":3000}]}`)); msg != "" {
+		t.Errorf("same-workspace reclaim should be allowed, got %q", msg)
+	}
+	if msg := h.hostnameConflict("wr", []byte(`{"hostnames":[{"name":"free"}]}`)); msg != "" {
+		t.Errorf("a free label should be allowed, got %q", msg)
+	}
+}
+
 func TestHub_ListHostsAndWorkspaces(t *testing.T) {
 	h, _ := hubFixture(t, version.Contract)
 
