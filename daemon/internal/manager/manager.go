@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -120,6 +121,11 @@ func (m *Manager) adopt(ws *model.Workspace, isLive bool) {
 	}
 	ctrl, err := session.Open(m.ctx, m.server, ws.TmuxSession, ws.ID)
 	if err != nil {
+		// The tmux session IS alive — we just could not attach to it. Saying
+		// nothing here is how a workspace full of running Claudes disappears from
+		// every lens with no trace of why; the reconciler retries it shortly.
+		log.Printf("adopt: workspace %s (%s) is live in tmux but attach failed: %v",
+			ws.ID, ws.TmuxSession, err)
 		ws.Status = model.StatusCold
 		m.mu.Lock()
 		m.byID[ws.ID] = &entry{ws: ws}
@@ -127,6 +133,10 @@ func (m *Manager) adopt(ws *model.Workspace, isLive bool) {
 		return
 	}
 	ws.Status = model.StatusLive
+	// Persist it. Only the cold branch used to write, so a workspace that ever
+	// went cold stayed cold in the registry forever — every later boot adopted it
+	// as live in memory while the database kept insisting otherwise.
+	_ = m.store.SetWorkspaceStatus(ws.ID, model.StatusLive)
 	m.mu.Lock()
 	m.byID[ws.ID] = &entry{ws: ws, ctrl: ctrl}
 	m.mu.Unlock()

@@ -95,6 +95,7 @@ func main() {
 		peersSvc.Start(ctx)
 	}
 
+	mgr.StartReconciler() // retries attach; a cooled workspace must not stay dark
 	if err := mgr.Start(); err != nil {
 		log.Fatalf("manager start: %v", err)
 	}
