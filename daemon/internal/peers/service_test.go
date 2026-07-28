@@ -16,6 +16,7 @@ import (
 // Mutex-guarded — the service calls SpawnEphemeralPane from a goroutine.
 type fakeHook struct {
 	mu     sync.Mutex
+	shells map[string]bool   // paneID -> foreground is a bare shell right now
 	groups map[string]string // paneID -> group ("" allowed: known but ungrouped)
 	repos  map[string]string // group\x00name -> wsID:repoPath
 	spawns []string          // recorded SpawnEphemeralPane calls "wsID|cwd|cmd"
@@ -26,6 +27,18 @@ func (f *fakeHook) GroupForPane(paneID string) (string, bool) {
 	defer f.mu.Unlock()
 	g, ok := f.groups[paneID]
 	return g, ok
+}
+
+func (f *fakeHook) PaneAtShell(paneID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.shells[paneID]
+}
+
+func (f *fakeHook) setShell(paneID string, atShell bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.shells[paneID] = atShell
 }
 
 func (f *fakeHook) LiveWorkspaceForRepo(group, name string) (string, string, bool) {
@@ -85,7 +98,7 @@ func newTestServiceWithStore(t *testing.T) (*Service, *fakeHook, *store.SQLite) 
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hook := &fakeHook{groups: map[string]string{}, repos: map[string]string{}}
+	hook := &fakeHook{groups: map[string]string{}, repos: map[string]string{}, shells: map[string]bool{}}
 	svc := NewService(st, hook, []byte("test-secret-test-secret-test-sec"))
 	svc.OpenCmd = "" // no deep links from tests
 	return svc, hook, st
@@ -456,7 +469,7 @@ func TestLocalPaneGroups_LiveWindowGroupingForDriverPanes(t *testing.T) {
 	other := svc.Register(RegisterReq{LocalPaneID: "AAAA1111-0000-0000-0000-000000000000",
 		PID: os.Getpid(), CWD: "/w/ChartLabs/admin", GitRoot: "/w/ChartLabs/admin"})
 	svc.SetLocalPaneGroups(map[string]string{
-		uuid: "CHARTLABS",
+		uuid:                                   "CHARTLABS",
 		"aaaa1111-0000-0000-0000-000000000000": "CHARTLABS",
 	})
 	if resp := svc.Send(SendReq{FromID: got.PeerID, ToName: "admin", Text: "hi"}); !resp.OK {
@@ -468,7 +481,7 @@ func TestLocalPaneGroups_LiveWindowGroupingForDriverPanes(t *testing.T) {
 
 	// Window rename: app pushes a replacement map → both re-group instantly.
 	svc.SetLocalPaneGroups(map[string]string{
-		uuid: "RENAMED",
+		uuid:                                   "RENAMED",
 		"aaaa1111-0000-0000-0000-000000000000": "ELSEWHERE",
 	})
 	if resp := svc.Send(SendReq{FromID: got.PeerID, ToID: other.PeerID, Text: "blocked"}); resp.OK {

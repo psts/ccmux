@@ -24,11 +24,6 @@ const sessionIdleGrace = 90 * time.Second
 type paneSessions struct {
 	live         map[string]bool
 	lastActivity int64
-	// atShell records the backstop observation: the pane's foreground is a bare
-	// shell. It is definitive and takes effect at once — the idle grace exists to
-	// cover a start we may have MISSED, and there is nothing to miss when we can
-	// see the shell. Any positive clears it.
-	atShell bool
 }
 
 // NoteSession records a verdict about a pane's Claude session. Start and end
@@ -48,19 +43,16 @@ func (s *Service) NoteSession(paneID, sessionID string, sig model.SessionSignal)
 	}
 	if sig != model.SessionNone {
 		ps.lastActivity = s.Now().UnixMilli()
-		ps.atShell = false // a session spoke, so the pane is not idling at a shell
 	}
 	switch sig {
 	case model.SessionStarted:
 		ps.live[sessionKey(sessionID)] = true
-		ps.atShell = false
 	case model.SessionEnded:
 		delete(ps.live, sessionKey(sessionID))
 	case model.SessionNone:
 		// An observation of the PANE, not a report from a session: nothing is
 		// running there, so every id we still believe in is stale.
 		clear(ps.live)
-		ps.atShell = true
 	}
 	s.persistLocked(paneID, ps)
 }
@@ -80,14 +72,29 @@ func sessionKey(sessionID string) string {
 // lifecycle, so a pane whose hooks are missing or misconfigured keeps behaving
 // exactly as before: this signal may only ever REMOVE presence, never grant it.
 func (s *Service) paneSessionDeadLocked(paneID string) bool {
+	// The backstop, asked fresh. A pane at a bare shell is running nothing,
+	// whatever the ledger believes — which settles a SessionStart that arrived
+	// late, or one that was never matched by a SessionEnd. No grace applies: the
+	// grace covers a start we may have MISSED, and there is nothing to miss when
+	// we can see the shell.
+	if s.mgr.PaneAtShell(paneID) {
+		return true
+	}
 	ps := s.sessions[paneID]
 	if ps == nil || len(ps.live) > 0 {
 		return false
 	}
-	if ps.atShell {
-		return true // seen, not inferred — no grace needed
-	}
 	return s.Now().UnixMilli()-ps.lastActivity >= sessionIdleGrace.Milliseconds()
+}
+
+// PaneHasLiveSession reports whether a Claude session is known to be running in
+// a pane — the manager's cue that a non-shell foreground is Claude working
+// rather than the pane having been repurposed.
+func (s *Service) PaneHasLiveSession(paneID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ps := s.sessions[paneID]
+	return ps != nil && len(ps.live) > 0
 }
 
 // forgetPaneSessionsLocked drops a pane's session truth once the pane itself is

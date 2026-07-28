@@ -92,6 +92,7 @@ func main() {
 		// a session that will read a message, rather than a claude process with
 		// the MCP server merely loaded.
 		mgr.SessionSink = peersSvc.NoteSession
+		mgr.SessionLiveFn = peersSvc.PaneHasLiveSession
 		peersSvc.Start(ctx)
 	}
 

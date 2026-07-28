@@ -54,6 +54,10 @@ type Manager struct {
 	// resolved to a pane (wired to the peers bus at startup). A plain func keeps
 	// the manager from importing the bus for one call.
 	SessionSink func(paneID, sessionID string, sig model.SessionSignal)
+	// SessionLiveFn asks the peers bus whether a pane holds a running Claude
+	// session, which is how a non-shell foreground is told apart: Claude at work,
+	// or the pane repurposed for something else entirely.
+	SessionLiveFn func(paneID string) bool
 
 	// ExtraPaneEnv, when set, contributes additional per-pane env vars (the peers
 	// bus injects its bearer token here). Set once at startup, before any pane is

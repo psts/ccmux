@@ -114,8 +114,14 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	// "changed" but everything has been forgotten. It cannot be lost, so it
 	// retires sessions no SessionEnd ever reported: a killed Claude, a session
 	// predating the hooks, a daemon that was down.
-	if shell {
+	switch {
+	case shell:
 		m.ApplySession(paneID, "", model.SessionNone)
+	case kind == "pane-command" && !runsClaude(&saved) && !m.paneHasLiveSession(paneID):
+		// Not a shell, not Claude, and no session behind it: the pane has been
+		// given to other work. Whatever Claude used to live here is history, and
+		// history is not what dormancy reports.
+		m.clearHostedClaude(paneID)
 	}
 	if !changed {
 		return

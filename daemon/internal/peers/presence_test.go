@@ -232,7 +232,7 @@ func hasMailbox(t *testing.T, st *store.SQLite, peerID string) bool {
 
 // newBareService models a restarted daemon: same store, empty registry.
 func newBareService(st *store.SQLite) *Service {
-	return NewService(st, &fakeHook{groups: map[string]string{}, repos: map[string]string{}},
+	return NewService(st, &fakeHook{groups: map[string]string{}, repos: map[string]string{}, shells: map[string]bool{}},
 		[]byte("test-secret-test-secret-test-sec"))
 }
 
@@ -500,12 +500,14 @@ func TestPresence_BareShellRetiresSessionsImmediately(t *testing.T) {
 		t.Fatal("a running session must be listed")
 	}
 
-	svc.NoteSession("pane-B", "", model.SessionNone) // tmux: the pane is at a shell
+	hook.setShell("pane-B", true) // tmux: the pane is at a shell
+	svc.NoteSession("pane-B", "", model.SessionNone)
 	if contains(listIDs(svc, me.PeerID), gone.PeerID) {
 		t.Fatal("a pane at a bare shell has no session, no grace period needed")
 	}
 
 	// And a real session starting there brings it straight back.
+	hook.setShell("pane-B", false)
 	svc.NoteSession("pane-B", "s2", model.SessionStarted)
 	if !contains(listIDs(svc, me.PeerID), gone.PeerID) {
 		t.Fatal("a new session must clear the shell observation")
@@ -515,7 +517,8 @@ func TestPresence_BareShellRetiresSessionsImmediately(t *testing.T) {
 // SessionNone is an observation of the PANE, so it retires every session id at
 // once — unlike SessionEnded, which retires the one that reported itself.
 func TestNoteSession_NoneClearsEveryLiveID(t *testing.T) {
-	svc, _ := newTestService(t)
+	svc, hook := newTestService(t)
+	hook.setShell("pane-X", true)
 	svc.NoteSession("pane-X", "s1", model.SessionStarted)
 	svc.NoteSession("pane-X", "s2", model.SessionStarted)
 

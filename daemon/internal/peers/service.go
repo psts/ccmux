@@ -25,6 +25,11 @@ import (
 // the native teammate spawn.
 type Hook interface {
 	GroupForPane(paneID string) (string, bool)
+	// PaneAtShell reports whether a pane's foreground is a bare shell RIGHT NOW.
+	// Asked at decision time rather than remembered from a past signal: hooks
+	// arrive out of band and can land after the observation that contradicts
+	// them, and a fact we can look up has no reason to be cached.
+	PaneAtShell(paneID string) bool
 	LiveWorkspaceForRepo(group, name string) (wsID, repoPath string, ok bool)
 	SpawnEphemeralPane(wsID, cwd, oneShotCmd, createdBy string) error
 }

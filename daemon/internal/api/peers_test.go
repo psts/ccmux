@@ -21,6 +21,7 @@ var testSecret = []byte("0123456789abcdef0123456789abcdef")
 type nullHook struct{}
 
 func (nullHook) GroupForPane(string) (string, bool)                         { return "", false }
+func (nullHook) PaneAtShell(string) bool                                    { return false }
 func (nullHook) LiveWorkspaceForRepo(string, string) (string, string, bool) { return "", "", false }
 func (nullHook) SpawnEphemeralPane(string, string, string, string) error    { return nil }
 

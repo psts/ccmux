@@ -117,3 +117,47 @@ func TestApplySession_MarksHostedClaudeOnAnyPositive(t *testing.T) {
 		}
 	}
 }
+
+// A pane is not its history. After enough workspace cycles and layout changes,
+// the pane that once auto-started Claude may be running a dev server or an
+// editor because that is what fits the work now. A dormancy flag that outlives
+// its truth is noise, and noise gets ignored.
+func TestRunsClaudeAndRepurposing(t *testing.T) {
+	// Claude's argv[0] is its bare version string, so a running Claude is
+	// recognisable even when no hook ever reported its session.
+	for _, cmd := range []string{"2.1.220", "2.1.212", "2.1.218"} {
+		if !runsClaude(&model.Pane{RawCommand: cmd}) {
+			t.Errorf("%q is Claude", cmd)
+		}
+	}
+	// Everything the user might reasonably put in a pane instead.
+	for _, cmd := range []string{"vim", "node", "Python", "zsh", "npm", "pnpm", ""} {
+		if runsClaude(&model.Pane{RawCommand: cmd}) {
+			t.Errorf("%q is not Claude", cmd)
+		}
+	}
+}
+
+// The three-way split the repurpose rule turns on, stated once so it cannot
+// drift: a shell means nothing runs here, Claude means leave it be, and
+// anything else means the pane has been given to other work.
+func TestPaneForegroundClassification(t *testing.T) {
+	cases := []struct{ cmd, want string }{
+		{"zsh", "shell"}, {"-bash", "shell"}, {"login", "shell"},
+		{"2.1.220", "claude"},
+		{"vim", "other"}, {"node", "other"}, {"Python", "other"},
+	}
+	for _, c := range cases {
+		p := &model.Pane{RawCommand: c.cmd}
+		got := "other"
+		switch {
+		case atBareShell(p):
+			got = "shell"
+		case runsClaude(p):
+			got = "claude"
+		}
+		if got != c.want {
+			t.Errorf("%q classified %q, want %q", c.cmd, got, c.want)
+		}
+	}
+}
