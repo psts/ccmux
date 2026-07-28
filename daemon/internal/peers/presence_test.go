@@ -200,17 +200,19 @@ func TestCollectMailboxes_ErasesUnclaimedPanelessMailbox(t *testing.T) {
 	}
 }
 
-// Cursors written before mailboxes existed carry no pane, so they look exactly
-// like an unclaimed pane-less mailbox — which is what they are.
-func TestCollectMailboxes_ErasesLegacyCursor(t *testing.T) {
+// Cursors written before mailboxes recorded a substrate carry no pane id — but
+// that means "never written down", NOT "pane-less". Reading it as pane-less
+// erased three live panes' queues once already, so ambiguity must never be
+// grounds for deletion. The set is fixed and shrinks as peers re-register.
+func TestCollectMailboxes_KeepsCursorOfUnknownProvenance(t *testing.T) {
 	_, _, st := newTestServiceWithStore(t)
 	if err := st.AdvancePeerCursor("legacy01", 42); err != nil {
 		t.Fatalf("seed legacy cursor: %v", err)
 	}
 
 	newBareService(st).CollectMailboxes()
-	if hasMailbox(t, st, "legacy01") {
-		t.Fatal("a legacy cursor with no substrate must be collected")
+	if !hasMailbox(t, st, "legacy01") {
+		t.Fatal("a cursor of unknown provenance must never be collected")
 	}
 }
 
@@ -472,5 +474,59 @@ func TestList_CarriesPollOnlyMode(t *testing.T) {
 	// An older client sends nothing, and push is what almost every session runs.
 	if byName["/x/c"].PollOnly {
 		t.Error("the default must be push, so old clients are not mislabelled")
+	}
+}
+
+// The backstop. Hooks get lost — the daemon was restarting, the session predates
+// the hook install, a SIGKILL fired no SessionEnd — so a pane can be left
+// believing in a session that ended. tmux streaming a bare shell settles it, and
+// settles it AT ONCE: the idle grace exists to cover a start we may have missed,
+// and there is nothing to miss when we can see the shell.
+func TestPresence_BareShellRetiresSessionsImmediately(t *testing.T) {
+	svc, hook := newTestService(t)
+	now := time.Unix(1_700_000_000, 0)
+	svc.Now = func() time.Time { return now }
+	hook.setGroup("pane-A", "grp")
+	hook.setGroup("pane-B", "grp")
+	me := registerPane(svc, "pane-A", "/x/a")
+	gone := registerPane(svc, "pane-B", "/x/b")
+	svc.mu.Lock()
+	svc.conns[gone.PeerID] = &peerConn{peerID: gone.PeerID}
+	svc.mu.Unlock()
+
+	// A session is running and its SessionEnd will never arrive.
+	svc.NoteSession("pane-B", "s1", model.SessionStarted)
+	if !contains(listIDs(svc, me.PeerID), gone.PeerID) {
+		t.Fatal("a running session must be listed")
+	}
+
+	svc.NoteSession("pane-B", "", model.SessionNone) // tmux: the pane is at a shell
+	if contains(listIDs(svc, me.PeerID), gone.PeerID) {
+		t.Fatal("a pane at a bare shell has no session, no grace period needed")
+	}
+
+	// And a real session starting there brings it straight back.
+	svc.NoteSession("pane-B", "s2", model.SessionStarted)
+	if !contains(listIDs(svc, me.PeerID), gone.PeerID) {
+		t.Fatal("a new session must clear the shell observation")
+	}
+}
+
+// SessionNone is an observation of the PANE, so it retires every session id at
+// once — unlike SessionEnded, which retires the one that reported itself.
+func TestNoteSession_NoneClearsEveryLiveID(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.NoteSession("pane-X", "s1", model.SessionStarted)
+	svc.NoteSession("pane-X", "s2", model.SessionStarted)
+
+	svc.NoteSession("pane-X", "", model.SessionNone)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if n := len(svc.sessions["pane-X"].live); n != 0 {
+		t.Fatalf("SessionNone left %d live ids, want 0", n)
+	}
+	if !svc.paneSessionDeadLocked("pane-X") {
+		t.Fatal("the pane must read as dead straight away")
 	}
 }

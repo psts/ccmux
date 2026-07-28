@@ -24,12 +24,17 @@ const sessionIdleGrace = 90 * time.Second
 type paneSessions struct {
 	live         map[string]bool
 	lastActivity int64
+	// atShell records the backstop observation: the pane's foreground is a bare
+	// shell. It is definitive and takes effect at once — the idle grace exists to
+	// cover a start we may have MISSED, and there is nothing to miss when we can
+	// see the shell. Any positive clears it.
+	atShell bool
 }
 
-// NoteSession records a hook's verdict about a pane's Claude session. Only
-// start and end mutate membership; every other event merely refreshes the
-// activity clock, so a sub-agent's events can never leave a phantom id behind
-// that keeps a departed pane looking alive forever.
+// NoteSession records a verdict about a pane's Claude session. Start and end
+// mutate membership by id and SessionNone clears it outright; every other event
+// merely refreshes the activity clock, so a sub-agent's events can never leave a
+// phantom id behind that keeps a departed pane looking alive forever.
 func (s *Service) NoteSession(paneID, sessionID string, sig model.SessionSignal) {
 	if paneID == "" {
 		return
@@ -41,12 +46,21 @@ func (s *Service) NoteSession(paneID, sessionID string, sig model.SessionSignal)
 		ps = &paneSessions{live: map[string]bool{}}
 		s.sessions[paneID] = ps
 	}
-	ps.lastActivity = s.Now().UnixMilli()
+	if sig != model.SessionNone {
+		ps.lastActivity = s.Now().UnixMilli()
+		ps.atShell = false // a session spoke, so the pane is not idling at a shell
+	}
 	switch sig {
 	case model.SessionStarted:
 		ps.live[sessionKey(sessionID)] = true
+		ps.atShell = false
 	case model.SessionEnded:
 		delete(ps.live, sessionKey(sessionID))
+	case model.SessionNone:
+		// An observation of the PANE, not a report from a session: nothing is
+		// running there, so every id we still believe in is stale.
+		clear(ps.live)
+		ps.atShell = true
 	}
 	s.persistLocked(paneID, ps)
 }
@@ -69,6 +83,9 @@ func (s *Service) paneSessionDeadLocked(paneID string) bool {
 	ps := s.sessions[paneID]
 	if ps == nil || len(ps.live) > 0 {
 		return false
+	}
+	if ps.atShell {
+		return true // seen, not inferred — no grace needed
 	}
 	return s.Now().UnixMilli()-ps.lastActivity >= sessionIdleGrace.Milliseconds()
 }

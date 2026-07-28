@@ -101,16 +101,25 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	// The same command signal that renames a pane also reveals a Claude that
 	// exited, so dormancy is recomputed here rather than polled for.
 	changed := refreshDormantLocked(p)
+	shell := atBareShell(p)
 	if title := derivePaneTitle(p.RawTitle, p.RawCommand, m.paneTitleDefaults); title != "" && title != p.Title {
 		p.Title = title
 		changed = true
 	}
+	saved := *p // copy: p is shared state and the writes below happen unlocked
+	m.mu.Unlock()
+	// The backstop, asserted on EVERY command signal rather than only on a change.
+	// tmux replays each pane's current command on subscribe, so this is what
+	// re-establishes the truth after a daemon restart — a moment when nothing has
+	// "changed" but everything has been forgotten. It cannot be lost, so it
+	// retires sessions no SessionEnd ever reported: a killed Claude, a session
+	// predating the hooks, a daemon that was down.
+	if shell {
+		m.ApplySession(paneID, "", model.SessionNone)
+	}
 	if !changed {
-		m.mu.Unlock()
 		return
 	}
-	saved := *p // copy: p is shared state and the write below happens unlocked
-	m.mu.Unlock()
 	_ = m.store.SavePane(&saved)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 }

@@ -27,11 +27,13 @@ func TestStartsClaude(t *testing.T) {
 	}
 }
 
-// A pane started for Claude whose foreground is now a bare shell is dormant —
-// the case where a dead teammate is indistinguishable from a working one.
+// A pane that has hosted Claude and is now at a bare shell is dormant — the
+// case where a dead teammate is indistinguishable from a working one. The rule
+// reads HostedClaude, NOT the startup command, so a Claude the user launched by
+// hand counts exactly the same.
 func TestIsDormant(t *testing.T) {
 	claudePane := func(rawCmd string) *model.Pane {
-		return &model.Pane{StartupCommand: "claude --dangerously-load-development-channels", RawCommand: rawCmd}
+		return &model.Pane{HostedClaude: true, RawCommand: rawCmd}
 	}
 	if !isDormant(claudePane("zsh")) {
 		t.Error("a claude pane sitting at a shell must be dormant")
@@ -47,20 +49,42 @@ func TestIsDormant(t *testing.T) {
 	if isDormant(claudePane("node")) {
 		t.Error("a pane running node must not be dormant")
 	}
-	// A pane never meant to host Claude has no session to lose.
-	if isDormant(&model.Pane{StartupCommand: "", RawCommand: "zsh"}) {
+	// A pane that has never hosted Claude has no session to lose.
+	if isDormant(&model.Pane{RawCommand: "zsh"}) {
 		t.Error("a plain terminal pane must never be dormant")
 	}
 	// The dev-server pane has its own lifecycle and its own UI affordance.
-	if isDormant(&model.Pane{StartupCommand: "claude", RawCommand: "zsh", DevServer: true}) {
+	if isDormant(&model.Pane{HostedClaude: true, RawCommand: "zsh", DevServer: true}) {
 		t.Error("the dev pane is not a dormant claude")
+	}
+	// The whole point of the change: a hand-launched Claude carries no startup
+	// command, and must still go dormant once it exits.
+	handLaunched := &model.Pane{HostedClaude: true, StartupCommand: "", RawCommand: "zsh"}
+	if !isDormant(handLaunched) {
+		t.Error("a hand-launched Claude that exited must be dormant")
+	}
+}
+
+// atBareShell is the backstop observation, and it must recognise a shell and
+// nothing else — saying "no session" about a pane running real work would hide
+// a live teammate.
+func TestAtBareShell(t *testing.T) {
+	for _, cmd := range []string{"zsh", "bash", "-zsh", "fish", "sh"} {
+		if !atBareShell(&model.Pane{RawCommand: cmd}) {
+			t.Errorf("%q is a bare shell", cmd)
+		}
+	}
+	for _, cmd := range []string{"2.1.220", "vim", "node", "Python", "", "npm"} {
+		if atBareShell(&model.Pane{RawCommand: cmd}) {
+			t.Errorf("%q is not a bare shell", cmd)
+		}
 	}
 }
 
 // refreshDormantLocked reports only real transitions, so the caller persists
 // and broadcasts once rather than on every command signal.
 func TestRefreshDormantReportsTransitionsOnly(t *testing.T) {
-	p := &model.Pane{StartupCommand: "claude", RawCommand: "2.1.220"}
+	p := &model.Pane{HostedClaude: true, RawCommand: "2.1.220"}
 	if refreshDormantLocked(p) {
 		t.Fatal("a running claude pane is not a change from the zero value")
 	}
@@ -74,5 +98,22 @@ func TestRefreshDormantReportsTransitionsOnly(t *testing.T) {
 	p.RawCommand = "2.1.220"
 	if !refreshDormantLocked(p) || p.Dormant {
 		t.Fatal("a new claude starting must clear dormancy")
+	}
+}
+
+// hosted_claude is what makes a hand-launched Claude visible to us at all: the
+// hook environment comes from the PANE, so any positive signal proves a session
+// ran there whoever started it. The bit is sticky for the life of the pane.
+func TestApplySession_MarksHostedClaudeOnAnyPositive(t *testing.T) {
+	for _, sig := range []model.SessionSignal{model.SessionStarted, model.SessionActive} {
+		p := &model.Pane{StartupCommand: "", RawCommand: "zsh"}
+		if isDormant(p) {
+			t.Fatal("precondition: a pane with no known Claude is not dormant")
+		}
+		p.HostedClaude = sig == model.SessionStarted || sig == model.SessionActive
+		p.Dormant = isDormant(p)
+		if !p.Dormant {
+			t.Errorf("%s should mark the pane as having hosted Claude, making it dormant at a shell", sig)
+		}
 	}
 }

@@ -94,6 +94,14 @@ func (s *Service) CollectMailboxes() {
 		if s.peers[b.PeerID] != nil {
 			continue // a session holds it, present or merely away
 		}
+		if b.UpdatedAt == 0 {
+			// Unknown provenance: written before mailboxes recorded a substrate,
+			// and never re-registered since. An empty pane id here does NOT mean
+			// "pane-less" — it means "we never wrote one down". Reading it as
+			// pane-less erased three live panes' queues once already; ambiguity is
+			// not evidence, and these rows are a fixed, shrinking set.
+			continue
+		}
 		if b.PaneID != "" && !s.keyGoneLocked(b.PaneID) {
 			continue // the pane can still host a returning session
 		}

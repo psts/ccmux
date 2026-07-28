@@ -24,8 +24,9 @@ var shellCommands = map[string]bool{
 }
 
 // startsClaude reports whether a startup command was meant to run a Claude
-// session. Only such panes can go dormant — a pane opened as a plain terminal
-// has no session to lose.
+// session. This is only a SEED for hosted_claude on a freshly created pane and
+// for the one-time migration of existing ones; it is never the runtime test,
+// because it cannot see a Claude the user launched by hand.
 func startsClaude(startupCmd string) bool {
 	fields := strings.Fields(startupCmd)
 	for _, f := range fields {
@@ -38,14 +39,18 @@ func startsClaude(startupCmd string) bool {
 	return false
 }
 
-// isDormant decides from the two facts the pane already carries: it was started
-// to host Claude, and its foreground command is now a bare shell.
+// isDormant is the whole rule, in the two facts a pane carries: a Claude has
+// run here, and a bare shell is running here now.
 func isDormant(p *model.Pane) bool {
-	if p.DevServer || !startsClaude(p.StartupCommand) {
+	if p.DevServer || !p.HostedClaude {
 		return false
 	}
 	return shellCommands[p.RawCommand]
 }
+
+// atBareShell reports the observation that backstops every missed hook: whatever
+// the hooks did or did not say, a pane sitting at a shell is running no session.
+func atBareShell(p *model.Pane) bool { return shellCommands[p.RawCommand] }
 
 // refreshDormantLocked recomputes a pane's dormant flag, returning whether it
 // changed so the caller can persist and broadcast exactly once.

@@ -577,10 +577,32 @@ func (m *Manager) SetLayout(wsID, blob string, baseVersion int) (int, error) {
 // "a session will read this", and no signal the bus owns can establish that.
 // A nil sink (peers disabled) makes this a no-op.
 func (m *Manager) ApplySession(paneID, sessionID string, sig model.SessionSignal) {
+	// Any positive is proof a Claude has run here, whoever launched it. The bit
+	// is sticky for the life of the pane and is what dormancy keys off.
+	if sig == model.SessionStarted || sig == model.SessionActive {
+		m.markHostedClaude(paneID)
+	}
 	if m.SessionSink == nil {
 		return
 	}
 	m.SessionSink(paneID, sessionID, sig)
+}
+
+// markHostedClaude records that a Claude session has run in a pane, persisting
+// and broadcasting only on the transition.
+func (m *Manager) markHostedClaude(paneID string) {
+	m.mu.Lock()
+	e, p := m.findPaneLocked(paneID)
+	if p == nil || p.HostedClaude {
+		m.mu.Unlock()
+		return
+	}
+	p.HostedClaude = true
+	p.Dormant = isDormant(p)
+	wsID, saved := e.ws.ID, *p
+	m.mu.Unlock()
+	_ = m.store.SavePane(&saved)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 }
 
 // ApplyAttention sets a pane's attention state, persists it, and broadcasts the
@@ -625,7 +647,7 @@ func (m *Manager) newPane(wsID, cwd, startupCmd, createdBy string) *model.Pane {
 		ID: uuid.NewString(), WorkspaceID: wsID, CWD: cwd, StartupCommand: startupCmd,
 		CreatedBy: createdBy, CreatedAt: nowMillis(), Status: model.StatusLive,
 		Attention: model.AttentionIdle,
-		Title:     initialPaneTitle(startupCmd), // refined live by tmux signals
+		Title:     initialPaneTitle(startupCmd),   // refined live by tmux signals
 		Cols:      defaultCols, Rows: defaultRows, // matches the initial ctrl.Resize
 	}
 }

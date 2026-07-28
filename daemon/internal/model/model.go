@@ -36,6 +36,13 @@ const (
 	// SessionActive: any other hook — proof a session is running even if its
 	// start was never observed, which is what makes a missed start self-heal.
 	SessionActive SessionSignal = "active"
+	// SessionNone: the pane's foreground is a bare shell, so nothing is running
+	// there whatever the hooks did or did not say. Unlike SessionEnded — which
+	// retires one session id — this retires the pane's whole set, because it is
+	// an observation of the pane rather than a report from a session. It is the
+	// backstop for every hook that never arrived: a daemon restarting, a session
+	// that predates the hook install, a SIGKILL that fired no SessionEnd.
+	SessionNone SessionSignal = "none"
 )
 
 // Attention is a pane's activity state, driven primarily by Claude Code hooks
@@ -193,12 +200,17 @@ type Pane struct {
 	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
 	// ■). Its presence is the "running" signal lenses render.
 	DevServer bool `json:"devServer,omitempty"`
-	// Dormant marks a pane that was started to run a Claude session whose
-	// process has since exited, leaving a bare shell. The pane is perfectly
-	// alive — that is exactly why this is needed: nothing else distinguishes it
-	// from a working session, so a dead teammate looks like a live one until you
-	// click into it. Lenses render it as restartable.
+	// Dormant marks a pane that has hosted a Claude session and is now sitting at
+	// a bare shell. The pane is perfectly alive — that is exactly why this is
+	// needed: nothing else distinguishes it from a working session, so a dead
+	// teammate looks like a live one until you click into it.
 	Dormant bool `json:"dormant,omitempty"`
+	// HostedClaude records that a Claude session has run in this pane at some
+	// point. Set by the session hooks and never cleared while the pane lives, so
+	// it holds for a Claude the user launched by hand — the hook environment
+	// comes from the PANE, not from the command line, which is what the old
+	// startup-command guess could never see.
+	HostedClaude bool `json:"hostedClaude,omitempty"`
 	// RawTitle/RawCommand are the tmux runtime signals (#{pane_title},
 	// #{pane_current_command}) that Title is derived from. Runtime-only.
 	RawTitle   string `json:"-"`
