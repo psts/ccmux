@@ -18,10 +18,10 @@ const replyGrantTTL = 2 * time.Hour
 // the tool-facing error explaining why not.
 func (s *Service) checkReachableLocked(req SendReq, sender *Peer, senderGroup string, target *Peer) string {
 	targetGroup := s.groupOfLocked(target)
-	if targetGroup == senderGroup {
+	if sameGroup(targetGroup, senderGroup) {
 		return ""
 	}
-	if req.ToGroup != "" && req.ToGroup == targetGroup {
+	if req.ToGroup != "" && sameGroup(req.ToGroup, targetGroup) {
 		return "" // explicitly addressed into that group
 	}
 	if s.hasReplyGrantLocked(sender.ID, target.ID) {

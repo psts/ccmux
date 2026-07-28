@@ -274,6 +274,12 @@ func (s *Service) SetLocalPaneGroups(groups map[string]string) {
 	s.mu.Unlock()
 }
 
+// fallbackGroup names the project a session outside ccmux belongs to: the
+// folder that HOLDS the repo, by name only. A repo at .../Coding/ChartLabs/backend
+// gives "ChartLabs" — the same string the ccmux window group uses — so a Claude
+// started in a plain terminal lands in the right project and can talk to its
+// teammates without naming a group at all. The full path was correct and useless:
+// it could never match a window group, so every such session was marooned.
 func fallbackGroup(gitRoot, cwd string) string {
 	base := gitRoot
 	if base == "" {
@@ -282,8 +288,13 @@ func fallbackGroup(gitRoot, cwd string) string {
 	if base == "" {
 		return ""
 	}
-	return filepath.Dir(base)
+	return filepath.Base(filepath.Dir(base))
 }
+
+// sameGroup compares two group names. Case is ignored so a window someone typed
+// as "chartlabs" and a folder named "ChartLabs" are one project rather than two
+// that cannot see each other. Names are stored and displayed exactly as written.
+func sameGroup(a, b string) bool { return strings.EqualFold(a, b) }
 
 func (s *Service) prunePermsLocked() {
 	cutoff := s.Now().Add(-permRequestTTL).UnixMilli()

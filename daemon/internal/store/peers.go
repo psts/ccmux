@@ -142,7 +142,7 @@ WHERE to_id=? AND kind=? AND sent_at>? AND from_id!=''`,
 // group (snapshotted at send time), oldest first — the read-only viewer's
 // history. limit<=0 means no cap.
 func (s *SQLite) PeerGroupMessages(group string, sinceMillis int64, limit int) ([]*model.PeerEvent, error) {
-	q := `SELECT ` + peerEventCols + ` FROM peer_events WHERE grp=? AND kind=? AND sent_at>? ORDER BY seq DESC`
+	q := `SELECT ` + peerEventCols + ` FROM peer_events WHERE grp=? COLLATE NOCASE AND kind=? AND sent_at>? ORDER BY seq DESC`
 	args := []any{group, model.PeerEventMessage, sinceMillis}
 	if limit > 0 {
 		q += ` LIMIT ?`

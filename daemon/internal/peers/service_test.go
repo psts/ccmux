@@ -126,15 +126,18 @@ func TestRegister_WindowGroupAndFallback(t *testing.T) {
 		t.Fatalf("derived name = %q, want backend", got.Name)
 	}
 
-	// Pane known but workspace ungrouped → dirname fallback.
+	// Pane known but workspace ungrouped → the holding folder's NAME, which is
+	// what a ccmux window group is called, so the two can match.
 	hook.groups["pane-2"] = ""
-	if got := registerPane(svc, "pane-2", "/Users/x/Work/Coding/api"); got.Group != "/Users/x/Work/Coding" {
-		t.Fatalf("ungrouped pane peer group = %q, want dirname fallback", got.Group)
+	if got := registerPane(svc, "pane-2", "/Users/x/Work/Coding/api"); got.Group != "Coding" {
+		t.Fatalf("ungrouped pane peer group = %q, want Coding", got.Group)
 	}
 
-	// No pane at all → dirname fallback (today's exact semantics).
-	if got := registerPaneless(svc, "/Users/x/Work/Coding/cli"); got.Group != "/Users/x/Work/Coding" {
-		t.Fatalf("pane-less group = %q, want dirname fallback", got.Group)
+	// No pane at all → same rule. A session started in a plain terminal inside
+	// a project lands in that project rather than being marooned by a path no
+	// window group could ever equal.
+	if got := registerPaneless(svc, "/Users/x/Work/Coding/cli"); got.Group != "Coding" {
+		t.Fatalf("pane-less group = %q, want Coding", got.Group)
 	}
 }
 
@@ -453,8 +456,8 @@ func TestLocalPaneGroups_LiveWindowGroupingForDriverPanes(t *testing.T) {
 	uuid := "C94A648A-D8B2-4A36-93FB-CED728437CED"
 	got := svc.Register(RegisterReq{LocalPaneID: uuid, PID: os.Getpid(),
 		CWD: "/w/ChartLabs/backend", GitRoot: "/w/ChartLabs/backend"})
-	if got.Group != "/w/ChartLabs" {
-		t.Fatalf("before map push: group = %q, want dirname fallback", got.Group)
+	if got.Group != "ChartLabs" {
+		t.Fatalf("before map push: group = %q, want the holding folder's name", got.Group)
 	}
 	// Stable id derived from the pane UUID: an MCP-server restart keeps it.
 	again := svc.Register(RegisterReq{LocalPaneID: uuid, PID: os.Getpid(),
@@ -487,10 +490,10 @@ func TestLocalPaneGroups_LiveWindowGroupingForDriverPanes(t *testing.T) {
 	if resp := svc.Send(SendReq{FromID: got.PeerID, ToID: other.PeerID, Text: "blocked"}); resp.OK {
 		t.Fatal("send should fail after panes moved to different window groups")
 	}
-	// Map entry gone (pane closed / app quit) → dirname fallback returns.
+	// Map entry gone (pane closed / app quit) → folder-name fallback returns.
 	svc.SetLocalPaneGroups(map[string]string{})
-	if g := svc.groupOfLocked(svc.peers[got.PeerID]); g != "/w/ChartLabs" {
-		t.Fatalf("after map clear: group = %q, want dirname fallback", g)
+	if g := svc.groupOfLocked(svc.peers[got.PeerID]); g != "ChartLabs" {
+		t.Fatalf("after map clear: group = %q, want the holding folder's name", g)
 	}
 }
 

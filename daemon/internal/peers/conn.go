@@ -268,7 +268,7 @@ func (s *Service) fanToListenersLocked(ev *model.PeerEvent) {
 		return
 	}
 	for l := range s.listeners {
-		if l.group != ev.Group {
+		if !sameGroup(l.group, ev.Group) {
 			continue
 		}
 		select {

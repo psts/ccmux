@@ -69,7 +69,7 @@ func (s *Service) Send(req SendReq) SendResp {
 	// A message that crossed a group boundary opens the return path, so the
 	// recipient can answer with a plain to_id reply the way it answers anyone
 	// else. Without this the conversation is one-way and the loop never closes.
-	if targetGroup := s.groupOfLocked(target); targetGroup != senderGroup {
+	if targetGroup := s.groupOfLocked(target); !sameGroup(targetGroup, senderGroup) {
 		s.grantReplyLocked(target.ID, sender.ID)
 	}
 
@@ -106,7 +106,7 @@ func (s *Service) resolveTargetLocked(req SendReq, sender *Peer, senderGroup str
 	var matches []*Peer
 	for _, p := range s.peers {
 		if p.Name == req.ToName && p.ID != sender.ID &&
-			s.groupOfLocked(p) == wantGroup && s.presentLocked(p) {
+			sameGroup(s.groupOfLocked(p), wantGroup) && s.presentLocked(p) {
 			matches = append(matches, p)
 		}
 	}

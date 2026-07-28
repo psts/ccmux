@@ -1,6 +1,7 @@
 package peers
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +109,60 @@ func TestList_GroupArgumentLooksIntoAnotherProject(t *testing.T) {
 	}
 	if got[0].Group != "CHARTLABS" {
 		t.Fatalf("entry must carry the group to pass as to_group, got %q", got[0].Group)
+	}
+}
+
+// The point of naming a group after the folder that holds the repos: a Claude
+// started in a plain terminal inside a project lands in that project, and can
+// talk to the panes there without naming a group at all. The old full path
+// could never equal a window group, so such a session was marooned.
+func TestFallbackGroup_MatchesTheWindowGroupName(t *testing.T) {
+	cases := []struct{ gitRoot, cwd, want string }{
+		{"/Users/p/Work/Coding/ChartLabs/backend", "", "ChartLabs"},
+		{"", "/Users/p/Work/Coding/ChartLabs/backend", "ChartLabs"},
+		{"/Users/p/Work/Coding/ccmux", "", "Coding"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := fallbackGroup(c.gitRoot, c.cwd); got != c.want {
+			t.Errorf("fallbackGroup(%q,%q) = %q, want %q", c.gitRoot, c.cwd, got, c.want)
+		}
+	}
+}
+
+// A window someone typed as "chartlabs" and a folder named "ChartLabs" are one
+// project, not two that cannot see each other. Names keep the spelling they
+// were given; only the comparison ignores case.
+func TestSameGroup_IgnoresCaseOnly(t *testing.T) {
+	if !sameGroup("ChartLabs", "chartlabs") {
+		t.Error("case must not split a group")
+	}
+	if !sameGroup("MIXED", "Mixed") {
+		t.Error("case must not split a group")
+	}
+	if sameGroup("ChartLabs", "Coding") {
+		t.Error("different names are different groups")
+	}
+	if sameGroup("", "Coding") {
+		t.Error("an empty group must not match a real one")
+	}
+}
+
+// End to end: a plain-terminal session in ChartLabs/backend reaches the panes
+// in the ChartLabs window with no to_group, even when the window's name was
+// typed in a different case.
+func TestSend_PlainTerminalJoinsItsProject(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.setGroup("pane-be", "chartlabs") // window name, lowercased by whoever typed it
+	pane := registerPane(svc, "pane-be", "/Users/p/Work/Coding/ChartLabs/backend")
+	term := svc.Register(RegisterReq{PID: os.Getpid(),
+		CWD:     "/Users/p/Work/Coding/ChartLabs/app",
+		GitRoot: "/Users/p/Work/Coding/ChartLabs/app"})
+
+	if term.Group != "ChartLabs" {
+		t.Fatalf("terminal group = %q, want ChartLabs", term.Group)
+	}
+	if resp := svc.Send(SendReq{FromID: term.PeerID, ToID: pane.PeerID, Text: "hi"}); !resp.OK {
+		t.Fatalf("a plain terminal must reach its project with no to_group: %+v", resp)
 	}
 }

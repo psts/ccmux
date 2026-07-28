@@ -207,9 +207,9 @@ func TestPeersAPI_ListenerStreamAndHistory(t *testing.T) {
 	b := registerPeer(t, ts, "/proj/b")
 	token := peers.PanelessToken(testSecret)
 
-	// Listener needs no token (read-only viewer surface). Group is the dirname
-	// fallback for these pane-less peers.
-	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/peers/ws?mode=listen&group=" + "%2Fproj"
+	// Listener needs no token (read-only viewer surface). Group is the holding
+	// folder's name for these pane-less peers.
+	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/peers/ws?mode=listen&group=proj"
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("dial listener: %v", err)
@@ -226,7 +226,7 @@ func TestPeersAPI_ListenerStreamAndHistory(t *testing.T) {
 	}
 
 	// REST history for the same group.
-	resp, err := http.Get(ts.URL + "/v1/peers/messages?group=%2Fproj")
+	resp, err := http.Get(ts.URL + "/v1/peers/messages?group=proj")
 	if err != nil {
 		t.Fatal(err)
 	}

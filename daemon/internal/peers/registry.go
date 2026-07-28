@@ -247,7 +247,7 @@ func (s *Service) List(callerID, scope, group string) []ListEntry {
 		case "all", "machine":
 			match = true
 		default: // "project" and anything unrecognized: same group
-			match = s.groupOfLocked(p) == callerGroup
+			match = sameGroup(s.groupOfLocked(p), callerGroup)
 		}
 		if match {
 			out = append(out, s.listEntryLocked(p))
@@ -267,7 +267,7 @@ func (s *Service) GroupPeers(group string) []ListEntry {
 		if !s.presentLocked(p) {
 			continue
 		}
-		if s.groupOfLocked(p) == group {
+		if sameGroup(s.groupOfLocked(p), group) {
 			out = append(out, s.listEntryLocked(p))
 		}
 	}
