@@ -88,6 +88,10 @@ func main() {
 	} else {
 		peersSvc = peers.NewService(st, mgr, secret)
 		mgr.ExtraPaneEnv = peersSvc.PaneEnv
+		// Claude Code's session hooks are the bus's only proof that a pane holds
+		// a session that will read a message, rather than a claude process with
+		// the MCP server merely loaded.
+		mgr.SessionSink = peersSvc.NoteSession
 		peersSvc.Start(ctx)
 	}
 

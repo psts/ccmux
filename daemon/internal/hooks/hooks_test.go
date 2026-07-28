@@ -48,18 +48,37 @@ func TestOutcome(t *testing.T) {
 }
 
 type mockRouter struct {
-	mu      sync.Mutex
-	resolve string
-	gotPane string
-	gotAtt  model.Attention
-	calls   int
+	mu       sync.Mutex
+	resolve  string
+	gotPane  string
+	gotAtt   model.Attention
+	calls    int
+	gotSig   model.SessionSignal
+	gotSess  string
+	sigCalls int
 }
 
-func (r *mockRouter) ResolvePane(paneID, cwd string) string { return r.resolve }
+// ResolvePane mirrors the manager: an explicit pane id wins, otherwise fall
+// back to a cwd match — the behaviour that makes the session path dangerous.
+func (r *mockRouter) ResolvePane(paneID, cwd string) string {
+	if paneID != "" {
+		return paneID
+	}
+	if cwd != "" {
+		return r.resolve
+	}
+	return ""
+}
 func (r *mockRouter) ApplyAttention(paneID string, att model.Attention) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.gotPane, r.gotAtt, r.calls = paneID, att, r.calls+1
+}
+
+func (r *mockRouter) ApplySession(paneID, sessionID string, sig model.SessionSignal) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gotPane, r.gotSess, r.gotSig, r.sigCalls = paneID, sessionID, sig, r.sigCalls+1
 }
 
 // TestListener_RoutesMessage sends the exact JSON ccmux-notify.sh emits and
@@ -124,4 +143,103 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met in time")
+}
+
+func TestSessionOutcome(t *testing.T) {
+	cases := []struct {
+		typ  string
+		want model.SessionSignal
+		ok   bool
+	}{
+		{"session_start", model.SessionStarted, true},
+		{"session_end", model.SessionEnded, true},
+		{"user_prompt_submit", model.SessionActive, true},
+		{"stop", model.SessionActive, true},
+		{"permission_request", model.SessionActive, true},
+		{"ask_user_question", model.SessionActive, true},
+		// A bare notification can fire outside a session; treating it as proof of
+		// life would resurrect the very phantom this signal exists to remove.
+		{"notification", "", false},
+		{"bogus", "", false},
+	}
+	for _, c := range cases {
+		got, ok := sessionOutcome(c.typ)
+		if got != c.want || ok != c.ok {
+			t.Errorf("sessionOutcome(%q) = (%q,%v), want (%q,%v)", c.typ, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// session_start carries no attention meaning at all, so it only reaches the
+// router through the session path — the event the bus most needs must not be
+// dropped by the attention filter.
+func TestListener_RoutesSessionStart(t *testing.T) {
+	sock := shortSock(t, "sessstart")
+	r := &mockRouter{resolve: "pane-xyz"}
+	l, err := Listen(sock, r)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+
+	send(t, sock, `{"type":"session_start","cwd":"/repo","pane_id":"pane-xyz","session_id":"s1"}`)
+
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.sigCalls == 1 })
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.gotPane != "pane-xyz" || r.gotSess != "s1" || r.gotSig != model.SessionStarted {
+		t.Fatalf("got (%q,%q,%q), want (pane-xyz, s1, started)", r.gotPane, r.gotSess, r.gotSig)
+	}
+	if r.calls != 0 {
+		t.Fatalf("session_start has no attention outcome, got %d attention calls", r.calls)
+	}
+}
+
+// session_end must drive BOTH outcomes: idle attention for the lenses and an
+// end signal for the bus.
+func TestListener_RoutesSessionEndToBothOutcomes(t *testing.T) {
+	sock := shortSock(t, "sessend")
+	r := &mockRouter{resolve: "pane-xyz"}
+	l, err := Listen(sock, r)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+
+	send(t, sock, `{"type":"session_end","cwd":"/repo","pane_id":"pane-xyz","session_id":"s1"}`)
+
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.sigCalls == 1 && r.calls == 1
+	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.gotSig != model.SessionEnded || r.gotAtt != model.AttentionIdle {
+		t.Fatalf("got (%q,%q), want (ended, idle)", r.gotSig, r.gotAtt)
+	}
+}
+
+// A session outside ccmux carries no CCMUX_PANE_ID and shares a cwd prefix with
+// hosted panes. Crediting its exit to whichever pane matched that prefix would
+// hide a live, unrelated peer — the one direction this signal must never get
+// wrong. Attention still flows: a stray flash is cosmetic.
+func TestListener_SessionEndWithoutPaneIDIsNotAttributed(t *testing.T) {
+	sock := shortSock(t, "nopane")
+	r := &mockRouter{resolve: "someone-elses-pane"}
+	l, err := Listen(sock, r)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+
+	send(t, sock, `{"type":"session_end","cwd":"/Users/x/Work/Coding/ccmux","session_id":"s1"}`)
+
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.calls == 1 })
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sigCalls != 0 {
+		t.Fatalf("a pane-less session must not end another pane's session, got %d calls on %q",
+			r.sigCalls, r.gotPane)
+	}
 }

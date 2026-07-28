@@ -21,6 +21,23 @@ const (
 	StatusCold Status = "cold"
 )
 
+// SessionSignal is what a Claude Code hook says about the SESSION running in a
+// pane — a different question from whether the pane, the claude process, or its
+// MCP servers exist. The MCP server stays loaded across the session picker, so
+// only these signals can tell "a session that will read your message" from
+// "the binary is running".
+type SessionSignal string
+
+const (
+	// SessionStarted: a session began in this pane (SessionStart).
+	SessionStarted SessionSignal = "started"
+	// SessionEnded: a session finished (SessionEnd).
+	SessionEnded SessionSignal = "ended"
+	// SessionActive: any other hook — proof a session is running even if its
+	// start was never observed, which is what makes a missed start self-heal.
+	SessionActive SessionSignal = "active"
+)
+
 // Attention is a pane's activity state, driven primarily by Claude Code hooks
 // and secondarily by %output flow. It powers session-list coloring in lenses.
 type Attention string

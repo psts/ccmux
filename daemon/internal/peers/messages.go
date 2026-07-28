@@ -17,9 +17,14 @@ var permReplyRe = regexp.MustCompile(`(?i)^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$`)
 
 // SendReq mirrors the send_message tool's arguments.
 type SendReq struct {
-	FromID         string `json:"from_id"`
-	ToID           string `json:"to_id"`
-	ToName         string `json:"to_name"`
+	FromID string `json:"from_id"`
+	ToID   string `json:"to_id"`
+	ToName string `json:"to_name"`
+	// ToGroup addresses a peer in ANOTHER group. Naming the group is the
+	// authorization: it turns a cross-project message into a deliberate act
+	// rather than something a stale id can do by accident. Empty means the
+	// sender's own group, which is the default and the common case.
+	ToGroup        string `json:"to_group"`
 	Text           string `json:"text"`
 	SpawnIfMissing bool   `json:"spawn_if_missing"`
 	ToRepo         string `json:"to_repo"`
@@ -28,13 +33,17 @@ type SendReq struct {
 // SendResp is the tool-facing outcome. Error strings the old broker used are
 // preserved verbatim — running sessions pattern-match on them.
 type SendResp struct {
-	OK       bool   `json:"ok"`
-	Spawning bool   `json:"spawning,omitempty"`
-	Error    string `json:"error,omitempty"`
+	OK       bool `json:"ok"`
+	Spawning bool `json:"spawning,omitempty"`
+	// Queued marks a message accepted into a mailbox with no session attached:
+	// durable, but nobody will read it until one returns to that pane. The
+	// sender is told, because "sent" and "sent into the void" must not look alike.
+	Queued bool   `json:"queued,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
-// Send routes one message: resolve the target inside the sender's group,
-// enforce the same-group guard, intercept permission verdicts, else append a
+// Send routes one message: resolve the target in the addressed group, check the
+// sender is allowed to reach it, intercept permission verdicts, else append a
 // message event and push it.
 func (s *Service) Send(req SendReq) SendResp {
 	s.mu.Lock()
@@ -50,24 +59,31 @@ func (s *Service) Send(req SendReq) SendResp {
 	if target == nil {
 		return resp
 	}
-	if senderGroup != s.groupOfLocked(target) {
-		return SendResp{Error: "Cannot send messages across projects"}
+	if err := s.checkReachableLocked(req, sender, senderGroup, target); err != "" {
+		return SendResp{Error: err}
 	}
 
 	if handled, resp := s.tryVerdictLocked(sender, target, senderGroup, req.Text); handled {
 		return resp
+	}
+	// A message that crossed a group boundary opens the return path, so the
+	// recipient can answer with a plain to_id reply the way it answers anyone
+	// else. Without this the conversation is one-way and the loop never closes.
+	if targetGroup := s.groupOfLocked(target); targetGroup != senderGroup {
+		s.grantReplyLocked(target.ID, sender.ID)
 	}
 
 	ev := s.eventFromLocked(sender, target, senderGroup, req.Text)
 	if err := s.deliverLocked(ev); err != nil {
 		return SendResp{Error: err.Error()}
 	}
-	return SendResp{OK: true}
+	return SendResp{OK: true, Queued: !s.presentLocked(target)}
 }
 
 // resolveTargetLocked finds the addressee: by id, or by name within the
-// sender's group (erroring on ambiguity instead of the old silent first-match),
-// optionally spawning a missing named teammate.
+// addressed group — the sender's own unless to_group names another (erroring on
+// ambiguity instead of the old silent first-match), optionally spawning a
+// missing named teammate.
 func (s *Service) resolveTargetLocked(req SendReq, sender *Peer, senderGroup string) (*Peer, SendResp) {
 	if req.ToID != "" {
 		t := s.peers[req.ToID]
@@ -79,9 +95,18 @@ func (s *Service) resolveTargetLocked(req SendReq, sender *Peer, senderGroup str
 	if req.ToName == "" {
 		return nil, SendResp{Error: "Either to_id or to_name is required"}
 	}
+	wantGroup := senderGroup
+	if req.ToGroup != "" {
+		wantGroup = req.ToGroup
+	}
+	// By NAME, only present peers are candidates: naming a teammate means "the
+	// one that's running", and matching a departed session would silently post
+	// into a mailbox instead of falling through to the spawn path. Replies,
+	// which carry to_id, still reach an away peer's queue.
 	var matches []*Peer
 	for _, p := range s.peers {
-		if p.Name == req.ToName && p.ID != sender.ID && s.groupOfLocked(p) == senderGroup {
+		if p.Name == req.ToName && p.ID != sender.ID &&
+			s.groupOfLocked(p) == wantGroup && s.presentLocked(p) {
 			matches = append(matches, p)
 		}
 	}
@@ -179,6 +204,7 @@ func (s *Service) Poll(peerID string) ([]*model.PeerEvent, error) {
 	if s.peers[peerID] == nil {
 		return nil, fmt.Errorf("peer %s is not registered", peerID)
 	}
+	s.touchLocked(peerID)
 	cursor, err := s.st.PeerCursor(peerID)
 	if err != nil {
 		return nil, err

@@ -117,6 +117,7 @@ func (s *Service) AttachPeer(peerID string, ws *websocket.Conn) {
 		old.close()
 	}
 	s.conns[peerID] = c
+	s.touchLocked(peerID) // a session attaching is a session that came back
 	s.mu.Unlock()
 
 	go s.readPeerAcks(c)
@@ -188,6 +189,7 @@ func (s *Service) readPeerAcks(c *peerConn) {
 			return
 		}
 		_ = c.ws.SetReadDeadline(time.Now().Add(readDeadline))
+		s.touch(c.peerID) // any frame is proof the session is still there
 		var ack ackFrame
 		if json.Unmarshal(data, &ack) == nil && ack.Type == "ack" && ack.Seq > 0 {
 			_ = s.st.AdvancePeerCursor(c.peerID, ack.Seq)

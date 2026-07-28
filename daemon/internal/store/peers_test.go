@@ -151,3 +151,62 @@ func TestPrunePeerEvents_RespectsCursorPerAddressee(t *testing.T) {
 		t.Fatalf("acked peer's remaining events = %+v, want just new-acked", evs)
 	}
 }
+
+// Registering must never move delivery. A mailbox touch records what the
+// mailbox hangs off; treating it as an ack would swallow undelivered mail, and
+// resetting it would replay mail the session already saw.
+func TestTouchPeerMailbox_LeavesTheCursorAlone(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.AdvancePeerCursor("p1", 7); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if err := st.TouchPeerMailbox("p1", "pane-1", 1234); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	got, err := st.PeerCursor("p1")
+	if err != nil || got != 7 {
+		t.Fatalf("cursor after touch = %d (err %v), want 7", got, err)
+	}
+
+	// Touching an unknown peer creates the mailbox at cursor zero, so a first
+	// registration is recorded without pretending anything was delivered.
+	if err := st.TouchPeerMailbox("p2", "", 1234); err != nil {
+		t.Fatalf("touch new: %v", err)
+	}
+	if got, err := st.PeerCursor("p2"); err != nil || got != 0 {
+		t.Fatalf("new mailbox cursor = %d (err %v), want 0", got, err)
+	}
+}
+
+// The collector needs the substrate back out again, and deleting a mailbox must
+// take only mail addressed TO that peer — what it sent lives in other mailboxes.
+func TestDeletePeerState_ErasesInboxOnly(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.AppendPeerEvent(msgEvent("dead", "alive", "G", "outbound", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendPeerEvent(msgEvent("alive", "dead", "G", "inbound", 2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchPeerMailbox("dead", "pane-x", 100); err != nil {
+		t.Fatal(err)
+	}
+	boxes, err := st.PeerMailboxes()
+	if err != nil || len(boxes) != 1 || boxes[0].PaneID != "pane-x" {
+		t.Fatalf("mailboxes = %+v (err %v), want one row for pane-x", boxes, err)
+	}
+
+	if err := st.DeletePeerState("dead"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if boxes, err := st.PeerMailboxes(); err != nil || len(boxes) != 0 {
+		t.Fatalf("mailboxes after delete = %+v (err %v), want none", boxes, err)
+	}
+	if evs, err := st.PeerEventsAfter("dead", 0); err != nil || len(evs) != 0 {
+		t.Fatalf("inbox after delete = %+v (err %v), want empty", evs, err)
+	}
+	evs, err := st.PeerEventsAfter("alive", 0)
+	if err != nil || len(evs) != 1 || evs[0].Text != "outbound" {
+		t.Fatalf("third party's inbox = %+v (err %v), want the outbound message intact", evs, err)
+	}
+}

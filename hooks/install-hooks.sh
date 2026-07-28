@@ -26,6 +26,7 @@ EVENTS = [
     ("PreToolUse",        "AskUserQuestion",  "ask-user-question"),
     ("Stop",              "",                "stop"),
     ("UserPromptSubmit",  "",                "user-prompt-submit"),
+    ("SessionStart",      "",                "session-start"),
     ("SessionEnd",        "",                "session-end"),
 ]
 

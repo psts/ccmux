@@ -50,11 +50,13 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 	// A pane-less MCP server restarting in the same terminal re-registers with
 	// a new peer id but the same pid; drop the stale record so it can't linger.
 	// A record carrying a DIFFERENT local-pane identity is someone else's —
-	// never evict it on pid alone.
+	// never evict it on pid alone. Dropping takes the mailbox with it: the old
+	// id was random, so nothing can re-derive it and nothing could ever collect
+	// that queue — leaving the cursor behind is how orphans were born.
 	for otherID, p := range s.peers {
 		if p.PaneID == "" && p.PID == req.PID && otherID != id &&
 			(p.LocalPaneID == "" || strings.EqualFold(p.LocalPaneID, req.LocalPaneID)) {
-			delete(s.peers, otherID)
+			s.dropPeerLocked(otherID)
 		}
 	}
 
@@ -62,10 +64,11 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 	if prev := s.peers[id]; prev != nil && summary == "" {
 		summary = prev.Summary
 	}
+	now := s.Now().UnixMilli()
 	peer := &Peer{
 		ID: id, Name: name, PaneID: req.PaneID, LocalPaneID: req.LocalPaneID,
 		PID: req.PID, CWD: req.CWD, GitRoot: req.GitRoot, Summary: summary,
-		RegisteredAt: s.Now().UnixMilli(),
+		RegisteredAt: now, LastSeenAt: now,
 	}
 	// Federation: stamp the owning host (hub mode) so list_peers distinguishes
 	// same-named peers across hosts. Cached read — safe under s.mu.
@@ -75,6 +78,9 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 		}
 	}
 	s.peers[id] = peer
+	// Record what this mailbox hangs off, so the collector can tell a mailbox
+	// waiting for a returning session from one whose pane is long gone.
+	_ = s.st.TouchPeerMailbox(id, substrateKey(peer), now)
 
 	s.fulfillPendingSpawnLocked(peer)
 	return RegisterResp{PeerID: id, Name: name, Group: s.groupOfLocked(peer)}
@@ -98,19 +104,21 @@ func (s *Service) assignIDLocked(req RegisterReq) string {
 	}
 	if req.RequestedID != "" {
 		// Free, ours already, or held by a dead peer → honor the request.
-		if p := s.peers[req.RequestedID]; p == nil || p.PID == req.PID || !s.aliveLocked(p) {
+		if p := s.peers[req.RequestedID]; p == nil || p.PID == req.PID || !s.substrateAliveLocked(p) {
 			return req.RequestedID
 		}
 	}
 	return randomID()
 }
 
-// Unregister drops a peer's live connection when its thin client exits (stdin
-// EOF). A pane peer whose pane still exists is KEPT addressable — its record and
-// durable queue survive — so a message sent while its Claude session restarts is
-// queued and replays when the session returns (the "restart later and still get
-// it" guarantee). Only pane-less peers (where the process IS the client) and pane
-// peers whose pane is gone are fully removed.
+// Unregister handles a thin client leaving (stdin EOF). A pane peer whose pane
+// still exists keeps its record and durable queue — its id is derived from the
+// pane, so a message sent while its Claude session restarts is queued and
+// replays when the session returns (the "restart later and still get it"
+// guarantee). It is marked AWAY, though: it stops being present the instant it
+// leaves, so no peer is ever shown a session that isn't there. Pane-less peers
+// (where the process IS the client) and pane peers whose pane is gone are
+// removed outright, mailbox and all.
 func (s *Service) Unregister(peerID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,10 +126,49 @@ func (s *Service) Unregister(peerID string) {
 		c.close()
 		delete(s.conns, peerID)
 	}
-	if p := s.peers[peerID]; p != nil && p.PaneID != "" && s.aliveLocked(p) {
-		return // pane still lives — stay addressable for the returning session
+	p := s.peers[peerID]
+	if p == nil {
+		return
+	}
+	// Only a CONFIRMED-gone pane forfeits the mailbox; an unresolvable pane is
+	// assumed to be a blip and kept, because the reaper will confirm it later
+	// and erasing it here would be irreversible.
+	if substrateKey(p) != "" && !s.substrateGoneLocked(p) {
+		p.AwayAt = s.Now().UnixMilli()
+		return
+	}
+	s.dropPeerLocked(peerID)
+}
+
+// dropPeerLocked removes a peer AND erases its durable mailbox. Called only
+// when the thing the mailbox hangs off is gone (the pane deleted, or a
+// pane-less client's process exited), so no session could ever collect the
+// queue — leaving it behind is the leak, not a safety net.
+func (s *Service) dropPeerLocked(peerID string) {
+	if c := s.conns[peerID]; c != nil {
+		c.close()
+		delete(s.conns, peerID)
+	}
+	if p := s.peers[peerID]; p != nil && p.PaneID != "" {
+		s.forgetPaneSessionsLocked(p.PaneID)
 	}
 	delete(s.peers, peerID)
+	_ = s.st.DeletePeerState(peerID)
+}
+
+// touchLocked records that a peer's session just proved it is there, which also
+// cancels any away mark (a session that came back is present again).
+func (s *Service) touchLocked(peerID string) {
+	if p := s.peers[peerID]; p != nil {
+		p.LastSeenAt = s.Now().UnixMilli()
+		p.AwayAt = 0
+	}
+}
+
+func (s *Service) touch(peerID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchLocked(peerID)
 }
 
 // SetSummary updates a peer's work summary.
@@ -133,6 +180,7 @@ func (s *Service) SetSummary(peerID, summary string) bool {
 		return false
 	}
 	p.Summary = summary
+	s.touchLocked(peerID)
 	return true
 }
 
@@ -155,24 +203,31 @@ type ListEntry struct {
 
 // List returns the caller's visible peers for a scope: "project" (the caller's
 // group — window or fallback), "directory" (same cwd), "repo" (same git
-// root), or "all" (every peer on this daemon). The caller itself is excluded.
-// Dead peers are evicted here, so inclusion is the liveness signal.
-func (s *Service) List(callerID, scope string) []ListEntry {
+// root), or "all" (every peer on this daemon); group, when set, looks into
+// another project instead of the caller's own. The caller itself is excluded.
+// Only PRESENT peers are returned — a listed peer always has a session attached
+// to it right now, so what a peer sees is what it can reach. Listing asks
+// nothing about panes: a session that can still hold a socket open is reachable
+// whatever the pane map currently says, and eviction is the reaper's job.
+func (s *Service) List(callerID, scope, group string) []ListEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	caller := s.peers[callerID]
 	if caller == nil {
 		return nil
 	}
+	s.touchLocked(callerID)
 	callerGroup := s.groupOfLocked(caller)
+	// An explicit group is a deliberate look into another project — the
+	// discovery half of to_group, so "who is running in ChartLabs?" is
+	// answerable before you message anyone there.
+	if group != "" {
+		callerGroup = group
+	}
 
 	out := []ListEntry{}
-	for id, p := range s.peers {
-		if id == callerID {
-			continue
-		}
-		if !s.aliveLocked(p) {
-			delete(s.peers, id)
+	for _, p := range s.peers {
+		if p.ID == callerID || !s.presentLocked(p) {
 			continue
 		}
 		match := false
@@ -193,14 +248,15 @@ func (s *Service) List(callerID, scope string) []ListEntry {
 	return out
 }
 
-// GroupPeers is the read-only viewer listing: every live peer in a group.
+// GroupPeers is the read-only viewer listing: every present peer in a group.
+// Same presence rule as List — the lenses and the sessions must never disagree
+// about who is there.
 func (s *Service) GroupPeers(group string) []ListEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := []ListEntry{}
-	for id, p := range s.peers {
-		if !s.aliveLocked(p) {
-			delete(s.peers, id)
+	for _, p := range s.peers {
+		if !s.presentLocked(p) {
 			continue
 		}
 		if s.groupOfLocked(p) == group {
@@ -215,22 +271,113 @@ func (s *Service) listEntryLocked(p *Peer) ListEntry {
 	return ListEntry{
 		ID: p.ID, Name: p.Name, Group: g, Project: g,
 		PID: p.PID, CWD: p.CWD, GitRoot: p.GitRoot, Summary: p.Summary,
-		LastSeen: isoMillis(p.RegisteredAt), Connected: s.conns[p.ID] != nil,
+		LastSeen: isoMillis(p.LastSeenAt), Connected: s.conns[p.ID] != nil,
 		Host: p.Host,
 	}
 }
 
-// aliveLocked: a pane peer lives as long as its pane; a pane-less peer as long
-// as its MCP-server process (kill 0 probe, the old broker's check).
-func (s *Service) aliveLocked(p *Peer) bool {
+// presentLocked answers the only question a listing is allowed to answer: is
+// there a Claude SESSION here that will read what you send it?
+//
+// A live socket is not that answer. ccmux-peers is a child of the claude
+// process, not of the session, so it stays connected while Claude sits on the
+// session picker with nothing running — online-looking, and unable to reply.
+// Hooks settle it first; only then does the socket decide, and a peer that left
+// cleanly or stopped proving itself within the grace window is not present.
+func (s *Service) presentLocked(p *Peer) bool {
+	if p.PaneID != "" && s.paneSessionDeadLocked(p.PaneID) {
+		return false
+	}
+	if s.conns[p.ID] != nil {
+		return true
+	}
+	if p.AwayAt != 0 {
+		return false
+	}
+	return s.Now().UnixMilli()-p.LastSeenAt < presenceGrace.Milliseconds()
+}
+
+// substrateAliveLocked reports whether the thing a peer's mailbox hangs off
+// still exists right now: its pane, or (pane-less) its MCP-server process.
+// Deliberately independent of presence — a pane sitting at a shell prompt is
+// alive but has nobody home, and conflating the two is what made departed
+// sessions look online.
+func (s *Service) substrateAliveLocked(p *Peer) bool {
 	if p.PaneID != "" {
-		_, ok := s.mgr.GroupForPane(p.PaneID)
-		return ok
+		return s.paneExistsLocked(p.PaneID)
 	}
 	if p.PID <= 0 {
 		return false
 	}
 	return syscall.Kill(p.PID, 0) == nil
+}
+
+// substrateKey is the durable identity a peer's mailbox hangs off — a hosted
+// pane, or a Mac driver-mode pane. Both make the peer id re-derivable, which is
+// what earns a mailbox the right to outlive its session. "" means the client
+// process is the only thing behind it.
+func substrateKey(p *Peer) string {
+	if p.PaneID != "" {
+		return p.PaneID
+	}
+	if p.LocalPaneID != "" {
+		return "local:" + strings.ToLower(p.LocalPaneID)
+	}
+	return ""
+}
+
+// substrateGoneLocked is the erasure test — a single failed lookup is never
+// enough. A pane must stay unresolvable for substrateGrace first (see
+// keyGoneLocked); a process-only peer's dead pid is unambiguous and needs no
+// confirmation, because kill(0) does not depend on any cache being warm.
+func (s *Service) substrateGoneLocked(p *Peer) bool {
+	if key := substrateKey(p); key != "" {
+		return s.keyGoneLocked(key)
+	}
+	return !(p.PID > 0 && syscall.Kill(p.PID, 0) == nil)
+}
+
+// keyGoneLocked reports a substrate as gone only once it has failed to resolve
+// for longer than substrateGrace. The hub rebuilds its federated pane map from
+// scratch on every refresh, and a member host that fails one fetch drops all of
+// its panes for that cycle; the Mac app's local-pane map is likewise empty until
+// it re-pushes after a restart. Erasing mailboxes on either would destroy
+// undelivered mail whose session is about to come back.
+func (s *Service) keyGoneLocked(key string) bool {
+	if s.substrateExistsLocked(key) {
+		delete(s.missingSince, key)
+		return false
+	}
+	now := s.Now().UnixMilli()
+	first := s.missingSince[key]
+	if first == 0 {
+		s.missingSince[key] = now
+		return false
+	}
+	return now-first >= substrateGrace.Milliseconds()
+}
+
+func (s *Service) substrateExistsLocked(key string) bool {
+	if local, ok := strings.CutPrefix(key, "local:"); ok {
+		_, found := s.localGroups[local]
+		return found
+	}
+	return s.paneExistsLocked(key)
+}
+
+// paneExistsLocked resolves a pane anywhere the bus serves: this host's manager
+// first, then (hub mode) the federation's aggregated pane map, so a peer on a
+// member host is never mistaken for a deleted pane.
+func (s *Service) paneExistsLocked(paneID string) bool {
+	if _, ok := s.mgr.GroupForPane(paneID); ok {
+		return true
+	}
+	if s.globalGroups != nil {
+		if _, ok := s.globalGroups(paneID); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // AuthorizeRegister checks a registration token: the pane token for pane

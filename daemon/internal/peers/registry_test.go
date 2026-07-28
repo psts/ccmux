@@ -3,6 +3,7 @@ package peers
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // A pane peer whose pane still exists must stay addressable after its Claude
@@ -47,15 +48,25 @@ func TestUnregister_DeletesPanelessPeer(t *testing.T) {
 	}
 }
 
-// Once a pane peer's pane is actually destroyed, unregister removes it — it is
-// no longer a live client to queue for.
-func TestUnregister_DeletesPanePeerWhenPaneGone(t *testing.T) {
+// Once a pane peer's pane is actually destroyed there is nothing left to queue
+// for, so the peer is removed — but only once the pane's absence has been
+// confirmed. A single failed lookup is a cache miss, not a demolition order.
+func TestUnregister_DeletesPanePeerWhenPaneConfirmedGone(t *testing.T) {
 	svc, hook := newTestService(t)
+	now := time.Unix(1_700_000_000, 0)
+	svc.Now = func() time.Time { return now }
 	hook.setGroup("pane-C", "grp")
 	c := registerPane(svc, "pane-C", "/x/c")
-	hook.dropGroup("pane-C") // pane destroyed
+
+	hook.dropGroup("pane-C") // pane destroyed (or the pane map blinked)
 	svc.Unregister(c.PeerID)
+	if _, err := svc.Poll(c.PeerID); err != nil {
+		t.Fatal("one failed pane lookup must not erase a mailbox")
+	}
+
+	now = now.Add(substrateGrace + time.Second)
+	svc.ReapOnce()
 	if _, err := svc.Poll(c.PeerID); err == nil {
-		t.Fatal("pane peer should be removed once its pane is gone")
+		t.Fatal("pane peer should be removed once its pane is confirmed gone")
 	}
 }

@@ -49,6 +49,10 @@ type Manager struct {
 	// separate: without it the last binder of a shared path stole the other's
 	// hooks (hosted attention flash died whenever the app ran). Empty = omit.
 	HooksSocket string
+	// SessionSink receives Claude session lifecycle signals once a hook has been
+	// resolved to a pane (wired to the peers bus at startup). A plain func keeps
+	// the manager from importing the bus for one call.
+	SessionSink func(paneID, sessionID string, sig model.SessionSignal)
 
 	// ExtraPaneEnv, when set, contributes additional per-pane env vars (the peers
 	// bus injects its bearer token here). Set once at startup, before any pane is
@@ -556,6 +560,17 @@ func (m *Manager) SetLayout(wsID, blob string, baseVersion int) (int, error) {
 		ctrl.Broadcast(session.Event{Kind: "layout", Payload: LayoutUpdate{Blob: blob, Version: newV}})
 	}
 	return newV, nil
+}
+
+// ApplySession forwards a hook's session-lifecycle verdict for a pane to the
+// peers bus, which is the only consumer that needs it: presence there must mean
+// "a session will read this", and no signal the bus owns can establish that.
+// A nil sink (peers disabled) makes this a no-op.
+func (m *Manager) ApplySession(paneID, sessionID string, sig model.SessionSignal) {
+	if m.SessionSink == nil {
+		return
+	}
+	m.SessionSink(paneID, sessionID, sig)
 }
 
 // ApplyAttention sets a pane's attention state, persists it, and broadcasts the

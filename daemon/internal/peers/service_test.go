@@ -72,6 +72,14 @@ func (f *fakeHook) spawn(i int) string {
 
 func newTestService(t *testing.T) (*Service, *fakeHook) {
 	t.Helper()
+	svc, hook, _ := newTestServiceWithStore(t)
+	return svc, hook
+}
+
+// newTestServiceWithStore also hands back the store, for the presence and
+// mailbox-collection tests that assert on what the database actually holds.
+func newTestServiceWithStore(t *testing.T) (*Service, *fakeHook, *store.SQLite) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "peers.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -80,7 +88,7 @@ func newTestService(t *testing.T) (*Service, *fakeHook) {
 	hook := &fakeHook{groups: map[string]string{}, repos: map[string]string{}}
 	svc := NewService(st, hook, []byte("test-secret-test-secret-test-sec"))
 	svc.OpenCmd = "" // no deep links from tests
-	return svc, hook
+	return svc, hook, st
 }
 
 // registerPane registers a peer bound to a pane. PIDs use our own live pid so
@@ -159,10 +167,11 @@ func TestSend_WindowScopingAndGuards(t *testing.T) {
 	if resp := svc.Send(SendReq{FromID: a, ToID: b, Text: "hi"}); !resp.OK {
 		t.Fatalf("same-window send failed: %+v", resp)
 	}
-	// Cross-window by id → hard guard, verbatim error.
+	// Cross-window by id with no to_group → refused, keeping the historic
+	// sentence as the prefix that running sessions pattern-match on.
 	if resp := svc.Send(SendReq{FromID: a, ToID: c, Text: "hi"}); resp.OK ||
-		resp.Error != "Cannot send messages across projects" {
-		t.Fatalf("cross-window send = %+v, want verbatim guard error", resp)
+		!strings.HasPrefix(resp.Error, "Cannot send messages across projects") {
+		t.Fatalf("cross-window send = %+v, want guard error", resp)
 	}
 	// Name resolution stays inside the sender's window.
 	if resp := svc.Send(SendReq{FromID: a, ToName: "app", Text: "hi"}); resp.OK ||
@@ -244,15 +253,15 @@ func TestListPeers_ScopesAndEviction(t *testing.T) {
 	registerPane(svc, "pane-b", "/w/b")
 	registerPane(svc, "pane-c", "/w/c")
 
-	if got := svc.List(a, "project"); len(got) != 1 || got[0].Group != "MIXED" {
+	if got := svc.List(a, "project", ""); len(got) != 1 || got[0].Group != "MIXED" {
 		t.Fatalf("project scope = %+v, want just the MIXED sibling", got)
 	}
-	if got := svc.List(a, "all"); len(got) != 2 {
+	if got := svc.List(a, "all", ""); len(got) != 2 {
 		t.Fatalf("all scope = %d peers, want 2", len(got))
 	}
 	// Pane disappears (workspace killed) → evicted from listings.
 	hook.dropGroup("pane-b")
-	if got := svc.List(a, "project"); len(got) != 0 {
+	if got := svc.List(a, "project", ""); len(got) != 0 {
 		t.Fatalf("dead pane still listed: %+v", got)
 	}
 }

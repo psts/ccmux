@@ -18,7 +18,7 @@
 #
 # Usage:  ccmux-notify.sh <event-name>
 #   where <event-name> is one of: notification, permission-request,
-#   ask-user-question, stop, user-prompt-submit, session-end
+#   ask-user-question, stop, user-prompt-submit, session-start, session-end
 
 SOCKET_PATH="${CCMUX_HOOKS_SOCK:-/tmp/ccmux-hooks.sock}"
 [[ -S "$SOCKET_PATH" ]] || exit 0
@@ -30,6 +30,7 @@ case "${1:-unknown}" in
     ask-user-question|AskUserQuestion)       TYPE="ask_user_question" ;;
     stop|Stop)                               TYPE="stop" ;;
     user-prompt-submit|UserPromptSubmit)     TYPE="user_prompt_submit" ;;
+    session-start|SessionStart)              TYPE="session_start" ;;
     session-end|SessionEnd)                  TYPE="session_end" ;;
     *)                                       TYPE="${1:-unknown}" ;;
 esac

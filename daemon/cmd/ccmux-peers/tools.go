@@ -42,6 +42,10 @@ var toolsList = []map[string]any{
 					"description": `Scope of peer discovery. "project" (default) = all instances in your window group (sibling repos for sessions outside ccmux). "directory" = same working directory. "repo" = same git repository. "all" = every peer on this machine.`,
 					"default":     "project",
 				},
+				"group": map[string]any{
+					"type":        "string",
+					"description": `Look into ANOTHER project instead of your own — pass the group name exactly as shown in a peer's "Group:" line. Use this when you've been asked about someone in a different project ("who's running in ChartLabs?"). Omit for your own group, which is the normal case.`,
+				},
 			},
 		},
 	},
@@ -62,6 +66,10 @@ var toolsList = []map[string]any{
 				"message": map[string]any{
 					"type":        "string",
 					"description": "The message to send",
+				},
+				"to_group": map[string]any{
+					"type":        "string",
+					"description": `Message a peer in ANOTHER project. By default you can only reach your own group; naming the target's group here authorizes the crossing. Use it when you've been told to contact someone in a specific project — e.g. send_message(to_name="backend", to_group="ChartLabs", message="..."). Find group names with list_peers. Not needed to REPLY to someone who messaged you from another project.`,
 				},
 				"spawn_if_missing": map[string]any{
 					"type":        "boolean",
@@ -126,6 +134,7 @@ type listEntry struct {
 func (a *app) toolListPeers(args json.RawMessage) any {
 	var in struct {
 		Scope string `json:"scope"`
+		Group string `json:"group"`
 	}
 	_ = json.Unmarshal(args, &in)
 	if in.Scope == "" {
@@ -133,7 +142,7 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 	}
 	var peers []listEntry
 	if err := a.daemon.post("/v1/peers/list", map[string]any{
-		"peer_id": a.peerID(), "scope": in.Scope,
+		"peer_id": a.peerID(), "scope": in.Scope, "group": in.Group,
 	}, &peers); err != nil {
 		return toolText("Error listing peers: "+err.Error(), true)
 	}
@@ -146,6 +155,7 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 		parts := []string{
 			"Name: " + orID(p.Name, "(unnamed)"),
 			"ID: " + p.ID,
+			"Group: " + p.Group, // pass this as to_group to message across projects
 			"CWD: " + p.CWD,
 		}
 		if p.GitRoot != "" {
@@ -154,6 +164,8 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 		if p.Summary != "" {
 			parts = append(parts, "Summary: "+p.Summary)
 		}
+		// Every listed peer has a session attached; the qualifier now means what
+		// it says — its socket is mid-reconnect, not that it left days ago.
 		status := "Status: online"
 		if !p.Connected {
 			status += " (reconnecting)"
@@ -169,6 +181,7 @@ func (a *app) toolSendMessage(args json.RawMessage) any {
 	var in struct {
 		ToID           string `json:"to_id"`
 		ToName         string `json:"to_name"`
+		ToGroup        string `json:"to_group"`
 		Message        string `json:"message"`
 		SpawnIfMissing bool   `json:"spawn_if_missing"`
 	}
@@ -181,11 +194,13 @@ func (a *app) toolSendMessage(args json.RawMessage) any {
 	var resp struct {
 		OK       bool   `json:"ok"`
 		Spawning bool   `json:"spawning"`
+		Queued   bool   `json:"queued"`
 		Error    string `json:"error"`
 	}
 	if err := a.daemon.post("/v1/peers/send", map[string]any{
 		"from_id": a.peerID(), "to_id": in.ToID, "to_name": in.ToName,
-		"text": in.Message, "spawn_if_missing": in.SpawnIfMissing,
+		"to_group": in.ToGroup,
+		"text":     in.Message, "spawn_if_missing": in.SpawnIfMissing,
 	}, &resp); err != nil {
 		return toolText("Error sending message: "+err.Error(), true)
 	}
@@ -194,6 +209,11 @@ func (a *app) toolSendMessage(args json.RawMessage) any {
 	}
 	if resp.Spawning {
 		return toolText(fmt.Sprintf(`Teammate "%s" isn't running — asked ccmux to start it. Your message is queued and will be delivered once it registers; it'll reply over the channel when ready (or you'll get an "unreachable" notice if it can't be started).`, in.ToName), false)
+	}
+	if resp.Queued {
+		return toolText(fmt.Sprintf(
+			"Queued for %s — no Claude session is running there right now. It stays in that pane's inbox and is delivered the moment a session starts there; nobody will read it before then. Don't wait on a reply.",
+			orID(in.ToName, in.ToID)), false)
 	}
 	if in.ToName != "" {
 		return toolText(fmt.Sprintf("Message sent to %q", in.ToName), false)

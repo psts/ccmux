@@ -14,10 +14,12 @@ import (
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
-// Router resolves a hook to a pane and applies its attention outcome.
+// Router resolves a hook to a pane and applies its outcomes: an attention state
+// for the lenses, and a session-lifecycle signal for the peers bus.
 type Router interface {
 	ResolvePane(paneID, cwd string) string
 	ApplyAttention(paneID string, att model.Attention)
+	ApplySession(paneID, sessionID string, sig model.SessionSignal)
 }
 
 type hookMsg struct {
@@ -71,12 +73,28 @@ func (l *Listener) handle(conn net.Conn) {
 	if json.Unmarshal(data, &msg) != nil {
 		return
 	}
-	att, ok := outcome(msg.Type, msg.NotificationType)
-	if !ok {
+	att, wantAtt := outcome(msg.Type, msg.NotificationType)
+	sig, wantSig := sessionOutcome(msg.Type)
+	if !wantAtt && !wantSig {
 		return
 	}
-	if paneID := l.router.ResolvePane(msg.PaneID, msg.CWD); paneID != "" {
+	paneID := l.router.ResolvePane(msg.PaneID, msg.CWD)
+	if paneID == "" {
+		return
+	}
+	if wantAtt {
 		l.router.ApplyAttention(paneID, att)
+	}
+	// Session truth demands an EXPLICIT pane. Attention tolerates the cwd
+	// fallback because a flash on the wrong pane is cosmetic; a session-end
+	// credited to the wrong pane hides a live teammate. Sessions outside ccmux
+	// carry no CCMUX_PANE_ID and share a cwd prefix with hosted panes, so the
+	// fallback would routinely blame someone else's pane for their exit.
+	// Resolving with an empty cwd yields "" unless the pane id itself is real.
+	if wantSig {
+		if sp := l.router.ResolvePane(msg.PaneID, ""); sp != "" {
+			l.router.ApplySession(sp, msg.SessionID, sig)
+		}
 	}
 }
 
@@ -106,6 +124,26 @@ func outcome(eventType, notificationType string) (model.Attention, bool) {
 		return model.AttentionDone, true
 	case "user_prompt_submit", "session_end":
 		return model.AttentionIdle, true
+	default:
+		return "", false
+	}
+}
+
+// sessionOutcome maps a hook event to what it proves about the pane's Claude
+// SESSION. The four activity events are unambiguously session-bound — prompting,
+// stopping, asking permission — so they let a missed session_start (hooks
+// installed mid-session, daemon restarted) heal itself instead of leaving a live
+// session looking dead. Bare notifications are deliberately NOT proof of life:
+// they can fire outside a session, and a false positive here would resurrect
+// exactly the phantom this signal exists to remove.
+func sessionOutcome(eventType string) (model.SessionSignal, bool) {
+	switch eventType {
+	case "session_start":
+		return model.SessionStarted, true
+	case "session_end":
+		return model.SessionEnded, true
+	case "user_prompt_submit", "stop", "permission_request", "ask_user_question":
+		return model.SessionActive, true
 	default:
 		return "", false
 	}

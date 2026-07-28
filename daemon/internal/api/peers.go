@@ -129,6 +129,7 @@ func (s *Server) peersSend(w http.ResponseWriter, r *http.Request) {
 type peerIDReq struct {
 	PeerID string `json:"peer_id"`
 	Scope  string `json:"scope"`
+	Group  string `json:"group"`
 }
 
 func (s *Server) peersList(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +147,7 @@ func (s *Server) peersList(w http.ResponseWriter, r *http.Request) {
 	if scope == "" {
 		scope = "project"
 	}
-	writeJSON(w, http.StatusOK, s.peersSvc.List(req.PeerID, scope))
+	writeJSON(w, http.StatusOK, s.peersSvc.List(req.PeerID, scope, req.Group))
 }
 
 func (s *Server) peersSummary(w http.ResponseWriter, r *http.Request) {

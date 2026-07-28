@@ -77,7 +77,11 @@ CREATE TABLE IF NOT EXISTS peer_events (
 CREATE INDEX IF NOT EXISTS peer_events_by_to ON peer_events(to_id, seq);
 CREATE INDEX IF NOT EXISTS peer_events_by_grp ON peer_events(grp, seq);
 CREATE TABLE IF NOT EXISTS peer_cursors (
-  peer_id TEXT PRIMARY KEY, acked_seq INTEGER
+  peer_id TEXT PRIMARY KEY, acked_seq INTEGER,
+  pane_id TEXT DEFAULT '', updated_at INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS pane_sessions (
+  pane_id TEXT PRIMARY KEY, live_ids TEXT, last_activity INTEGER
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT
@@ -100,6 +104,11 @@ func Open(path string) (*SQLite, error) {
 	_, _ = db.Exec(`ALTER TABLE workspaces ADD COLUMN hostnames_json TEXT DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE workspaces ADD COLUMN dev_command TEXT DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE panes ADD COLUMN is_dev INTEGER DEFAULT 0`)
+	// Pre-mailbox registries have cursors with no record of what they hang off,
+	// so nothing could ever garbage-collect them. The columns default empty;
+	// every registration backfills its own row (see TouchPeerMailbox).
+	_, _ = db.Exec(`ALTER TABLE peer_cursors ADD COLUMN pane_id TEXT DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE peer_cursors ADD COLUMN updated_at INTEGER DEFAULT 0`)
 	return &SQLite{db: db}, nil
 }
 

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // Hook is the slice of the manager the bus needs: live group resolution and
@@ -37,6 +38,12 @@ type Store interface {
 	RecentPeerSenders(toID string, sinceMillis int64) ([]string, error)
 	PeerGroupMessages(group string, sinceMillis int64, limit int) ([]*model.PeerEvent, error)
 	PrunePeerEvents(beforeMillis int64) (int64, error)
+	TouchPeerMailbox(peerID, paneID string, now int64) error
+	SavePaneSessions(paneID string, liveIDs []string, lastActivity int64) error
+	LoadPaneSessions() (map[string]store.PaneSessionState, error)
+	DeletePaneSessions(paneID string) error
+	PeerMailboxes() ([]store.PeerMailbox, error)
+	DeletePeerState(peerID string) error
 }
 
 // Peer is one registered session. Live connection state is tracked separately
@@ -55,6 +62,16 @@ type Peer struct {
 	GitRoot      string
 	Summary      string
 	RegisteredAt int64
+	// LastSeenAt is the last moment this peer's session proved it was there:
+	// registering, attaching its socket, acking, or polling. Presence is judged
+	// from it, so a session that stops proving anything stops being listed.
+	LastSeenAt int64
+	// AwayAt is when the session left cleanly (stdin EOF → unregister), or 0
+	// while it is here. A pane peer that goes away keeps its record and its
+	// queue — its id is derived from the pane, so the next session in that pane
+	// re-derives it and replays — but it is NOT present, and presence is the
+	// only thing a listing may report.
+	AwayAt int64
 	// GroupOverride pins a pane-less peer into a window group: set when a
 	// deep-link-spawned teammate (a Mac-local ephemeral pane, invisible to the
 	// daemon) registers and matches a pending spawn — without it the teammate
@@ -116,6 +133,16 @@ type Service struct {
 	listeners map[*listenConn]struct{}
 	perms     map[string]*permRequest
 	spawns    map[string]*pendingSpawn
+	// missingSince records when a pane first failed to resolve, so absence has
+	// to persist before the reaper erases anything that hangs off it.
+	missingSince map[string]int64
+	// replyGrants licenses cross-group replies, keyed "replier\x00original
+	// sender" with an expiry (see reach.go).
+	replyGrants map[string]int64
+	// sessions is the per-pane Claude session truth fed by hooks (see
+	// sessions.go) — the only signal that distinguishes a session that will
+	// read a message from a process that merely has the MCP server loaded.
+	sessions map[string]*paneSessions
 	// localGroups maps a Mac-local pane's UUID (lowercased) to its owning
 	// window's name. The Mac app is the source of truth and pushes the full map
 	// on every window/ownership change, so resolution stays live for driver-mode
@@ -154,12 +181,18 @@ func NewService(st Store, mgr Hook, secret []byte) *Service {
 		listeners:    map[*listenConn]struct{}{},
 		perms:        map[string]*permRequest{},
 		spawns:       map[string]*pendingSpawn{},
+		missingSince: map[string]int64{},
+		replyGrants:  map[string]int64{},
+		sessions:     map[string]*paneSessions{},
 		localGroups:  map[string]string{},
 	}
 }
 
-// Start launches the background pruner for the lifetime of ctx.
+// Start restores persisted session truth, then launches the background pruner
+// and the reaper for the lifetime of ctx.
 func (s *Service) Start(ctx context.Context) {
+	s.loadSessions()
+	go s.startReaper(ctx)
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()

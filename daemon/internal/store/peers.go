@@ -63,6 +63,58 @@ ON CONFLICT(peer_id) DO UPDATE SET acked_seq = MAX(acked_seq, excluded.acked_seq
 	return err
 }
 
+// PeerMailbox is one peer's durable delivery state as the database knows it:
+// the substrate the mailbox hangs off (a pane, or "" for a pane-less session)
+// and when a session last claimed it. It is what makes the mailbox collectable
+// — a peer id is a one-way hash of its pane, so without the recorded pane_id
+// nothing can tell a live mailbox from the leftovers of a pane deleted weeks ago.
+type PeerMailbox struct {
+	PeerID    string
+	PaneID    string
+	UpdatedAt int64
+}
+
+// TouchPeerMailbox records (or refreshes) the substrate behind a peer's
+// mailbox. It deliberately never writes acked_seq: registering is not delivery,
+// and an existing cursor must neither rewind (replaying delivered mail) nor
+// advance (swallowing undelivered mail).
+func (s *SQLite) TouchPeerMailbox(peerID, paneID string, now int64) error {
+	_, err := s.db.Exec(`
+INSERT INTO peer_cursors (peer_id, acked_seq, pane_id, updated_at) VALUES (?,0,?,?)
+ON CONFLICT(peer_id) DO UPDATE SET pane_id=excluded.pane_id, updated_at=excluded.updated_at`,
+		peerID, paneID, now)
+	return err
+}
+
+// PeerMailboxes lists every durable mailbox — the garbage collector's input.
+func (s *SQLite) PeerMailboxes() ([]PeerMailbox, error) {
+	rows, err := s.db.Query(`SELECT peer_id, pane_id, updated_at FROM peer_cursors`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PeerMailbox
+	for rows.Next() {
+		var m PeerMailbox
+		if err := rows.Scan(&m.PeerID, &m.PaneID, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// DeletePeerState erases one peer's mailbox: its cursor and the events
+// addressed to it. Events it SENT are left alone — those live in other peers'
+// mailboxes, and group history stays renderable after a peer departs.
+func (s *SQLite) DeletePeerState(peerID string) error {
+	if _, err := s.db.Exec(`DELETE FROM peer_events WHERE to_id=?`, peerID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM peer_cursors WHERE peer_id=?`, peerID)
+	return err
+}
+
 // RecentPeerSenders returns the distinct peers that sent toID a message since
 // sinceMillis — the permission-relay broadcast set, computed instead of stored
 // so it survives daemon and client restarts alike.
