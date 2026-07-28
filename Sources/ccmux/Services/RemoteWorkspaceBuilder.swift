@@ -20,6 +20,7 @@ enum RemoteWorkspaceBuilder {
             title: pane.title.isEmpty ? nil : pane.title,
             startupCommand: nil)
         config.host = .hosted(paneId: pane.id)
+        config.dormant = pane.dormant
         return config
     }
 
@@ -74,6 +75,9 @@ enum RemoteWorkspaceBuilder {
     /// Returns nil when nothing changed so callers can skip republishing.
     static func updatingTitles(_ tree: SplitTree<PaneTabs>, panes: [DaemonPane]) -> SplitTree<PaneTabs>? {
         let titles = Dictionary(panes.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+        // Dormancy rides the same reconcile as titles: it changes for the same
+        // reason (the pane's foreground command moved) and must not need its own.
+        let dormant = Dictionary(panes.map { ($0.id, $0.dormant) }, uniquingKeysWith: { a, _ in a })
         var result = tree
         var changed = false
         for (leafId, tabs) in tree.allLeaves {
@@ -83,8 +87,10 @@ enum RemoteWorkspaceBuilder {
                 guard case .terminal(var cfg) = tab, let paneId = cfg.host.hostedPaneId,
                       let raw = titles[paneId] else { continue }
                 let title: String? = raw.isEmpty ? nil : raw
-                if cfg.title != title {
+                let isDormant = dormant[paneId] ?? false
+                if cfg.title != title || cfg.dormant != isDormant {
                     cfg.title = title
+                    cfg.dormant = isDormant
                     newTabs.tabs[idx] = .terminal(cfg)
                     leafChanged = true
                 }

@@ -282,6 +282,11 @@ struct DaemonPane: Codable, Identifiable {
     var workspaceId: String?
     /// True for the workspace's dev-server pane (spawned by ▶).
     var devServer: Bool
+    /// True when this pane was started to run a Claude session whose Claude has
+    /// since exited, leaving a bare shell. The pane is perfectly alive — which is
+    /// exactly why it needs saying: nothing else tells it apart from a working
+    /// session, so a dead teammate reads as a live one until you click into it.
+    var dormant: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -293,6 +298,7 @@ struct DaemonPane: Codable, Identifiable {
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
         devServer = try c.decodeIfPresent(Bool.self, forKey: .devServer) ?? false
+        dormant = try c.decodeIfPresent(Bool.self, forKey: .dormant) ?? false
     }
 }
 

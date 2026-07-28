@@ -144,12 +144,16 @@ private struct TabChip: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: tab.iconName)
+            // A dormant tab is dimmed rather than badged: it marks an absence,
+            // not an alert, and must not compete with attention states.
+            Image(systemName: tab.isDormant ? "moon.zzz" : tab.iconName)
                 .font(.system(size: 10))
                 .foregroundColor(isActive ? .primary : .secondary)
+                .opacity(tab.isDormant ? 0.55 : 1)
             Text(tab.displayName)
                 .font(.system(size: 11, weight: isActive ? .medium : .regular))
                 .foregroundColor(isActive ? .primary : .secondary)
+                .opacity(tab.isDormant ? 0.55 : 1)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
@@ -183,6 +187,7 @@ private struct TabChip: View {
             }
         }
         .contentShape(Rectangle())
+        .help(tab.isDormant ? "Claude exited — shell only" : "")
         .onHover { isHovered = $0 }
     }
 }

@@ -31,6 +31,12 @@ enum PaneContent: Identifiable, Codable {
         }
     }
 
+    /// True when this tab is a hosted terminal whose Claude has exited.
+    var isDormant: Bool {
+        if case .terminal(let c) = self { return c.dormant }
+        return false
+    }
+
     var iconName: String {
         switch self {
         case .terminal: return "terminal"
@@ -71,6 +77,9 @@ struct TerminalConfig: Codable, Identifiable {
     /// Where this pane's process lives. Default `.local` preserves the original
     /// driver behavior for every persisted config written before the lens pivot.
     var host: PaneHost = .local
+    /// Hosted panes only: the pane's Claude has exited and left a shell. Purely
+    /// presentational — the pane still works, it just has nobody in it.
+    var dormant: Bool = false
 }
 
 extension TerminalConfig {
@@ -86,6 +95,7 @@ extension TerminalConfig {
         title = try c.decodeIfPresent(String.self, forKey: .title)
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
         host = try c.decodeIfPresent(PaneHost.self, forKey: .host) ?? .local
+        dormant = try c.decodeIfPresent(Bool.self, forKey: .dormant) ?? false
     }
 }
 
