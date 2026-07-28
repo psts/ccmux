@@ -21,6 +21,11 @@ type RegisterReq struct {
 	Name        string `json:"name"`
 	RequestedID string `json:"requested_id"`
 	Summary     string `json:"summary"`
+	// PollOnly marks a session that opted out of live push
+	// (CCMUX_PEERS_CHANNEL=0): it collects messages by polling instead of
+	// holding a socket. Sent as the NEGATIVE so an older client, which sends
+	// nothing, defaults to push — the mode almost every session runs in.
+	PollOnly bool `json:"poll_only"`
 }
 
 // RegisterResp echoes the derived identity back so the client can render tool
@@ -68,7 +73,7 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 	peer := &Peer{
 		ID: id, Name: name, PaneID: req.PaneID, LocalPaneID: req.LocalPaneID,
 		PID: req.PID, CWD: req.CWD, GitRoot: req.GitRoot, Summary: summary,
-		RegisteredAt: now, LastSeenAt: now,
+		RegisteredAt: now, LastSeenAt: now, PollOnly: req.PollOnly,
 	}
 	// Federation: stamp the owning host (hub mode) so list_peers distinguishes
 	// same-named peers across hosts. Cached read — safe under s.mu.
@@ -197,6 +202,9 @@ type ListEntry struct {
 	Summary   string `json:"summary"`
 	LastSeen  string `json:"last_seen"`
 	Connected bool   `json:"connected"`
+	// PollOnly says this peer never holds a push socket, so Connected being
+	// false is its normal healthy state rather than a broken connection.
+	PollOnly bool `json:"poll_only,omitempty"`
 	// Host is the peer's owning-host label (federation, hub mode); "" single-host.
 	Host string `json:"host,omitempty"`
 }
@@ -272,7 +280,7 @@ func (s *Service) listEntryLocked(p *Peer) ListEntry {
 		ID: p.ID, Name: p.Name, Group: g, Project: g,
 		PID: p.PID, CWD: p.CWD, GitRoot: p.GitRoot, Summary: p.Summary,
 		LastSeen: isoMillis(p.LastSeenAt), Connected: s.conns[p.ID] != nil,
-		Host: p.Host,
+		PollOnly: p.PollOnly, Host: p.Host,
 	}
 }
 

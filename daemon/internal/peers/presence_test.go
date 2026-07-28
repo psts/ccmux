@@ -450,3 +450,27 @@ func TestPresence_SessionTruthSurvivesDaemonRestart(t *testing.T) {
 		t.Fatal("a new session must bring the peer back")
 	}
 }
+
+// The delivery mode a session registers with has to reach the listing, or a
+// poll-only peer is indistinguishable from one with a broken socket.
+func TestList_CarriesPollOnlyMode(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.setGroup("pane-A", "grp")
+	hook.setGroup("pane-B", "grp")
+	hook.setGroup("pane-C", "grp")
+	me := registerPane(svc, "pane-A", "/x/a")
+	svc.Register(RegisterReq{PaneID: "pane-B", PID: os.Getpid(), CWD: "/x/b", GitRoot: "/x/b", PollOnly: true})
+	svc.Register(RegisterReq{PaneID: "pane-C", PID: os.Getpid(), CWD: "/x/c", GitRoot: "/x/c"})
+
+	byName := map[string]ListEntry{}
+	for _, e := range svc.List(me.PeerID, "all", "") {
+		byName[e.CWD] = e
+	}
+	if !byName["/x/b"].PollOnly {
+		t.Error("a poll-only session must be reported as such")
+	}
+	// An older client sends nothing, and push is what almost every session runs.
+	if byName["/x/c"].PollOnly {
+		t.Error("the default must be push, so old clients are not mislabelled")
+	}
+}

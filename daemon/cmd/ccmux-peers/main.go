@@ -139,6 +139,7 @@ func (a *app) register() error {
 		"pane_id": a.paneID, "local_pane_id": a.localPaneID, "pid": os.Getpid(),
 		"cwd": a.cwd, "git_root": a.gitRoot,
 		"name": a.name, "requested_id": a.id,
+		"poll_only": !a.channelMode,
 	}
 	a.mu.Unlock()
 	var resp struct {

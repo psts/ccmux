@@ -129,6 +129,7 @@ type listEntry struct {
 	GitRoot   string `json:"git_root"`
 	Summary   string `json:"summary"`
 	Connected bool   `json:"connected"`
+	PollOnly  bool   `json:"poll_only"`
 }
 
 func (a *app) toolListPeers(args json.RawMessage) any {
@@ -164,13 +165,7 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 		if p.Summary != "" {
 			parts = append(parts, "Summary: "+p.Summary)
 		}
-		// Every listed peer has a session attached; the qualifier now means what
-		// it says — its socket is mid-reconnect, not that it left days ago.
-		status := "Status: online"
-		if !p.Connected {
-			status += " (reconnecting)"
-		}
-		parts = append(parts, status)
+		parts = append(parts, "Status: "+peerStatus(p))
 		lines = append(lines, strings.Join(parts, "\n  "))
 	}
 	return toolText(fmt.Sprintf("Found %d peer(s) (scope: %s, project: %s):\n\n%s",
@@ -259,4 +254,19 @@ func (a *app) toolCheckMessages() any {
 		return toolText("No new messages.", false)
 	}
 	return toolText(fmt.Sprintf("%d new message(s):\n\n%s", len(lines), strings.Join(lines, "\n\n---\n\n")), false)
+}
+
+// peerStatus describes a listed peer. Every peer in a listing has a live Claude
+// session behind it, so the question is only how fast it will hear you: a poll
+// -only session holds no socket by design and must not be reported as broken,
+// which is what the old blanket "(reconnecting)" did to it forever.
+func peerStatus(p listEntry) string {
+	switch {
+	case p.PollOnly:
+		return "online (polls for messages — delivery on its next check)"
+	case p.Connected:
+		return "online"
+	default:
+		return "online (reconnecting)"
+	}
 }
