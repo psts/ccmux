@@ -279,6 +279,10 @@ body {
 .tab::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: transparent; }
 .tab.att-needs_input::before { background: var(--needs); box-shadow: 0 0 6px var(--needs); }
 .tab.att-done::before { background: var(--done); }
+/* Dormant: the pane is alive but its Claude exited. Dimmed rather than coloured
+   — it is an absence, not an alert competing with attention states. */
+.tab.dormant { opacity: .55; }
+.tab.dormant::before { background: transparent; box-shadow: inset 0 0 0 1px #6b7280; }
 #terminal { flex: 1; min-height: 0; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)) 8px; }
 .empty {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;

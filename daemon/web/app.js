@@ -609,8 +609,13 @@ function renderTabs() {
   tabs.innerHTML = "";
   state.panes.forEach((p, i) => {
     const b = document.createElement("button");
-    b.className = "tab" + (p.id === state.paneId ? " active" : "") + " att-" + (p.attention || "idle");
+    // A dormant pane hosted a Claude session that has exited. The pane is alive,
+    // which is exactly why it needs saying — nothing else tells it apart from a
+    // working session.
+    b.className = "tab" + (p.id === state.paneId ? " active" : "") +
+      " att-" + (p.attention || "idle") + (p.dormant ? " dormant" : "");
     b.dataset.pane = p.id;
+    b.title = p.dormant ? "Claude exited — shell only" : "";
     b.textContent = p.title || `pane ${i + 1}`;
     b.onclick = () => attach(state.wsId, p.id);
     tabs.appendChild(b);

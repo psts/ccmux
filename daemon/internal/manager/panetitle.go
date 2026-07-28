@@ -98,13 +98,19 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	} else {
 		p.RawCommand = value
 	}
-	title := derivePaneTitle(p.RawTitle, p.RawCommand, m.paneTitleDefaults)
-	if title == "" || title == p.Title {
+	// The same command signal that renames a pane also reveals a Claude that
+	// exited, so dormancy is recomputed here rather than polled for.
+	changed := refreshDormantLocked(p)
+	if title := derivePaneTitle(p.RawTitle, p.RawCommand, m.paneTitleDefaults); title != "" && title != p.Title {
+		p.Title = title
+		changed = true
+	}
+	if !changed {
 		m.mu.Unlock()
 		return
 	}
-	p.Title = title
+	saved := *p // copy: p is shared state and the write below happens unlocked
 	m.mu.Unlock()
-	_ = m.store.SavePane(p)
+	_ = m.store.SavePane(&saved)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 }

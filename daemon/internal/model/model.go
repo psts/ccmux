@@ -193,6 +193,12 @@ type Pane struct {
 	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
 	// ■). Its presence is the "running" signal lenses render.
 	DevServer bool `json:"devServer,omitempty"`
+	// Dormant marks a pane that was started to run a Claude session whose
+	// process has since exited, leaving a bare shell. The pane is perfectly
+	// alive — that is exactly why this is needed: nothing else distinguishes it
+	// from a working session, so a dead teammate looks like a live one until you
+	// click into it. Lenses render it as restartable.
+	Dormant bool `json:"dormant,omitempty"`
 	// RawTitle/RawCommand are the tmux runtime signals (#{pane_title},
 	// #{pane_current_command}) that Title is derived from. Runtime-only.
 	RawTitle   string `json:"-"`
