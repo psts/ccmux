@@ -1,0 +1,67 @@
+# GoReleaser config for the ccmux daemon binaries (ccmuxd + ccmux-peers).
+#
+# The Go module lives in daemon/ while the git tags + release live at the repo
+# root, so each build sets `dir: daemon` and a `main` relative to it. Both
+# binaries are pure Go (CGO_ENABLED=0), so every target cross-compiles from the
+# CI runner with no C toolchain.
+#
+# Targets: darwin/arm64, linux/amd64, linux/arm64 (macOS is Apple Silicon only).
+# One tarball per platform contains BOTH binaries at its root, which is what
+# install.sh unpacks.
+#
+# Local dry run (no publish):  goreleaser release --snapshot --clean
+# Validate this file:          goreleaser check
+version: 2
+
+project_name: ccmux
+
+builds:
+  - id: ccmuxd
+    dir: daemon
+    main: ./cmd/ccmuxd
+    binary: ccmuxd
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X ccmux.dev/ccmuxd/internal/version.Build={{ .Version }}
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+  - id: ccmux-peers
+    dir: daemon
+    main: ./cmd/ccmux-peers
+    binary: ccmux-peers
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: ccmux
+    ids: [ccmuxd, ccmux-peers]
+    formats: [tar.gz]
+    # Base name must match install.sh's asset: ccmux_<os>_<arch>.tar.gz
+    name_template: "ccmux_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  draft: false
+  prerelease: auto
+
+changelog:
+  disable: true

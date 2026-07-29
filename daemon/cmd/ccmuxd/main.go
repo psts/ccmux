@@ -40,7 +40,18 @@ import (
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
 
+// main dispatches a leading non-flag arg (install/uninstall) to the subcommand
+// layer; otherwise it runs the daemon. The launchd/systemd invocation passes
+// `-addr …` (starts with "-"), so it always lands on the daemon path.
 func main() {
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		runSubcommand(os.Args[1], os.Args[2:])
+		return
+	}
+	runDaemon()
+}
+
+func runDaemon() {
 	socket := flag.String("socket", "ccmux", "tmux server socket name (-L)")
 	addr := flag.String("addr", "127.0.0.1:7890", "HTTP listen address")
 	dbPath := flag.String("db", defaultDBPath(), "registry SQLite path")

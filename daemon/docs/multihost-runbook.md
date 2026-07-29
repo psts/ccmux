@@ -49,34 +49,49 @@ install behaves exactly as before.
 
 ## Deploy
 
+Every host runs the same binary; "hub" is one extra flag on one node. The installer
+downloads the binaries, writes a user service (launchd on macOS, systemd `--user` on
+Linux), joins the tailnet once, and registers the per-host peers MCP. It re-runs
+safely.
+
+**Prerequisite (all hosts):** HTTPS certs enabled for the tailnet (Admin → DNS →
+HTTPS Certificates) — the same requirement single-host `-tsnet` already carries. Have
+a reusable `TS_AUTHKEY` ready, ideally pre-approved and auto-tagged `tag:ccmux`.
+
 ### 1. Every host (including the future hub)
 
-Install `ccmuxd`, run it as its own tailnet node, and tag it:
-
 ```
-ccmuxd -tsnet -tsnet-hostname <host-label> [-projects-root /srv/projects]
+curl -fsSL https://raw.githubusercontent.com/psts/ccmux/main/install.sh | sh -s -- \
+  --hostname <host-label> --authkey "$TS_AUTHKEY" [--projects-root /srv/projects]
 ```
 
-In the Tailscale admin console (or ACL policy), give each node the tag **`tag:ccmux`**.
-First run needs `TS_AUTHKEY` (a reusable, pre-approved key, ideally auto-tagged
-`tag:ccmux`). HTTPS certs must be enabled for the tailnet (Admin → DNS → HTTPS
-Certificates) — the same requirement single-host `-tsnet` already carries.
+Run with no `--` args to be prompted instead (override the source with `CCMUX_REPO`).
+The installer joins the tailnet once — the
+key is consumed into node state, never written into the service file — then serves
+`127.0.0.1:7900` plus the tailnet node's `:443`.
 
+Then, in the Tailscale admin console (or ACL policy), tag the node **`tag:ccmux`**.
 No secret is distributed to hosts: joining a host is *tag it + let it reach the hub*.
 
 ### 2. The hub (one node — a normal host plus the hub role)
 
-Pick one node, add `-hub`, and tag it `tag:ccmux-hub` (the tag is what member hosts
-discover to federate their peers bus — not optional if you want cross-host peers):
+Pick one node and add `--hub`, then tag it `tag:ccmux-hub` (that tag is what member
+hosts discover to federate their peers bus — required for cross-host peers):
 
 ```
-ccmuxd -tsnet -tsnet-hostname hub -hub [-projects-root /srv/projects]
+curl -fsSL https://raw.githubusercontent.com/psts/ccmux/main/install.sh | sh -s -- \
+  --hostname hub --hub --authkey "$TS_AUTHKEY" [--projects-root /srv/projects]
 ```
 
-`-hub` requires `-tsnet`. The hub discovers members from the tailnet on a 5s probe;
-tag a new box `tag:ccmux` and it appears within one cycle. A single-machine install
-runs its one daemon as the hub (superset role) — nothing else to do. Member hosts
-need no hub config: they find `tag:ccmux-hub` themselves and mint pane tokens from it.
+The hub discovers members from the tailnet on a 5s probe; tag a new box `tag:ccmux`
+and it appears within one cycle. A single-machine install runs its one daemon as the
+hub (superset role) — nothing else to do. Member hosts need no hub config: they find
+`tag:ccmux-hub` themselves and mint pane tokens from it.
+
+> **From source instead of a release:** in `daemon/`, `go build -o ~/.local/bin/ccmuxd
+> ./cmd/ccmuxd && go build -o ~/.local/bin/ccmux-peers ./cmd/ccmux-peers`, then
+> `ccmuxd install --hostname <label> [--hub] --authkey "$TS_AUTHKEY"`. The subcommand
+> does the same service + tailnet + MCP setup on a locally-built binary.
 
 ### 3. Point lenses at the hub
 
