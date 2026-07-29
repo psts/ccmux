@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"sort"
+	"strings"
 
+	"ccmux.dev/ccmuxd/internal/hooktrace"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/push"
@@ -67,29 +70,73 @@ func notifyState(att model.Attention) bool {
 
 // onAttention sends a push for a pane's new attention state to every subscribed
 // dev not currently watching the workspace, pruning dead subscriptions as it goes.
+//
+// Every branch is traced. Suppression compares two strings that are produced by
+// different code paths for the same human — a lens's presence login and a
+// subscription's stored login — so the trace records both sides of the comparison
+// rather than only its result. A phone that buzzes while its owner is at a screen
+// is almost always those two strings disagreeing, and no other log shows it.
 func (n *notifier) onAttention(ctx context.Context, wsID string, att model.Attention) {
 	if !notifyState(att) {
+		n.trace(wsID, att, hooktrace.Line{Decision: "no-push", Detail: "state is ambient"})
 		return
 	}
 	subs, err := n.subs.ListPushSubscriptions()
-	if err != nil || len(subs) == 0 {
+	if err != nil {
+		n.trace(wsID, att, hooktrace.Line{Decision: "no-push", Detail: "list subscriptions: " + err.Error()})
+		return
+	}
+	if len(subs) == 0 {
+		n.trace(wsID, att, hooktrace.Line{Decision: "no-push", Detail: "nobody is subscribed"})
 		return
 	}
 	suppressed := n.focus.ActiveOwners()
+	focused := focusedLogins(suppressed)
 	body, _ := json.Marshal(n.payloadFor(wsID, att))
 	topic := push.Topic(wsID)
 	for _, sub := range subs {
 		if suppressed[sub.Login] {
+			n.trace(wsID, att, hooktrace.Line{Decision: "suppressed", Login: sub.Login, Suppressed: sub.Login})
 			continue
 		}
 		status, err := n.sender.Send(ctx, sub.Address, body, topic)
 		if err != nil {
+			n.trace(wsID, att, hooktrace.Line{Decision: "send-failed", Login: sub.Login, Detail: err.Error()})
 			continue
 		}
 		if push.Dead(status) {
 			_ = n.subs.DeletePushSubscription(sub.ID)
+			n.trace(wsID, att, hooktrace.Line{Decision: "pruned", Login: sub.Login, Detail: "push service says gone"})
+			continue
 		}
+		n.trace(wsID, att, hooktrace.Line{Decision: "sent", Login: sub.Login, Detail: "focused now: " + focused})
 	}
+}
+
+// focusedLogins renders the suppression set for the trace. On a "sent" line this
+// is the comparison that failed: if a login here looks like the same person as
+// the one that just got pushed, the two identity paths disagree.
+func focusedLogins(active map[string]bool) string {
+	if len(active) == 0 {
+		return "(nobody)"
+	}
+	names := make([]string, 0, len(active))
+	for login := range active {
+		names = append(names, login)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// trace fills in the fields every push line shares. There is no trace id here:
+// the notifier consumes the manager firehose, which carries a workspace and an
+// attention state but no hook identity, so these lines correlate with the route
+// line above them by timestamp and workspace.
+func (n *notifier) trace(wsID string, att model.Attention, line hooktrace.Line) {
+	line.Stage = hooktrace.StagePush
+	line.WorkspaceID = wsID
+	line.Attention = string(att)
+	hooktrace.Write(line)
 }
 
 func (n *notifier) payloadFor(wsID string, att model.Attention) pushPayload {

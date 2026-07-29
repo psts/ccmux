@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/hooktrace"
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
@@ -28,6 +29,10 @@ type hookMsg struct {
 	NotificationType string `json:"notification_type"`
 	SessionID        string `json:"session_id"`
 	PaneID           string `json:"pane_id"`
+	// TraceID ties this message back to the ccmux-notify.sh line that produced
+	// it, so the trace file reads as one story per hook. Absent from older
+	// scripts; an empty id just means the route line stands on its own.
+	TraceID string `json:"trace_id"`
 }
 
 // Listener owns the hooks Unix socket.
@@ -73,17 +78,22 @@ func (l *Listener) handle(conn net.Conn) {
 	if json.Unmarshal(data, &msg) != nil {
 		return
 	}
+	l.route(msg)
+}
+
+// route applies a hook's outcomes and traces every branch, including the ones
+// that do nothing. "The daemon received this hook and deliberately ignored it" is
+// as useful to a reader chasing a stray notification as "the daemon flashed a
+// pane" — the silent branches are exactly where a missing flash hides.
+func (l *Listener) route(msg hookMsg) {
 	att, wantAtt := outcome(msg.Type, msg.NotificationType)
 	sig, wantSig := sessionOutcome(msg.Type)
 	if !wantAtt && !wantSig {
-		return
-	}
-	paneID := l.router.ResolvePane(msg.PaneID, msg.CWD)
-	if paneID == "" {
+		l.trace(msg, hooktrace.Line{Decision: "ignored", Detail: "no attention or session meaning"})
 		return
 	}
 	if wantAtt {
-		l.router.ApplyAttention(paneID, att)
+		l.applyAttention(msg, att)
 	}
 	// Session truth demands an EXPLICIT pane. Attention tolerates the cwd
 	// fallback because a flash on the wrong pane is cosmetic; a session-end
@@ -92,10 +102,43 @@ func (l *Listener) handle(conn net.Conn) {
 	// fallback would routinely blame someone else's pane for their exit.
 	// Resolving with an empty cwd yields "" unless the pane id itself is real.
 	if wantSig {
-		if sp := l.router.ResolvePane(msg.PaneID, ""); sp != "" {
-			l.router.ApplySession(sp, msg.SessionID, sig)
-		}
+		l.applySession(msg, sig)
 	}
+}
+
+func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
+	paneID := l.router.ResolvePane(msg.PaneID, msg.CWD)
+	if paneID == "" {
+		l.trace(msg, hooktrace.Line{Decision: "unresolved", Detail: "no pane matches this pane id or cwd"})
+		return
+	}
+	l.router.ApplyAttention(paneID, att)
+	l.trace(msg, hooktrace.Line{Decision: "attention", Resolved: paneID, Attention: string(att)})
+}
+
+func (l *Listener) applySession(msg hookMsg, sig model.SessionSignal) {
+	sp := l.router.ResolvePane(msg.PaneID, "")
+	if sp == "" {
+		l.trace(msg, hooktrace.Line{Decision: "session-unresolved", Detail: "hook carries no ccmux pane id"})
+		return
+	}
+	l.router.ApplySession(sp, msg.SessionID, sig)
+	l.trace(msg, hooktrace.Line{Decision: "session", Resolved: sp, Session: string(sig)})
+}
+
+// trace fills in the fields every route line shares, so each call site states
+// only what it decided.
+func (l *Listener) trace(msg hookMsg, line hooktrace.Line) {
+	line.Stage = hooktrace.StageRoute
+	line.TraceID = msg.TraceID
+	line.Event = msg.Type
+	line.CWD = msg.CWD
+	line.SessionID = msg.SessionID
+	line.PaneID = msg.PaneID
+	if line.Detail == "" && msg.NotificationType != "" {
+		line.Detail = msg.NotificationType
+	}
+	hooktrace.Write(line)
 }
 
 // Close stops the listener and removes the socket.

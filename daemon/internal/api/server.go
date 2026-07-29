@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -195,6 +196,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"cloudflareTokenSet":  s.mgr.CloudflareToken() != "",
 		"tailscaleAuthKeySet": s.mgr.TailscaleAuthKey() != "",
 		"devCertStatus":       s.devCertStatus(),
+		// Which self-declared names are aliased, never what they map to. The
+		// values are verified logins — emails — and this handler is unauthenticated,
+		// so it follows the same write-only rule as the secrets above. The names
+		// alone answer the question you'd read this for: is my lens aliased or not.
+		"identityAliasNames": aliasNames(s.mgr.IdentityAliases()),
 	}
 	if repo := r.URL.Query().Get("repoPath"); repo != "" {
 		resp["resolvedStartupCommand"] = s.mgr.StartupCommandFor(repo)
@@ -215,19 +221,40 @@ func (s *Server) devCertStatus() string {
 	return "unknown"
 }
 
+// settingsRequest is the PUT body. Every field is a pointer so an absent key
+// means "leave this alone" rather than "set it to the zero value".
+type settingsRequest struct {
+	StartupCommand   *string                `json:"startupCommand"`
+	StartupRules     *[]manager.StartupRule `json:"startupRules"`
+	DevDomain        *string                `json:"devDomain"`
+	CloudflareToken  *string                `json:"cloudflareToken"`
+	TailscaleAuthKey *string                `json:"tailscaleAuthKey"`
+	// Replaces the whole alias map rather than merging: an alias you couldn't
+	// remove by sending the map without it would be a trap.
+	IdentityAliases *map[string]string `json:"identityAliases"`
+}
+
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		StartupCommand   *string                `json:"startupCommand"`
-		StartupRules     *[]manager.StartupRule `json:"startupRules"`
-		DevDomain        *string                `json:"devDomain"`
-		CloudflareToken  *string                `json:"cloudflareToken"`
-		TailscaleAuthKey *string                `json:"tailscaleAuthKey"`
-	}
+	var req settingsRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	// Custom-domain mode is unusable without a token to issue certs with, so
-	// reject the combination before persisting anything.
+	if msg, ok := s.rejectSettings(req); !ok {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if err := s.applySettings(req); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.getSettings(w, r)
+}
+
+// rejectSettings validates the request against the state it would produce,
+// before anything is persisted. It returns the message to send and ok=false when
+// the request must be refused.
+func (s *Server) rejectSettings(req settingsRequest) (string, bool) {
+	// Custom-domain mode is unusable without a token to issue certs with.
 	domain, token := s.mgr.DevDomain(), s.mgr.CloudflareToken()
 	if req.DevDomain != nil {
 		domain = strings.TrimSpace(*req.DevDomain)
@@ -236,39 +263,60 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		token = strings.TrimSpace(*req.CloudflareToken)
 	}
 	if domain != "" && token == "" {
-		writeError(w, http.StatusBadRequest, "devDomain requires a cloudflareToken for DNS-01 certs")
-		return
+		return "devDomain requires a cloudflareToken for DNS-01 certs", false
 	}
-	setters := []struct {
+	// An alias row missing either side is the caller's mistake, not something to
+	// silently drop and then answer 200 to.
+	if req.IdentityAliases != nil {
+		for name, login := range *req.IdentityAliases {
+			if strings.TrimSpace(name) == "" || strings.TrimSpace(login) == "" {
+				return manager.ErrIncompleteAlias.Error(), false
+			}
+		}
+	}
+	return "", true
+}
+
+// applySettings persists every field the request carried. Each setter takes the
+// dereferenced value; a nil field is skipped.
+func (s *Server) applySettings(req settingsRequest) error {
+	strs := []struct {
 		val *string
 		set func(string) error
 	}{
 		{req.DevDomain, s.mgr.SetDevDomain},
 		{req.CloudflareToken, s.mgr.SetCloudflareToken},
 		{req.TailscaleAuthKey, s.mgr.SetTailscaleAuthKey},
+		{req.StartupCommand, func(v string) error { return s.mgr.SetDefaultStartupCommand(strings.TrimSpace(v)) }},
 	}
-	for _, f := range setters {
+	for _, f := range strs {
 		if f.val == nil {
 			continue
 		}
 		if err := f.set(*f.val); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return err
 		}
 	}
-	if req.StartupCommand != nil {
-		if err := s.mgr.SetDefaultStartupCommand(strings.TrimSpace(*req.StartupCommand)); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+	if req.IdentityAliases != nil {
+		if err := s.mgr.SetIdentityAliases(*req.IdentityAliases); err != nil {
+			return err
 		}
 	}
 	if req.StartupRules != nil {
-		if err := s.mgr.SetStartupRules(*req.StartupRules); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+		return s.mgr.SetStartupRules(*req.StartupRules)
 	}
-	s.getSettings(w, r)
+	return nil
+}
+
+// aliasNames lists the aliased names, dropping the logins they map to. Sorted so
+// the settings response is stable between reads.
+func aliasNames(aliases map[string]string) []string {
+	names := make([]string, 0, len(aliases))
+	for name := range aliases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // putHostnames replaces a workspace's dev-hostname mappings ({name, port}

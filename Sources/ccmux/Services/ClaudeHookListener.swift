@@ -112,26 +112,47 @@ final class ClaudeHookListener {
 
     private func handle(_ data: Data) {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = obj["type"] as? String,
-              let cwd = obj["cwd"] as? String, !cwd.isEmpty,
+              let type = obj["type"] as? String
+        else { return }
+
+        // Trace context shared by every branch below. `trace_id` comes from
+        // ccmux-notify.sh, so a local decision lines up with the hook that caused
+        // it in the shared log.
+        var ctx: [String: String] = ["event": type]
+        ctx["trace_id"] = obj["trace_id"] as? String
+        ctx["cwd"] = obj["cwd"] as? String
+        ctx["session_id"] = obj["session_id"] as? String
+
+        guard let cwd = obj["cwd"] as? String, !cwd.isEmpty,
               let wm = workspaceManager,
               let workspace = wm.workspace(forCwd: cwd),
               let monitor = wm.attentionMonitors[workspace.id]
-        else { return }
+        else {
+            HookTrace.write(decision: "unresolved", fields: ctx.merging(
+                ["detail": "no local workspace matches this cwd"]) { _, new in new })
+            return
+        }
+        ctx["workspace_id"] = workspace.id.uuidString
 
         switch Self.outcome(forEvent: type, notificationType: obj["notification_type"] as? String) {
         case .clear:
             monitor.clear()
+            HookTrace.write(decision: "cleared", fields: ctx)
         case .ignore:
-            break
+            HookTrace.write(decision: "ignored", fields: ctx.merging(
+                ["detail": obj["notification_type"] as? String ?? "no attention meaning"]) { _, new in new })
         case .set(let newState):
+            ctx["attention"] = String(describing: newState)
             // Suppress when you're already watching this workspace — nothing to flag.
             if isCurrentlyWatched(workspace.id) {
                 monitor.clear()
+                HookTrace.write(decision: "suppressed", fields: ctx.merging(
+                    ["detail": "this workspace is the key window"]) { _, new in new })
                 return
             }
             monitor.set(newState)
             notifier.post(for: workspace, state: newState)
+            HookTrace.write(decision: "posted", fields: ctx)
         }
     }
 
