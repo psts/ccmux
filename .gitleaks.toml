@@ -1,0 +1,19 @@
+# gitleaks config for the ccmux repo.
+#
+# Keeps the full built-in ruleset (useDefault) and only carves out vendored
+# third-party bundles, whose minified code trips high-entropy heuristics. The
+# one real-world example: xterm.js exports `t.FourKeyMap=…`, which the
+# generic-api-key rule reads as a secret. It is a keyboard-mapping class, not a
+# credential.
+#
+# Scan history:  gitleaks git . --redact
+# Scan working tree: gitleaks dir . --redact
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored third-party assets — not our source"
+paths = [
+  '''daemon/web/vendor/.*''',
+]
