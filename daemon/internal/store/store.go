@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"ccmux.dev/ccmuxd/internal/model"
 	_ "modernc.org/sqlite" // pure-Go driver, registered as "sqlite"
@@ -118,6 +119,14 @@ func Open(path string) (*SQLite, error) {
 	// every registration backfills its own row (see TouchPeerMailbox).
 	_, _ = db.Exec(`ALTER TABLE peer_cursors ADD COLUMN pane_id TEXT DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE peer_cursors ADD COLUMN updated_at INTEGER DEFAULT 0`)
+	// The registry holds peer message history and workspace state; SQLite creates
+	// it with the process umask (typically 0644), but the config dir is 0700 and
+	// the peers secret/info files are 0600 (see internal/peers/token.go) — keep the
+	// DB owner-only too. WAL sidecars inherit the loose mode, so tighten them
+	// best-effort (they exist only after the first write in WAL mode).
+	_ = os.Chmod(path, 0o600)
+	_ = os.Chmod(path+"-wal", 0o600)
+	_ = os.Chmod(path+"-shm", 0o600)
 	return &SQLite{db: db}, nil
 }
 
