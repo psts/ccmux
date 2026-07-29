@@ -6,3 +6,5 @@ DerivedData/
 .DS_Store
 # GoReleaser build output
 dist/
+# Local Claude Code state (personal, not for the public repo)
+.claude/
