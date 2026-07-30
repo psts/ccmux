@@ -54,7 +54,7 @@ func routeOnly(lines []hooktrace.Line, decision string) []hooktrace.Line {
 func TestRouteTrace_CarriesTheScriptsTraceID(t *testing.T) {
 	read := traceTo(t)
 	r := &mockRouter{resolve: "pane-1"}
-	l := &Listener{router: r}
+	l := newListener(r)
 
 	l.route(hookMsg{Type: "stop", CWD: "/repo", PaneID: "pane-1", TraceID: "cafe1234"})
 
@@ -74,7 +74,7 @@ func TestRouteTrace_CarriesTheScriptsTraceID(t *testing.T) {
 // not to act, and without a line there is no evidence either way.
 func TestRouteTrace_IgnoredEventStillLogs(t *testing.T) {
 	read := traceTo(t)
-	l := &Listener{router: &mockRouter{resolve: "pane-1"}}
+	l := newListener(&mockRouter{resolve: "pane-1"})
 
 	l.route(hookMsg{Type: "notification", NotificationType: "auth_success", CWD: "/repo"})
 
@@ -89,7 +89,7 @@ func TestRouteTrace_IgnoredEventStillLogs(t *testing.T) {
 
 func TestRouteTrace_UnresolvedPaneIsRecorded(t *testing.T) {
 	read := traceTo(t)
-	l := &Listener{router: &mockRouter{resolve: ""}} // nothing matches
+	l := newListener(&mockRouter{resolve: ""}) // nothing matches
 
 	l.route(hookMsg{Type: "stop", CWD: "/somewhere/else"})
 
@@ -103,7 +103,7 @@ func TestRouteTrace_UnresolvedPaneIsRecorded(t *testing.T) {
 // rules and can disagree.
 func TestRouteTrace_SessionSignalGetsItsOwnLine(t *testing.T) {
 	read := traceTo(t)
-	l := &Listener{router: &mockRouter{resolve: "pane-1"}}
+	l := newListener(&mockRouter{resolve: "pane-1"})
 
 	l.route(hookMsg{Type: "user_prompt_submit", CWD: "/repo", PaneID: "pane-1", SessionID: "s1"})
 
@@ -125,7 +125,7 @@ func TestRouteTrace_SessionSignalGetsItsOwnLine(t *testing.T) {
 func TestRouteTrace_DoesNotAlterRouting(t *testing.T) {
 	traceTo(t)
 	r := &mockRouter{resolve: "pane-1"}
-	l := &Listener{router: r}
+	l := newListener(r)
 
 	l.route(hookMsg{Type: "stop", CWD: "/repo", PaneID: "pane-1"})
 

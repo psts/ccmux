@@ -48,8 +48,12 @@ case "${1:-unknown}" in
     session-start|SessionStart)              TYPE="session_start" ;;
     session-end|SessionEnd)                  TYPE="session_end" ;;
 
-    subagent-start|SubagentStart)            TYPE="subagent_start";    ROUTED=0 ;;
-    subagent-stop|SubagentStop)              TYPE="subagent_stop";     ROUTED=0 ;;
+    # Routed, but they set no attention of their own: the daemon counts them to
+    # know whether a Stop means "finished" or "stopped talking while background
+    # agents are still running".
+    subagent-start|SubagentStart)            TYPE="subagent_start" ;;
+    subagent-stop|SubagentStop)              TYPE="subagent_stop" ;;
+
     task-completed|TaskCompleted)            TYPE="task_completed";    ROUTED=0 ;;
     teammate-idle|TeammateIdle)              TYPE="teammate_idle";     ROUTED=0 ;;
     permission-denied|PermissionDenied)      TYPE="permission_denied"; ROUTED=0 ;;
@@ -145,6 +149,19 @@ for key in ("notification_type", "agent_id", "agent_type", "stop_reason",
 if payload.get("message"):
     line["message"] = clip(payload["message"])
 
+# Everything else the payload carried, so the log can show a field nobody thought
+# to whitelist. This is not defensive padding: the documented stop_reason turned
+# out never to be sent, and the question of whether a Stop means "finished" or
+# "stopped talking while background agents run" can only be answered by a field
+# we are not yet looking for. Scalars only, clipped — nested objects and the
+# transcript path are bulk with no discriminating value.
+SKIP = {"cwd", "session_id", "hook_event_name", "transcript_path", "message"}
+for key, value in sorted(payload.items()):
+    if key in line or key in SKIP:
+        continue
+    if isinstance(value, bool) or isinstance(value, (int, float)) or isinstance(value, str):
+        line[key] = clip(value, 80)
+
 trace(line)
 
 if decision != "routed":
@@ -157,6 +174,11 @@ print(json.dumps({
     "session_id": payload.get("session_id") or "",
     "pane_id": os.environ.get("CCMUX_PANE_ID") or "",
     "trace_id": trace_id,
+    # Only the subagent lifecycle events carry this. It lets the daemon count the
+    # live background agents in a session. NOTE: no apostrophes anywhere in this
+    # python block -- it is single-quoted for the shell, so one ends the string
+    # and the whole script dies with a syntax error.
+    "agent_id": payload.get("agent_id") or "",
 }))
 ' 2>/dev/null)
 
