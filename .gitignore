@@ -7,4 +7,8 @@ DerivedData/
 # GoReleaser build output
 dist/
 # Local Claude Code state (personal, not for the public repo)
-.claude/
+.claude/*
+# The gate definitions are the repo's, not one machine's: without them
+# qa-receipt.sh finds no test command here (go.mod is under daemon/, and it does
+# not recognise Package.swift) and refuses to sign anything.
+!.claude/qa-gates

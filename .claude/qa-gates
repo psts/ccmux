@@ -1,0 +1,14 @@
+# Quality gates for ccmux.
+#
+# This repo is two stacks and neither is where auto-detection looks: the Go daemon's
+# go.mod lives in daemon/, not at the root, and a SwiftPM Package.swift is not a
+# marker qa-receipt.sh knows. Without this file the repo detects no test command at
+# all and can never record a green.
+#
+# This file REPLACES auto-detection. Anything not listed here stops being gated, so
+# add a line when a stack is added rather than assuming detection will pick it up.
+
+cd daemon && go vet ./...
+cd daemon && go test ./...
+swift build
+swift test
