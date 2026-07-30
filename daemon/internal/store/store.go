@@ -85,6 +85,21 @@ CREATE TABLE IF NOT EXISTS peer_cursors (
 CREATE TABLE IF NOT EXISTS pane_sessions (
   pane_id TEXT PRIMARY KEY, live_ids TEXT, last_activity INTEGER
 );
+-- Outstanding tool-approval relays. Held here rather than only in memory because
+-- a dialog can sit open for hours: a daemon restart used to orphan every one of
+-- them, and the delegator's "yes <id>" then stopped matching and arrived as
+-- ordinary chat while the worker sat waiting.
+CREATE TABLE IF NOT EXISTS peer_perm_requests (
+  request_id TEXT PRIMARY KEY, worker_id TEXT, resolved INTEGER DEFAULT 0,
+  created_at INTEGER
+);
+-- Cross-group reply licences. Same reason: a restart used to revoke the return
+-- path mid-conversation, so a teammate reached into from another project got
+-- "cannot send messages across projects" when it tried to answer.
+CREATE TABLE IF NOT EXISTS peer_reply_grants (
+  replier TEXT, sender TEXT, expires_at INTEGER,
+  PRIMARY KEY (replier, sender)
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT
 );`

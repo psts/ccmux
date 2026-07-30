@@ -240,14 +240,24 @@ func (a *app) toolCheckMessages() any {
 	}
 	var lines []string
 	for _, ev := range resp.Events {
+		// The daemon's cursor only advances when this process acks a push, and it
+		// acks only after the notification write succeeds. So a poll racing a
+		// still-unacked push legitimately gets that event back — and rendering it
+		// would show the session the same message twice.
+		if a.alreadyShown(ev.Seq) {
+			continue
+		}
 		if ev.Type == "permission_verdict" {
 			// A verdict that arrived while the push channel was down still
 			// resolves the dialog — emit it, don't render it as chat.
-			_ = a.mcp.Notify("notifications/claude/channel/permission", map[string]any{
+			if a.mcp.Notify("notifications/claude/channel/permission", map[string]any{
 				"request_id": ev.RequestID, "behavior": ev.Behavior,
-			})
+			}) == nil {
+				a.markShown(ev.Seq)
+			}
 			continue
 		}
+		a.markShown(ev.Seq)
 		lines = append(lines, fmt.Sprintf("From %s (%s):\n%s", orID(ev.FromName, ev.FromID), ev.SentAt, ev.Text))
 	}
 	if len(lines) == 0 {

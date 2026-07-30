@@ -34,13 +34,13 @@ func runFrames(t *testing.T, frames ...string) []map[string]any {
 
 func TestMCP_InitializeDeclaresChannelCapabilities(t *testing.T) {
 	frames := runFrames(t,
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claude-code"}}}`)
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"claude-code"}}}`)
 	if len(frames) != 1 {
 		t.Fatalf("got %d frames, want 1", len(frames))
 	}
 	result := frames[0]["result"].(map[string]any)
-	if result["protocolVersion"] != "2025-03-26" {
-		t.Fatalf("protocolVersion = %v, want echo of client's", result["protocolVersion"])
+	if result["protocolVersion"] != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want the 2025-06-18 the client asked for", result["protocolVersion"])
 	}
 	caps := result["capabilities"].(map[string]any)
 	exp := caps["experimental"].(map[string]any)
@@ -132,5 +132,69 @@ func TestDispatchEvent_EmitsChannelAndPermissionNotifications(t *testing.T) {
 	vp := verdict["params"].(map[string]any)
 	if vp["request_id"] != "abcde" || vp["behavior"] != "allow" {
 		t.Fatalf("verdict params = %v", vp)
+	}
+}
+
+// Negotiation, not a pin and not an echo. A revision the server speaks is agreed
+// to as asked; anything else gets the newest it does speak, leaving the client to
+// accept the older revision or terminate. Echoing an unknown version back — the
+// original behavior — claimed support for whatever was asked for, which matters
+// most for a revision like 2026-07-28 whose stateless core removes the
+// server-initiated notifications this server's delivery path depends on.
+func TestMCP_InitializeNegotiatesProtocolVersion(t *testing.T) {
+	cases := map[string]string{
+		"2025-11-25":    "2025-11-25", // current spec, and what Claude Code prefers
+		"2025-06-18":    "2025-06-18", // also spoken; agreed as asked
+		"2026-07-28":    "2025-11-25", // not spoken -> newest we do
+		"2025-03-26":    "2025-11-25", // allowed batching, which Serve cannot parse
+		"2024-11-05":    "2025-11-25",
+		"not-a-version": "2025-11-25",
+		"":              "2025-11-25", // absent field invents no claim
+	}
+	for offered, want := range cases {
+		frames := runFrames(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+offered+
+			`","capabilities":{},"clientInfo":{"name":"claude-code"}}}`)
+		if len(frames) != 1 {
+			t.Fatalf("offered %q: got %d frames, want 1", offered, len(frames))
+		}
+		if got := frames[0]["result"].(map[string]any)["protocolVersion"]; got != want {
+			t.Errorf("client offered %q, server answered %v; want %s", offered, got, want)
+		}
+	}
+}
+
+// The newest supported revision leads the list, because that is what an unknown
+// request falls back to.
+func TestSupportedProtocolVersions_NewestFirst(t *testing.T) {
+	if len(supportedProtocolVersions) < 1 {
+		t.Fatal("no supported protocol versions declared")
+	}
+	for i := 1; i < len(supportedProtocolVersions); i++ {
+		if supportedProtocolVersions[i-1] <= supportedProtocolVersions[i] {
+			t.Errorf("versions are not newest-first: %q before %q",
+				supportedProtocolVersions[i-1], supportedProtocolVersions[i])
+		}
+	}
+	if got := negotiateProtocolVersion("nonsense"); got != supportedProtocolVersions[0] {
+		t.Errorf("unknown request fell back to %q, want the newest %q", got, supportedProtocolVersions[0])
+	}
+}
+
+// 2025-06-18 removed JSON-RPC batching, and this server's pin asserts that
+// revision. Every frame it writes must therefore be a single JSON object, never
+// an array — the claim is only true while that holds.
+func TestMCP_NeverWritesABatch(t *testing.T) {
+	frames := runFrames(t,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"ping","params":{}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"no/such/method","params":{}}`)
+	if len(frames) != 4 {
+		t.Fatalf("got %d frames, want one object per request", len(frames))
+	}
+	for i, f := range frames {
+		if f["jsonrpc"] != "2.0" {
+			t.Errorf("frame %d is not a lone JSON-RPC object: %v", i, f)
+		}
 	}
 }

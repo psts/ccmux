@@ -142,6 +142,9 @@ func (s *Service) tryVerdictLocked(sender, target *Peer, group, text string) (bo
 		return true, SendResp{OK: true}
 	}
 	pr.resolved = true
+	// Persist the resolution before delivering: a restart between the two would
+	// otherwise let a second verdict for the same dialog through.
+	_ = s.st.SavePermRequest(rid, pr.workerID, true, pr.at)
 	behavior := "deny"
 	if strings.HasPrefix(strings.ToLower(m[1]), "y") {
 		behavior = "allow"

@@ -25,6 +25,45 @@ import (
 	"ccmux.dev/ccmuxd/internal/peers"
 )
 
+// supportedProtocolVersions are the MCP revisions this server speaks, newest
+// first. The spec's rule is that client and server MAY each support several
+// revisions but MUST agree on one, so the set — not a single pin — is what makes
+// negotiation honest.
+//
+// Both entries are listed because nothing in 2025-11-25 changes what a tools-only
+// stdio server must do: its breaking changes are OAuth/OIDC discovery, optional
+// icons, elicitation, sampling tool-calls and experimental tasks, none of which
+// this server implements or needs. It also explicitly permits stdio servers to use
+// stderr for all logging, which is what logf already does.
+//
+// Older revisions are deliberately absent. 2025-03-26 and 2024-11-05 allowed
+// batched JSON-RPC, and mcpServer.Serve unmarshals one request per line — a batch
+// would be dropped as a bad frame. Claiming them would be claiming a capability
+// this transport does not have.
+//
+// Add a revision here only alongside the code that makes it true.
+var supportedProtocolVersions = []string{"2025-11-25", "2025-06-18"}
+
+// negotiateProtocolVersion picks the revision to run the session at. When the
+// client asks for one this server speaks, that is the answer. Otherwise it answers
+// with the newest it does speak and leaves the decision where the spec puts it:
+// the client either accepts the older revision or terminates the connection.
+//
+// What it must never do is echo an unknown version back. That was the original
+// behavior, and it amounted to claiming support for anything asked for — so a
+// client offering, say, 2026-07-28, whose stateless core removes the
+// server-initiated notifications this server's whole delivery path is built on,
+// would get a "yes" and then proceed against a contract this process does not
+// implement.
+func negotiateProtocolVersion(requested string) string {
+	for _, v := range supportedProtocolVersions {
+		if requested == v {
+			return v
+		}
+	}
+	return supportedProtocolVersions[0]
+}
+
 type app struct {
 	mcp         *mcpServer
 	daemon      *daemonClient
@@ -39,10 +78,47 @@ type app struct {
 	id     string // assigned by ccmuxd on register
 	grp    string
 	regReq map[string]any
+	// shownSeq is the highest event seq this process has actually put in front of
+	// the model. It is the dedupe authority, and it has to live here rather than
+	// in the daemon: the daemon's cursor only advances when this process acks,
+	// and it acks only after a notification write succeeds, so between a push and
+	// its ack the daemon legitimately still considers the event undelivered. A
+	// concurrent check_messages would then hand back something the session has
+	// already seen.
+	//
+	// Deduping here instead of skipping unacked events in the daemon also keeps
+	// the failure direction safe: an event whose notification write FAILED never
+	// reaches shownSeq, so check_messages still returns it. A daemon-side skip
+	// would have swallowed exactly that case.
+	shownSeq int64
 }
 
 func (a *app) peerID() string { a.mu.Lock(); defer a.mu.Unlock(); return a.id }
 func (a *app) group() string  { a.mu.Lock(); defer a.mu.Unlock(); return a.grp }
+
+// markShown records that seq reached the model, and reports whether that was
+// news. Out-of-order and repeat seqs are absorbed: only a forward move counts.
+func (a *app) markShown(seq int64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if seq <= a.shownSeq {
+		return false
+	}
+	a.shownSeq = seq
+	return true
+}
+
+// alreadyShown reports whether seq has already been put in front of the model.
+// A zero seq is never suppressed: it means the sender did not number the event,
+// so there is nothing to dedupe on and dropping it would lose a message.
+func (a *app) alreadyShown(seq int64) bool {
+	if seq == 0 {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return seq <= a.shownSeq
+}
 
 func main() {
 	a := &app{mcp: newMCPServer(), channelMode: os.Getenv("CCMUX_PEERS_CHANNEL") != "0"}
@@ -163,11 +239,13 @@ func (a *app) installHandlers() {
 			ProtocolVersion string `json:"protocolVersion"`
 		}
 		_ = json.Unmarshal(params, &in)
-		if in.ProtocolVersion == "" {
-			in.ProtocolVersion = "2024-11-05"
+		agreed := negotiateProtocolVersion(in.ProtocolVersion)
+		if in.ProtocolVersion != agreed {
+			logf("client offered MCP %q; answering with %s (newest this server speaks)",
+				in.ProtocolVersion, agreed)
 		}
 		return map[string]any{
-			"protocolVersion": in.ProtocolVersion,
+			"protocolVersion": agreed,
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
 				"experimental": map[string]any{

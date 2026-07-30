@@ -132,7 +132,14 @@ func (a *app) pushOnce() error {
 
 // dispatchEvent forwards one bus event into Claude Code. Returns true when the
 // MCP notification was written (ack-worthy).
+//
+// A successful write records the seq as shown, which is what stops a concurrent
+// check_messages from rendering the same message a second time while this one is
+// still waiting to be acked.
 func (a *app) dispatchEvent(ev wireEvent) bool {
+	if a.alreadyShown(ev.Seq) {
+		return true // already in front of the model; ack it away
+	}
 	switch ev.Type {
 	case "permission_verdict":
 		err := a.mcp.Notify("notifications/claude/channel/permission", map[string]any{
@@ -140,6 +147,7 @@ func (a *app) dispatchEvent(ev wireEvent) bool {
 			"behavior":   ev.Behavior,
 		})
 		if err == nil {
+			a.markShown(ev.Seq)
 			logf("relayed verdict %s %s from %s", ev.Behavior, ev.RequestID, ev.FromID)
 		}
 		return err == nil
@@ -158,6 +166,7 @@ func (a *app) dispatchEvent(ev wireEvent) bool {
 			},
 		})
 		if err == nil {
+			a.markShown(ev.Seq)
 			logf("pushed message from %s: %.80s", orID(ev.FromName, ev.FromID), ev.Text)
 		}
 		return err == nil

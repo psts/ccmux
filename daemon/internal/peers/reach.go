@@ -36,8 +36,13 @@ func (s *Service) checkReachableLocked(req SendReq, sender *Peer, senderGroup st
 }
 
 // grantReplyLocked lets `to` answer `from` across a group boundary for a while.
+// Written through, because a daemon restart inside the two-hour window used to
+// revoke the return path mid-conversation: the teammate that was reached into
+// then got "cannot send messages across projects" when it tried to answer.
 func (s *Service) grantReplyLocked(to, from string) {
-	s.replyGrants[to+"\x00"+from] = s.Now().Add(replyGrantTTL).UnixMilli()
+	exp := s.Now().Add(replyGrantTTL).UnixMilli()
+	s.replyGrants[to+"\x00"+from] = exp
+	_ = s.st.SaveReplyGrant(to, from, exp)
 }
 
 // hasReplyGrantLocked reports whether `from` may answer `to` because `to`
@@ -51,6 +56,7 @@ func (s *Service) hasReplyGrantLocked(from, to string) bool {
 	}
 	if s.Now().UnixMilli() >= exp {
 		delete(s.replyGrants, key)
+		_ = s.st.DeleteReplyGrant(from, to)
 		return false
 	}
 	return true

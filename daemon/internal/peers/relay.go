@@ -25,7 +25,13 @@ func (s *Service) PermissionRequest(workerID, requestID, toolName, description, 
 		return 0, fmt.Errorf("peer %s is not registered", workerID)
 	}
 	s.prunePermsLocked()
-	s.perms[strings.ToLower(requestID)] = &permRequest{workerID: workerID, at: s.Now().UnixMilli()}
+	rid := strings.ToLower(requestID)
+	pr := &permRequest{workerID: workerID, at: s.Now().UnixMilli()}
+	s.perms[rid] = pr
+	// Written through, because the dialog this tracks can stay open for hours and
+	// a daemon restart in between used to orphan it: the verdict stopped matching
+	// and arrived at the worker as ordinary chat while it waited.
+	_ = s.st.SavePermRequest(rid, pr.workerID, pr.resolved, pr.at)
 
 	senders, err := s.st.RecentPeerSenders(workerID, s.Now().Add(-recentSenderWindow).UnixMilli())
 	if err != nil {

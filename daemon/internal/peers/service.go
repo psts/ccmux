@@ -49,6 +49,18 @@ type Store interface {
 	DeletePaneSessions(paneID string) error
 	PeerMailboxes() ([]store.PeerMailbox, error)
 	DeletePeerState(peerID string) error
+
+	// Relay state that outlives the daemon: a permission dialog can sit open for
+	// hours and a reply grant lasts two, so holding either only in memory meant a
+	// restart silently broke a conversation already under way.
+	SavePermRequest(requestID, workerID string, resolved bool, createdAt int64) error
+	LoadPermRequests() (map[string]store.PermRequest, error)
+	DeletePermRequest(requestID string) error
+	PrunePermRequests(beforeMillis int64) error
+	SaveReplyGrant(replier, sender string, expiresAt int64) error
+	LoadReplyGrants() ([]store.ReplyGrant, error)
+	DeleteReplyGrant(replier, sender string) error
+	PruneReplyGrants(nowMillis int64) error
 }
 
 // Peer is one registered session. Live connection state is tracked separately
@@ -201,6 +213,7 @@ func NewService(st Store, mgr Hook, secret []byte) *Service {
 // and the reaper for the lifetime of ctx.
 func (s *Service) Start(ctx context.Context) {
 	s.loadSessions()
+	s.loadRelayState()
 	go s.startReaper(ctx)
 	go func() {
 		t := time.NewTicker(time.Hour)
@@ -301,6 +314,39 @@ func (s *Service) prunePermsLocked() {
 	for id, pr := range s.perms {
 		if pr.at < cutoff {
 			delete(s.perms, id)
+		}
+	}
+	_ = s.st.PrunePermRequests(cutoff)
+	_ = s.st.PruneReplyGrants(s.Now().UnixMilli())
+}
+
+// loadRelayState rebuilds the outstanding permission requests and cross-group
+// reply grants from the registry at startup, dropping anything already past its
+// TTL. Without this a daemon restart left a worker waiting on a dialog whose
+// verdict could no longer be matched, and revoked reply licences mid-conversation.
+func (s *Service) loadRelayState() {
+	now := s.Now().UnixMilli()
+	permCutoff := s.Now().Add(-permRequestTTL).UnixMilli()
+
+	perms, err := s.st.LoadPermRequests()
+	grants, gerr := s.st.LoadReplyGrants()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
+		for id, pr := range perms {
+			if pr.CreatedAt < permCutoff {
+				continue // expired while the daemon was down
+			}
+			s.perms[id] = &permRequest{workerID: pr.WorkerID, resolved: pr.Resolved, at: pr.CreatedAt}
+		}
+	}
+	if gerr == nil {
+		for _, g := range grants {
+			if g.ExpiresAt <= now {
+				continue
+			}
+			s.replyGrants[g.Replier+"\x00"+g.Sender] = g.ExpiresAt
 		}
 	}
 }

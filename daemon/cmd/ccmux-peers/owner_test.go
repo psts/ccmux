@@ -9,10 +9,10 @@ import "testing"
 // or in another group, so they must be excluded.
 func TestOwnsBus(t *testing.T) {
 	tests := []struct {
-		name              string
-		hasCtty           bool
-		fg, myPg, parPg   int
-		want              bool
+		name            string
+		hasCtty         bool
+		fg, myPg, parPg int
+		want            bool
 	}{
 		{"interactive session: MCP server shares the session's group", true, 100, 100, 100, true},
 		{"interactive session: MCP server in own group, parent is the session", true, 100, 555, 100, true},
