@@ -47,7 +47,7 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if err := conn.WriteJSON(firehoseFrame(ev)); err != nil {
+			if err := conn.WriteJSON(s.firehoseFrame(ev)); err != nil {
 				return
 			}
 		case raw := <-up.frames:

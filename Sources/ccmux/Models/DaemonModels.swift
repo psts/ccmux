@@ -465,6 +465,10 @@ struct DaemonFirehoseFrame: Decodable {
     let pane: String?
     let state: DaemonAttention?
     let attention: [DaemonAttentionEntry]?  // hello only
+    /// Whether the daemon wants a notification raised for this attention, as
+    /// opposed to only a sidebar flash. Absent on older daemons, which is why it
+    /// is optional and defaults to false — an old daemon simply never alerts.
+    let alert: Bool?
 }
 
 /// One pane's current attention in the firehose `hello` snapshot.
@@ -488,7 +492,7 @@ struct DaemonAttentionEntry: Decodable {
 /// lens can flash the right sidebar row without being attached to it.
 enum DaemonFirehoseEvent {
     case hello(entries: [DaemonAttentionEntry])
-    case attention(workspace: String, pane: String, state: DaemonAttention)
+    case attention(workspace: String, pane: String, state: DaemonAttention, alert: Bool)
     /// A workspace was added/removed or changed live↔cold — the lens re-fetches the
     /// list instead of waiting for its poll.
     case workspaceChanged(kind: String, workspace: String)
@@ -499,7 +503,8 @@ enum DaemonFirehoseEvent {
         case "hello":
             self = .hello(entries: frame.attention ?? [])
         case "attention":
-            self = .attention(workspace: frame.workspace ?? "", pane: frame.pane ?? "", state: frame.state ?? .unknown)
+            self = .attention(workspace: frame.workspace ?? "", pane: frame.pane ?? "",
+                              state: frame.state ?? .unknown, alert: frame.alert ?? false)
         case "workspace-added", "workspace-removed", "workspace-status", "workspace-git":
             self = .workspaceChanged(kind: frame.t, workspace: frame.workspace ?? "")
         default:

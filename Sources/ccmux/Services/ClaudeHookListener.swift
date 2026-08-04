@@ -21,9 +21,6 @@ final class ClaudeHookListener {
     private weak var workspaceManager: WorkspaceManager?
     private weak var windowManager: WindowManager?
     private let notifier: AttentionNotifier
-    /// Live background agents per session. Only touched on the main thread, from
-    /// `handle`, which is where every hook is dispatched.
-    private let agents = BackgroundAgentTracker()
 
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
@@ -126,17 +123,6 @@ final class ClaudeHookListener {
         ctx["cwd"] = obj["cwd"] as? String
         ctx["session_id"] = obj["session_id"] as? String
 
-        let sessionId = obj["session_id"] as? String ?? ""
-        let outcome = agents.observe(
-            event: type,
-            sessionId: sessionId,
-            agentId: obj["agent_id"] as? String ?? ""
-        )
-        if case .tracked(let detail) = outcome {
-            HookTrace.write(decision: "tracked", fields: ctx.merging(["detail": detail]) { _, new in new })
-            return
-        }
-
         guard let cwd = obj["cwd"] as? String, !cwd.isEmpty,
               let wm = workspaceManager,
               let workspace = wm.workspace(forCwd: cwd),
@@ -157,18 +143,6 @@ final class ClaudeHookListener {
                 ["detail": obj["notification_type"] as? String ?? "no attention meaning"]) { _, new in new })
         case .set(let newState):
             ctx["attention"] = String(describing: newState)
-            // A `Stop` with background agents outstanding means "stopped talking",
-            // not "finished". Announcing it is how one piece of work became seven
-            // "finished a task" alerts in three minutes. The `Stop` that arrives
-            // once the last agent is done finds an empty count and alerts normally.
-            // Only `done` is held: a permission prompt during a background run
-            // still needs you, and holding it would strand the session.
-            let outstanding = agents.outstanding(sessionId: sessionId)
-            if newState == .done, outstanding > 0 {
-                HookTrace.write(decision: "held", fields: ctx.merging(
-                    ["detail": "\(outstanding) background agent(s) still running"]) { _, new in new })
-                return
-            }
             // Suppress when you're already watching this workspace — nothing to flag.
             if isCurrentlyWatched(workspace.id) {
                 monitor.clear()
@@ -177,6 +151,15 @@ final class ClaudeHookListener {
                 return
             }
             monitor.set(newState)
+
+            // The sidebar flashes for every state; only some raise an alert. The
+            // rule lives on AttentionNotifier so this path and the hosted firehose
+            // path cannot drift apart — they already did once.
+            guard AttentionNotifier.alerts(newState) else {
+                HookTrace.write(decision: "flashed", fields: ctx.merging(
+                    ["detail": "done flashes the lens; the alert waits for idle_prompt"]) { _, new in new })
+                return
+            }
             notifier.post(for: workspace, state: newState)
             HookTrace.write(decision: "posted", fields: ctx)
         }

@@ -6,7 +6,6 @@ package hooks
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -34,9 +33,6 @@ type hookMsg struct {
 	// it, so the trace file reads as one story per hook. Absent from older
 	// scripts; an empty id just means the route line stands on its own.
 	TraceID string `json:"trace_id"`
-	// AgentID identifies a background agent on the subagent lifecycle events.
-	// Empty on everything else.
-	AgentID string `json:"agent_id"`
 }
 
 // Listener owns the hooks Unix socket.
@@ -44,7 +40,6 @@ type Listener struct {
 	path   string
 	router Router
 	ln     net.Listener
-	agents *agentTracker
 }
 
 // Listen binds path (removing any stale socket) and serves hook messages. The
@@ -64,10 +59,9 @@ func Listen(path string, r Router) (*Listener, error) {
 }
 
 // newListener builds the routing half of a Listener, with no socket bound. Tests
-// route messages through this; Listen adds the socket. Keeping construction in
-// one place means the agent tracker can never be missing.
+// route messages through this; Listen adds the socket.
 func newListener(r Router) *Listener {
-	return &Listener{router: r, agents: newAgentTracker()}
+	return &Listener{router: r}
 }
 
 func (l *Listener) serve() {
@@ -99,25 +93,8 @@ func (l *Listener) handle(conn net.Conn) {
 // as useful to a reader chasing a stray notification as "the daemon flashed a
 // pane" — the silent branches are exactly where a missing flash hides.
 func (l *Listener) route(msg hookMsg) {
-	if handled, detail := l.agents.observe(msg.Type, msg.SessionID, msg.AgentID); handled {
-		l.trace(msg, hooktrace.Line{Decision: "tracked", Detail: detail})
-		return
-	}
 	att, wantAtt := outcome(msg.Type, msg.NotificationType)
 	sig, wantSig := sessionOutcome(msg.Type)
-	// A Stop with background agents outstanding means "stopped talking", not
-	// "finished". Announcing it is how one piece of work became seven "finished a
-	// task" alerts in three minutes. The Stop that arrives once the last agent is
-	// done has an empty count and notifies normally.
-	if wantAtt && att == model.AttentionDone {
-		if n := l.agents.outstanding(msg.SessionID); n > 0 {
-			l.trace(msg, hooktrace.Line{
-				Decision: "held",
-				Detail:   fmt.Sprintf("%d background agent(s) still running", n),
-			})
-			wantAtt = false
-		}
-	}
 	if !wantAtt && !wantSig {
 		l.trace(msg, hooktrace.Line{Decision: "ignored", Detail: "no attention or session meaning"})
 		return

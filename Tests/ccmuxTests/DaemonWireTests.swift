@@ -248,7 +248,7 @@ final class DaemonWireTests: XCTestCase {
 
     func testFirehoseAttentionCarriesWorkspace() {
         let text = #"{"t":"attention","workspace":"ws-9","pane":"p3","state":"needs_input"}"#
-        guard case .attention(let workspace, let pane, let state)? = DaemonFirehoseEvent.decode(text: text) else {
+        guard case .attention(let workspace, let pane, let state, _)? = DaemonFirehoseEvent.decode(text: text) else {
             return XCTFail("expected attention")
         }
         XCTAssertEqual(workspace, "ws-9")
@@ -307,5 +307,40 @@ final class DaemonWireTests: XCTestCase {
         })
         XCTAssertEqual(obj["t"] as? String, "focus")
         XCTAssertEqual(obj["pane"] as? String, "p3")
+    }
+}
+
+// MARK: - The daemon owns the alert decision
+
+/// The app must not decide whether an attention warrants a notification; it obeys
+/// the daemon's `alert` flag. The two sides kept their own copies of the rule and
+/// drifted twice — most recently the app alerted on every `done` long after the
+/// daemon had stopped pushing on them, turning one burst of background agents into
+/// an alert per agent.
+final class FirehoseAlertFlagTests: XCTestCase {
+    func testAlertFlagIsDecoded() {
+        let text = #"{"t":"attention","workspace":"w1","pane":"p1","state":"needs_input","alert":true}"#
+        guard case .attention(_, _, _, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
+            return XCTFail("did not decode as an attention event")
+        }
+        XCTAssertTrue(alert, "the daemon asked for an alert and the app must carry it through")
+    }
+
+    /// A daemon that predates the flag omits it entirely. That has to read as "do
+    /// not alert" rather than crashing or defaulting to noisy.
+    func testMissingAlertFlagDefaultsToSilent() {
+        let text = #"{"t":"attention","workspace":"w1","pane":"p1","state":"needs_input"}"#
+        guard case .attention(_, _, _, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
+            return XCTFail("an attention frame without the flag must still decode")
+        }
+        XCTAssertFalse(alert, "an absent flag means an older daemon; stay quiet rather than guess")
+    }
+
+    func testAlertFalseIsRespected() {
+        let text = #"{"t":"attention","workspace":"w1","pane":"p1","state":"needs_input","alert":false}"#
+        guard case .attention(_, _, _, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
+            return XCTFail("did not decode as an attention event")
+        }
+        XCTAssertFalse(alert)
     }
 }

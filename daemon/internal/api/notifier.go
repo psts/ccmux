@@ -61,11 +61,34 @@ type pushPayload struct {
 	State string `json:"state"` // attention state
 }
 
-// notifyState reports whether an attention transition is worth a push: the
-// session either needs the user (needs_input) or just finished (done). running
-// and idle are ambient and never notify.
+// notifyState reports whether an attention transition is worth a push.
+//
+// Only needs_input is. done is deliberately excluded, even though it still
+// flashes the lens: done comes from the Stop hook alone, and Stop fires whenever
+// Claude finishes *responding*, not when the work is finished. Measured over a
+// day, 8 of 57 Stops were followed by another Stop in the same prompt — the turn
+// carried on, sometimes spawning five more agents half a minute later, and
+// nothing observable at the time predicted it.
+//
+// The signal that does mean "finished, and nothing more is coming" is Claude
+// Code's own idle_prompt, which arrives 60s after the last Stop and resets on
+// every new one. It maps to needs_input, so it still pushes here. That costs a
+// minute of latency on a completion alert, which is invisible: respond inside
+// the minute and no alert is wanted, and if you are away a minute does not
+// matter. Flashing eagerly while pushing conservatively is the whole split.
 func notifyState(att model.Attention) bool {
-	return att == model.AttentionNeedsInput || att == model.AttentionDone
+	return att == model.AttentionNeedsInput
+}
+
+// noPushReason explains a skipped push in the trace. done is worth its own
+// sentence: it is the one state that flashes the lens but deliberately stays
+// silent, and a reader who sees the flash and no alert should find out why here
+// rather than assume something broke.
+func noPushReason(att model.Attention) string {
+	if att == model.AttentionDone {
+		return "done flashes the lens; the alert waits for idle_prompt, which means the turn really ended"
+	}
+	return "state is ambient"
 }
 
 // onAttention sends a push for a pane's new attention state to every subscribed
@@ -78,7 +101,7 @@ func notifyState(att model.Attention) bool {
 // is almost always those two strings disagreeing, and no other log shows it.
 func (n *notifier) onAttention(ctx context.Context, wsID string, att model.Attention) {
 	if !notifyState(att) {
-		n.trace(wsID, att, hooktrace.Line{Decision: "no-push", Detail: "state is ambient"})
+		n.trace(wsID, att, hooktrace.Line{Decision: "no-push", Detail: noPushReason(att)})
 		return
 	}
 	subs, err := n.subs.ListPushSubscriptions()

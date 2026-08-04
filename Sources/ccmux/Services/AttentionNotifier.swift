@@ -11,6 +11,23 @@ import UserNotifications
 final class AttentionNotifier {
     static let workspaceIdKey = "ccmux.workspaceId"
 
+    /// Whether a state is worth an alert, as opposed to just a sidebar flash.
+    ///
+    /// Only `needsInput` is. `done` comes from the Stop hook alone, and Stop fires
+    /// when Claude finishes *responding*, not when the work is finished: a turn
+    /// routinely carries on afterwards, and a session whose background agents keep
+    /// reporting back produces a Stop for each one. The signal that really means
+    /// "finished, nothing more coming" is Claude Code's own `idle_prompt`, which
+    /// arrives 60s after the last Stop, resets on every new one, and maps to
+    /// `needsInput` — so it alerts through here.
+    ///
+    /// This lives on the notifier rather than at the call sites because there are
+    /// two of them — the local hook listener and the hosted firehose — and they
+    /// have already drifted apart once. `post` enforces it, so neither can alert
+    /// on a state this returns false for. The daemon's `notifyState` is the same
+    /// rule for web push.
+    static func alerts(_ state: AttentionState) -> Bool { state == .needsInput }
+
     /// Notifications only work from the `.app` bundle (needs a CFBundleIdentifier).
     private var isAvailable: Bool { Bundle.main.bundleIdentifier != nil }
 
@@ -22,7 +39,7 @@ final class AttentionNotifier {
     }
 
     func post(for workspace: Workspace, state: AttentionState) {
-        guard isAvailable else { return }
+        guard isAvailable, Self.alerts(state) else { return }
 
         let content = UNMutableNotificationContent()
         switch state {

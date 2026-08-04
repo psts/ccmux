@@ -135,8 +135,8 @@ final class RemoteSessionService: ObservableObject {
         switch event {
         case .hello(let entries):
             for e in entries { applyAttention(daemonWsId: e.workspace, state: e.state, notify: false) }
-        case .attention(let workspace, _, let state):
-            applyAttention(daemonWsId: workspace, state: state, notify: true)
+        case .attention(let workspace, _, let state, let alert):
+            applyAttention(daemonWsId: workspace, state: state, notify: alert)
         case .workspaceChanged:
             // A workspace appeared/vanished/changed live↔cold elsewhere — pick it up
             // now rather than at the next poll.
@@ -150,7 +150,12 @@ final class RemoteSessionService: ObservableObject {
     /// single hosted-attention source, working whether or not the workspace has a
     /// live attach. Mirrors the local hook path (`ClaudeHookListener.handle`): a
     /// `.none` mapping clears; an actionable state either clears (already watching)
-    /// or flashes, and — for a live change — posts a notification.
+    /// or flashes, and raises a notification only when the DAEMON asked for one.
+    ///
+    /// `notify` is the daemon's `alert` flag, not a local judgement. The app used
+    /// to decide for itself here and drifted from the daemon twice — most recently
+    /// alerting on every `done` long after the daemon had stopped pushing on them,
+    /// which turned one burst of background agents into an alert per agent.
     private func applyAttention(daemonWsId: String, state: DaemonAttention, notify: Bool) {
         latestAttention[daemonWsId] = state
         let appId = RemoteWorkspaceBuilder.workspaceUUID(daemonWsId)

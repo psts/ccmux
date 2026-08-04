@@ -100,7 +100,8 @@ func TestNotifierTrace_SilentBranchesGiveAReason(t *testing.T) {
 		wantDetail string
 	}{
 		{"ambient state", model.AttentionIdle, []*model.PushSubscription{{ID: "a", Login: "x"}}, "ambient"},
-		{"no subscribers", model.AttentionDone, nil, "subscribed"},
+		{"no subscribers", model.AttentionNeedsInput, nil, "subscribed"},
+		{"done is not an alert", model.AttentionDone, []*model.PushSubscription{{ID: "a", Login: "x"}}, "idle_prompt"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,7 +128,7 @@ func TestNotifierTrace_PrunedSubscriptionIsRecorded(t *testing.T) {
 		{ID: "gone", Login: "x", Address: `{"endpoint":"gone"}`},
 	}}
 
-	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionDone)
+	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
 
 	if got := linesWith(read(), "pruned"); len(got) != 1 {
 		t.Fatalf("want 1 pruned line, got %d", len(got))

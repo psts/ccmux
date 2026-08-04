@@ -85,12 +85,29 @@ func TestNotifier_IgnoresAmbientStates(t *testing.T) {
 	}
 }
 
-func TestNotifier_DonePushes(t *testing.T) {
+// done flashes the lens but must never push. It comes from the Stop hook alone,
+// and Stop fires when Claude finishes RESPONDING, not when the work is finished:
+// measured over a day, 8 of 57 Stops were followed by another Stop in the same
+// prompt, sometimes spawning five more agents half a minute later. The signal
+// that really means "finished" is Claude Code's idle_prompt, which arrives 60s
+// after the last Stop and maps to needs_input.
+func TestNotifier_DoneDoesNotPush(t *testing.T) {
 	sender := &fakeSender{}
 	store := &fakeStore{subs: []*model.PushSubscription{{ID: "a", Login: "x", Address: `{"endpoint":"e"}`}}}
 	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionDone)
+	if len(sender.sent) != 0 {
+		t.Fatalf("done pushed %d times, want 0 — Stop is not a finish", len(sender.sent))
+	}
+}
+
+// The other half of the same rule: idle_prompt maps to needs_input, and that is
+// what carries the completion alert now.
+func TestNotifier_NeedsInputPushes(t *testing.T) {
+	sender := &fakeSender{}
+	store := &fakeStore{subs: []*model.PushSubscription{{ID: "a", Login: "x", Address: `{"endpoint":"e"}`}}}
+	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
 	if len(sender.sent) != 1 {
-		t.Fatalf("done pushed %d times, want 1", len(sender.sent))
+		t.Fatalf("needs_input pushed %d times, want 1", len(sender.sent))
 	}
 }
 

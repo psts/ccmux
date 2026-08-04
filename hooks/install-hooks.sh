@@ -45,11 +45,6 @@ ROUTED = [
     ("UserPromptSubmit",  "",                "user-prompt-submit"),
     ("SessionStart",      "",                "session-start"),
     ("SessionEnd",        "",                "session-end"),
-    # These two set no attention themselves. They are routed so the daemon can
-    # count a session's live background agents and tell a Stop that means
-    # "finished" from one that means "stopped talking while agents still run".
-    ("SubagentStart",     "",                "subagent-start"),
-    ("SubagentStop",      "",                "subagent-stop"),
 ]
 
 # Logged, never acted on. Chosen because each one can fire close enough to a
@@ -57,6 +52,8 @@ ROUTED = [
 # PostToolBatch, MessageDisplay and the file/config watchers — they fire on a
 # cadence that would bury the events you're actually reading the log for.
 TRACE_ONLY = [
+    ("SubagentStart",    "",  "subagent-start"),
+    ("SubagentStop",     "",  "subagent-stop"),
     ("TaskCompleted",    "",  "task-completed"),
     ("TeammateIdle",     "",  "teammate-idle"),
     ("PermissionDenied", "*", "permission-denied"),
