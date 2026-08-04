@@ -61,6 +61,14 @@ type Store interface {
 	LoadReplyGrants() ([]store.ReplyGrant, error)
 	DeleteReplyGrant(replier, sender string) error
 	PruneReplyGrants(nowMillis int64) error
+
+	// Delegation tasks: durable so a delegation outlives the sessions on both
+	// ends and their restarts (see store/peertasks.go).
+	SavePeerTask(store.PeerTask) error
+	PeerTask(taskID string) (*store.PeerTask, error)
+	OpenPeerTasksFor(peerID string, limit int) ([]store.PeerTask, error)
+	DeletePeerTask(taskID string) error
+	PrunePeerTasks(beforeMillis int64) error
 }
 
 // Peer is one registered session. Live connection state is tracked separately
@@ -104,6 +112,11 @@ type Peer struct {
 	// same-named peers on different hosts. "" for a pane on the hub itself or in
 	// single-host mode.
 	Host string
+	// ShimVersion is what the connected shim reported at registration ("" for a
+	// pre-0.3.0 shim). Diagnostic: with federation putting shims and daemon on
+	// different hosts, a wire mismatch should be readable off a listing rather
+	// than inferred from absent fields.
+	ShimVersion string
 }
 
 type permRequest struct {
@@ -130,6 +143,9 @@ const (
 	permRequestTTL     = 12 * time.Hour // dialogs can sit open for a long time
 	eventRetention     = 30 * 24 * time.Hour
 	defaultSpawnWait   = 60 * time.Second
+	// Closed delegations are kept two weeks for the audit trail; open ones are
+	// never pruned — an unanswered delegation staying visible is the point.
+	taskRetention = 14 * 24 * time.Hour
 )
 
 // Service is the bus. Safe for concurrent use; one mutex guards all state and
@@ -224,6 +240,7 @@ func (s *Service) Start(ctx context.Context) {
 				return
 			case <-t.C:
 				_, _ = s.st.PrunePeerEvents(s.Now().Add(-eventRetention).UnixMilli())
+				_ = s.st.PrunePeerTasks(s.Now().Add(-taskRetention).UnixMilli())
 				s.mu.Lock()
 				s.prunePermsLocked()
 				s.mu.Unlock()

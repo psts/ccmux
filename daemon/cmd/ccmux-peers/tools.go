@@ -1,7 +1,8 @@
-// The four MCP tools, schemas and wording preserved verbatim from the old
-// claude-peers server.ts — running sessions are trained on these exact texts.
-// The only additive change: list_peers gains an "all" scope (every peer on
-// this daemon), formalizing the CLI's old undocumented "machine" fallthrough.
+// The MCP tools. The original four keep schemas and wording verbatim from the
+// old claude-peers server.ts — running sessions are trained on these exact
+// texts; list_peers additively gained an "all" scope. delegate and update_task
+// (handlers in delegation.go) are the tracked-delegation surface added
+// 2026-08: same addressing as send_message plus a durable task row.
 package main
 
 import (
@@ -20,11 +21,15 @@ When a peer asks you to do work, acknowledge the request, do the work, and then 
 
 PERMISSION RELAY: If you receive a message starting with "[claude-peers permission relay]", another peer needs your approval to run a tool. The relay is broadcast to everyone who has messaged that peer recently — so it might be for work YOU delegated, or it might be for work someone else delegated. ONLY respond yes/no if you actually asked that peer to do the work in question. If you didn't delegate it, ignore the relay completely (don't send anything back). To approve work you delegated: call send_message back to that peer with the message field set to exactly "yes <request_id>" (e.g. "yes abcde"). To deny: "no <request_id>". The reply must contain only those two tokens — no greeting, no explanation. The request_id is the five lowercase letters in the relay message.
 
+DELEGATION TASKS: If a message starts with "[claude-peers delegation task tsk_xxxxxxxx]", you are the worker on a tracked delegation. Call update_task(task_id, status="acked") immediately, "working" when you start, and close it with status="completed" plus a result summary (or "failed" and why). Your updates reach the delegator automatically — do not also send a separate completion message. When YOU need a peer to do work whose completion you must know about, use delegate instead of send_message; you will receive "[claude-peers task update]" messages as the worker reports, and check_messages lists your open delegations. Task update messages are status notifications, not conversation: read them, act if the result requires it, and do NOT send a reply unless something is wrong. A delegator may close its own task with update_task(status="failed") to cancel it.
+
 Available tools:
 - send_message: Reply to a peer by passing to_id (from the tag's from_id) and message. For unsolicited outbound messages, pass to_name instead.
+- delegate: Send tracked work to a peer; returns a task_id whose status updates arrive automatically.
+- update_task: Report status on a delegation you received (acked/working/completed/failed).
 - list_peers: Discover other Claude Code instances in your project.
 - set_summary: Describe what you're working on (visible to peers).
-- check_messages: Manually poll for messages (usually automatic via channel push).
+- check_messages: Manually poll for messages (usually automatic via channel push); also lists open delegations.
 
 On startup, call set_summary to describe your current work.`
 
@@ -80,6 +85,63 @@ var toolsList = []map[string]any{
 		},
 	},
 	{
+		"name":        "delegate",
+		"description": `Send TRACKED work to another peer. Same addressing as send_message, but the bus creates a durable task: the worker reports progress with update_task and you receive "[claude-peers task update]" messages automatically — no need to ask for status or chase silence. Use this instead of send_message whenever you need to know the outcome of the work. Returns the task_id.`,
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"to_name": map[string]any{
+					"type":        "string",
+					"description": `Worker peer name (e.g., "backend"). Prefer to_id when replying threads exist or names are ambiguous.`,
+				},
+				"to_id": map[string]any{
+					"type":        "string",
+					"description": "Worker peer ID (from a channel tag's from_id or list_peers).",
+				},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "The work being delegated. Self-contained: contract, constraints, and what a completed result must include.",
+				},
+				"to_group": map[string]any{
+					"type":        "string",
+					"description": "Delegate into ANOTHER project; naming the target's group authorizes the crossing (same rule as send_message).",
+				},
+				"spawn_if_missing": map[string]any{
+					"type":        "boolean",
+					"description": "If the named worker (to_name) isn't running, ask ccmux to start it and queue the delegation for delivery once it registers.",
+				},
+			},
+			"required": []string{"message"},
+		},
+	},
+	{
+		"name":        "update_task",
+		"description": `Report status on a delegation you received (its message opened with "[claude-peers delegation task tsk_...]"). Call with status="acked" on receipt, "working" when you start, and close with "completed" plus result (or "failed" and why). Each update is delivered to the delegator automatically.`,
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id": map[string]any{
+					"type":        "string",
+					"description": `The task id from the delegation header, e.g. "tsk_ab12cd34".`,
+				},
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []string{"acked", "working", "completed", "failed"},
+					"description": "The transition to report.",
+				},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "One-line progress note shown to the delegator with the status.",
+				},
+				"result": map[string]any{
+					"type":        "string",
+					"description": `The outcome, for "completed" (what was done, where, verification) or "failed" (what blocked it).`,
+				},
+			},
+			"required": []string{"task_id", "status"},
+		},
+	},
+	{
 		"name":        "set_summary",
 		"description": "Set a brief summary (1-2 sentences) of what you are currently working on. This is visible to other Claude Code instances when they list peers.",
 		"inputSchema": map[string]any{
@@ -112,6 +174,10 @@ func (a *app) callTool(name string, args json.RawMessage) any {
 		return a.toolListPeers(args)
 	case "send_message":
 		return a.toolSendMessage(args)
+	case "delegate":
+		return a.toolDelegate(args)
+	case "update_task":
+		return a.toolUpdateTask(args)
 	case "set_summary":
 		return a.toolSetSummary(args)
 	case "check_messages":
@@ -260,10 +326,16 @@ func (a *app) toolCheckMessages() any {
 		a.markShown(ev.Seq)
 		lines = append(lines, fmt.Sprintf("From %s (%s):\n%s", orID(ev.FromName, ev.FromID), ev.SentAt, ev.Text))
 	}
-	if len(lines) == 0 {
-		return toolText("No new messages.", false)
+	body := "No new messages."
+	if len(lines) > 0 {
+		body = fmt.Sprintf("%d new message(s):\n\n%s", len(lines), strings.Join(lines, "\n\n---\n\n"))
 	}
-	return toolText(fmt.Sprintf("%d new message(s):\n\n%s", len(lines), strings.Join(lines, "\n\n---\n\n")), false)
+	// Open delegations ride along so a restarted session can pick its threads
+	// back up without the task ids having survived in its context window.
+	if tasks := a.openTaskLines(); len(tasks) > 0 {
+		body += "\n\nOpen delegation task(s):\n" + strings.Join(tasks, "\n")
+	}
+	return toolText(body, false)
 }
 
 // peerStatus describes a listed peer. Every peer in a listing has a live Claude

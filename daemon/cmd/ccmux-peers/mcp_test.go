@@ -69,7 +69,7 @@ func TestMCP_ToolsListIsVerbatimSurface(t *testing.T) {
 	for _, tl := range tools {
 		names = append(names, tl.(map[string]any)["name"].(string))
 	}
-	want := []string{"list_peers", "send_message", "set_summary", "check_messages"}
+	want := []string{"list_peers", "send_message", "delegate", "update_task", "set_summary", "check_messages"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -177,6 +177,42 @@ func TestSupportedProtocolVersions_NewestFirst(t *testing.T) {
 	}
 	if got := negotiateProtocolVersion("nonsense"); got != supportedProtocolVersions[0] {
 		t.Errorf("unknown request fell back to %q, want the newest %q", got, supportedProtocolVersions[0])
+	}
+}
+
+// A 2026-07-28 client may probe with server/discover before falling back to the
+// legacy handshake. The answer must be well-formed and honest: only the legacy
+// revisions this server actually implements, so the probe resolves to a clean
+// legacy fallback instead of a method-not-found (or worse, a claimed era whose
+// semantics this server does not speak).
+func TestMCP_ServerDiscoverAdvertisesLegacyOnly(t *testing.T) {
+	frames := runFrames(t,
+		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`)
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1", len(frames))
+	}
+	result, ok := frames[0]["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("server/discover errored: %v — a modern client's probe must get a result", frames[0]["error"])
+	}
+	if result["resultType"] != "complete" {
+		t.Fatalf("resultType = %v, want complete", result["resultType"])
+	}
+	var versions []string
+	for _, v := range result["supportedVersions"].([]any) {
+		versions = append(versions, v.(string))
+	}
+	if strings.Join(versions, ",") != strings.Join(supportedProtocolVersions, ",") {
+		t.Fatalf("supportedVersions = %v, want exactly %v (advertise only what the era code implements)",
+			versions, supportedProtocolVersions)
+	}
+	caps := result["capabilities"].(map[string]any)
+	exp := caps["experimental"].(map[string]any)
+	if _, ok := exp["claude/channel"]; !ok {
+		t.Fatal("discover response missing claude/channel — push delivery would silently die on the discover path")
+	}
+	if _, ok := result["instructions"].(string); !ok {
+		t.Fatal("discover response missing instructions")
 	}
 }
 

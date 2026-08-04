@@ -234,6 +234,55 @@ func (s *Server) peersPermissionRequest(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "relayed_to": n})
 }
 
+// peersDelegate is the tracked-send path: an ordinary bus message plus a
+// durable task row whose updates flow back through the delegator's queue.
+func (s *Server) peersDelegate(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) {
+		return
+	}
+	var req peers.DelegateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !s.requirePeer(w, r, req.FromID) {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.peersSvc.Delegate(req))
+}
+
+func (s *Server) peersTaskUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) {
+		return
+	}
+	var req peers.TaskUpdateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !s.requirePeer(w, r, req.PeerID) {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.peersSvc.UpdateTask(req))
+}
+
+func (s *Server) peersTasksList(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) {
+		return
+	}
+	var req peerIDReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !s.requirePeer(w, r, req.PeerID) {
+		return
+	}
+	tasks, err := s.peersSvc.OpenTasks(req.PeerID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+}
+
 // peersWS serves both socket modes: mode=peer (token-authed push channel with
 // cursor replay + cumulative acks) and mode=listen (read-only per-group viewer
 // stream, tailnet-OK).

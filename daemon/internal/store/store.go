@@ -100,6 +100,19 @@ CREATE TABLE IF NOT EXISTS peer_reply_grants (
   replier TEXT, sender TEXT, expires_at INTEGER,
   PRIMARY KEY (replier, sender)
 );
+-- Delegation tasks. Durable for the same reason as the relay tables: a
+-- delegation routinely outlives the sessions on both ends, and the transcripts
+-- show what in-memory-only tracking costs — silent stalls, chase-up pings, and
+-- full-context re-sends. status runs sent → acked → working → completed|failed;
+-- to_id may be '' while a spawned worker is still coming up, backfilled on its
+-- first update_task.
+CREATE TABLE IF NOT EXISTS peer_tasks (
+  task_id TEXT PRIMARY KEY, from_id TEXT, to_id TEXT, grp TEXT,
+  text TEXT, status TEXT, status_message TEXT DEFAULT '', result TEXT DEFAULT '',
+  created_at INTEGER, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS peer_tasks_by_from ON peer_tasks(from_id, updated_at);
+CREATE INDEX IF NOT EXISTS peer_tasks_by_to ON peer_tasks(to_id, updated_at);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT
 );`

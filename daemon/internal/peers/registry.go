@@ -26,6 +26,11 @@ type RegisterReq struct {
 	// holding a socket. Sent as the NEGATIVE so an older client, which sends
 	// nothing, defaults to push — the mode almost every session runs in.
 	PollOnly bool `json:"poll_only"`
+	// ShimVersion is the connecting shim's own version ("" = a pre-0.3.0 shim
+	// that predates the field). Diagnostic only today; it exists so a future
+	// wire change can be gated on fact instead of absent-field inference —
+	// which matters once federation puts shims and daemon on different hosts.
+	ShimVersion string `json:"shim_version"`
 }
 
 // RegisterResp echoes the derived identity back so the client can render tool
@@ -74,6 +79,7 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 		ID: id, Name: name, PaneID: req.PaneID, LocalPaneID: req.LocalPaneID,
 		PID: req.PID, CWD: req.CWD, GitRoot: req.GitRoot, Summary: summary,
 		RegisteredAt: now, LastSeenAt: now, PollOnly: req.PollOnly,
+		ShimVersion: req.ShimVersion,
 	}
 	// Federation: stamp the owning host (hub mode) so list_peers distinguishes
 	// same-named peers across hosts. Cached read — safe under s.mu.
@@ -207,6 +213,9 @@ type ListEntry struct {
 	PollOnly bool `json:"poll_only,omitempty"`
 	// Host is the peer's owning-host label (federation, hub mode); "" single-host.
 	Host string `json:"host,omitempty"`
+	// ShimVersion is the peer's connected shim ("" = pre-0.3.0): the readable
+	// fact a federated wire mismatch gets diagnosed from.
+	ShimVersion string `json:"shim_version,omitempty"`
 }
 
 // List returns the caller's visible peers for a scope: "project" (the caller's
@@ -280,7 +289,7 @@ func (s *Service) listEntryLocked(p *Peer) ListEntry {
 		ID: p.ID, Name: p.Name, Group: g, Project: g,
 		PID: p.PID, CWD: p.CWD, GitRoot: p.GitRoot, Summary: p.Summary,
 		LastSeen: isoMillis(p.LastSeenAt), Connected: s.conns[p.ID] != nil,
-		PollOnly: p.PollOnly, Host: p.Host,
+		PollOnly: p.PollOnly, Host: p.Host, ShimVersion: p.ShimVersion,
 	}
 }
 

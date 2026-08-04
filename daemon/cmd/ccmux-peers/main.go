@@ -44,6 +44,12 @@ import (
 // Add a revision here only alongside the code that makes it true.
 var supportedProtocolVersions = []string{"2025-11-25", "2025-06-18"}
 
+// shimVersion travels in the register payload (and MCP serverInfo) so the
+// daemon — the hub, in federation — can tell what a connected shim speaks.
+// Today's wire tolerates absent-field-means-old-client; this makes the next
+// change diagnosable instead of inferential. 0.3.0 added delegate/update_task.
+const shimVersion = "0.3.0"
+
 // negotiateProtocolVersion picks the revision to run the session at. When the
 // client asks for one this server speaks, that is the answer. Otherwise it answers
 // with the newest it does speak and leaves the decision where the spec puts it:
@@ -215,7 +221,7 @@ func (a *app) register() error {
 		"pane_id": a.paneID, "local_pane_id": a.localPaneID, "pid": os.Getpid(),
 		"cwd": a.cwd, "git_root": a.gitRoot,
 		"name": a.name, "requested_id": a.id,
-		"poll_only": !a.channelMode,
+		"poll_only": !a.channelMode, "shim_version": shimVersion,
 	}
 	a.mu.Unlock()
 	var resp struct {
@@ -253,8 +259,31 @@ func (a *app) installHandlers() {
 					"claude/channel/permission": map[string]any{},
 				},
 			},
-			"serverInfo":   map[string]any{"name": "claude-peers", "version": "0.2.0"},
+			"serverInfo":   map[string]any{"name": "claude-peers", "version": shimVersion},
 			"instructions": serverInstructions,
+		}, nil
+	}
+	// 2026-07-28 clients probe with server/discover before falling back to the
+	// legacy handshake. Answering it honestly — these legacy revisions, nothing
+	// newer — turns that probe into a clean fallback instead of a method-not-found.
+	// Flipping the bus to the modern era later is a supportedVersions change here,
+	// made only alongside the code that implements the era's semantics.
+	a.mcp.onRequest["server/discover"] = func(json.RawMessage) (any, *rpcError) {
+		logf("client probed server/discover; advertising legacy revisions %v", supportedProtocolVersions)
+		return map[string]any{
+			"resultType":        "complete",
+			"supportedVersions": supportedProtocolVersions,
+			"capabilities": map[string]any{
+				"tools": map[string]any{},
+				"experimental": map[string]any{
+					"claude/channel":            map[string]any{},
+					"claude/channel/permission": map[string]any{},
+				},
+			},
+			"instructions": serverInstructions,
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/serverInfo": map[string]any{"name": "claude-peers", "version": shimVersion},
+			},
 		}, nil
 	}
 	a.mcp.onRequest["ping"] = func(json.RawMessage) (any, *rpcError) {

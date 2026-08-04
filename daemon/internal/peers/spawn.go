@@ -34,12 +34,18 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// birthPrompt is the teammate's seed prompt (wording preserved from broker.ts).
+// birthPrompt is the teammate's seed prompt. It no longer tells the teammate
+// to poll check_messages for its request: delivery is push, and the transcripts
+// show spawned teammates polling empty five times while the request arrived as
+// a channel message — the advice manufactured exactly the confusion it meant
+// to prevent.
 func birthPrompt(name, requesterName string) string {
 	return fmt.Sprintf("You were just started as a claude-peers teammate %q to collaborate with peer %q. ", name, requesterName) +
-		"On startup: call set_summary to say what you're doing, then call check_messages to pick up the request that started you. " +
-		fmt.Sprintf("Complete that request, then report back to %q via send_message. ", requesterName) +
-		fmt.Sprintf("If no request arrives within a minute, run list_peers and check in with %q directly.", requesterName)
+		"On startup: call set_summary to say what you're doing. The request that started you is delivered " +
+		`automatically as a <channel source="claude-peers"> message — do not poll for it. ` +
+		`If it opens with "[claude-peers delegation task tsk_...]", follow its instructions and report progress via update_task; ` +
+		fmt.Sprintf("otherwise complete it and report back to %q via send_message. ", requesterName) +
+		fmt.Sprintf("If nothing arrives within a minute, call check_messages once as a fallback, then run list_peers and check in with %q directly.", requesterName)
 }
 
 func spawnKey(group, name string) string { return group + "\x00" + name }
@@ -163,6 +169,7 @@ func (s *Service) spawnTimedOut(key string) {
 	secs := int(s.SpawnTimeout / time.Second)
 	text := fmt.Sprintf("Teammate %q could not be started — ccmux did not register it within %ds. "+
 		"Check that ccmux is installed and able to host %s.", pending.name, secs, pending.repo)
+	s.failTasksInLocked(pending, text)
 	s.notifyRequestersLocked(pending, text)
 }
 
@@ -176,6 +183,7 @@ func (s *Service) abortSpawn(key, text string) {
 	}
 	delete(s.spawns, key)
 	pending.timer.Stop()
+	s.failTasksInLocked(pending, text)
 	s.notifyRequestersLocked(pending, text)
 }
 
