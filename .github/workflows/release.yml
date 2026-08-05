@@ -63,7 +63,20 @@ jobs:
             security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" > /dev/null
             security list-keychains -d user -s "$KC" login.keychain
             SIGN_ID=$(security find-identity -v -p codesigning "$KC" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
-            [ -n "$SIGN_ID" ] || { echo "no Developer ID Application identity in the imported p12" >&2; exit 1; }
+            if [ -z "$SIGN_ID" ]; then
+              # Interim fallback: any valid imported identity (e.g. Apple
+              # Development while the Developer ID cert is unavailable). Same
+              # Team ID, so the app's self-anchoring update pin stays
+              # consistent when the real cert replaces the secret. For
+              # DISTRIBUTION it behaves like ad-hoc (Gatekeeper does not trust
+              # it), hence the warning rather than silence.
+              SIGN_ID=$(security find-identity -v -p codesigning "$KC" | awk -F'"' '/^ *1\)/ {print $2; exit}')
+              [ -n "$SIGN_ID" ] && echo "::warning::no Developer ID Application identity — signing with \"$SIGN_ID\" (distribution-untrusted, interim)"
+            fi
+            if [ -z "$SIGN_ID" ]; then
+              echo "::warning::imported p12 holds no valid codesigning identity — building ad-hoc"
+              SIGN_ID="-"
+            fi
             export CCMUX_SIGN_ID="$SIGN_ID"
             export CCMUX_SIGN_OPTS="--options runtime --timestamp"
           else
