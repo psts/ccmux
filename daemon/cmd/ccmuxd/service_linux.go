@@ -24,6 +24,10 @@ func unitPath() string {
 	return filepath.Join(home, ".config", "systemd", "user", linuxUnit)
 }
 
+// serviceFilePath is the cross-OS accessor install_saved.go recovers previous
+// install flags from.
+func serviceFilePath() string { return unitPath() }
+
 // installHint is distro-agnostic: we can't know the package manager.
 func installHint(pkg string) string {
 	return "install " + pkg + " with your package manager (apt/dnf/pacman/…)"
@@ -43,6 +47,13 @@ func writeAndStartService(cfg serviceConfig) error {
 	enableLinger()
 	if out, err := exec.Command("systemctl", "--user", "enable", "--now", linuxUnit).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl enable --now: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	// enable --now is a no-op on an already-active unit, so an UPDATE would
+	// leave the old binary running. Restart unconditionally — on a fresh
+	// install the unit just started and a restart is harmless; this is what
+	// makes Linux match macOS's kickstart -k behavior.
+	if out, err := exec.Command("systemctl", "--user", "restart", linuxUnit).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl restart: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	fmt.Printf("  systemd user service %s installed (logs: journalctl --user -u ccmuxd -f)\n", linuxUnit)
 	return nil

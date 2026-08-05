@@ -24,6 +24,10 @@ func plistPath() string {
 	return filepath.Join(home, "Library", "LaunchAgents", darwinLabel+".plist")
 }
 
+// serviceFilePath is the cross-OS accessor install_saved.go recovers previous
+// install flags from.
+func serviceFilePath() string { return plistPath() }
+
 func defaultLogPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Library", "Logs", "ccmuxd.log")

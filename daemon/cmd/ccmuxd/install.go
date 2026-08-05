@@ -84,7 +84,10 @@ type installOpts struct {
 	RegisterMCP  bool
 }
 
-func parseInstallFlags(args []string) (*installOpts, error) {
+// parseInstallFlags also reports WHICH flags the caller set explicitly, so an
+// update can fill the rest from the previous install without overriding a
+// deliberate change.
+func parseInstallFlags(args []string) (*installOpts, map[string]bool, error) {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	o := &installOpts{}
 	fs.StringVar(&o.Addr, "addr", "127.0.0.1:7900", "loopback HTTP listen address")
@@ -97,22 +100,31 @@ func parseInstallFlags(args []string) (*installOpts, error) {
 	fs.BoolVar(&o.Hub, "hub", false, "run the hub role (aggregates every tag:ccmux host; exactly one per fleet)")
 	fs.BoolVar(&o.RegisterMCP, "register-peers-mcp", true, "register the ccmux-peers MCP server for Claude Code on this host")
 	if err := fs.Parse(args); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if o.AuthKey == "" {
 		o.AuthKey = os.Getenv("TS_AUTHKEY")
 	}
 	o.Tsnet = !*noTsnet
-	if o.Hub && !o.Tsnet {
-		return nil, fmt.Errorf("--hub requires the tailnet (drop --no-tsnet)")
-	}
-	return o, nil
+	// The hub-requires-tsnet invariant is checked in cmdInstall, AFTER the
+	// previous install's answers are merged in — checking here misses the merge
+	// re-creating the combination (e.g. explicit -hub onto a saved no-tsnet
+	// install), which would silently drop the hub role.
+	return o, set, nil
 }
 
 // cmdInstall is the whole install flow: preflight → resolve config → join the
 // tailnet once → write+start the service → register the peers MCP → verify.
+//
+// A host that was installed before is UPDATED, not re-interviewed: the previous
+// answers (install.json, or recovered from the existing service file) fill
+// every option not explicitly flagged, and no prompts run. Re-prompting used to
+// offer the machine's OS hostname as the default node name — accepting it on an
+// update would have renamed the tailnet node.
 func cmdInstall(args []string) error {
-	o, err := parseInstallFlags(args)
+	o, set, err := parseInstallFlags(args)
 	if err != nil {
 		return err
 	}
@@ -123,9 +135,21 @@ func cmdInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	t := openTTY()
-	defer t.close()
-	fillInteractive(o, t)
+	if prev, src := loadPreviousInstall(); prev != nil {
+		applySaved(o, prev, set)
+		if o.Hostname == "" {
+			o.Hostname = defaultHostLabel()
+		}
+		fmt.Printf("  updating existing install (config from %s): hostname=%s hub=%v — pass flags to change\n",
+			src, o.Hostname, o.Hub)
+	} else {
+		t := openTTY()
+		defer t.close()
+		fillInteractive(o, t)
+	}
+	if o.Hub && !o.Tsnet {
+		return fmt.Errorf("--hub requires the tailnet (drop --no-tsnet, or re-run with -hub=false)")
+	}
 
 	if o.Tsnet {
 		if err := ensureTailnetAuth(o); err != nil {
@@ -135,6 +159,7 @@ func cmdInstall(args []string) error {
 	if err := writeAndStartService(buildServiceConfig(o, self)); err != nil {
 		return err
 	}
+	saveInstallConfig(o)
 	if o.RegisterMCP {
 		registerPeersMCP(filepath.Join(filepath.Dir(self), "ccmux-peers"))
 	}

@@ -46,6 +46,29 @@ lens configuration and verification, are in
 Requirements on a host: `tmux` ≥ 3.3 and `git` on `PATH`, and HTTPS certificates enabled
 for your tailnet (Admin → DNS → HTTPS Certificates).
 
+## Update a host
+
+Re-run the installer. It always fetches the latest release, verifies the checksum,
+replaces both binaries, and rewrites the service. On a host that was installed
+before, it asks nothing: your previous answers (node name, hub role, projects root)
+are reused from `install.json` — or recovered from the existing service file for
+installs made before v0.1.2 — and the tailnet node identity survives in the daemon's
+state dir. Pass flags (`--hostname`, `--hub`, …) to change a setting:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/psts/ccmux/main/install.sh | sh
+```
+
+The installer restarts the daemon itself on both platforms (`launchctl kickstart -k`
+on macOS, `systemctl --user restart` on Linux), so the new binary is running when it
+returns. One thing remains yours: restart your Claude Code sessions afterwards.
+`ccmux-peers` runs per session, not under the service, so every session keeps its
+old shim until it restarts.
+
+Verify: `curl -s http://127.0.0.1:7890/v1/health` reports the running daemon's
+`version`. To pin a specific release instead of latest, set `CCMUX_VERSION=vX.Y.Z`
+before the installer.
+
 ## Build the Mac app
 
 The lens is a native SwiftUI app (macOS 14+):
