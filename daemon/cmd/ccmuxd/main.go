@@ -63,7 +63,7 @@ func runDaemon() {
 	socket := flag.String("socket", "ccmux", "tmux server socket name (-L)")
 	addr := flag.String("addr", "127.0.0.1:7890", "HTTP listen address")
 	dbPath := flag.String("db", defaultDBPath(), "registry SQLite path")
-	hooksSock := flag.String("hooks-socket", "/tmp/ccmuxd-hooks.sock", "Claude Code hooks Unix socket (distinct from the native app's /tmp/ccmux-hooks.sock; injected into hosted panes as CCMUX_HOOKS_SOCK)")
+	hooksSock := flag.String("hooks-socket", filepath.Join(runtimeDir(), "hooks.sock"), "Claude Code hooks Unix socket (distinct from the native app's /tmp/ccmux-hooks.sock; injected into hosted panes as CCMUX_HOOKS_SOCK)")
 	vapidPath := flag.String("vapid", defaultVAPIDPath(), "VAPID keypair JSON path (web push)")
 	pushSubject := flag.String("push-subject", "https://ccmux.dev", "VAPID subject: a real contact email or https: URL identifying this server (Apple rejects unroutable domains like .local)")
 	tsnetEnabled := flag.Bool("tsnet", false, "serve as an own tailnet node (HTTPS on :443, in-process WhoIs identity); needs TS_AUTHKEY on first run")
@@ -77,7 +77,10 @@ func runDaemon() {
 		log.Fatal("--hub requires --tsnet (the hub discovers member hosts over the tailnet)")
 	}
 
-	cfgPath := filepath.Join(os.TempDir(), "ccmux-tmux.conf")
+	if err := os.MkdirAll(runtimeDir(), 0o700); err != nil {
+		log.Fatalf("mkdir runtime dir: %v", err)
+	}
+	cfgPath := filepath.Join(runtimeDir(), "tmux.conf")
 	if err := os.WriteFile(cfgPath, []byte(config.TmuxConf), 0o644); err != nil {
 		log.Fatalf("write tmux config: %v", err)
 	}
@@ -124,7 +127,7 @@ func runDaemon() {
 	mgr.StartGitStatus(5 * time.Second)
 
 	// Claude Code hooks → attention fan-out. The daemon owns a DISTINCT socket
-	// (default /tmp/ccmuxd-hooks.sock) from the native app's /tmp/ccmux-hooks.sock,
+	// (default <runtimeDir>/hooks.sock) from the native app's /tmp/ccmux-hooks.sock,
 	// and injects its path into hosted panes as CCMUX_HOOKS_SOCK — so hosted hooks
 	// reach the daemon even when the app is running (no more last-binder-steals).
 	// Still non-fatal if the socket is somehow taken; the daemon serves regardless.
@@ -437,6 +440,20 @@ func defaultVAPIDPath() string { return filepath.Join(configDir(), "vapid.json")
 
 // defaultTsnetDir returns the tsnet node's state directory beside the registry.
 func defaultTsnetDir() string { return filepath.Join(configDir(), "tsnet") }
+
+// runtimeDir is the per-user home of the daemon's runtime artifacts (tmux
+// config, hooks socket). Fixed names in the shared /tmp made the daemon
+// single-user per MACHINE: /tmp's sticky bit stops user B replacing user A's
+// leftover file, so a second user's daemon crash-looped on "permission
+// denied" — seen live migrating a host between accounts. XDG_RUNTIME_DIR is
+// the per-user answer where systemd provides it; macOS's TempDir is already
+// per-user, and the uid suffix keeps the invariant explicit either way.
+func runtimeDir() string {
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		return filepath.Join(d, "ccmuxd")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("ccmuxd-%d", os.Getuid()))
+}
 
 // defaultProjectsRoot is the daemon user's home — a server deployment narrows it
 // with -projects-root (e.g. /srv/projects).
