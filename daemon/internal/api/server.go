@@ -53,6 +53,12 @@ type Server struct {
 	// settings UI, wired by SetDevhostStatus; nil when dev serving is off.
 	devStatus func() string
 
+	// hubURLFn reports the tag:ccmux-hub node's base URL this member host has
+	// discovered (GET /v1/hub), so a lens pointed at the local daemon can
+	// retarget itself to the hub. nil (or "") when this node IS the hub, has no
+	// tsnet, or no hub has been found yet.
+	hubURLFn func() string
+
 	// hub, when set by EnableHub, makes this the federation hub: it aggregates
 	// every member host's workspaces and reverse-proxies host-scoped routes to
 	// the owning host. nil in host-only mode.
@@ -82,6 +88,9 @@ func (s *Server) SetProjectsRoot(root string) { s.projectsRoot = root }
 // SetDevhostStatus wires the devhost server's cert-status reporter (see devStatus).
 func (s *Server) SetDevhostStatus(f func() string) { s.devStatus = f }
 
+// SetHubURL wires the member host's hub-discovery reporter (see hubURLFn).
+func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
+
 // EnablePush wires Web Push: it stores the sender + subscription store the
 // /v1/push/* handlers use, and starts a notifier that pushes on attention (with
 // per-dev suppression) for the lifetime of ctx. Idempotent-safe to call once at
@@ -110,6 +119,7 @@ func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.health)
+	mux.HandleFunc("GET /v1/hub", s.hubInfo)
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
@@ -168,6 +178,18 @@ func (s *Server) Handler() http.Handler {
 	// matched by a more specific /v1 pattern.
 	mux.Handle("GET /", http.FileServerFS(web.Files))
 	return mux
+}
+
+// hubInfo reports the discovered hub's base URL so a lens that connected to the
+// local daemon can retarget itself to the federation hub automatically. url is
+// "" when there is nothing to retarget to: this node is the hub itself, runs
+// without tsnet, or no tag:ccmux-hub peer has been discovered (yet).
+func (s *Server) hubInfo(w http.ResponseWriter, _ *http.Request) {
+	url := ""
+	if s.hubURLFn != nil {
+		url = s.hubURLFn()
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
 // health reports liveness plus the federation handshake fields: the informational

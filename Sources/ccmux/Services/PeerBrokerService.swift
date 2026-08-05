@@ -6,8 +6,13 @@ import Foundation
 class PeerBrokerService {
     static let shared = PeerBrokerService()
 
-    private var baseURL: String { DaemonConfig.baseURL }
-    private var wsBaseURL: String { DaemonConfig.wsBaseURL }
+    // Pinned to the LOCAL daemon, never the discovered hub: /v1/peers/local-groups
+    // is loopback-gated server-side, and the bearer token below is minted by the
+    // local daemon's secret — the hub would 403/401 both. The local bus is also
+    // where this Mac's driver-mode panes register, so it's the right data source
+    // for the overlay. A hub-wide peers overlay is a separate feature.
+    private var baseURL: String { DaemonConfig.localURL }
+    private var wsBaseURL: String { DaemonConfig.wsOrigin(DaemonConfig.localURL) }
 
     /// Shared pane-less bearer token from the daemon's info file — authorizes
     /// the local-pane group push (0600, same-user only). Cached after first read;

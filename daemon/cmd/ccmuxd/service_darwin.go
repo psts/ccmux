@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const darwinLabel = "com.ccmux.ccmuxd"
@@ -51,7 +52,21 @@ func writeAndStartService(cfg serviceConfig) error {
 	uid := strconv.Itoa(os.Getuid())
 	// bootout first so a re-install replaces cleanly (bootstrap fails if loaded).
 	_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+darwinLabel).Run()
-	if out, err := exec.Command("launchctl", "bootstrap", "gui/"+uid, p).CombinedOutput(); err != nil {
+	// bootout of a RUNNING service is asynchronous: a bootstrap racing the
+	// teardown gets "Bootstrap failed: 5: Input/output error" — deterministic
+	// on live re-installs (rename, upgrade). Retry over a few seconds; the
+	// first install (nothing to boot out) still succeeds on attempt one.
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		if attempt > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if out, err = exec.Command("launchctl", "bootstrap", "gui/"+uid, p).CombinedOutput(); err == nil {
+			break
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("launchctl bootstrap: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	_ = exec.Command("launchctl", "kickstart", "-k", "gui/"+uid+"/"+darwinLabel).Run()

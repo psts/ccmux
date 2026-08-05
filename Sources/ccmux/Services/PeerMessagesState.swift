@@ -26,7 +26,7 @@ class PeerMessagesState: ObservableObject {
                 peers = prs
                 isConnected = true
             } catch {
-                self.error = "Cannot reach ccmuxd at \(DaemonConfig.baseURL)"
+                self.error = "Cannot reach ccmuxd at \(DaemonConfig.localURL)"
                 return
             }
 

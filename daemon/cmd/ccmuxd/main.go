@@ -235,7 +235,9 @@ func setupTailnetNode(ctx context.Context, mgr *manager.Manager, apiSrv *api.Ser
 			log.Printf("hub mode disabled: %v", err)
 		}
 	} else {
-		enableHostFederation(ctx, ts, lc, mgr, peersSvc)
+		hubURL := startHubDiscovery(ctx, lc)
+		apiSrv.SetHubURL(func() string { return *hubURL.Load() })
+		enableHostFederation(ts, hubURL, mgr, peersSvc)
 	}
 	return ts, lc, nil
 }
@@ -318,20 +320,12 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	return nil
 }
 
-// enableHostFederation points a non-hub host's Claude panes at the hub's peers
-// bus (discovered via tag:ccmux-hub), so they join the hub's directory and can
-// message peers on other hosts. It overrides ExtraPaneEnv to inject
-// CCMUX_PEERS_URL (the hub) + a hub-minted CCMUX_PANE_TOKEN, leaving
-// CCMUX_DAEMON_URL local so on-host hooks still reach this host. Discovery runs
-// in the background (the hub may start later); until a hub is found, and whenever
-// the hub can't be reached at spawn, panes fall back to the LOCAL bus — so a
-// single-host / no-hub node behaves exactly as before. No secret is distributed;
-// the hub mints each token.
-func enableHostFederation(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, peersSvc *peers.Service) {
-	if peersSvc == nil {
-		return
-	}
-	var hubURL atomic.Pointer[string]
+// startHubDiscovery watches the tailnet for the tag:ccmux-hub node and keeps
+// its base URL in the returned pointer ("" until one is found). Runs for the
+// lifetime of ctx; consumed by the peers-bus federation AND GET /v1/hub (lens
+// retargeting), which is why it lives outside enableHostFederation.
+func startHubDiscovery(ctx context.Context, lc *local.Client) *atomic.Pointer[string] {
+	hubURL := &atomic.Pointer[string]{}
 	empty := ""
 	hubURL.Store(&empty)
 	go func() {
@@ -341,7 +335,7 @@ func enableHostFederation(ctx context.Context, ts *tsnet.Server, lc *local.Clien
 			if st, err := lc.Status(ctx); err == nil && st.Self != nil {
 				if u := hub.DiscoverHub(ctx, lc, firstLabel(st.Self.DNSName)); u != "" && u != *hubURL.Load() {
 					hubURL.Store(&u)
-					log.Printf("peers: federating to hub %s", u)
+					log.Printf("federating to hub %s", u)
 				}
 			}
 			select {
@@ -351,7 +345,22 @@ func enableHostFederation(ctx context.Context, ts *tsnet.Server, lc *local.Clien
 			}
 		}
 	}()
+	return hubURL
+}
 
+// enableHostFederation points a non-hub host's Claude panes at the hub's peers
+// bus (discovered via tag:ccmux-hub), so they join the hub's directory and can
+// message peers on other hosts. It overrides ExtraPaneEnv to inject
+// CCMUX_PEERS_URL (the hub) + a hub-minted CCMUX_PANE_TOKEN, leaving
+// CCMUX_DAEMON_URL local so on-host hooks still reach this host. hubURL comes
+// from startHubDiscovery (the hub may start later); until a hub is found, and
+// whenever the hub can't be reached at spawn, panes fall back to the LOCAL
+// bus — so a single-host / no-hub node behaves exactly as before. No secret is
+// distributed; the hub mints each token.
+func enableHostFederation(ts *tsnet.Server, hubURL *atomic.Pointer[string], mgr *manager.Manager, peersSvc *peers.Service) {
+	if peersSvc == nil {
+		return
+	}
 	client := &http.Client{Transport: &http.Transport{DialContext: ts.Dial}, Timeout: 3 * time.Second}
 	localEnv := peersSvc.PaneEnv // fallback: local bus when there's no hub / it's unreachable
 	mgr.ExtraPaneEnv = func(paneID string) map[string]string {

@@ -126,6 +126,17 @@ final class RemoteSessionService: ObservableObject {
         for id in Array(attachments.keys) { removeWorkspace(id) }
     }
 
+    /// A federation hub was adopted after the services connected (cold-boot
+    /// discovery landed late): re-point the event firehose at it — a healthy
+    /// socket never reconnects on its own — and refresh now instead of waiting
+    /// out the poll interval. The REST calls need nothing; they read
+    /// `DaemonConfig.baseURL` per request.
+    func hubAdopted() {
+        events.disconnect()
+        events.connect()
+        Task { await refresh() }
+    }
+
     // MARK: - Attention firehose
 
     /// Route a decoded firehose event onto the sidebar flash. `hello` seeds current

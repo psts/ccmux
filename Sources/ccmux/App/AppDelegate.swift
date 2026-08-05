@@ -81,8 +81,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Start listening for Claude Code attention events (sidebar flash + notifications).
             self.startAttentionSignals(windowManager: wm)
 
-            // Start polling the ccmuxd daemon for hosted (lens) workspaces.
-            self.startRemoteSessions()
+            // Discover the federation hub (via the local daemon) BEFORE the
+            // daemon services connect, so they target the hub from their first
+            // request. Falls through to the local daemon when there is no hub
+            // or an unreachable one — and keeps retrying in the background for
+            // the cold-boot case where the daemon hasn't found the hub yet,
+            // rewiring the live services if it lands late.
+            Task { @MainActor in
+                await HubDiscovery.adoptHub(onLateAdopt: {
+                    RemoteSessionService.shared.hubAdopted()
+                })
+                // Start polling the ccmuxd daemon for hosted (lens) workspaces.
+                self.startRemoteSessions()
+            }
         }
     }
 
