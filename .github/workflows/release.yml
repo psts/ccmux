@@ -111,11 +111,27 @@ jobs:
           KEY="$RUNNER_TEMP/notary.p8"
           printf '%s' "$APPSTORE_API_KEY_P8" > "$KEY"
           ditto -c -k --keepParent .build/release/ccmux.app "$RUNNER_TEMP/notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+          # A slow notary queue must not kill the release: a notarized-but-
+          # unstapled app still passes Gatekeeper through Apple's online check
+          # once the (already submitted) scan completes — the staple is offline
+          # insurance only. First-ever team submissions routinely exceed any
+          # sane timeout (seen live: v0.1.8's first attempt). Timeout → warn
+          # and ship unstapled; an actual Invalid verdict still fails.
+          RC=0
+          OUT=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
             --key "$KEY" --key-id "$APPSTORE_API_KEY_ID" --issuer "$APPSTORE_API_ISSUER_ID" \
-            --wait --timeout 15m
-          xcrun stapler staple .build/release/ccmux.app
+            --wait --timeout 20m 2>&1) || RC=$?
+          echo "$OUT"
           rm "$KEY"
+          if [ "$RC" -eq 124 ] || { [ "$RC" -ne 0 ] && echo "$OUT" | grep -q "In Progress"; }; then
+            echo "::warning::notarization still in progress at timeout — shipping signed, unstapled; Gatekeeper's online check passes once Apple finishes"
+            exit 0
+          fi
+          if [ "$RC" -ne 0 ] || ! echo "$OUT" | grep -q "status: Accepted"; then
+            echo "notarization failed (rc=$RC)" >&2
+            exit 1
+          fi
+          xcrun stapler staple .build/release/ccmux.app
 
       - name: Package and attach to release
         env:
