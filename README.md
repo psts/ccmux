@@ -48,26 +48,29 @@ for your tailnet (Admin → DNS → HTTPS Certificates).
 
 ## Update a host
 
-Re-run the installer. It always fetches the latest release, verifies the checksum,
-replaces both binaries, and rewrites the service. On a host that was installed
-before, it asks nothing: your previous answers (node name, hub role, projects root)
-are reused from `install.json` — or recovered from the existing service file for
-installs made before v0.1.2 — and the tailnet node identity survives in the daemon's
-state dir. Pass flags (`--hostname`, `--hub`, …) to change a setting:
+On any host running v0.1.3 or later:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/psts/ccmux/main/install.sh | sh
+ccmuxd upgrade            # to the latest release; `ccmuxd upgrade v0.1.4` pins one
 ```
 
-The installer restarts the daemon itself on both platforms (`launchctl kickstart -k`
-on macOS, `systemctl --user restart` on Linux), so the new binary is running when it
-returns. One thing remains yours: restart your Claude Code sessions afterwards.
+It resolves the release, verifies the checksum, swaps both binaries in place, and
+hands off to the new version's installer in update mode: your previous answers
+(node name, hub role, projects root) are reused, nothing is asked, and the daemon
+is restarted on both platforms. Pass install flags by re-running the curl installer
+instead when you want to *change* a setting (`--hostname`, `--hub`, …).
+
+Re-running the curl installer from the Install section is the equivalent update
+path for hosts on older versions (or when `ccmuxd` isn't on PATH) — same update
+mode, same kept answers; pre-v0.1.2 installs recover their answers from the
+service file. It also honors `CCMUX_VERSION=vX.Y.Z` to pin a release.
+
+One thing remains yours either way: restart your Claude Code sessions afterwards.
 `ccmux-peers` runs per session, not under the service, so every session keeps its
 old shim until it restarts.
 
-Verify: `curl -s http://127.0.0.1:7890/v1/health` reports the running daemon's
-`version`. To pin a specific release instead of latest, set `CCMUX_VERSION=vX.Y.Z`
-before the installer.
+Verify: `ccmuxd version`, or `curl -s http://127.0.0.1:7890/v1/health` for the
+version of the *running* daemon.
 
 ## Build the Mac app
 

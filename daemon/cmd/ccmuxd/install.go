@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"tailscale.com/tsnet"
+
+	"ccmux.dev/ccmuxd/internal/version"
 )
 
 // serviceConfig is the portable description of the daemon invocation a service
@@ -49,6 +51,11 @@ func runSubcommand(name string, args []string) {
 		err = cmdInstall(args)
 	case "uninstall":
 		err = cmdUninstall(args)
+	case "upgrade":
+		err = cmdUpgrade(args)
+	case "version": // -version/--version arrive here via main's carve-out
+		fmt.Printf("ccmuxd %s (wire contract %d)\n", version.Build, version.Contract)
+		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "ccmuxd: unknown command %q\n\n", name)
 		printUsage()
@@ -68,7 +75,9 @@ func printUsage() {
 Usage:
   ccmuxd [flags]        run the daemon (see -h)
   ccmuxd install [opts] install + start ccmuxd as a user service
+  ccmuxd upgrade [vX.Y.Z] self-update to the latest (or named) release and restart
   ccmuxd uninstall      stop + remove the service (-purge also wipes state)
+  ccmuxd version        print the build version
 `)
 }
 
@@ -124,6 +133,9 @@ func parseInstallFlags(args []string) (*installOpts, map[string]bool, error) {
 // offer the machine's OS hostname as the default node name — accepting it on an
 // update would have renamed the tailnet node.
 func cmdInstall(args []string) error {
+	// Say which build is doing the installing, first thing — "which version did
+	// I just get?" must be answerable from the curl|sh output alone.
+	fmt.Printf("  ccmuxd %s\n", version.Build)
 	o, set, err := parseInstallFlags(args)
 	if err != nil {
 		return err

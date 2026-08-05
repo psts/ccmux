@@ -40,13 +40,21 @@ import (
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
 
-// main dispatches a leading non-flag arg (install/uninstall) to the subcommand
-// layer; otherwise it runs the daemon. The launchd/systemd invocation passes
-// `-addr …` (starts with "-"), so it always lands on the daemon path.
+// main dispatches a leading non-flag arg (install/uninstall/upgrade/version)
+// to the subcommand layer; otherwise it runs the daemon. The launchd/systemd
+// invocation passes `-addr …` (starts with "-"), so it always lands on the
+// daemon path — with one carve-out: `-version`/`--version` is what fingers
+// type, and without the carve-out it would reach the daemon's flag parser and
+// die with a usage dump instead of printing the version.
 func main() {
-	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		runSubcommand(os.Args[1], os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		if arg := os.Args[1]; arg == "-version" || arg == "--version" {
+			runSubcommand("version", nil)
+			return
+		} else if !strings.HasPrefix(arg, "-") {
+			runSubcommand(arg, os.Args[2:])
+			return
+		}
 	}
 	runDaemon()
 }

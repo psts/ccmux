@@ -47,10 +47,20 @@ fi
 
 asset="ccmux_${os}_${arch}.tar.gz"
 if [ "$VERSION" = latest ]; then
-	base="https://github.com/$REPO/releases/latest/download"
-else
-	base="https://github.com/$REPO/releases/download/$VERSION"
+	# Resolve the alias to its concrete tag BEFORE downloading. Two reasons:
+	# the user sees which version they are actually getting, and download +
+	# checksums are pinned to one release — the latest/download alias is
+	# resolved per file, so a release publishing mid-install could otherwise
+	# serve the old version consistently (or worse, mixed files).
+	loc=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") \
+		|| die "cannot resolve the latest release of $REPO"
+	VERSION="${loc##*/}"
+	case "$VERSION" in
+		v[0-9]*) echo "install: latest release is $VERSION" ;;
+		*) die "could not resolve latest release tag (redirect landed on $loc)" ;;
+	esac
 fi
+base="https://github.com/$REPO/releases/download/$VERSION"
 
 # --- tools -----------------------------------------------------------------
 command -v curl >/dev/null 2>&1 || die "curl is required"
