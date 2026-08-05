@@ -39,12 +39,23 @@ jobs:
   # notarized (first manual install needs right-click→Open; self-updates are
   # unaffected either way).
   macapp:
-    runs-on: macos-14
+    runs-on: macos-15
     needs: goreleaser # the release must exist before we can attach to it
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # The app is developed against current Swift (6.2 / Xcode 26); the
+      # runner's default Xcode lags and its older compiler rejects concurrency
+      # captures that are legal now. Select the newest Xcode on the image
+      # instead of hand-porting valid code backwards.
+      - name: Select newest Xcode
+        run: |
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "selecting $NEWEST"
+          sudo xcode-select -s "$NEWEST"
+          swift --version
 
       - name: Build and sign
         env:
