@@ -31,3 +31,72 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The native Mac app, attached to the same release as ccmux-app.zip — what
+  # the app's "Check for Updates…" downloads. Secrets are consumed inside the
+  # shell steps (not in `if:` conditions), so the job degrades gracefully:
+  # no cert secret → ad-hoc signed build; no notary key → signed, not
+  # notarized (first manual install needs right-click→Open; self-updates are
+  # unaffected either way).
+  macapp:
+    runs-on: macos-14
+    needs: goreleaser # the release must exist before we can attach to it
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build and sign
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "$MACOS_CERT_P12" ]; then
+            KC="$RUNNER_TEMP/build.keychain-db"
+            security create-keychain -p ci "$KC"
+            security set-keychain-settings -lut 21600 "$KC"
+            security unlock-keychain -p ci "$KC"
+            echo "$MACOS_CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+            rm "$RUNNER_TEMP/cert.p12"
+            security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" > /dev/null
+            security list-keychains -d user -s "$KC" login.keychain
+            SIGN_ID=$(security find-identity -v -p codesigning "$KC" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+            [ -n "$SIGN_ID" ] || { echo "no Developer ID Application identity in the imported p12" >&2; exit 1; }
+            export CCMUX_SIGN_ID="$SIGN_ID"
+            export CCMUX_SIGN_OPTS="--options runtime --timestamp"
+          else
+            echo "::warning::MACOS_CERT_P12 not set — building ad-hoc signed app"
+            export CCMUX_SIGN_ID="-"
+          fi
+          CCMUX_APP_VERSION="${GITHUB_REF_NAME#v}" ./build-app.sh
+
+      - name: Notarize and staple
+        env:
+          APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPSTORE_API_KEY_P8" ] || [ -z "$MACOS_CERT_P12" ]; then
+            echo "::warning::notary credentials or cert absent — shipping signed-but-not-notarized app"
+            exit 0
+          fi
+          KEY="$RUNNER_TEMP/notary.p8"
+          printf '%s' "$APPSTORE_API_KEY_P8" > "$KEY"
+          ditto -c -k --keepParent .build/release/ccmux.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$KEY" --key-id "$APPSTORE_API_KEY_ID" --issuer "$APPSTORE_API_ISSUER_ID" \
+            --wait --timeout 15m
+          xcrun stapler staple .build/release/ccmux.app
+          rm "$KEY"
+
+      - name: Package and attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent .build/release/ccmux.app ccmux-app.zip
+          gh release upload "$GITHUB_REF_NAME" ccmux-app.zip --clobber

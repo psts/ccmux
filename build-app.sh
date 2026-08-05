@@ -3,9 +3,21 @@ set -e
 
 APP_NAME="ccmux"
 BUNDLE_ID="com.ccmux.app"
-VERSION="1.0.0"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
+
+# Version: CI passes the release tag (CCMUX_APP_VERSION=0.1.5); local builds
+# stamp git-describe so "Check for Updates…" and the About panel can tell a
+# source build from a release.
+VERSION="${CCMUX_APP_VERSION:-$(git describe --tags --dirty --always 2>/dev/null | sed 's/^v//')}"
+VERSION="${VERSION:-0.0.0}"
+
+# Signing: CI passes the imported Developer ID identity plus hardened-runtime
+# options (CCMUX_SIGN_OPTS="--options runtime --timestamp"), or "-" for an
+# ad-hoc build when no certificate secret is configured. Local default stays
+# the personal development certificate.
+SIGN_ID="${CCMUX_SIGN_ID:-Apple Development: Patric Sandelin (H5287KRN8S)}"
+SIGN_OPTS="${CCMUX_SIGN_OPTS:-}"
 
 echo "Building release for arm64 (Apple Silicon)..."
 swift build -c release --arch arm64
@@ -92,16 +104,15 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 </plist>
 EOF
 
-echo "Code signing..."
-SIGN_ID="Apple Development: Patric Sandelin (H5287KRN8S)"
-# No hardened runtime (--options runtime): it's only needed for notarization,
-# which an Apple Development cert can't do anyway, so there's nothing to gain.
+echo "Code signing ($SIGN_ID)..."
+# Hardened runtime (--options runtime) comes in via CCMUX_SIGN_OPTS from CI —
+# needed for notarization; local dev builds don't need it.
 # NB: signing has no bearing on glyph rendering. The ".notdef tofu" bug was a
 # cold-launch CoreText font race (terminals resolved Monaco before the
 # LaunchServices session's font connection was ready), fixed by deferring window
 # creation in AppDelegate — not hardened runtime or library validation, despite
 # what an earlier version of this comment claimed.
-codesign --force --sign "$SIGN_ID" "$APP_DIR"
+codesign --force --sign "$SIGN_ID" $SIGN_OPTS "$APP_DIR"
 codesign --verify --verbose=2 "$APP_DIR"
 
 echo ""

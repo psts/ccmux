@@ -244,6 +244,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wc.togglePeerMessages()
     }
 
+    /// Check for Updates… — the app-side `ccmuxd upgrade` (GitHub releases,
+    /// download + verify + swap + relaunch). See UpdaterService.
+    @objc private func checkForUpdates() {
+        MainActor.assumeIsolated { UpdaterService.shared.checkForUpdates() }
+    }
+
     /// Settings… (⌘,) — edits the daemon-wide settings (startup command +
     /// per-folder rules); one lazily-created window, reused across opens.
     @objc private func openDaemonSettings() {
@@ -325,6 +331,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
         appMenu.addItem(withTitle: "About ccmux", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(openDaemonSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
