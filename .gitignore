@@ -12,3 +12,5 @@ dist/
 # qa-receipt.sh finds no test command here (go.mod is under daemon/, and it does
 # not recognise Package.swift) and refuses to sign anything.
 !.claude/qa-gates
+SwiftTerm/.build/
+SwiftTerm/.swiftpm/
