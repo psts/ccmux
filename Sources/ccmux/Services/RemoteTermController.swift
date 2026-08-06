@@ -3,8 +3,49 @@ import SwiftTerm
 
 /// Base `TerminalView` (no local process) that accepts first-mouse clicks, so a
 /// hosted pane activates on the same first click as a local one.
+///
+/// Paste is image-aware: Claude Code reads its clipboard on the machine it RUNS
+/// on, so a Mac clipboard image is invisible to a hosted session. When the
+/// pasteboard holds an image, Cmd+V hands the bytes to `onImagePaste` (upload →
+/// host temp file → path typed into the pane) instead of SwiftTerm's text paste.
 final class ClickThroughRemoteTerminalView: TerminalView {
+    var onImagePaste: ((Data) -> Void)?
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func paste(_ sender: Any) {
+        if let data = Self.imageData(from: NSPasteboard.general), let onImagePaste {
+            onImagePaste(data)
+            return
+        }
+        super.paste(sender)
+    }
+
+    /// Extract image bytes from a pasteboard. Priority:
+    /// 1. A copied image FILE (Finder) — its exact bytes, even though Finder
+    ///    also puts the filename on the string flavor.
+    /// 2. Text — a copy that carries real text (spreadsheet cells, rich-text,
+    ///    mixed web selections) pastes as text even when a picture rendition
+    ///    rides along; Cmd+V must never surprise-convert text to an upload.
+    /// 3. Raw PNG/TIFF with no text (screenshots): PNG as-is, TIFF re-encoded.
+    /// nil = no image; the caller falls back to SwiftTerm's text paste.
+    static func imageData(from pb: NSPasteboard) -> Data? {
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+        if let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL],
+           let url = urls.first, url.isFileURL,
+           imageExts.contains(url.pathExtension.lowercased()),
+           let data = try? Data(contentsOf: url) {
+            return data
+        }
+        if let text = pb.string(forType: .string), !text.isEmpty { return nil }
+        if let png = pb.data(forType: .png) { return png }
+        if let tiff = pb.data(forType: .tiff),
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            return png
+        }
+        return nil
+    }
 }
 
 /// Bridges one hosted pane to a SwiftTerm view: it IS the view's delegate, so
@@ -66,6 +107,46 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
         terminalView.nativeBackgroundColor = NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0)
         terminalView.optionAsMetaKey = false
         terminalView.terminalDelegate = self
+        (terminalView as? ClickThroughRemoteTerminalView)?.onImagePaste = { [weak self] data in
+            self?.uploadPastedImage(data)
+        }
+    }
+
+    /// Mirrors the daemon's maxPasteBytes (paste.go) so an over-cap image fails
+    /// fast here instead of uploading 10MB+ just to collect a 413.
+    private static let maxPasteBytes = 10 << 20
+
+    /// Land a clipboard image on the daemon's host and type the returned path
+    /// into the pane (trailing space, like drag-and-drop), so the hosted Claude
+    /// session can read the file. Failures beep + log: an image-only clipboard
+    /// has no text to fall back to, so the beep is the "nothing was pasted"
+    /// signal — never type garbage into the prompt.
+    private func uploadPastedImage(_ data: Data) {
+        guard data.count <= Self.maxPasteBytes else {
+            NSLog("[ccmux paste] image too large (\(data.count) bytes, cap \(Self.maxPasteBytes))")
+            NSSound.beep()
+            return
+        }
+        guard let daemonId = attach?.workspaceId,
+              let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/paste") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        Task { [weak self] in
+            guard let (body, resp) = try? await URLSession.shared.data(for: req),
+                  (resp as? HTTPURLResponse)?.statusCode == 201,
+                  let path = (try? JSONDecoder().decode([String: String].self, from: body))?["path"]
+            else {
+                NSLog("[ccmux paste] image upload failed (\(data.count) bytes)")
+                await MainActor.run { NSSound.beep() }
+                return
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.attach?.send(.input(pane: self.paneId, bytes: ArraySlice(Array((path + " ").utf8))))
+            }
+        }
     }
 
     // MARK: - Daemon → view

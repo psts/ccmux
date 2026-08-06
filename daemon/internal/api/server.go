@@ -163,6 +163,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/workspaces/{id}/files", s.scoped(s.getFile))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/files", s.scoped(s.putFile))
 	mux.HandleFunc("GET /v1/workspaces/{id}/dir", s.scoped(s.listDir))
+	mux.HandleFunc("POST /v1/workspaces/{id}/paste", s.scoped(s.pasteImage))
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.scoped(s.paneSnapshot))
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.scoped(s.paneDriver))
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
