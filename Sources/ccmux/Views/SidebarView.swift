@@ -16,6 +16,9 @@ struct SidebarView: View {
     var onNewHostedSession: (() -> Void)?
     var onWorkspaceHostnames: ((UUID) -> Void)?
     var onNewWindow: (() -> Void)?
+    /// Drag-and-drop move: (workspaceId, targetWindowId). Any window section —
+    /// this window's or another's — accepts a dropped workspace row.
+    var onMoveToWindow: ((UUID, UUID) -> Void)?
 
     /// Workspaces belonging to this window — local and hosted alike; a hosted
     /// workspace lives in whatever window group the user put it in, marked only
@@ -60,10 +63,16 @@ struct SidebarView: View {
                 if !thisWindowWorkspaces.isEmpty {
                     Section {
                         ForEach(thisWindowWorkspaces) { workspace in
-                            if workspace.mode == .hosted {
-                                hostedRow(workspace, dimmed: false)
-                            } else {
-                                localRow(workspace)
+                            Group {
+                                if workspace.mode == .hosted {
+                                    hostedRow(workspace, dimmed: false)
+                                } else {
+                                    localRow(workspace)
+                                }
+                            }
+                            .draggable(workspace.id.uuidString)
+                            .dropDestination(for: String.self) { ids, _ in
+                                dropWorkspaces(ids, into: currentWindowId)
                             }
                         }
                     } header: {
@@ -75,6 +84,9 @@ struct SidebarView: View {
                                     }
                                 }
                             }
+                            .dropDestination(for: String.self) { ids, _ in
+                                dropWorkspaces(ids, into: currentWindowId)
+                            }
                     }
                 }
 
@@ -84,10 +96,16 @@ struct SidebarView: View {
                     if !groupWorkspaces.isEmpty {
                         Section {
                             ForEach(groupWorkspaces) { workspace in
-                                if workspace.mode == .hosted {
-                                    hostedRow(workspace, dimmed: true)
-                                } else {
-                                    otherWindowLocalRow(workspace)
+                                Group {
+                                    if workspace.mode == .hosted {
+                                        hostedRow(workspace, dimmed: true)
+                                    } else {
+                                        otherWindowLocalRow(workspace)
+                                    }
+                                }
+                                .draggable(workspace.id.uuidString)
+                                .dropDestination(for: String.self) { ids, _ in
+                                    dropWorkspaces(ids, into: group.id)
                                 }
                             }
                         } header: {
@@ -96,6 +114,9 @@ struct SidebarView: View {
                                     Button("Rename Window...") {
                                         onRenameWindow?(group.id, group.name)
                                     }
+                                }
+                                .dropDestination(for: String.self) { ids, _ in
+                                    dropWorkspaces(ids, into: group.id)
                                 }
                         }
                     }
@@ -223,6 +244,18 @@ struct SidebarView: View {
             }
         }
         .background(Color(nsColor: NSColor(red: 0.15, green: 0.16, blue: 0.17, alpha: 1.0)))
+    }
+
+    /// Shared drop handler: every payload is a workspace UUID string dragged
+    /// from some sidebar row. Same-window drops no-op downstream (the manager
+    /// skips targets that already own the workspace).
+    private func dropWorkspaces(_ ids: [String], into windowId: UUID?) -> Bool {
+        guard let windowId else { return false }
+        let workspaceIds = ids.compactMap(UUID.init(uuidString:))
+        for wsId in workspaceIds {
+            onMoveToWindow?(wsId, windowId)
+        }
+        return !workspaceIds.isEmpty
     }
 
     // MARK: - Row builders

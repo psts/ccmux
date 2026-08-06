@@ -155,6 +155,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             },
             onNewWindow: { [weak self] in
                 self?.windowManager?.createWindow(displayingWorkspace: nil)
+            },
+            onMoveToWindow: { [weak self] wsId, windowId in
+                self?.windowManager?.moveWorkspace(id: wsId, toWindowId: windowId)
             }
         )
         let sidebarHosting = NSHostingController(rootView: sidebarView)

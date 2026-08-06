@@ -242,6 +242,11 @@ class WindowManager {
     /// Move a workspace from its current window into the requesting window.
     /// Closes the source window if it only had that workspace.
     func moveWorkspaceToWindow(id: UUID, targetController: WorkspaceWindowController) {
+        // Moving counts as "I've seen it" just like clicking does — the flash
+        // must not follow the workspace into its new window (see selectWorkspace).
+        workspaceManager.attentionMonitors[id]?.clear()
+        RemoteSessionService.shared.attentionMonitors[id]?.clear()
+
         // Remove ownership from any other window
         for wc in windowControllers where wc !== targetController {
             wc.windowContext.ownedWorkspaceIds.remove(id)
@@ -263,8 +268,24 @@ class WindowManager {
         targetController.windowContext.displayedWorkspaceId = id
         targetController.windowContext.ownedWorkspaceIds.insert(id)
         targetController.updateWindowTitle()
-        workspaceManager.activeWorkspaceId = id
+        // Only mark it active when the target is where the user actually is: a
+        // drag dropped on ANOTHER window's section must not point menu actions
+        // at a workspace the key window doesn't display.
+        if targetController.window?.isKeyWindow ?? false {
+            workspaceManager.activeWorkspaceId = id
+        }
         refreshOtherWindowIds()
+        // Persist now — without this a move only survives a clean quit.
+        workspaceManager.scheduleSaveFromWindow()
+    }
+
+    /// Drag-and-drop entry: move a workspace onto a sidebar window SECTION,
+    /// identified by window id. Same-window drops are a no-op (sections are
+    /// name-sorted, so there is no position to change).
+    func moveWorkspace(id: UUID, toWindowId windowId: UUID) {
+        guard let target = windowControllers.first(where: { $0.windowId == windowId }),
+              !target.windowContext.ownedWorkspaceIds.contains(id) else { return }
+        moveWorkspaceToWindow(id: id, targetController: target)
     }
 
     /// Reopen a previously closed workspace in a new window with its saved frame.
