@@ -595,7 +595,10 @@ function onMessage(ev) {
       // to the OS clipboard. Best-effort — a browser may refuse the write
       // without a recent user gesture, and a refusal must stay silent.
       if (m.data && navigator.clipboard) {
-        navigator.clipboard.writeText(new TextDecoder().decode(b64ToBytes(m.data))).catch(() => {});
+        // console.debug, not user-visible: refusals stay silent for users but
+        // diagnosable in devtools (gesture policy, focus, permissions).
+        navigator.clipboard.writeText(new TextDecoder().decode(b64ToBytes(m.data)))
+          .catch((e) => console.debug("clipboard write refused:", e));
       }
       break;
   }

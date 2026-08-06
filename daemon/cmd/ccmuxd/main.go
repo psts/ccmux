@@ -81,9 +81,15 @@ func runDaemon() {
 		log.Fatalf("mkdir runtime dir: %v", err)
 	}
 	cfgPath := filepath.Join(runtimeDir(), "tmux.conf")
-	// The copy-pipe clipboard bindings need this daemon's loopback origin.
-	tmuxConf := strings.ReplaceAll(config.TmuxConf, "__CCMUX_URL__", loopbackURL(*addr))
-	if err := os.WriteFile(cfgPath, []byte(tmuxConf), 0o644); err != nil {
+	// The copy bindings pipe through a daemon-written helper (token + loopback
+	// URL baked in). A minting failure disables the pipe, never the daemon:
+	// the placeholder becomes `true` so the bindings still copy locally.
+	clipScript, clipToken, clipErr := setupClipboardPipe(runtimeDir(), loopbackURL(*addr))
+	if clipErr != nil {
+		log.Printf("clipboard pipe disabled: %v", clipErr)
+		clipScript = "true"
+	}
+	if err := os.WriteFile(cfgPath, []byte(renderTmuxConf(config.TmuxConf, clipScript)), 0o644); err != nil {
 		log.Fatalf("write tmux config: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
@@ -142,6 +148,7 @@ func runDaemon() {
 
 	apiSrv := api.NewServer(mgr)
 	apiSrv.SetProjectsRoot(*projectsRoot)
+	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)
 		infoPath := filepath.Join(configDir(), "peers.json")

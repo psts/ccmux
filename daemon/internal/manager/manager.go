@@ -704,14 +704,14 @@ func (m *Manager) ResizePane(paneID string, cols, rows int) error {
 // land on lenses watching other workspaces or other users' sessions. tmux
 // pane ids are unique per tmux server, so at most one controller matches.
 func (m *Manager) BroadcastClipboard(tmuxPane string, text []byte) error {
-	m.mu.Lock()
+	m.mu.RLock()
 	ctrls := make([]*session.Controller, 0, len(m.byID))
 	for _, e := range m.byID {
 		if e.ctrl != nil {
 			ctrls = append(ctrls, e.ctrl)
 		}
 	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	for _, ctrl := range ctrls {
 		if paneID := ctrl.PaneIDForTmux(tmuxPane); paneID != "" {
 			ctrl.Broadcast(session.Event{Kind: "clipboard", PaneID: paneID, Data: text})

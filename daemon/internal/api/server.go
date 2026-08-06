@@ -4,9 +4,11 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -60,6 +62,10 @@ type Server struct {
 	// tsnet, or no hub has been found yet.
 	hubURLFn func() string
 
+	// clipToken authorizes POST /v1/clipboard (per-boot random, written 0600
+	// into the runtime dir for the tmux copy helper). "" = endpoint disabled.
+	clipToken string
+
 	// hub, when set by EnableHub, makes this the federation hub: it aggregates
 	// every member host's workspaces and reverse-proxies host-scoped routes to
 	// the owning host. nil in host-only mode.
@@ -91,6 +97,9 @@ func (s *Server) SetDevhostStatus(f func() string) { s.devStatus = f }
 
 // SetHubURL wires the member host's hub-discovery reporter (see hubURLFn).
 func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
+
+// SetClipboardToken arms POST /v1/clipboard (see clipToken).
+func (s *Server) SetClipboardToken(t string) { s.clipToken = t }
 
 // EnablePush wires Web Push: it stores the sender + subscription store the
 // /v1/push/* handlers use, and starts a notifier that pushes on attention (with
@@ -182,13 +191,26 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// clipboard receives tmux copy-mode text — piped here by the managed tmux
-// config's copy bindings via curl ON THIS HOST (loopback-only, like the
-// local-groups push) — and fans it out to the lenses attached to the pane's
-// workspace, which write their OS clipboard. 1MB cap: a copy is human-sized;
-// an unbounded body from a runaway pipe must not balloon every lens.
+// clipboard receives tmux copy-mode text — piped here by the daemon-written
+// ccmux-copy helper — and fans it out to the lenses attached to the pane's
+// workspace, which write their OS clipboard. Auth = loopback AND the per-boot
+// token from the user's 0700 runtime dir: writing someone's clipboard is a
+// paste-a-command primitive, so another ACCOUNT on this host must not reach
+// it (same-user callers can fake a copy via the tmux socket regardless — no
+// pretense of a same-user boundary). 1MB cap: a copy is human-sized; a
+// runaway pipe must not balloon every lens. Failures are logged — the caller
+// discards the response, so this is the only place they can surface.
 func (s *Server) clipboard(w http.ResponseWriter, r *http.Request) {
 	if !requireLoopback(w, r) {
+		return
+	}
+	if s.clipToken == "" {
+		writeError(w, http.StatusServiceUnavailable, "clipboard pipe disabled")
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Ccmux-Clip")), []byte(s.clipToken)) != 1 {
+		log.Printf("clipboard: rejected post with bad token")
+		writeError(w, http.StatusUnauthorized, "invalid clipboard token")
 		return
 	}
 	paneID := r.Header.Get("X-Ccmux-Pane")
@@ -202,6 +224,7 @@ func (s *Server) clipboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.mgr.BroadcastClipboard(paneID, text); err != nil {
+		log.Printf("clipboard: %v", err)
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}

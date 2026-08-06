@@ -114,15 +114,20 @@ final class WorkspaceAttachment {
             }
         case .paneSize(let pane, let cols, let rows):
             controller(forPane: pane, workingDirectory: repoPath).setAuthoritativeSize(cols: cols, rows: rows)
-        case .clipboard(_, let bytes):
+        case .clipboard(let pane, let bytes):
             // tmux copy-mode copied in this workspace (selection = copy):
             // mirror it to the Mac clipboard so Cmd+V just works. Scoped by
-            // the daemon to this workspace's lenses only.
-            if let text = String(bytes: bytes, encoding: .utf8), !text.isEmpty {
-                DispatchQueue.main.async {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                }
+            // the daemon to this workspace's lenses only. Lossy UTF-8 decode:
+            // a copy containing stray invalid bytes should still copy (with
+            // replacement chars), never silently vanish.
+            let text = String(decoding: bytes, as: UTF8.self)
+            guard !text.isEmpty else {
+                NSLog("[ccmux clip] dropped empty/undecodable copy from pane \(pane) (\(bytes.count) bytes)")
+                break
+            }
+            DispatchQueue.main.async {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
             }
         // Attention now rides the global firehose; the attach still carries the
         // per-workspace `attention` frame but it is authoritative on /v1/events.

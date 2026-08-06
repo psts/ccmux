@@ -35,7 +35,9 @@ func requireLoopback(w http.ResponseWriter, r *http.Request) bool {
 	if ip := net.ParseIP(host); err == nil && ip != nil && ip.IsLoopback() {
 		return true
 	}
-	writeError(w, http.StatusForbidden, "peers mutations are loopback-only")
+	// Generic wording: this guard now also fronts /v1/clipboard — blaming
+	// "peers" sent debuggers of a clipboard 403 to the wrong subsystem.
+	writeError(w, http.StatusForbidden, "loopback-only endpoint")
 	return false
 }
 
