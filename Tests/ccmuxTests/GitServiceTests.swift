@@ -179,6 +179,31 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(def, "main")
     }
 
+    /// Fresh clone checked out on the integration branch: no LOCAL main, but
+    /// origin/main exists — detection must return the remote-tracking ref, not
+    /// fall through to origin/HEAD (which points at dev and would hide the row).
+    func testDetectDefaultBranchFallsBackToOriginMain() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ccmux-gitclone-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        func git(_ args: [String]) async { _ = await GitService.run(args: args, in: tmp.path) }
+        await git(["init", "-b", "dev"])
+        await git(["config", "user.email", "t@example.com"])
+        await git(["config", "user.name", "t"])
+        try "hello".write(to: tmp.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        await git(["add", "a.txt"])
+        await git(["commit", "-m", "init"])
+        // No local main — only the remote-tracking refs a clone creates.
+        await git(["update-ref", "refs/remotes/origin/main", "HEAD"])
+        await git(["update-ref", "refs/remotes/origin/dev", "HEAD"])
+        await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev"])
+
+        let def = await GitService.detectDefaultBranch(path: tmp.path)
+        XCTAssertEqual(def, "origin/main")
+    }
+
     /// When no main/master exists, fall back to the remote default so repos whose
     /// trunk is genuinely named something else still get a comparison base.
     func testDetectDefaultBranchFallsBackToOriginHead() async throws {

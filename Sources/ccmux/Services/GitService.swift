@@ -175,8 +175,14 @@ enum GitService {
         // caches the default branch (see GitStatusMonitor); we just consume it here,
         // and skip the extra call when on the default branch (the sidebar hides the
         // row in that case anyway).
-        info.defaultBranch = cachedDefaultBranch
-        if let defaultBranch = cachedDefaultBranch, !defaultBranch.isEmpty, info.branch != defaultBranch {
+        // The cached value may be a remote-tracking ref ("origin/main" — fresh
+        // clone, no local main). Count with the ref, display (and compare the
+        // current branch against) the short name, so the row reads "vs main".
+        let shortDefault = cachedDefaultBranch.map {
+            $0.hasPrefix("origin/") ? String($0.dropFirst("origin/".count)) : $0
+        }
+        info.defaultBranch = shortDefault
+        if let defaultBranch = cachedDefaultBranch, !defaultBranch.isEmpty, info.branch != shortDefault {
             let ab = await run(
                 args: ["rev-list", "--count", "--left-right", "\(defaultBranch)...HEAD"],
                 in: path
@@ -203,10 +209,19 @@ enum GitService {
     /// origin/HEAD only when neither main nor master exists still handles repos whose
     /// trunk is genuinely named something else.
     ///
+    /// Fresh clones checked out on the integration branch have no LOCAL main —
+    /// remote-tracking origin/main|master slots in before origin/HEAD so the
+    /// row still shows "vs main" instead of hiding (dev vs dev). The result is
+    /// a REF (possibly "origin/main"); `status` derives the display name.
+    ///
     /// Meant to be called once per repo and cached by the caller.
     static func detectDefaultBranch(path: String) async -> String? {
-        if !(await run(args: ["rev-parse", "--verify", "main"], in: path)).stdout.isEmpty { return "main" }
-        if !(await run(args: ["rev-parse", "--verify", "master"], in: path)).stdout.isEmpty { return "master" }
+        for name in ["main", "master"] {
+            if !(await run(args: ["rev-parse", "--verify", "refs/heads/\(name)"], in: path)).stdout.isEmpty { return name }
+        }
+        for name in ["origin/main", "origin/master"] {
+            if !(await run(args: ["rev-parse", "--verify", "refs/remotes/\(name)"], in: path)).stdout.isEmpty { return name }
+        }
         let originHead = await run(args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: path)
             .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         if !originHead.isEmpty {

@@ -62,8 +62,12 @@ func Full(ctx context.Context, repoPath, defaultBranch string) (*Status, error) 
 	}
 	st := Parse(out)
 	st.IsGitRepo = true
-	st.DefaultBranch = defaultBranch
-	if defaultBranch != "" && st.Branch != defaultBranch {
+	// defaultBranch may be a remote-tracking ref ("origin/main") — count with
+	// the ref, but display (and compare the current branch against) the short
+	// name, so the sidebar reads "vs main" either way.
+	shortDefault := strings.TrimPrefix(defaultBranch, "origin/")
+	st.DefaultBranch = shortDefault
+	if defaultBranch != "" && st.Branch != shortDefault {
 		if out, code, _ := run(ctx, repoPath, "rev-list", "--count", "--left-right", defaultBranch+"...HEAD"); code == 0 {
 			fields := strings.Fields(out)
 			if len(fields) == 2 {
@@ -75,14 +79,24 @@ func Full(ctx context.Context, repoPath, defaultBranch string) (*Status, error) 
 	return st, nil
 }
 
-// DetectDefaultBranch resolves the branch to compare against — preferring
-// `main`, then `master`, then the remote default (origin/HEAD). main/master
-// come first on purpose: a repo can point origin/HEAD at an integration branch
-// like `dev` that is worked on directly; the comparison the dashboard wants is
-// still "vs the release trunk". Call once per repo and cache ("" = no trunk).
+// DetectDefaultBranch resolves the ref to compare against — preferring local
+// `main`/`master`, then remote-tracking `origin/main`/`origin/master`, then
+// the remote default (origin/HEAD). The trunk names come first on purpose: a
+// repo can point origin/HEAD at an integration branch like `dev` that is
+// worked on directly; the comparison the dashboard wants is still "vs the
+// release trunk". The remote-tracking step exists for fresh clones checked
+// out on that integration branch — they have no local main, and falling
+// straight to origin/HEAD would compare dev vs dev and hide the row. Call
+// once per repo and cache ("" = no trunk). The result is a REF (possibly
+// "origin/main"); Full derives the display name from it.
 func DetectDefaultBranch(ctx context.Context, repoPath string) string {
 	for _, name := range []string{"main", "master"} {
-		if out, code, _ := run(ctx, repoPath, "rev-parse", "--verify", name); code == 0 && strings.TrimSpace(out) != "" {
+		if out, code, _ := run(ctx, repoPath, "rev-parse", "--verify", "refs/heads/"+name); code == 0 && strings.TrimSpace(out) != "" {
+			return name
+		}
+	}
+	for _, name := range []string{"origin/main", "origin/master"} {
+		if out, code, _ := run(ctx, repoPath, "rev-parse", "--verify", "refs/remotes/"+name); code == 0 && strings.TrimSpace(out) != "" {
 			return name
 		}
 	}

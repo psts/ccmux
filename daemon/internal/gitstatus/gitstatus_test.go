@@ -117,6 +117,62 @@ func TestFull_RealRepo(t *testing.T) {
 	}
 }
 
+// TestDetectDefaultBranch_FreshClone pins the fresh-clone case: a repo whose
+// default branch is `dev` (origin/HEAD → dev), cloned onto a new host, has no
+// local main — detection must fall back to origin/main so the sidebar still
+// shows "vs main" instead of hiding the row (dev vs dev).
+func TestDetectDefaultBranch_FreshClone(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	ctx := context.Background()
+	src := t.TempDir()
+	gitIn := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitIn(src, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(src, "add", "a.txt")
+	gitIn(src, "commit", "-m", "base")
+	gitIn(src, "checkout", "-b", "dev")
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(src, "commit", "-am", "dev-ahead")
+	// Mirror the real repos: the origin's default branch IS dev.
+	gitIn(src, "symbolic-ref", "HEAD", "refs/heads/dev")
+
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitIn(t.TempDir(), "clone", "--quiet", src, clone)
+
+	db := DetectDefaultBranch(ctx, clone)
+	if db != "origin/main" {
+		t.Fatalf("default branch = %q, want origin/main", db)
+	}
+	st, err := Full(ctx, clone, db)
+	if err != nil {
+		t.Fatalf("Full: %v", err)
+	}
+	if st.Branch != "dev" {
+		t.Fatalf("clone branch = %q, want dev", st.Branch)
+	}
+	if st.DefaultBranch != "main" {
+		t.Errorf("display default = %q, want main (origin/ stripped)", st.DefaultBranch)
+	}
+	if st.AheadOfDefault != 1 || st.BehindDefault != 0 {
+		t.Errorf("vs default = ↑%d ↓%d, want ↑1 ↓0", st.AheadOfDefault, st.BehindDefault)
+	}
+}
+
 func TestFull_NotARepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
