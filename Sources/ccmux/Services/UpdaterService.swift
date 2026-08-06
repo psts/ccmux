@@ -41,6 +41,10 @@ final class UpdaterService {
 
     private func start(quiet: Bool) {
         guard !running else { return }
+        // Unbundled dev runs (bare `swift build` binary, no Info.plist) report
+        // version "0" — every release "beats" that, so the auto-check would
+        // pop a bogus update prompt on each dev launch.
+        if quiet && Bundle.main.bundleIdentifier == nil { return }
         if quiet && !Self.autoCheckEligible(currentVersion) { return }
         running = true
         Task {
