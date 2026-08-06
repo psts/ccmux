@@ -95,6 +95,13 @@ ExecStart=%s
 %sRestart=on-failure
 RestartSec=10
 WorkingDirectory=%s
+# The daemon spawns the tmux server as a child, so it lives in this unit's
+# cgroup. systemd's default KillMode=control-group would kill it - and every
+# hosted session with it - on ANY service restart, including ccmuxd upgrade.
+# KillMode=process stops only ccmuxd itself; tmux survives the bounce and the
+# restarted daemon reconciles the still-live sessions (same behavior launchd
+# gives macOS for free).
+KillMode=process
 
 [Install]
 WantedBy=default.target

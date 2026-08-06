@@ -21,6 +21,7 @@ func TestRenderUnit(t *testing.T) {
 		"WorkingDirectory=/home/me",
 		"WantedBy=default.target",
 		"Restart=on-failure",
+		"KillMode=process",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("unit missing %q\n%s", want, out)

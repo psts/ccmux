@@ -36,6 +36,21 @@ struct SidebarView: View {
     }
 
     /// Current window's display name
+    /// Cold hosted sessions whose shared group names this window — rendered
+    /// inside its section so a session that merely went cold doesn't visually
+    /// leave the window it belongs to.
+    private func coldWorkspaces(inGroup name: String) -> [DaemonWorkspace] {
+        remoteService.coldWorkspaces.filter { $0.group == name }
+    }
+
+    /// Cold sessions with no matching window section ("" or a window that was
+    /// closed) — the only ones the global COLD SESSIONS bucket shows.
+    private var ungroupedColdWorkspaces: [DaemonWorkspace] {
+        var names = Set(windowContext.otherWindowGroups.map(\.name))
+        names.insert(thisWindowName)
+        return remoteService.coldWorkspaces.filter { !names.contains($0.group) }
+    }
+
     private var thisWindowName: String {
         windowContext.windowName ?? "This Window"
     }
@@ -84,6 +99,9 @@ struct SidebarView: View {
                         .onDrag { dragProvider(for: workspace) }
                         .modifier(dropTarget(currentWindowId))
                     }
+                    ForEach(coldWorkspaces(inGroup: thisWindowName), id: \.id) { cold in
+                        coldRow(cold)
+                    }
                 } header: {
                     windowSectionHeader(name: thisWindowName.uppercased(), isCurrentWindow: true)
                         .contextMenu {
@@ -112,6 +130,9 @@ struct SidebarView: View {
                             .onDrag { dragProvider(for: workspace) }
                             .modifier(dropTarget(group.id))
                         }
+                        ForEach(coldWorkspaces(inGroup: group.name), id: \.id) { cold in
+                            coldRow(cold)
+                        }
                     } header: {
                         windowSectionHeader(name: group.name.uppercased(), isCurrentWindow: false)
                             .contextMenu {
@@ -125,9 +146,13 @@ struct SidebarView: View {
 
                 // Cold hosted sessions (archived, or the host restarted): the
                 // daemon keeps their full recipe — click revives in place.
-                if !remoteService.coldWorkspaces.isEmpty {
+                // Cold rows whose shared group matches a window render INSIDE
+                // that window's section above (revive re-adopts them there via
+                // reconcileHostedOwnership's group match); this global bucket
+                // only catches ones with no matching window.
+                if !ungroupedColdWorkspaces.isEmpty {
                     Section {
-                        ForEach(remoteService.coldWorkspaces, id: \.id) { cold in
+                        ForEach(ungroupedColdWorkspaces, id: \.id) { cold in
                             coldRow(cold)
                         }
                     } header: {
