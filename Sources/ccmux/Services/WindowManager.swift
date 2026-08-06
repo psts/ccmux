@@ -18,7 +18,7 @@ class WindowContext: ObservableObject {
     @Published var collapsedWorkspaceIds: Set<UUID> = []
     weak var workspaceManager: WorkspaceManager?
 
-    struct WindowGroup: Identifiable {
+    struct WindowGroup: Identifiable, Equatable {
         let id: UUID  // window ID
         let name: String
         let workspaceIds: [UUID]
@@ -538,8 +538,15 @@ class WindowManager {
                     workspaceIds: Array(otherWc.windowContext.ownedWorkspaceIds)
                 ))
             }
-            wc.windowContext.otherWindowWorkspaceIds = otherIds
-            wc.windowContext.otherWindowGroups = otherGroups
+            // Diff-gate the @Published writes: an unchanged reassign still
+            // invalidates every sidebar's List (NSTableView reload), and a
+            // reload mid-press kills an in-flight drag gesture.
+            if wc.windowContext.otherWindowWorkspaceIds != otherIds {
+                wc.windowContext.otherWindowWorkspaceIds = otherIds
+            }
+            if wc.windowContext.otherWindowGroups != otherGroups {
+                wc.windowContext.otherWindowGroups = otherGroups
+            }
             // Auto-assign window name if not custom
             if wc.windowContext.windowName == nil {
                 // Don't publish — just for display fallback

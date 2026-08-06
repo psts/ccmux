@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @ObservedObject var manager: WorkspaceManager
@@ -70,9 +71,17 @@ struct SidebarView: View {
                                     localRow(workspace)
                                 }
                             }
-                            .draggable(workspace.id.uuidString)
-                            .dropDestination(for: String.self) { ids, _ in
-                                dropWorkspaces(ids, into: currentWindowId)
+                            // Drag starts from the row's CONTENT (text/icons)
+                            // only. Full-row dragging was tried and disproven
+                            // live: contentShape(Rectangle()), a full-width
+                            // frame, and a 0.001-opacity background all failed
+                            // to extend the drag area — the AppKit-backed List
+                            // routes empty-area mouse-downs to the row view,
+                            // never to this content. Same limitation as
+                            // Finder's sidebar; don't re-attempt those hacks.
+                            .onDrag { dragProvider(for: workspace) }
+                            .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                                dropProviders(providers, into: currentWindowId)
                             }
                         }
                     } header: {
@@ -84,8 +93,8 @@ struct SidebarView: View {
                                     }
                                 }
                             }
-                            .dropDestination(for: String.self) { ids, _ in
-                                dropWorkspaces(ids, into: currentWindowId)
+                            .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                                dropProviders(providers, into: currentWindowId)
                             }
                     }
                 }
@@ -103,9 +112,9 @@ struct SidebarView: View {
                                         otherWindowLocalRow(workspace)
                                     }
                                 }
-                                .draggable(workspace.id.uuidString)
-                                .dropDestination(for: String.self) { ids, _ in
-                                    dropWorkspaces(ids, into: group.id)
+                                .onDrag { dragProvider(for: workspace) }
+                                .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                                    dropProviders(providers, into: group.id)
                                 }
                             }
                         } header: {
@@ -115,8 +124,8 @@ struct SidebarView: View {
                                         onRenameWindow?(group.id, group.name)
                                     }
                                 }
-                                .dropDestination(for: String.self) { ids, _ in
-                                    dropWorkspaces(ids, into: group.id)
+                                .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                                    dropProviders(providers, into: group.id)
                                 }
                         }
                     }
@@ -246,16 +255,35 @@ struct SidebarView: View {
         .background(Color(nsColor: NSColor(red: 0.15, green: 0.16, blue: 0.17, alpha: 1.0)))
     }
 
+    /// Drag source for a workspace row. NSItemProvider (`onDrag`) rather than
+    /// `.draggable`/Transferable: in an AppKit-backed List the Transferable
+    /// path can leave the table's drag session stuck after a drop or cancel,
+    /// after which NO drag starts in that window until its rows churn — seen
+    /// live as "dragging dies for a minute until I switch windows around".
+    /// The NSLog lines make the next report diagnosable from the log.
+    private func dragProvider(for workspace: Workspace) -> NSItemProvider {
+        NSLog("[ccmux drag] begin \(workspace.name)")
+        return NSItemProvider(object: workspace.id.uuidString as NSString)
+    }
+
     /// Shared drop handler: every payload is a workspace UUID string dragged
     /// from some sidebar row. Same-window drops no-op downstream (the manager
     /// skips targets that already own the workspace).
-    private func dropWorkspaces(_ ids: [String], into windowId: UUID?) -> Bool {
+    private func dropProviders(_ providers: [NSItemProvider], into windowId: UUID?) -> Bool {
         guard let windowId else { return false }
-        let workspaceIds = ids.compactMap(UUID.init(uuidString:))
-        for wsId in workspaceIds {
-            onMoveToWindow?(wsId, windowId)
+        let move = onMoveToWindow
+        var accepted = false
+        for provider in providers where provider.canLoadObject(ofClass: NSString.self) {
+            accepted = true
+            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let s = object as? String, let wsId = UUID(uuidString: s) else { return }
+                DispatchQueue.main.async {
+                    NSLog("[ccmux drag] drop \(s) -> window \(windowId)")
+                    move?(wsId, windowId)
+                }
+            }
         }
-        return !workspaceIds.isEmpty
+        return accepted
     }
 
     // MARK: - Row builders
