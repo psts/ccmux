@@ -94,6 +94,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // Start polling the ccmuxd daemon for hosted (lens) workspaces.
                 self.startRemoteSessions()
             }
+
+            // Quiet update checks (launch + every 4h) — prompts only when a
+            // newer release exists; the menu item stays the loud path.
+            UpdaterService.shared.startAutomaticChecks()
         }
     }
 

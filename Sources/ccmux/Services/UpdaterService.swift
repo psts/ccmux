@@ -2,7 +2,9 @@ import AppKit
 
 /// Self-update from GitHub releases — the app-side sibling of `ccmuxd upgrade`.
 ///
-/// "Check for Updates…" asks the releases API for the latest tag, and when it's
+/// Two entry points, one flow: "Check for Updates…" (always answers) and the
+/// automatic launch + periodic check (speaks only when an update exists). Both
+/// ask the releases API for the latest tag, and when it's
 /// newer than this bundle's version: downloads `ccmux-app.zip`, verifies the
 /// code signature of the unpacked app, clears its quarantine flag (the updater
 /// is a local process acting on the user's explicit request — this is what
@@ -19,42 +21,72 @@ final class UpdaterService {
     private let repo = "psts/ccmux"
     private let assetName = "ccmux-app.zip"
     private var running = false
+    private var autoTimer: Timer?
 
-    func checkForUpdates() {
+    /// Menu path ("Check for Updates…"): always answers, including "you're up
+    /// to date".
+    func checkForUpdates() { start(quiet: false) }
+
+    /// Automatic path: one check at launch plus one every `interval`. Quiet —
+    /// the update prompt is the ONLY thing it ever shows; up-to-date, a
+    /// still-building release, and network errors all pass silently, so it
+    /// never nags someone who's current or offline.
+    func startAutomaticChecks(interval: TimeInterval = 4 * 3600) {
+        start(quiet: true)
+        autoTimer?.invalidate()
+        autoTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            Task { @MainActor in UpdaterService.shared.start(quiet: true) }
+        }
+    }
+
+    private func start(quiet: Bool) {
         guard !running else { return }
+        if quiet && !Self.autoCheckEligible(currentVersion) { return }
         running = true
         Task {
             defer { running = false }
-            await check()
+            await check(quiet: quiet)
         }
+    }
+
+    /// A version with no numeric segment is a source build ("dev"): every
+    /// release compares "newer" than it, so an automatic check would offer a
+    /// downgrade on every launch of a dev build. The menu path still allows it
+    /// deliberately. Internal for the test neighbor.
+    nonisolated static func autoCheckEligible(_ current: String) -> Bool {
+        current.contains(where: \.isNumber)
     }
 
     private var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
-    private func check() async {
+    private func check(quiet: Bool) async {
         do {
             let release = try await latestRelease()
             let latest = release.tag.hasPrefix("v") ? String(release.tag.dropFirst()) : release.tag
             let current = currentVersion
             guard Self.isNewer(latest, than: current) else {
-                alert("You're up to date",
-                      current == latest
-                          ? "ccmux \(current) is the latest release."
-                          : "You're on \(current), ahead of the latest release (\(latest)) — likely a source build.")
+                if !quiet {
+                    alert("You're up to date",
+                          current == latest
+                              ? "ccmux \(current) is the latest release."
+                              : "You're on \(current), ahead of the latest release (\(latest)) — likely a source build.")
+                }
                 return
             }
             guard let asset = release.assetURL else {
-                alert("Update available",
-                      "ccmux \(latest) is out, but its app download isn't attached yet — the release may still be building. Try again in a few minutes.")
+                if !quiet {
+                    alert("Update available",
+                          "ccmux \(latest) is out, but its app download isn't attached yet — the release may still be building. Try again in a few minutes.")
+                }
                 return
             }
             guard confirm("Update to ccmux \(latest)?",
                           "You're on \(current). ccmux will download the update, replace itself, and relaunch. Terminals keep running — they live in the daemon, not the app.") else { return }
             try await downloadAndInstall(from: asset)
         } catch {
-            alert("Update failed", error.localizedDescription)
+            if !quiet { alert("Update failed", error.localizedDescription) }
         }
     }
 
