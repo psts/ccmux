@@ -60,74 +60,66 @@ struct SidebarView: View {
             .padding(.top, 6)
 
             List {
-                // This window's workspaces
-                if !thisWindowWorkspaces.isEmpty {
-                    Section {
-                        ForEach(thisWindowWorkspaces) { workspace in
-                            Group {
-                                if workspace.mode == .hosted {
-                                    hostedRow(workspace, dimmed: false)
-                                } else {
-                                    localRow(workspace)
-                                }
-                            }
-                            // Drag starts from the row's CONTENT (text/icons)
-                            // only. Full-row dragging was tried and disproven
-                            // live: contentShape(Rectangle()), a full-width
-                            // frame, and a 0.001-opacity background all failed
-                            // to extend the drag area — the AppKit-backed List
-                            // routes empty-area mouse-downs to the row view,
-                            // never to this content. Same limitation as
-                            // Finder's sidebar; don't re-attempt those hacks.
-                            .onDrag { dragProvider(for: workspace) }
-                            .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                                dropProviders(providers, into: currentWindowId)
+                // This window's workspaces. The section renders even when
+                // EMPTY: a freshly created window must offer a drop target
+                // for its first workspace — hidden sections would leave no
+                // droppable pixel for it anywhere in the app.
+                Section {
+                    ForEach(thisWindowWorkspaces) { workspace in
+                        Group {
+                            if workspace.mode == .hosted {
+                                hostedRow(workspace, dimmed: false)
+                            } else {
+                                localRow(workspace)
                             }
                         }
-                    } header: {
-                        windowSectionHeader(name: thisWindowName.uppercased(), isCurrentWindow: true)
-                            .contextMenu {
-                                if let windowId = currentWindowId {
-                                    Button("Rename Window...") {
-                                        onRenameWindow?(windowId, windowContext.windowName ?? "This Window")
-                                    }
+                        // Drag starts from the row's CONTENT (text/icons)
+                        // only. Full-row dragging was tried and disproven
+                        // live: contentShape(Rectangle()), a full-width
+                        // frame, and a 0.001-opacity background all failed
+                        // to extend the drag area — the AppKit-backed List
+                        // routes empty-area mouse-downs to the row view,
+                        // never to this content. Same limitation as
+                        // Finder's sidebar; don't re-attempt those hacks.
+                        .onDrag { dragProvider(for: workspace) }
+                        .modifier(dropTarget(currentWindowId))
+                    }
+                } header: {
+                    windowSectionHeader(name: thisWindowName.uppercased(), isCurrentWindow: true)
+                        .contextMenu {
+                            if let windowId = currentWindowId {
+                                Button("Rename Window...") {
+                                    onRenameWindow?(windowId, windowContext.windowName ?? "This Window")
                                 }
                             }
-                            .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                                dropProviders(providers, into: currentWindowId)
-                            }
-                    }
+                        }
+                        .modifier(dropTarget(currentWindowId))
                 }
 
-                // Other windows — each as its own section
+                // Other windows — each as its own section, EMPTY ones
+                // included so every window is a visible drop target from
+                // every sidebar.
                 ForEach(windowContext.otherWindowGroups) { group in
-                    let groupWorkspaces = workspaces(ownedBy: group.workspaceIds)
-                    if !groupWorkspaces.isEmpty {
-                        Section {
-                            ForEach(groupWorkspaces) { workspace in
-                                Group {
-                                    if workspace.mode == .hosted {
-                                        hostedRow(workspace, dimmed: true)
-                                    } else {
-                                        otherWindowLocalRow(workspace)
-                                    }
-                                }
-                                .onDrag { dragProvider(for: workspace) }
-                                .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                                    dropProviders(providers, into: group.id)
+                    Section {
+                        ForEach(workspaces(ownedBy: group.workspaceIds)) { workspace in
+                            Group {
+                                if workspace.mode == .hosted {
+                                    hostedRow(workspace, dimmed: true)
+                                } else {
+                                    otherWindowLocalRow(workspace)
                                 }
                             }
-                        } header: {
-                            windowSectionHeader(name: group.name.uppercased(), isCurrentWindow: false)
-                                .contextMenu {
-                                    Button("Rename Window...") {
-                                        onRenameWindow?(group.id, group.name)
-                                    }
-                                }
-                                .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                                    dropProviders(providers, into: group.id)
-                                }
+                            .onDrag { dragProvider(for: workspace) }
+                            .modifier(dropTarget(group.id))
                         }
+                    } header: {
+                        windowSectionHeader(name: group.name.uppercased(), isCurrentWindow: false)
+                            .contextMenu {
+                                Button("Rename Window...") {
+                                    onRenameWindow?(group.id, group.name)
+                                }
+                            }
+                            .modifier(dropTarget(group.id))
                     }
                 }
 
@@ -266,24 +258,40 @@ struct SidebarView: View {
         return NSItemProvider(object: workspace.id.uuidString as NSString)
     }
 
-    /// Shared drop handler: every payload is a workspace UUID string dragged
-    /// from some sidebar row. Same-window drops no-op downstream (the manager
-    /// skips targets that already own the workspace).
+    /// One drop rule for every window section (rows and headers alike): a
+    /// plain-text payload means "move that workspace to this section's window".
+    private struct WorkspaceDropTarget: ViewModifier {
+        let handle: ([NSItemProvider]) -> Bool
+        func body(content: Content) -> some View {
+            content.onDrop(of: [.plainText], isTargeted: nil, perform: handle)
+        }
+    }
+
+    private func dropTarget(_ windowId: UUID?) -> some ViewModifier {
+        WorkspaceDropTarget { dropProviders($0, into: windowId) }
+    }
+
+    /// Shared drop handler: the payload is ONE workspace UUID string dragged
+    /// from a sidebar row. Same-window drops no-op downstream (the manager
+    /// skips targets that already own the workspace). A payload that fails to
+    /// load or isn't a workspace UUID logs — the drop already animated as
+    /// accepted by then, and a nothing-happened drop with no log line is the
+    /// exact failure shape the [ccmux drag] breadcrumbs exist to explain.
     private func dropProviders(_ providers: [NSItemProvider], into windowId: UUID?) -> Bool {
-        guard let windowId else { return false }
-        let move = onMoveToWindow
-        var accepted = false
-        for provider in providers where provider.canLoadObject(ofClass: NSString.self) {
-            accepted = true
-            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                guard let s = object as? String, let wsId = UUID(uuidString: s) else { return }
-                DispatchQueue.main.async {
-                    NSLog("[ccmux drag] drop \(s) -> window \(windowId)")
-                    move?(wsId, windowId)
-                }
+        guard let windowId,
+              let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) })
+        else { return false }
+        _ = provider.loadObject(ofClass: NSString.self) { object, error in
+            guard let s = object as? String, let wsId = UUID(uuidString: s) else {
+                NSLog("[ccmux drag] drop rejected: \(error.map(String.init(describing:)) ?? "payload is not a workspace UUID")")
+                return
+            }
+            DispatchQueue.main.async {
+                NSLog("[ccmux drag] drop \(s) -> window \(windowId)")
+                onMoveToWindow?(wsId, windowId)
             }
         }
-        return accepted
+        return true
     }
 
     // MARK: - Row builders

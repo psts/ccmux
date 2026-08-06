@@ -296,9 +296,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// File → New Window (Cmd+N) and the sidebar's "+" share one meaning: an
-    /// EMPTY window (welcome screen). Opening with a workspace pre-displayed
-    /// belongs to "Open in New Window" on the workspace itself.
+    /// File → New Window (Cmd+N) and the sidebar's New Window button (the
+    /// macwindow.badge.plus at its top) share one meaning: an EMPTY window
+    /// (welcome screen). Opening with a workspace pre-displayed belongs to
+    /// "Open in New Window" on the workspace itself.
     @objc private func newWindow() {
         windowManager?.createWindow(displayingWorkspace: nil)
     }

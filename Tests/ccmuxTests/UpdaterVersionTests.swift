@@ -25,12 +25,16 @@ final class UpdaterVersionTests: XCTestCase {
         XCTAssertFalse(UpdaterService.isNewer("0.1", than: "0.1.0"))
     }
 
-    func testAutoCheckSkipsPureSourceBuilds() {
+    func testAutoCheckSkipsSourceBuilds() {
         // "dev" has no numeric segment, so every release would "beat" it and the
         // automatic check would offer a downgrade on every launch — skip it.
         XCTAssertFalse(UpdaterService.autoCheckEligible("dev"))
-        // Releases and git-describe stamps carry numbers and stay eligible.
+        // git-describe stamps are local build-app.sh builds: a stamp behind the
+        // latest tag would get nagged to overwrite itself with the release.
+        XCTAssertFalse(UpdaterService.autoCheckEligible("0.1.4-2-gabc123"))
+        XCTAssertFalse(UpdaterService.autoCheckEligible("0.1.4-dirty"))
+        XCTAssertFalse(UpdaterService.autoCheckEligible("0.1.4-2-gabc123-dirty"))
+        // Only release-shaped versions stay eligible.
         XCTAssertTrue(UpdaterService.autoCheckEligible("0.1.10"))
-        XCTAssertTrue(UpdaterService.autoCheckEligible("0.1.4-2-gabc123-dirty"))
     }
 }

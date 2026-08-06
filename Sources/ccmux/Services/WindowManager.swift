@@ -280,11 +280,16 @@ class WindowManager {
     }
 
     /// Drag-and-drop entry: move a workspace onto a sidebar window SECTION,
-    /// identified by window id. Same-window drops are a no-op (sections are
-    /// name-sorted, so there is no position to change).
+    /// identified by window id. Same-window drops are a silent no-op (sections
+    /// are name-sorted, so there is no position to change); a drop on a window
+    /// that vanished mid-drag logs — that failure would otherwise be
+    /// indistinguishable from the intended no-op.
     func moveWorkspace(id: UUID, toWindowId windowId: UUID) {
-        guard let target = windowControllers.first(where: { $0.windowId == windowId }),
-              !target.windowContext.ownedWorkspaceIds.contains(id) else { return }
+        guard let target = windowControllers.first(where: { $0.windowId == windowId }) else {
+            NSLog("[ccmux drag] move failed: no window \(windowId)")
+            return
+        }
+        guard !target.windowContext.ownedWorkspaceIds.contains(id) else { return }
         moveWorkspaceToWindow(id: id, targetController: target)
     }
 

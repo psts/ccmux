@@ -21,16 +21,23 @@ final class UpdaterService {
     private let repo = "psts/ccmux"
     private let assetName = "ccmux-app.zip"
     private var running = false
+    private var runningQuiet = false
     private var autoTimer: Timer?
+    /// Version the user declined in a QUIET prompt — the 4h timer must not
+    /// re-ask for the same release every cycle. The menu path ignores this.
+    private var declinedVersion: String?
 
     /// Menu path ("Check for Updates…"): always answers, including "you're up
     /// to date".
     func checkForUpdates() { start(quiet: false) }
 
     /// Automatic path: one check at launch plus one every `interval`. Quiet —
-    /// the update prompt is the ONLY thing it ever shows; up-to-date, a
-    /// still-building release, and network errors all pass silently, so it
-    /// never nags someone who's current or offline.
+    /// the update prompt is the ONLY thing it ever shows before the user
+    /// consents; up-to-date, a still-building release, and pre-consent network
+    /// errors pass silently (logged, never alerted), so it never nags someone
+    /// who's current or offline. AFTER the user clicks Update, failures alert
+    /// regardless — quiet describes unsolicited interruptions, not the outcome
+    /// of an action the user asked for.
     func startAutomaticChecks(interval: TimeInterval = 4 * 3600) {
         start(quiet: true)
         autoTimer?.invalidate()
@@ -40,25 +47,40 @@ final class UpdaterService {
     }
 
     private func start(quiet: Bool) {
-        guard !running else { return }
-        // Unbundled dev runs (bare `swift build` binary, no Info.plist) report
-        // version "0" — every release "beats" that, so the auto-check would
-        // pop a bogus update prompt on each dev launch.
-        if quiet && Bundle.main.bundleIdentifier == nil { return }
-        if quiet && !Self.autoCheckEligible(currentVersion) { return }
+        guard !running else {
+            // The menu press must never silently no-op (a hung quiet request
+            // can hold `running` for its whole network timeout).
+            if !quiet && runningQuiet {
+                alert("Already checking",
+                      "An automatic update check is running — try again in a moment.")
+            }
+            return
+        }
+        // Dev builds: an unbundled `swift build` binary (no Info.plist →
+        // version "0") and git-describe-stamped local bundles both compare
+        // "older" than the latest release, so the auto-check would offer a
+        // downgrade/overwrite on every launch.
+        if quiet && (Bundle.main.bundleIdentifier == nil || !Self.autoCheckEligible(currentVersion)) {
+            return
+        }
         running = true
+        runningQuiet = quiet
         Task {
             defer { running = false }
             await check(quiet: quiet)
         }
     }
 
-    /// A version with no numeric segment is a source build ("dev"): every
-    /// release compares "newer" than it, so an automatic check would offer a
-    /// downgrade on every launch of a dev build. The menu path still allows it
-    /// deliberately. Internal for the test neighbor.
+    /// Versions the AUTOMATIC check may act on: release-shaped only. Rejected:
+    /// no numeric segment at all ("dev"), and git-describe source stamps
+    /// ("0.1.4-2-gabc123", "…-dirty") — every release compares newer than the
+    /// former and later releases beat the latter, so the auto-check would
+    /// offer to overwrite a developer's local build. The menu path still
+    /// allows all of them deliberately. Internal for the test neighbor.
     nonisolated static func autoCheckEligible(_ current: String) -> Bool {
         current.contains(where: \.isNumber)
+            && !current.contains("-g")
+            && !current.hasSuffix("-dirty")
     }
 
     private var currentVersion: String {
@@ -66,31 +88,47 @@ final class UpdaterService {
     }
 
     private func check(quiet: Bool) async {
+        let release: Release
         do {
-            let release = try await latestRelease()
-            let latest = release.tag.hasPrefix("v") ? String(release.tag.dropFirst()) : release.tag
-            let current = currentVersion
-            guard Self.isNewer(latest, than: current) else {
-                if !quiet {
-                    alert("You're up to date",
-                          current == latest
-                              ? "ccmux \(current) is the latest release."
-                              : "You're on \(current), ahead of the latest release (\(latest)) — likely a source build.")
-                }
-                return
+            release = try await latestRelease()
+        } catch {
+            // Pre-consent failure: quiet stays quiet for the USER but never
+            // for the log — an invisibly broken auto-update is worse than none.
+            if quiet { NSLog("[ccmux updater] quiet check failed: \(error)") }
+            else { alert("Update failed", error.localizedDescription) }
+            return
+        }
+        let latest = release.tag.hasPrefix("v") ? String(release.tag.dropFirst()) : release.tag
+        let current = currentVersion
+        guard Self.isNewer(latest, than: current) else {
+            if !quiet {
+                alert("You're up to date",
+                      current == latest
+                          ? "ccmux \(current) is the latest release."
+                          : "You're on \(current), ahead of the latest release (\(latest)) — likely a source build.")
             }
-            guard let asset = release.assetURL else {
-                if !quiet {
-                    alert("Update available",
-                          "ccmux \(latest) is out, but its app download isn't attached yet — the release may still be building. Try again in a few minutes.")
-                }
-                return
+            return
+        }
+        if quiet && latest == declinedVersion { return } // asked once; don't nag every 4h
+        guard let asset = release.assetURL else {
+            if !quiet {
+                alert("Update available",
+                      "ccmux \(latest) is out, but its app download isn't attached yet — the release may still be building. Try again in a few minutes.")
             }
-            guard confirm("Update to ccmux \(latest)?",
-                          "You're on \(current). ccmux will download the update, replace itself, and relaunch. Terminals keep running — they live in the daemon, not the app.") else { return }
+            return
+        }
+        guard confirm("Update to ccmux \(latest)?",
+                      "You're on \(current). ccmux will download the update, replace itself, and relaunch. Terminals keep running — they live in the daemon, not the app.",
+                      updateIsDefault: !quiet) else {
+            if quiet { declinedVersion = latest }
+            return
+        }
+        do {
             try await downloadAndInstall(from: asset)
         } catch {
-            if !quiet { alert("Update failed", error.localizedDescription) }
+            // Post-consent: the user asked for this install — its failure is
+            // never quiet.
+            alert("Update failed", error.localizedDescription)
         }
     }
 
@@ -247,12 +285,21 @@ final class UpdaterService {
         a.runModal()
     }
 
-    private func confirm(_ title: String, _ text: String) -> Bool {
+    /// updateIsDefault false = the QUIET path: the alert interrupts whatever
+    /// the user was doing (it can fire mid-typing in a terminal), so Return
+    /// must NOT mean "replace and relaunch the app" — Cancel gets the default.
+    /// The menu path keeps Update as the default; the user just asked for it.
+    private func confirm(_ title: String, _ text: String, updateIsDefault: Bool) -> Bool {
         let a = NSAlert()
         a.messageText = title
         a.informativeText = text
-        a.addButton(withTitle: "Update")
+        if updateIsDefault {
+            a.addButton(withTitle: "Update")
+            a.addButton(withTitle: "Cancel")
+            return a.runModal() == .alertFirstButtonReturn
+        }
         a.addButton(withTitle: "Cancel")
-        return a.runModal() == .alertFirstButtonReturn
+        a.addButton(withTitle: "Update")
+        return a.runModal() == .alertSecondButtonReturn
     }
 }
