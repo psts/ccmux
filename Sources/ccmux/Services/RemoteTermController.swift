@@ -145,12 +145,24 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
     func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 
-    // MARK: - Link handling (mirrors TerminalLinkInterceptor, local-clone resolution)
+    // MARK: - Link handling (mirrors TerminalLinkInterceptor, daemon-side resolution)
 
-    static func handleOpenLink(_ link: String, workingDirectory: String, onFile: ((String) -> Void)?) {
-        if link.hasPrefix("http://") || link.hasPrefix("https://") {
-            if let url = URL(string: link) { NSWorkspace.shared.open(url) }
-            return
+    enum LinkAction: Equatable {
+        case openExternal(URL)
+        case openFile(String)
+    }
+
+    /// Pure classification of a clicked link, split from the side effects for
+    /// testability. The file lives on the daemon's host, so existence can't be
+    /// checked here — file-looking links always classify as `.openFile`; a bad
+    /// path simply fails the daemon read downstream and opens nothing.
+    static func linkAction(_ link: String, workingDirectory: String) -> LinkAction {
+        // Non-file URL schemes (http, mailto, vscode, …) open externally. The
+        // "://" probe avoids URL(string:)'s scheme parsing, which would read
+        // "file.md:3" as scheme "file.md".
+        if !link.hasPrefix("file://"), link.contains("://") || link.hasPrefix("mailto:"),
+           let url = URL(string: link) {
+            return .openExternal(url)
         }
         var filePath = link
         if filePath.hasPrefix("file://") {
@@ -163,10 +175,13 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
 
         let absolutePath = cleanPath.hasPrefix("/") ? cleanPath
             : (workingDirectory as NSString).appendingPathComponent(cleanPath)
-        if FileManager.default.fileExists(atPath: absolutePath) {
-            onFile?(absolutePath)
-        } else if let url = URL(string: link), url.scheme != nil {
-            NSWorkspace.shared.open(url)
+        return .openFile(absolutePath)
+    }
+
+    static func handleOpenLink(_ link: String, workingDirectory: String, onFile: ((String) -> Void)?) {
+        switch linkAction(link, workingDirectory: workingDirectory) {
+        case .openExternal(let url): NSWorkspace.shared.open(url)
+        case .openFile(let path): onFile?(path)
         }
     }
 }

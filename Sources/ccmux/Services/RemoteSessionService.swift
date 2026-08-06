@@ -609,6 +609,9 @@ final class RemoteSessionService: ObservableObject {
         let controller = SplitTreeController(workingDirectory: dw.repoPath)
         controller.tree = tree
         controller.focusedPaneId = focused
+        // File explorers in this workspace read/write through the daemon — the
+        // repo lives on its host, not this Mac.
+        controller.fileSource = DaemonFileSource(daemonId: dw.id)
         controller.onHostedTerminalRequest = { [weak self] leafId, direction in
             Task { await self?.placeSpawnedTerminal(appId: appId, leafId: leafId, direction: direction) }
         }
@@ -659,6 +662,14 @@ final class RemoteSessionService: ObservableObject {
         devRunning.removeValue(forKey: appId)
         devCommands.removeValue(forKey: appId)
         workspaces.removeAll { $0.id == appId }
+    }
+
+    /// Open a clicked file link in the hosted workspace's file explorer,
+    /// creating the explorer tab if the workspace has none. `path` is the
+    /// remote absolute path the terminal link resolved to; the daemon's file
+    /// routes accept it as long as it stays inside the repo root.
+    func revealFile(_ appId: UUID, path: String) {
+        controllers[appId]?.revealFileInExplorer(relativePath: path)
     }
 
     // MARK: - Shared sidebar group

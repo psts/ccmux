@@ -128,11 +128,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.windowManager?.hostedWorkspaceRemoved(id: id)
         }
         service.onFileLink = { wsId, absolutePath in
-            // Hosted panes are terminal-only in v1; reveal a clicked file in the local
-            // clone rather than mutating the daemon-driven layout.
-            guard FileManager.default.fileExists(atPath: absolutePath) else { return }
-            let parent = (absolutePath as NSString).deletingLastPathComponent
-            NSWorkspace.shared.selectFile(absolutePath, inFileViewerRootedAtPath: parent)
+            // The file lives on the daemon's host: open it in the workspace's
+            // own file explorer (backed by the daemon's file routes), never in
+            // Finder — the local Mac may not even have a clone.
+            RemoteSessionService.shared.revealFile(wsId, path: absolutePath)
         }
         service.start()
     }

@@ -15,6 +15,10 @@ class SplitTreeController: ObservableObject {
     /// Runtime state for file explorer tabs, keyed by the FileExplorerConfig UUID.
     var fileExplorerStates: [UUID: FileExplorerState] = [:]
 
+    /// Where this workspace's file explorers read/write files. nil = local disk;
+    /// RemoteSessionService sets a DaemonFileSource for hosted workspaces.
+    var fileSource: FileSource?
+
     // MARK: - Hosted-workspace hooks (set by RemoteSessionService; nil for local)
 
     /// Intercepts terminal creation: in a hosted workspace a new terminal must be
@@ -197,7 +201,7 @@ class SplitTreeController: ObservableObject {
         }
         // Find the config by scanning all panes' tabs
         guard let config = findFileExplorerConfig(explorerId: explorerId) else { return nil }
-        let state = FileExplorerState(rootPath: config.rootPath)
+        let state = FileExplorerState(rootPath: config.rootPath, source: fileSource)
         state.restoreFromConfig(config)
         fileExplorerStates[explorerId] = state
         return state
@@ -238,17 +242,38 @@ class SplitTreeController: ObservableObject {
 
     /// Open a file in the first available File Explorer tab. Returns true if successful.
     func openFileInExplorer(relativePath: String) -> Bool {
+        guard let (leafId, configId) = firstExplorerTab(),
+              let state = fileExplorerState(for: configId) else { return false }
+        activateTab(leafId: leafId, tabId: configId)
+        state.openFile(relativePath: relativePath)
+        return true
+    }
+
+    /// Like `openFileInExplorer`, but creates a File Explorer tab in the focused
+    /// pane when the workspace has none — a clicked file link should always land
+    /// somewhere visible. The read is probed FIRST: SwiftTerm's implicit link
+    /// regex also fires on non-files, and a miss must not leave a junk Files tab
+    /// behind (hosted layouts sync to the daemon and every other lens).
+    func revealFileInExplorer(relativePath: String) {
+        if openFileInExplorer(relativePath: relativePath) { return }
+        let source = fileSource ?? LocalFileSource(rootPath: workingDirectory)
+        Task { @MainActor in
+            guard await source.read(path: relativePath) != nil else { return }
+            if self.openFileInExplorer(relativePath: relativePath) { return }
+            guard let leafId = self.focusedPaneId ?? self.tree.allLeaves.first?.id else { return }
+            let content = PaneContent.defaultFileExplorer(rootPath: self.workingDirectory)
+            self.addTab(leafId: leafId, newContent: content)
+            self.fileExplorerState(for: content.id)?.openFile(relativePath: relativePath)
+        }
+    }
+
+    private func firstExplorerTab() -> (leafId: UUID, configId: UUID)? {
         for leaf in tree.allLeaves {
             for tab in leaf.content.tabs {
-                if case .fileExplorer(let config) = tab {
-                    if let state = fileExplorerState(for: config.id) {
-                        state.openFile(relativePath: relativePath)
-                        return true
-                    }
-                }
+                if case .fileExplorer(let config) = tab { return (leaf.id, config.id) }
             }
         }
-        return false
+        return nil
     }
 
     /// Update the content of a scratchpad tab.

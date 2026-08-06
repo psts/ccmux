@@ -39,7 +39,8 @@ private struct FileExplorerContent: View {
         HSplitView {
             // Left: File tree
             FileTreeView(
-                rootPath: state.rootPath,
+                rootName: (state.rootPath as NSString).lastPathComponent,
+                source: state.source,
                 onFileSelected: { relativePath in
                     state.openFile(relativePath: relativePath)
                     onStateChange()
@@ -77,6 +78,12 @@ private struct FileExplorerContent: View {
                                     }
                                 )
                             }
+                            if tab.saveErrored {
+                                SaveFailedBanner(
+                                    onRetry: { state.saveActiveFile() },
+                                    onDismiss: { state.dismissSaveError(tabId: tab.id) }
+                                )
+                            }
 
                             ZStack(alignment: .topTrailing) {
                                 if tab.isPreviewMode {
@@ -89,7 +96,7 @@ private struct FileExplorerContent: View {
                                             state.updateContent(tabId: tab.id, newContent: newContent)
                                         },
                                         onSave: {
-                                            _ = state.saveActiveFile()
+                                            state.saveActiveFile()
                                             onStateChange()
                                         }
                                     )
@@ -136,15 +143,17 @@ private struct FileExplorerContent: View {
 // MARK: - File Tree
 
 private struct FileTreeView: View {
-    let rootPath: String
+    let rootName: String
+    let source: FileSource
     let onFileSelected: (String) -> Void
 
     var body: some View {
         List {
             FileTreeNode(
-                path: rootPath,
+                name: rootName,
                 relativePath: "",
                 isRoot: true,
+                source: source,
                 onFileSelected: onFileSelected
             )
         }
@@ -154,10 +163,14 @@ private struct FileTreeView: View {
     }
 }
 
+/// One DIRECTORY row of the tree — files render as plain rows inside their
+/// parent's DisclosureGroup. Listing goes through the explorer's `FileSource`,
+/// so the tree browses the daemon's repo for hosted workspaces.
 private struct FileTreeNode: View {
-    let path: String
+    let name: String
     let relativePath: String
     let isRoot: Bool
+    let source: FileSource
     let onFileSelected: (String) -> Void
 
     @State private var children: [FileItem]?
@@ -167,44 +180,40 @@ private struct FileTreeNode: View {
         let id = UUID()
         let name: String
         let relativePath: String
-        let absolutePath: String
         let isDirectory: Bool
     }
 
     var body: some View {
-        if isDirectory(at: path) {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                if let children {
-                    ForEach(children) { child in
-                        if child.isDirectory {
-                            FileTreeNode(
-                                path: child.absolutePath,
-                                relativePath: child.relativePath,
-                                isRoot: false,
-                                onFileSelected: onFileSelected
-                            )
-                        } else {
-                            fileRow(child)
-                        }
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if let children {
+                ForEach(children) { child in
+                    if child.isDirectory {
+                        FileTreeNode(
+                            name: child.name,
+                            relativePath: child.relativePath,
+                            isRoot: false,
+                            source: source,
+                            onFileSelected: onFileSelected
+                        )
+                    } else {
+                        fileRow(child)
                     }
                 }
-            } label: {
-                Label(
-                    (path as NSString).lastPathComponent,
-                    systemImage: isExpanded ? "folder.fill" : "folder"
-                )
+            }
+        } label: {
+            Label(name, systemImage: isExpanded ? "folder.fill" : "folder")
                 .font(.system(size: 11))
+        }
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded && children == nil {
+                loadChildren()
             }
-            .onChange(of: isExpanded) { _, expanded in
-                if expanded && children == nil {
-                    loadChildren()
-                }
-            }
-            .onAppear {
-                if isRoot {
-                    isExpanded = true
-                    loadChildren()
-                }
+        }
+        .onAppear {
+            // Only flip the flag — onChange does the (async) load, and calling
+            // loadChildren here too would double-fetch the root listing.
+            if isRoot {
+                isExpanded = true
             }
         }
     }
@@ -225,34 +234,23 @@ private struct FileTreeNode: View {
     }
 
     private func loadChildren() {
-        let fm = FileManager.default
-        guard let contents = try? fm.contentsOfDirectory(atPath: path) else {
-            children = []
-            return
+        Task {
+            let entries = await source.list(path: relativePath) ?? []
+            let items = entries
+                .filter { !$0.name.hasPrefix(".") }
+                .sorted { lhs, rhs in
+                    if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+                .map { entry in
+                    FileItem(
+                        name: entry.name,
+                        relativePath: relativePath.isEmpty ? entry.name : relativePath + "/" + entry.name,
+                        isDirectory: entry.isDirectory
+                    )
+                }
+            await MainActor.run { children = items }
         }
-        children = contents
-            .filter { !$0.hasPrefix(".") }
-            .sorted { lhs, rhs in
-                let lhsIsDir = isDirectory(at: (path as NSString).appendingPathComponent(lhs))
-                let rhsIsDir = isDirectory(at: (path as NSString).appendingPathComponent(rhs))
-                if lhsIsDir != rhsIsDir { return lhsIsDir }
-                return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
-            }
-            .map { name in
-                let absPath = (path as NSString).appendingPathComponent(name)
-                let relPath = relativePath.isEmpty ? name : relativePath + "/" + name
-                return FileItem(
-                    name: name,
-                    relativePath: relPath,
-                    absolutePath: absPath,
-                    isDirectory: isDirectory(at: absPath)
-                )
-            }
-    }
-
-    private func isDirectory(at path: String) -> Bool {
-        var isDir: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
     private func iconForFile(_ name: String) -> String {
@@ -388,6 +386,39 @@ private struct DiskChangedBanner: View {
         .background(Color.orange.opacity(0.12))
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.orange.opacity(0.4)).frame(height: 1)
+        }
+    }
+}
+
+// MARK: - Save Failed Banner
+
+private struct SaveFailedBanner: View {
+    let onRetry: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundColor(.red)
+                .font(.system(size: 11))
+            Text("Save failed — the file was not written.")
+                .font(.system(size: 11))
+                .foregroundColor(.primary)
+            Spacer(minLength: 8)
+            Button("Retry", action: onRetry)
+                .font(.system(size: 11))
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.red.opacity(0.12))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.red.opacity(0.4)).frame(height: 1)
         }
     }
 }
