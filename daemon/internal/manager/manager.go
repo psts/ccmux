@@ -99,6 +99,12 @@ func (m *Manager) Start() error {
 	if err := m.server.EnsureStarted(); err != nil {
 		return err
 	}
+	// The server may predate this daemon (it survives restarts/upgrades) and
+	// -f only applies at spawn: re-source so config changes reach it. Non-fatal
+	// — a sourcing error must not keep sessions dark.
+	if err := m.server.SourceConfig(); err != nil {
+		log.Printf("tmux source-file: %v", err)
+	}
 	saved, err := m.store.Load()
 	if err != nil {
 		return err
@@ -689,6 +695,30 @@ func (m *Manager) ResizePane(paneID string, cols, rows int) error {
 		ctrl.Broadcast(session.Event{Kind: "pane-size", PaneID: paneID, Payload: PaneSize{Cols: cols, Rows: rows}})
 	}
 	return nil
+}
+
+// BroadcastClipboard pushes tmux-copied text to every lens attached to the
+// workspace owning the TMUX pane (the tmux config's copy-pipe bindings POST
+// it here with #{pane_id}, e.g. "%5" — tmux knows nothing of ccmux pane
+// uuids). Scoped to the one owning workspace on purpose: a copy must never
+// land on lenses watching other workspaces or other users' sessions. tmux
+// pane ids are unique per tmux server, so at most one controller matches.
+func (m *Manager) BroadcastClipboard(tmuxPane string, text []byte) error {
+	m.mu.Lock()
+	ctrls := make([]*session.Controller, 0, len(m.byID))
+	for _, e := range m.byID {
+		if e.ctrl != nil {
+			ctrls = append(ctrls, e.ctrl)
+		}
+	}
+	m.mu.Unlock()
+	for _, ctrl := range ctrls {
+		if paneID := ctrl.PaneIDForTmux(tmuxPane); paneID != "" {
+			ctrl.Broadcast(session.Event{Kind: "clipboard", PaneID: paneID, Data: text})
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown tmux pane %s", tmuxPane)
 }
 
 func (m *Manager) paneEnv(paneID string) map[string]string {

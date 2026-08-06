@@ -249,6 +249,19 @@ func (c *Controller) ref(paneID string) *paneRef {
 	return c.byID[paneID]
 }
 
+// PaneIDForTmux resolves a runtime tmux pane id ("%5") to the stable ccmux
+// pane id, or "" when this controller's session doesn't own that tmux pane.
+// Needed by callers fed from tmux itself (the clipboard copy-pipe), which
+// only know the tmux id.
+func (c *Controller) PaneIDForTmux(tmuxPane string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if ref := c.byTmuxPane[tmuxPane]; ref != nil {
+		return ref.id
+	}
+	return ""
+}
+
 // Notices returns the channel of window-lifecycle / exit events.
 func (c *Controller) Notices() <-chan Notice { return c.notices }
 

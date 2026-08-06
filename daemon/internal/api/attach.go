@@ -182,6 +182,10 @@ func frameFor(ev session.Event) wsMsg {
 	case "pane-size":
 		ps, _ := ev.Payload.(manager.PaneSize)
 		return wsMsg{T: "pane-size", Pane: ev.PaneID, Cols: ps.Cols, Rows: ps.Rows}
+	case "clipboard":
+		// Distinct kind is load-bearing: the default arm would write the
+		// copied text INTO the terminal as pane output.
+		return wsMsg{T: "clipboard", Pane: ev.PaneID, Data: b64(ev.Data)}
 	default:
 		return wsMsg{T: "output", Pane: ev.PaneID, Data: b64(ev.Data)}
 	}

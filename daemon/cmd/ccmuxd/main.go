@@ -81,7 +81,9 @@ func runDaemon() {
 		log.Fatalf("mkdir runtime dir: %v", err)
 	}
 	cfgPath := filepath.Join(runtimeDir(), "tmux.conf")
-	if err := os.WriteFile(cfgPath, []byte(config.TmuxConf), 0o644); err != nil {
+	// The copy-pipe clipboard bindings need this daemon's loopback origin.
+	tmuxConf := strings.ReplaceAll(config.TmuxConf, "__CCMUX_URL__", loopbackURL(*addr))
+	if err := os.WriteFile(cfgPath, []byte(tmuxConf), 0o644); err != nil {
 		log.Fatalf("write tmux config: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {

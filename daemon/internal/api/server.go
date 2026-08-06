@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -157,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/push/subscriptions", s.createSubscription)
 	mux.HandleFunc("DELETE /v1/push/subscriptions", s.deleteSubscription)
 	mux.HandleFunc("GET /v1/attach", s.attach)
+	mux.HandleFunc("POST /v1/clipboard", s.clipboard)
 	mux.HandleFunc("GET /v1/events", s.events)
 	mux.HandleFunc("GET /v1/presence", s.presenceOwners) // hub polls members to union push suppression
 	mux.HandleFunc("POST /v1/peers/register", s.peersRegister)
@@ -178,6 +180,32 @@ func (s *Server) Handler() http.Handler {
 	// matched by a more specific /v1 pattern.
 	mux.Handle("GET /", http.FileServerFS(web.Files))
 	return mux
+}
+
+// clipboard receives tmux copy-mode text — piped here by the managed tmux
+// config's copy bindings via curl ON THIS HOST (loopback-only, like the
+// local-groups push) — and fans it out to the lenses attached to the pane's
+// workspace, which write their OS clipboard. 1MB cap: a copy is human-sized;
+// an unbounded body from a runaway pipe must not balloon every lens.
+func (s *Server) clipboard(w http.ResponseWriter, r *http.Request) {
+	if !requireLoopback(w, r) {
+		return
+	}
+	paneID := r.Header.Get("X-Ccmux-Pane")
+	if paneID == "" {
+		writeError(w, http.StatusBadRequest, "X-Ccmux-Pane header required")
+		return
+	}
+	text, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil || len(text) == 0 {
+		writeError(w, http.StatusBadRequest, "empty or unreadable body")
+		return
+	}
+	if err := s.mgr.BroadcastClipboard(paneID, text); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bytes": len(text)})
 }
 
 // hubInfo reports the discovered hub's base URL so a lens that connected to the

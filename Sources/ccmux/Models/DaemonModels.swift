@@ -414,6 +414,9 @@ enum DaemonEvent {
     case paneAdded(pane: String)
     case paneClosed(pane: String)
     case paneSize(pane: String, cols: Int, rows: Int)
+    /// tmux copy-mode copied text in this pane (selection = copy); the lens
+    /// writes it to the OS clipboard.
+    case clipboard(pane: String, bytes: [UInt8])
     case unknown(String)
 
     /// Pure mapping from a wire frame to a typed event (the testable codec seam).
@@ -435,6 +438,8 @@ enum DaemonEvent {
             self = .paneClosed(pane: frame.pane ?? "")
         case "pane-size":
             self = .paneSize(pane: frame.pane ?? "", cols: frame.cols ?? 0, rows: frame.rows ?? 0)
+        case "clipboard":
+            self = .clipboard(pane: frame.pane ?? "", bytes: Self.decodeBytes(frame.data))
         default:
             self = .unknown(frame.t)
         }

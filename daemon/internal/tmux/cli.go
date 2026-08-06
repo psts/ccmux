@@ -39,6 +39,16 @@ func (s *Server) EnsureStarted() error {
 	return err
 }
 
+// SourceConfig re-applies the managed config to an ALREADY-RUNNING server.
+// `-f` is only read at server spawn, and the tmux server outlives daemon
+// restarts/upgrades by design — without this, config changes (e.g. the
+// clipboard copy-pipe bindings) would not take effect until every session
+// died and the server respawned.
+func (s *Server) SourceConfig() error {
+	_, err := s.run("source-file", s.ConfigPath)
+	return err
+}
+
 // SetGlobal sets a global (-g) option at runtime.
 func (s *Server) SetGlobal(name, value string) error {
 	_, err := s.run("set-option", "-g", name, value)

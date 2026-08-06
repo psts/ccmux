@@ -590,6 +590,14 @@ function onMessage(ev) {
     case "pane-closed":
       attach(state.wsId, state.paneId); // simplest correct refresh
       break;
+    case "clipboard":
+      // tmux copy-mode copied in this workspace (selection = copy): mirror it
+      // to the OS clipboard. Best-effort — a browser may refuse the write
+      // without a recent user gesture, and a refusal must stay silent.
+      if (m.data && navigator.clipboard) {
+        navigator.clipboard.writeText(new TextDecoder().decode(b64ToBytes(m.data))).catch(() => {});
+      }
+      break;
   }
 }
 

@@ -145,6 +145,18 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertEqual(bytes, payload)
     }
 
+    func testClipboardFrameDecodes() {
+        // A tmux copy must arrive as its OWN case — falling into .unknown (or
+        // worse, output) would drop the text or paint it into the terminal.
+        let b64 = Data("copied text".utf8).base64EncodedString()
+        let text = #"{"t":"clipboard","pane":"%3","data":"\#(b64)"}"#
+        guard case .clipboard(let pane, let bytes)? = DaemonEvent.decode(text: text) else {
+            return XCTFail("expected clipboard")
+        }
+        XCTAssertEqual(pane, "%3")
+        XCTAssertEqual(String(bytes: bytes, encoding: .utf8), "copied text")
+    }
+
     func testSnapshotFrameDecodes() {
         let b64 = Data("screen".utf8).base64EncodedString()
         let text = #"{"t":"snapshot","pane":"p2","data":"\#(b64)"}"#

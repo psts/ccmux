@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Runtime state for one attached hosted workspace: its single WS attach connection
@@ -113,6 +114,16 @@ final class WorkspaceAttachment {
             }
         case .paneSize(let pane, let cols, let rows):
             controller(forPane: pane, workingDirectory: repoPath).setAuthoritativeSize(cols: cols, rows: rows)
+        case .clipboard(_, let bytes):
+            // tmux copy-mode copied in this workspace (selection = copy):
+            // mirror it to the Mac clipboard so Cmd+V just works. Scoped by
+            // the daemon to this workspace's lenses only.
+            if let text = String(bytes: bytes, encoding: .utf8), !text.isEmpty {
+                DispatchQueue.main.async {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+            }
         // Attention now rides the global firehose; the attach still carries the
         // per-workspace `attention` frame but it is authoritative on /v1/events.
         case .attention, .presence, .paneAdded, .paneClosed, .unknown:
