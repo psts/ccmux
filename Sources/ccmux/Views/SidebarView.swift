@@ -15,6 +15,7 @@ struct SidebarView: View {
     var onRestoreWindow: ((UUID) -> Void)?
     var onNewHostedSession: (() -> Void)?
     var onWorkspaceHostnames: ((UUID) -> Void)?
+    var onNewWindow: (() -> Void)?
 
     /// Workspaces belonging to this window — local and hosted alike; a hosted
     /// workspace lives in whatever window group the user put it in, marked only
@@ -37,6 +38,23 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Window-level actions live up here; the bottom menu adds CONTENT
+            // (workspaces, hosted sessions) to the current window.
+            HStack {
+                Spacer()
+                Button {
+                    onNewWindow?()
+                } label: {
+                    Image(systemName: "macwindow.badge.plus")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("New Window")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+
             List {
                 // This window's workspaces
                 if !thisWindowWorkspaces.isEmpty {

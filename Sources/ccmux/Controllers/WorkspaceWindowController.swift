@@ -152,6 +152,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             },
             onWorkspaceHostnames: { [weak self] id in
                 self?.showHostnamesSheet(for: id)
+            },
+            onNewWindow: { [weak self] in
+                self?.windowManager?.createWindow(displayingWorkspace: nil)
             }
         )
         let sidebarHosting = NSHostingController(rootView: sidebarView)
