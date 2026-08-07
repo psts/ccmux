@@ -51,11 +51,11 @@ type Manager struct {
 	// separate: without it the last binder of a shared path stole the other's
 	// hooks (hosted attention flash died whenever the app ran). Empty = omit.
 	HooksSocket string
-	// ClipShimDir holds the fake xclip/wl-copy that makes an app's copy reach the
-	// lens clipboard instead of a tmux buffer beside the daemon. Prepended to
-	// hosted panes' PATH, and empty off Linux (see writeClipboardShims), where
-	// the platform's own clipboard tool already writes the right machine.
-	ClipShimDir string
+	// ClipShimReady says the fake xclip/wl-copy is installed AND confirmed to be
+	// what the user's login shell resolves — the only condition under which
+	// claiming a display for hosted panes buys anything. False off Linux, where
+	// the platform's own clipboard tool already writes the lens's machine.
+	ClipShimReady bool
 	// SessionSink receives Claude session lifecycle signals once a hook has been
 	// resolved to a pane (wired to the peers bus at startup). A plain func keeps
 	// the manager from importing the bus for one call.
@@ -728,25 +728,20 @@ func (m *Manager) BroadcastClipboard(tmuxPane string, text []byte) error {
 }
 
 func (m *Manager) paneEnv(paneID string) map[string]string {
-	shimOK := m.ClipShimDir != ""
-	if err := shellint.WriteZdotdir(shellint.ZdotdirPath(paneID), m.ClipShimDir); err != nil {
-		// Also costs this pane its command capture, so it is worth a line either
-		// way; previously the error was dropped entirely.
-		log.Printf("pane %s: shell integration not installed (%v) — command capture and the clipboard shim are off for it", paneID, err)
-		shimOK = false
+	if err := shellint.WriteZdotdir(shellint.ZdotdirPath(paneID)); err != nil {
+		// Costs this pane its command capture, so it is worth a line; the error
+		// used to be dropped entirely.
+		log.Printf("pane %s: shell integration not installed (%v) — command capture is off for it", paneID, err)
 	}
 	env := shellint.EnvForPane(paneID)
-	// The shim only gets LOOKED FOR when the pane claims a display: Claude Code
-	// probes for xclip/wl-copy solely when DISPLAY or WAYLAND_DISPLAY is set.
-	// Claiming one is a real cost — programs that prefer a GUI (askpass,
-	// xdg-open) take that branch on a headless host — so it is claimed ONLY where
-	// the shim is genuinely reachable. That means: the shim exists (Linux), its
-	// dotfiles were written, and the pane's shell is the zsh those dotfiles are
-	// for. A bash or fish pane never sources them, so a display claim there would
-	// buy nothing and send Claude Code to a real xclip writing the wrong machine.
-	// Never over a genuine display, for the same reason.
-	if shimOK && strings.HasSuffix(loginShell(), "zsh") &&
-		os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+	// The clipboard shim only gets LOOKED FOR when the pane claims a display:
+	// Claude Code probes for xclip/wl-copy solely when DISPLAY or WAYLAND_DISPLAY
+	// is set. Claiming one is a real cost — programs that prefer a GUI (askpass,
+	// xdg-open) take that branch on a headless host — so it is claimed only when
+	// the daemon has CONFIRMED, by asking the user's own login shell, that the
+	// shim is what `xclip` resolves to. Never over a genuine display: there the
+	// real tool writes the host's clipboard, which is not the lens's machine.
+	if m.ClipShimReady && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		env["DISPLAY"] = ":0"
 	}
 	if m.LocalURL != "" {

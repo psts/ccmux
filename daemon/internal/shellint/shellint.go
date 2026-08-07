@@ -7,10 +7,8 @@
 package shellint
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // CmdFilePath is where a pane's shell records its last typed command line, read
@@ -54,41 +52,12 @@ var proxyFiles = map[string]string{
 	".zlogin":   `[[ -f "$HOME/.zlogin" ]] && source "$HOME/.zlogin"` + "\n",
 }
 
-// pathPrepend puts a directory at the FRONT of PATH from the proxy .zshrc.
-//
-// It has to happen here rather than in the pane's tmux environment: a login
-// shell rebuilds PATH from the user's own config (and, on macOS, path_helper
-// reorders it), so anything handed in via `new-session -e PATH=…` lands
-// wherever that rebuild leaves it. Appending after the user's .zshrc has run is
-// the only point where "first" is still true. Front, not back, because the shim
-// must beat a real clipboard tool: a genuine xclip would write the HOST's
-// clipboard, which is not the machine the lens is on.
-// Single-quoted, not %q: Go quoting escapes `"` and `\` but leaves `$` and
-// backticks alone, and this line is sourced by every hosted pane's shell — a `$`
-// in the path would expand there. Single quotes suppress all of it.
-const pathPrepend = "\nexport PATH=%s:\"$PATH\"\n"
-
-// shQuote wraps s in single quotes, ending and reopening them around any single
-// quote it contains ('\”) — the only escape a POSIX shell honours inside them.
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// WriteZdotdir creates the proxy ZDOTDIR at dir with all four dotfiles. A
-// non-empty binDir is prepended to PATH for panes using this ZDOTDIR.
-func WriteZdotdir(dir, binDir string) error {
+// WriteZdotdir creates the proxy ZDOTDIR at dir with all four dotfiles.
+func WriteZdotdir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	files := proxyFiles
-	if binDir != "" {
-		files = make(map[string]string, len(proxyFiles))
-		for k, v := range proxyFiles {
-			files[k] = v
-		}
-		files[".zshrc"] = proxyZshrc + fmt.Sprintf(pathPrepend, shQuote(binDir))
-	}
-	for name, content := range files {
+	for name, content := range proxyFiles {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 			return err
 		}

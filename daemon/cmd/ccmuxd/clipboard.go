@@ -6,67 +6,139 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 )
 
 // setupClipboardPipe writes the artifacts the copy paths need into the (0700,
-// per-user) runtime dir: a per-boot random token, the ccmux-copy helper the tmux
-// copy bindings pipe into, and — on Linux — the xclip/wl-copy shim directory
-// that hosted panes get on their PATH. shimDir is "" where no shim is written.
+// per-user) runtime dir: a per-boot random token and the ccmux-copy helper the
+// tmux copy bindings pipe into. On Linux it also installs the xclip/wl-copy
+// shim beside the daemon binary; shimReady reports whether the user's shell
+// actually resolves it, which is what gates claiming a display.
 //
 // The token turns "anything on this machine can write every lens's clipboard"
 // into a per-USER capability: another account can reach the loopback port but
 // cannot read this user's runtime dir. It deliberately does NOT try to exclude
 // same-user processes — they can drive the tmux socket directly and fake a
 // copy anyway, so a same-user boundary here would be theater.
-func setupClipboardPipe(dir, baseURL string) (scriptPath, shimDir, token string, err error) {
+func setupClipboardPipe(dir, baseURL string) (scriptPath, token string, shimReady bool, err error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
-		return "", "", "", fmt.Errorf("mint token: %w", err)
+		return "", "", false, fmt.Errorf("mint token: %w", err)
 	}
 	token = hex.EncodeToString(raw)
 	tokenPath := filepath.Join(dir, "clipboard-token")
 	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
-		return "", "", "", fmt.Errorf("write token: %w", err)
+		return "", "", false, fmt.Errorf("write token: %w", err)
 	}
 	scriptPath = filepath.Join(dir, "ccmux-copy")
 	script := clipboardScript(tokenPath, baseURL, filepath.Join(dir, "clipboard.log"))
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
-		return "", "", "", fmt.Errorf("write script: %w", err)
+		return "", "", false, fmt.Errorf("write script: %w", err)
 	}
 	// The shim is an enhancement over the tmux-buffer fallback; the pipe above is
-	// the feature. Failing the whole call here would take out copy-mode mirroring
-	// — which was working — over a directory that could not be created.
-	shimDir, err = writeClipboardShims(dir, scriptPath)
-	if err != nil {
-		log.Printf("clipboard shim not installed (%v) — copy-mode still mirrors, but an app's own copy will land in a tmux buffer", err)
-		shimDir = ""
-	}
-	return scriptPath, shimDir, token, nil
+	// the feature, so shim trouble is logged inside and never fails this call.
+	return scriptPath, token, installClipboardShims(scriptPath), nil
 }
 
-// writeClipboardShims installs the fake clipboard tools, and is a no-op off
-// Linux. macOS needs nothing: Claude Code copies there with pbcopy, which
-// already writes the clipboard of the machine the lens runs on. Windows/WSL
-// likewise. Only a headless Linux host has no clipboard for Claude Code to find
-// and falls back to a tmux buffer.
-func writeClipboardShims(dir, helperPath string) (string, error) {
+// shimNames are the tools Claude Code probes for on Linux, in its own order.
+var shimNames = []string{"wl-copy", "xclip", "xsel"}
+
+// shimMarker identifies a file as ours, so an upgrade may replace it and a real
+// clipboard tool never gets clobbered.
+const shimMarker = "# ccmux-clipboard-shim"
+
+// installClipboardShims puts the fake clipboard tools where the pane's PATH
+// already points — beside the ccmuxd binary, which install.sh puts in
+// ~/.local/bin — and reports whether the user's own shell actually resolves
+// them. Both halves matter:
+//
+// Placement cannot go through a shell rc file. The first cut prepended the dir
+// from the zsh ZDOTDIR proxy, which does nothing on a bash host, and handing
+// PATH to tmux with `new-session -e` does not survive either: measured in
+// containers, a Debian login shell drops an injected PATH via /etc/profile
+// while an Ubuntu one keeps it. Installing into a directory the profile already
+// puts on PATH is the one mechanism that does not care which shell you run —
+// verified as first on PATH for a real user on both distros.
+//
+// No-op off Linux: macOS copies with pbcopy, which already writes the machine
+// the lens runs on. Only a headless Linux host has nothing for Claude Code to
+// find and falls back to a tmux buffer.
+func installClipboardShims(helperPath string) bool {
 	if runtime.GOOS != "linux" {
-		return "", nil
+		return false
 	}
-	shimDir := filepath.Join(dir, "clipbin")
-	if err := os.MkdirAll(shimDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir shim dir: %w", err)
+	self, err := resolveSelf()
+	if err != nil {
+		log.Printf("clipboard shim: cannot locate the ccmuxd binary (%v) — app-made copies will land in a tmux buffer", err)
+		return false
 	}
-	shim := clipboardShimScript(helperPath)
-	for _, name := range []string{"xclip", "wl-copy", "xsel"} {
-		if err := os.WriteFile(filepath.Join(shimDir, name), []byte(shim), 0o700); err != nil {
-			return "", fmt.Errorf("write %s shim: %w", name, err)
+	binDir := filepath.Dir(self)
+	body := []byte(clipboardShimScript(helperPath))
+	for _, name := range shimNames {
+		path := filepath.Join(binDir, name)
+		if !ownedByUs(path) {
+			log.Printf("clipboard shim: %s already exists and is not ours — leaving it alone", path)
+			continue
+		}
+		if err := os.WriteFile(path, body, 0o755); err != nil {
+			log.Printf("clipboard shim: write %s: %v", path, err)
 		}
 	}
-	return shimDir, nil
+	return shimResolves(binDir)
+}
+
+// ownedByUs reports whether path is absent or is a shim this daemon wrote.
+// A real clipboard tool sitting there must never be overwritten.
+func ownedByUs(path string) bool {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), shimMarker)
+}
+
+// shimResolves asks the user's OWN login shell what `xclip` resolves to, rather
+// than assuming a directory is on PATH. That is the shell-agnostic check: the
+// answer comes from whatever startup files that shell actually reads, so a bash
+// host, a zsh host, and a distro with an opinionated /etc/profile all report
+// honestly instead of being guessed at.
+func shimResolves(binDir string) bool {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	out, err := exec.Command(shell, "-lc", "command -v xclip").Output()
+	if err != nil {
+		log.Printf("clipboard shim: %s could not resolve xclip (%v) — not claiming a display; app-made copies will land in a tmux buffer", shell, err)
+		return false
+	}
+	got := strings.TrimSpace(string(out))
+	if got != filepath.Join(binDir, "xclip") {
+		log.Printf("clipboard shim: %s resolves xclip to %q, not our shim — not claiming a display; put %s on PATH to enable app-made copies", shell, got, binDir)
+		return false
+	}
+	return true
+}
+
+// removeClipboardShims deletes the shims this daemon installed, leaving any real
+// tool that happens to share the name. Called from uninstall.
+func removeClipboardShims() {
+	self, err := resolveSelf()
+	if err != nil {
+		return
+	}
+	for _, name := range shimNames {
+		path := filepath.Join(filepath.Dir(self), name)
+		if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), shimMarker) {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 // clipboardScript renders the helper the tmux copy bindings invoke: $1 is the
@@ -149,8 +221,10 @@ func clipboardScript(tokenPath, baseURL, logPath string) string {
 func clipboardShimScript(helperPath string) string {
 	return strings.Join([]string{
 		"#!/bin/sh",
-		"# Written by ccmuxd at startup — do not edit. Stands in for xclip/wl-copy",
-		"# so an app's copy reaches the lens clipboard instead of a tmux buffer.",
+		shimMarker + " — written by ccmuxd at startup, do not edit. Stands in for",
+		"# xclip/wl-copy so an app's copy reaches the lens clipboard, not a tmux",
+		"# buffer. The marker above is how an upgrade tells its own file apart from",
+		"# a real clipboard tool it must not overwrite.",
 		`while [ $# -gt 0 ]; do`,
 		`  case "$1" in`,
 		`    -o|--output|-out) exit 1 ;;`,

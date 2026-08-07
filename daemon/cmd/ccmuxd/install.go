@@ -185,6 +185,10 @@ func cmdUninstall(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// The clipboard shims sit beside this binary and would otherwise outlive the
+	// daemon, shadowing a real xclip the user installs later with a script that
+	// posts to a port nothing is listening on.
+	removeClipboardShims()
 	return stopAndRemoveService(*purge)
 }
 

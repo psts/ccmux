@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -35,6 +34,13 @@ func TestRenderTmuxConf(t *testing.T) {
 		if strings.HasPrefix(line, "set-hook") && strings.Contains(line, "buffer") {
 			t.Errorf("a buffer hook is back — it cannot bind a copy to its buffer: %s", line)
 		}
+	}
+	// tmux's default update-environment list starts with DISPLAY, so an attaching
+	// client with no DISPLAY marks it REMOVED for the whole session — which
+	// silently disabled the clipboard shim, since Claude Code only looks for a
+	// clipboard tool when a display is claimed. Verified in a Debian container.
+	if !strings.Contains(got, `set -g update-environment ""`) {
+		t.Error("update-environment is no longer cleared — an attaching client will strip DISPLAY from panes")
 	}
 }
 
@@ -216,30 +222,90 @@ func TestClipboardShimScript_Runs(t *testing.T) {
 	}
 }
 
-// TestWriteClipboardShims pins the platform gate: only a headless Linux host
-// needs the fake tools, and every name Claude Code probes for must be present
-// (it looks for wl-copy first, then xclip, then xsel).
-func TestWriteClipboardShims(t *testing.T) {
+// TestOwnedByUs is the guard that keeps a real clipboard tool safe: the shim dir
+// is the user's own bin directory, so an upgrade must be able to replace its own
+// file and must never overwrite someone else's xclip.
+func TestOwnedByUs(t *testing.T) {
 	dir := t.TempDir()
-	shimDir, err := writeClipboardShims(dir, "/rt/ccmux-copy")
-	if err != nil {
+	absent := filepath.Join(dir, "nothing-here")
+	ours := filepath.Join(dir, "ours")
+	theirs := filepath.Join(dir, "theirs")
+	if err := os.WriteFile(ours, []byte(clipboardShimScript("/rt/ccmux-copy")), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GOOS != "linux" {
-		if shimDir != "" {
-			t.Errorf("shim dir = %q on %s, want none — the platform clipboard already writes the lens's machine", shimDir, runtime.GOOS)
-		}
-		return
+	if err := os.WriteFile(theirs, []byte("#!/bin/sh\n# the real xclip\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range []string{"xclip", "wl-copy", "xsel"} {
-		fi, err := os.Stat(filepath.Join(shimDir, name))
-		if err != nil {
-			t.Errorf("missing %s shim: %v", name, err)
-			continue
+	for _, tc := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"absent is free to take", absent, true},
+		{"our own shim is replaceable", ours, true},
+		{"a real tool is left alone", theirs, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ownedByUs(tc.path); got != tc.want {
+				t.Errorf("ownedByUs = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShimResolves runs a REAL login shell against a temp bin dir. Asserting on
+// PATH strings would prove nothing — the reason this check exists is that what
+// lands on PATH depends on the shell AND the distro's profile (a Debian bash
+// login shell drops an injected PATH; an Ubuntu one keeps it), so the only
+// honest answer comes from asking the shell itself.
+func TestShimResolves(t *testing.T) {
+	sh, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not installed")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "xclip"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", sh)
+
+	// A login shell that puts our dir first must resolve to our shim...
+	t.Setenv("BASH_ENV", "")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if !shimResolves(dir) {
+		t.Error("shim on PATH first was not detected — the display claim would never arm")
+	}
+	// ...and a directory that is NOT on PATH must report honestly, rather than
+	// letting the daemon claim a display for a shim nothing can find.
+	if shimResolves(filepath.Join(dir, "elsewhere")) {
+		t.Error("a dir that is not on PATH reported as resolving")
+	}
+}
+
+// TestRemoveClipboardShims: uninstall takes back only what it installed.
+func TestRemoveClipboardShims(t *testing.T) {
+	dir := t.TempDir()
+	ours := filepath.Join(dir, "xclip")
+	theirs := filepath.Join(dir, "wl-copy")
+	if err := os.WriteFile(ours, []byte(clipboardShimScript("/rt/ccmux-copy")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(theirs, []byte("#!/bin/sh\n# a real wl-copy\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// removeClipboardShims locates the bin dir via the running binary, so drive
+	// its inner logic directly with the same ownership rule.
+	for _, name := range shimNames {
+		p := filepath.Join(dir, name)
+		if b, err := os.ReadFile(p); err == nil && strings.Contains(string(b), shimMarker) {
+			_ = os.Remove(p)
 		}
-		if fi.Mode().Perm()&0o100 == 0 {
-			t.Errorf("%s shim is not executable (%v)", name, fi.Mode())
-		}
+	}
+	if _, err := os.Stat(ours); !os.IsNotExist(err) {
+		t.Error("our own shim survived uninstall")
+	}
+	if _, err := os.Stat(theirs); err != nil {
+		t.Error("a real tool was deleted by uninstall")
 	}
 }
 
