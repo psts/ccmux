@@ -80,6 +80,13 @@ type app struct {
 	cwd         string
 	gitRoot     string
 
+	// localURL/localToken address THIS pane's own daemon, kept separate from
+	// a.daemon because a.daemon may be pointed at the hub. Empty means "do not
+	// ask" — a pane-less session, or an older daemon that stamped the bus into
+	// env and gave us a token only that bus accepts.
+	localURL   string
+	localToken string
+
 	mu     sync.Mutex
 	id     string // assigned by ccmuxd on register
 	grp    string
@@ -134,19 +141,28 @@ func main() {
 	a.paneID = os.Getenv("CCMUX_PANE_ID")
 	a.localPaneID = localPaneID(os.Getenv("CCMUX_CMD_FILE"))
 
-	// Federation: CCMUX_PEERS_URL points the bus at the hub while CCMUX_DAEMON_URL
-	// stays the local daemon (hooks — co-author, attention — must reach the pane's
-	// own host). Falls back to CCMUX_DAEMON_URL in single-host mode.
-	url := os.Getenv("CCMUX_PEERS_URL")
-	if url == "" {
-		url = os.Getenv("CCMUX_DAEMON_URL")
-	}
+	// The local daemon is always where we START. Which bus we END UP on is asked
+	// for, not inherited: resolveBus queries this daemon's live tag:ccmux-hub
+	// discovery before every registration. CCMUX_PEERS_URL is only still read so
+	// a new shim keeps working against an older daemon that stamps it; it is no
+	// longer written, because a value frozen into pane env at session-creation
+	// time cannot follow a hub that appears later.
+	url := os.Getenv("CCMUX_DAEMON_URL")
 	token := os.Getenv("CCMUX_PANE_TOKEN")
+	a.localURL, a.localToken = url, token
+	if legacy := os.Getenv("CCMUX_PEERS_URL"); legacy != "" {
+		// Older daemon: it stamped the hub AND minted a hub token, so the token
+		// we have is not valid against the local daemon. Use what it gave us and
+		// ask nobody — clearing localURL disables resolution for this process.
+		url = legacy
+		a.localURL, a.localToken = "", ""
+	}
 	if a.paneID == "" || url == "" || token == "" {
 		// Not a fully-tokened hosted pane → register pane-less (dirname fallback
 		// group) with the daemon-info file's shared credentials.
 		a.paneID = ""
 		url, token = readDaemonInfo()
+		a.localURL, a.localToken = "", "" // no pane identity to authorize a resolve with
 	}
 	if url == "" {
 		logf("no ccmuxd found (env or daemon-info file) — tools will error until it appears")
@@ -182,6 +198,7 @@ func (a *app) busLoop() {
 			time.Sleep(recheck)
 			continue
 		}
+		a.resolveBus()
 		if a.peerID() == "" {
 			if err := a.register(); err != nil {
 				logf("register: %v (retrying in %s)", err, delay)
@@ -200,6 +217,43 @@ func (a *app) busLoop() {
 			a.keepRegistered()
 		}
 	}
+}
+
+// resolveBus asks THIS pane's own daemon which peers bus to be on, and moves if
+// the answer changed. Called before every registration attempt, which is what
+// makes hub membership follow tag:ccmux-hub instead of a value frozen into pane
+// environment when the session was created — panes routinely outlive the daemon,
+// and a hub can appear, move, or go away while one is running.
+//
+// Any failure is a no-op on purpose: an older daemon 404s this route, an
+// unreachable one errors, and either way staying put is the safe answer.
+func (a *app) resolveBus() {
+	if a.localURL == "" || a.paneID == "" {
+		return
+	}
+	local := newDaemonClient(a.localURL, a.localToken)
+	var resp struct {
+		URL   string `json:"url"`
+		Token string `json:"token"`
+	}
+	if err := local.post("/v1/peers/bus", map[string]any{"pane_id": a.paneID}, &resp); err != nil {
+		return
+	}
+	url, token := resp.URL, resp.Token
+	if url == "" { // no hub discovered — our own daemon is the bus
+		url, token = a.localURL, a.localToken
+	}
+	curURL, curToken := a.daemon.target()
+	if curURL == strings.TrimRight(url, "/") && curToken == token {
+		return
+	}
+	// Unregister BEFORE moving: a.unregister posts through a.daemon, so once the
+	// client is retargeted the request would go to the bus we are joining rather
+	// than the one we are leaving, and the old one would keep listing us until
+	// its reaper timed us out.
+	a.unregister()
+	a.daemon.retarget(url, token)
+	logf("bus moved to %s — re-registering", url)
 }
 
 // unregister releases our registration and clears our id (so busLoop re-joins if

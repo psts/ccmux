@@ -115,8 +115,11 @@ owning host (the lens resolves `host` → address from `GET /v1/hosts`).
 5. Cross-host peers (the live-validation pass): a Claude on host B and one on host A in
    the same window group — `list_peers` shows both with their `host`; `send_message` to
    the other's name is delivered; a non-member tailnet node is refused at the bus. Check
-   host B's logs for `peers: federating to hub …` and that its panes carry
-   `CCMUX_PEERS_URL` (hub) while `CCMUX_DAEMON_URL` stays local.
+   host B's logs for `peers: federating to hub …`. Panes carry no hub variable at all —
+   the shim asks host B's daemon (`POST /v1/peers/bus`) before every registration and
+   gets the live `tag:ccmux-hub` answer, so membership follows the tag rather than
+   whatever was true when the session was created. `CCMUX_DAEMON_URL` stays local.
+   To confirm a move, look for `bus moved to …` in the pane's shim log.
 
 ## Notes
 

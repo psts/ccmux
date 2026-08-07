@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,7 +19,13 @@ const (
 	wsReconnectMax  = 15 * time.Second
 )
 
+// daemonClient is RE-TARGETABLE on purpose. Which bus this process belongs to is
+// not knowable once at startup: a hub can appear, disappear, or move while the
+// pane lives, and panes outlive daemons. The target is therefore re-resolved on
+// every reconnect (see app.resolveBus) and swapped here, so the pointer held by
+// the tool handlers never changes and no call site needs to care.
 type daemonClient struct {
+	mu      sync.Mutex
 	baseURL string
 	token   string
 	http    *http.Client
@@ -32,17 +39,38 @@ func newDaemonClient(baseURL, token string) *daemonClient {
 	}
 }
 
+// target reports the current base URL and token as one consistent pair.
+func (d *daemonClient) target() (string, string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.baseURL, d.token
+}
+
+// retarget points this client at a different bus. Reports whether anything
+// changed, so the caller can re-register only when it actually moved.
+func (d *daemonClient) retarget(baseURL, token string) bool {
+	baseURL = strings.TrimRight(baseURL, "/")
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.baseURL == baseURL && d.token == token {
+		return false
+	}
+	d.baseURL, d.token = baseURL, token
+	return true
+}
+
 func (d *daemonClient) post(path string, body, out any) error {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", d.baseURL+path, bytes.NewReader(b))
+	baseURL, token := d.target()
+	req, err := http.NewRequest("POST", baseURL+path, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+d.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := d.http.Do(req)
 	if err != nil {
 		return err
@@ -101,9 +129,10 @@ func (a *app) runPushLoop() {
 }
 
 func (a *app) pushOnce() error {
-	wsURL := "ws" + strings.TrimPrefix(a.daemon.baseURL, "http") +
+	baseURL, token := a.daemon.target()
+	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") +
 		"/v1/peers/ws?peer_id=" + a.peerID()
-	header := http.Header{"Authorization": {"Bearer " + a.daemon.token}}
+	header := http.Header{"Authorization": {"Bearer " + token}}
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
 		return err

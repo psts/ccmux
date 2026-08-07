@@ -114,6 +114,37 @@ func (s *Server) peersMintPaneToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": s.peersSvc.MintPaneToken(req.PaneID)})
 }
 
+// peersBus tells a pane's thin client WHICH bus to join, answered live from
+// this host's tag:ccmux-hub discovery rather than from anything stamped into the
+// pane's environment. That distinction is the whole point: pane env is written
+// once at session creation and tmux sessions outlive daemon restarts by design,
+// so a pane created before the hub existed stayed on its local bus forever —
+// silently, and for weeks. Asking on every reconnect makes the tag the live
+// authority it was meant to be.
+//
+// An empty url means "no hub discovered — stay on the daemon you asked". The
+// caller already holds that URL and its token, so there is nothing to send.
+func (s *Server) peersBus(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) || !s.peerConnAllowed(w, r) {
+		return
+	}
+	var req struct {
+		PaneID string `json:"pane_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !s.peersSvc.AuthorizePane(req.PaneID, bearerToken(r)) {
+		writeError(w, http.StatusUnauthorized, "invalid pane token")
+		return
+	}
+	url, token := "", ""
+	if s.busResolver != nil {
+		url, token = s.busResolver(req.PaneID)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url, "token": token})
+}
+
 func (s *Server) peersSend(w http.ResponseWriter, r *http.Request) {
 	if !s.peersEnabled(w) {
 		return

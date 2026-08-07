@@ -67,6 +67,10 @@ type Server struct {
 	// tsnet, or no hub has been found yet.
 	hubURLFn func() string
 
+	// busResolver answers "which peers bus should this pane join, and with what
+	// token" — see SetBusResolver and peersBus.
+	busResolver func(paneID string) (string, string)
+
 	// clipToken authorizes POST /v1/clipboard (per-boot random, written 0600
 	// into the runtime dir for the tmux copy helper). "" = endpoint disabled.
 	clipToken string
@@ -103,6 +107,11 @@ func (s *Server) SetDevhostStatus(f func() string) { s.devStatus = f }
 
 // SetHubURL wires the member host's hub-discovery reporter (see hubURLFn).
 func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
+
+// SetBusResolver wires POST /v1/peers/bus: given a pane id, it returns the bus
+// that pane should join and a token for it, or ("", "") to mean "this daemon".
+// Unset on a hub or a single-host node, where the local bus is always the answer.
+func (s *Server) SetBusResolver(f func(paneID string) (string, string)) { s.busResolver = f }
 
 // SetClipboardToken arms POST /v1/clipboard (see clipToken).
 func (s *Server) SetClipboardToken(t string) { s.clipToken = t }
@@ -184,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/presence", s.presenceOwners) // hub polls members to union push suppression
 	mux.HandleFunc("POST /v1/peers/register", s.peersRegister)
 	mux.HandleFunc("POST /v1/peers/pane-token", s.peersMintPaneToken)
+	mux.HandleFunc("POST /v1/peers/bus", s.peersBus)
 	mux.HandleFunc("POST /v1/peers/send", s.peersSend)
 	mux.HandleFunc("POST /v1/peers/list", s.peersList)
 	mux.HandleFunc("POST /v1/peers/summary", s.peersSummary)

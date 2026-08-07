@@ -407,6 +407,16 @@ func (s *Service) AuthorizeRegister(req RegisterReq, token string) bool {
 	return hmac.Equal([]byte(token), []byte(want))
 }
 
+// AuthorizePane checks a pane's own token, for callers that identify by pane id
+// before any peer exists — the bus-resolution request a thin client makes on
+// startup, before it has registered anywhere.
+func (s *Service) AuthorizePane(paneID, token string) bool {
+	if paneID == "" {
+		return false
+	}
+	return hmac.Equal([]byte(token), []byte(TokenForPane(s.secret, paneID)))
+}
+
 // AuthorizeLocalGroups gates the Mac app's local-pane map push: it presents
 // the shared pane-less token (readable only by the user via the 0600 info file).
 func (s *Service) AuthorizeLocalGroups(token string) bool {
