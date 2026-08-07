@@ -24,25 +24,31 @@ func startupProgram(startupCmd string) string {
 		case strings.Contains(f, "="):
 			continue // VAR=value, either a shell assignment or an env operand
 		case filepath.Base(f) == "env":
-			// Skip env's own options. -u/--unset take a separate argument
-			// unless it was given as --unset=NAME (caught by the "=" case).
-			for i+1 < len(fields) {
-				switch next := fields[i+1]; {
-				case next == "-u" || next == "--unset":
-					i += 2
-					continue
-				case next == "-" || next == "-i" || next == "--ignore-environment":
-					i++
-					continue
-				case strings.Contains(next, "="):
-					i++
-					continue
-				}
-				break
-			}
+			i = skipEnvOptions(fields, i)
 		default:
 			return filepath.Base(f)
 		}
 	}
 	return ""
+}
+
+// skipEnvOptions takes the index of an `env` field and returns the index of the
+// last field belonging to its options, so the caller's loop increment lands on
+// the program. Only the options env is actually given here are recognised; an
+// unrecognised one stops the scan, which costs a pane its title rather than
+// mistaking a flag's argument for the program.
+func skipEnvOptions(fields []string, i int) int {
+	for i+1 < len(fields) {
+		switch next := fields[i+1]; {
+		case next == "-u" || next == "--unset":
+			i += 2 // takes a SEPARATE argument; --unset=NAME is the "=" case below
+		case next == "-" || next == "-i" || next == "--ignore-environment":
+			i++
+		case strings.Contains(next, "="):
+			i++
+		default:
+			return i
+		}
+	}
+	return i
 }

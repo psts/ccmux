@@ -75,8 +75,26 @@ func (b *busStub) server(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]string{"url": url, "token": token})
 	})
 	mux.HandleFunc("/v1/peers/unregister", func(w http.ResponseWriter, r *http.Request) {
+		// Same contract enforcement as /v1/peers/bus above, for the same reason:
+		// the real route reads peer_id from the body and runs it through
+		// requirePeer, so a client that renames the field or drops the bearer
+		// must fail here. Unguarded, a rename left the suite green while every
+		// bus move stranded a registration on the bus it left.
+		var req struct {
+			PeerID string `json:"peer_id"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || req.PeerID == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"peer_id required"}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+b.wantToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid token"}`))
+			return
+		}
 		b.mu.Lock()
-		b.unregistered++
+		b.unregistered++ // counted only on the authorized path
 		b.mu.Unlock()
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -194,15 +212,23 @@ func TestResolveBus_FailureStaysPut(t *testing.T) {
 // to authorize with, and a legacy-stamped pane holds a token only the hub
 // accepts. Both must not ask.
 func TestResolveBus_SkipsWhenNotResolvable(t *testing.T) {
+	// useStub means "leave localURL pointing at the stub", so the only thing that
+	// can keep the request from arriving is the guard under test. Pointing it at
+	// a dead address instead made the assertion hold no matter what.
+	const useStub = "\x00stub"
 	for _, tc := range []struct{ name, localURL, pane string }{
 		{"pane-less or legacy-stamped: localURL cleared", "", "pane-1"},
-		{"no pane id to authorize with", "http://127.0.0.1:1", ""},
+		{"no pane id to authorize with", useStub, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := &busStub{wantToken: "local-tok"}
 			ts := stub.server(t)
 			a := newResolveApp(t, ts.URL)
-			a.localURL, a.paneID = tc.localURL, tc.pane
+			if tc.localURL == useStub {
+				a.paneID = tc.pane
+			} else {
+				a.localURL, a.paneID = tc.localURL, tc.pane
+			}
 
 			a.resolveBus()
 
