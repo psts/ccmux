@@ -309,7 +309,8 @@ final class RemoteSessionService: ObservableObject {
     @discardableResult
     func updateSettings(
         startupCommand: String? = nil, startupRules: [DaemonStartupRule]? = nil,
-        devDomain: String? = nil, cloudflareToken: String? = nil, tailscaleAuthKey: String? = nil
+        devDomain: String? = nil, lensHostname: String? = nil,
+        cloudflareToken: String? = nil, tailscaleAuthKey: String? = nil
     ) async -> DaemonSettings? {
         var body: [String: Any] = [:]
         if let startupCommand { body["startupCommand"] = startupCommand }
@@ -317,6 +318,7 @@ final class RemoteSessionService: ObservableObject {
             body["startupRules"] = startupRules.map { ["pathPrefix": $0.pathPrefix, "command": $0.command] }
         }
         if let devDomain { body["devDomain"] = devDomain }
+        if let lensHostname { body["lensHostname"] = lensHostname }
         if let cloudflareToken { body["cloudflareToken"] = cloudflareToken }
         if let tailscaleAuthKey { body["tailscaleAuthKey"] = tailscaleAuthKey }
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }

@@ -20,6 +20,7 @@ type fakeState struct {
 	mu        sync.Mutex
 	domain    string
 	authKey   string
+	lensName  string
 	hostnames map[string]int
 	stamped   map[string]string // name → url from the last stamp
 	listening map[int]bool      // port → listening from the last stamp
@@ -28,6 +29,7 @@ type fakeState struct {
 func (f *fakeState) DevDomain() string        { return f.domain }
 func (f *fakeState) CloudflareToken() string  { return "" }
 func (f *fakeState) TailscaleAuthKey() string { return f.authKey }
+func (f *fakeState) LensHostname() string     { return f.lensName }
 func (f *fakeState) AllHostnames() map[string]int {
 	out := map[string]int{}
 	for k, v := range f.hostnames {
@@ -96,6 +98,43 @@ func TestHandler_DomainModeDispatch(t *testing.T) {
 	// Anything else falls through to the lens/API.
 	if code, body := get("ccmuxd.tailtest.ts.net"); code != 200 || body != "lens" {
 		t.Fatalf("fallthrough = %d %q", code, body)
+	}
+}
+
+// TestHandler_LensAlias pins the reserved lens hostname: it serves the daemon's
+// own handler (web lens) under the dev domain instead of the unknown-host 404,
+// and it's checked before the workspace table so it can't be shadowed.
+func TestHandler_LensAlias(t *testing.T) {
+	st := &fakeState{domain: "dev.test", lensName: "ccmux", hostnames: map[string]int{}}
+	s, _ := testServer(t, st)
+	s.Refresh()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "lens") })
+	h := s.Handler(next)
+
+	get := func(host string) (int, string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "https://"+host+"/", nil)
+		req.Host = host
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	if code, body := get("ccmux.dev.test"); code != 200 || body != "lens" {
+		t.Fatalf("lens alias = %d %q, want the lens", code, body)
+	}
+	// Other unknown names under the domain still 404.
+	if code, _ := get("typo.dev.test"); code != 404 {
+		t.Fatalf("unknown host = %d, want 404", code)
+	}
+
+	// Clearing the label (domain still set) removes the route: the name is
+	// just an unknown dev host again. This is the discriminating case — it
+	// fails if Refresh ever stops recomputing the alias.
+	st.lensName = ""
+	s.Refresh()
+	if code, _ := get("ccmux.dev.test"); code != 404 {
+		t.Fatalf("cleared alias = %d, want the unknown-host 404", code)
 	}
 }
 

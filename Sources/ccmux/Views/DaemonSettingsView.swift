@@ -15,6 +15,7 @@ struct DaemonSettingsView: View {
     @State private var saving = false
     @State private var loaded = false
     @State private var devDomain = ""
+    @State private var lensHostname = ""
     @State private var cloudflareToken = ""
     @State private var tailscaleAuthKey = ""
     @State private var cloudflareTokenSet = false
@@ -86,6 +87,11 @@ struct DaemonSettingsView: View {
                 TextField("dev.sanlabs.io (empty = ts.net mode)", text: $devDomain)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
+                TextField("ccmux (serves this web UI at <name>.<domain>; empty = off)", text: $lensHostname)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .disabled(devDomain.isEmpty)
+                    .help("Reserved name for the ccmux web UI itself, e.g. \"ccmux\" → https://ccmux.\(devDomain.isEmpty ? "<domain>" : devDomain). Needs a dev domain.")
                 SecureField("Cloudflare API token", text: $cloudflareToken)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
@@ -152,10 +158,10 @@ struct DaemonSettingsView: View {
         let outgoing = rules.map { DaemonStartupRule(pathPrefix: $0.pathPrefix, command: $0.command) }
         guard let saved = await RemoteSessionService.shared.updateSettings(
             startupCommand: command, startupRules: outgoing,
-            devDomain: devDomain,
+            devDomain: devDomain, lensHostname: lensHostname,
             cloudflareToken: outgoingSecret(cloudflareToken, wasSet: cloudflareTokenSet),
             tailscaleAuthKey: outgoingSecret(tailscaleAuthKey, wasSet: tailscaleAuthKeySet)) else {
-            status = "✗ Couldn't save — a domain needs a Cloudflare token, and the daemon must be running."
+            status = "✗ Couldn't save — a domain needs a Cloudflare token, the lens name must be a free DNS label, and the daemon must be running."
             return
         }
         apply(saved) // show the resolved command + the rules that survived validation
@@ -193,6 +199,7 @@ struct DaemonSettingsView: View {
         command = settings.startupCommand
         rules = settings.startupRules.map { EditableRule(pathPrefix: $0.pathPrefix, command: $0.command) }
         devDomain = settings.devDomain
+        lensHostname = settings.lensHostname
         cloudflareTokenSet = settings.cloudflareTokenSet
         tailscaleAuthKeySet = settings.tailscaleAuthKeySet
         devCertStatus = settings.devCertStatus

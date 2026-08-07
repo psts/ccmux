@@ -80,6 +80,9 @@ struct DaemonSettings: Codable {
     var startupRules: [DaemonStartupRule]
     /// Custom dev domain (e.g. "dev.sanlabs.io"); "" = ts.net fallback mode.
     var devDomain: String
+    /// Reserved label serving the ccmux web lens under the dev domain
+    /// (e.g. "ccmux" → https://ccmux.dev.sanlabs.io); "" = off.
+    var lensHostname: String
     var cloudflareTokenSet: Bool
     var tailscaleAuthKeySet: Bool
     /// Wildcard-cert lifecycle: unset | pending | ready | error: <cause> | unknown.
@@ -90,6 +93,7 @@ struct DaemonSettings: Codable {
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand) ?? ""
         startupRules = try c.decodeIfPresent([DaemonStartupRule].self, forKey: .startupRules) ?? []
         devDomain = try c.decodeIfPresent(String.self, forKey: .devDomain) ?? ""
+        lensHostname = try c.decodeIfPresent(String.self, forKey: .lensHostname) ?? ""
         cloudflareTokenSet = try c.decodeIfPresent(Bool.self, forKey: .cloudflareTokenSet) ?? false
         tailscaleAuthKeySet = try c.decodeIfPresent(Bool.self, forKey: .tailscaleAuthKeySet) ?? false
         devCertStatus = try c.decodeIfPresent(String.self, forKey: .devCertStatus) ?? "unset"

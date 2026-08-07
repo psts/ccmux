@@ -25,6 +25,33 @@ final class UpdaterVersionTests: XCTestCase {
         XCTAssertFalse(UpdaterService.isNewer("0.1", than: "0.1.0"))
     }
 
+    /// Daemon-sync decision: only a clean release-shaped daemon OLDER than a
+    /// release-shaped app gets upgraded — source builds on either side are
+    /// never touched, and equal/newer daemons are left alone.
+    func testShouldSyncDaemon() {
+        XCTAssertTrue(UpdaterService.shouldSyncDaemon(appVersion: "0.1.15", daemonVersion: "0.1.13"))
+        XCTAssertFalse(UpdaterService.shouldSyncDaemon(appVersion: "0.1.15", daemonVersion: "0.1.15"), "equal = in sync")
+        XCTAssertFalse(UpdaterService.shouldSyncDaemon(appVersion: "0.1.15", daemonVersion: "0.1.16"), "never downgrade a newer daemon")
+        XCTAssertFalse(UpdaterService.shouldSyncDaemon(appVersion: "0.1.15", daemonVersion: "0.1.13-dirty"), "dirty source build is sacred")
+        XCTAssertFalse(UpdaterService.shouldSyncDaemon(appVersion: "0.1.15", daemonVersion: "0.1.13-2-gabc123"), "git-describe stamp is a source build")
+        XCTAssertFalse(UpdaterService.shouldSyncDaemon(appVersion: "0.1.15", daemonVersion: "dev"), "dev build is a source build")
+        XCTAssertFalse(UpdaterService.shouldSyncDaemon(appVersion: "0.1.15-dirty", daemonVersion: "0.1.13"), "a dev APP must not drive upgrades")
+    }
+
+    /// Fleet selection: healthy + release-shaped + strictly older, nothing else.
+    func testHostsNeedingUpgrade() {
+        typealias H = UpdaterService.FleetHost
+        let hosts = [
+            H(id: "sanlabs", version: "0.1.13", healthy: true),      // older → upgrade
+            H(id: "current", version: "0.1.15", healthy: true),      // equal → skip
+            H(id: "newer", version: "0.1.16", healthy: true),        // newer → skip
+            H(id: "dev-box", version: "0.1.13-dirty", healthy: true),// source build → skip
+            H(id: "downbox", version: "0.1.13", healthy: false),     // unreachable → skip
+            H(id: "asleep", version: nil, healthy: true),            // no probed version → skip
+        ]
+        XCTAssertEqual(UpdaterService.hostsNeedingUpgrade(appVersion: "0.1.15", hosts: hosts), ["sanlabs"])
+    }
+
     func testAutoCheckSkipsSourceBuilds() {
         // "dev" has no numeric segment, so every release would "beat" it and the
         // automatic check would offer a downgrade on every launch — skip it.

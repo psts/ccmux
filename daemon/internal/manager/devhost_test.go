@@ -110,6 +110,44 @@ func TestKillPane(t *testing.T) {
 	}
 }
 
+// TestLensHostname pins the reserved-label invariant both ways: the lens can't
+// take a workspace's name, and a workspace can't take the lens's.
+func TestLensHostname(t *testing.T) {
+	m, _ := devhostManager(t)
+
+	if err := m.SetLensHostname("CCMux"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got := m.LensHostname(); got != "ccmux" {
+		t.Fatalf("lens = %q, want normalized ccmux", got)
+	}
+	// A workspace claim of the lens label is rejected.
+	if _, err := m.SetHostnames("w1", []model.Hostname{{Name: "ccmux", Port: 3000}}); err == nil {
+		t.Fatal("workspace claim of the lens label must be rejected")
+	}
+	// The lens can't take a label a workspace already maps.
+	if _, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 3000}}); err != nil {
+		t.Fatalf("workspace hostname: %v", err)
+	}
+	if err := m.SetLensHostname("app"); err == nil {
+		t.Fatal("lens label colliding with a workspace hostname must be rejected")
+	}
+	// Bad labels are rejected; "" clears.
+	if err := m.SetLensHostname("no.dots"); err == nil {
+		t.Fatal("dotted lens label must be rejected")
+	}
+	if err := m.SetLensHostname(""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got := m.LensHostname(); got != "" {
+		t.Fatalf("lens after clear = %q", got)
+	}
+	// With the lens cleared, the label is claimable again.
+	if _, err := m.SetHostnames("w2", []model.Hostname{{Name: "ccmux", Port: 3100}}); err != nil {
+		t.Fatalf("claim after clear: %v", err)
+	}
+}
+
 func TestSetHostnames_UnknownWorkspace(t *testing.T) {
 	m, _ := devhostManager(t)
 	_, err := m.SetHostnames("nope", []model.Hostname{{Name: "app", Port: 1}})

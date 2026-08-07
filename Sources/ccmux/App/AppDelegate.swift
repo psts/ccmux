@@ -93,6 +93,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 })
                 // Start polling the ccmuxd daemon for hosted (lens) workspaces.
                 self.startRemoteSessions()
+                // Keep the daemons on the same release as this app: local via
+                // its binary, the fleet via the hub. AFTER adoptHub — the
+                // fleet pass reads DaemonConfig.baseURL, and firing before the
+                // hub URL lands would ask the local daemon for /v1/hosts,
+                // which only exists on the hub.
+                UpdaterService.shared.syncLocalDaemon()
             }
 
             // Quiet update checks (launch + every 4h) — prompts only when a

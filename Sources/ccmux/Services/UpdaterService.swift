@@ -87,6 +87,122 @@ final class UpdaterService {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
+    // MARK: - Local daemon sync
+
+    /// One-shot launch reconcile: if the LOCAL daemon (never a remote host)
+    /// runs an OLDER release than this app, run `ccmuxd upgrade v<appVersion>`
+    /// so the pair stays in sync — the app updater's relaunch lands here, which
+    /// is what makes "update the app" also update the daemon. Pinned to the
+    /// app's own version (not "latest") so both sides land on the same release
+    /// even if a newer one shipped mid-update. Quiet: logs, never alerts.
+    func syncLocalDaemon() {
+        let app = currentVersion
+        guard Bundle.main.bundleIdentifier != nil, Self.autoCheckEligible(app) else { return }
+        Task.detached {
+            await Self.runDaemonSync(appVersion: app)
+            await Self.runFleetSync(appVersion: app)
+        }
+    }
+
+    /// Whether the daemon at `daemonVersion` should be upgraded to match the
+    /// app. Source builds ("dev", git-describe stamps) are never touched — the
+    /// same protection `autoCheckEligible` gives the app side, because
+    /// `ccmuxd upgrade` would happily replace a developer's hand-built binary.
+    /// Internal for the test neighbor.
+    nonisolated static func shouldSyncDaemon(appVersion: String, daemonVersion: String) -> Bool {
+        autoCheckEligible(appVersion)
+            && autoCheckEligible(daemonVersion)
+            && isNewer(appVersion, than: daemonVersion)
+    }
+
+    /// One hub-registry row, as GET /v1/hosts serves it. `version` is optional
+    /// on the wire (omitempty — an unreachable host has none); decoding must
+    /// tolerate that, or ONE sleeping laptop in the registry would abort the
+    /// whole fleet sync.
+    struct FleetHost: Decodable {
+        let id: String
+        let version: String?
+        let healthy: Bool
+    }
+
+    /// Which fleet hosts should be upgraded to match the app — the same rules
+    /// as the local sync (release-shaped, strictly older), plus healthy-only:
+    /// an unreachable host can't run the upgrade anyway. Internal for the test
+    /// neighbor.
+    nonisolated static func hostsNeedingUpgrade(appVersion: String, hosts: [FleetHost]) -> [String] {
+        hosts.filter {
+            guard $0.healthy, let v = $0.version else { return false }
+            return shouldSyncDaemon(appVersion: appVersion, daemonVersion: v)
+        }.map(\.id)
+    }
+
+    /// Ask every eligible fleet host to upgrade itself (POST
+    /// /v1/hosts/{id}/upgrade → the host's own detached `ccmuxd upgrade`).
+    /// No hub (route absent) means a single-host setup — silently done. The
+    /// host-side endpoint re-checks everything (source build, same version,
+    /// already upgrading), so a stale registry row can't cause harm here.
+    private nonisolated static func runFleetSync(appVersion: String) async {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/hosts"),
+              let (data, resp) = try? await URLSession.shared.data(from: url),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            return // no hub route — single-host setup
+        }
+        let hosts: [FleetHost]
+        do {
+            hosts = try JSONDecoder().decode([FleetHost].self, from: data)
+        } catch {
+            NSLog("[ccmux updater] fleet sync: /v1/hosts decode failed: \(error)")
+            return
+        }
+        for id in hostsNeedingUpgrade(appVersion: appVersion, hosts: hosts) {
+            guard let u = URL(string: "\(DaemonConfig.baseURL)/v1/hosts/\(id)/upgrade") else { continue }
+            var req = URLRequest(url: u)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONEncoder().encode(["version": "v" + appVersion])
+            let result = try? await URLSession.shared.data(for: req)
+            let code = (result?.1 as? HTTPURLResponse)?.statusCode ?? 0
+            NSLog("[ccmux updater] fleet upgrade \(id) → v\(appVersion): HTTP \(code)")
+        }
+    }
+
+    private nonisolated static func runDaemonSync(appVersion: String) async {
+        struct Health: Decodable { let version: String }
+        guard let url = URL(string: "\(DaemonConfig.localURL)/v1/health"),
+              let (data, resp) = try? await URLSession.shared.data(from: url),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let health = try? JSONDecoder().decode(Health.self, from: data) else {
+            return // no local daemon — nothing to sync
+        }
+        guard shouldSyncDaemon(appVersion: appVersion, daemonVersion: health.version) else {
+            if health.version != appVersion {
+                NSLog("[ccmux updater] daemon sync skipped: app \(appVersion), daemon \(health.version) (source build or not older)")
+            }
+            return
+        }
+        let bin = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/bin/ccmuxd").path
+        guard FileManager.default.isExecutableFile(atPath: bin) else {
+            NSLog("[ccmux updater] daemon sync skipped: \(bin) not found")
+            return
+        }
+        NSLog("[ccmux updater] syncing local daemon \(health.version) → \(appVersion)")
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: bin)
+        proc.arguments = ["upgrade", "v" + appVersion]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            NSLog("[ccmux updater] daemon sync exit \(proc.terminationStatus): \(out.suffix(400))")
+        } catch {
+            NSLog("[ccmux updater] daemon sync failed to launch: \(error)")
+        }
+    }
+
     private func check(quiet: Bool) async {
         let release: Release
         do {

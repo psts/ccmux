@@ -95,14 +95,18 @@ func TestHub_HostnameConflict(t *testing.T) {
 	agg.Aggregate(context.Background())
 	h := &hubMode{reg: reg, agg: agg, selfID: "hub"}
 
-	if msg := h.hostnameConflict("wr", []byte(`{"hostnames":[{"name":"app","port":3001}]}`)); msg == "" {
+	if msg := h.hostnameConflict("wr", []byte(`{"hostnames":[{"name":"app","port":3001}]}`), ""); msg == "" {
 		t.Error("expected a conflict: 'app' is claimed by another workspace")
 	}
-	if msg := h.hostnameConflict("wl", []byte(`{"hostnames":[{"name":"app","port":3000}]}`)); msg != "" {
+	if msg := h.hostnameConflict("wl", []byte(`{"hostnames":[{"name":"app","port":3000}]}`), ""); msg != "" {
 		t.Errorf("same-workspace reclaim should be allowed, got %q", msg)
 	}
-	if msg := h.hostnameConflict("wr", []byte(`{"hostnames":[{"name":"free"}]}`)); msg != "" {
+	if msg := h.hostnameConflict("wr", []byte(`{"hostnames":[{"name":"free"}]}`), ""); msg != "" {
 		t.Errorf("a free label should be allowed, got %q", msg)
+	}
+	// The hub's lens alias is reserved fleet-wide — any workspace claim loses.
+	if msg := h.hostnameConflict("wr", []byte(`{"hostnames":[{"name":"ccmux"}]}`), "ccmux"); !strings.Contains(msg, "reserved") {
+		t.Errorf("lens label claim should be rejected as reserved, got %q", msg)
 	}
 }
 

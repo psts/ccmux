@@ -20,6 +20,7 @@ type State interface {
 	DevDomain() string
 	CloudflareToken() string
 	TailscaleAuthKey() string
+	LensHostname() string
 	AllHostnames() map[string]int
 	StampHostnameRuntime(urlFor func(name string) string, listeningFor func(port int) bool)
 }
@@ -37,6 +38,7 @@ type Server struct {
 
 	table      atomic.Pointer[Table]
 	domain     atomic.Pointer[string] // "" = ts.net fallback mode
+	lensHost   atomic.Pointer[string] // full host serving the web lens ("" = off)
 	certStatus atomic.Pointer[string]
 	// magicCfg is the handshake-path view of the active certmagic config (nil
 	// in fallback mode); separate from s.magic so TLS never takes s.mu.
@@ -62,6 +64,7 @@ func NewServer(ctx context.Context, state State, dataDir, tsSuffix string, selfI
 	empty, unset := "", "unset"
 	s.table.Store(NewTable(nil))
 	s.domain.Store(&empty)
+	s.lensHost.Store(&empty)
 	s.certStatus.Store(&unset)
 	return s
 }
@@ -83,6 +86,13 @@ func (s *Server) Refresh() {
 	}
 	s.table.Store(NewTable(byHost))
 	s.domain.Store(&domain)
+	// The reserved lens alias only exists in custom-domain mode — the ts.net
+	// fallback already serves the lens at the daemon node's own name.
+	lens := ""
+	if label := strings.ToLower(strings.TrimSpace(s.state.LensHostname())); label != "" && domain != "" {
+		lens = label + "." + domain
+	}
+	s.lensHost.Store(&lens)
 	if domain != "" {
 		token := s.state.CloudflareToken()
 		s.ensureCertLocked(domain, token)

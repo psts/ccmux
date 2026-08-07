@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -56,6 +57,10 @@ type Server struct {
 	// settings UI, wired by SetDevhostStatus; nil when dev serving is off.
 	devStatus func() string
 
+	// spawnUpgrade launches the detached self-upgrade child (POST /v1/upgrade);
+	// the real spawner by default, a fake in tests.
+	spawnUpgrade func(tag string) error
+
 	// hubURLFn reports the tag:ccmux-hub node's base URL this member host has
 	// discovered (GET /v1/hub), so a lens pointed at the local daemon can
 	// retarget itself to the hub. nil (or "") when this node IS the hub, has no
@@ -74,9 +79,10 @@ type Server struct {
 
 func NewServer(mgr *manager.Manager) *Server {
 	return &Server{
-		mgr:      mgr,
-		presence: newPresenceHub(mgr),
-		identity: tailnet.NewResolver(),
+		mgr:          mgr,
+		presence:     newPresenceHub(mgr),
+		identity:     tailnet.NewResolver(),
+		spawnUpgrade: realSpawnUpgrade,
 		// Same-origin default; the web lens is served from this daemon, and
 		// tailnet identity gates access. Loosened checks come with auth.
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
@@ -144,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 		// dev domain, tokens, etc. through the hub (self runs local).
 		mux.HandleFunc("GET /v1/hosts/{host}/settings", s.hub.hostScoped(s.getSettings, "/v1/settings"))
 		mux.HandleFunc("PUT /v1/hosts/{host}/settings", s.hub.hostScoped(s.putSettings, "/v1/settings"))
+		mux.HandleFunc("POST /v1/hosts/{host}/upgrade", s.hub.hostScopedUpgrade(s.selfUpgrade, "/v1/upgrade"))
 	} else {
 		mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
 	}
@@ -170,6 +177,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/push/subscriptions", s.listSubscriptions)
 	mux.HandleFunc("POST /v1/push/subscriptions", s.createSubscription)
 	mux.HandleFunc("DELETE /v1/push/subscriptions", s.deleteSubscription)
+	mux.HandleFunc("POST /v1/upgrade", s.selfUpgrade)
 	mux.HandleFunc("GET /v1/attach", s.attach)
 	mux.HandleFunc("POST /v1/clipboard", s.clipboard)
 	mux.HandleFunc("GET /v1/events", s.events)
@@ -273,6 +281,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"startupRules":   s.mgr.StartupRules(),
 		// Dev hostnames: secrets are write-only — GET reports presence, never values.
 		"devDomain":           s.mgr.DevDomain(),
+		"lensHostname":        s.mgr.LensHostname(),
 		"cloudflareTokenSet":  s.mgr.CloudflareToken() != "",
 		"tailscaleAuthKeySet": s.mgr.TailscaleAuthKey() != "",
 		"devCertStatus":       s.devCertStatus(),
@@ -307,6 +316,7 @@ type settingsRequest struct {
 	StartupCommand   *string                `json:"startupCommand"`
 	StartupRules     *[]manager.StartupRule `json:"startupRules"`
 	DevDomain        *string                `json:"devDomain"`
+	LensHostname     *string                `json:"lensHostname"`
 	CloudflareToken  *string                `json:"cloudflareToken"`
 	TailscaleAuthKey *string                `json:"tailscaleAuthKey"`
 	// Replaces the whole alias map rather than merging: an alias you couldn't
@@ -345,6 +355,20 @@ func (s *Server) rejectSettings(req settingsRequest) (string, bool) {
 	if domain != "" && token == "" {
 		return "devDomain requires a cloudflareToken for DNS-01 certs", false
 	}
+	// Manager-level validation surfaced here so a bad label is the caller's 400.
+	if req.LensHostname != nil {
+		if msg := s.mgr.ValidateLensHostname(*req.LensHostname); msg != "" {
+			return msg, false
+		}
+		// Hub mode: the label must be free across the whole fleet, not just
+		// this host — a member's workspace may already serve it.
+		label := strings.ToLower(strings.TrimSpace(*req.LensHostname))
+		if s.hub != nil && label != "" {
+			if host, _, ok := s.hub.agg.HostnameOwner(label); ok {
+				return fmt.Sprintf("hostname %q is already mapped by a workspace on host %s", label, host), false
+			}
+		}
+	}
 	// An alias row missing either side is the caller's mistake, not something to
 	// silently drop and then answer 200 to.
 	if req.IdentityAliases != nil {
@@ -365,6 +389,7 @@ func (s *Server) applySettings(req settingsRequest) error {
 		set func(string) error
 	}{
 		{req.DevDomain, s.mgr.SetDevDomain},
+		{req.LensHostname, s.mgr.SetLensHostname},
 		{req.CloudflareToken, s.mgr.SetCloudflareToken},
 		{req.TailscaleAuthKey, s.mgr.SetTailscaleAuthKey},
 		{req.StartupCommand, func(v string) error { return s.mgr.SetDefaultStartupCommand(strings.TrimSpace(v)) }},

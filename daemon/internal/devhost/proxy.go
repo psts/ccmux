@@ -29,6 +29,13 @@ func (s *Server) Handler(next http.Handler) http.Handler {
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The lens alias is RESERVED: checked before the workspace table so a
+		// later workspace claim can never shadow the settings UI you'd need to
+		// fix the collision (the manager rejects such claims anyway).
+		if lh := *s.lensHost.Load(); lh != "" && normalizeHost(r.Host) == lh {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if port, ok := s.table.Load().Route(r.Host); ok {
 			proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), portKey{}, port)))
 			return

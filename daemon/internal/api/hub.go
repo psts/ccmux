@@ -61,7 +61,7 @@ func (s *Server) hostnamesRoute(local http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body)) // let the downstream handler re-read
-		if conflict := s.hub.hostnameConflict(r.PathValue("id"), body); conflict != "" {
+		if conflict := s.hub.hostnameConflict(r.PathValue("id"), body, s.mgr.LensHostname()); conflict != "" {
 			writeError(w, http.StatusConflict, conflict)
 			return
 		}
@@ -72,7 +72,7 @@ func (s *Server) hostnamesRoute(local http.HandlerFunc) http.HandlerFunc {
 // hostnameConflict returns a message when any requested dev-hostname label is
 // already claimed by a DIFFERENT workspace on any host, else "". A malformed body
 // passes through so the owner handler returns its own validation error.
-func (h *hubMode) hostnameConflict(wsID string, body []byte) string {
+func (h *hubMode) hostnameConflict(wsID string, body []byte, reserved string) string {
 	var req struct {
 		Hostnames []struct {
 			Name string `json:"name"`
@@ -84,6 +84,12 @@ func (h *hubMode) hostnameConflict(wsID string, body []byte) string {
 	for _, hn := range req.Hostnames {
 		if hn.Name == "" {
 			continue
+		}
+		// The hub's lens alias: member daemons only check their own settings,
+		// so the hub — the choke point every hostnames PUT proxies through —
+		// enforces the fleet-wide reservation.
+		if reserved != "" && hn.Name == reserved {
+			return fmt.Sprintf("hostname %q is reserved for the ccmux web lens", reserved)
 		}
 		if host, ownerWs, ok := h.agg.HostnameOwner(hn.Name); ok && ownerWs != wsID {
 			return fmt.Sprintf("hostname %q is already taken on host %s", hn.Name, host)
@@ -133,6 +139,18 @@ func (h *hubMode) ownerRoute(local http.HandlerFunc) http.HandlerFunc {
 // hostScoped wraps an explicit /v1/hosts/{host}/... route: self runs local,
 // otherwise proxy to the named host with the path rewritten to targetPath.
 func (h *hubMode) hostScoped(local http.HandlerFunc, targetPath string) http.HandlerFunc {
+	return h.hostScopedWith(local, targetPath, true)
+}
+
+// hostScopedUpgrade is hostScoped WITHOUT the compat gate: a degraded host —
+// one whose contract lags the hub's — is exactly the host a remote upgrade
+// exists to fix, and `allow`'s refusal even says "upgrade the host". Health is
+// the only precondition; the host-side handler re-validates everything else.
+func (h *hubMode) hostScopedUpgrade(local http.HandlerFunc, targetPath string) http.HandlerFunc {
+	return h.hostScopedWith(local, targetPath, false)
+}
+
+func (h *hubMode) hostScopedWith(local http.HandlerFunc, targetPath string, gated bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hostID := r.PathValue("host")
 		if hostID == h.selfID {
@@ -144,7 +162,7 @@ func (h *hubMode) hostScoped(local http.HandlerFunc, targetPath string) http.Han
 			writeError(w, http.StatusNotFound, "unknown host "+hostID)
 			return
 		}
-		if !h.allow(w, r, host) {
+		if gated && !h.allow(w, r, host) {
 			return
 		}
 		r.URL.Path = targetPath
@@ -164,7 +182,16 @@ func (s *Server) WrapDevhost(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if he, ok := s.hub.remoteDevTarget(hostOnly(r.Host), s.mgr.DevDomain()); ok {
+		host := hostOnly(r.Host)
+		// The lens alias is reserved FLEET-wide: never owner-route it to a
+		// member host, even if one claims the label — this wrapper runs outside
+		// the local devhost dispatch, so without this check a member's claim
+		// would shadow the hub's own lens at exactly the URL you'd use to fix it.
+		if lens := s.mgr.LensHostname(); lens != "" && devLabel(host, s.mgr.DevDomain()) == lens {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if he, ok := s.hub.remoteDevTarget(host, s.mgr.DevDomain()); ok {
 			s.hub.client.ReverseProxy(he).ServeHTTP(w, r)
 			return
 		}

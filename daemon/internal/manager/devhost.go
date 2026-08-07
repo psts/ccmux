@@ -20,6 +20,7 @@ const (
 	settingDevDomain        = "dev_domain"
 	settingCloudflareToken  = "cloudflare_token"
 	settingTailscaleAuthKey = "tailscale_authkey"
+	settingLensHostname     = "lens_hostname"
 )
 
 // ErrUnknownWorkspace marks lookups of a workspace id the registry doesn't
@@ -36,6 +37,37 @@ func (m *Manager) DevDomain() string { return m.getSetting(settingDevDomain) }
 // SetDevDomain persists the dev domain ("" switches to ts.net fallback mode).
 func (m *Manager) SetDevDomain(v string) error {
 	return m.setDevSetting(settingDevDomain, strings.ToLower(strings.TrimSpace(v)))
+}
+
+// LensHostname returns the reserved label serving the ccmux web lens itself
+// under the dev domain (e.g. "ccmux" → https://ccmux.dev.sanlabs.io); "" = off.
+// Only meaningful in custom-domain mode — in ts.net fallback the lens is
+// already at the daemon node's own name.
+func (m *Manager) LensHostname() string { return m.getSetting(settingLensHostname) }
+
+// ValidateLensHostname reports why v can't be the lens label ("" = it can).
+// Split from the setter so the API can answer 400, not 500, on a bad value.
+func (m *Manager) ValidateLensHostname(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return ""
+	}
+	if !hostnameLabel.MatchString(v) {
+		return fmt.Sprintf("invalid lens hostname %q: must be a DNS label (a-z, 0-9, inner hyphens)", v)
+	}
+	if _, taken := m.AllHostnames()[v]; taken {
+		return fmt.Sprintf("hostname %q is already mapped by a workspace", v)
+	}
+	return ""
+}
+
+// SetLensHostname persists the lens label ("" clears it).
+func (m *Manager) SetLensHostname(v string) error {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if msg := m.ValidateLensHostname(v); msg != "" {
+		return errors.New(msg)
+	}
+	return m.setDevSetting(settingLensHostname, v)
 }
 
 // CloudflareToken returns the DNS-edit API token for the dev domain's zone.
@@ -86,6 +118,9 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 		hs[i].URL, hs[i].Listening = "", false
 		if !hostnameLabel.MatchString(hs[i].Name) {
 			return nil, fmt.Errorf("invalid hostname %q: must be a DNS label (a-z, 0-9, inner hyphens)", hs[i].Name)
+		}
+		if lens := m.LensHostname(); lens != "" && hs[i].Name == lens {
+			return nil, fmt.Errorf("hostname %q is reserved for the ccmux web lens", lens)
 		}
 		if hs[i].Port < 1 || hs[i].Port > 65535 {
 			return nil, fmt.Errorf("invalid port %d for %q", hs[i].Port, hs[i].Name)
