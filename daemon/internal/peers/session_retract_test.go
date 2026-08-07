@@ -2,15 +2,16 @@ package peers
 
 import (
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
-// The shell backstop is asserted on every command signal, restarts included, so
-// a pane caught at its shell for one moment is recorded as holding no session.
-// Only a hook could ever say otherwise — and on a host with no hooks installed
-// there are none, so a healthy Claude with a connected bus socket stayed hidden
-// for the life of the pane. Seeing Claude in the foreground has to withdraw it.
+// The shell backstop is asserted on every signal, restarts included, so a pane
+// caught at its shell for one moment is recorded as holding no session. Only a
+// hook could ever say otherwise — and on a host with no hooks installed there
+// are none, so a healthy Claude with a connected bus socket stayed hidden for
+// the life of the pane. Seeing Claude in the foreground has to withdraw it.
 func TestNoteSession_UnknownRetractsAStaleNone(t *testing.T) {
 	svc, hook := newTestService(t)
 	hook.setGroup("pane-A", "grp")
@@ -37,11 +38,50 @@ func TestNoteSession_UnknownRetractsAStaleNone(t *testing.T) {
 	}
 }
 
-// Not-knowing means no record at all: an empty record is precisely the state
-// that reads as known-dead, so writing one would retract nothing.
-func TestNoteSession_UnknownForgetsThePane(t *testing.T) {
+// The retraction withdraws the SHELL verdict and nothing else. A hook that
+// positively reported a running session outranks a foreground observation, and
+// discarding its id would tell the manager the pane holds no session — the cue
+// it uses to decide a pane has been repurposed to other work.
+func TestNoteSession_UnknownKeepsHookSuppliedSessions(t *testing.T) {
 	svc, _ := newTestService(t)
 	svc.NoteSession("pane-X", "s1", model.SessionStarted)
+
+	svc.NoteSession("pane-X", "", model.SessionUnknown)
+
+	if !svc.PaneHasLiveSession("pane-X") {
+		t.Fatal("a live session reported by a hook was erased by the retraction")
+	}
+}
+
+// The phantom this module exists to catch: a claude process parked on the
+// session picker, connected to the bus with nobody home. Its session ENDED, so
+// the record must keep aging out — forgetting the pane would leave it listed as
+// present forever, and messages sent to it would never be read.
+func TestNoteSession_UnknownLetsAnEndedSessionStillExpire(t *testing.T) {
+	svc, _ := newTestService(t)
+	now := time.Now()
+	svc.Now = func() time.Time { return now }
+
+	svc.NoteSession("pane-X", "s1", model.SessionStarted)
+	svc.NoteSession("pane-X", "s1", model.SessionEnded)
+
+	// Claude is still the foreground program — it is sitting on the picker.
+	svc.NoteSession("pane-X", "", model.SessionUnknown)
+
+	now = now.Add(sessionIdleGrace + time.Second)
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if !svc.paneSessionDeadLocked("pane-X") {
+		t.Fatal("an ended session stopped aging out — the pane is listed as present with nobody home")
+	}
+}
+
+// Not-knowing means no record at all: an empty record is precisely the state
+// that reads as known-dead, so writing one would retract nothing.
+func TestNoteSession_UnknownForgetsAPureShellVerdict(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.NoteSession("pane-X", "", model.SessionNone)
+
 	svc.NoteSession("pane-X", "", model.SessionUnknown)
 
 	svc.mu.Lock()

@@ -55,6 +55,28 @@ func TestApplyPaneTitleSignal_ClaudeRetractsTheShellVerdict(t *testing.T) {
 	}
 }
 
+// A running Claude repaints its title constantly. The retraction carries no new
+// evidence there, and firing on it re-asserted the withdrawal on every repaint.
+func TestApplyPaneTitleSignal_TitleRepaintDoesNotRetract(t *testing.T) {
+	m, _ := devhostManager(t)
+	rec := &sessionSignals{}
+	m.SessionSink = rec.sink
+	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1"}
+	m.mu.Lock()
+	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
+	m.mu.Unlock()
+
+	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "claude")
+	before := len(rec.sigs)
+	m.applyPaneTitleSignal("w1", "pane-1", "pane-title", "✳ Claude Code")
+
+	for _, sig := range rec.sigs[before:] {
+		if sig == model.SessionUnknown {
+			t.Fatal("a title repaint re-asserted the retraction")
+		}
+	}
+}
+
 // The retraction must not fire for anything else running in a pane: a dev
 // server or an editor is not evidence that a Claude session is there, and
 // clearing the record for it would resurrect a pane the backstop correctly

@@ -43,7 +43,7 @@ func derivePaneTitle(rawTitle, rawCommand string, defaultTitles map[string]bool)
 		}
 		return t
 	}
-	if versionish.MatchString(cmd) {
+	if isClaudeCommand(cmd) {
 		return "Claude"
 	}
 	return cmd
@@ -117,14 +117,18 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	switch {
 	case shell:
 		m.ApplySession(paneID, "", model.SessionNone)
-	case runsClaude(&saved):
+	case kind == "pane-command" && runsClaude(&saved):
 		// The retraction the backstop above needs to be safe. That assertion is
-		// made on EVERY command signal, restarts included, so a pane caught at
-		// its shell for one moment is recorded as holding no session — and
-		// without hooks installed nothing else ever speaks for it, leaving a
-		// live Claude hidden from every listing for the life of the pane. Seeing
-		// Claude in the foreground is the same class of evidence and must be
-		// allowed to withdraw it.
+		// made on every signal, restarts included, so a pane caught at its shell
+		// for one moment is recorded as holding no session — and without hooks
+		// installed nothing else ever speaks for it, leaving a live Claude
+		// hidden from every listing for the life of the pane. Seeing Claude in
+		// the foreground is the same class of evidence and must be allowed to
+		// withdraw it.
+		//
+		// Gated on the COMMAND signal: only that one carries a foreground
+		// change. A running Claude repaints its title constantly, and firing
+		// there would re-assert this on every repaint for no new evidence.
 		m.ApplySession(paneID, "", model.SessionUnknown)
 	case kind == "pane-command" && !m.paneHasLiveSession(paneID):
 		// Not a shell, not Claude, and no session behind it: the pane has been

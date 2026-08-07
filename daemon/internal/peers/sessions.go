@@ -8,6 +8,7 @@
 package peers
 
 import (
+	"log"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
@@ -37,11 +38,7 @@ func (s *Service) NoteSession(paneID, sessionID string, sig model.SessionSignal)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sig == model.SessionUnknown {
-		// Forget the pane entirely rather than recording an empty set: "no
-		// record" is what presence reads as not-known-dead, and inventing a
-		// session id here would claim knowledge no hook has supplied.
-		delete(s.sessions, paneID)
-		_ = s.st.DeletePaneSessions(paneID)
+		s.retractShellVerdictLocked(paneID)
 		return
 	}
 	ps := s.sessions[paneID]
@@ -63,6 +60,38 @@ func (s *Service) NoteSession(paneID, sessionID string, sig model.SessionSignal)
 		clear(ps.live)
 	}
 	s.persistLocked(paneID, ps)
+}
+
+// retractShellVerdictLocked withdraws a "this pane is at a shell" observation,
+// and NOTHING else. Forgetting the pane is what makes presence read it as
+// not-known-dead again; there is no session id to record instead, because the
+// hosts this exists for have no hooks to supply one.
+//
+// The narrowness is the whole design. An earlier version deleted the record
+// outright and took two guarantees with it: a hook-supplied live id (which
+// PaneHasLiveSession uses to keep a working Claude's pane from being mistaken
+// for one repurposed to other work) and the activity clock (which retires the
+// phantom this module exists to catch — a claude process parked on the session
+// picker, connected to the bus with nobody home).
+//
+// A record with no live session AND no activity ever recorded is exactly the
+// shell verdict's signature: SessionNone clears the set and deliberately does
+// not touch the clock, while every hook-driven path sets it. That makes the
+// provenance derivable rather than stored, so it survives a restart through the
+// existing two-column table with no migration.
+func (s *Service) retractShellVerdictLocked(paneID string) {
+	ps := s.sessions[paneID]
+	if ps == nil || len(ps.live) > 0 || ps.lastActivity != 0 {
+		return
+	}
+	delete(s.sessions, paneID)
+	if err := s.st.DeletePaneSessions(paneID); err != nil {
+		// Left unlogged, this voids the retraction at the next restart only:
+		// memory forgets the pane, disk does not, and the load re-admits the
+		// verdict that hid it — the original bug, returning hours later with
+		// nothing to connect it to.
+		log.Printf("peers: could not erase the shell verdict for pane %s (%v) — it will come back on restart", paneID, err)
+	}
 }
 
 // sessionKey lets a hook with no session_id still participate: all such events

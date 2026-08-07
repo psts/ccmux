@@ -50,8 +50,13 @@ func atBareShell(p *model.Pane) bool {
 // invisible to every rule built on this predicate, which is how a live session
 // on that host stayed hidden from the peers bus: nothing recognized it as Claude,
 // so nothing ever retracted the pane's stale "at a shell" verdict.
-func runsClaude(p *model.Pane) bool {
-	cmd := strings.TrimSpace(p.RawCommand)
+func runsClaude(p *model.Pane) bool { return isClaudeCommand(p.RawCommand) }
+
+// isClaudeCommand is the one place that decides whether a tmux
+// #{pane_current_command} names Claude, shared with title derivation so the two
+// can never disagree about it — the same reason atBareShell shares shellNames.
+func isClaudeCommand(rawCommand string) bool {
+	cmd := strings.TrimSpace(rawCommand)
 	return versionish.MatchString(cmd) || startupProgram(cmd) == "claude"
 }
 
