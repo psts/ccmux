@@ -89,12 +89,15 @@ type app struct {
 	localURL   string
 	localToken string
 
-	mu        sync.Mutex
-	id        string          // assigned by ccmuxd on register
-	busWarned bool            // bus resolution has already reported a failure
-	conn      *websocket.Conn // live push channel, closed when the bus moves under us
-	grp       string
-	regReq    map[string]any
+	// moveMu serializes bus moves against registration; see resolveBus.
+	moveMu sync.Mutex
+
+	mu      sync.Mutex
+	id      string          // assigned by ccmuxd on register
+	busWarn string          // last reported bus-resolve failure, cleared on success
+	conn    *websocket.Conn // live push channel, closed when the bus moves under us
+	grp     string
+	regReq  map[string]any
 	// shownSeq is the highest event seq this process has actually put in front of
 	// the model. It is the dedupe authority, and it has to live here rather than
 	// in the daemon: the daemon's cursor only advances when this process acks,
@@ -185,7 +188,7 @@ func main() {
 	// Serve stdio until the parent closes the pipe, then unregister and exit —
 	// an orphaned thin client must not hold a stale registration.
 	a.mcp.Serve()
-	a.unregister()
+	_ = a.unregister()
 	logf("stdin closed, exiting")
 }
 
@@ -199,7 +202,7 @@ func (a *app) busLoop() {
 	delay := time.Second
 	for {
 		if !isBusOwner() {
-			a.unregister() // no-op unless we were the owner and just lost it
+			_ = a.unregister() // no-op unless we were the owner and just lost it
 			time.Sleep(recheck)
 			continue
 		}
@@ -236,6 +239,14 @@ func (a *app) resolveBus() bool {
 	if a.localURL == "" || a.paneID == "" {
 		return false
 	}
+	// Serialized against register: the watchdog can retarget on its own
+	// goroutine, and a move landing between register's POST and its id
+	// assignment would leave a.id holding a peer on the bus we just left while
+	// a.daemon points at the new one — resolveBus then sees a matching target,
+	// busLoop sees a non-empty id, and the pane is silently absent from the hub
+	// for its whole life.
+	a.moveMu.Lock()
+	defer a.moveMu.Unlock()
 	local := newDaemonClient(a.localURL, a.localToken)
 	var resp struct {
 		URL   string `json:"url"`
@@ -247,15 +258,23 @@ func (a *app) resolveBus() bool {
 		// 401 from a rotated secret means this pane never federates again for its
 		// entire life — and busLoop would still print "registered as …" against
 		// the local bus, making the two indistinguishable.
+		// Latched by MESSAGE, not by a bool: a bool meant one transient failure
+		// at startup (daemon still coming up) silenced a DIFFERENT, permanent one
+		// later — a 401 from a rotated secret — which is the case this log exists
+		// for. Cleared on success below, so a recovered pane reports the next one.
+		msg := err.Error()
 		a.mu.Lock()
-		first := !a.busWarned
-		a.busWarned = true
+		repeat := a.busWarn == msg
+		a.busWarn = msg
 		a.mu.Unlock()
-		if first {
+		if !repeat {
 			logf("bus resolve failed (%v) — staying on %s; a hub, if one appears, will not be joined", err, a.localURL)
 		}
 		return false
 	}
+	a.mu.Lock()
+	a.busWarn = ""
+	a.mu.Unlock()
 	url, token := resp.URL, resp.Token
 	if url == "" { // no hub discovered — our own daemon is the bus
 		url, token = a.localURL, a.localToken
@@ -268,7 +287,12 @@ func (a *app) resolveBus() bool {
 	// client is retargeted the request would go to the bus we are joining rather
 	// than the one we are leaving, and the old one would keep listing us until
 	// its reaper timed us out.
-	a.unregister()
+	if err := a.unregister(); err != nil {
+		// The likeliest reason we are moving is that the old bus became
+		// unreachable, which is also when this fails — so the stale listing the
+		// ordering above exists to prevent happens anyway. Say so.
+		logf("bus move: could not release the registration on %s (%v) — it stays listed there until that bus reaps it", curURL, err)
+	}
 	a.daemon.retarget(url, token)
 	logf("bus moved to %s — re-registering", url)
 	return true
@@ -319,18 +343,24 @@ func (a *app) dropConn() {
 
 // unregister releases our registration and clears our id (so busLoop re-joins if
 // we become the owner again). Safe to call when not registered.
-func (a *app) unregister() {
+// unregister releases our registration and clears our id either way — a failed
+// release must still drop the id, or busLoop would never re-register. Returns
+// the post error so a caller that cares (a bus move) can say it was left listed.
+func (a *app) unregister() error {
 	id := a.peerID()
 	if id == "" {
-		return
+		return nil
 	}
-	_ = a.daemon.post("/v1/peers/unregister", map[string]any{"peer_id": id}, nil)
+	err := a.daemon.post("/v1/peers/unregister", map[string]any{"peer_id": id}, nil)
 	a.mu.Lock()
 	a.id = ""
 	a.mu.Unlock()
+	return err
 }
 
 func (a *app) register() error {
+	a.moveMu.Lock()
+	defer a.moveMu.Unlock()
 	a.mu.Lock()
 	req := map[string]any{
 		"pane_id": a.paneID, "local_pane_id": a.localPaneID, "pid": os.Getpid(),

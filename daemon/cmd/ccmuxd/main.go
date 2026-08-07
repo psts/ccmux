@@ -88,7 +88,11 @@ func runDaemon() {
 	if clipErr != nil {
 		log.Printf("clipboard pipe disabled: %v", clipErr)
 		clipScript = "true"
-		clipShimReady = false // no helper to exec — panes must not get a broken xclip
+		// Shims from a previous boot are still on PATH and would exec a helper
+		// whose token file is now stale — the comment used to claim panes could
+		// not get a broken xclip, while leaving exactly that behind.
+		clipShimReady = false
+		removeInstalledShims()
 	}
 	if err := os.WriteFile(cfgPath, []byte(renderTmuxConf(config.TmuxConf, clipScript)), 0o644); err != nil {
 		log.Fatalf("write tmux config: %v", err)

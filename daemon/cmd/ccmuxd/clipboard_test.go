@@ -182,6 +182,43 @@ func TestClipboardScript_ExitPolicy(t *testing.T) {
 	}
 }
 
+// TestClipboardShimScript_Dash re-runs the argv contract under dash, which is
+// /bin/sh on Debian and Ubuntu — the hosts this shim is written for. macOS
+// /bin/sh is bash and forgives things dash does not.
+func TestClipboardShimScript_Dash(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	b := newClipBed(t, 0)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"write", []string{"-selection", "clipboard"}, 0},
+		{"trailing flag with no value", []string{"-selection"}, 1},
+		{"read", []string{"-o"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(dash, append([]string{b.shim}, tc.args...)...)
+			cmd.Env = append(os.Environ(), "PATH="+b.binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMUX_PANE=%3")
+			cmd.Stdin = strings.NewReader("dash copy")
+			rc := 0
+			if err := cmd.Run(); err != nil {
+				var ee *exec.ExitError
+				if !errors.As(err, &ee) {
+					t.Fatal(err)
+				}
+				rc = ee.ExitCode()
+			}
+			if rc != tc.want {
+				t.Errorf("dash exit = %d, want %d", rc, tc.want)
+			}
+		})
+	}
+}
+
 // TestClipboardShimScript_Runs pins the argv contract. The shim sits at the
 // front of every hosted pane's PATH, so it shadows a real xclip for every
 // command in the pane — the one thing it must never do is report a copy it did
@@ -209,6 +246,10 @@ func TestClipboardShimScript_Runs(t *testing.T) {
 		{"PRIMARY is declined as a selection value", []string{"-selection", "primary"}, 0},
 		{"text as an argument is refused, not silently dropped", []string{"hello world"}, 1},
 		{"a file argument is refused too", []string{"notes.txt"}, 1},
+		// A value-taking flag in final position. `shift 2 || shift` looked like a
+		// guard but dash aborts the script on a shift it cannot do, and dash is
+		// /bin/sh on the only platform that gets a shim.
+		{"trailing flag with no value", []string{"-selection"}, 1},
 	}
 	for _, r := range refusals {
 		t.Run(r.name, func(t *testing.T) {
@@ -293,52 +334,99 @@ func TestShimResolves(t *testing.T) {
 	}
 }
 
-// TestHostHasClipboard is the guard that keeps this off a machine that already
-// has a clipboard. The shim dir is first on PATH, so installing there shadows a
-// real xclip for every command the user runs — and a pane doing
+// TestRealClipboardTool covers the guard that keeps this off a machine that
+// already has a clipboard. The shim dir is first on PATH, so installing there
+// shadows a real xclip for every command the user runs — and a pane doing
 // `xclip < ~/.ssh/id_rsa` would post that key to every attached lens.
-func TestHostHasClipboard(t *testing.T) {
+//
+// The search path is passed in because the one that matters is the LOGIN
+// SHELL's: the daemon's own PATH under systemd is six system directories, so a
+// tool from snap, nix, brew or ~/.local/bin was invisible here while sitting
+// ahead of nothing on the user's real PATH.
+func TestRealClipboardTool(t *testing.T) {
 	binDir := t.TempDir()
 	otherDir := t.TempDir()
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+otherDir)
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sep := string(os.PathListSeparator)
+	search := binDir + sep + otherDir
 
-	if got := hostHasClipboard(binDir); got != "" {
-		t.Fatalf("a bare host reported %q, want it treated as headless", got)
+	if got := realClipboardTool(search); got != "" {
+		t.Fatalf("a bare host reported %q, want none", got)
 	}
-	// Our own shim living in the bin dir must not count as the host being
-	// equipped — otherwise the second startup would decline to reinstall.
+	// Our own shim must not count as the host being equipped, even though it
+	// shares the searched directories — ownership is by content, not location.
 	if err := os.WriteFile(filepath.Join(binDir, "xclip"), []byte(clipboardShimScript("/rt/h")), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := hostHasClipboard(binDir); got != "" {
+	if got := realClipboardTool(search); got != "" {
 		t.Errorf("our own shim counted as a real tool: %q", got)
 	}
-	// A genuine tool anywhere else on PATH stops the install.
+	// A genuine tool anywhere on that path stops the install — including one
+	// sharing the bin dir, which the old binDir skip would have hidden.
 	real := filepath.Join(otherDir, "xsel")
 	if err := os.WriteFile(real, []byte("#!/bin/sh\n# real xsel\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := hostHasClipboard(binDir); !strings.Contains(got, real) {
-		t.Errorf("hostHasClipboard = %q, want it to name %s", got, real)
+	if got := realClipboardTool(search); got != real {
+		t.Errorf("realClipboardTool = %q, want %s", got, real)
 	}
 }
 
 // TestRealClipboardTool_IgnoresNonExecutable: a same-named directory or a
 // non-executable file is not a clipboard tool, and must not block the install.
 func TestRealClipboardTool_IgnoresNonExecutable(t *testing.T) {
-	binDir := t.TempDir()
-	otherDir := t.TempDir()
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+otherDir)
-	if err := os.Mkdir(filepath.Join(otherDir, "xclip"), 0o755); err != nil {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "xclip"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(otherDir, "xsel"), []byte("not executable"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "xsel"), []byte("not executable"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := realClipboardTool(binDir); got != "" {
+	if got := realClipboardTool(dir); got != "" {
 		t.Errorf("realClipboardTool = %q, want none", got)
 	}
+}
+
+// TestHostHasClipboard_FailsClosed: not knowing the pane's PATH must block the
+// install. Shadowing a real tool is the worst outcome available here, so an
+// unusable login shell has to read as "cannot rule one out".
+func TestHostHasClipboard_FailsClosed(t *testing.T) {
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "no-such-shell"))
+	got := hostHasClipboard()
+	if !strings.Contains(got, "could not read the login shell") {
+		t.Errorf("hostHasClipboard = %q, want it to refuse when PATH is unknown", got)
+	}
+}
+
+// TestDisplayServer is the only guard that stops a shim landing on a desktop
+// that has no clipboard tool installed yet, so its edges matter: a Wayland lock
+// file is not a display, and an empty runtime dir is not one either.
+func TestDisplayServer(t *testing.T) {
+	t.Run("wayland socket counts", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_RUNTIME_DIR", dir)
+		if err := os.WriteFile(filepath.Join(dir, "wayland-0"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := displayServer(); !strings.Contains(got, "wayland-0") {
+			t.Errorf("displayServer = %q, want the wayland socket", got)
+		}
+	})
+	t.Run("a lock file alone is not a display", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_RUNTIME_DIR", dir)
+		if err := os.WriteFile(filepath.Join(dir, "wayland-0.lock"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := displayServer(); got != "" {
+			t.Errorf("displayServer = %q, want none — a lock file is not a socket", got)
+		}
+	})
+	t.Run("empty runtime dir", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+		if got := displayServer(); got != "" {
+			t.Errorf("displayServer = %q, want none", got)
+		}
+	})
 }
 
 // TestRemoveClipboardShims: uninstall takes back only what it installed.
@@ -352,14 +440,9 @@ func TestRemoveClipboardShims(t *testing.T) {
 	if err := os.WriteFile(theirs, []byte("#!/bin/sh\n# a real wl-copy\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// removeClipboardShims locates the bin dir via the running binary, so drive
-	// its inner logic directly with the same ownership rule.
-	for _, name := range shimNames {
-		p := filepath.Join(dir, name)
-		if b, err := os.ReadFile(p); err == nil && strings.Contains(string(b), shimMarker) {
-			_ = os.Remove(p)
-		}
-	}
+	// The real function, not a copy of its rule: removeShimsIn is what both
+	// uninstall and the "host gained a clipboard" cleanup call.
+	removeShimsIn(dir)
 	if _, err := os.Stat(ours); !os.IsNotExist(err) {
 		t.Error("our own shim survived uninstall")
 	}

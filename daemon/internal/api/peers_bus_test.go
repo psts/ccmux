@@ -99,9 +99,12 @@ func TestPeersBus_Auth(t *testing.T) {
 
 // TestPeersBus_NonLoopbackRefused: a pane asks its OWN daemon, so this route has
 // no reason to answer anyone else. Unlike /v1/peers/pane-token, which the hub
-// exposes to member hosts, this one stays loopback-only.
+// exposes to member hosts, this one stays loopback-only — and the server here
+// carries a hub with a registered member, so the assertion has teeth. Built with
+// a nil hub it passed vacuously, pinning a guarantee the handler did not make.
 func TestPeersBus_NonLoopbackRefused(t *testing.T) {
 	s, _ := busServer(t)
+	s.hub = &hubMode{reg: memberRegistry(t)}
 	req := httptest.NewRequest("POST", "/v1/peers/bus", strings.NewReader(`{"pane_id":"pane-1"}`))
 	req.RemoteAddr = "100.0.0.2:5000"
 	req.Header.Set("Authorization", "Bearer "+peers.TokenForPane(testSecret, "pane-1"))
@@ -109,5 +112,26 @@ func TestPeersBus_NonLoopbackRefused(t *testing.T) {
 	s.peersBus(rec, req)
 	if rec.Code != 403 {
 		t.Errorf("status = %d, want 403 — the bus route is loopback-only", rec.Code)
+	}
+}
+
+// TestPeersBus_RouteRegistered goes through Handler(), not the method. Without
+// it, deleting the mux line leaves every other bus test green while production
+// 404s — which resolveBus reads as "older daemon", stays put, and reports with
+// one benign-looking line. That is indistinguishable from the bug this route
+// exists to fix.
+func TestPeersBus_RouteRegistered(t *testing.T) {
+	_, svc := newPeersTestServer(t)
+	s := &Server{peersSvc: svc}
+	req := httptest.NewRequest("POST", "/v1/peers/bus", strings.NewReader(`{"pane_id":"pane-1"}`))
+	req.RemoteAddr = "127.0.0.1:5000"
+	req.Header.Set("Authorization", "Bearer "+peers.TokenForPane(testSecret, "pane-1"))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code == 404 {
+		t.Fatal("POST /v1/peers/bus is not registered on the mux")
+	}
+	if rec.Code != 200 {
+		t.Errorf("status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
 }

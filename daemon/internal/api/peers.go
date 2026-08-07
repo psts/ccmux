@@ -125,7 +125,12 @@ func (s *Server) peersMintPaneToken(w http.ResponseWriter, r *http.Request) {
 // An empty url means "no hub discovered — stay on the daemon you asked". The
 // caller already holds that URL and its token, so there is nothing to send.
 func (s *Server) peersBus(w http.ResponseWriter, r *http.Request) {
-	if !s.peersEnabled(w) || !s.peerConnAllowed(w, r) {
+	// requireLoopback, NOT peerConnAllowed: a pane asks its OWN daemon, so
+	// unlike /v1/peers/pane-token there is no member host to admit — and this
+	// route hands out a credential for a different bus. peerConnAllowed would
+	// have accepted any member IP in hub mode, which is not what the contract
+	// here says.
+	if !s.peersEnabled(w) || !requireLoopback(w, r) {
 		return
 	}
 	var req struct {

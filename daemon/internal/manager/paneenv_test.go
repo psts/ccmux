@@ -31,3 +31,21 @@ func TestManager_PaneEnv_InjectsHooksSocket(t *testing.T) {
 		t.Fatalf("CCMUX_PANE_ID = %q, want %q", env["CCMUX_PANE_ID"], paneID)
 	}
 }
+
+// TestPaneEnv_ClipShimDisplay pins both directions of the display claim. Set
+// unconditionally, askpass and xdg-open take their GUI branch on a headless host
+// and panes hang with no visible cause; never set, Claude Code never probes for
+// a clipboard tool and the whole shim is inert.
+func TestPaneEnv_ClipShimDisplay(t *testing.T) {
+	const paneID = "pane-display-test"
+	t.Cleanup(func() { shellint.Cleanup(paneID) })
+	m := &Manager{}
+
+	if _, ok := m.paneEnv(paneID)["DISPLAY"]; ok {
+		t.Error("DISPLAY claimed with no shim installed")
+	}
+	m.ClipShimReady = true
+	if got := m.paneEnv(paneID)["DISPLAY"]; got != ":0" {
+		t.Errorf("DISPLAY = %q, want :0 once the shim is confirmed", got)
+	}
+}
