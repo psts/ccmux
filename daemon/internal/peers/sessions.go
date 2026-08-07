@@ -36,6 +36,14 @@ func (s *Service) NoteSession(paneID, sessionID string, sig model.SessionSignal)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sig == model.SessionUnknown {
+		// Forget the pane entirely rather than recording an empty set: "no
+		// record" is what presence reads as not-known-dead, and inventing a
+		// session id here would claim knowledge no hook has supplied.
+		delete(s.sessions, paneID)
+		_ = s.st.DeletePaneSessions(paneID)
+		return
+	}
 	ps := s.sessions[paneID]
 	if ps == nil {
 		ps = &paneSessions{live: map[string]bool{}}

@@ -43,6 +43,18 @@ const (
 	// backstop for every hook that never arrived: a daemon restarting, a session
 	// that predates the hook install, a SIGKILL that fired no SessionEnd.
 	SessionNone SessionSignal = "none"
+	// SessionUnknown: Claude is in this pane's foreground, so any earlier
+	// "nothing is running here" is void — but with no hook to name a session id,
+	// the honest state is not-knowing rather than a fabricated live session.
+	//
+	// It exists because SessionNone had no counterpart. The shell backstop fires
+	// on every daemon restart (tmux replays each pane's command on subscribe), so
+	// a pane caught at its shell for one moment was recorded as holding no
+	// session — and only a SessionStart hook could ever say otherwise. On a host
+	// with no hooks installed, that verdict was permanent: a healthy Claude with
+	// a connected bus socket stayed hidden from every listing for the life of the
+	// pane. An observation must not outlive the observation that replaces it.
+	SessionUnknown SessionSignal = "unknown"
 )
 
 // Attention is a pane's activity state, driven primarily by Claude Code hooks

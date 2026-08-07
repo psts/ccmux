@@ -117,7 +117,16 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	switch {
 	case shell:
 		m.ApplySession(paneID, "", model.SessionNone)
-	case kind == "pane-command" && !runsClaude(&saved) && !m.paneHasLiveSession(paneID):
+	case runsClaude(&saved):
+		// The retraction the backstop above needs to be safe. That assertion is
+		// made on EVERY command signal, restarts included, so a pane caught at
+		// its shell for one moment is recorded as holding no session — and
+		// without hooks installed nothing else ever speaks for it, leaving a
+		// live Claude hidden from every listing for the life of the pane. Seeing
+		// Claude in the foreground is the same class of evidence and must be
+		// allowed to withdraw it.
+		m.ApplySession(paneID, "", model.SessionUnknown)
+	case kind == "pane-command" && !m.paneHasLiveSession(paneID):
 		// Not a shell, not Claude, and no session behind it: the pane has been
 		// given to other work. Whatever Claude used to live here is history, and
 		// history is not what dormancy reports.

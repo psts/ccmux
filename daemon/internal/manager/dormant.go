@@ -39,12 +39,20 @@ func atBareShell(p *model.Pane) bool {
 	return shellNames[strings.TrimPrefix(strings.TrimSpace(p.RawCommand), "-")]
 }
 
-// runsClaude reports that a pane's foreground IS Claude, by the same version
-// -string signature title derivation uses. It keeps a running Claude's pane from
-// being mistaken for one repurposed to other work, even when no hook has ever
-// reported its session.
+// runsClaude reports that a pane's foreground IS Claude. It keeps a running
+// Claude's pane from being mistaken for one repurposed to other work, even when
+// no hook has ever reported its session.
+//
+// TWO spellings, both seen on this fleet: Claude Code renames its process to the
+// bare version ("2.1.211"), which is the signature title derivation keys off —
+// but tmux reports a plain "claude" for the same program on the Linux host, and
+// before the rename lands anywhere. Matching only the version made a real Claude
+// invisible to every rule built on this predicate, which is how a live session
+// on that host stayed hidden from the peers bus: nothing recognized it as Claude,
+// so nothing ever retracted the pane's stale "at a shell" verdict.
 func runsClaude(p *model.Pane) bool {
-	return versionish.MatchString(strings.TrimSpace(p.RawCommand))
+	cmd := strings.TrimSpace(p.RawCommand)
+	return versionish.MatchString(cmd) || startupProgram(cmd) == "claude"
 }
 
 // refreshDormantLocked recomputes a pane's dormant flag, returning whether it
