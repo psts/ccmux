@@ -252,7 +252,8 @@ func TestRelayable(t *testing.T) {
 		{"/v1/health", false},
 		{"/", false},
 	} {
-		if got := relayable(tc.path); got != tc.want {
+		req := httptest.NewRequest("POST", tc.path, nil)
+		if got := relayable(req); got != tc.want {
 			t.Errorf("relayable(%q) = %v, want %v", tc.path, got, tc.want)
 		}
 	}

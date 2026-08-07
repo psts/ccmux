@@ -164,6 +164,93 @@ func TestNotifyScript_AppPaneIgnoresDaemonPointer(t *testing.T) {
 	}
 }
 
+// The nastier half of the same bug: -S proves a socket FILE exists, never that
+// anyone is bound to it. A listener unlinks on a clean close, so a crash or an
+// interrupted upgrade leaves the inode behind — and /tmp, where the daemon's
+// socket used to live, survives reboots on macOS. The staleness check sails
+// past it, and without a retry the hook pipes into nothing while the trace
+// records a delivery that never happened.
+func TestNotifyScript_OrphanedSocketFileFallsBackOnSendFailure(t *testing.T) {
+	requireScript(t)
+	dir := sockDir(t)
+
+	// Bind, then close WITHOUT unlinking — exactly what a killed daemon leaves.
+	orphan := filepath.Join(dir, "orphan.sock")
+	ln, err := net.Listen("unix", orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+	if fi, err := os.Stat(orphan); err != nil || fi.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("orphan is not a socket file: %v", err)
+	}
+
+	live := filepath.Join(dir, "live.sock")
+	got := listenOnce(t, live)
+	pointer := filepath.Join(dir, "hooks-socket")
+	if err := WritePointer(pointer, live); err != nil {
+		t.Fatal(err)
+	}
+	trace := filepath.Join(dir, "trace.jsonl")
+
+	cmd := exec.Command("bash", notifyScript, "session-start")
+	cmd.Stdin = strings.NewReader(`{"session_id":"s1","cwd":"/repo","hook_event_name":"SessionStart"}`)
+	cmd.Env = append(scrubbedEnv(),
+		"CCMUX_HOOK_TRACE="+trace,
+		"CCMUX_PANE_ID=pane-1",
+		"CCMUX_HOOKS_SOCK="+orphan, // a socket file with nobody behind it
+		"CCMUX_HOOKS_POINTER="+pointer,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script failed: %v\n%s", err, out)
+	}
+
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing reached the live socket — an orphaned inode still swallows every hook")
+	}
+}
+
+// And when delivery fails everywhere, the trace must say so. It is written
+// before the send, from the same file-type test, so a stale "routed" line would
+// assert the opposite of what happened to the one reader who goes looking.
+func TestNotifyScript_UndeliveredIsTraced(t *testing.T) {
+	requireScript(t)
+	dir := sockDir(t)
+	trace := filepath.Join(dir, "trace.jsonl")
+
+	orphan := filepath.Join(dir, "orphan.sock")
+	ln, err := net.Listen("unix", orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+
+	cmd := exec.Command("bash", notifyScript, "session-start")
+	cmd.Stdin = strings.NewReader(`{"session_id":"s1","cwd":"/repo","hook_event_name":"SessionStart"}`)
+	cmd.Env = append(scrubbedEnv(),
+		"CCMUX_HOOK_TRACE="+trace,
+		"CCMUX_PANE_ID=pane-1",
+		"CCMUX_HOOKS_SOCK="+orphan,
+		"CCMUX_HOOKS_POINTER="+filepath.Join(dir, "no-pointer"),
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script failed: %v\n%s", err, out)
+	}
+
+	written, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("no trace written: %v", err)
+	}
+	if !strings.Contains(string(written), `"decision": "undelivered"`) &&
+		!strings.Contains(string(written), `"decision":"undelivered"`) {
+		t.Errorf("a failed delivery left no undelivered line:\n%s", written)
+	}
+}
+
 func TestWritePointer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "hooks-socket")
 	if err := WritePointer(path, "/run/ccmuxd/hooks.sock"); err != nil {

@@ -404,15 +404,15 @@ func enableHostFederation(ts *tsnet.Server, hubURL *atomic.Pointer[string], apiS
 		localPaneless = peersSvc.PanelessToken()
 	}
 	apiSrv.SetHubBus(func() string { return *hubURL.Load() }, transport,
-		func(inbound string) string {
+		func(inbound string) (string, error) {
 			// Only the pane-less credential is translated. A pane already holds
 			// a hub-minted token, and anything else is left alone for the hub to
 			// reject — a relay that invented credentials for unknown callers
 			// would be the open door this whole path exists to avoid.
 			if localPaneless == "" || inbound != localPaneless {
-				return ""
+				return "", nil
 			}
-			return hostCred.token()
+			return hostCred.fetch()
 		})
 	apiSrv.SetBusResolver(func(paneID string) (string, string, error) {
 		u := *hubURL.Load()
@@ -472,16 +472,6 @@ type hubHostCredential struct {
 }
 
 const hostCredentialTTL = 5 * time.Minute
-
-// token is the relay's lookup: best effort, "" when nothing is cached and the
-// hub cannot be asked, which leaves the caller's own bearer in place.
-func (c *hubHostCredential) token() string {
-	t, err := c.fetch()
-	if err != nil {
-		return ""
-	}
-	return t
-}
 
 func (c *hubHostCredential) fetch() (string, error) {
 	u := *c.hubURL.Load()

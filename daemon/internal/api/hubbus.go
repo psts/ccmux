@@ -36,7 +36,7 @@ const HubBusPrefix = "/v1/hubbus"
 type hubBus struct {
 	hubURL    func() string
 	transport http.RoundTripper
-	upstream  func(inbound string) string
+	upstream  func(inbound string) (string, error)
 
 	mu     sync.Mutex
 	target string
@@ -49,14 +49,35 @@ type hubBus struct {
 // hub or a single-host node, where the route is not registered at all.
 //
 // upstream maps the bearer a local caller presented to the one the hub should
-// see. A pane carries a hub-minted token already and passes through unchanged; a
-// PANE-LESS session authenticates with this host's own shared token, which the
-// hub knows nothing about, and the daemon substitutes the hub's. That keeps the
-// hub's shared credential inside the daemon rather than handing it to every
-// local process that can read the daemon-info file. nil = pass everything
-// through.
-func (s *Server) SetHubBus(hubURL func() string, transport http.RoundTripper, upstream func(string) string) {
+// see. A pane carries a hub-minted token already and passes through unchanged
+// (""), a PANE-LESS session authenticates with this host's own shared token —
+// which the hub knows nothing about — and the daemon substitutes the hub's. That
+// keeps the hub's shared credential inside the daemon rather than handing it to
+// every local process that can read the daemon-info file. An ERROR means the
+// substitute could not be obtained, and the relay answers 503 instead of
+// forwarding a token the hub will reject. nil = pass everything through.
+func (s *Server) SetHubBus(hubURL func() string, transport http.RoundTripper, upstream func(string) (string, error)) {
 	s.hubBus = &hubBus{hubURL: hubURL, transport: transport, upstream: upstream}
+}
+
+// relayable answers whether a request may cross to the hub. Path alone is not
+// enough: /v1/peers/ws is TWO handlers behind one path, chosen by ?mode=, and
+// the listen arm upgrades before any credential is checked (peersWS) because it
+// is the lens viewer surface, gated by tailnet reach rather than by a token.
+// Relaying it by path would have put that stream one loopback dial away on every
+// member host, wearing the host's member identity — an unauthenticated read of
+// every message, delegation and permission request in a guessable group name.
+//
+// A thin client only ever dials this path with peer_id, so the check costs it
+// nothing.
+func relayable(r *http.Request) bool {
+	if !relayPaths[r.URL.Path] {
+		return false
+	}
+	if r.URL.Path == "/v1/peers/ws" && r.URL.Query().Get("mode") != "" {
+		return false
+	}
+	return true
 }
 
 // relayPaths is every path a thin client sends to its bus, and nothing else.
@@ -84,15 +105,13 @@ var relayPaths = map[string]bool{
 	"/v1/peers/ws":                 true,
 }
 
-func relayable(path string) bool { return relayPaths[path] }
-
 // hubBusRelay serves HubBusPrefix/*. Mounted behind http.StripPrefix, so the
 // path it sees is already the hub-side one.
 func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 	if !requireLoopback(w, r) {
 		return
 	}
-	if !relayable(r.URL.Path) {
+	if !relayable(r) {
 		writeError(w, http.StatusForbidden, "path is not relayable to the hub")
 		return
 	}
@@ -103,6 +122,15 @@ func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "no hub discovered")
 		return
 	}
+	if err := s.hubBus.checkCredential(bearerToken(r)); err != nil {
+		// Fail CLOSED. Forwarding a credential the hub is certain to reject turns
+		// a reachability fault into "invalid peer token" in the caller's log —
+		// which reads as a rotated secret, the one thing that is not wrong. Say
+		// what actually happened, here, where the fault is.
+		log.Printf("peers: hub relay cannot present a credential: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "hub credential unavailable")
+		return
+	}
 	proxy, err := s.hubBus.proxyFor(target)
 	if err != nil {
 		log.Printf("peers: hub relay target %q unusable: %v", target, err)
@@ -110,6 +138,18 @@ func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// checkCredential resolves the upstream bearer BEFORE proxying, so a failure to
+// obtain one is answered as a failure rather than smuggled upstream as someone
+// else's token. Nothing to translate (a pane's own hub-minted token, or no
+// mapper wired) is not an error.
+func (b *hubBus) checkCredential(inbound string) error {
+	if b.upstream == nil {
+		return nil
+	}
+	_, err := b.upstream(inbound)
+	return err
 }
 
 // proxyFor returns the reverse proxy for a hub URL, rebuilt only when the hub
@@ -142,7 +182,10 @@ func (b *hubBus) proxyFor(raw string) (*httputil.ReverseProxy, error) {
 		if upstream == nil {
 			return
 		}
-		if tok := upstream(bearerToken(out)); tok != "" {
+		// Errors are handled in hubBusRelay before we get here (fail closed); a
+		// late failure would be a hub that vanished between the two, and leaving
+		// the caller's bearer in place is what the pass-through case does anyway.
+		if tok, err := upstream(bearerToken(out)); err == nil && tok != "" {
 			out.Header.Set("Authorization", "Bearer "+tok)
 		}
 	}

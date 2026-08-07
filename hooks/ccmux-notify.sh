@@ -73,6 +73,19 @@ if [[ -n "${CCMUX_HOOKS_SOCK:-}" && ! -S "$SOCKET_PATH" ]]; then
     if [[ -r "$POINTER_PATH" ]] && read -r CURRENT_SOCK < "$POINTER_PATH" && [[ -S "$CURRENT_SOCK" ]]; then
         SOCKET_PATH="$CURRENT_SOCK"
     fi
+elif [[ -n "${CCMUX_HOOKS_SOCK:-}" ]]; then
+    # The frozen path still names a socket FILE, which is not proof anyone is
+    # bound to it — see the send below. Keep the daemon's current socket as a
+    # fallback for a delivery that actually fails.
+    if [[ "$OSTYPE" == darwin* ]]; then
+        CCMUX_STATE_DIR="$HOME/Library/Application Support/ccmuxd"
+    else
+        CCMUX_STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ccmuxd"
+    fi
+    POINTER_PATH="${CCMUX_HOOKS_POINTER:-$CCMUX_STATE_DIR/hooks-socket}"
+    if [[ -r "$POINTER_PATH" ]]; then
+        read -r FALLBACK_SOCK < "$POINTER_PATH" || FALLBACK_SOCK=""
+    fi
 fi
 
 # Map the CLI event arg to the canonical type string ccmux's listener expects.
@@ -217,6 +230,58 @@ print(json.dumps({
 
 [[ -z "$MSG" ]] && exit 0
 
-printf '%s' "$MSG" | nc -U -w 1 "$SOCKET_PATH" 2>/dev/null
+# Send, and if that fails, try the daemon's CURRENT socket before giving up.
+#
+# -S proves a socket FILE exists, never that anyone is bound to it. A unix socket
+# is unlinked by its listener on a clean close, so a crash, a SIGKILL or an
+# interrupted upgrade leaves the inode behind — and /tmp, where the daemon's
+# socket used to live, survives reboots on macOS. A pane stamped with that old
+# path would sail past every staleness check above and pipe into nothing.
+#
+# The delivery attempt is the only honest test, so failure is what triggers the
+# retry rather than any prediction about the path.
+DELIVERED=1
+if ! printf '%s' "$MSG" | nc -U -w 1 "$SOCKET_PATH" 2>/dev/null; then
+    DELIVERED=0
+    if [[ -n "${FALLBACK_SOCK:-}" && "$FALLBACK_SOCK" != "$SOCKET_PATH" && -S "$FALLBACK_SOCK" ]]; then
+        printf '%s' "$MSG" | nc -U -w 1 "$FALLBACK_SOCK" 2>/dev/null && DELIVERED=1
+    fi
+fi
+
+# A trace line that says "routed" is written before the send, from a test that
+# only proves the socket FILE exists. When the send then fails, the one artifact
+# a debugger reads would assert delivery that never happened — worse than the
+# silence this whole fallback exists to end. Correct the record.
+if [[ "$DELIVERED" == "0" ]]; then
+    MSG="$MSG" TRACE_PATH="$TRACE_PATH" SOCKET_PATH="$SOCKET_PATH" \
+    FALLBACK_SOCK="${FALLBACK_SOCK:-}" python3 -c "
+import json, os, datetime
+try:
+    msg = json.loads(os.environ.get('MSG') or '{}')
+except Exception:
+    msg = {}
+line = {
+    'ts': datetime.datetime.now().astimezone().isoformat(),
+    'stage': 'hook',
+    'trace_id': msg.get('trace_id') or '',
+    'event': msg.get('type') or '',
+    'decision': 'undelivered',
+    'socket': os.environ.get('SOCKET_PATH') or '',
+    'fallback_socket': os.environ.get('FALLBACK_SOCK') or '',
+    'pane_id': msg.get('pane_id') or '',
+    'session_id': msg.get('session_id') or '',
+}
+try:
+    path = os.environ['TRACE_PATH']
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, (json.dumps(line) + chr(10)).encode('utf-8'))
+    finally:
+        os.close(fd)
+except Exception:
+    pass
+" 2>/dev/null
+fi
 
 exit 0
