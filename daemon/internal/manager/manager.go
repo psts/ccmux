@@ -50,11 +50,6 @@ type Manager struct {
 	// separate: without it the last binder of a shared path stole the other's
 	// hooks (hosted attention flash died whenever the app ran). Empty = omit.
 	HooksSocket string
-	// ClipShimReady says the fake xclip/wl-copy is installed AND confirmed to be
-	// what the user's login shell resolves — the only condition under which
-	// claiming a display for hosted panes buys anything. False off Linux, where
-	// the platform's own clipboard tool already writes the lens's machine.
-	ClipShimReady bool
 	// SessionSink receives Claude session lifecycle signals once a hook has been
 	// resolved to a pane (wired to the peers bus at startup). A plain func keeps
 	// the manager from importing the bus for one call.
@@ -162,7 +157,20 @@ func (m *Manager) adopt(ws *model.Workspace, isLive bool) {
 // no default has been configured: a peers-enabled claude, so ccmux-created
 // sessions get live channel push out of the box (plain `claude` would load the
 // peer tools but silently drop pushed messages).
-const FallbackStartupCommand = "claude --dangerously-load-development-channels server:claude-peers"
+//
+// `env -u TMUX` is what makes copies reach the lens. Claude Code picks its copy
+// strategy as: native if a clipboard tool is on PATH, else tmux-buffer if $TMUX
+// is set, else OSC 52. On a headless host the first is unavailable, so it wrote
+// copies into a tmux buffer beside the daemon where no lens ever saw them.
+// Hiding $TMUX from THIS process (not from the pane's shell) drops it to OSC 52,
+// which tmux already forwards verbatim in %output and SwiftTerm already turns
+// into an OS-clipboard write — a path that exists end to end and needs nothing
+// installed on the host.
+//
+// The cost is that claude's own subprocesses no longer see $TMUX, so a `tmux`
+// command it runs reports no server. In a ccmux pane the daemon owns tmux, so
+// that is rarely wanted; it is a deliberate trade, not an oversight.
+const FallbackStartupCommand = "env -u TMUX claude --dangerously-load-development-channels server:claude-peers"
 
 const settingStartupCommand = "default_startup_command"
 
@@ -733,17 +741,6 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 		log.Printf("pane %s: shell integration not installed (%v) — command capture is off for it", paneID, err)
 	}
 	env := shellint.EnvForPane(paneID)
-	// The clipboard shim only gets LOOKED FOR when the pane claims a display:
-	// Claude Code probes for xclip/wl-copy solely when DISPLAY or WAYLAND_DISPLAY
-	// is set. Claiming one is a real cost — programs that prefer a GUI (askpass,
-	// xdg-open) take that branch on a headless host — so the whole decision is
-	// made once at startup and handed here as a single answer. Deliberately NOT
-	// re-derived from this process's own DISPLAY: a systemd user service starts
-	// before any graphical login and never has one, so reading it here would call
-	// a desktop headless. See installClipboardShims.
-	if m.ClipShimReady {
-		env["DISPLAY"] = ":0"
-	}
 	if m.LocalURL != "" {
 		env["CCMUX_DAEMON_URL"] = m.LocalURL
 	}

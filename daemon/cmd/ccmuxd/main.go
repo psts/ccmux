@@ -84,15 +84,10 @@ func runDaemon() {
 	// The copy bindings pipe through a daemon-written helper (token + loopback
 	// URL baked in). A minting failure disables the pipe, never the daemon:
 	// the placeholder becomes `true` so the bindings still copy locally.
-	clipScript, clipToken, clipShimReady, clipErr := setupClipboardPipe(runtimeDir(), loopbackURL(*addr))
+	clipScript, clipToken, clipErr := setupClipboardPipe(runtimeDir(), loopbackURL(*addr))
 	if clipErr != nil {
 		log.Printf("clipboard pipe disabled: %v", clipErr)
 		clipScript = "true"
-		// Shims from a previous boot are still on PATH and would exec a helper
-		// whose token file is now stale — the comment used to claim panes could
-		// not get a broken xclip, while leaving exactly that behind.
-		clipShimReady = false
-		removeInstalledShims()
 	}
 	if err := os.WriteFile(cfgPath, []byte(renderTmuxConf(config.TmuxConf, clipScript)), 0o644); err != nil {
 		log.Fatalf("write tmux config: %v", err)
@@ -113,7 +108,6 @@ func runDaemon() {
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
-	mgr.ClipShimReady = clipShimReady
 
 	// Built-in peers bus: pane env gets the bearer token (must be wired before
 	// any pane is created), pane-less sessions discover url+token via the info
@@ -382,17 +376,18 @@ func startHubDiscovery(ctx context.Context, lc *local.Client) *atomic.Pointer[st
 // single-host or no-hub node behaves exactly as before.
 func enableHostFederation(ts *tsnet.Server, hubURL *atomic.Pointer[string], apiSrv *api.Server) {
 	client := &http.Client{Transport: &http.Transport{DialContext: ts.Dial}, Timeout: 3 * time.Second}
-	apiSrv.SetBusResolver(func(paneID string) (string, string) {
+	apiSrv.SetBusResolver(func(paneID string) (string, string, error) {
 		u := *hubURL.Load()
 		if u == "" {
-			return "", ""
+			return "", "", nil // genuinely no hub — this daemon is the bus
 		}
 		token, err := mintHubPaneToken(client, u, paneID)
 		if err != nil {
-			log.Printf("peers: hub mint failed for pane %s (%v) — staying on the local bus", paneID, err)
-			return "", ""
+			// NOT ("","",nil): that reads as "no hub" and would pull the pane off
+			// a hub that is merely restarting. An error keeps it where it is.
+			return "", "", fmt.Errorf("hub mint for pane %s: %w", paneID, err)
 		}
-		return u, token
+		return u, token, nil
 	})
 	log.Printf("peers: host federation armed (discovering %s)", hub.HubTag)
 }

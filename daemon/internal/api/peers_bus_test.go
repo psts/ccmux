@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -52,9 +53,9 @@ func TestPeersBus_NoHub(t *testing.T) {
 func TestPeersBus_Hub(t *testing.T) {
 	s, _ := busServer(t)
 	var askedFor string
-	s.SetBusResolver(func(paneID string) (string, string) {
+	s.SetBusResolver(func(paneID string) (string, string, error) {
 		askedFor = paneID
-		return "https://hub.ts.net", "hub-token-for-" + paneID
+		return "https://hub.ts.net", "hub-token-for-" + paneID, nil
 	})
 	rec := busAsk(t, s, "pane-7", peers.TokenForPane(testSecret, "pane-7"))
 	if rec.Code != 200 {
@@ -89,7 +90,7 @@ func TestPeersBus_Auth(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := busServer(t)
-			s.SetBusResolver(func(string) (string, string) { return "https://hub.ts.net", "tok" })
+			s.SetBusResolver(func(string) (string, string, error) { return "https://hub.ts.net", "tok", nil })
 			if rec := busAsk(t, s, tc.pane, tc.token); rec.Code != tc.want {
 				t.Errorf("status = %d, want %d (%s)", rec.Code, tc.want, rec.Body)
 			}
@@ -133,5 +134,23 @@ func TestPeersBus_RouteRegistered(t *testing.T) {
 	}
 	if rec.Code != 200 {
 		t.Errorf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestPeersBus_ResolverError: an unreachable hub must NOT come back as an empty
+// answer. The client reads a successful empty reply as "your own daemon is the
+// bus" and would unregister from a hub that is merely restarting — every pane on
+// the host, in lockstep, every watchdog tick.
+func TestPeersBus_ResolverError(t *testing.T) {
+	s, _ := busServer(t)
+	s.SetBusResolver(func(string) (string, string, error) {
+		return "", "", errors.New("dial tcp: connection refused")
+	})
+	rec := busAsk(t, s, "pane-1", peers.TokenForPane(testSecret, "pane-1"))
+	if rec.Code != 503 {
+		t.Errorf("status = %d, want 503 so the caller stays put (%s)", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), `"url"`) {
+		t.Errorf("an error answer must not carry a url: %s", rec.Body)
 	}
 }

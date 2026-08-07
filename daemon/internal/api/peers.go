@@ -6,6 +6,7 @@
 package api
 
 import (
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -145,7 +146,15 @@ func (s *Server) peersBus(w http.ResponseWriter, r *http.Request) {
 	}
 	url, token := "", ""
 	if s.busResolver != nil {
-		url, token = s.busResolver(req.PaneID)
+		var err error
+		url, token, err = s.busResolver(req.PaneID)
+		if err != nil {
+			// 503, not an empty answer: the caller treats a successful empty
+			// reply as "your own daemon is the bus" and would leave the hub.
+			log.Printf("peers: bus resolve for pane %s: %v", req.PaneID, err)
+			writeError(w, http.StatusServiceUnavailable, "bus unavailable")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"url": url, "token": token})
 }

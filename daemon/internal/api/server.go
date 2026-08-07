@@ -69,7 +69,7 @@ type Server struct {
 
 	// busResolver answers "which peers bus should this pane join, and with what
 	// token" — see SetBusResolver and peersBus.
-	busResolver func(paneID string) (string, string)
+	busResolver func(paneID string) (string, string, error)
 
 	// clipToken authorizes POST /v1/clipboard (per-boot random, written 0600
 	// into the runtime dir for the tmux copy helper). "" = endpoint disabled.
@@ -108,10 +108,17 @@ func (s *Server) SetDevhostStatus(f func() string) { s.devStatus = f }
 // SetHubURL wires the member host's hub-discovery reporter (see hubURLFn).
 func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
 
-// SetBusResolver wires POST /v1/peers/bus: given a pane id, it returns the bus
-// that pane should join and a token for it, or ("", "") to mean "this daemon".
-// Unset on a hub or a single-host node, where the local bus is always the answer.
-func (s *Server) SetBusResolver(f func(paneID string) (string, string)) { s.busResolver = f }
+// SetBusResolver wires POST /v1/peers/bus: given a pane id it returns the bus
+// that pane should join and a token for it, ("", "", nil) to mean "this daemon",
+// or an error when the answer is unknown. Unset on a hub or a single-host node,
+// where the local bus is always the answer.
+//
+// The error case is not decoration. "No hub exists" and "the hub exists but I
+// could not reach it" are different answers, and collapsing them told every pane
+// on a member host to leave the hub whenever it blipped — then rejoin two
+// minutes later, in lockstep, with a rotated secret parking them locally for
+// good.
+func (s *Server) SetBusResolver(f func(paneID string) (string, string, error)) { s.busResolver = f }
 
 // SetClipboardToken arms POST /v1/clipboard (see clipToken).
 func (s *Server) SetClipboardToken(t string) { s.clipToken = t }
