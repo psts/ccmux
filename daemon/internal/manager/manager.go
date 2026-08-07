@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -737,11 +736,12 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 	// The clipboard shim only gets LOOKED FOR when the pane claims a display:
 	// Claude Code probes for xclip/wl-copy solely when DISPLAY or WAYLAND_DISPLAY
 	// is set. Claiming one is a real cost — programs that prefer a GUI (askpass,
-	// xdg-open) take that branch on a headless host — so it is claimed only when
-	// the daemon has CONFIRMED, by asking the user's own login shell, that the
-	// shim is what `xclip` resolves to. Never over a genuine display: there the
-	// real tool writes the host's clipboard, which is not the lens's machine.
-	if m.ClipShimReady && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+	// xdg-open) take that branch on a headless host — so the whole decision is
+	// made once at startup and handed here as a single answer. Deliberately NOT
+	// re-derived from this process's own DISPLAY: a systemd user service starts
+	// before any graphical login and never has one, so reading it here would call
+	// a desktop headless. See installClipboardShims.
+	if m.ClipShimReady {
 		env["DISPLAY"] = ":0"
 	}
 	if m.LocalURL != "" {
@@ -757,10 +757,6 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 	}
 	return env
 }
-
-// loginShell is the shell tmux will start panes with: it takes default-shell
-// from $SHELL in the server's environment, and the server inherits the daemon's.
-func loginShell() string { return os.Getenv("SHELL") }
 
 // WorkspaceForPane returns the workspace id owning a pane, or "" if unknown.
 func (m *Manager) WorkspaceForPane(paneID string) string {

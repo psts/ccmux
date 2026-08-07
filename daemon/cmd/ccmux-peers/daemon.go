@@ -138,6 +138,8 @@ func (a *app) pushOnce() error {
 		return err
 	}
 	defer conn.Close()
+	a.setConn(conn)
+	defer a.dropConn()
 	logf("push channel connected")
 
 	conn.SetPingHandler(func(payload string) error {

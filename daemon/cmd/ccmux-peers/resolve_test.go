@@ -78,7 +78,9 @@ func TestResolveBus_MovesToHub(t *testing.T) {
 	a.mu.Unlock()
 
 	stub.answer("https://hub.ts.net", "hub-tok")
-	a.resolveBus()
+	if !a.resolveBus() {
+		t.Error("resolveBus reported no move — the watchdog would never cut the channel")
+	}
 
 	if url, token := a.daemon.target(); url != "https://hub.ts.net" || token != "hub-tok" {
 		t.Errorf("target = %s/%s, want the hub", url, token)
@@ -100,8 +102,9 @@ func TestResolveBus_EmptyMeansStay(t *testing.T) {
 	ts := stub.server(t)
 	a := newResolveApp(t, ts.URL)
 
-	a.resolveBus()
-	a.resolveBus()
+	if a.resolveBus() || a.resolveBus() {
+		t.Error("an empty answer reported a move — it means stay put")
+	}
 
 	if url, token := a.daemon.target(); url != ts.URL || token != "local-tok" {
 		t.Errorf("target = %s/%s, want the local daemon", url, token)
@@ -123,9 +126,15 @@ func TestResolveBus_StableAnswerDoesNotChurn(t *testing.T) {
 	a.mu.Unlock()
 	stub.answer("https://hub.ts.net", "hub-tok")
 
-	a.resolveBus()
-	a.resolveBus()
-	a.resolveBus()
+	moved := 0
+	for i := 0; i < 3; i++ {
+		if a.resolveBus() {
+			moved++
+		}
+	}
+	if moved != 1 {
+		t.Errorf("reported %d moves across 3 resolves, want exactly 1", moved)
+	}
 
 	asks, unreg := stub.counts()
 	if asks != 3 {
@@ -143,7 +152,9 @@ func TestResolveBus_FailureStaysPut(t *testing.T) {
 	ts := stub.server(t)
 	a := newResolveApp(t, ts.URL)
 
-	a.resolveBus()
+	if a.resolveBus() {
+		t.Error("a failed resolve reported a move")
+	}
 
 	if url, _ := a.daemon.target(); url != ts.URL {
 		t.Errorf("target = %s, want to stay on the local daemon", url)
@@ -158,9 +169,8 @@ func TestResolveBus_FailureStaysPut(t *testing.T) {
 // accepts. Both must not ask.
 func TestResolveBus_SkipsWhenNotResolvable(t *testing.T) {
 	for _, tc := range []struct{ name, localURL, pane string }{
-		{"pane-less session", "", "pane-1"},
-		{"legacy stamped pane", "", "pane-1"},
-		{"no pane id", "http://127.0.0.1:1", ""},
+		{"pane-less or legacy-stamped: localURL cleared", "", "pane-1"},
+		{"no pane id to authorize with", "http://127.0.0.1:1", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := &busStub{}

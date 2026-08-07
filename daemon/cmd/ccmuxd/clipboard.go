@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // setupClipboardPipe writes the artifacts the copy paths need into the (0700,
@@ -52,23 +55,24 @@ const shimMarker = "# ccmux-clipboard-shim"
 
 // installClipboardShims puts the fake clipboard tools where the pane's PATH
 // already points — beside the ccmuxd binary, which install.sh puts in
-// ~/.local/bin — and reports whether the user's own shell actually resolves
-// them. Both halves matter:
+// ~/.local/bin — and reports whether the user's own shell then resolves them.
 //
 // Placement cannot go through a shell rc file. The first cut prepended the dir
 // from the zsh ZDOTDIR proxy, which does nothing on a bash host, and handing
 // PATH to tmux with `new-session -e` does not survive either: measured in
 // containers, a Debian login shell drops an injected PATH via /etc/profile
 // while an Ubuntu one keeps it. Installing into a directory the profile already
-// puts on PATH is the one mechanism that does not care which shell you run —
-// verified as first on PATH for a real user on both distros.
+// puts on PATH is the one mechanism that does not care which shell you run.
 //
-// No-op off Linux: macOS copies with pbcopy, which already writes the machine
-// the lens runs on. Only a headless Linux host has nothing for Claude Code to
-// find and falls back to a tmux buffer.
+// It installs ONLY on a host that has no clipboard of its own, and that
+// restriction is enforced rather than assumed. The bin dir is first on PATH, so
+// a shim shadows a real xclip for every command the user runs — not just ccmux
+// panes — and a pane doing `xclip < ~/.ssh/id_rsa` would then post that key to
+// every attached lens. So: no install when a genuine tool exists anywhere else
+// on PATH, and none when the machine has a display server at all.
 func installClipboardShims(helperPath string) bool {
 	if runtime.GOOS != "linux" {
-		return false
+		return false // macOS/Windows copy natively to the lens's own machine
 	}
 	self, err := resolveSelf()
 	if err != nil {
@@ -76,11 +80,16 @@ func installClipboardShims(helperPath string) bool {
 		return false
 	}
 	binDir := filepath.Dir(self)
+	if reason := hostHasClipboard(binDir); reason != "" {
+		log.Printf("clipboard shim: not installing — %s. This host's own clipboard tools are left alone; app-made copies in hosted panes will land in a tmux buffer.", reason)
+		removeShimsIn(binDir) // an earlier install must not keep shadowing
+		return false
+	}
 	body := []byte(clipboardShimScript(helperPath))
 	for _, name := range shimNames {
 		path := filepath.Join(binDir, name)
 		if !ownedByUs(path) {
-			log.Printf("clipboard shim: %s already exists and is not ours — leaving it alone", path)
+			log.Printf("clipboard shim: %s exists and is not ours — leaving it alone", path)
 			continue
 		}
 		if err := os.WriteFile(path, body, 0o755); err != nil {
@@ -88,6 +97,63 @@ func installClipboardShims(helperPath string) bool {
 		}
 	}
 	return shimResolves(binDir)
+}
+
+// hostHasClipboard reports why this host must keep its own clipboard, or "" when
+// it has none and the shim is safe to install. Two independent signals, because
+// either alone is too weak: a desktop may not have xclip installed yet, and a
+// headless box may carry a stray tool from some other package.
+func hostHasClipboard(binDir string) string {
+	if tool := realClipboardTool(binDir); tool != "" {
+		return fmt.Sprintf("%s is already installed at %s", filepath.Base(tool), tool)
+	}
+	if disp := displayServer(); disp != "" {
+		return fmt.Sprintf("this machine has a display server (%s)", disp)
+	}
+	return ""
+}
+
+// realClipboardTool finds a clipboard tool that is NOT one of ours, searching
+// PATH with binDir removed — our own shim living there would otherwise answer
+// for every name and make the host look equipped.
+func realClipboardTool(binDir string) string {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" || dir == binDir {
+			continue
+		}
+		for _, name := range shimNames {
+			path := filepath.Join(dir, name)
+			fi, err := os.Stat(path)
+			if err != nil || fi.IsDir() || fi.Mode().Perm()&0o111 == 0 {
+				continue
+			}
+			if !ownedByUs(path) { // a shim of ours from an older bin dir does not count
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+// displayServer names this machine's display, or "" for a headless host. It
+// looks for the sockets rather than at DISPLAY/WAYLAND_DISPLAY, because the
+// daemon's OWN environment does not have them: a systemd user service starts at
+// boot, before any graphical login, so an env check would call a desktop
+// headless and hijack its clipboard.
+func displayServer() string {
+	if entries, err := os.ReadDir("/tmp/.X11-unix"); err == nil && len(entries) > 0 {
+		return "X11 " + entries[0].Name()
+	}
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "wayland-") && !strings.HasSuffix(e.Name(), ".lock") {
+					return "Wayland " + e.Name()
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // ownedByUs reports whether path is absent or is a shim this daemon wrote.
@@ -98,29 +164,55 @@ func ownedByUs(path string) bool {
 		return true
 	}
 	if err != nil {
+		log.Printf("clipboard shim: cannot read %s (%v) — treating it as not ours", path, err)
 		return false
 	}
 	return strings.Contains(string(b), shimMarker)
 }
 
-// shimResolves asks the user's OWN login shell what `xclip` resolves to, rather
-// than assuming a directory is on PATH. That is the shell-agnostic check: the
-// answer comes from whatever startup files that shell actually reads, so a bash
-// host, a zsh host, and a distro with an opinionated /etc/profile all report
-// honestly instead of being guessed at.
+// shimResolves asks the user's OWN login shell what the clipboard tool resolves
+// to, rather than assuming a directory is on PATH. That is the shell-agnostic
+// check: the answer comes from whatever startup files that shell actually reads,
+// so a bash host, a zsh host, and a distro with an opinionated /etc/profile all
+// report honestly instead of being guessed at.
+//
+// It checks the name Claude Code would pick FIRST, and requires the resolved
+// file to be ours by content. Matching on path alone was wrong: where a real
+// tool already sat in binDir the write was correctly skipped, then the path
+// still matched, a display got claimed, and copies went to a tool with no
+// display to write — silently.
 func shimResolves(binDir string) bool {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	out, err := exec.Command(shell, "-lc", "command -v xclip").Output()
+	// Bounded: `-lc` sources the user's whole profile chain, and profiles do
+	// network work (version managers, auth probes). This runs before the daemon
+	// binds its listener, so an unbounded hang here looks like a dead daemon.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	name := shimNames[0]
+	out, err := exec.CommandContext(ctx, shell, "-lc", "command -v "+name).Output()
+	if ctx.Err() != nil {
+		log.Printf("clipboard shim: %s -lc did not answer within 5s — not claiming a display", shell)
+		return false
+	}
 	if err != nil {
-		log.Printf("clipboard shim: %s could not resolve xclip (%v) — not claiming a display; app-made copies will land in a tmux buffer", shell, err)
+		stderr := ""
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+		log.Printf("clipboard shim: %s could not resolve %s (%v %s) — not claiming a display; app-made copies will land in a tmux buffer", shell, name, err, stderr)
 		return false
 	}
 	got := strings.TrimSpace(string(out))
-	if got != filepath.Join(binDir, "xclip") {
-		log.Printf("clipboard shim: %s resolves xclip to %q, not our shim — not claiming a display; put %s on PATH to enable app-made copies", shell, got, binDir)
+	if got != filepath.Join(binDir, name) {
+		log.Printf("clipboard shim: %s resolves %s to %q, not our shim — not claiming a display; put %s on PATH to enable app-made copies", shell, name, got, binDir)
+		return false
+	}
+	if !ownedByUs(got) {
+		log.Printf("clipboard shim: %s is on PATH but is not our shim — not claiming a display", got)
 		return false
 	}
 	return true
@@ -131,12 +223,31 @@ func shimResolves(binDir string) bool {
 func removeClipboardShims() {
 	self, err := resolveSelf()
 	if err != nil {
+		log.Printf("uninstall: cannot locate the ccmuxd binary (%v) — clipboard shims may remain on PATH; remove %v from your bin dir by hand", err, shimNames)
 		return
 	}
+	removeShimsIn(filepath.Dir(self))
+}
+
+// removeShimsIn deletes our shims from dir, reporting anything it could not take
+// back. A survivor shadows a real clipboard tool with a script that posts to a
+// port nothing is listening on, so silence here is the one unacceptable outcome.
+func removeShimsIn(dir string) {
 	for _, name := range shimNames {
-		path := filepath.Join(filepath.Dir(self), name)
-		if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), shimMarker) {
-			_ = os.Remove(path)
+		path := filepath.Join(dir, name)
+		b, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			log.Printf("clipboard shim: cannot read %s (%v) — leaving it; check it by hand", path, err)
+			continue
+		}
+		if !strings.Contains(string(b), shimMarker) {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			log.Printf("clipboard shim: could not remove %s (%v) — it will shadow a real clipboard tool; remove it by hand", path, err)
 		}
 	}
 }
@@ -217,7 +328,10 @@ func clipboardScript(tokenPath, baseURL, logPath string) string {
 //     There is no clipboard on this host to read, so exit non-zero and let the
 //     caller take its own not-available path.
 //   - PRIMARY is declined: X11 clients write CLIPBOARD and PRIMARY as separate
-//     calls, and mirroring both would push every copy to the lens twice.
+//     calls, and mirroring both would push every copy to the lens twice. It exits
+//     0 because declining is correct, but it says so on stderr — a tool that
+//     targets PRIMARY only would otherwise see success for a copy that was
+//     dropped, the one outcome the rest of this shim refuses to produce.
 func clipboardShimScript(helperPath string) string {
 	return strings.Join([]string{
 		"#!/bin/sh",
@@ -228,10 +342,16 @@ func clipboardShimScript(helperPath string) string {
 		`while [ $# -gt 0 ]; do`,
 		`  case "$1" in`,
 		`    -o|--output|-out) exit 1 ;;`,
-		`    -p|--primary) exit 0 ;;`,
+		`    -p|--primary)`,
+		`      printf 'ccmux: PRIMARY selection is not mirrored to the lens\n' >&2`,
+		`      exit 0 ;;`,
 		// -selection/-t and friends take a value; skip it, but decline PRIMARY.
 		`    -selection|-sel|-s|-t|-target|--type)`,
-		`      case "$2" in primary|PRIMARY) exit 0 ;; esac`,
+		`      case "$2" in`,
+		`        primary|PRIMARY)`,
+		`          printf 'ccmux: PRIMARY selection is not mirrored to the lens\n' >&2`,
+		`          exit 0 ;;`,
+		`      esac`,
 		`      shift 2 || shift ;;`,
 		`    -*) shift ;;`,
 		`    *)`,

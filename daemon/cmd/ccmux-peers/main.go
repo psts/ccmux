@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"ccmux.dev/ccmuxd/internal/peers"
 )
 
@@ -87,10 +89,12 @@ type app struct {
 	localURL   string
 	localToken string
 
-	mu     sync.Mutex
-	id     string // assigned by ccmuxd on register
-	grp    string
-	regReq map[string]any
+	mu        sync.Mutex
+	id        string          // assigned by ccmuxd on register
+	busWarned bool            // bus resolution has already reported a failure
+	conn      *websocket.Conn // live push channel, closed when the bus moves under us
+	grp       string
+	regReq    map[string]any
 	// shownSeq is the highest event seq this process has actually put in front of
 	// the model. It is the dedupe authority, and it has to live here rather than
 	// in the daemon: the daemon's cursor only advances when this process acks,
@@ -176,6 +180,7 @@ func main() {
 	// Join the bus in the background — never block the MCP handshake. busLoop
 	// keeps us registered only while we're the pane's interactive session.
 	go a.busLoop()
+	go a.busWatchdog() // a hub that appears mid-connection must still be joined
 
 	// Serve stdio until the parent closes the pipe, then unregister and exit —
 	// an orphaned thin client must not hold a stale registration.
@@ -227,9 +232,9 @@ func (a *app) busLoop() {
 //
 // Any failure is a no-op on purpose: an older daemon 404s this route, an
 // unreachable one errors, and either way staying put is the safe answer.
-func (a *app) resolveBus() {
+func (a *app) resolveBus() bool {
 	if a.localURL == "" || a.paneID == "" {
-		return
+		return false
 	}
 	local := newDaemonClient(a.localURL, a.localToken)
 	var resp struct {
@@ -237,7 +242,19 @@ func (a *app) resolveBus() {
 		Token string `json:"token"`
 	}
 	if err := local.post("/v1/peers/bus", map[string]any{"pane_id": a.paneID}, &resp); err != nil {
-		return
+		// Logged once, because silence here is precisely the bug this whole path
+		// exists to kill. A 404 is the benign rollout case (older daemon), but a
+		// 401 from a rotated secret means this pane never federates again for its
+		// entire life — and busLoop would still print "registered as …" against
+		// the local bus, making the two indistinguishable.
+		a.mu.Lock()
+		first := !a.busWarned
+		a.busWarned = true
+		a.mu.Unlock()
+		if first {
+			logf("bus resolve failed (%v) — staying on %s; a hub, if one appears, will not be joined", err, a.localURL)
+		}
+		return false
 	}
 	url, token := resp.URL, resp.Token
 	if url == "" { // no hub discovered — our own daemon is the bus
@@ -245,7 +262,7 @@ func (a *app) resolveBus() {
 	}
 	curURL, curToken := a.daemon.target()
 	if curURL == strings.TrimRight(url, "/") && curToken == token {
-		return
+		return false
 	}
 	// Unregister BEFORE moving: a.unregister posts through a.daemon, so once the
 	// client is retargeted the request would go to the bus we are joining rather
@@ -254,6 +271,50 @@ func (a *app) resolveBus() {
 	a.unregister()
 	a.daemon.retarget(url, token)
 	logf("bus moved to %s — re-registering", url)
+	return true
+}
+
+// busWatchdog re-asks where the bus is on a timer, and cuts the push channel
+// when the answer changes.
+//
+// busLoop alone is not enough: it resolves once and then blocks in runPushLoop,
+// whose WebSocket only returns on error or lost ownership. A healthy pane can
+// therefore hold a connection for days, which would have left it on its local
+// bus for all of that time even though a hub had since appeared — the same
+// staleness this design set out to remove, moved from session lifetime to
+// connection lifetime. Dropping the connection makes runPushLoop redial, and
+// it redials against the retargeted client.
+func (a *app) busWatchdog() {
+	const every = 2 * time.Minute
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for range t.C {
+		if !isBusOwner() {
+			continue
+		}
+		if a.resolveBus() {
+			a.dropConn()
+		}
+	}
+}
+
+// setConn records the live push connection so the watchdog can cut it.
+func (a *app) setConn(c *websocket.Conn) {
+	a.mu.Lock()
+	a.conn = c
+	a.mu.Unlock()
+}
+
+// dropConn closes the live push connection, if any. runPushLoop treats the
+// resulting read error as an ordinary drop and reconnects.
+func (a *app) dropConn() {
+	a.mu.Lock()
+	c := a.conn
+	a.conn = nil
+	a.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
 }
 
 // unregister releases our registration and clears our id (so busLoop re-joins if
@@ -397,6 +458,9 @@ func (a *app) keepRegistered() {
 		if !isBusOwner() {
 			return
 		}
+		// Poll-only sessions have no push connection for the watchdog to cut, so
+		// this tick is where a moved bus gets picked up.
+		a.resolveBus()
 		if err := a.register(); err != nil {
 			logf("keepalive register: %v", err)
 		}

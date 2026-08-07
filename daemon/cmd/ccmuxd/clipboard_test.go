@@ -264,7 +264,11 @@ func TestShimResolves(t *testing.T) {
 		t.Skip("bash not installed")
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "xclip"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	// A REAL shim: shimResolves checks ownership by content now, because a
+	// path-only match let a genuine tool sitting in the same directory arm the
+	// display claim and swallow every copy.
+	shim := []byte(clipboardShimScript("/rt/ccmux-copy"))
+	if err := os.WriteFile(filepath.Join(dir, shimNames[0]), shim, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SHELL", sh)
@@ -275,10 +279,65 @@ func TestShimResolves(t *testing.T) {
 	if !shimResolves(dir) {
 		t.Error("shim on PATH first was not detected — the display claim would never arm")
 	}
+	// A real tool at the very same path must NOT arm it.
+	if err := os.WriteFile(filepath.Join(dir, shimNames[0]), []byte("#!/bin/sh\n# the real thing\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if shimResolves(dir) {
+		t.Error("a foreign tool at the shim's own path armed the display claim")
+	}
 	// ...and a directory that is NOT on PATH must report honestly, rather than
 	// letting the daemon claim a display for a shim nothing can find.
 	if shimResolves(filepath.Join(dir, "elsewhere")) {
 		t.Error("a dir that is not on PATH reported as resolving")
+	}
+}
+
+// TestHostHasClipboard is the guard that keeps this off a machine that already
+// has a clipboard. The shim dir is first on PATH, so installing there shadows a
+// real xclip for every command the user runs — and a pane doing
+// `xclip < ~/.ssh/id_rsa` would post that key to every attached lens.
+func TestHostHasClipboard(t *testing.T) {
+	binDir := t.TempDir()
+	otherDir := t.TempDir()
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+otherDir)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	if got := hostHasClipboard(binDir); got != "" {
+		t.Fatalf("a bare host reported %q, want it treated as headless", got)
+	}
+	// Our own shim living in the bin dir must not count as the host being
+	// equipped — otherwise the second startup would decline to reinstall.
+	if err := os.WriteFile(filepath.Join(binDir, "xclip"), []byte(clipboardShimScript("/rt/h")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostHasClipboard(binDir); got != "" {
+		t.Errorf("our own shim counted as a real tool: %q", got)
+	}
+	// A genuine tool anywhere else on PATH stops the install.
+	real := filepath.Join(otherDir, "xsel")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n# real xsel\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostHasClipboard(binDir); !strings.Contains(got, real) {
+		t.Errorf("hostHasClipboard = %q, want it to name %s", got, real)
+	}
+}
+
+// TestRealClipboardTool_IgnoresNonExecutable: a same-named directory or a
+// non-executable file is not a clipboard tool, and must not block the install.
+func TestRealClipboardTool_IgnoresNonExecutable(t *testing.T) {
+	binDir := t.TempDir()
+	otherDir := t.TempDir()
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+otherDir)
+	if err := os.Mkdir(filepath.Join(otherDir, "xclip"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "xsel"), []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := realClipboardTool(binDir); got != "" {
+		t.Errorf("realClipboardTool = %q, want none", got)
 	}
 }
 
