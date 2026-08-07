@@ -206,16 +206,24 @@ func (r *Registry) Get(id string) (Host, bool) {
 // (a member host's thin-client dialing over the tailnet). Unknown IPs are
 // rejected, so only tag:ccmux nodes reach the bus.
 func (r *Registry) IsMemberIP(ip string) bool {
+	_, ok := r.HostForIP(ip)
+	return ok
+}
+
+// HostForIP names the member host an address belongs to. It is how the hub
+// labels a peer that arrives with no pane to look up — a pane-less session on a
+// member — using its own discovery data rather than anything the caller claims.
+func (r *Registry) HostForIP(ip string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, h := range r.hosts {
 		for _, hip := range h.IPs {
 			if hip == ip {
-				return true
+				return h.ID, true
 			}
 		}
 	}
-	return false
+	return "", false
 }
 
 func abs(n int) int {

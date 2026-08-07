@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/hooktrace"
@@ -56,6 +57,27 @@ func Listen(path string, r Router) (*Listener, error) {
 	l.path, l.ln = path, ln
 	go l.serve()
 	return l, nil
+}
+
+// WritePointer records the socket a hook should send to when the path frozen
+// into its pane's environment no longer exists — see the fallback in
+// hooks/ccmux-notify.sh.
+//
+// Pane environment is written once, at session creation, and tmux sessions
+// outlive daemon restarts and upgrades by design. When this socket's path last
+// moved, every pane older than the move went on addressing the old one, and
+// nothing anywhere reported it: the hooks simply stopped arriving. A pointer the
+// daemon rewrites on every start is what makes the live path discoverable
+// instead of remembered.
+//
+// 0644, unlike the 0600 peers info file beside it: this names an already
+// world-writable socket and carries no credential. The 0700 parent directory is
+// the boundary that matters.
+func WritePointer(path, socket string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(socket+"\n"), 0o644)
 }
 
 // newListener builds the routing half of a Listener, with no socket bound. Tests

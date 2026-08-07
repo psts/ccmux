@@ -44,12 +44,15 @@ func (b *busStub) server(t *testing.T) *httptest.Server {
 		var req struct {
 			PaneID string `json:"pane_id"`
 		}
-		if json.NewDecoder(r.Body).Decode(&req) != nil || req.PaneID == "" {
+		// An EMPTY pane id is legitimate — that is a pane-less session, which
+		// authorizes with the daemon-info token instead. Only a body that does
+		// not parse is a client bug.
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
 			b.mu.Lock()
 			b.asks++
 			b.mu.Unlock()
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"pane_id required"}`))
+			_, _ = w.Write([]byte(`{"error":"bad body"}`))
 			return
 		}
 		if r.Header.Get("Authorization") != "Bearer "+b.wantToken {
@@ -113,6 +116,33 @@ func newResolveApp(t *testing.T, localURL string) *app {
 // TestResolveBus_MovesToHub is the whole point of the change: a pane that
 // started on its local bus joins the hub as soon as the daemon's tag discovery
 // finds one, without the pane being recreated.
+// A PANE-LESS session — Claude in a plain terminal — asks the same question with
+// the daemon-info credentials it already holds, and moves like any pane. It used
+// to be skipped for having no pane id, which left it alone on its host's local
+// bus while every pane in the same project was on the hub's.
+func TestResolveBus_PanelessSessionJoinsTheHub(t *testing.T) {
+	stub := &busStub{wantToken: "local-tok"}
+	ts := stub.server(t)
+	a := newResolveApp(t, ts.URL)
+	a.paneID = "" // no pane behind this session
+	a.mu.Lock()
+	a.id = "peer-1"
+	a.mu.Unlock()
+
+	// The relay URL a member daemon hands out, with the host's OWN shared token:
+	// the daemon swaps it for the hub's on the way through.
+	stub.answer("http://127.0.0.1:7900/v1/hubbus", "local-tok")
+	if !a.resolveBus() {
+		t.Fatal("a pane-less session did not move — it stays on the local bus")
+	}
+	if url, token := a.daemon.target(); url != "http://127.0.0.1:7900/v1/hubbus" || token != "local-tok" {
+		t.Errorf("target = %s/%s, want the relay", url, token)
+	}
+	if asks, _ := stub.counts(); asks != 1 {
+		t.Errorf("asked %d times, want 1", asks)
+	}
+}
+
 func TestResolveBus_MovesToHub(t *testing.T) {
 	stub := &busStub{wantToken: "local-tok"}
 	ts := stub.server(t)
@@ -217,8 +247,8 @@ func TestResolveBus_SkipsWhenNotResolvable(t *testing.T) {
 	// a dead address instead made the assertion hold no matter what.
 	const useStub = "\x00stub"
 	for _, tc := range []struct{ name, localURL, pane string }{
-		{"pane-less or legacy-stamped: localURL cleared", "", "pane-1"},
-		{"no pane id to authorize with", useStub, ""},
+		{"legacy CCMUX_PEERS_URL stamped: localURL cleared", "", "pane-1"},
+		{"legacy stamp on a pane-less session", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := &busStub{wantToken: "local-tok"}

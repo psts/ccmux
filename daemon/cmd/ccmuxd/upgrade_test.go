@@ -127,25 +127,43 @@ func TestSwapBinaries_RenamesOverExisting(t *testing.T) {
 	}
 }
 
-// announceUpgrade is the one function coupled to goreleaser's version format
-// (version.Build = tag without the v, per .goreleaser.yaml ldflags) — its
-// equality check is what makes `upgrade` a no-op on the current version, and
-// what lets a retried upgrade proceed after a partial swap left the old
-// ccmuxd on disk.
-func TestAnnounceUpgrade_VersionGate(t *testing.T) {
+// decideUpgrade is the one rule coupled to goreleaser's version format
+// (version.Build = tag without the v, per .goreleaser.yaml ldflags). It is what
+// makes `upgrade` a no-op on the current version, what lets a retried upgrade
+// proceed after a partial swap left the old ccmuxd on disk, and — the case that
+// cost a day — what notices that the SERVICE is still on the old binary.
+func TestDecideUpgrade(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		onDisk, running, target string
+		want                    upgradeAction
+	}{
+		{"current everywhere", "0.1.3", "0.1.3", "0.1.3", upgradeNothing},
+		{"newer release out", "0.1.3", "0.1.3", "0.1.4", upgradeFetch},
+		{"dev build", "dev", "dev", "0.1.3", upgradeFetch},
+		{"partial swap: old binary on disk", "0.1.3", "0.1.4", "0.1.4", upgradeFetch},
+		// The regression: binaries swapped, the exec handoff to install never
+		// happened, so the service kept serving the old one. Reported "already
+		// up to date" forever, because only the on-disk version was consulted.
+		{"swapped but never restarted", "0.1.4", "0.1.3", "0.1.4", upgradeRestart},
+		{"daemon not answering", "0.1.4", "", "0.1.4", upgradeRestart},
+		{"source build serving itself", "0.1.4-dirty", "0.1.4-dirty", "0.1.4", upgradeFetch},
+	} {
+		if got := decideUpgrade(tc.onDisk, tc.running, tc.target); got != tc.want {
+			t.Errorf("%s: decideUpgrade(%q, %q, %q) = %v, want %v",
+				tc.name, tc.onDisk, tc.running, tc.target, got, tc.want)
+		}
+	}
+}
+
+// version.Build still has to be the value the rule reads, so the goreleaser
+// coupling stays pinned even though the decision itself is now pure.
+func TestAnnounceUpgrade_ReadsBuildVersion(t *testing.T) {
 	orig := version.Build
 	defer func() { version.Build = orig }()
-
 	version.Build = "0.1.3"
-	if announceUpgrade("r", "v0.1.3") {
-		t.Fatal("same version reported as needing an upgrade")
-	}
-	if !announceUpgrade("r", "v0.1.4") {
-		t.Fatal("newer release reported as up to date")
-	}
-	version.Build = "dev"
-	if !announceUpgrade("r", "v0.1.3") {
-		t.Fatal("dev build refused to upgrade")
+	if got := announceUpgrade("r", "v0.1.4"); got != upgradeFetch {
+		t.Fatalf("a newer release gave %v, want upgradeFetch", got)
 	}
 }
 

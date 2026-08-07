@@ -42,8 +42,16 @@ type RegisterResp struct {
 }
 
 // Register is idempotent: the same pane (or requested_id) gets the same peer
-// id back, and re-registration replaces the record in place.
-func (s *Service) Register(req RegisterReq) RegisterResp {
+// id back, and re-registration replaces the record in place. Local callers use
+// it; the HTTP layer uses RegisterFrom so a federated peer can be labelled with
+// the host it came from.
+func (s *Service) Register(req RegisterReq) RegisterResp { return s.RegisterFrom(req, "") }
+
+// RegisterFrom is Register plus the connection's origin IP, which the hub turns
+// into the peer's owning-host label when there is no pane to look one up by.
+// The IP comes from the socket, never from the request body: a self-asserted
+// host would let one member claim to be another.
+func (s *Service) RegisterFrom(req RegisterReq, originIP string) RegisterResp {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -56,6 +64,11 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 		name = filepath.Base(base)
 	}
 
+	// The owning host, resolved before anything compares pids: on the hub, two
+	// member hosts each have a pid 1234, and every pid rule below is only true
+	// within one host.
+	host := s.originHostLocked(req, originIP)
+
 	id := s.assignIDLocked(req)
 	// A pane-less MCP server restarting in the same terminal re-registers with
 	// a new peer id but the same pid; drop the stale record so it can't linger.
@@ -64,7 +77,7 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 	// id was random, so nothing can re-derive it and nothing could ever collect
 	// that queue — leaving the cursor behind is how orphans were born.
 	for otherID, p := range s.peers {
-		if p.PaneID == "" && p.PID == req.PID && otherID != id &&
+		if p.PaneID == "" && p.PID == req.PID && otherID != id && p.Host == host &&
 			(p.LocalPaneID == "" || strings.EqualFold(p.LocalPaneID, req.LocalPaneID)) {
 			s.dropPeerLocked(otherID)
 		}
@@ -81,13 +94,7 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 		RegisteredAt: now, LastSeenAt: now, PollOnly: req.PollOnly,
 		ShimVersion: req.ShimVersion,
 	}
-	// Federation: stamp the owning host (hub mode) so list_peers distinguishes
-	// same-named peers across hosts. Cached read — safe under s.mu.
-	if s.hostForPane != nil && peer.PaneID != "" {
-		if h, ok := s.hostForPane(peer.PaneID); ok {
-			peer.Host = h
-		}
-	}
+	peer.Host = host
 	s.peers[id] = peer
 	// Record what this mailbox hangs off, so the collector can tell a mailbox
 	// waiting for a returning session from one whose pane is long gone.
@@ -95,6 +102,28 @@ func (s *Service) Register(req RegisterReq) RegisterResp {
 
 	s.fulfillPendingSpawnLocked(peer)
 	return RegisterResp{PeerID: id, Name: name, Group: s.groupOfLocked(peer)}
+}
+
+// originHostLocked names the host a registration belongs to, "" off the hub (or
+// for a peer this hub owns itself). A pane answers through the federated pane
+// map; a PANE-LESS session has no pane, so the connection's address answers —
+// from the hub's own discovery, never from the request body.
+//
+// The label is load-bearing beyond display: every pid rule in the bus (the
+// reaper's kill(0), the stale-record eviction) is meaningful only within one
+// machine, and this is what says which machine that is.
+func (s *Service) originHostLocked(req RegisterReq, originIP string) string {
+	if s.hostForPane != nil && req.PaneID != "" {
+		if h, ok := s.hostForPane(req.PaneID); ok {
+			return h
+		}
+	}
+	if req.PaneID == "" && originIP != "" && s.hostForAddr != nil {
+		if h, ok := s.hostForAddr(originIP); ok {
+			return h
+		}
+	}
+	return ""
 }
 
 func (s *Service) assignIDLocked(req RegisterReq) string {
@@ -323,11 +352,22 @@ func (s *Service) substrateAliveLocked(p *Peer) bool {
 	if p.PaneID != "" {
 		return s.paneExistsLocked(p.PaneID)
 	}
+	if s.remoteLocked(p) {
+		return s.presentLocked(p)
+	}
 	if p.PID <= 0 {
 		return false
 	}
 	return syscall.Kill(p.PID, 0) == nil
 }
+
+// remoteLocked reports a pane-less peer living on ANOTHER host — the hub's view
+// of a plain-terminal session on a member. Its pid indexes a process table this
+// process cannot see, so kill(0) here is not a liveness test but a coin flip
+// against an unrelated local process: it would keep a departed session listed
+// because some daemon happens to hold that pid, or evict a live one because
+// nothing does. Its own connection and heartbeat are the only honest evidence.
+func (s *Service) remoteLocked(p *Peer) bool { return p.PaneID == "" && p.Host != "" }
 
 // substrateKey is the durable identity a peer's mailbox hangs off — a hosted
 // pane, or a Mac driver-mode pane. Both make the peer id re-derivable, which is
@@ -350,6 +390,12 @@ func substrateKey(p *Peer) string {
 func (s *Service) substrateGoneLocked(p *Peer) bool {
 	if key := substrateKey(p); key != "" {
 		return s.keyGoneLocked(key)
+	}
+	if s.remoteLocked(p) {
+		// Presence, for the reason in remoteLocked. ReapOnce already drops any
+		// pane-less peer that is not present, so this only keeps the two rules
+		// from disagreeing about the same peer.
+		return !s.presentLocked(p)
 	}
 	return !(p.PID > 0 && syscall.Kill(p.PID, 0) == nil)
 }
@@ -420,6 +466,13 @@ func (s *Service) AuthorizePane(paneID, token string) bool {
 // AuthorizeLocalGroups gates the Mac app's local-pane map push: it presents
 // the shared pane-less token (readable only by the user via the 0600 info file).
 func (s *Service) AuthorizeLocalGroups(token string) bool {
+	return hmac.Equal([]byte(token), []byte(PanelessToken(s.secret)))
+}
+
+// AuthorizePaneless checks the shared pane-less credential — the counterpart to
+// AuthorizePane for a session with no pane behind it, which is how a Claude
+// started in a plain terminal proves itself when it asks which bus to join.
+func (s *Service) AuthorizePaneless(token string) bool {
 	return hmac.Equal([]byte(token), []byte(PanelessToken(s.secret)))
 }
 

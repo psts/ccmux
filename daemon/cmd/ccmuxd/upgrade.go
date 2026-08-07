@@ -14,6 +14,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -41,12 +42,19 @@ func cmdUpgrade(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !announceUpgrade(repo, tag) {
-		return nil // already up to date
+	action := announceUpgrade(repo, tag)
+	if action == upgradeNothing {
+		return nil
 	}
 	self, err := resolveSelf()
 	if err != nil {
 		return err
+	}
+	if action == upgradeRestart {
+		// Nothing to download: the binaries are already the target. Only the
+		// service is behind, and rewriting + restarting it is exactly what
+		// install does. Same exec handoff as the tail of a real upgrade.
+		return syscall.Exec(self, []string{self, "install"}, os.Environ())
 	}
 	tmp, err := os.MkdirTemp("", "ccmux-upgrade-")
 	if err != nil {
@@ -85,23 +93,95 @@ func parseUpgradeArgs(args []string) (repo, requested string, err error) {
 	return repo, fs.Arg(0), nil // Arg(0): optional explicit tag; empty = latest
 }
 
-// announceUpgrade prints what is about to happen and reports whether an
-// upgrade is needed at all.
-func announceUpgrade(repo, tag string) bool {
-	target := strings.TrimPrefix(tag, "v")
-	switch version.Build {
-	case target:
-		// The version check reads the ON-DISK binary that is running this very
-		// command, so it also fires when a previous upgrade swapped binaries and
-		// then failed before the service was rewritten. Name the recovery.
-		fmt.Printf("already up to date (%s) — if a previous upgrade was interrupted, run `ccmuxd install` to re-apply the service\n", version.Build)
-		return false
-	case "dev":
-		fmt.Printf("upgrade: dev build → %s (release %s of %s)\n", target, tag, repo)
-	default:
-		fmt.Printf("upgrade: %s → %s\n", version.Build, target)
+// upgradeAction is what `ccmuxd upgrade` should do about the version it found.
+type upgradeAction int
+
+const (
+	upgradeNothing upgradeAction = iota // on disk and running are both the target
+	upgradeRestart                      // binaries are the target, the service is not running them
+	upgradeFetch                        // fetch, swap, then hand off to install
+)
+
+// decideUpgrade is the pure rule (unit-tested). onDisk is the version of the
+// binary running this command; running is what the live daemon reports, or ""
+// when it could not be asked.
+//
+// The version comparison used to look ONLY at onDisk, and that is a state this
+// tool can reach by itself: cmdUpgrade swaps the binaries and THEN execs
+// install, so an interrupt in between leaves new binaries on disk and the old
+// daemon still serving. Every later `ccmuxd upgrade` then reported "already up
+// to date" and did nothing, while the running daemon stayed versions behind —
+// on this fleet, for a whole day, until the missing routes were traced by hand.
+// The binary on disk is not the thing being upgraded; the service is.
+//
+// An unreachable daemon means "" and is treated as needing the restart: the
+// service being down IS the thing install fixes, and re-applying it is safe.
+func decideUpgrade(onDisk, running, target string) upgradeAction {
+	if onDisk != target {
+		return upgradeFetch
 	}
-	return true
+	if running == target {
+		return upgradeNothing
+	}
+	return upgradeRestart
+}
+
+// announceUpgrade prints what is about to happen and reports what to do next.
+func announceUpgrade(repo, tag string) upgradeAction {
+	target := strings.TrimPrefix(tag, "v")
+	running := runningVersion()
+	action := decideUpgrade(version.Build, running, target)
+	switch action {
+	case upgradeNothing:
+		fmt.Printf("already up to date (%s, and the service is running it)\n", version.Build)
+	case upgradeRestart:
+		fmt.Printf("binaries are already %s but the service is running %s — re-applying it\n",
+			version.Build, orUnknown(running))
+	case upgradeFetch:
+		if version.Build == "dev" {
+			fmt.Printf("upgrade: dev build → %s (release %s of %s)\n", target, tag, repo)
+		} else {
+			fmt.Printf("upgrade: %s → %s\n", version.Build, target)
+		}
+	}
+	return action
+}
+
+func orUnknown(v string) string {
+	if v == "" {
+		return "an unknown version (it did not answer)"
+	}
+	return v
+}
+
+// runningVersion asks the live daemon what it is, over the loopback address the
+// last install recorded. "" means "could not be asked" — no install on record,
+// no daemon listening, or a reply this binary cannot read.
+func runningVersion() string {
+	saved, _ := loadPreviousInstall()
+	if saved == nil || saved.Addr == "" {
+		return ""
+	}
+	url := loopbackURL(saved.Addr)
+	if url == "" {
+		return ""
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url + "/v1/health")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var health struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return ""
+	}
+	return health.Version
 }
 
 // resolveReleaseTag turns "latest" (empty) into the concrete tag by following

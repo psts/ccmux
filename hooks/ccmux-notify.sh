@@ -51,6 +51,30 @@
 SOCKET_PATH="${CCMUX_HOOKS_SOCK:-/tmp/ccmux-hooks.sock}"
 TRACE_PATH="${CCMUX_HOOK_TRACE:-$HOME/Library/Logs/ccmux-hooks.jsonl}"
 
+# CCMUX_HOOKS_SOCK is stamped into pane environment when the pane is created, and
+# tmux sessions deliberately outlive the daemon. The daemon's socket has already
+# moved once (a shared /tmp name → a per-user runtime dir), and every pane created
+# before that move kept sending to a path that no longer existed: hooks vanished
+# silently for weeks, which made the peers bus treat those sessions as absent.
+#
+# So a stale value must not be trusted. The daemon writes its CURRENT socket path
+# beside its registry on every start; read that whenever the frozen one is gone.
+# Only hosted panes take this path — the Mac app's local panes have no
+# CCMUX_HOOKS_SOCK and must keep going to the app's own socket.
+if [[ -n "${CCMUX_HOOKS_SOCK:-}" && ! -S "$SOCKET_PATH" ]]; then
+    if [[ "$OSTYPE" == darwin* ]]; then
+        CCMUX_STATE_DIR="$HOME/Library/Application Support/ccmuxd"
+    else
+        CCMUX_STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ccmuxd"
+    fi
+    # Overridable for tests; no forks (read builtin), because this runs on every
+    # hook of every session on the machine.
+    POINTER_PATH="${CCMUX_HOOKS_POINTER:-$CCMUX_STATE_DIR/hooks-socket}"
+    if [[ -r "$POINTER_PATH" ]] && read -r CURRENT_SOCK < "$POINTER_PATH" && [[ -S "$CURRENT_SOCK" ]]; then
+        SOCKET_PATH="$CURRENT_SOCK"
+    fi
+fi
+
 # Map the CLI event arg to the canonical type string ccmux's listener expects.
 # ROUTED=0 means "trace it, don't send it": the event is registered purely so it
 # shows up in the log next to the notification it might explain (a subagent

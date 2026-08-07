@@ -89,7 +89,17 @@ func (s *Server) peersRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid peer token")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.peersSvc.Register(req))
+	writeJSON(w, http.StatusOK, s.peersSvc.RegisterFrom(req, remoteIP(r)))
+}
+
+// remoteIP is the connection's address without its port, "" if unparsable. The
+// bus labels a pane-less federated peer with the host this resolves to.
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return ""
+	}
+	return host
 }
 
 // peersMintPaneToken issues the bearer token a pane's sessions authenticate
@@ -113,6 +123,23 @@ func (s *Server) peersMintPaneToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"token": s.peersSvc.MintPaneToken(req.PaneID)})
+}
+
+// peersHostToken hands a member host the credential its PANE-LESS sessions
+// register with — a Claude started in a plain terminal, which has no pane and
+// therefore no pane token to mint against. Same authority path and same
+// plan-accepted risk as peersMintPaneToken (a member is inside the trust
+// boundary), and the same reason: no secret is distributed, the hub answers.
+//
+// The token never leaves the member's daemon. Its relay presents it upstream on
+// behalf of a local caller that authenticated with the member's OWN pane-less
+// token — see hubbus.go — so a local process gains no hub credential it could
+// use directly.
+func (s *Server) peersHostToken(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) || !s.peerConnAllowed(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": s.peersSvc.PanelessToken()})
 }
 
 // peersBus tells a pane's thin client WHICH bus to join, answered live from
@@ -140,8 +167,17 @@ func (s *Server) peersBus(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !s.peersSvc.AuthorizePane(req.PaneID, bearerToken(r)) {
-		writeError(w, http.StatusUnauthorized, "invalid pane token")
+	// A PANE-LESS session — Claude started in a plain terminal — asks the same
+	// question and deserves the same answer: it authenticates with the shared
+	// pane-less token from the daemon-info file instead of a pane's. Leaving it
+	// out is what kept those sessions marooned on their own host's bus while
+	// every pane around them was on the hub's.
+	authorized := s.peersSvc.AuthorizePane(req.PaneID, bearerToken(r))
+	if req.PaneID == "" {
+		authorized = s.peersSvc.AuthorizePaneless(bearerToken(r))
+	}
+	if !authorized {
+		writeError(w, http.StatusUnauthorized, "invalid peer token")
 		return
 	}
 	url, token := "", ""
@@ -151,12 +187,19 @@ func (s *Server) peersBus(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// 503, not an empty answer: the caller treats a successful empty
 			// reply as "your own daemon is the bus" and would leave the hub.
-			log.Printf("peers: bus resolve for pane %s: %v", req.PaneID, err)
+			log.Printf("peers: bus resolve for %s: %v", orPaneless(req.PaneID), err)
 			writeError(w, http.StatusServiceUnavailable, "bus unavailable")
 			return
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"url": url, "token": token})
+}
+
+func orPaneless(paneID string) string {
+	if paneID == "" {
+		return "a pane-less session"
+	}
+	return "pane " + paneID
 }
 
 func (s *Server) peersSend(w http.ResponseWriter, r *http.Request) {

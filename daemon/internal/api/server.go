@@ -71,6 +71,11 @@ type Server struct {
 	// token" — see SetBusResolver and peersBus.
 	busResolver func(paneID string) (string, string, error)
 
+	// hubBus, when set by SetHubBus, mounts the loopback relay that carries a
+	// pane's peers-bus traffic to the hub over the daemon's tailnet identity —
+	// see hubbus.go. nil on a hub or a node with no hub discovery.
+	hubBus *hubBus
+
 	// clipToken authorizes POST /v1/clipboard (per-boot random, written 0600
 	// into the runtime dir for the tmux copy helper). "" = endpoint disabled.
 	clipToken string
@@ -200,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/presence", s.presenceOwners) // hub polls members to union push suppression
 	mux.HandleFunc("POST /v1/peers/register", s.peersRegister)
 	mux.HandleFunc("POST /v1/peers/pane-token", s.peersMintPaneToken)
+	mux.HandleFunc("POST /v1/peers/host-token", s.peersHostToken)
 	mux.HandleFunc("POST /v1/peers/bus", s.peersBus)
 	mux.HandleFunc("POST /v1/peers/send", s.peersSend)
 	mux.HandleFunc("POST /v1/peers/list", s.peersList)
@@ -214,6 +220,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers/ws", s.peersWS)
 	mux.HandleFunc("GET /v1/peers/messages", s.peersGroupMessages)
 	mux.HandleFunc("GET /v1/peers", s.peersGroupPeers)
+	if s.hubBus != nil {
+		// Registered only on a member host with hub discovery armed, so a hub or
+		// a single-host node has no relay surface at all. Per-METHOD patterns,
+		// not a bare subtree: a method-less pattern is ambiguous against the
+		// GET / catch-all below and panics the mux at startup. GET and POST are
+		// the whole bus vocabulary (GET also carries the WS upgrade).
+		relay := http.StripPrefix(HubBusPrefix, http.HandlerFunc(s.hubBusRelay))
+		mux.Handle("GET "+HubBusPrefix+"/", relay)
+		mux.Handle("POST "+HubBusPrefix+"/", relay)
+	}
 	// The web lens (served from the embedded bundle) catches everything not
 	// matched by a more specific /v1 pattern.
 	mux.Handle("GET /", http.FileServerFS(web.Files))

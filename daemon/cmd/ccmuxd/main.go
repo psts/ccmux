@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -143,6 +144,12 @@ func runDaemon() {
 		log.Printf("hooks listener disabled: %v", err)
 	} else {
 		defer hl.Close()
+		// Panes created before this socket last moved still address the old path
+		// (pane env is stamped once, tmux sessions outlive the daemon). The
+		// pointer is how their hooks find the live one — see hooks.WritePointer.
+		if err := hooks.WritePointer(filepath.Join(configDir(), "hooks-socket"), *hooksSock); err != nil {
+			log.Printf("hooks socket pointer write failed (panes with a stale CCMUX_HOOKS_SOCK stay mute): %v", err)
+		}
 		log.Printf("hooks listening on %s", *hooksSock)
 	}
 
@@ -246,7 +253,7 @@ func setupTailnetNode(ctx context.Context, mgr *manager.Manager, apiSrv *api.Ser
 	} else {
 		hubURL := startHubDiscovery(ctx, lc)
 		apiSrv.SetHubURL(func() string { return *hubURL.Load() })
-		enableHostFederation(ts, hubURL, apiSrv)
+		enableHostFederation(ts, hubURL, apiSrv, mgr.LocalURL, peersSvc)
 	}
 	return ts, lc, nil
 }
@@ -313,7 +320,7 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	// the bus lock. The remote-connection auth relaxation + host env redirect that
 	// actually route cross-host panes here are the live-test-gated follow-up.
 	if peersSvc != nil {
-		peersSvc.EnableFederation(agg.GroupForPane, agg.Owner)
+		peersSvc.EnableFederation(agg.GroupForPane, agg.Owner, reg.HostForIP)
 	}
 
 	// WebSocket dialer for the event firehose fan-in — same tailnet dial as the
@@ -374,12 +381,70 @@ func startHubDiscovery(ctx context.Context, lc *local.Client) *atomic.Pointer[st
 // No secret is distributed: the hub mints each pane's token on demand. Any
 // failure returns the empty answer, which means "stay on your local bus" — so a
 // single-host or no-hub node behaves exactly as before.
-func enableHostFederation(ts *tsnet.Server, hubURL *atomic.Pointer[string], apiSrv *api.Server) {
-	client := &http.Client{Transport: &http.Transport{DialContext: ts.Dial}, Timeout: 3 * time.Second}
+//
+// The bus a pane is sent to is this daemon's own loopback relay, NOT the hub's
+// tailnet address. A pane process does not share the daemon's tailnet identity —
+// with tsnet they are two different nodes — and the hub admits a remote pane only
+// from a member IP, so panes dialing the hub directly were rejected on every
+// register. See internal/api/hubbus.go.
+func enableHostFederation(ts *tsnet.Server, hubURL *atomic.Pointer[string], apiSrv *api.Server, localURL string, peersSvc *peers.Service) {
+	// One tailnet transport, two users: the mint call (bounded, request/response)
+	// and the relay (unbounded, holds a WebSocket open). The timeout belongs on
+	// the client, never the transport — on the transport it would cut the bus
+	// socket every 3 seconds.
+	transport := &http.Transport{DialContext: ts.Dial}
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	relayURL := busRelayURL(localURL)
+	if relayURL == "" {
+		log.Printf("peers: no loopback base URL — panes will be sent to the hub directly, which only works where the pane process shares this daemon's tailnet identity")
+	}
+	hostCred := &hubHostCredential{client: client, hubURL: hubURL}
+	localPaneless := ""
+	if peersSvc != nil {
+		localPaneless = peersSvc.PanelessToken()
+	}
+	apiSrv.SetHubBus(func() string { return *hubURL.Load() }, transport,
+		func(inbound string) string {
+			// Only the pane-less credential is translated. A pane already holds
+			// a hub-minted token, and anything else is left alone for the hub to
+			// reject — a relay that invented credentials for unknown callers
+			// would be the open door this whole path exists to avoid.
+			if localPaneless == "" || inbound != localPaneless {
+				return ""
+			}
+			return hostCred.token()
+		})
 	apiSrv.SetBusResolver(func(paneID string) (string, string, error) {
 		u := *hubURL.Load()
 		if u == "" {
 			return "", "", nil // genuinely no hub — this daemon is the bus
+		}
+		if relayURL == "" {
+			// No relay to offer. A pane can still reach the hub directly where
+			// the pane process shares this daemon's tailnet identity; a
+			// pane-less session has no hub credential of its own, so it stays.
+			if paneID == "" {
+				return "", "", nil
+			}
+			token, err := mintHubPaneToken(client, u, paneID)
+			if err != nil {
+				return "", "", fmt.Errorf("hub mint for pane %s: %w", paneID, err)
+			}
+			return u, token, nil
+		}
+		if paneID == "" {
+			// A pane-less session keeps presenting THIS host's shared token; the
+			// relay swaps it for the hub's. Nothing hub-minted is handed to a
+			// local process, and the session needs no pane identity to join.
+			if localPaneless == "" {
+				return "", "", nil
+			}
+			if _, err := hostCred.fetch(); err != nil {
+				// Same reasoning as a failed mint: an empty answer would read as
+				// "no hub" and pull the session back to the local bus.
+				return "", "", fmt.Errorf("hub host credential: %w", err)
+			}
+			return relayURL, localPaneless, nil
 		}
 		token, err := mintHubPaneToken(client, u, paneID)
 		if err != nil {
@@ -387,9 +452,104 @@ func enableHostFederation(ts *tsnet.Server, hubURL *atomic.Pointer[string], apiS
 			// a hub that is merely restarting. An error keeps it where it is.
 			return "", "", fmt.Errorf("hub mint for pane %s: %w", paneID, err)
 		}
-		return u, token, nil
+		return relayURL, token, nil
 	})
-	log.Printf("peers: host federation armed (discovering %s)", hub.HubTag)
+	log.Printf("peers: host federation armed (discovering %s, bus relay %s)", hub.HubTag, orNone(relayURL))
+}
+
+// hubHostCredential caches the hub's pane-less registration token. It is fetched
+// rather than derived because the secret it comes from never leaves the hub, and
+// re-fetched on a TTL so a hub whose secret was rotated recovers on its own
+// instead of leaving every pane-less session 401ing until a daemon restart.
+type hubHostCredential struct {
+	client *http.Client
+	hubURL *atomic.Pointer[string]
+
+	mu      sync.Mutex
+	token_  string
+	source  string
+	fetched time.Time
+}
+
+const hostCredentialTTL = 5 * time.Minute
+
+// token is the relay's lookup: best effort, "" when nothing is cached and the
+// hub cannot be asked, which leaves the caller's own bearer in place.
+func (c *hubHostCredential) token() string {
+	t, err := c.fetch()
+	if err != nil {
+		return ""
+	}
+	return t
+}
+
+func (c *hubHostCredential) fetch() (string, error) {
+	u := *c.hubURL.Load()
+	if u == "" {
+		return "", fmt.Errorf("no hub discovered")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.token_ != "" && c.source == u && time.Since(c.fetched) < hostCredentialTTL {
+		return c.token_, nil
+	}
+	tok, err := fetchHubHostToken(c.client, u)
+	if err != nil {
+		// Keep serving a cached token from the SAME hub: a blip must not knock
+		// every pane-less session off the bus when the credential still works.
+		if c.token_ != "" && c.source == u {
+			return c.token_, nil
+		}
+		return "", err
+	}
+	c.token_, c.source, c.fetched = tok, u, time.Now()
+	return tok, nil
+}
+
+// fetchHubHostToken asks the hub for the credential its pane-less peers register
+// with (POST /v1/peers/host-token).
+func fetchHubHostToken(client *http.Client, hubURL string) (string, error) {
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/v1/peers/host-token", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("host-token HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.Token == "" {
+		return "", fmt.Errorf("hub returned an empty host token")
+	}
+	return out.Token, nil
+}
+
+// busRelayURL is the loopback bus base a pane is handed: this daemon's address
+// plus the relay prefix. Empty when there is no dialable loopback base, which is
+// the only case where handing out the hub directly is still the better answer —
+// a relative URL would be no answer at all.
+func busRelayURL(localURL string) string {
+	if localURL == "" {
+		return ""
+	}
+	return strings.TrimRight(localURL, "/") + api.HubBusPrefix
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none — direct)"
+	}
+	return s
 }
 
 // mintHubPaneToken asks the hub to mint a pane's bus token (POST /v1/peers/pane-token).

@@ -194,14 +194,21 @@ type Service struct {
 	// stamped onto Peer.Host. Both nil off the hub — single-host is unaffected.
 	globalGroups func(paneID string) (string, bool)
 	hostForPane  func(paneID string) (string, bool)
+	// hostForAddr names the member host a connection came FROM. A pane-less
+	// peer on a member host has no pane to look hostForPane up by, and its PID
+	// belongs to another machine's process table — so without this label the
+	// hub's reaper would judge it with kill(0) against an unrelated local pid.
+	// Resolved from the hub's own discovery, never from anything the caller says.
+	hostForAddr func(ip string) (string, bool)
 }
 
 // EnableFederation wires the hub-mode resolvers (see the struct fields). Call
 // once at startup, after the aggregator exists and before panes register.
-func (s *Service) EnableFederation(groups, host func(string) (string, bool)) {
+func (s *Service) EnableFederation(groups, host func(string) (string, bool), hostForAddr func(string) (string, bool)) {
 	s.mu.Lock()
 	s.globalGroups = groups
 	s.hostForPane = host
+	s.hostForAddr = hostForAddr
 	s.mu.Unlock()
 }
 

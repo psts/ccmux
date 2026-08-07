@@ -16,13 +16,22 @@ How to deploy the federation and what's live today. Design: `multihost-plan.md`.
   Web has the full host-targeted create picker + host context line; Mac has the host
   context line and direct-attach (host-targeted create is a follow-up — it creates on
   the hub by default).
-- **Cross-host peers bus** (built; **needs live two-host validation**): a non-hub host
-  discovers the hub (`tag:ccmux-hub`) and points its Claude panes' bus at it, so a peer
-  on host B can `send_message` to a peer on host A that shares a window group. The hub
-  owns the directory + global group resolution; it mints each pane's token (no secret
-  distributed) and accepts bus connections only from loopback or registered member-host
-  IPs. When no hub is found (or it's unreachable at spawn), a host falls back to its
-  local bus — so single-host is unchanged. Requires the hub tagged `tag:ccmux-hub`.
+- **Cross-host peers bus** (built; validated live on a two-host fleet 2026-08-07): a
+  non-hub host discovers the hub (`tag:ccmux-hub`) and points its Claude panes' bus at
+  it, so a peer on host B can `send_message` to a peer on host A that shares a window
+  group. The hub owns the directory + global group resolution; it mints each pane's
+  token (no secret distributed) and accepts bus connections only from loopback or
+  registered member-host IPs. When no hub is found (or it's unreachable at spawn), a
+  host falls back to its local bus — so single-host is unchanged. Requires the hub
+  tagged `tag:ccmux-hub`.
+
+  A member's panes reach that bus through `POST/GET /v1/hubbus/*` on their OWN daemon,
+  which relays to the hub over the daemon's tailnet connection — panes never dial the
+  hub themselves. They cannot: with `-tsnet` the daemon's tailnet node and the machine's
+  own tailscaled are DIFFERENT nodes with different IPs, so a pane's registration
+  arrived from an address the hub had never discovered and was refused with "peers
+  connection must be loopback or a member host", silently, on every attempt. The relay
+  is loopback-only and forwards only the bus paths a thin client uses (`internal/api/hubbus.go`).
 
 - **Per-host settings** + **global dev-hostname uniqueness/routing** (built): the lens
   configures any host via `GET/PUT /v1/hosts/{host}/settings`; the hub rejects a

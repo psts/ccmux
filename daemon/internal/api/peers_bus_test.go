@@ -85,7 +85,9 @@ func TestPeersBus_Auth(t *testing.T) {
 		{"no token", "pane-1", "", 401},
 		{"wrong token", "pane-1", "nope", 401},
 		{"another pane's token", "pane-1", peers.TokenForPane(testSecret, "pane-2"), 401},
-		{"no pane id", "", peers.TokenForPane(testSecret, "pane-1"), 401},
+		// A pane-less caller is answered (see TestPeersBus_PanelessIsAnswered),
+		// but only against the SHARED credential — a pane's token is not it.
+		{"no pane id, presenting a pane token", "", peers.TokenForPane(testSecret, "pane-1"), 401},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

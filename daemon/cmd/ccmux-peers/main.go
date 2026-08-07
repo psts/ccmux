@@ -184,7 +184,16 @@ func main() {
 		// group) with the daemon-info file's shared credentials.
 		a.paneID = ""
 		url, token = readDaemonInfo()
-		a.localURL, a.localToken = "", "" // no pane identity to authorize a resolve with
+		if legacyURL := os.Getenv("CCMUX_PEERS_URL"); legacyURL == "" {
+			// Those same credentials authorize the bus question, so a pane-less
+			// session asks it too and joins whatever bus its panes are on. It
+			// used to be excluded here, and the result was a Claude in a plain
+			// terminal sitting alone on its host's local bus while every pane
+			// beside it — same project, same group — was on the hub's.
+			a.localURL, a.localToken = url, token
+		} else {
+			a.localURL, a.localToken = "", ""
+		}
 	}
 	if url == "" {
 		logf("no ccmuxd found (env or daemon-info file) — tools will error until it appears")
@@ -256,7 +265,10 @@ func (a *app) busLoop() {
 // Any failure is a no-op on purpose: an older daemon 404s this route, an
 // unreachable one errors, and either way staying put is the safe answer.
 func (a *app) resolveBus() bool {
-	if a.localURL == "" || a.paneID == "" {
+	// No pane id required: a pane-less session asks the same question with the
+	// daemon-info credentials it already holds. Only a client with no local
+	// daemon to ask (the legacy CCMUX_PEERS_URL path) sits this out.
+	if a.localURL == "" {
 		return false
 	}
 	// Serialized against register: the watchdog can retarget on its own

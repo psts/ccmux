@@ -20,6 +20,7 @@ func TestFederation_GlobalGroupAndHostStamp(t *testing.T) {
 			}
 			return "", false
 		},
+		nil,
 	)
 
 	resp := registerPane(svc, "remote-pane", "/srv/x/backend")
@@ -42,6 +43,7 @@ func TestFederation_LocalGroupWins(t *testing.T) {
 	svc.EnableFederation(
 		func(string) (string, bool) { return "GLOBAL", true },
 		func(string) (string, bool) { return "otherhost", true },
+		nil,
 	)
 	if resp := registerPane(svc, "local-pane", "/x"); resp.Group != "LOCALWIN" {
 		t.Fatalf("local pane group = %q, want LOCALWIN (local manager wins)", resp.Group)
