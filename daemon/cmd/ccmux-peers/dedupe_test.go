@@ -32,7 +32,7 @@ func TestDedupe_PolledEventAlreadyPushedIsNotRenderedTwice(t *testing.T) {
 	var out bytes.Buffer
 	a := dedupeApp(&out)
 
-	if !a.dispatchEvent(wireEvent{Type: "message", Seq: 7, FromName: "backend", Text: "ship it"}) {
+	if !a.dispatchEvent(wireEvent{Type: "message", Seq: 7, FromName: "backend", Text: "ship it"}, 0) {
 		t.Fatal("push dispatch failed")
 	}
 	if !a.alreadyShown(7) {
@@ -50,7 +50,7 @@ func TestDedupe_PolledEventAlreadyPushedIsNotRenderedTwice(t *testing.T) {
 func TestDedupe_FailedWriteIsStillPollable(t *testing.T) {
 	a := &app{mcp: newMCPServerIO(strings.NewReader(""), failingWriter{}), channelMode: true}
 
-	if a.dispatchEvent(wireEvent{Type: "message", Seq: 7, Text: "ship it"}) {
+	if a.dispatchEvent(wireEvent{Type: "message", Seq: 7, Text: "ship it"}, 0) {
 		t.Fatal("dispatch reported success despite an unwritable transport")
 	}
 	if a.alreadyShown(7) {
@@ -64,9 +64,9 @@ func TestDedupe_ReplayAfterReconnectIsSuppressed(t *testing.T) {
 	var out bytes.Buffer
 	a := dedupeApp(&out)
 
-	a.dispatchEvent(wireEvent{Type: "message", Seq: 4, Text: "first"})
+	a.dispatchEvent(wireEvent{Type: "message", Seq: 4, Text: "first"}, 0)
 	// Reconnect: the server replays 4 because the ack never landed.
-	if !a.dispatchEvent(wireEvent{Type: "message", Seq: 4, Text: "first"}) {
+	if !a.dispatchEvent(wireEvent{Type: "message", Seq: 4, Text: "first"}, 0) {
 		t.Fatal("a replayed event must still be acked away, not left to loop")
 	}
 
@@ -81,8 +81,8 @@ func TestDedupe_VerdictIsNotEmittedTwice(t *testing.T) {
 	var out bytes.Buffer
 	a := dedupeApp(&out)
 
-	a.dispatchEvent(wireEvent{Type: "permission_verdict", Seq: 9, RequestID: "abcde", Behavior: "allow"})
-	a.dispatchEvent(wireEvent{Type: "permission_verdict", Seq: 9, RequestID: "abcde", Behavior: "allow"})
+	a.dispatchEvent(wireEvent{Type: "permission_verdict", Seq: 9, RequestID: "abcde", Behavior: "allow"}, 0)
+	a.dispatchEvent(wireEvent{Type: "permission_verdict", Seq: 9, RequestID: "abcde", Behavior: "allow"}, 0)
 
 	if got := notificationCount(&out, "notifications/claude/channel/permission"); got != 1 {
 		t.Errorf("got %d permission notifications, want 1", got)
@@ -94,10 +94,10 @@ func TestDedupe_VerdictIsNotEmittedTwice(t *testing.T) {
 func TestMarkShown_OnlyMovesForward(t *testing.T) {
 	a := &app{}
 
-	if !a.markShown(5) {
+	if !a.markShown(5, 0) {
 		t.Fatal("first advance to 5 should be news")
 	}
-	if a.markShown(3) {
+	if a.markShown(3, 0) {
 		t.Error("a lower seq must not count as news")
 	}
 	if !a.alreadyShown(3) || !a.alreadyShown(5) {
@@ -106,7 +106,7 @@ func TestMarkShown_OnlyMovesForward(t *testing.T) {
 	if a.alreadyShown(6) {
 		t.Error("6 has not been shown")
 	}
-	if a.markShown(5) {
+	if a.markShown(5, 0) {
 		t.Error("re-marking the same seq must not count as news")
 	}
 }
@@ -114,7 +114,7 @@ func TestMarkShown_OnlyMovesForward(t *testing.T) {
 // An event with no seq cannot be deduped, and dropping it would lose a message.
 func TestAlreadyShown_ZeroSeqIsNeverSuppressed(t *testing.T) {
 	a := &app{}
-	a.markShown(10)
+	a.markShown(10, 0)
 	if a.alreadyShown(0) {
 		t.Error("a zero seq must never be treated as already shown")
 	}

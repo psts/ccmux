@@ -22,8 +22,13 @@ const (
 // daemonClient is RE-TARGETABLE on purpose. Which bus this process belongs to is
 // not knowable once at startup: a hub can appear, disappear, or move while the
 // pane lives, and panes outlive daemons. The target is therefore re-resolved on
-// every reconnect (see app.resolveBus) and swapped here, so the pointer held by
-// the tool handlers never changes and no call site needs to care.
+// a timer (app.busWatchdog) and on each busLoop / keepRegistered pass, then
+// swapped here, so the pointer held by the tool handlers never changes.
+//
+// Reconnects inside runPushLoop do NOT re-resolve; they redial whatever this
+// client currently points at. A move is what cuts the connection, via
+// app.dropConn, and app.busEpoch keeps a dial that raced the move from being
+// installed against the bus we left.
 type daemonClient struct {
 	mu      sync.Mutex
 	baseURL string
@@ -46,17 +51,14 @@ func (d *daemonClient) target() (string, string) {
 	return d.baseURL, d.token
 }
 
-// retarget points this client at a different bus. Reports whether anything
-// changed, so the caller can re-register only when it actually moved.
-func (d *daemonClient) retarget(baseURL, token string) bool {
-	baseURL = strings.TrimRight(baseURL, "/")
+// retarget points this client at a different bus. resolveBus has already
+// compared the answer against target() and returns early when nothing changed,
+// so this does not report a delta — an earlier version did, and no caller ever
+// read it.
+func (d *daemonClient) retarget(baseURL, token string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.baseURL == baseURL && d.token == token {
-		return false
-	}
-	d.baseURL, d.token = baseURL, token
-	return true
+	d.baseURL, d.token = strings.TrimRight(baseURL, "/"), token
 }
 
 func (d *daemonClient) post(path string, body, out any) error {
@@ -129,6 +131,10 @@ func (a *app) runPushLoop() {
 }
 
 func (a *app) pushOnce() error {
+	// Captured BEFORE the dial: a bus move landing while we are connecting makes
+	// this connection belong to the bus we left, and the watchdog's dropConn has
+	// already run against a nil a.conn. setConn is what catches that.
+	epoch := a.busEpochNow()
 	baseURL, token := a.daemon.target()
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") +
 		"/v1/peers/ws?peer_id=" + a.peerID()
@@ -138,7 +144,9 @@ func (a *app) pushOnce() error {
 		return err
 	}
 	defer conn.Close()
-	a.setConn(conn)
+	if !a.setConn(conn, epoch) {
+		return fmt.Errorf("bus moved while connecting; dropping the connection dialled at %s", baseURL)
+	}
 	defer a.dropConn()
 	logf("push channel connected")
 
@@ -152,7 +160,7 @@ func (a *app) pushOnce() error {
 		if err := conn.ReadJSON(&ev); err != nil {
 			return err
 		}
-		if !a.dispatchEvent(ev) {
+		if !a.dispatchEvent(ev, epoch) {
 			continue // notification failed — leave unacked so it replays
 		}
 		if err := conn.WriteJSON(map[string]any{"type": "ack", "seq": ev.Seq}); err != nil {
@@ -167,7 +175,7 @@ func (a *app) pushOnce() error {
 // A successful write records the seq as shown, which is what stops a concurrent
 // check_messages from rendering the same message a second time while this one is
 // still waiting to be acked.
-func (a *app) dispatchEvent(ev wireEvent) bool {
+func (a *app) dispatchEvent(ev wireEvent, epoch uint64) bool {
 	if a.alreadyShown(ev.Seq) {
 		return true // already in front of the model; ack it away
 	}
@@ -178,7 +186,7 @@ func (a *app) dispatchEvent(ev wireEvent) bool {
 			"behavior":   ev.Behavior,
 		})
 		if err == nil {
-			a.markShown(ev.Seq)
+			a.markShown(ev.Seq, epoch)
 			logf("relayed verdict %s %s from %s", ev.Behavior, ev.RequestID, ev.FromID)
 		}
 		return err == nil
@@ -197,7 +205,7 @@ func (a *app) dispatchEvent(ev wireEvent) bool {
 			},
 		})
 		if err == nil {
-			a.markShown(ev.Seq)
+			a.markShown(ev.Seq, epoch)
 			logf("pushed message from %s: %.80s", orID(ev.FromName, ev.FromID), ev.Text)
 		}
 		return err == nil

@@ -95,10 +95,10 @@ func TestDispatchEvent_EmitsChannelAndPermissionNotifications(t *testing.T) {
 	a := &app{mcp: newMCPServerIO(strings.NewReader(""), &out), channelMode: true}
 
 	if !a.dispatchEvent(wireEvent{Type: "message", Seq: 3, FromID: "abc", FromName: "backend",
-		FromSummary: "s", FromCWD: "/w/backend", Text: "hello", SentAt: "2026-07-15T12:00:00.000Z"}) {
+		FromSummary: "s", FromCWD: "/w/backend", Text: "hello", SentAt: "2026-07-15T12:00:00.000Z"}, 0) {
 		t.Fatal("message dispatch reported failure")
 	}
-	if !a.dispatchEvent(wireEvent{Type: "permission_verdict", Seq: 4, RequestID: "abcde", Behavior: "allow", FromID: "abc"}) {
+	if !a.dispatchEvent(wireEvent{Type: "permission_verdict", Seq: 4, RequestID: "abcde", Behavior: "allow", FromID: "abc"}, 0) {
 		t.Fatal("verdict dispatch reported failure")
 	}
 

@@ -5,11 +5,15 @@ import (
 	"testing"
 )
 
-// TestFallbackStartupCommand_HidesTMUX pins the one token that makes copies
-// reach the lens. Claude Code picks tmux-buffer over OSC 52 whenever $TMUX is
-// set, and a tmux buffer lives on the daemon's host where no lens can see it.
-// Without `env -u TMUX` the copy silently goes nowhere — the failure this whole
-// path exists to remove, and one nothing else in the daemon would catch.
+// TestFallbackStartupCommand_HidesTMUX pins the `env -u TMUX` prefix. It does
+// NOT pin "copies reach the lens": measured against Claude Code 2.1.224, they
+// reach it with $TMUX set too, because it emits OSC 52 on every copy. What the
+// prefix avoids is a duplicate sequence and an up-to-4s blocking
+// `tmux load-buffer` ahead of each copy.
+//
+// Note the narrow scope: this guards only the FALLBACK. An install with
+// default_startup_command persisted, or a matching startup rule, never reaches
+// this constant at all — see Manager.DefaultStartupCommand.
 func TestFallbackStartupCommand_HidesTMUX(t *testing.T) {
 	if !strings.HasPrefix(FallbackStartupCommand, "env -u TMUX ") {
 		t.Errorf("startup command = %q, want it to hide $TMUX from claude", FallbackStartupCommand)

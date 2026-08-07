@@ -53,7 +53,7 @@ func derivePaneTitle(rawTitle, rawCommand string, defaultTitles map[string]bool)
 // arrives (~1s): panes born to run claude are "Claude", everything else starts
 // as a shell.
 func initialPaneTitle(startupCmd string) string {
-	if f := strings.Fields(startupCmd); len(f) > 0 && f[0] == "claude" {
+	if startupProgram(startupCmd) == "claude" {
 		return "Claude"
 	}
 	return "Terminal"

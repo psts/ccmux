@@ -158,18 +158,21 @@ func (m *Manager) adopt(ws *model.Workspace, isLive bool) {
 // sessions get live channel push out of the box (plain `claude` would load the
 // peer tools but silently drop pushed messages).
 //
-// `env -u TMUX` is what makes copies reach the lens. Claude Code picks its copy
-// strategy as: native if a clipboard tool is on PATH, else tmux-buffer if $TMUX
-// is set, else OSC 52. On a headless host the first is unavailable, so it wrote
-// copies into a tmux buffer beside the daemon where no lens ever saw them.
-// Hiding $TMUX from THIS process (not from the pane's shell) drops it to OSC 52,
-// which tmux already forwards verbatim in %output and SwiftTerm already turns
-// into an OS-clipboard write — a path that exists end to end and needs nothing
-// installed on the host.
+// `env -u TMUX` is a cleanup on the clipboard path, NOT what makes copies reach
+// the lens. Measured against Claude Code 2.1.224: it writes OSC 52 on every
+// copy regardless of $TMUX, and `tmux load-buffer` / pbcopy / xclip are extra
+// writes rather than alternatives to it. tmux forwards a pane's OSC 52 to its
+// client inside %output either way, so copies already reach the lens with $TMUX
+// set — verified end to end against a real hosted pane and an attached lens.
 //
-// The cost is that claude's own subprocesses no longer see $TMUX, so a `tmux`
-// command it runs reports no server. In a ccmux pane the daemon owns tmux, so
-// that is rarely wanted; it is a deliberate trade, not an oversight.
+// What unsetting it buys: with $TMUX set, claude emits the sequence twice (once
+// plain, once wrapped in a tmux DCS passthrough) and awaits `tmux load-buffer`
+// for up to 4s before emitting at all. Unsetting drops both.
+//
+// What it costs: claude's own subprocesses no longer see $TMUX, so a `tmux`
+// command one of them runs does not find the ccmux server. TMUX_PANE survives,
+// so anything keyed on the pane id is unaffected. In a ccmux pane the daemon
+// owns tmux, so that is a deliberate trade.
 const FallbackStartupCommand = "env -u TMUX claude --dangerously-load-development-channels server:claude-peers"
 
 const settingStartupCommand = "default_startup_command"

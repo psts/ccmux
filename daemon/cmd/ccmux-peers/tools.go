@@ -301,6 +301,10 @@ func (a *app) toolCheckMessages() any {
 	var resp struct {
 		Events []wireEvent `json:"events"`
 	}
+	// Read BEFORE the poll: these seqs belong to whichever bus answers it, and a
+	// move landing before we mark them would otherwise stamp this bus's numbering
+	// onto the next one (see markShown).
+	epoch := a.busEpochNow()
 	if err := a.daemon.post("/v1/peers/poll", map[string]any{"peer_id": a.peerID()}, &resp); err != nil {
 		return toolText("Error checking messages: "+err.Error(), true)
 	}
@@ -319,11 +323,11 @@ func (a *app) toolCheckMessages() any {
 			if a.mcp.Notify("notifications/claude/channel/permission", map[string]any{
 				"request_id": ev.RequestID, "behavior": ev.Behavior,
 			}) == nil {
-				a.markShown(ev.Seq)
+				a.markShown(ev.Seq, epoch)
 			}
 			continue
 		}
-		a.markShown(ev.Seq)
+		a.markShown(ev.Seq, epoch)
 		lines = append(lines, fmt.Sprintf("From %s (%s):\n%s", orID(ev.FromName, ev.FromID), ev.SentAt, ev.Text))
 	}
 	body := "No new messages."

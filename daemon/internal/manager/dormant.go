@@ -9,7 +9,6 @@
 package manager
 
 import (
-	"path/filepath"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/model"
@@ -20,15 +19,7 @@ import (
 // for the one-time migration of existing ones; it is never the runtime test,
 // because it cannot see a Claude the user launched by hand.
 func startsClaude(startupCmd string) bool {
-	fields := strings.Fields(startupCmd)
-	for _, f := range fields {
-		// Skip leading env assignments (FOO=bar claude …) and find the program.
-		if strings.Contains(f, "=") {
-			continue
-		}
-		return filepath.Base(f) == "claude"
-	}
-	return false
+	return startupProgram(startupCmd) == "claude"
 }
 
 // isDormant is the whole rule, in the two facts a pane carries: the last thing

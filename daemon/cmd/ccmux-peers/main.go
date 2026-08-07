@@ -98,6 +98,14 @@ type app struct {
 	conn    *websocket.Conn // live push channel, closed when the bus moves under us
 	grp     string
 	regReq  map[string]any
+	// busEpoch counts completed bus moves. A push connection belongs to the bus
+	// it was dialled against, so pushOnce captures this before dialling and
+	// setConn refuses a connection whose epoch is stale. Without it, a move
+	// landing inside the dial window closes nothing (a.conn is still nil), the
+	// dial completes against the bus we just left, and every later watchdog tick
+	// sees a matching target and never cuts it — the pane is absent from the hub
+	// for good while the log says it moved.
+	busEpoch uint64
 	// shownSeq is the highest event seq this process has actually put in front of
 	// the model. It is the dedupe authority, and it has to live here rather than
 	// in the daemon: the daemon's cursor only advances when this process acks,
@@ -118,10 +126,17 @@ func (a *app) group() string  { a.mu.Lock(); defer a.mu.Unlock(); return a.grp }
 
 // markShown records that seq reached the model, and reports whether that was
 // news. Out-of-order and repeat seqs are absorbed: only a forward move counts.
-func (a *app) markShown(seq int64) bool {
+//
+// epoch is the bus generation the event was READ under. Callers notify the model
+// before marking, and that write is not under a.mu, so a bus move can land in
+// between — and seq is per-daemon, so writing the old bus's number back after
+// resolveBus zeroed it would re-suppress the new bus's first events for good.
+// A stale epoch therefore drops the mark rather than resurrecting it; the event
+// still reached the model, and the new bus's numbering starts clean.
+func (a *app) markShown(seq int64, epoch uint64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if seq <= a.shownSeq {
+	if a.busEpoch != epoch || seq <= a.shownSeq {
 		return false
 	}
 	a.shownSeq = seq
@@ -228,10 +243,15 @@ func (a *app) busLoop() {
 }
 
 // resolveBus asks THIS pane's own daemon which peers bus to be on, and moves if
-// the answer changed. Called before every registration attempt, which is what
-// makes hub membership follow tag:ccmux-hub instead of a value frozen into pane
-// environment when the session was created — panes routinely outlive the daemon,
-// and a hub can appear, move, or go away while one is running.
+// the answer changed. That is what makes hub membership follow tag:ccmux-hub
+// instead of a value frozen into pane environment when the session was created —
+// panes routinely outlive the daemon, and a hub can appear, move, or go away
+// while one is running.
+//
+// Called from three places: each busLoop iteration, the keepRegistered tick, and
+// busWatchdog every 2 minutes. NOT from the reconnects inside runPushLoop, which
+// redial the current target without re-resolving — the watchdog is what covers a
+// connection that stays healthy for days.
 //
 // Any failure is a no-op on purpose: an older daemon 404s this route, an
 // unreachable one errors, and either way staying put is the safe answer.
@@ -294,6 +314,18 @@ func (a *app) resolveBus() bool {
 		logf("bus move: could not release the registration on %s (%v) — it stays listed there until that bus reaps it", curURL, err)
 	}
 	a.daemon.retarget(url, token)
+	a.mu.Lock()
+	// shownSeq is a high-water mark over the OLD bus's seq counter, and seq is a
+	// per-daemon AUTOINCREMENT (store.peer_events) — the two buses number their
+	// events independently. Carrying the mark across a move silently swallows
+	// every event on the new bus below it: alreadyShown suppresses them and the
+	// cursor is acked past them, so they are lost for good rather than delayed.
+	// A pane that sat on its local bus for a day then joined a fresh hub would
+	// see nothing until the hub's counter passed the local one.
+	a.shownSeq = 0
+	// Any connection dialled before this point belongs to the bus we just left.
+	a.busEpoch++
+	a.mu.Unlock()
 	logf("bus moved to %s — re-registering", url)
 	return true
 }
@@ -322,11 +354,25 @@ func (a *app) busWatchdog() {
 	}
 }
 
-// setConn records the live push connection so the watchdog can cut it.
-func (a *app) setConn(c *websocket.Conn) {
+// busEpochNow reads the current move counter, for a caller about to dial.
+func (a *app) busEpochNow() uint64 {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.busEpoch
+}
+
+// setConn records the live push connection so the watchdog can cut it. It
+// reports false when the bus moved since epoch was taken, meaning this
+// connection is to the bus we just left and the caller must drop it — the
+// watchdog's dropConn cannot, because a.conn was still nil when it ran.
+func (a *app) setConn(c *websocket.Conn, epoch uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.busEpoch != epoch {
+		return false
+	}
 	a.conn = c
-	a.mu.Unlock()
+	return true
 }
 
 // dropConn closes the live push connection, if any. runPushLoop treats the
@@ -343,9 +389,10 @@ func (a *app) dropConn() {
 
 // unregister releases our registration and clears our id (so busLoop re-joins if
 // we become the owner again). Safe to call when not registered.
-// unregister releases our registration and clears our id either way — a failed
-// release must still drop the id, or busLoop would never re-register. Returns
-// the post error so a caller that cares (a bus move) can say it was left listed.
+//
+// The id is dropped either way — a failed release must still clear it, or
+// busLoop would never re-register. Returns the post error so a caller that cares
+// (a bus move) can report that we were left listed on the bus we left.
 func (a *app) unregister() error {
 	id := a.peerID()
 	if id == "" {

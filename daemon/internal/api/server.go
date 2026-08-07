@@ -114,10 +114,10 @@ func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
 // where the local bus is always the answer.
 //
 // The error case is not decoration. "No hub exists" and "the hub exists but I
-// could not reach it" are different answers, and collapsing them told every pane
-// on a member host to leave the hub whenever it blipped — then rejoin two
-// minutes later, in lockstep, with a rotated secret parking them locally for
-// good.
+// could not reach it" are different answers. Collapsing them would tell every
+// pane on a member host to leave the hub whenever it blipped, then rejoin on the
+// next watchdog tick, in lockstep — and a rotated secret would park them locally
+// for good.
 func (s *Server) SetBusResolver(f func(paneID string) (string, string, error)) { s.busResolver = f }
 
 // SetClipboardToken arms POST /v1/clipboard (see clipToken).
