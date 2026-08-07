@@ -46,6 +46,10 @@ func TestClipboard_Gates(t *testing.T) {
 		{"missing pane header", "tok", "127.0.0.1:4242", "tok", "", "hello", 400},
 		{"empty body", "tok", "127.0.0.1:4242", "tok", "%1", "", 400},
 		{"unknown pane", "tok", "127.0.0.1:4242", "tok", "%1", "hello", 404},
+		// Rejected, not truncated: a clipboard holding the first megabyte of
+		// what you copied looks like it worked.
+		{"over the 1MB cap", "tok", "127.0.0.1:4242", "tok", "%1", strings.Repeat("x", (1<<20)+1), 413},
+		{"exactly at the cap", "tok", "127.0.0.1:4242", "tok", "%1", strings.Repeat("x", 1<<20), 404},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

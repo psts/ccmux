@@ -210,8 +210,10 @@ func (s *Server) Handler() http.Handler {
 // paste-a-command primitive, so another ACCOUNT on this host must not reach
 // it (same-user callers can fake a copy via the tmux socket regardless — no
 // pretense of a same-user boundary). 1MB cap: a copy is human-sized; a
-// runaway pipe must not balloon every lens. Failures are logged — the caller
-// discards the response, so this is the only place they can surface.
+// runaway pipe must not balloon every lens. Over the cap is REJECTED, not
+// truncated — a clipboard that silently holds the first megabyte of what you
+// copied is worse than one that visibly did nothing. Failures are logged — the
+// caller discards the response, so this is the only place they can surface.
 func (s *Server) clipboard(w http.ResponseWriter, r *http.Request) {
 	if !requireLoopback(w, r) {
 		return
@@ -230,9 +232,23 @@ func (s *Server) clipboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "X-Ccmux-Pane header required")
 		return
 	}
-	text, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil || len(text) == 0 {
-		writeError(w, http.StatusBadRequest, "empty or unreadable body")
+	const maxClip = 1 << 20
+	text, err := io.ReadAll(io.LimitReader(r.Body, maxClip+1))
+	if err != nil {
+		// Split from "empty" and logged: a copy cut off mid-upload (the pane
+		// exited, the client was killed) is a real failure, and every OTHER
+		// branch here records itself. This was the one that vanished.
+		log.Printf("clipboard: body read failed for pane %s after %d bytes: %v", paneID, len(text), err)
+		writeError(w, http.StatusBadRequest, "clipboard body could not be read")
+		return
+	}
+	if len(text) == 0 {
+		writeError(w, http.StatusBadRequest, "empty clipboard body")
+		return
+	}
+	if len(text) > maxClip {
+		log.Printf("clipboard: rejected copy over %d bytes from pane %s", maxClip, paneID)
+		writeError(w, http.StatusRequestEntityTooLarge, "copy exceeds 1MB")
 		return
 	}
 	if err := s.mgr.BroadcastClipboard(paneID, text); err != nil {

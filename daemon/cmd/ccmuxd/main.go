@@ -84,10 +84,11 @@ func runDaemon() {
 	// The copy bindings pipe through a daemon-written helper (token + loopback
 	// URL baked in). A minting failure disables the pipe, never the daemon:
 	// the placeholder becomes `true` so the bindings still copy locally.
-	clipScript, clipToken, clipErr := setupClipboardPipe(runtimeDir(), loopbackURL(*addr))
+	clipScript, clipShimDir, clipToken, clipErr := setupClipboardPipe(runtimeDir(), loopbackURL(*addr))
 	if clipErr != nil {
 		log.Printf("clipboard pipe disabled: %v", clipErr)
 		clipScript = "true"
+		clipShimDir = "" // no helper to exec — panes must not get a broken xclip
 	}
 	if err := os.WriteFile(cfgPath, []byte(renderTmuxConf(config.TmuxConf, clipScript)), 0o644); err != nil {
 		log.Fatalf("write tmux config: %v", err)
@@ -108,6 +109,7 @@ func runDaemon() {
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
+	mgr.ClipShimDir = clipShimDir
 
 	// Built-in peers bus: pane env gets the bearer token (must be wired before
 	// any pane is created), pane-less sessions discover url+token via the info
