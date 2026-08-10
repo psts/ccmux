@@ -17,7 +17,6 @@
 package api
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,15 +33,14 @@ const HubBusPrefix = "/v1/hubbus"
 // ViewerTokenParam carries the lens credential on requests that cannot set a
 // header. A browser's WebSocket constructor takes no headers at all, and the
 // listen stream is the one viewer surface that must be a socket — so the token
-// rides the query string for that hop, over loopback only, and is stripped
-// before the request crosses to the hub.
+// rides the query string for that hop and is stripped before the request
+// crosses to the hub.
+//
+// That hop is whatever the lens page was loaded over: loopback, or the tailnet
+// when the page came from this daemon's tsnet listener. A URL is one more place
+// a credential can be logged, which is the cost of a constructor that takes no
+// headers.
 const ViewerTokenParam = "viewer_token"
-
-// viewerRelayCtxKey marks a request the relay classified as a lens read, so the
-// proxy's Director can tell it apart from thin-client bus traffic after the
-// classification is done. A context value rather than a second proxy: the
-// Director is built once per hub, and the two kinds differ per request.
-type viewerRelayCtxKey struct{}
 
 // hubBus forwards to whatever hub is discovered RIGHT NOW. The target is read
 // per request, not captured: hub discovery re-resolves tag:ccmux-hub every 15s,
@@ -109,10 +107,9 @@ func relayKindFor(r *http.Request) relayKind {
 // tailnet reach and take no credential at all (peersWS upgrades the listen arm
 // before checking anything). Relaying them on that basis would have put an
 // unauthenticated read of every message, delegation and permission request in a
-// guessable group name one loopback dial away on every member host — which on a
-// shared host is every local account, tailnet or not. So the relay applies the
-// boundary the hub gets from the tailnet: this host's pane-less token, out of
-// the 0600 daemon-info file, which means same user on this machine.
+// guessable group name one dial away on every member host. So the relay demands
+// a credential of its own — see viewerRelayRequest for which, and why the
+// caller's address is not it.
 func viewerRelay(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/v1/peers", "/v1/peers/messages":
@@ -177,7 +174,7 @@ func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if kind == relayViewer {
-		if r = s.viewerRelayRequest(w, r); r == nil {
+		if !s.viewerRelayRequest(w, r) {
 			return
 		}
 	} else if err := s.hubBus.checkCredential(bearerToken(r)); err != nil {
@@ -198,34 +195,45 @@ func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-// viewerRelayRequest authorizes a lens read and returns the request to forward,
-// or nil when it has already answered the caller. The token may arrive as a
-// bearer (the Mac app) or as a query parameter (a browser's WebSocket, which
-// cannot set headers); either way it is this host's own credential and is taken
-// off the request before the hop, because the hub neither knows nor wants it.
-func (s *Server) viewerRelayRequest(w http.ResponseWriter, r *http.Request) *http.Request {
+// viewerRelayRequest authorizes a lens read and reports whether to forward it.
+// The token may arrive as a bearer (the Mac app) or as a query parameter (a
+// browser's WebSocket, which cannot set headers). Either way it is this host's
+// own credential and is taken off the request before the hop, because the hub
+// neither knows nor wants it.
+//
+// The credential is required from EVERY caller, whatever its address. An earlier
+// version demanded it only from loopback, reasoning that anyone arriving over
+// the tailnet could already read the hub directly. That reasoning does not hold:
+// a daemon can be bound to a LAN address, an ACL can admit a node to members but
+// not to the tag-isolated hub, and — decisively — an unprivileged local account
+// on a shared host can reach this daemon's own tsnet node through the machine's
+// tailscaled and so arrive here NOT from loopback. Address is not identity. The
+// 0600 daemon-info file is the only same-user proof there is, so holding a token
+// derived from it is the whole test.
+func (s *Server) viewerRelayRequest(w http.ResponseWriter, r *http.Request) bool {
 	if s.peersSvc == nil {
 		writeError(w, http.StatusServiceUnavailable, "peers bus not enabled")
-		return nil
+		return false
 	}
 	q := r.URL.Query()
 	token := bearerToken(r)
 	if token == "" {
 		token = q.Get(ViewerTokenParam)
 	}
-	// Only a LOOPBACK caller has to present one. On a shared host that caller is
-	// any local account, which is who the credential exists to exclude; a caller
-	// that came over the tailnet has already crossed the boundary the hub itself
-	// relies on for the very same read.
-	if isLoopback(r) && !s.peersSvc.AuthorizeViewer(token) {
+	if !s.peersSvc.AuthorizeViewer(token) {
 		writeError(w, http.StatusUnauthorized, "invalid viewer token")
-		return nil
+		return false
 	}
 	if q.Has(ViewerTokenParam) {
 		q.Del(ViewerTokenParam)
 		r.URL.RawQuery = q.Encode()
 	}
-	return r.WithContext(context.WithValue(r.Context(), viewerRelayCtxKey{}, true))
+	// Dropped here, at the point of classification, rather than signalled to the
+	// proxy's Director through the request context. The hub's viewer surface
+	// takes no credential, and this one is a LOCAL secret that would mean nothing
+	// there — so the read crosses anonymously.
+	r.Header.Del("Authorization")
+	return true
 }
 
 // checkCredential resolves the upstream bearer BEFORE proxying, so a failure to
@@ -267,14 +275,6 @@ func (b *hubBus) proxyFor(raw string) (*httputil.ReverseProxy, error) {
 		// dev-hostname dispatch, and a proxied request must look like it was
 		// addressed to the hub, not to the pane's loopback.
 		out.Host = u.Host
-		if out.Context().Value(viewerRelayCtxKey{}) != nil {
-			// A lens read. The hub's viewer surface takes no credential, and the
-			// one this caller presented is a LOCAL secret that would mean nothing
-			// there — so the read crosses anonymously rather than putting this
-			// host's token on the tailnet for nothing.
-			out.Header.Del("Authorization")
-			return
-		}
 		if upstream == nil {
 			return
 		}

@@ -19,9 +19,10 @@ enum PeerBrokerError: Error {
     }
 }
 
-/// Read-only client for ccmuxd's built-in peers bus (the old external broker
-/// on :7899 is gone — the daemon now hosts history, peers, and the live
-/// listen stream under /v1/peers/*, keyed by window group name).
+/// Client for ccmuxd's built-in peers bus (the old external broker on :7899 is
+/// gone — the daemon now hosts history, peers, and the live listen stream under
+/// /v1/peers/*, keyed by window group name). Reads are read-only; the one write
+/// is this Mac's own local-pane group map.
 class PeerBrokerService {
     static let shared = PeerBrokerService()
 
@@ -38,6 +39,11 @@ class PeerBrokerService {
     // the split that made panes unable to reach the hub in the first place.
     private var busURL: String = DaemonConfig.localURL
     private var wsBusURL: String { DaemonConfig.wsOrigin(busURL) }
+
+    /// The read-only credential for `busURL`, handed out by the daemon to a
+    /// caller that proved same-user. nil when the daemon withheld it or was not
+    /// reachable; the local routes do not need it.
+    private var viewerToken: String?
 
     /// Shared pane-less bearer token from the daemon's info file — authorizes
     /// the local-pane group push (0600, same-user only). Cached after first read;
@@ -68,47 +74,52 @@ class PeerBrokerService {
         if (resp as? HTTPURLResponse)?.statusCode == 401 { cachedToken = nil }
     }
 
-    /// Ask the local daemon which bus to read, exactly as a session's thin client
-    /// asks before it registers (POST /v1/peers/bus). One question, one answer,
-    /// so the overlay cannot end up looking at a different bus than the sessions
-    /// it is meant to show. An empty answer means "no hub — I am the bus".
+    /// Ask the daemon which bus to read and for the credential to read it with
+    /// (GET /v1/peers/viewer). The DAEMON decides — the same answer it gives the
+    /// browser lens — so the two cannot drift into looking at different buses.
+    /// An empty `bus` means "no hub, I am the bus".
     ///
     /// Re-asked every time the overlay opens: a hub can appear, move, or go away
     /// while the app is running, and a value cached at launch would outlive it.
-    func refreshBus() async {
+    ///
+    /// Returns false when the answer could not be obtained, so the caller can say
+    /// the list may be incomplete instead of drawing a confident empty panel.
+    @discardableResult
+    func refreshBus() async -> Bool {
+        busURL = DaemonConfig.localURL
+        viewerToken = nil
         guard let token = panelessToken(),
-              let url = URL(string: "\(baseURL)/v1/peers/bus") else {
-            busURL = DaemonConfig.localURL
-            return
+              let url = URL(string: "\(baseURL)/v1/peers/viewer") else {
+            NSLog("[ccmux peers] no daemon credential — cannot ask which bus to read")
+            return false
         }
         var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.httpBody = try? JSONEncoder().encode(["pane_id": ""])
         guard let (data, resp) = try? await URLSession.shared.data(for: req) else {
-            busURL = DaemonConfig.localURL
-            return
+            NSLog("[ccmux peers] could not reach ccmuxd to ask which bus to read")
+            return false
         }
-        if (resp as? HTTPURLResponse)?.statusCode == 401 { cachedToken = nil }
-        let answer = try? JSONDecoder().decode([String: String].self, from: data)
-        // A 503 ("bus unavailable") is NOT "no hub": the daemon says that when it
-        // cannot reach a hub it knows about, and falling back to the local bus
-        // would quietly show an empty overlay as though nobody were there. Stay
-        // on the relay and let the read fail loudly.
-        if (resp as? HTTPURLResponse)?.statusCode == 503 {
-            busURL = "\(baseURL)/v1/hubbus"
-            return
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 401 { cachedToken = nil }
+        guard status == 200,
+              let answer = try? JSONDecoder().decode([String: String].self, from: data) else {
+            NSLog("[ccmux peers] bus resolve answered HTTP \(status)")
+            return false
         }
-        busURL = answer?["url"].flatMap { $0.isEmpty ? nil : $0 } ?? DaemonConfig.localURL
+        // A relative prefix ("/v1/hubbus") or "" — the daemon names a path on
+        // itself, never a hub URL, so the app still talks only to 127.0.0.1 and
+        // the tailnet hop wears the daemon's identity rather than this app's.
+        busURL = DaemonConfig.localURL + (answer["bus"] ?? "")
+        viewerToken = answer["token"].flatMap { $0.isEmpty ? nil : $0 }
+        return true
     }
 
-    /// Authorizes a viewer read. On the local bus the endpoints take no token at
-    /// all and this is ignored; through the relay it is what replaces the tailnet
-    /// boundary the hub's own read surface relies on.
+    /// Authorizes a viewer read. The local routes take no token and ignore it;
+    /// through the relay it is the whole test, since the caller's address proves
+    /// nothing about which local account it belongs to.
     private func authorize(_ req: inout URLRequest) {
-        if let token = panelessToken() {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let viewerToken {
+            req.setValue("Bearer \(viewerToken)", forHTTPHeaderField: "Authorization")
         }
     }
 

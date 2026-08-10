@@ -45,18 +45,19 @@ func getViewer(t *testing.T, url, token string) (*http.Response, map[string]stri
 	return resp, out
 }
 
-// A loopback caller is any local account on a shared host — the exact reader the
-// relay's credential exists to exclude. It has to prove same-user first, with
-// the token out of the 0600 daemon-info file.
-func TestPeersViewerCredential_LoopbackMustProveSameUser(t *testing.T) {
+// The token unlocks a fleet-wide read, so it goes only to a caller that proved
+// same-user with the 0600 file's credential. Which bus to read is not a secret
+// and is answered either way, so a browser — which can hold no credential — can
+// still tell whether the list it renders is the whole picture.
+func TestPeersViewerCredential_TokenNeedsSameUserProof(t *testing.T) {
 	ts, _ := viewerCredServer(t)
 
 	resp, out := getViewer(t, ts.URL, "")
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("status = %d without a token, want 401", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d without a token, want 200 — the bus answer is not gated", resp.StatusCode)
 	}
 	if out["token"] != "" {
-		t.Error("a credential was handed to an unauthenticated loopback caller")
+		t.Error("a credential was handed to an unauthenticated caller")
 	}
 
 	resp, out = getViewer(t, ts.URL, peers.PanelessToken(testSecret))
@@ -68,6 +69,29 @@ func TestPeersViewerCredential_LoopbackMustProveSameUser(t *testing.T) {
 	}
 	if out["token"] == peers.PanelessToken(testSecret) {
 		t.Error("the pane-less token was served — a lens must not be able to register peers")
+	}
+}
+
+// The address a request arrives from is not identity. On a shared host an
+// unprivileged local account can reach this daemon's own tsnet node through the
+// machine's tailscaled, arriving NOT from loopback — so a rule that trusted
+// non-loopback callers would hand that account the token it must never have.
+func TestPeersViewerCredential_RemoteCallerGetsNoTokenEither(t *testing.T) {
+	_, srv := viewerCredServer(t)
+	handler := srv.Handler()
+
+	req := httptest.NewRequest("GET", "/v1/peers/viewer", nil)
+	req.RemoteAddr = "100.80.201.127:54321"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	out := map[string]string{}
+	_ = json.NewDecoder(rec.Body).Decode(&out)
+	if out["token"] != "" {
+		t.Error("a tailnet caller with no credential was handed the viewer token")
 	}
 }
 
@@ -91,7 +115,14 @@ func TestPeersViewerCredential_NamesTheBus(t *testing.T) {
 		if tc.resolver != nil {
 			s.SetBusResolver(tc.resolver)
 		}
-		_, out := getViewer(t, ts.URL, peers.PanelessToken(testSecret))
+		resp, out := getViewer(t, ts.URL, peers.PanelessToken(testSecret))
+		// Asserted, not discarded: without this the rows expecting "" pass on any
+		// failure at all, because a 401 or an empty body decodes to an empty map
+		// and compares equal. Half the table could not fail.
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", tc.name, resp.StatusCode)
+			continue
+		}
 		if out["bus"] != tc.want {
 			t.Errorf("%s: bus = %q, want %q", tc.name, out["bus"], tc.want)
 		}

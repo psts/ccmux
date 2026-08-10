@@ -4,13 +4,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"ccmux.dev/ccmuxd/internal/peers"
 )
 
-// The browser lens is served on the daemon's tailnet listener, so its relay
-// requests arrive from a 100.x address, not loopback. Gating the whole relay on
-// loopback made the lens's bus prefix unusable: the daemon handed the page a bus
-// and then refused every request to it.
-func TestHubBusRelay_ViewerReadFromTheTailnet(t *testing.T) {
+// A lens read may arrive from off-loopback — the lens page is also served on the
+// daemon's tsnet listener — so the relay does not refuse it on address. It
+// refuses it on credential, and the credential is what decides, not where the
+// request came from.
+func TestHubBusRelay_ViewerReadFromTheTailnetWithAToken(t *testing.T) {
 	reached := false
 	handler, _ := viewerRelayHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
@@ -18,12 +20,41 @@ func TestHubBusRelay_ViewerReadFromTheTailnet(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest("GET", HubBusPrefix+"/v1/peers?group=ChartLabs", nil)
-	req.RemoteAddr = "100.80.201.127:54321" // a tailnet peer, no credential
+	req.RemoteAddr = "100.80.201.127:54321"
+	req.Header.Set("Authorization", "Bearer "+peers.ViewerToken(testSecret))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK || !reached {
-		t.Fatalf("status = %d, reached hub = %v — a tailnet lens read must relay", rec.Code, reached)
+		t.Fatalf("status = %d, reached hub = %v — a credentialled lens read must relay", rec.Code, reached)
+	}
+}
+
+// The hole this closes: an unprivileged local account on a shared host reaches
+// this daemon's own tsnet node through the machine's tailscaled, so its requests
+// are not loopback. A relay that demanded a credential only from loopback handed
+// that account the entire fleet's peer traffic.
+func TestHubBusRelay_ViewerReadFromTheTailnetWithoutAToken(t *testing.T) {
+	reached := false
+	handler, _ := viewerRelayHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+	}))
+
+	for _, path := range []string{
+		"/v1/peers?group=ChartLabs",
+		"/v1/peers/messages?group=ChartLabs",
+		"/v1/peers/ws?mode=listen&group=ChartLabs",
+	} {
+		req := httptest.NewRequest("GET", HubBusPrefix+path, nil)
+		req.RemoteAddr = "100.80.201.127:54321"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401", path, rec.Code)
+		}
+	}
+	if reached {
+		t.Error("an uncredentialled read reached the hub")
 	}
 }
 

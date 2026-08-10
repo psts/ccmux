@@ -73,15 +73,34 @@ struct PeerMessagesOverlayView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.messages.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "bubble.left.and.bubble.right")
+                    Image(systemName: state.busUnconfirmed ? "questionmark.circle" : "bubble.left.and.bubble.right")
                         .font(.system(size: 24))
                         .foregroundColor(.secondary.opacity(0.4))
-                    Text("No messages yet")
+                    // "No messages yet" is a claim about the whole bus. It is only
+                    // honest once we know which bus we read.
+                    Text(state.busUnconfirmed
+                         ? "Couldn't confirm which bus to read, so this may not be the whole picture."
+                         : "No messages yet")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, 24)
             } else {
+                // Rows on screen do not make an unconfirmed bus confirmed: a
+                // member host's local registry usually holds stale pre-federation
+                // history, which would otherwise render as the hub's with no
+                // caveat at all.
+                if state.busUnconfirmed {
+                    Text("Couldn't confirm which bus to read — this may not be the whole picture.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange.opacity(0.9))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                        .background(Color.orange.opacity(0.08))
+                }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {

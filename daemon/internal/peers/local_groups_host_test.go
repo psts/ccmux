@@ -107,3 +107,44 @@ func TestLocalPaneSubstrate_SurvivesWhenItsHostStillPushesTheMap(t *testing.T) {
 		t.Fatal("a local pane gone from its host's map should be reaped")
 	}
 }
+
+// The mailbox collector resolves a local pane from a PERSISTED substrate key,
+// which records no host, while the map it looks in is host-keyed. If those two
+// stop agreeing, a restarted daemon finds every driver-mode mailbox unresolvable
+// and deletes it — mail included — while the pane is still on screen. This is
+// the collector's half of the same rule; the reaper's half is covered above.
+func TestCollectMailboxes_KeepsLocalPaneWhoseHostStillPushesTheMap(t *testing.T) {
+	svc, _, st := newTestServiceWithStore(t)
+	const uuid = "55555555-0000-0000-0000-000000000000"
+	kept := svc.Register(RegisterReq{LocalPaneID: uuid, PID: os.Getpid(),
+		CWD: "/w/ChartLabs/backend", GitRoot: "/w/ChartLabs/backend"})
+	if !hasMailbox(t, st, kept.PeerID) {
+		t.Fatal("registering should record a mailbox")
+	}
+
+	// A fresh Service over the same store models ccmuxd restarting: no peers in
+	// memory, every mailbox unclaimed, and the map re-pushed by the app.
+	restarted := newBareService(st)
+	now := time.Unix(1_700_000_000, 0)
+	restarted.Now = func() time.Time { return now }
+	restarted.SetLocalPaneGroupsForHost("mac-one", map[string]string{uuid: "Window A"})
+
+	// Two sweeps with the grace window between them. One sweep proves nothing:
+	// the first failed lookup only STARTS the clock, so a broken resolver keeps
+	// the mailbox on that pass and deletes it on the next one.
+	restarted.CollectMailboxes()
+	now = now.Add(substrateGrace + time.Minute)
+	restarted.CollectMailboxes()
+	if !hasMailbox(t, st, kept.PeerID) {
+		t.Fatal("a mailbox whose local pane is still in a host's map was collected")
+	}
+
+	// Gone from every host's map → genuinely unresolvable, and collected.
+	restarted.SetLocalPaneGroupsForHost("mac-one", map[string]string{})
+	restarted.CollectMailboxes()
+	now = now.Add(substrateGrace + time.Minute)
+	restarted.CollectMailboxes()
+	if hasMailbox(t, st, kept.PeerID) {
+		t.Fatal("a local pane gone from every map must be collected")
+	}
+}

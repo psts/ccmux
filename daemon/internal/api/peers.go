@@ -471,7 +471,17 @@ func (s *Server) peersLocalGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	// The pushing host is read off the connection, never the body: a member that
 	// could name its own label could rewrite another member's grouping.
-	host := s.peersSvc.HostForConn(remoteIP(r))
+	//
+	// A remote address that does not resolve is refused rather than defaulted.
+	// peerConnAllowed and this lookup read the same member map, so they normally
+	// agree; a registry refresh landing between the two is the gap, and treating
+	// the miss as "local" would file that member's panes as this daemon's own and
+	// delete its real ones. 503 because the next push, 60s later, will resolve.
+	host, ok := s.peersSvc.HostForConn(remoteIP(r))
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "pushing host not resolved")
+		return
+	}
 	s.peersSvc.SetLocalPaneGroupsForHost(host, req.Groups)
 	if host == "" && s.localGroupsSink != nil {
 		// Ours to forward, and only ours — a map that arrived FROM a member is
@@ -482,29 +492,36 @@ func (s *Server) peersLocalGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(req.Groups)})
 }
 
-// peersViewerCredential tells a lens which bus to read and hands it the
-// read-only credential for that bus: GET /v1/peers/viewer → {bus, token}.
-// bus is "" when this daemon IS the bus (a hub, or a node with no hub), and the
-// relay prefix when its sessions have federated onto a hub — the same question
-// the app and a session's thin client ask, so all three read one answer.
+// peersViewerCredential answers a lens's two startup questions in one call:
+// GET /v1/peers/viewer → {bus, token}.
 //
-// Who may ask is the whole design. A tailnet caller already has, by reach, every
-// read this credential unlocks (the hub serves its viewer surface to the tailnet
-// unauthenticated), so nothing is widened by answering it. A LOOPBACK caller is
-// different: on a shared host that is any local account, which is precisely who
-// the relay's credential exists to exclude — so it must prove same-user first by
-// presenting the token from the 0600 daemon-info file.
+// The two halves are gated differently, because they are not equally sensitive.
+// WHICH BUS is not a secret — it says only whether this node federates onto a
+// hub — and every lens needs it, including a browser, which has no way to hold a
+// credential. So bus is always answered. The TOKEN unlocks a fleet-wide read and
+// is handed out only to a caller that proves same-user by presenting the token
+// from the 0600 daemon-info file, which a browser cannot do and the Mac app can.
+//
+// Address is deliberately NOT part of the test. An earlier version demanded the
+// credential from loopback callers only, which vended the token to anyone who
+// could reach this daemon from anywhere else — including an unprivileged local
+// account on a shared host, which can arrive over the machine's tailscaled at
+// this daemon's own tsnet node and so is not loopback. That handed the very
+// caller the token exists to exclude a credential it could then replay.
+//
+// A lens that gets no token still renders: it reads the local routes and says
+// what it could not confirm. Degraded and honest beats complete and wrong.
 func (s *Server) peersViewerCredential(w http.ResponseWriter, r *http.Request) {
 	if !s.peersEnabled(w) {
 		return
 	}
-	if isLoopback(r) && !s.peersSvc.AuthorizePaneless(bearerToken(r)) {
-		writeError(w, http.StatusUnauthorized, "invalid token")
-		return
+	token := ""
+	if s.peersSvc.AuthorizePaneless(bearerToken(r)) {
+		token = s.peersSvc.ViewerToken()
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"bus":   s.viewerBusPrefix(),
-		"token": s.peersSvc.ViewerToken(),
+		"token": token,
 	})
 }
 
@@ -514,11 +531,19 @@ func (s *Server) viewerBusPrefix() string {
 		return ""
 	}
 	url, _, err := s.busResolver("")
-	// An error is a hub this daemon knows about but could not reach just now.
-	// Answering "" would send the lens to the local registry, which holds nobody
-	// once sessions have federated — an empty panel reads as "nobody is here"
-	// rather than as the fault it is. Point at the relay and let it say so.
-	if err != nil || url != "" {
+	if err != nil {
+		// A hub this daemon knows about but could not reach just now. Answering
+		// "" would send the lens to the local registry, which holds nobody once
+		// sessions have federated — an empty panel reads as "nobody is here"
+		// rather than as the fault it is. Point at the relay and let it say so.
+		//
+		// Logged because this is the only place the reason exists: the resolver
+		// wraps a rotated hub secret and an unreachable hub into distinct errors,
+		// and the lens sees the same sentence for both.
+		log.Printf("peers: viewer bus resolve: %v — pointing the lens at the relay", err)
+		return HubBusPrefix
+	}
+	if url != "" {
 		return HubBusPrefix
 	}
 	return ""

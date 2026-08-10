@@ -34,9 +34,10 @@
     try {
       const r = await fetch("/v1/peers/viewer");
       if (r.ok) viewer = await r.json();
-      else busUnknown = true;
-    } catch (_) {
+      else { busUnknown = true; console.warn("peers: /v1/peers/viewer HTTP " + r.status); }
+    } catch (e) {
       busUnknown = true;
+      console.warn("peers: could not ask which bus to read:", e);
     }
     if (group !== g) return; // closed or reopened while we asked
     refresh();
@@ -45,9 +46,8 @@
 
   const auth = () => (viewer.token ? { Authorization: "Bearer " + viewer.token } : {});
 
-  // A refusal is not data. Decoding one as JSON yields an object with no
-  // messages in it, which renders as silence — the exact failure this viewer was
-  // rebuilt to stop showing.
+  // A refusal is not data. Decoded as JSON it yields an object with no messages
+  // in it, which renders as silence.
   function refusal(status) {
     if (status === 503) return "ccmuxd can't reach the hub right now — the sessions live there, so this list would be wrong.";
     if (status === 401 || status === 403) return "ccmuxd refused this page's read of the peers bus.";
@@ -84,11 +84,18 @@
     const box = $("peers-msgs");
     box.innerHTML = "";
     for (const m of msgs || []) box.appendChild(msgRow(m));
-    $("peers-status").classList.toggle("hidden", (msgs || []).length > 0);
-    if ((msgs || []).length === 0) {
-      $("peers-status").textContent = busUnknown
-        ? "Couldn't confirm which bus to read, so this may not be the whole picture."
-        : "No messages yet.";
+    // Rows on screen do not make an unconfirmed bus confirmed: a member host's
+    // local registry usually holds stale pre-federation history, which would
+    // otherwise render as the hub's with no caveat at all. So the hedge is
+    // driven by what we know, not by whether the list came back empty.
+    if (busUnknown) {
+      $("peers-status").textContent = "Couldn't confirm which bus to read — this may not be the whole picture.";
+      $("peers-status").classList.remove("hidden");
+    } else if ((msgs || []).length === 0) {
+      $("peers-status").textContent = "No messages yet.";
+      $("peers-status").classList.remove("hidden");
+    } else {
+      $("peers-status").classList.add("hidden");
     }
     box.scrollTop = box.scrollHeight;
   }

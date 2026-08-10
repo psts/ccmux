@@ -3,6 +3,7 @@ package peers
 
 import (
 	"crypto/hmac"
+	"net"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -126,20 +127,30 @@ func (s *Service) originHostLocked(req RegisterReq, originIP string) string {
 	return ""
 }
 
-// HostForConn names the member host a connection came from, "" for loopback or
-// off the hub. Same answer originHostLocked gives a pane-less registration from
-// the same address, so a host's local-pane map and its peers agree on the label
-// they are keyed by.
-func (s *Service) HostForConn(ip string) string {
+// HostForConn names the member host a connection came from. Same answer
+// originHostLocked gives a pane-less registration from the same address, so a
+// host's local-pane map and its peers agree on the label they are keyed by.
+//
+// ok is false only when a REMOTE address failed to resolve to a member. That is
+// distinct from the "" label, which legitimately means "this daemon's own", and
+// the two must not be conflated: handing an unresolved remote push the local
+// label files another host's panes as ours and wipes our own slice. Callers
+// refuse rather than guess. Loopback resolves to ("", true) — genuinely local.
+func (s *Service) HostForConn(ip string) (host string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.hostForAddr == nil || ip == "" {
-		return ""
+	if s.hostForAddr == nil || ip == "" || isLoopbackIP(ip) {
+		return "", true
 	}
-	if h, ok := s.hostForAddr(ip); ok {
-		return h
+	if h, found := s.hostForAddr(ip); found {
+		return h, true
 	}
-	return ""
+	return "", false
+}
+
+func isLoopbackIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	return parsed != nil && parsed.IsLoopback()
 }
 
 func (s *Service) assignIDLocked(req RegisterReq) string {
@@ -531,8 +542,8 @@ func (s *Service) AuthorizeViewer(token string) bool {
 		hmac.Equal([]byte(token), []byte(PanelessToken(s.secret)))
 }
 
-// ViewerToken exposes the read-only lens credential for the handler that serves
-// it to a lens.
+// ViewerToken exposes the read-only lens credential (see peers.ViewerToken for
+// why it is separate from the pane-less one).
 func (s *Service) ViewerToken() string { return ViewerToken(s.secret) }
 
 // AuthorizePaneless checks the shared pane-less credential — the counterpart to

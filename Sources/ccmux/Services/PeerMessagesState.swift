@@ -6,6 +6,10 @@ class PeerMessagesState: ObservableObject {
     @Published var peers: [PeerInfo] = []
     @Published var isConnected: Bool = false
     @Published var error: String? = nil
+    /// Set when the daemon could not say which bus to read. What follows may be
+    /// the local registry rather than the bus the sessions are on, so an empty
+    /// list is not evidence of silence and must not be drawn as one.
+    @Published var busUnconfirmed: Bool = false
 
     private let service = PeerBrokerService.shared
     private var wsCancel: (() -> Void)?
@@ -22,7 +26,7 @@ class PeerMessagesState: ObservableObject {
         // running, and reading the local registry after that shows an empty panel
         // rather than the truth.
         listenTask = Task {
-            await service.refreshBus()
+            busUnconfirmed = !(await service.refreshBus())
             do {
                 async let fetchedMessages = service.fetchMessages(group: group)
                 async let fetchedPeers = service.fetchPeers(group: group)
@@ -75,6 +79,7 @@ class PeerMessagesState: ObservableObject {
         peers = []
         isConnected = false
         error = nil
+        busUnconfirmed = false
         nextLocalId = -1
     }
 }
