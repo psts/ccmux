@@ -120,11 +120,13 @@ func TestHubBusRelay_FailsClosedWhenTheCredentialIsUnavailable(t *testing.T) {
 }
 
 // /v1/peers/ws is two handlers behind one path: ?mode=listen upgrades with NO
-// credential (it is the lens viewer surface). Relaying by path alone put the
-// hub's whole live group stream one loopback dial away on every member host.
-func TestHubBusRelay_ListenModeIsNotRelayable(t *testing.T) {
+// credential on the hub (it is the lens viewer surface, gated there by tailnet
+// reach). Relaying it on that basis would put the hub's whole live group stream
+// one loopback dial away on every member host — so the relay carries it, but
+// only for a caller holding this host's own pane-less token.
+func TestHubBusRelay_ListenModeNeedsTheLocalToken(t *testing.T) {
 	reached := false
-	member, _, _ := relayServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	member, _ := viewerRelayServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
 	}))
 	wsURL := "ws" + strings.TrimPrefix(member.URL, "http") + HubBusPrefix + "/v1/peers/ws?mode=listen&group=ChartLabs"
@@ -133,12 +135,12 @@ func TestHubBusRelay_ListenModeIsNotRelayable(t *testing.T) {
 		conn.Close()
 		t.Fatal("an unauthenticated listener was relayed to the hub")
 	}
-	if resp == nil || resp.StatusCode != http.StatusForbidden {
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		code := 0
 		if resp != nil {
 			code = resp.StatusCode
 		}
-		t.Errorf("status = %d, want 403", code)
+		t.Errorf("status = %d, want 401", code)
 	}
 	if reached {
 		t.Error("the listen upgrade reached the hub")
@@ -149,8 +151,8 @@ func TestHubBusRelay_ListenModeIsNotRelayable(t *testing.T) {
 // inbox it exists to carry.
 func TestHubBusRelay_PeerWebSocketStillRelays(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/peers/ws?peer_id=peer-1", nil)
-	if !relayable(req) {
-		t.Error("a peer_id WebSocket dial is no longer relayable")
+	if got := relayKindFor(req); got != relayClient {
+		t.Errorf("a peer_id WebSocket dial classifies as %v, want relayClient", got)
 	}
 }
 

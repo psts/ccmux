@@ -126,6 +126,22 @@ func (s *Service) originHostLocked(req RegisterReq, originIP string) string {
 	return ""
 }
 
+// HostForConn names the member host a connection came from, "" for loopback or
+// off the hub. Same answer originHostLocked gives a pane-less registration from
+// the same address, so a host's local-pane map and its peers agree on the label
+// they are keyed by.
+func (s *Service) HostForConn(ip string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hostForAddr == nil || ip == "" {
+		return ""
+	}
+	if h, ok := s.hostForAddr(ip); ok {
+		return h
+	}
+	return ""
+}
+
 func (s *Service) assignIDLocked(req RegisterReq) string {
 	if req.PaneID != "" {
 		id := derivedID(req.PaneID)
@@ -389,7 +405,7 @@ func substrateKey(p *Peer) string {
 // confirmation, because kill(0) does not depend on any cache being warm.
 func (s *Service) substrateGoneLocked(p *Peer) bool {
 	if key := substrateKey(p); key != "" {
-		return s.keyGoneLocked(key)
+		return s.keyGoneLocked(key, p.Host)
 	}
 	if s.remoteLocked(p) {
 		// Presence, for the reason in remoteLocked. ReapOnce already drops any
@@ -406,8 +422,19 @@ func (s *Service) substrateGoneLocked(p *Peer) bool {
 // its panes for that cycle; the Mac app's local-pane map is likewise empty until
 // it re-pushes after a restart. Erasing mailboxes on either would destroy
 // undelivered mail whose session is about to come back.
-func (s *Service) keyGoneLocked(key string) bool {
-	if s.substrateExistsLocked(key) {
+// host is the peer's owning host, which the local-pane map is keyed by; the KEY
+// deliberately is not, because it is persisted with the mailbox and re-keying it
+// would orphan every row written before this.
+func (s *Service) keyGoneLocked(key, host string) bool {
+	return s.graceGoneLocked(key, s.substrateExistsLocked(key, host))
+}
+
+// graceGoneLocked applies the grace window to an answer someone else resolved,
+// so the two callers that resolve a substrate differently (a live peer, which
+// knows its host; a persisted mailbox row, which does not) still share one rule
+// about how long absence has to last before it counts.
+func (s *Service) graceGoneLocked(key string, exists bool) bool {
+	if exists {
 		delete(s.missingSince, key)
 		return false
 	}
@@ -420,9 +447,35 @@ func (s *Service) keyGoneLocked(key string) bool {
 	return now-first >= substrateGrace.Milliseconds()
 }
 
-func (s *Service) substrateExistsLocked(key string) bool {
+// orphanKeyGoneLocked is the mailbox collector's variant. It works from a
+// PERSISTED substrate key, which records no owning host, so a local pane is
+// matched under ANY host. That is the generous direction on purpose: a false
+// "gone" here deletes undelivered mail, while a false "exists" costs one row
+// surviving until the next sweep.
+func (s *Service) orphanKeyGoneLocked(key string) bool {
+	return s.graceGoneLocked(key, s.substrateExistsAnyHostLocked(key))
+}
+
+func (s *Service) substrateExistsAnyHostLocked(key string) bool {
+	local, ok := strings.CutPrefix(key, "local:")
+	if !ok {
+		return s.paneExistsLocked(key)
+	}
+	for k := range s.localGroups {
+		if keyPane(k) == local {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) substrateExistsLocked(key, host string) bool {
 	if local, ok := strings.CutPrefix(key, "local:"); ok {
-		_, found := s.localGroups[local]
+		// Looked up under the OWNING HOST. Reading the map with the bare uuid
+		// finds nothing once entries are host-keyed, which reads as "this pane is
+		// gone" for every driver-mode pane on the bus — and that answer erases
+		// mailboxes holding undelivered mail.
+		_, found := s.localGroups[localGroupKey(host, local)]
 		return found
 	}
 	return s.paneExistsLocked(key)
@@ -468,6 +521,19 @@ func (s *Service) AuthorizePane(paneID, token string) bool {
 func (s *Service) AuthorizeLocalGroups(token string) bool {
 	return hmac.Equal([]byte(token), []byte(PanelessToken(s.secret)))
 }
+
+// AuthorizeViewer gates the relay's read surface. The pane-less token is
+// accepted alongside the viewer one because it is strictly more privileged and
+// already held by callers that read the 0600 info file — refusing it would only
+// mean the Mac app fetching a second credential to do less.
+func (s *Service) AuthorizeViewer(token string) bool {
+	return hmac.Equal([]byte(token), []byte(ViewerToken(s.secret))) ||
+		hmac.Equal([]byte(token), []byte(PanelessToken(s.secret)))
+}
+
+// ViewerToken exposes the read-only lens credential for the handler that serves
+// it to a lens.
+func (s *Service) ViewerToken() string { return ViewerToken(s.secret) }
 
 // AuthorizePaneless checks the shared pane-less credential — the counterpart to
 // AuthorizePane for a session with no pane behind it, which is how a Claude

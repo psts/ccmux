@@ -4,10 +4,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gorilla/websocket"
+
+	"ccmux.dev/ccmuxd/internal/peers"
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // relayServer wires a member-side relay pointing at a stub hub, and returns the
@@ -25,6 +29,163 @@ func relayServer(t *testing.T, hub http.Handler) (member *httptest.Server, hubSr
 	member = httptest.NewServer(s.Handler())
 	t.Cleanup(member.Close)
 	return member, hubSrv, func(u string) { target = u }
+}
+
+// viewerRelayServer is relayServer with the peers bus enabled, which the lens
+// half of the relay needs: the credential it checks is this host's own. The
+// upstream mapper returns a token on purpose, so a test can prove a viewer read
+// does NOT get it.
+func viewerRelayServer(t *testing.T, hub http.Handler) (member *httptest.Server, token string) {
+	t.Helper()
+	handler, token := viewerRelayHandler(t, hub)
+	member = httptest.NewServer(handler)
+	t.Cleanup(member.Close)
+	return member, token
+}
+
+// viewerRelayHandler is the same wiring unserved, for tests that need to forge a
+// RemoteAddr — a real loopback listener can only ever report 127.0.0.1, and the
+// origin rule is exactly what those tests are about.
+func viewerRelayHandler(t *testing.T, hub http.Handler) (http.Handler, string) {
+	t.Helper()
+	hubSrv := httptest.NewServer(hub)
+	t.Cleanup(hubSrv.Close)
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "peers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	svc := peers.NewService(st, nullHook{}, testSecret)
+	svc.OpenCmd = ""
+
+	s := &Server{peersSvc: svc, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	// Faithful to production: only this host's pane-less credential is swapped
+	// for the hub's, everything else passes through for the hub to judge.
+	s.SetHubBus(func() string { return hubSrv.URL }, http.DefaultTransport, func(inbound string) (string, error) {
+		if inbound != peers.PanelessToken(testSecret) {
+			return "", nil
+		}
+		return "hub-secret", nil
+	})
+	return s.Handler(), peers.PanelessToken(testSecret)
+}
+
+// A lens read must cross to the hub, or a member host's overlay shows an empty
+// panel while every session it is asking about sits on the hub's bus.
+func TestHubBusRelay_ViewerReadCrossesWithTheLocalToken(t *testing.T) {
+	var gotPath, gotQuery, gotAuth string
+	member, token := viewerRelayServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, []map[string]string{{"id": "peer-1", "group": "ChartLabs"}})
+	}))
+
+	req, _ := http.NewRequest("GET", member.URL+HubBusPrefix+"/v1/peers?group=ChartLabs", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200 (body %s)", resp.StatusCode, body)
+	}
+	if gotPath != "/v1/peers" || gotQuery != "group=ChartLabs" {
+		t.Errorf("hub saw %s?%s, want /v1/peers?group=ChartLabs", gotPath, gotQuery)
+	}
+	if gotAuth != "" {
+		t.Errorf("hub saw auth %q — a local secret must not ride onto the tailnet", gotAuth)
+	}
+	if !strings.Contains(string(body), "peer-1") {
+		t.Errorf("hub response not returned to the caller: %s", body)
+	}
+}
+
+// The token is what replaces the tailnet boundary the hub's own viewer surface
+// relies on. Without it the relay would hand every local account on a shared
+// host a fleet-wide read.
+func TestHubBusRelay_ViewerReadNeedsTheToken(t *testing.T) {
+	reached := false
+	member, token := viewerRelayServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+	}))
+
+	for _, tc := range []struct{ name, bearer string }{
+		{"no token", ""},
+		{"wrong token", "not-the-local-secret"},
+		{"a pane token, which is not the lens credential", peers.TokenForPane(testSecret, "pane-7")},
+	} {
+		req, _ := http.NewRequest("GET", member.URL+HubBusPrefix+"/v1/peers/messages?group=ChartLabs", nil)
+		if tc.bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+tc.bearer)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401", tc.name, resp.StatusCode)
+		}
+	}
+	if reached {
+		t.Error("an unauthorized read reached the hub")
+	}
+	// The same request with the real credential proves the refusals above were
+	// about the token and not about the route.
+	req, _ := http.NewRequest("GET", member.URL+HubBusPrefix+"/v1/peers/messages?group=ChartLabs", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d with the local token, want 200", resp.StatusCode)
+	}
+}
+
+// A browser's WebSocket constructor cannot set headers, so the listen stream —
+// the one viewer surface that must be a socket — takes its credential in the
+// query string. It must not travel any further than this daemon.
+func TestHubBusRelay_ListenSocketTakesAQueryToken(t *testing.T) {
+	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	var gotQuery, gotAuth string
+	member, token := viewerRelayServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery, gotAuth = r.URL.RawQuery, r.Header.Get("Authorization")
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("hub upgrade: %v", err)
+			return
+		}
+		defer c.Close()
+		_ = c.WriteMessage(websocket.TextMessage, []byte(`{"type":"message"}`))
+	}))
+
+	wsURL := "ws" + strings.TrimPrefix(member.URL, "http") + HubBusPrefix +
+		"/v1/peers/ws?mode=listen&group=ChartLabs&" + ViewerTokenParam + "=" + token
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		code := 0
+		if resp != nil {
+			code = resp.StatusCode
+		}
+		t.Fatalf("listen dial through relay: %v (HTTP %d)", err, code)
+	}
+	defer conn.Close()
+	if _, msg, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read through relay: %v", err)
+	} else if string(msg) != `{"type":"message"}` {
+		t.Errorf("got %q, want the hub's push", msg)
+	}
+	if strings.Contains(gotQuery, ViewerTokenParam) {
+		t.Errorf("hub saw %q — the local token must be stripped at the relay", gotQuery)
+	}
+	if gotAuth != "" {
+		t.Errorf("hub saw auth %q on a viewer socket", gotAuth)
+	}
 }
 
 // hostOf is the authority of a test server's URL ("127.0.0.1:PORT"). Both the
@@ -222,39 +383,59 @@ func TestHubBusRelay_UnarmedHasNoRoute(t *testing.T) {
 	}
 }
 
-func TestRelayable(t *testing.T) {
+func TestRelayKindFor(t *testing.T) {
 	for _, tc := range []struct {
 		path string
-		want bool
+		want relayKind
 	}{
-		{"/v1/peers/register", true},
-		{"/v1/peers/unregister", true},
-		{"/v1/peers/send", true},
-		{"/v1/peers/list", true},
-		{"/v1/peers/summary", true},
-		{"/v1/peers/poll", true},
-		{"/v1/peers/permission-request", true},
-		{"/v1/peers/tasks/delegate", true},
-		{"/v1/peers/tasks/update", true},
-		{"/v1/peers/tasks/list", true},
-		{"/v1/peers/ws", true},
-		{"/v1/peers/bus", false},
-		{"/v1/peers/pane-token", false},
-		{"/v1/peers/local-groups", false},
-		// Viewer routes: a lens reads them from the hub directly, and a pane's
-		// client never sends them.
-		{"/v1/peers/messages", false},
-		{"/v1/peers", false},
+		{"/v1/peers/register", relayClient},
+		{"/v1/peers/unregister", relayClient},
+		{"/v1/peers/send", relayClient},
+		{"/v1/peers/list", relayClient},
+		{"/v1/peers/summary", relayClient},
+		{"/v1/peers/poll", relayClient},
+		{"/v1/peers/permission-request", relayClient},
+		{"/v1/peers/tasks/delegate", relayClient},
+		{"/v1/peers/tasks/update", relayClient},
+		{"/v1/peers/tasks/list", relayClient},
+		{"/v1/peers/ws", relayClient},
+		{"/v1/peers/bus", relayDenied},
+		{"/v1/peers/pane-token", relayDenied},
+		{"/v1/peers/local-groups", relayDenied},
+		// The lens read surface: relayable, but under this host's own token
+		// rather than a bus credential.
+		{"/v1/peers/messages", relayViewer},
+		{"/v1/peers", relayViewer},
 		// The allowlist's whole point — a route nobody has written yet is not
 		// relayable by default.
-		{"/v1/peers/some-future-route", false},
-		{"/v1/peersies", false},
-		{"/v1/health", false},
-		{"/", false},
+		{"/v1/peers/some-future-route", relayDenied},
+		{"/v1/peersies", relayDenied},
+		{"/v1/health", relayDenied},
+		{"/", relayDenied},
 	} {
 		req := httptest.NewRequest("POST", tc.path, nil)
-		if got := relayable(req); got != tc.want {
-			t.Errorf("relayable(%q) = %v, want %v", tc.path, got, tc.want)
+		if got := relayKindFor(req); got != tc.want {
+			t.Errorf("relayKindFor(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// The socket is two handlers behind one path, and which one you get decides
+// which credential answers for it. mode= that is neither is refused outright:
+// the thin client never sends it, so the form has no legitimate caller.
+func TestRelayKindFor_SocketArms(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  relayKind
+	}{
+		{"peer_id=peer-1", relayClient},
+		{"mode=listen&group=ChartLabs", relayViewer},
+		{"mode=peer&peer_id=peer-1", relayDenied},
+		{"mode=whatever", relayDenied},
+	} {
+		req := httptest.NewRequest("GET", "/v1/peers/ws?"+tc.query, nil)
+		if got := relayKindFor(req); got != tc.want {
+			t.Errorf("relayKindFor(ws?%s) = %v, want %v", tc.query, got, tc.want)
 		}
 	}
 }

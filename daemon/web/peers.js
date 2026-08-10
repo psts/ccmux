@@ -8,8 +8,19 @@
 
   let group = null; // open group, null when the modal is closed
   let sock = null;
+  // Which bus to read and the read-only credential for it. On a hub (or a lone
+  // node) bus is "" and the local routes answer; on a member host the sessions
+  // have federated onto the hub, so the reads go through this daemon's relay —
+  // reading the local registry there shows an empty panel while every session it
+  // asks about is somewhere else.
+  let viewer = { bus: "", token: "" };
+  // Set when the daemon would not tell us which bus to read. The local routes
+  // still answer, but on a member host they answer for a registry nobody is in —
+  // so an empty result after this is not evidence of silence and must not be
+  // drawn as "no messages".
+  let busUnknown = false;
 
-  function open(g) {
+  async function open(g) {
     group = g;
     $("peers-title").textContent = "Messages — " + g.toUpperCase();
     $("peers-modal").classList.remove("hidden");
@@ -17,8 +28,36 @@
     $("peers-status").classList.remove("hidden");
     $("peers-list").innerHTML = "";
     $("peers-msgs").innerHTML = "";
+    // Asked on every open: a hub can appear or move while this page is loaded.
+    viewer = { bus: "", token: "" };
+    busUnknown = false;
+    try {
+      const r = await fetch("/v1/peers/viewer");
+      if (r.ok) viewer = await r.json();
+      else busUnknown = true;
+    } catch (_) {
+      busUnknown = true;
+    }
+    if (group !== g) return; // closed or reopened while we asked
     refresh();
     connect();
+  }
+
+  const auth = () => (viewer.token ? { Authorization: "Bearer " + viewer.token } : {});
+
+  // A refusal is not data. Decoding one as JSON yields an object with no
+  // messages in it, which renders as silence — the exact failure this viewer was
+  // rebuilt to stop showing.
+  function refusal(status) {
+    if (status === 503) return "ccmuxd can't reach the hub right now — the sessions live there, so this list would be wrong.";
+    if (status === 401 || status === 403) return "ccmuxd refused this page's read of the peers bus.";
+    return "The peers bus answered HTTP " + status + ".";
+  }
+
+  async function readJSON(path) {
+    const r = await fetch(viewer.bus + path, { headers: auth() });
+    if (!r.ok) throw new Error(refusal(r.status));
+    return r.json();
   }
 
   function close() {
@@ -33,11 +72,12 @@
     let msgs = [], peers = [];
     try {
       [msgs, peers] = await Promise.all([
-        fetch("/v1/peers/messages?" + q + "&limit=200").then((r) => r.json()),
-        fetch("/v1/peers?" + q).then((r) => r.json()),
+        readJSON("/v1/peers/messages?" + q + "&limit=200"),
+        readJSON("/v1/peers?" + q),
       ]);
     } catch (e) {
-      $("peers-status").textContent = "Couldn't load messages: " + e.message;
+      $("peers-status").textContent = e.message;
+      $("peers-status").classList.remove("hidden");
       return;
     }
     renderPeers(peers || []);
@@ -45,7 +85,11 @@
     box.innerHTML = "";
     for (const m of msgs || []) box.appendChild(msgRow(m));
     $("peers-status").classList.toggle("hidden", (msgs || []).length > 0);
-    if ((msgs || []).length === 0) $("peers-status").textContent = "No messages yet.";
+    if ((msgs || []).length === 0) {
+      $("peers-status").textContent = busUnknown
+        ? "Couldn't confirm which bus to read, so this may not be the whole picture."
+        : "No messages yet.";
+    }
     box.scrollTop = box.scrollHeight;
   }
 
@@ -53,7 +97,14 @@
     if (sock) { sock.close(); sock = null; }
     if (!group) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/v1/peers/ws?mode=listen&group=${encodeURIComponent(group)}`);
+    // The WebSocket constructor takes no headers, so the credential rides the
+    // query string on this hop. The relay strips it before the request crosses
+    // to the hub.
+    // Only through the relay: the local route ignores it, and a token in a URL
+    // is one more place it can be logged.
+    const tok = viewer.bus && viewer.token ? "&viewer_token=" + encodeURIComponent(viewer.token) : "";
+    const ws = new WebSocket(
+      `${proto}://${location.host}${viewer.bus}/v1/peers/ws?mode=listen&group=${encodeURIComponent(group)}${tok}`);
     ws.onmessage = (ev) => {
       let m;
       try { m = JSON.parse(ev.data); } catch (_) { return; }

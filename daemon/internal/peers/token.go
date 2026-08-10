@@ -60,6 +60,16 @@ func PanelessToken(secret []byte) string {
 	return tokenFor(secret, "pane-less")
 }
 
+// ViewerToken is the READ-ONLY lens credential: it authorizes the viewer half
+// of the hub-bus relay (group peers, group history, the listen stream) and
+// nothing else. Separate from PanelessToken on purpose — that one registers
+// peers and sends messages as them, which is far more than a lens that only
+// draws what is already there should be able to do with a credential it may
+// hand to a browser.
+func ViewerToken(secret []byte) string {
+	return tokenFor(secret, "viewer")
+}
+
 // DaemonInfo is the discovery record for pane-less sessions, which have no
 // CCMUX_DAEMON_URL/CCMUX_PANE_TOKEN in their environment.
 type DaemonInfo struct {

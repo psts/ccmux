@@ -76,6 +76,12 @@ type Server struct {
 	// see hubbus.go. nil on a hub or a node with no hub discovery.
 	hubBus *hubBus
 
+	// localGroupsSink forwards this host's local-pane→window map onward to the
+	// hub, so a driver-mode session that registered THERE resolves to its window
+	// group instead of the dirname fallback. The daemon carries it rather than
+	// the Mac app, which only ever talks to its own daemon. nil off a member.
+	localGroupsSink func(groups map[string]string)
+
 	// clipToken authorizes POST /v1/clipboard (per-boot random, written 0600
 	// into the runtime dir for the tmux copy helper). "" = endpoint disabled.
 	clipToken string
@@ -124,6 +130,10 @@ func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
 // next watchdog tick, in lockstep — and a rotated secret would park them locally
 // for good.
 func (s *Server) SetBusResolver(f func(paneID string) (string, string, error)) { s.busResolver = f }
+
+// SetLocalGroupsForwarder arms the onward push of this host's local-pane map to
+// the hub (see localGroupsSink). Called on member hosts only.
+func (s *Server) SetLocalGroupsForwarder(f func(groups map[string]string)) { s.localGroupsSink = f }
 
 // SetClipboardToken arms POST /v1/clipboard (see clipToken).
 func (s *Server) SetClipboardToken(t string) { s.clipToken = t }
@@ -220,6 +230,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers/ws", s.peersWS)
 	mux.HandleFunc("GET /v1/peers/messages", s.peersGroupMessages)
 	mux.HandleFunc("GET /v1/peers", s.peersGroupPeers)
+	mux.HandleFunc("GET /v1/peers/viewer", s.peersViewerCredential)
 	if s.hubBus != nil {
 		// Registered only on a member host with hub discovery armed, so a hub or
 		// a single-host node has no relay surface at all. Per-METHOD patterns,

@@ -16,8 +16,13 @@ class PeerMessagesState: ObservableObject {
         error = nil
         isConnected = false
 
-        // Fetch history + peers in parallel, then start WebSocket
+        // Which bus first, then history + peers in parallel, then the WebSocket.
+        // Asking every time the overlay opens is what keeps it pointed at the bus
+        // the sessions are actually on: a hub can appear or move while the app is
+        // running, and reading the local registry after that shows an empty panel
+        // rather than the truth.
         listenTask = Task {
+            await service.refreshBus()
             do {
                 async let fetchedMessages = service.fetchMessages(group: group)
                 async let fetchedPeers = service.fetchPeers(group: group)
@@ -25,6 +30,11 @@ class PeerMessagesState: ObservableObject {
                 messages = msgs
                 peers = prs
                 isConnected = true
+            } catch let refusal as PeerBrokerError {
+                // Reached a daemon, got refused. Saying "cannot reach ccmuxd"
+                // here would send the reader to the one thing that is working.
+                self.error = refusal.message
+                return
             } catch {
                 self.error = "Cannot reach ccmuxd at \(DaemonConfig.localURL)"
                 return

@@ -454,7 +454,62 @@ func enableHostFederation(ts *tsnet.Server, hubURL *atomic.Pointer[string], apiS
 		}
 		return relayURL, token, nil
 	})
+	// The Mac app pushes its driver-mode pane→window map to THIS daemon, which is
+	// the only ccmuxd it talks to. Once those sessions register on the hub, the
+	// map has to follow them there or the hub falls back to the dirname group and
+	// the session lands in a project nobody is looking at.
+	// Mutex-guarded: the handler forwards on its own goroutine, so two pushes
+	// can land at once.
+	var forwardMu sync.Mutex
+	lastForwardErr := ""
+	apiSrv.SetLocalGroupsForwarder(func(groups map[string]string) {
+		u := *hubURL.Load()
+		if u == "" {
+			return
+		}
+		err := forwardLocalGroups(client, u, hostCred, groups)
+		msg := ""
+		if err != nil {
+			msg = err.Error()
+		}
+		// Latched by message: the app re-pushes every minute, and an unlatched
+		// log would turn one unreachable hub into a line a minute forever.
+		forwardMu.Lock()
+		repeat := msg == lastForwardErr
+		lastForwardErr = msg
+		forwardMu.Unlock()
+		if err != nil && !repeat {
+			log.Printf("peers: local-pane groups not forwarded to the hub (%v) — driver-mode sessions there will group by directory", err)
+		}
+	})
 	log.Printf("peers: host federation armed (discovering %s, bus relay %s)", hub.HubTag, orNone(relayURL))
+}
+
+// forwardLocalGroups pushes this host's driver-mode pane→window map to the hub
+// under the hub's own shared credential. The hub keys what arrives by the member
+// it came from, so this is a full replacement of THIS host's slice and touches
+// no other member's.
+func forwardLocalGroups(client *http.Client, hubURL string, cred *hubHostCredential, groups map[string]string) error {
+	token, err := cred.fetch()
+	if err != nil {
+		return fmt.Errorf("hub host credential: %w", err)
+	}
+	body, _ := json.Marshal(map[string]any{"groups": groups})
+	req, err := http.NewRequest(http.MethodPut, hubURL+"/v1/peers/local-groups", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("local-groups HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // hubHostCredential caches the hub's pane-less registration token. It is fetched

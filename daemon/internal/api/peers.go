@@ -31,9 +31,17 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
-func requireLoopback(w http.ResponseWriter, r *http.Request) bool {
+func isLoopback(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if ip := net.ParseIP(host); err == nil && ip != nil && ip.IsLoopback() {
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func requireLoopback(w http.ResponseWriter, r *http.Request) bool {
+	if isLoopback(r) {
 		return true
 	}
 	// Generic wording: this guard now also fronts /v1/clipboard — blaming
@@ -438,11 +446,17 @@ func (s *Server) peersGroupMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, msgs)
 }
 
-// peersLocalGroups receives the Mac app's live local-pane→window map (the
-// window grouping source of truth for driver-mode panes the daemon doesn't
-// host). Full-replace semantics; authed with the shared pane-less token.
+// peersLocalGroups receives a live local-pane→window map (the window grouping
+// source of truth for driver-mode panes the daemon doesn't host). Full-replace
+// semantics, but only of the pushing host's own slice; authed with the shared
+// pane-less token.
+//
+// Two callers: the Mac app over loopback, and — on the hub — a member daemon
+// forwarding what its own app told it, so a driver-mode session that registered
+// on the hub resolves to its window group. Hence peerConnAllowed rather than
+// requireLoopback, matching how registrations already arrive.
 func (s *Server) peersLocalGroups(w http.ResponseWriter, r *http.Request) {
-	if !s.peersEnabled(w) || !requireLoopback(w, r) {
+	if !s.peersEnabled(w) || !s.peerConnAllowed(w, r) {
 		return
 	}
 	if !s.peersSvc.AuthorizeLocalGroups(bearerToken(r)) {
@@ -455,8 +469,59 @@ func (s *Server) peersLocalGroups(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	s.peersSvc.SetLocalPaneGroups(req.Groups)
+	// The pushing host is read off the connection, never the body: a member that
+	// could name its own label could rewrite another member's grouping.
+	host := s.peersSvc.HostForConn(remoteIP(r))
+	s.peersSvc.SetLocalPaneGroupsForHost(host, req.Groups)
+	if host == "" && s.localGroupsSink != nil {
+		// Ours to forward, and only ours — a map that arrived FROM a member is
+		// already at its destination. Fire-and-forget: the app re-pushes on a
+		// timer, so a lost forward self-heals.
+		go s.localGroupsSink(req.Groups)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(req.Groups)})
+}
+
+// peersViewerCredential tells a lens which bus to read and hands it the
+// read-only credential for that bus: GET /v1/peers/viewer → {bus, token}.
+// bus is "" when this daemon IS the bus (a hub, or a node with no hub), and the
+// relay prefix when its sessions have federated onto a hub — the same question
+// the app and a session's thin client ask, so all three read one answer.
+//
+// Who may ask is the whole design. A tailnet caller already has, by reach, every
+// read this credential unlocks (the hub serves its viewer surface to the tailnet
+// unauthenticated), so nothing is widened by answering it. A LOOPBACK caller is
+// different: on a shared host that is any local account, which is precisely who
+// the relay's credential exists to exclude — so it must prove same-user first by
+// presenting the token from the 0600 daemon-info file.
+func (s *Server) peersViewerCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.peersEnabled(w) {
+		return
+	}
+	if isLoopback(r) && !s.peersSvc.AuthorizePaneless(bearerToken(r)) {
+		writeError(w, http.StatusUnauthorized, "invalid token")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"bus":   s.viewerBusPrefix(),
+		"token": s.peersSvc.ViewerToken(),
+	})
+}
+
+// viewerBusPrefix is where a lens on THIS node should read the bus from.
+func (s *Server) viewerBusPrefix() string {
+	if s.busResolver == nil {
+		return ""
+	}
+	url, _, err := s.busResolver("")
+	// An error is a hub this daemon knows about but could not reach just now.
+	// Answering "" would send the lens to the local registry, which holds nobody
+	// once sessions have federated — an empty panel reads as "nobody is here"
+	// rather than as the fault it is. Point at the relay and let it say so.
+	if err != nil || url != "" {
+		return HubBusPrefix
+	}
+	return ""
 }
 
 // peersGroupPeers is the read-only peers listing for viewers: GET /v1/peers?group=.

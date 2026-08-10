@@ -177,7 +177,7 @@ struct PeerMessagesOverlayView: View {
                 .font(.system(size: 11))
                 .foregroundColor(.orange.opacity(0.8))
                 .multilineTextAlignment(.center)
-            Text("The peers bus lives in ccmuxd now — make sure the daemon is running.")
+            Text("Sessions appear here once they register on the bus this daemon points at.")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

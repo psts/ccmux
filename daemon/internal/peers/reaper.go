@@ -102,7 +102,7 @@ func (s *Service) CollectMailboxes() {
 			// not evidence, and these rows are a fixed, shrinking set.
 			continue
 		}
-		if b.PaneID != "" && !s.keyGoneLocked(b.PaneID) {
+		if b.PaneID != "" && !s.orphanKeyGoneLocked(b.PaneID) {
 			continue // the pane can still host a returning session
 		}
 		_ = s.st.DeletePeerState(b.PeerID)

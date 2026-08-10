@@ -17,6 +17,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,6 +30,19 @@ import (
 // treats the whole thing as its bus base URL and appends the same /v1/peers/…
 // paths it would have sent to the hub, so nothing about the client changes.
 const HubBusPrefix = "/v1/hubbus"
+
+// ViewerTokenParam carries the lens credential on requests that cannot set a
+// header. A browser's WebSocket constructor takes no headers at all, and the
+// listen stream is the one viewer surface that must be a socket — so the token
+// rides the query string for that hop, over loopback only, and is stripped
+// before the request crosses to the hub.
+const ViewerTokenParam = "viewer_token"
+
+// viewerRelayCtxKey marks a request the relay classified as a lens read, so the
+// proxy's Director can tell it apart from thin-client bus traffic after the
+// classification is done. A context value rather than a second proxy: the
+// Director is built once per hub, and the two kinds differ per request.
+type viewerRelayCtxKey struct{}
 
 // hubBus forwards to whatever hub is discovered RIGHT NOW. The target is read
 // per request, not captured: hub discovery re-resolves tag:ccmux-hub every 15s,
@@ -60,24 +74,53 @@ func (s *Server) SetHubBus(hubURL func() string, transport http.RoundTripper, up
 	s.hubBus = &hubBus{hubURL: hubURL, transport: transport, upstream: upstream}
 }
 
-// relayable answers whether a request may cross to the hub. Path alone is not
-// enough: /v1/peers/ws is TWO handlers behind one path, chosen by ?mode=, and
-// the listen arm upgrades before any credential is checked (peersWS) because it
-// is the lens viewer surface, gated by tailnet reach rather than by a token.
-// Relaying it by path would have put that stream one loopback dial away on every
-// member host, wearing the host's member identity — an unauthenticated read of
-// every message, delegation and permission request in a guessable group name.
-//
-// A thin client only ever dials this path with peer_id, so the check costs it
-// nothing.
-func relayable(r *http.Request) bool {
+// relayKind is what a request IS, because the two halves of the bus surface
+// answer to different credentials. Path alone cannot say: /v1/peers/ws is TWO
+// handlers behind one path, chosen by ?mode=.
+type relayKind int
+
+const (
+	// relayDenied is anything not on the allowlist, plus the peer arm of the
+	// socket dialed with an explicit mode= (a thin client only ever dials it
+	// with peer_id, so refusing the form it never sends costs it nothing).
+	relayDenied relayKind = iota
+	// relayClient is thin-client bus traffic, carrying a hub-minted pane token
+	// or this host's shared one for the relay to substitute.
+	relayClient
+	// relayViewer is the read-only lens surface: group peers, group history,
+	// and the listen stream.
+	relayViewer
+)
+
+func relayKindFor(r *http.Request) relayKind {
+	if viewerRelay(r) {
+		return relayViewer
+	}
 	if !relayPaths[r.URL.Path] {
-		return false
+		return relayDenied
 	}
 	if r.URL.Path == "/v1/peers/ws" && r.URL.Query().Get("mode") != "" {
-		return false
+		return relayDenied
 	}
-	return true
+	return relayClient
+}
+
+// viewerRelay names the lens read surface. On the hub these three are gated by
+// tailnet reach and take no credential at all (peersWS upgrades the listen arm
+// before checking anything). Relaying them on that basis would have put an
+// unauthenticated read of every message, delegation and permission request in a
+// guessable group name one loopback dial away on every member host — which on a
+// shared host is every local account, tailnet or not. So the relay applies the
+// boundary the hub gets from the tailnet: this host's pane-less token, out of
+// the 0600 daemon-info file, which means same user on this machine.
+func viewerRelay(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/v1/peers", "/v1/peers/messages":
+		return true
+	case "/v1/peers/ws":
+		return r.URL.Query().Get("mode") == "listen"
+	}
+	return false
 }
 
 // relayPaths is every path a thin client sends to its bus, and nothing else.
@@ -90,7 +133,10 @@ func relayable(r *http.Request) bool {
 //
 // Absent by design: /v1/peers/bus (this host's own question, answered locally),
 // /v1/peers/pane-token (the hub-authority path the DAEMON calls, not a pane),
-// and /v1/peers/local-groups (the Mac app's local pane map).
+// and /v1/peers/local-groups (the Mac app's local pane map, which this daemon
+// forwards to the hub itself rather than letting a local process address it).
+// The lens read surface is NOT here: see viewerRelay, which admits it under a
+// different credential.
 var relayPaths = map[string]bool{
 	"/v1/peers/register":           true,
 	"/v1/peers/unregister":         true,
@@ -108,11 +154,19 @@ var relayPaths = map[string]bool{
 // hubBusRelay serves HubBusPrefix/*. Mounted behind http.StripPrefix, so the
 // path it sees is already the hub-side one.
 func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
-	if !requireLoopback(w, r) {
+	kind := relayKindFor(r)
+	if kind == relayDenied {
+		writeError(w, http.StatusForbidden, "path is not relayable to the hub")
 		return
 	}
-	if !relayable(r) {
-		writeError(w, http.StatusForbidden, "path is not relayable to the hub")
+	// Bus traffic is loopback-only: it wears this host's identity upstream and
+	// can register, send, and act as peers. A lens READ is not, because a caller
+	// that reached this daemon over the tailnet can already fetch the same data
+	// from the hub itself unauthenticated — refusing to relay it would only mean
+	// the browser lens on a member host shows an empty panel forever. (A daemon
+	// deliberately bound to a LAN address widens this, as it already does for
+	// every other route on that listener.)
+	if kind == relayClient && !requireLoopback(w, r) {
 		return
 	}
 	target := s.hubBus.hubURL()
@@ -122,7 +176,11 @@ func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "no hub discovered")
 		return
 	}
-	if err := s.hubBus.checkCredential(bearerToken(r)); err != nil {
+	if kind == relayViewer {
+		if r = s.viewerRelayRequest(w, r); r == nil {
+			return
+		}
+	} else if err := s.hubBus.checkCredential(bearerToken(r)); err != nil {
 		// Fail CLOSED. Forwarding a credential the hub is certain to reject turns
 		// a reachability fault into "invalid peer token" in the caller's log —
 		// which reads as a rotated secret, the one thing that is not wrong. Say
@@ -138,6 +196,36 @@ func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// viewerRelayRequest authorizes a lens read and returns the request to forward,
+// or nil when it has already answered the caller. The token may arrive as a
+// bearer (the Mac app) or as a query parameter (a browser's WebSocket, which
+// cannot set headers); either way it is this host's own credential and is taken
+// off the request before the hop, because the hub neither knows nor wants it.
+func (s *Server) viewerRelayRequest(w http.ResponseWriter, r *http.Request) *http.Request {
+	if s.peersSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "peers bus not enabled")
+		return nil
+	}
+	q := r.URL.Query()
+	token := bearerToken(r)
+	if token == "" {
+		token = q.Get(ViewerTokenParam)
+	}
+	// Only a LOOPBACK caller has to present one. On a shared host that caller is
+	// any local account, which is who the credential exists to exclude; a caller
+	// that came over the tailnet has already crossed the boundary the hub itself
+	// relies on for the very same read.
+	if isLoopback(r) && !s.peersSvc.AuthorizeViewer(token) {
+		writeError(w, http.StatusUnauthorized, "invalid viewer token")
+		return nil
+	}
+	if q.Has(ViewerTokenParam) {
+		q.Del(ViewerTokenParam)
+		r.URL.RawQuery = q.Encode()
+	}
+	return r.WithContext(context.WithValue(r.Context(), viewerRelayCtxKey{}, true))
 }
 
 // checkCredential resolves the upstream bearer BEFORE proxying, so a failure to
@@ -179,6 +267,14 @@ func (b *hubBus) proxyFor(raw string) (*httputil.ReverseProxy, error) {
 		// dev-hostname dispatch, and a proxied request must look like it was
 		// addressed to the hub, not to the pane's loopback.
 		out.Host = u.Host
+		if out.Context().Value(viewerRelayCtxKey{}) != nil {
+			// A lens read. The hub's viewer surface takes no credential, and the
+			// one this caller presented is a LOCAL secret that would mean nothing
+			// there — so the read crosses anonymously rather than putting this
+			// host's token on the tailnet for nothing.
+			out.Header.Del("Authorization")
+			return
+		}
 		if upstream == nil {
 			return
 		}

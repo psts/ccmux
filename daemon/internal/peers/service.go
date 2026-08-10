@@ -180,11 +180,16 @@ type Service struct {
 	// sessions.go) — the only signal that distinguishes a session that will
 	// read a message from a process that merely has the MCP server loaded.
 	sessions map[string]*paneSessions
-	// localGroups maps a Mac-local pane's UUID (lowercased) to its owning
-	// window's name. The Mac app is the source of truth and pushes the full map
-	// on every window/ownership change, so resolution stays live for driver-mode
-	// panes exactly like workspace groups do for hosted ones. Not persisted —
-	// the app re-pushes shortly after either side restarts.
+	// localGroups maps a Mac-local pane to its owning window's name, keyed by
+	// localGroupKey(owning host, pane UUID). The Mac app is the source of truth
+	// and pushes the full map on every window/ownership change, so resolution
+	// stays live for driver-mode panes exactly like workspace groups do for
+	// hosted ones. Not persisted — the app re-pushes shortly after either side
+	// restarts.
+	//
+	// Keyed by HOST because on the hub this map is the union of every member's,
+	// each of which arrives as a complete replacement of its own host's entries.
+	// A flat map would have let the second member's push delete the first's.
 	localGroups map[string]string
 	// globalGroups and hostForPane are the hub-mode federation resolvers, backed
 	// by the aggregator's cached maps (pure reads — never I/O under s.mu).
@@ -289,7 +294,7 @@ func (s *Service) groupOfLocked(p *Peer) string {
 		}
 	}
 	if p.LocalPaneID != "" {
-		if g := s.localGroups[strings.ToLower(p.LocalPaneID)]; g != "" {
+		if g := s.localGroups[localGroupKey(p.Host, p.LocalPaneID)]; g != "" {
 			return g
 		}
 	}
@@ -299,16 +304,48 @@ func (s *Service) groupOfLocked(p *Peer) string {
 	return fallbackGroup(p.GitRoot, p.CWD)
 }
 
-// SetLocalPaneGroups replaces the local-pane→window map (the Mac app always
-// pushes its complete current view).
+// SetLocalPaneGroups replaces this daemon's OWN local-pane→window map (the Mac
+// app always pushes its complete current view).
 func (s *Service) SetLocalPaneGroups(groups map[string]string) {
-	normalized := make(map[string]string, len(groups))
-	for id, g := range groups {
-		normalized[strings.ToLower(id)] = g
-	}
+	s.SetLocalPaneGroupsForHost("", groups)
+}
+
+// SetLocalPaneGroupsForHost replaces one host's slice of the map and leaves
+// every other host's alone. host is "" for this daemon's own panes — the same
+// label Peer.Host carries for them, so the key a push writes is the key a
+// lookup reads.
+//
+// On the hub, host is the member the push arrived from, resolved from the
+// connection rather than from anything the caller said: a member that could name
+// its own host label could rewrite another member's grouping.
+func (s *Service) SetLocalPaneGroupsForHost(host string, groups map[string]string) {
 	s.mu.Lock()
-	s.localGroups = normalized
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	for key := range s.localGroups {
+		if keyHost(key) == host {
+			delete(s.localGroups, key)
+		}
+	}
+	for id, g := range groups {
+		s.localGroups[localGroupKey(host, id)] = g
+	}
+}
+
+// localGroupKey pairs the owning host with the pane UUID. The separator is a NUL
+// because neither part can contain one, so no host/pane pair can be spelled two
+// ways.
+func localGroupKey(host, paneID string) string {
+	return host + "\x00" + strings.ToLower(paneID)
+}
+
+func keyHost(key string) string {
+	host, _, _ := strings.Cut(key, "\x00")
+	return host
+}
+
+func keyPane(key string) string {
+	_, pane, _ := strings.Cut(key, "\x00")
+	return pane
 }
 
 // fallbackGroup names the project a session outside ccmux belongs to: the
