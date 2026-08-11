@@ -53,7 +53,15 @@ class WorkspaceManager: ObservableObject {
         return controllers[id]
     }
 
-    init() {
+    /// Whether mutations schedule a write to state.json. Tests pass false: the save
+    /// path targets the real `~/Library/Application Support/ccmux/state.json` with no
+    /// override, so a test that builds a throwaway manager and lets its debounced save
+    /// fire would overwrite the user's actual workspaces and windows.
+    private let autosaves: Bool
+
+    init(autosaves: Bool = true) {
+        self.autosaves = autosaves
+
         // Auto-save whenever workspaces or active ID changes
         $workspaces
             .combineLatest($activeWorkspaceId)
@@ -301,6 +309,7 @@ class WorkspaceManager: ObservableObject {
     }
 
     private func scheduleSave() {
+        guard autosaves else { return }
         saveDebouncer.call { [weak self] in
             self?.saveState()
         }
@@ -565,7 +574,16 @@ class WorkspaceManager: ObservableObject {
     /// Permanently delete a closed workspace.
     func deleteClosedWorkspace(id: UUID) {
         closedWorkspaces.removeAll { $0.id == id }
-        // Also remove from any closed windows
+        forgetClosedWindowReferences(to: id)
+    }
+
+    /// Drop a workspace from every closed-window record, pruning records left empty.
+    ///
+    /// Load-bearing beyond tidiness: the sidebar hides a closed workspace whenever any
+    /// closed window still mentions it (SidebarView's "Restore Workspace" list), on the
+    /// assumption that you would restore it via its window. A record that outlives the
+    /// workspace's membership therefore makes it unreachable from both menus.
+    func forgetClosedWindowReferences(to id: UUID) {
         for i in closedWindows.indices {
             closedWindows[i].workspaceIds.removeAll { $0 == id }
         }
@@ -596,6 +614,9 @@ class WorkspaceManager: ObservableObject {
 
         let workspace = closedWorkspaces.remove(at: idx)
         workspaces.append(workspace)
+        // It is open again, so no closed-window record may keep claiming it — one that
+        // does hides it from "Restore Workspace" the next time it is closed, for good.
+        forgetClosedWindowReferences(to: id)
 
         // Create controller with saved layout
         let controller = SplitTreeController(workingDirectory: workspace.repoPath)

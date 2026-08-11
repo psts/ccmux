@@ -187,8 +187,13 @@ struct SidebarView: View {
                         Text("Restore Window")
 
                         ForEach(manager.closedWindows) { cw in
+                            // Hosted sessions keep running while their window is closed,
+                            // so they are named from the live list rather than the
+                            // closed one — without this an unnamed window holding only
+                            // hosted sessions reads as a bare "Window".
                             let wsNames = cw.workspaceIds.compactMap { id in
                                 manager.closedWorkspaces.first(where: { $0.id == id })?.name
+                                    ?? remoteService.workspaces.first(where: { $0.id == id })?.name
                             }
                             Button {
                                 onRestoreWindow?(cw.id)

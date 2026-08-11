@@ -81,13 +81,20 @@ class WindowManager {
     // MARK: - Window Lifecycle
 
     /// Create a new window displaying the given workspace (or nil for welcome screen).
+    /// `name` is applied before the window joins `windowControllers`, because the
+    /// `refreshOtherWindowIds` below pushes each window's name to the daemon as its
+    /// hosted group. Naming afterwards means the auto "Window N" goes out first, and
+    /// the corrective push races it from a separate unstructured Task.
     @discardableResult
-    func createWindow(displayingWorkspace workspaceId: UUID?, frame: WindowFrame? = nil) -> WorkspaceWindowController {
+    func createWindow(
+        displayingWorkspace workspaceId: UUID?, frame: WindowFrame? = nil, name: String? = nil
+    ) -> WorkspaceWindowController {
         let wc = WorkspaceWindowController(
             workspaceManager: workspaceManager,
             windowManager: self,
             displayedWorkspaceId: workspaceId
         )
+        wc.windowContext.windowName = name
 
         if let frame {
             wc.window?.setFrame(
@@ -185,34 +192,27 @@ class WindowManager {
             // Seed with the displayed workspace too — ownership tracking has historically had
             // gaps (detach/move paths can drop a workspace from ownedWorkspaceIds while it's
             // still on screen), and a leaked workspace there means leaked PTYs/child processes.
-            var ownedIds = controller.windowContext.ownedWorkspaceIds
-            if let displayed = controller.windowContext.displayedWorkspaceId {
-                ownedIds.insert(displayed)
-            }
-            var closingIds: [UUID] = []
+            let plan = Self.closingPlan(
+                owned: controller.windowContext.ownedWorkspaceIds,
+                displayed: controller.windowContext.displayedWorkspaceId,
+                isHosted: { RemoteSessionService.shared.isHosted($0) },
+                isOwnedElsewhere: { wsId in
+                    windowControllers.contains { wc in
+                        wc !== controller && wc.windowContext.ownedWorkspaceIds.contains(wsId)
+                    }
+                })
+            let closingIds = plan.closeLocally
 
-            for wsId in ownedIds {
-                // Hosted workspaces live on the daemon, not in this window — closing
-                // the window must not close (or archive) them. They become unowned
-                // and are re-adopted into the first window on the next reconcile.
-                if RemoteSessionService.shared.isHosted(wsId) {
-                    continue
-                }
-                let ownedElsewhere = windowControllers.contains { wc in
-                    wc !== controller && wc.windowContext.ownedWorkspaceIds.contains(wsId)
-                }
-                if !ownedElsewhere {
-                    closingIds.append(wsId)
-                }
-            }
-
-            // Save as a closed window group if it had workspaces
-            if !closingIds.isEmpty {
+            // Save as a closed window group if it held anything — hosted sessions
+            // included. They keep running on the daemon, but the window that grouped
+            // them (its name, frame, and membership) is ours to remember, and without
+            // the record there is nothing for "Restore Window" to rebuild.
+            if !plan.record.isEmpty {
                 let frame = controller.window?.frame ?? NSRect(x: 100, y: 100, width: 1200, height: 800)
                 let closedWindow = ClosedWindow(
                     id: UUID(),
                     windowName: controller.windowContext.windowName,
-                    workspaceIds: closingIds,
+                    workspaceIds: plan.record,
                     displayedWorkspaceId: controller.windowContext.displayedWorkspaceId,
                     frame: WindowFrame(x: frame.origin.x, y: frame.origin.y,
                                        width: frame.size.width, height: frame.size.height)
@@ -237,6 +237,51 @@ class WindowManager {
         refreshOtherWindowIds()
 
         // Don't quit — app stays running so user can reopen from dock
+    }
+
+    /// What a closing window leaves behind.
+    ///
+    /// `closeLocally` are the workspaces this window is the last owner of, whose panes
+    /// and processes it must tear down. `record` is what the closed-window entry
+    /// remembers, and it deliberately includes hosted sessions: those keep running on
+    /// the daemon (closing a window must never kill one), but the grouping is the
+    /// window's, and recording only the local ones is why a window full of hosted
+    /// sessions used to vanish with no way to bring it back.
+    ///
+    /// The displayed workspace is folded in because ownership tracking has historically
+    /// had gaps — detach/move paths can drop a workspace from `ownedWorkspaceIds` while
+    /// it is still on screen, and a leaked one there means leaked PTYs.
+    static func closingPlan(
+        owned: Set<UUID>, displayed: UUID?,
+        isHosted: (UUID) -> Bool, isOwnedElsewhere: (UUID) -> Bool
+    ) -> (closeLocally: [UUID], record: [UUID]) {
+        var ids = owned
+        if let displayed { ids.insert(displayed) }
+        var closeLocally: [UUID] = []
+        var record: [UUID] = []
+        for id in ids where !isOwnedElsewhere(id) {
+            if !isHosted(id) { closeLocally.append(id) }
+            record.append(id)
+        }
+        return (closeLocally, record)
+    }
+
+    /// Split a closed window's saved ids by how each one comes back: hosted sessions are
+    /// re-claimed live from the daemon, local ones are reopened from `closedWorkspaces`.
+    ///
+    /// Ids matching neither are dropped. A hosted session deleted or archived while the
+    /// window was closed would otherwise be claimed into `ownedWorkspaceIds`, persisted
+    /// into the window descriptor, and never cleaned up — the orphan sweep only iterates
+    /// ids the daemon still lists.
+    static func restorePlan(
+        ids: [UUID], isHosted: (UUID) -> Bool, isReopenable: (UUID) -> Bool
+    ) -> (hosted: [UUID], local: [UUID]) {
+        var hosted: [UUID] = []
+        var local: [UUID] = []
+        for id in ids {
+            if isHosted(id) { hosted.append(id) } else if isReopenable(id) { local.append(id) }
+        }
+        return (hosted, local)
     }
 
     /// Move a workspace from its current window into the requesting window.
@@ -303,26 +348,30 @@ class WindowManager {
     func restoreClosedWindow(id: UUID) {
         guard let closedWindow = workspaceManager.closedWindows.first(where: { $0.id == id }) else { return }
 
-        // Reopen all workspaces that belong to this window
-        var reopenedIds: [UUID] = []
-        for wsId in closedWindow.workspaceIds {
-            if let _ = workspaceManager.reopenWorkspace(id: wsId) {
-                reopenedIds.append(wsId)
-            }
-        }
+        let plan = Self.restorePlan(
+            ids: closedWindow.workspaceIds,
+            isHosted: { RemoteSessionService.shared.isHosted($0) },
+            isReopenable: { wsId in workspaceManager.closedWorkspaces.contains { $0.id == wsId } })
+        for wsId in plan.local { _ = workspaceManager.reopenWorkspace(id: wsId) }
 
-        guard !reopenedIds.isEmpty else { return }
-
-        // Create a new window displaying the previously displayed workspace (or first)
-        let displayId = closedWindow.displayedWorkspaceId ?? reopenedIds.first!
-        let wc = createWindow(displayingWorkspace: displayId, frame: closedWindow.frame)
-
-        // Assign all reopened workspaces to this window
-        wc.windowContext.ownedWorkspaceIds = Set(reopenedIds)
-        wc.windowContext.windowName = closedWindow.windowName
-
-        // Remove the closed window record
+        // Drop the record first. Every member may be gone — a hosted session deleted by
+        // another lens is pruned from windows but not from here — and leaving the record
+        // behind on that path makes a menu entry that does nothing, forever.
         workspaceManager.closedWindows.removeAll { $0.id == id }
+
+        let restored = plan.hosted + plan.local
+        guard !restored.isEmpty else { return }
+
+        // Display what was on screen when it closed, unless that one didn't come back.
+        let displayId = closedWindow.displayedWorkspaceId.flatMap { restored.contains($0) ? $0 : nil }
+            ?? restored[0]
+        let wc = createWindow(
+            displayingWorkspace: displayId, frame: closedWindow.frame, name: closedWindow.windowName)
+        wc.windowContext.ownedWorkspaceIds = Set(restored)
+        // Hosted sessions were adopted by another window while this one was closed, so
+        // take them back exclusively — a plain insert leaves two owners and the next
+        // orphan sweep dedupes them straight back out.
+        for wsId in plan.hosted { claimHostedWorkspace(wsId, into: wc) }
 
         refreshOtherWindowIds()
     }
@@ -455,10 +504,20 @@ class WindowManager {
 
     /// Claim a hosted workspace for one window EXCLUSIVELY: every other window
     /// drops it. Used after creating a session, in case an adoption sweep grabbed
-    /// it mid-create anyway.
+    /// it mid-create anyway, and when restoring a closed window takes its sessions
+    /// back from whichever window adopted them meanwhile.
+    ///
+    /// A window that loses the claim must also stop *showing* it. Ownership and
+    /// display are separate fields, and leaving a window displaying a workspace it no
+    /// longer owns breaks the routing invariant (`selectWorkspace` sends a click to
+    /// the owner) and leaves two windows attached to one daemon session — which, with
+    /// one PTY per session, means they fight over its size.
     func claimHostedWorkspace(_ id: UUID, into controller: WorkspaceWindowController) {
         for wc in windowControllers where wc !== controller {
             wc.windowContext.ownedWorkspaceIds.remove(id)
+            guard wc.windowContext.displayedWorkspaceId == id else { continue }
+            wc.windowContext.displayedWorkspaceId = wc.windowContext.ownedWorkspaceIds.first
+            wc.updateWindowTitle()
         }
         controller.windowContext.ownedWorkspaceIds.insert(id)
         refreshOtherWindowIds()
@@ -526,6 +585,9 @@ class WindowManager {
                 wc.updateWindowTitle()
             }
         }
+        // Closed windows remember hosted sessions too, so they need the same pruning
+        // the local delete path gets — otherwise a record slowly fills with dead ids.
+        workspaceManager.forgetClosedWindowReferences(to: id)
         refreshOtherWindowIds()
     }
 
@@ -609,11 +671,15 @@ class WindowManager {
         Task { await PeerBrokerService.shared.pushLocalGroups(map) }
     }
 
-    /// Rename a window.
+    /// Rename a window. Persisted immediately: the name lives only in the window
+    /// descriptor, and nothing else about a rename touches the autosave triggers, so
+    /// without this the new name survived only if you happened to move, resize, or
+    /// change a workspace before quitting.
     func renameWindow(id: UUID, newName: String?) {
         guard let wc = windowControllers.first(where: { $0.windowId == id }) else { return }
         wc.windowContext.windowName = newName
         refreshOtherWindowIds()
+        workspaceManager.scheduleSaveFromWindow()
     }
 
     /// Get the auto-generated name for a window based on its index.
