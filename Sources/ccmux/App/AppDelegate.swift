@@ -31,11 +31,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Try to restore saved state
         let windowDescriptors = workspaceManager.loadState()
 
-        // If no saved workspaces, create one from cwd
-        if workspaceManager.workspaces.isEmpty {
-            let cwd = FileManager.default.currentDirectoryPath
-            let name = (cwd as NSString).lastPathComponent
-            workspaceManager.addWorkspace(name: name, repoPath: cwd)
+        // First launch only: seed a workspace from the directory we were started in.
+        if let seed = Self.launchSeedRepoPath(
+            savedWindows: windowDescriptors,
+            localWorkspaces: workspaceManager.workspaces,
+            cwd: FileManager.default.currentDirectoryPath
+        ) {
+            workspaceManager.addWorkspace(name: (seed as NSString).lastPathComponent, repoPath: seed)
         }
 
         let wm = WindowManager(workspaceManager: workspaceManager)
@@ -74,6 +76,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 contentSizeProvider: { [weak wm] wsId in wm?.contentSize(forWorkspace: wsId) }
             )
 
+            // Only now, with windows on screen and the app active, is a modal safe:
+            // run from didFinishLaunching it would block launch on an alert owned by
+            // an inactive app with nothing behind it.
+            self.reportStateLoadWarning()
+
             // The window manager is now live — service any spawn URLs that cold-started us.
             self.isReadyForSpawns = true
             self.flushPendingSpawns()
@@ -105,6 +112,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // newer release exists; the menu item stays the loud path.
             UpdaterService.shared.startAutomaticChecks()
         }
+    }
+
+    /// Tell the user when state.json did not come back whole. Losing saved workspaces
+    /// silently is how a corrupt file becomes "ccmux forgot everything" with no trace
+    /// the user can follow — the alert names the backup so recovery is possible.
+    private func reportStateLoadWarning() {
+        guard let warning = PersistenceService.lastLoadWarning else { return }
+        let alert = NSAlert()
+        alert.messageText = "Some saved state could not be restored"
+        alert.informativeText = warning
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    /// The directory to seed a first-run workspace from, or nil when we must not seed one.
+    ///
+    /// Two things make the naive "no workspaces yet → make one from cwd" wrong:
+    ///
+    /// 1. Hosted (lens) workspaces live in ccmuxd and arrive *after* launch, so an
+    ///    empty `localWorkspaces` says nothing about whether the user has sessions.
+    ///    Saved window descriptors are the real "this is a returning session" signal.
+    /// 2. Launched from the Dock/Finder, LaunchServices gives the app cwd `/`. Seeding
+    ///    from that mints a junk workspace named "/" rooted at the filesystem root —
+    ///    the phantom "empty session with one terminal, Not a git repository" that used
+    ///    to appear in the first window's sidebar on every reopen.
+    static func launchSeedRepoPath(
+        savedWindows: [WindowDescriptor], localWorkspaces: [Workspace], cwd: String
+    ) -> String? {
+        guard savedWindows.isEmpty, localWorkspaces.isEmpty else { return nil }
+        guard cwd != "/" else { return nil }
+        return cwd
     }
 
     /// Wire and start the hosted-session service: it polls ccmuxd, renders hosted

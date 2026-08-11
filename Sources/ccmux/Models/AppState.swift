@@ -29,15 +29,22 @@ struct AppState: Codable {
 
     // See WindowDescriptor.init(from:) for the rationale — `decodeIfPresent`
     // keeps default-valued fields tolerant of older state.json files.
+    //
+    // The three collections decode leniently (`decodeLossyArray`): one corrupt
+    // workspace used to throw and take the entire file with it, losing every other
+    // workspace, both closed lists, and the whole window/Space layout. Drops are
+    // tallied into `decoder.dropLog` so PersistenceService can back the file up
+    // before the launch-time autosave overwrites it.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        workspaces = try c.decode([Workspace].self, forKey: .workspaces)
-        closedWorkspaces = try c.decodeIfPresent([Workspace].self, forKey: .closedWorkspaces) ?? []
-        closedWindows = try c.decodeIfPresent([ClosedWindow].self, forKey: .closedWindows) ?? []
+        let log = decoder.dropLog
+        workspaces = try c.decodeLossyArray(Workspace.self, forKey: .workspaces, into: log, required: true)
+        closedWorkspaces = try c.decodeLossyArray(Workspace.self, forKey: .closedWorkspaces, into: log)
+        closedWindows = try c.decodeLossyArray(ClosedWindow.self, forKey: .closedWindows, into: log)
         activeWorkspaceId = try c.decodeIfPresent(UUID.self, forKey: .activeWorkspaceId)
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 2
         windowFrame = try c.decodeIfPresent(WindowFrame.self, forKey: .windowFrame)
-        windows = try c.decodeIfPresent([WindowDescriptor].self, forKey: .windows) ?? []
+        windows = try c.decodeLossyArray(WindowDescriptor.self, forKey: .windows, into: log)
     }
 }
 
