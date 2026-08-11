@@ -307,6 +307,10 @@ func (m *Manager) SpawnPane(wsID, cwd, startupCmd, createdBy string) (*model.Pan
 // KillPane kills one pane (SIGTERM through tmux) and drops it from the
 // workspace — the generic close-a-pane path behind a hosted tab's ✕ in any
 // lens. Idempotent: a pane the workspace doesn't hold is a no-op.
+//
+// The last pane is the exception: rather than drop it and leave a paneless
+// workspace, the session is archived and the pane row stays on as its revive
+// recipe. See the isLast branch below.
 func (m *Manager) KillPane(wsID, paneID string) error {
 	e := m.entry(wsID)
 	if e == nil {
@@ -320,9 +324,27 @@ func (m *Manager) KillPane(wsID, paneID string) error {
 			break
 		}
 	}
+	isLast := held && len(e.ws.Panes) == 1
 	m.mu.RUnlock()
 	if !held {
 		return nil
+	}
+	// Closing the last pane ends the session instead of leaving a paneless
+	// workspace behind. A zero-pane row cannot be revived (ReviveWorkspace reads
+	// pane 0 for the session's cwd) so it lingers in every lens as a cold row
+	// that does nothing when clicked. Archiving kills the tmux session and keeps
+	// the recipe, which is the same end state as "Close Session" — and unlike a
+	// delete it does not destroy the layout, hostnames, or dev command.
+	if isLast {
+		// Re-checked under the write lock: a pane may have been spawned since the
+		// read above, and archiving on the stale count would kill a live session.
+		// If it raced, fall through and close the pane the ordinary way.
+		_, err := m.archiveIf(wsID, func(e *entry) bool {
+			return len(e.ws.Panes) == 1 && e.ws.Panes[0].ID == paneID
+		})
+		if !errors.Is(err, errArchiveRaced) {
+			return err
+		}
 	}
 	if e.ctrl != nil {
 		if err := e.ctrl.KillPane(paneID); err != nil {
@@ -433,11 +455,27 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 // Same end state as the tmux server dying ("Close Session" in the lenses).
 // Idempotent: an already-cold workspace is a no-op.
 func (m *Manager) ArchiveWorkspace(wsID string) (*model.Workspace, error) {
+	return m.archiveIf(wsID, func(*entry) bool { return true })
+}
+
+// errArchiveRaced reports that the condition justifying an archive stopped holding
+// before the write lock was taken. Callers fall back to their non-archive path.
+var errArchiveRaced = errors.New("archive precondition no longer holds")
+
+// archiveIf is ArchiveWorkspace with the decision made under the same write lock
+// that performs it. A caller deciding on state read under the read lock — "this is
+// the last pane" — can be overtaken by a concurrent SpawnPane, and archiving on a
+// stale count would kill a session that just gained a pane.
+func (m *Manager) archiveIf(wsID string, stillTrue func(*entry) bool) (*model.Workspace, error) {
 	m.mu.Lock()
 	e := m.byID[wsID]
 	if e == nil {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("unknown workspace %s", wsID)
+	}
+	if !stillTrue(e) {
+		m.mu.Unlock()
+		return nil, errArchiveRaced
 	}
 	ctrl := e.ctrl
 	session := e.ws.TmuxSession
@@ -834,22 +872,32 @@ func (m *Manager) watch(wsID string, ctrl *session.Controller) {
 	}
 }
 
+// dropPane removes a pane from the workspace and the store — except when it is the
+// last one. A workspace with no panes cannot be revived (ReviveWorkspace reads pane 0
+// for the session's cwd), so the final row stays on as the recipe and the workspace
+// simply goes cold. KillPane archives explicitly for this case; the floor here catches
+// every other route to the same state, including a pane count that changed under a
+// racing caller.
 func (m *Manager) dropPane(wsID, paneID string) {
 	if paneID == "" {
 		return
 	}
 	m.mu.Lock()
-	if e := m.byID[wsID]; e != nil {
+	dropped := false
+	if e := m.byID[wsID]; e != nil && len(e.ws.Panes) > 1 {
 		kept := e.ws.Panes[:0]
 		for _, p := range e.ws.Panes {
 			if p.ID != paneID {
 				kept = append(kept, p)
 			}
 		}
+		dropped = len(kept) != len(e.ws.Panes)
 		e.ws.Panes = kept
 	}
 	m.mu.Unlock()
-	_ = m.store.DeletePane(paneID)
+	if dropped {
+		_ = m.store.DeletePane(paneID)
+	}
 }
 
 func (m *Manager) markCold(wsID string) {

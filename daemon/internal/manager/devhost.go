@@ -309,6 +309,15 @@ func (m *Manager) StopDevServer(wsID string) (*model.Workspace, error) {
 	if pane == nil {
 		return e.ws, nil
 	}
+	// Stop is not close. KillPane archives the workspace when it takes the last
+	// pane, which would turn this button into "end my session" — and the caller
+	// would still see 200. Refuse instead, and name the way out.
+	m.mu.RLock()
+	onlyPane := len(e.ws.Panes) == 1
+	m.mu.RUnlock()
+	if onlyPane {
+		return nil, fmt.Errorf("the dev server is this session's only pane; closing it would end the session — use Close Session instead")
+	}
 	if err := m.KillPane(wsID, pane.ID); err != nil {
 		return nil, err
 	}

@@ -511,11 +511,11 @@ struct SidebarView: View {
         .foregroundColor(.secondary)
         .contentShape(Rectangle())
         .onTapGesture {
-            Task { await remoteService.reviveWorkspace(daemonId: cold.id) }
+            revive(cold)
         }
         .contextMenu {
             Button("Revive") {
-                Task { await remoteService.reviveWorkspace(daemonId: cold.id) }
+                revive(cold)
             }
             Divider()
             Button("Remove Session…", role: .destructive) {
@@ -524,6 +524,27 @@ struct SidebarView: View {
                 }
             }
         }
+    }
+
+    /// Resurrect a cold session, reporting a refusal instead of swallowing it.
+    /// The click has no other visible effect when it fails, so silence reads as a
+    /// dead row.
+    private func revive(_ cold: DaemonWorkspace) {
+        Task {
+            guard let error = await remoteService.reviveWorkspace(daemonId: cold.id) else { return }
+            await MainActor.run { reportFailure(action: "Revive “\(cold.name)”", error: error) }
+        }
+    }
+
+    /// Surface a daemon refusal. Modal because every caller is a direct response
+    /// to a click the user just made.
+    private func reportFailure(action: String, error: String) {
+        let alert = NSAlert()
+        alert.messageText = "\(action) failed"
+        alert.informativeText = error
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Guard the permanent purge behind an explicit confirmation — it kills the
@@ -542,7 +563,12 @@ struct SidebarView: View {
     /// Flip the workspace's dev server: the daemon spawns/kills its dev pane.
     private func toggleDevServer(_ id: UUID) {
         let running = remoteService.devRunning[id] ?? false
-        Task { await remoteService.setDevServer(id, running: !running) }
+        Task {
+            guard let error = await remoteService.setDevServer(id, running: !running) else { return }
+            await MainActor.run {
+                reportFailure(action: running ? "Stop dev server" : "Start dev server", error: error)
+            }
+        }
     }
 
     /// One mapped hostname's menu entry: open / copy, with the dev server's

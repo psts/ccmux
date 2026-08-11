@@ -161,6 +161,84 @@ func TestManager_ArchiveKeepsRecipe(t *testing.T) {
 	}
 }
 
+// TestManager_KillLastPaneArchivesLiveSession exercises the last-pane branch against
+// a real tmux session, which the unit-level fixture cannot: its workspaces have no
+// controller, so ArchiveWorkspace returns at its already-cold guard and never kills a
+// session, persists a status, or publishes an event. Here the session is live, so all
+// three actually run — and the pane row must still survive as the revive recipe.
+func TestManager_KillLastPaneArchivesLiveSession(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-lastpane-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	marker := "LASTPANE_MARKER_9021"
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "printf "+marker, "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if len(ws.Panes) != 1 {
+		t.Fatalf("fixture panes = %d, want 1", len(ws.Panes))
+	}
+
+	if err := mgr.KillPane(ws.ID, ws.Panes[0].ID); err != nil {
+		t.Fatalf("kill last pane: %v", err)
+	}
+
+	if got := mgr.Workspace(ws.ID); got == nil || got.Status != model.StatusCold {
+		t.Fatalf("workspace = %+v, want a cold row", got)
+	}
+	if tsrv.HasSession(ws.TmuxSession) {
+		t.Fatal("tmux session survived closing its last pane")
+	}
+	// Persisted, not just flipped in memory — the cold-only path never gets here.
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	found := false
+	for _, l := range loaded {
+		if l.ID != ws.ID {
+			continue
+		}
+		found = true
+		if l.Status != model.StatusCold {
+			t.Fatalf("persisted status = %v, want cold", l.Status)
+		}
+		if len(l.Panes) != 1 || l.Panes[0].StartupCommand != "printf "+marker {
+			t.Fatalf("persisted panes = %+v, want the recipe kept", l.Panes)
+		}
+	}
+	if !found {
+		t.Fatal("registry row deleted — closing a pane must not purge the workspace")
+	}
+
+	// The whole point of keeping the recipe: it comes back.
+	revived, err := mgr.ReviveWorkspace(ws.ID)
+	if err != nil {
+		t.Fatalf("revive after last-pane close: %v", err)
+	}
+	if revived.Status != model.StatusLive || !tsrv.HasSession(ws.TmuxSession) {
+		t.Fatalf("revive did not restore the session (status=%v)", revived.Status)
+	}
+}
+
 func waitStatus(mgr *Manager, wsID string, want model.Status, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {

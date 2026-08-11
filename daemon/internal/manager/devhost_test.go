@@ -73,33 +73,52 @@ func TestSetHostnames_RoundtripAndUniqueness(t *testing.T) {
 	}
 }
 
-// TestKillPane pins the generic close-a-pane path (a hosted tab's ✕ in a lens):
-// the pane leaves the workspace and the store; a pane the workspace doesn't
-// hold is a no-op and an unknown workspace errors.
-func TestKillPane(t *testing.T) {
-	m, st := devhostManager(t)
-	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1", CWD: "/r1"}
-	if err := st.SavePane(p); err != nil {
-		t.Fatal(err)
+// givePanes attaches panes to a fixture workspace in both memory and the store.
+func givePanes(t *testing.T, m *Manager, st *store.SQLite, wsID string, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		p := &model.Pane{ID: id, WorkspaceID: wsID, CWD: "/r1"}
+		if err := st.SavePane(p); err != nil {
+			t.Fatal(err)
+		}
+		m.mu.Lock()
+		m.byID[wsID].ws.Panes = append(m.byID[wsID].ws.Panes, p)
+		m.mu.Unlock()
 	}
-	m.mu.Lock()
-	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
-	m.mu.Unlock()
+}
 
-	if err := m.KillPane("w1", "pane-1"); err != nil {
-		t.Fatalf("kill: %v", err)
-	}
-	if got := m.Workspace("w1").Panes; len(got) != 0 {
-		t.Fatalf("panes = %+v, want none", got)
-	}
+// persistedPanes reads a workspace's pane rows back out of the store.
+func persistedPanes(t *testing.T, st *store.SQLite, wsID string) []*model.Pane {
+	t.Helper()
 	loaded, err := st.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, l := range loaded {
-		if l.ID == "w1" && len(l.Panes) != 0 {
-			t.Fatalf("persisted panes = %+v, want none", l.Panes)
+		if l.ID == wsID {
+			return l.Panes
 		}
+	}
+	t.Fatalf("workspace %s not in store", wsID)
+	return nil
+}
+
+// TestKillPane pins the generic close-a-pane path (a hosted tab's ✕ in a lens):
+// the pane leaves the workspace and the store; a pane the workspace doesn't
+// hold is a no-op and an unknown workspace errors.
+func TestKillPane(t *testing.T) {
+	m, st := devhostManager(t)
+	givePanes(t, m, st, "w1", "pane-1", "pane-2")
+
+	if err := m.KillPane("w1", "pane-1"); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	got := m.Workspace("w1").Panes
+	if len(got) != 1 || got[0].ID != "pane-2" {
+		t.Fatalf("panes = %+v, want only pane-2", got)
+	}
+	if p := persistedPanes(t, st, "w1"); len(p) != 1 || p[0].ID != "pane-2" {
+		t.Fatalf("persisted panes = %+v, want only pane-2", p)
 	}
 
 	if err := m.KillPane("w1", "pane-1"); err != nil {
@@ -108,6 +127,37 @@ func TestKillPane(t *testing.T) {
 	if err := m.KillPane("nope", "pane-1"); !errors.Is(err, ErrUnknownWorkspace) {
 		t.Fatalf("err = %v, want ErrUnknownWorkspace", err)
 	}
+}
+
+// TestKillLastPaneArchives pins the fix for the un-revivable zero-pane row:
+// closing the final pane ends the session (cold) but KEEPS the pane recipe, so
+// the workspace still revives. Dropping the row instead left a cold entry that
+// ReviveWorkspace rejects with "has no panes to revive" and that no lens could
+// clear except Remove Session.
+func TestKillLastPaneArchives(t *testing.T) {
+	m, st := devhostManager(t)
+	givePanes(t, m, st, "w1", "only-pane")
+
+	if err := m.KillPane("w1", "only-pane"); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+
+	ws := m.Workspace("w1")
+	if ws == nil {
+		t.Fatal("workspace deleted; archiving must keep the row")
+	}
+	if ws.Status != model.StatusCold {
+		t.Fatalf("status = %q, want %q", ws.Status, model.StatusCold)
+	}
+	if len(ws.Panes) != 1 || ws.Panes[0].ID != "only-pane" {
+		t.Fatalf("panes = %+v, want the recipe kept", ws.Panes)
+	}
+	if p := persistedPanes(t, st, "w1"); len(p) != 1 || p[0].ID != "only-pane" {
+		t.Fatalf("persisted panes = %+v, want the recipe kept", p)
+	}
+	// Holding a pane is exactly ReviveWorkspace's precondition (manager.go: "has no
+	// panes to revive"), so the assertions above are what keep the row revivable.
+	// Revive itself isn't called here — it would exec tmux against the fixture socket.
 }
 
 // TestLensHostname pins the reserved-label invariant both ways: the lens can't
@@ -287,6 +337,29 @@ func TestDevCommand(t *testing.T) {
 	}
 	if _, err := m.StartDevServer("nope"); !errors.Is(err, ErrUnknownWorkspace) {
 		t.Fatalf("unknown ws start err = %v", err)
+	}
+}
+
+// TestStopDevServerRefusesWhenItIsTheOnlyPane guards the seam between "stop the
+// dev server" and KillPane's last-pane archive: without the refusal, ■ would kill
+// the tmux session and still answer 200, so every layer would report success while
+// the user's session went cold.
+func TestStopDevServerRefusesWhenItIsTheOnlyPane(t *testing.T) {
+	m, st := devhostManager(t)
+	givePanes(t, m, st, "w1", "dev-pane")
+	m.mu.Lock()
+	m.byID["w1"].ws.Panes[0].DevServer = true
+	m.mu.Unlock()
+
+	if _, err := m.StopDevServer("w1"); err == nil {
+		t.Fatal("stop should refuse to close the session's only pane")
+	}
+	// The pane must survive — a refusal that still killed something is not a refusal.
+	if ws := m.Workspace("w1"); len(ws.Panes) != 1 || ws.Panes[0].ID != "dev-pane" {
+		t.Fatalf("panes = %+v, want the dev pane still there", ws.Panes)
+	}
+	if p := persistedPanes(t, st, "w1"); len(p) != 1 {
+		t.Fatalf("persisted panes = %+v, want the dev pane still there", p)
 	}
 }
 

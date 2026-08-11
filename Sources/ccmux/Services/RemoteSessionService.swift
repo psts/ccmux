@@ -444,11 +444,14 @@ final class RemoteSessionService: ObservableObject {
         await refresh()
     }
 
-    @discardableResult
-    func reviveWorkspace(daemonId: String) async -> Bool {
-        let ok = await post("/v1/workspaces/\(daemonId)/revive", body: [:], expect: 200)
-        if ok { await refresh() }
-        return ok
+    /// Resurrect a cold workspace from its stored recipe. Returns nil on success or
+    /// the daemon's error text — a refusal here is the answer to a click on a cold
+    /// row, so it must reach the user rather than leaving the row looking inert.
+    func reviveWorkspace(daemonId: String) async -> String? {
+        let error = await sendReportingError(
+            "POST", path: "/v1/workspaces/\(daemonId)/revive", body: [:], expect: 200)
+        if error == nil { await refresh() }
+        return error
     }
 
     func deleteWorkspace(_ id: UUID) async {
@@ -552,7 +555,19 @@ final class RemoteSessionService: ObservableObject {
                 rebuilt.append(patched)                // pane set changed — patch the live tree in place
             } else {
                 if attachments[appId] != nil { removeWorkspace(appId) }
-                if let ws = addWorkspace(dw, appId: appId) { rebuilt.append(ws) }
+                if let ws = addWorkspace(dw, appId: appId) {
+                    rebuilt.append(ws)
+                } else {
+                    // A live workspace with no buildable tree (no panes) drops out of
+                    // `workspaces` here. Without the callback, WindowManager keeps owning
+                    // the id and persists it into WindowDescriptor, leaving a window
+                    // pointed at a workspace that no longer exists. Logged because the
+                    // daemon calls it live: a row reaching this branch is a registry the
+                    // daemon-side last-pane fix has not cleaned up yet.
+                    NSLog("[ccmux] daemon workspace %@ is live but has no buildable tree (%d panes) — dropping",
+                          dw.id, dw.panes.count)
+                    onWorkspaceRemoved?(appId)
+                }
             }
         }
         workspaces = rebuilt
@@ -794,6 +809,39 @@ final class RemoteSessionService: ObservableObject {
     private func post(_ path: String, body: [String: Any], expect: Int) async -> Bool {
         let data = try? JSONSerialization.data(withJSONObject: body)
         return await send("POST", path: path, body: data, expect: expect)
+    }
+
+    /// Like `send`, but returns the daemon's `{"error": …}` text instead of a bare
+    /// false. `send` throws the body away, which is how a refused request ends up
+    /// looking like nothing happened at all.
+    private func sendReportingError(
+        _ method: String, path: String, body: [String: Any]?, expect: Int
+    ) async -> String? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)\(path)") else { return "bad daemon URL" }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        if let body {
+            // Sending the request anyway would ship an empty body under a JSON
+            // content type, and the daemon's rejection would blame the daemon for a
+            // request this app built wrong.
+            guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
+                return "could not encode the request for \(path)"
+            }
+            req.httpBody = payload
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
+            if code == expect { return nil }
+            struct APIError: Decodable { let error: String }
+            let message = (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
+            await MainActor.run { self.lastError = message }
+            return message
+        } catch {
+            await MainActor.run { self.lastError = error.localizedDescription }
+            return error.localizedDescription
+        }
     }
 
     private func send(_ method: String, path: String, body: Data?, expect: Int) async -> Bool {
