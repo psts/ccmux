@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -35,6 +37,12 @@ type federatedFocus struct {
 
 	mu     sync.RWMutex
 	remote map[string]bool
+	// byHost is the same data before the union, so one member failing to answer
+	// costs only its own entry rather than every member's (see poll).
+	byHost map[string]map[string]bool
+	// failing latches which hosts have already reported a poll failure, so the
+	// 3s loop logs the fault once and the recovery once.
+	failing map[string]bool
 }
 
 // newFederatedFocus builds the union oracle and starts polling members.
@@ -77,39 +85,100 @@ func (f *federatedFocus) refreshLoop(ctx context.Context, interval time.Duration
 	}
 }
 
-// poll fetches every healthy remote member's active owners into a fresh union.
+// poll refreshes every healthy remote member's active owners, keyed by host so a
+// member that fails to answer keeps its LAST KNOWN owners instead of vanishing.
+//
+// That retention matters more than it used to. When only push read this, a
+// failed poll was fail-safe: it under-counted watchers and sent the phone a
+// notification nobody needed. The alert flag reads it too now, and there the
+// same miss inverts — no owners means "nobody is at a screen", so the lens is
+// told not to raise a notification at all. A 3s tailnet hiccup would silently
+// reproduce the exact bug this path exists to fix, and leave no trace doing it.
 func (f *federatedFocus) poll(ctx context.Context) {
-	union := map[string]bool{}
+	f.mu.RLock()
+	previous := f.byHost
+	f.mu.RUnlock()
+
+	fresh := map[string]map[string]bool{}
 	for _, h := range f.hub.reg.List() {
 		if h.Self || !h.Healthy {
 			continue
 		}
-		for _, login := range f.fetchOwners(ctx, "https://"+h.Addr) {
+		owners, err := f.fetchOwners(ctx, "https://"+h.Addr)
+		if err != nil {
+			// Keep what this host last told us rather than erasing it.
+			if last, ok := previous[h.ID]; ok {
+				fresh[h.ID] = last
+			}
+			f.noteFailure(h.ID, err)
+			continue
+		}
+		f.noteRecovery(h.ID)
+		set := map[string]bool{}
+		for _, login := range owners {
+			set[login] = true
+		}
+		fresh[h.ID] = set
+	}
+
+	union := map[string]bool{}
+	for _, owners := range fresh {
+		for login := range owners {
 			union[login] = true
 		}
 	}
 	f.mu.Lock()
-	f.remote = union
+	f.byHost, f.remote = fresh, union
 	f.mu.Unlock()
 }
 
-func (f *federatedFocus) fetchOwners(ctx context.Context, baseURL string) []string {
+// noteFailure logs a member's first failed presence poll and stays quiet until
+// it recovers — the loop runs every 3s, and an unlatched line would bury the log
+// while telling a reader nothing the first one did not.
+func (f *federatedFocus) noteFailure(host string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failing == nil {
+		f.failing = map[string]bool{}
+	}
+	if !f.failing[host] {
+		log.Printf("hub focus: %s presence poll failed (%v) — keeping its last known watchers", host, err)
+	}
+	f.failing[host] = true
+}
+
+func (f *federatedFocus) noteRecovery(host string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failing[host] {
+		log.Printf("hub focus: %s presence poll recovered", host)
+		delete(f.failing, host)
+	}
+}
+
+// fetchOwners reports a member's focused logins, or an error. The error is the
+// point: an empty list and an unreachable host mean opposite things to the alert
+// flag, and returning nil for both is what let a blip read as "nobody is here".
+func (f *federatedFocus) fetchOwners(ctx context.Context, baseURL string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/presence", nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("presence HTTP %d", resp.StatusCode)
+	}
 	var out struct {
 		Owners []string `json:"owners"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&out) != nil {
-		return nil
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
 	}
-	return out.Owners
+	return out.Owners, nil
 }
 
 // mergedNotifierEvents is the hub notifier's event stream: the local manager

@@ -156,13 +156,17 @@ func (s *Server) SetClipboardToken(t string) { s.clipToken = t }
 func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore) {
 	s.sender = sender
 	s.pushStore = ps
-	n := &notifier{sender: sender, subs: ps, focus: s.presence, names: s.mgr}
+	// s.focus, not a second oracle of its own: it is already the federated union
+	// on a hub and the local presence hub elsewhere. Building another here meant
+	// two pollers hitting every member's /v1/presence every 3s, and — worse —
+	// two answers to "is anybody at a screen" that disagree between polls, so a
+	// pane could alert a lens and push to the same person's phone.
+	n := &notifier{sender: sender, subs: ps, focus: s.focus, names: s.mgr}
 	if s.hub != nil {
 		// Hub owns push: notify on attention across ALL member hosts (merged
 		// events) with merged presence suppression, so it never over-notifies a
 		// user watching a remote-host session directly. Member hosts' own
 		// notifiers stay inert (subscriptions live at the hub).
-		n.focus = s.newFederatedFocus(ctx)
 		go n.run(ctx, s.mergedNotifierEvents(ctx))
 		return
 	}

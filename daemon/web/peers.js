@@ -33,8 +33,14 @@
     busUnknown = false;
     try {
       const r = await fetch("/v1/peers/viewer");
-      if (r.ok) viewer = await r.json();
-      else { busUnknown = true; console.warn("peers: /v1/peers/viewer HTTP " + r.status); }
+      if (r.ok) {
+        viewer = await r.json();
+        // partial = the daemon federates onto a hub but would not give this page
+        // a credential for it, so what follows is the local registry only. A
+        // browser holds no credential, which makes this the normal answer on a
+        // member host — and the caveat is the whole point of being told.
+        busUnknown = viewer.partial === true;
+      } else { busUnknown = true; console.warn("peers: /v1/peers/viewer HTTP " + r.status); }
     } catch (e) {
       busUnknown = true;
       console.warn("peers: could not ask which bus to read:", e);

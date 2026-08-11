@@ -59,67 +59,7 @@ struct PeerMessagesOverlayView: View {
                 Divider().background(Color.white.opacity(0.1))
             }
 
-            // Messages section
-            if let error = state.error {
-                errorBanner(error)
-            } else if !state.isConnected && state.messages.isEmpty {
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                    Text("Connecting...")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if state.messages.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: state.busUnconfirmed ? "questionmark.circle" : "bubble.left.and.bubble.right")
-                        .font(.system(size: 24))
-                        .foregroundColor(.secondary.opacity(0.4))
-                    // "No messages yet" is a claim about the whole bus. It is only
-                    // honest once we know which bus we read.
-                    Text(state.busUnconfirmed
-                         ? "Couldn't confirm which bus to read, so this may not be the whole picture."
-                         : "No messages yet")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 24)
-            } else {
-                // Rows on screen do not make an unconfirmed bus confirmed: a
-                // member host's local registry usually holds stale pre-federation
-                // history, which would otherwise render as the hub's with no
-                // caveat at all.
-                if state.busUnconfirmed {
-                    Text("Couldn't confirm which bus to read — this may not be the whole picture.")
-                        .font(.system(size: 10))
-                        .foregroundColor(.orange.opacity(0.9))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
-                        .background(Color.orange.opacity(0.08))
-                }
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(state.messages) { message in
-                                messageRow(message)
-                                    .id(message.id)
-                            }
-                        }
-                        .padding(16)
-                    }
-                    .onChange(of: state.messages.count) {
-                        if let lastId = state.messages.last?.id {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(lastId, anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-            }
+            messagesBody
         }
         .frame(minWidth: 360, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
         .background(
@@ -131,6 +71,91 @@ struct PeerMessagesOverlayView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// The four ways this panel can be: refused, still connecting, empty, or a
+    /// list. Split out of `body` because the caveat below cuts across two of
+    /// them, and inlining it in each was how the same sentence came to exist
+    /// twice, already worded differently.
+    @ViewBuilder
+    private var messagesBody: some View {
+        if let error = state.error {
+            errorBanner(error)
+        } else if !state.isConnected && state.messages.isEmpty {
+            VStack(spacing: 8) {
+                ProgressView()
+                    .scaleEffect(0.7)
+                Text("Connecting...")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if state.messages.isEmpty {
+            emptyState
+        } else {
+            busCaveat
+            messageList
+        }
+    }
+
+    /// "No messages yet" is a claim about the whole bus, and only honest once we
+    /// know which bus we read.
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: state.busUnconfirmed ? "questionmark.circle" : "bubble.left.and.bubble.right")
+                .font(.system(size: 24))
+                .foregroundColor(.secondary.opacity(0.4))
+            Text(state.busUnconfirmed ? Self.unconfirmedBus : "No messages yet")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+    }
+
+    /// Rows on screen do not make an unconfirmed bus confirmed: a member host's
+    /// local registry usually holds stale pre-federation history, which would
+    /// otherwise render as the hub's with no caveat at all.
+    @ViewBuilder
+    private var busCaveat: some View {
+        if state.busUnconfirmed {
+            Text(Self.unconfirmedBus)
+                .font(.system(size: 10))
+                .foregroundColor(.orange.opacity(0.9))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.08))
+        }
+    }
+
+    /// One sentence, one place. It is shown both instead of a result and above
+    /// one, and two copies had already drifted apart.
+    private static let unconfirmedBus =
+        "Couldn't confirm which bus to read — this may not be the whole picture."
+
+    @ViewBuilder
+    private var messageList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(state.messages) { message in
+                        messageRow(message)
+                            .id(message.id)
+                    }
+                }
+                .padding(16)
+            }
+            .onChange(of: state.messages.count) {
+                if let lastId = state.messages.last?.id {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(lastId, anchor: .bottom)
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder

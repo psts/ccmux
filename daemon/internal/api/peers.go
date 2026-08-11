@@ -485,9 +485,14 @@ func (s *Server) peersLocalGroups(w http.ResponseWriter, r *http.Request) {
 	s.peersSvc.SetLocalPaneGroupsForHost(host, req.Groups)
 	if host == "" && s.localGroupsSink != nil {
 		// Ours to forward, and only ours — a map that arrived FROM a member is
-		// already at its destination. Fire-and-forget: the app re-pushes on a
-		// timer, so a lost forward self-heals.
-		go s.localGroupsSink(req.Groups)
+		// already at its destination.
+		//
+		// Called directly, NOT on a goroutine. The sink hands the map to a
+		// forwarder that serializes pushes latest-wins, and a goroutine per push
+		// would let two of them reach it out of order — leaving the hub acting on
+		// the older map, which is the exact thing the serialization is for. The
+		// sink is written never to block a handler.
+		s.localGroupsSink(req.Groups)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(req.Groups)})
 }
@@ -509,19 +514,37 @@ func (s *Server) peersLocalGroups(w http.ResponseWriter, r *http.Request) {
 // this daemon's own tsnet node and so is not loopback. That handed the very
 // caller the token exists to exclude a credential it could then replay.
 //
-// A lens that gets no token still renders: it reads the local routes and says
-// what it could not confirm. Degraded and honest beats complete and wrong.
+// A lens that gets no token is NOT sent to the relay, because it could only be
+// refused there. It is sent to the local routes with partial=true, which says
+// "this is my own registry, not the fleet's" — the caveat a lens renders instead
+// of claiming an empty panel means silence. Degraded and honest beats complete
+// and wrong, but only if the lens is pointed somewhere it can actually read:
+// naming the relay and withholding the key produced neither.
 func (s *Server) peersViewerCredential(w http.ResponseWriter, r *http.Request) {
 	if !s.peersEnabled(w) {
+		return
+	}
+	// A caller that presents a WRONG credential is told so, rather than quietly
+	// handed the tokenless answer. The Mac app clears its cached token on a 401,
+	// and that re-mint is exactly what a caller holding a stale one needs.
+	if presented := bearerToken(r); presented != "" && !s.peersSvc.AuthorizePaneless(presented) {
+		log.Printf("peers: viewer credential refused (bad pane-less token) from %s", remoteIP(r))
+		writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 	token := ""
 	if s.peersSvc.AuthorizePaneless(bearerToken(r)) {
 		token = s.peersSvc.ViewerToken()
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"bus":   s.viewerBusPrefix(),
-		"token": token,
+	bus := s.viewerBusPrefix()
+	partial := bus != "" && token == ""
+	if partial {
+		bus = ""
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"bus":     bus,
+		"token":   token,
+		"partial": partial,
 	})
 }
 

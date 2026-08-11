@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -59,7 +60,7 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // restampAlert replaces a member's alert verdict with the hub's before the frame
-// reaches a lens, leaving every other frame and every other field untouched.
+// reaches a lens, leaving every other FRAME untouched (fields, see below).
 //
 // The member computed that flag against ITS OWN presence — the lenses attached
 // to it — which is the wrong question. The lens reading this stream is attached
@@ -70,6 +71,12 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 //
 // Unparseable or non-attention frames pass through byte-for-byte: this is a
 // relay, and a frame it does not understand is not its to rewrite.
+//
+// An attention frame does NOT pass through byte-for-byte. It is decoded into
+// firehoseMsg and re-encoded, so a field a newer member sends and this struct
+// does not model is dropped here. The frame contract has to stay in lockstep
+// across the fleet; hosts already run mixed versions (hub.Health carries a
+// contract number), so a field added on one side needs this struct on the other.
 func (s *Server) restampAlert(raw []byte) []byte {
 	var frame firehoseMsg
 	if err := json.Unmarshal(raw, &frame); err != nil || frame.T != "attention" {
@@ -78,6 +85,9 @@ func (s *Server) restampAlert(raw []byte) []byte {
 	frame.Alert = s.alertsLocally(frame.State)
 	restamped, err := json.Marshal(frame)
 	if err != nil {
+		// The member's own verdict crosses instead — wrong, but a dropped frame
+		// would be worse, and this cannot happen for a struct that just decoded.
+		log.Printf("peers: could not re-stamp a relayed attention frame (%v) — forwarding the member's verdict", err)
 		return raw
 	}
 	return restamped

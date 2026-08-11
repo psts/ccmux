@@ -31,32 +31,24 @@ func (b *busResolve) Resolve(paneID string) (string, string, error) {
 	if hub == "" {
 		return "", "", nil
 	}
-	if b.relayURL == "" {
-		return b.withoutRelay(hub, paneID)
-	}
 	if paneID == "" {
+		// A pane-less session has no hub credential of its own, so without a
+		// relay to swap one in for it, it stays where it is.
+		if b.relayURL == "" {
+			return "", "", nil
+		}
 		return b.panelessViaRelay()
 	}
 	token, err := mintHubPaneToken(b.client, hub, paneID)
 	if err != nil {
 		return "", "", fmt.Errorf("hub mint for pane %s: %w", paneID, err)
 	}
+	// No relay to offer means the pane dials the hub itself, which works only
+	// where the pane process shares this daemon's tailnet identity.
+	if b.relayURL == "" {
+		return hub, token, nil
+	}
 	return b.relayURL, token, nil
-}
-
-// withoutRelay serves a daemon with no loopback base URL to offer. A pane can
-// still reach the hub directly where the pane process shares this daemon's
-// tailnet identity; a pane-less session has no hub credential of its own, so it
-// stays where it is.
-func (b *busResolve) withoutRelay(hub, paneID string) (string, string, error) {
-	if paneID == "" {
-		return "", "", nil
-	}
-	token, err := mintHubPaneToken(b.client, hub, paneID)
-	if err != nil {
-		return "", "", fmt.Errorf("hub mint for pane %s: %w", paneID, err)
-	}
-	return hub, token, nil
 }
 
 // panelessViaRelay keeps a pane-less session on THIS host's shared token and

@@ -157,12 +157,9 @@ func (s *Server) hubBusRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Bus traffic is loopback-only: it wears this host's identity upstream and
-	// can register, send, and act as peers. A lens READ is not, because a caller
-	// that reached this daemon over the tailnet can already fetch the same data
-	// from the hub itself unauthenticated — refusing to relay it would only mean
-	// the browser lens on a member host shows an empty panel forever. (A daemon
-	// deliberately bound to a LAN address widens this, as it already does for
-	// every other route on that listener.)
+	// can register, send, and act as peers. A lens READ is admitted from any
+	// address and gated on a credential instead — see viewerRelayRequest for why
+	// the caller's address is not evidence of anything.
 	if kind == relayClient && !requireLoopback(w, r) {
 		return
 	}

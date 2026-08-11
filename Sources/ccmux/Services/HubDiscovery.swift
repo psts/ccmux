@@ -25,26 +25,22 @@ enum HubDiscovery {
     /// host; silently rerouting it would be worse than wrong.
     static func adoptHub(onLateAdopt: @escaping @MainActor () -> Void) async {
         guard ProcessInfo.processInfo.environment["CCMUXD_URL"] == nil else { return }
-        if await adoptOnce() { return }
+        if await attempt() { return }
         await MainActor.run { startRetrying(onLateAdopt: onLateAdopt) }
     }
 
     /// The retry, on a run-loop timer rather than a detached `Task` sleeping in a
-    /// loop.
-    ///
-    /// The Task version was found stopped: an app that launched 35s before its
-    /// daemon missed the first attempt and then never adopted the hub for three
-    /// days, while a Timer-driven poll elsewhere in the app ran the whole time.
-    /// It was not spinning and the resolve itself succeeded when run by hand, so
-    /// the reason it stopped is still unknown — which is the other half of the
-    /// problem, and why every outcome now says something. An unobservable retry
-    /// cannot be told apart from a retry that never runs.
+    /// loop. The Task version was observed to stop retrying — for three days, on
+    /// a launch that beat its daemon up — and the cause was never found, while a
+    /// Timer-driven poll in the same process kept running throughout. Hence the
+    /// timer, and hence `logMiss`: a retry that says nothing cannot be told apart
+    /// from one that is not running, which is why that took three days to notice.
     @MainActor
     private static func startRetrying(onLateAdopt: @escaping @MainActor () -> Void) {
         retryTimer?.invalidate()
         let timer = Timer(timeInterval: retryInterval, repeats: true) { _ in
             Task { @MainActor in
-                guard await adoptOnce() else { return }
+                guard await attempt() else { return }
                 retryTimer?.invalidate()
                 retryTimer = nil
                 onLateAdopt()
@@ -77,11 +73,10 @@ enum HubDiscovery {
         return true
     }
 
-    private static func adoptOnce() async -> Bool { await attempt() }
-
-    /// Report a miss occasionally rather than every 15s: often enough that a
-    /// stuck lens says so in the log, rarely enough that a single-host setup does
-    /// not write a line a minute forever.
+    /// Report the first miss, then one in every 40 — about once every ten minutes
+    /// at the 15s interval. Often enough that a stuck lens says so, rarely enough
+    /// that a single-host Mac (where "no hub" is simply the truth, forever) does
+    /// not fill the log.
     @MainActor
     private static func logMiss() {
         attempts += 1

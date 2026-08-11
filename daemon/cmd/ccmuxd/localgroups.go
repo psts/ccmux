@@ -55,11 +55,7 @@ func (f *localGroupsForwarder) Submit(groups map[string]string) {
 		select {
 		case f.pending <- groups:
 			return
-		default:
-		}
-		select {
 		case <-f.pending: // discard the superseded map and retry
-		default:
 		}
 	}
 }
