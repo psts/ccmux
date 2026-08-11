@@ -25,7 +25,8 @@ func TestFirehoseFrame_AlertNeedsBothWorthinessAndPresence(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s := &Server{presence: presenceWithFocus(c.focused)}
+			p := presenceWithFocus(c.focused)
+			s := &Server{presence: p, focus: p}
 			frame := s.firehoseFrame(manager.Event{
 				Kind: "attention", WorkspaceID: "ws1", PaneID: "p1", Attention: c.att,
 			})

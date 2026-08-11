@@ -14,34 +14,80 @@ enum HubDiscovery {
     /// Adopt the hub as the app-wide daemon base. The first attempt completes
     /// before the caller starts the daemon services (fast when the daemon is
     /// warm). When it misses — the common cold-boot case: app and daemon launch
-    /// together and the daemon hasn't scanned the tailnet yet — a background
-    /// loop keeps retrying and fires `onLateAdopt` so the caller can rewire
-    /// already-running services. The loop is one loopback GET per interval, so
-    /// it just runs for the app's lifetime in single-host setups (and adopts a
-    /// hub stood up mid-session). Once adopted, discovery stops for good:
-    /// hub-down fallback is out of scope by design (multihost-plan).
+    /// together and the daemon hasn't scanned the tailnet yet — a retry timer
+    /// keeps trying and fires `onLateAdopt` so the caller can rewire
+    /// already-running services. It is one loopback GET per interval, so it just
+    /// runs for the app's lifetime in single-host setups (and adopts a hub stood
+    /// up mid-session). Once adopted, discovery stops for good: hub-down
+    /// fallback is out of scope by design (multihost-plan).
     ///
     /// No-op when `CCMUXD_URL` is set — an explicit pin means the user chose a
     /// host; silently rerouting it would be worse than wrong.
     static func adoptHub(onLateAdopt: @escaping @MainActor () -> Void) async {
         guard ProcessInfo.processInfo.environment["CCMUXD_URL"] == nil else { return }
         if await adoptOnce() { return }
-        Task {
-            while true {
-                try? await Task.sleep(for: .seconds(retryInterval))
-                if await adoptOnce() {
-                    await MainActor.run { onLateAdopt() }
-                    return
-                }
-            }
-        }
+        await MainActor.run { startRetrying(onLateAdopt: onLateAdopt) }
     }
 
-    private static func adoptOnce() async -> Bool {
-        guard let hub = await resolve() else { return false }
+    /// The retry, on a run-loop timer rather than a detached `Task` sleeping in a
+    /// loop.
+    ///
+    /// The Task version was found stopped: an app that launched 35s before its
+    /// daemon missed the first attempt and then never adopted the hub for three
+    /// days, while a Timer-driven poll elsewhere in the app ran the whole time.
+    /// It was not spinning and the resolve itself succeeded when run by hand, so
+    /// the reason it stopped is still unknown — which is the other half of the
+    /// problem, and why every outcome now says something. An unobservable retry
+    /// cannot be told apart from a retry that never runs.
+    @MainActor
+    private static func startRetrying(onLateAdopt: @escaping @MainActor () -> Void) {
+        retryTimer?.invalidate()
+        let timer = Timer(timeInterval: retryInterval, repeats: true) { _ in
+            Task { @MainActor in
+                guard await adoptOnce() else { return }
+                retryTimer?.invalidate()
+                retryTimer = nil
+                onLateAdopt()
+            }
+        }
+        // .common, not the default mode: a timer scheduled the usual way stops
+        // firing while a menu is open or a scroll is tracking, and adoption
+        // should not wait on the user letting go of the mouse.
+        RunLoop.main.add(timer, forMode: .common)
+        retryTimer = timer
+        NSLog("[ccmux hub] no hub yet — retrying every \(Int(retryInterval))s")
+    }
+
+    @MainActor private static var retryTimer: Timer?
+    @MainActor private static var attempts = 0
+
+    /// One attempt: resolve, and on success move the app-wide base URL. Returns
+    /// whether the hub was adopted, which is also what stops the retry timer —
+    /// so an attempt that reports success without moving `baseURL` would strand
+    /// the app on the local daemon believing it had federated. `fetch` is
+    /// injectable for tests; the default hits the network.
+    @discardableResult
+    static func attempt(fetch: (String) async -> Data? = { await httpGet($0) }) async -> Bool {
+        guard let hub = await resolve(fetch: fetch) else {
+            await MainActor.run { logMiss() }
+            return false
+        }
         DaemonConfig.discoveredHubURL = hub
         NSLog("[ccmux hub] using hub \(hub)")
         return true
+    }
+
+    private static func adoptOnce() async -> Bool { await attempt() }
+
+    /// Report a miss occasionally rather than every 15s: often enough that a
+    /// stuck lens says so in the log, rarely enough that a single-host setup does
+    /// not write a line a minute forever.
+    @MainActor
+    private static func logMiss() {
+        attempts += 1
+        if attempts == 1 || attempts % 40 == 0 {
+            NSLog("[ccmux hub] still no hub after \(attempts) attempt(s) — staying on \(DaemonConfig.localURL)")
+        }
     }
 
     /// One resolution attempt: the local daemon's answer to "who is the hub?",
@@ -61,7 +107,7 @@ enum HubDiscovery {
         return info.url
     }
 
-    private static func httpGet(_ urlString: String) async -> Data? {
+    static func httpGet(_ urlString: String) async -> Data? {
         guard let url = URL(string: urlString) else { return nil }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "GET"

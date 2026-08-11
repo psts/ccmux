@@ -90,12 +90,23 @@ type Server struct {
 	// every member host's workspaces and reverse-proxies host-scoped routes to
 	// the owning host. nil in host-only mode.
 	hub *hubMode
+
+	// focus answers "is anybody at a screen?" for the alert flag and for push.
+	// On a single host that is this daemon's own presence; on a hub it is the
+	// union across every member, because a person sits at ONE screen and it does
+	// not belong to whichever machine happens to own the pane that spoke.
+	//
+	// Never nil: NewServer seeds it with the local presence hub, so the alert
+	// path never has to check.
+	focus focusOracle
 }
 
 func NewServer(mgr *manager.Manager) *Server {
+	presence := newPresenceHub(mgr)
 	return &Server{
 		mgr:          mgr,
-		presence:     newPresenceHub(mgr),
+		presence:     presence,
+		focus:        presence,
 		identity:     tailnet.NewResolver(),
 		spawnUpgrade: realSpawnUpgrade,
 		// Same-origin default; the web lens is served from this daemon, and

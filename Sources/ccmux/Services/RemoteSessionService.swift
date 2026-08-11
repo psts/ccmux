@@ -87,6 +87,9 @@ final class RemoteSessionService: ObservableObject {
 
     private let session = URLSession(configuration: .default)
     private var pollTimer: Timer?
+    /// In-flight coalescing window for workspace-change refetches (see
+    /// scheduleCoalescedRefresh). nil = nothing pending.
+    private var pendingRefresh: Timer?
 
     // MARK: - Lifecycle
 
@@ -122,6 +125,8 @@ final class RemoteSessionService: ObservableObject {
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        pendingRefresh?.invalidate()
+        pendingRefresh = nil
         events.disconnect()
         for id in Array(attachments.keys) { removeWorkspace(id) }
     }
@@ -151,9 +156,29 @@ final class RemoteSessionService: ObservableObject {
         case .workspaceChanged:
             // A workspace appeared/vanished/changed live↔cold elsewhere — pick it up
             // now rather than at the next poll.
-            Task { await refresh() }
+            scheduleCoalescedRefresh()
         case .unknown:
             break
+        }
+    }
+
+    /// Coalesce workspace-change refetches into one fetch per short window.
+    ///
+    /// Each of these frames costs a full `/v1/workspaces` round trip, and on a hub
+    /// that is every workspace on every host. They arrive in bursts, and a member
+    /// was seen emitting one a second for minutes on end while a pane's status
+    /// churned — one fetch of the whole fleet per second, indefinitely, to learn
+    /// the same thing each time. What the frame actually says is "your list is
+    /// stale", and that is worth exactly one fetch however many times it is said.
+    ///
+    /// Short enough (250ms) that a genuine change still feels instant, which is
+    /// the whole reason the app does not simply wait for the 4s poll.
+    private func scheduleCoalescedRefresh() {
+        guard pendingRefresh == nil else { return }
+        pendingRefresh = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.pendingRefresh = nil
+            Task { await self.refresh() }
         }
     }
 

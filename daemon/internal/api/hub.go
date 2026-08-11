@@ -32,8 +32,16 @@ type hubMode struct {
 // every listing host, GET /v1/hosts exposes the registry, workspace/pane and
 // /v1/hosts/{host} routes reverse-proxy to the owning host (self runs local),
 // and GET /v1/events merges every host's firehose. wsDial must route the tailnet.
-func (s *Server) EnableHub(reg *hub.Registry, agg *hub.Aggregator, client *hub.Client, selfID string, wsDial func(context.Context, string) (*websocket.Conn, error)) {
+func (s *Server) EnableHub(ctx context.Context, reg *hub.Registry, agg *hub.Aggregator, client *hub.Client, selfID string, wsDial func(context.Context, string) (*websocket.Conn, error)) {
 	s.hub = &hubMode{reg: reg, agg: agg, client: client, selfID: selfID, wsDial: wsDial}
+	// Presence becomes federation-wide the moment this node is a hub, for the
+	// alert flag as much as for push. A hub that judged "is anybody watching?"
+	// by its OWN attached lenses would tell a Mac not to raise a notification
+	// for a Linux session purely because the user was looking at a workspace on
+	// a different machine at the time.
+	if client != nil {
+		s.focus = s.newFederatedFocus(ctx)
+	}
 }
 
 // scoped applies hub owner-routing to a workspace/pane-{id}-scoped handler; in

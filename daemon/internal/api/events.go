@@ -117,8 +117,16 @@ func (s *Server) firehoseFrame(ev manager.Event) firehoseMsg {
 // alerts the ones that have. Both live here so the two can never disagree, which
 // is precisely what happened while the Mac app kept its own copy: it alerted on
 // done long after the daemon had stopped pushing on it.
+//
+// "At a screen" is federation-wide (s.focus), not this daemon's own lenses.
+// Reading the local presence hub directly made the answer depend on which
+// MACHINE the watched workspace happened to live on: a user at their Mac got no
+// notification for a Linux session, because the Linux daemon could see no lens
+// focused on anything of its own. And on the occasions it could, the lens was
+// looking straight at the pane and cleared the flash instead. The rule was
+// unsatisfiable off the hub in almost every real arrangement.
 func (s *Server) alertsLocally(att model.Attention) bool {
-	return notifyState(att) && len(s.presence.ActiveOwners()) > 0
+	return notifyState(att) && len(s.focus.ActiveOwners()) > 0
 }
 
 // drainReads discards anything the client sends (the firehose is read-only for

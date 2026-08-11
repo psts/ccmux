@@ -331,7 +331,7 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 		return conn, err
 	}
 
-	apiSrv.EnableHub(reg, agg, client, selfID, wsDial)
+	apiSrv.EnableHub(ctx, reg, agg, client, selfID, wsDial)
 	log.Printf("hub mode: self=%s, discovering %s peers", selfID, hub.CcmuxTag)
 	return nil
 }

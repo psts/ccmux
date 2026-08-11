@@ -64,7 +64,7 @@ func TestHandler_RegistersHubRoutesWhenEnabled(t *testing.T) {
 	)
 	reg.Refresh()
 	agg := hub.NewAggregator("hub", reg, s.mgr, func(context.Context, hub.Host) ([]*model.Workspace, error) { return nil, nil })
-	s.EnableHub(reg, agg, hub.NewClient(nil), "hub", nil)
+	s.EnableHub(context.Background(), reg, agg, hub.NewClient(nil), "hub", nil)
 
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/hosts", nil))
