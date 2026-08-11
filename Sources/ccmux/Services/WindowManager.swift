@@ -116,13 +116,22 @@ class WindowManager {
     /// Uses the source window's frame for the new window.
     func detachWorkspace(id: UUID, sourceWindow: NSWindow? = nil) {
         if let ownerWc = windowOwning(workspaceId: id) {
-            if ownerWc.windowContext.displayedWorkspaceId == id {
-                // Already displayed in a window, bring it to front
+            // Already on screen in some OTHER window: reveal that one instead of
+            // making a second window for the same session. But when the owner IS the
+            // window that asked, fronting it does nothing visible — the user is
+            // already looking at it — and "Open in New Window" reads as a dead menu
+            // item. Detach it for real in that case.
+            let askedByOwner = sourceWindow != nil && ownerWc.window === sourceWindow
+            if ownerWc.windowContext.displayedWorkspaceId == id, !askedByOwner {
                 ownerWc.window?.makeKeyAndOrderFront(nil)
                 return
             }
             // Remove ownership from source window
             ownerWc.windowContext.ownedWorkspaceIds.remove(id)
+            if ownerWc.windowContext.displayedWorkspaceId == id {
+                ownerWc.windowContext.displayedWorkspaceId = ownerWc.windowContext.ownedWorkspaceIds.first
+                ownerWc.updateWindowTitle()
+            }
         }
         let frame: WindowFrame?
         if let f = sourceWindow?.frame {
@@ -356,8 +365,10 @@ class WindowManager {
 
         // Drop the record first. Every member may be gone — a hosted session deleted by
         // another lens is pruned from windows but not from here — and leaving the record
-        // behind on that path makes a menu entry that does nothing, forever.
-        workspaceManager.closedWindows.removeAll { $0.id == id }
+        // behind on that path makes a menu entry that does nothing, forever. Dropping it
+        // first also un-reserves these sessions, so the claims below are not undone by
+        // the next orphan sweep.
+        workspaceManager.forgetClosedWindow(id: id)
 
         let restored = plan.hosted + plan.local
         guard !restored.isEmpty else { return }
@@ -521,6 +532,7 @@ class WindowManager {
         }
         controller.windowContext.ownedWorkspaceIds.insert(id)
         refreshOtherWindowIds()
+        workspaceManager.scheduleSaveFromWindow()
     }
 
     /// Keep hosted-workspace ownership consistent after each daemon reconcile:
@@ -535,12 +547,17 @@ class WindowManager {
             groups: RemoteSessionService.shared.groups,
             owned: windowControllers.map { $0.windowContext.ownedWorkspaceIds },
             displayed: windowControllers.map { $0.windowContext.displayedWorkspaceId },
-            windowNames: windowControllers.map { $0.windowContext.windowName ?? autoWindowName(for: $0) })
+            windowNames: windowControllers.map { $0.windowContext.windowName ?? autoWindowName(for: $0) },
+            reserved: Set(workspaceManager.closedWindows.flatMap(\.workspaceIds)))
         else { return }
         for (wc, ids) in zip(windowControllers, resolved) where wc.windowContext.ownedWorkspaceIds != ids {
             wc.windowContext.ownedWorkspaceIds = ids
         }
         refreshOtherWindowIds()
+        // Ownership lives only in the window descriptor, and nothing here trips the
+        // autosave: without this the saved state keeps insisting a session is
+        // unowned while the running app has already re-homed it.
+        workspaceManager.scheduleSaveFromWindow()
     }
 
     /// Pure ownership resolution (index = window order): every listed workspace
@@ -549,14 +566,20 @@ class WindowManager {
     /// group the user picked), else the first window; a multiply-owned workspace
     /// keeps the window displaying it, else its first owner. Returns nil when
     /// nothing changes.
+    ///
+    /// `reserved` holds sessions belonging to a window the user closed. They are left
+    /// alone: adopting them into some other window is what made a closed window's
+    /// sessions scatter into whichever window happened to be first, and it rewrote
+    /// their daemon group on the way out, so restoring the window could not find them
+    /// again. A reserved session waits, unowned, until "Restore Window" gathers it.
     static func reconcileHostedOwnership(
         workspaceIds: [UUID], groups: [UUID: String], owned: [Set<UUID>], displayed: [UUID?],
-        windowNames: [String]
+        windowNames: [String], reserved: Set<UUID> = []
     ) -> [Set<UUID>]? {
         guard !owned.isEmpty else { return nil }
         var result = owned
         var changed = false
-        for id in workspaceIds {
+        for id in workspaceIds where !reserved.contains(id) {
             let owners = result.indices.filter { result[$0].contains(id) }
             if owners.isEmpty {
                 let target = groups[id].flatMap { windowNames.firstIndex(of: $0) } ?? 0

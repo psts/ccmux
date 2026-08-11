@@ -597,6 +597,14 @@ class WorkspaceManager: ObservableObject {
         scheduleSave()
     }
 
+    /// Forget a closed-window record without touching its workspaces — the record has
+    /// served its purpose (the window is being restored), unlike `deleteClosedWindow`,
+    /// which is the purge.
+    func forgetClosedWindow(id: UUID) {
+        closedWindows.removeAll { $0.id == id }
+        scheduleSave()
+    }
+
     /// Permanently delete a closed window group.
     func deleteClosedWindow(id: UUID) {
         guard let window = closedWindows.first(where: { $0.id == id }) else { return }

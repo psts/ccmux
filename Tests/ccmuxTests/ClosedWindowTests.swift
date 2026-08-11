@@ -87,6 +87,29 @@ final class ClosedWindowTests: XCTestCase {
         XCTAssertTrue(plan.local.isEmpty)
     }
 
+    // MARK: - Reserved by a closed window
+
+    func testAClosedWindowsSessionIsNotAdoptedByAnotherWindow() throws {
+        // The reported bug: close a window holding a hosted session and it jumped into
+        // whichever window was first, taking its daemon group with it, so restoring the
+        // window could not find it again.
+        let resolved = WindowManager.reconcileHostedOwnership(
+            workspaceIds: [hosted], groups: [hosted: "Dasha"], owned: [[], []],
+            displayed: [nil, nil], windowNames: ["ChartLabs", "Mixed"], reserved: [hosted])
+
+        XCTAssertNil(resolved, "a reserved session must not move; nil means nothing changed")
+    }
+
+    func testAnUnreservedOrphanIsStillAdopted() throws {
+        // The reservation must not disable ordinary adoption — a session created by
+        // another lens still has to land somewhere visible.
+        let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
+            workspaceIds: [hosted], groups: [:], owned: [[], []],
+            displayed: [nil, nil], windowNames: ["ChartLabs", "Mixed"], reserved: [other]))
+
+        XCTAssertEqual(resolved, [[hosted], []])
+    }
+
     // MARK: - Stale closed-window references
 
     /// A manager that cannot touch the user's real state.json — the save path has no
