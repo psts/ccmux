@@ -116,21 +116,21 @@ class WindowManager {
     /// Uses the source window's frame for the new window.
     func detachWorkspace(id: UUID, sourceWindow: NSWindow? = nil) {
         if let ownerWc = windowOwning(workspaceId: id) {
-            // Already on screen in some OTHER window: reveal that one instead of
-            // making a second window for the same session. But when the owner IS the
-            // window that asked, fronting it does nothing visible — the user is
-            // already looking at it — and "Open in New Window" reads as a dead menu
-            // item. Detach it for real in that case.
-            let askedByOwner = sourceWindow != nil && ownerWc.window === sourceWindow
-            if ownerWc.windowContext.displayedWorkspaceId == id, !askedByOwner {
+            let others = ownerWc.windowContext.ownedWorkspaceIds.subtracting([id])
+            let decision = Self.detachDecision(
+                askedByOwner: sourceWindow != nil && ownerWc.window === sourceWindow,
+                ownerDisplaysIt: ownerWc.windowContext.displayedWorkspaceId == id,
+                ownerHasOthers: !others.isEmpty)
+            switch decision {
+            case .revealOwner:
                 ownerWc.window?.makeKeyAndOrderFront(nil)
                 return
-            }
-            // Remove ownership from source window
-            ownerWc.windowContext.ownedWorkspaceIds.remove(id)
-            if ownerWc.windowContext.displayedWorkspaceId == id {
-                ownerWc.windowContext.displayedWorkspaceId = ownerWc.windowContext.ownedWorkspaceIds.first
-                ownerWc.updateWindowTitle()
+            case .detach(let repointOwner):
+                ownerWc.windowContext.ownedWorkspaceIds.remove(id)
+                if repointOwner {
+                    ownerWc.windowContext.displayedWorkspaceId = others.first
+                    ownerWc.updateWindowTitle()
+                }
             }
         }
         let frame: WindowFrame?
@@ -140,6 +140,34 @@ class WindowManager {
             frame = nil
         }
         createWindow(displayingWorkspace: id, frame: frame)
+        workspaceManager.scheduleSaveFromWindow()
+    }
+
+    /// What "Open in New Window" should do.
+    enum DetachDecision: Equatable {
+        /// Reveal the window that already shows it rather than making a second window
+        /// for one session.
+        case revealOwner
+        /// Move it into a new window. `repointOwner` when the owner was showing it and
+        /// has something else left to show.
+        case detach(repointOwner: Bool)
+    }
+
+    /// Pure decision behind `detachWorkspace`.
+    ///
+    /// The case that used to read as a dead menu item: the owner IS the window asking,
+    /// so fronting it changes nothing the user can see. The case that must NOT detach:
+    /// the workspace is the owner's only one, so a new window would just move it
+    /// sideways, discard the old window's name, and leave an empty descriptor behind.
+    /// It is already alone in its own window — revealing is the honest answer.
+    static func detachDecision(
+        askedByOwner: Bool, ownerDisplaysIt: Bool, ownerHasOthers: Bool
+    ) -> DetachDecision {
+        guard askedByOwner else {
+            return ownerDisplaysIt ? .revealOwner : .detach(repointOwner: false)
+        }
+        guard ownerHasOthers else { return .revealOwner }
+        return .detach(repointOwner: ownerDisplaysIt)
     }
 
     /// Handle workspace selection from sidebar.
@@ -363,15 +391,22 @@ class WindowManager {
             isReopenable: { wsId in workspaceManager.closedWorkspaces.contains { $0.id == wsId } })
         for wsId in plan.local { _ = workspaceManager.reopenWorkspace(id: wsId) }
 
-        // Drop the record first. Every member may be gone — a hosted session deleted by
-        // another lens is pruned from windows but not from here — and leaving the record
-        // behind on that path makes a menu entry that does nothing, forever. Dropping it
-        // first also un-reserves these sessions, so the claims below are not undone by
-        // the next orphan sweep.
-        workspaceManager.forgetClosedWindow(id: id)
-
         let restored = plan.hosted + plan.local
-        guard !restored.isEmpty else { return }
+        guard !restored.isEmpty else {
+            // Nothing resolved. That means "these sessions are gone" only if the daemon
+            // has actually answered — `isHosted` is empty for EVERY id until the first
+            // workspace fetch lands, which is the normal state during a daemon restart
+            // (a fleet upgrade does exactly that). Forgetting the record there would
+            // un-reserve its sessions and hand them straight to the next orphan sweep:
+            // the scattering this whole mechanism exists to prevent. Keep the record and
+            // let the user try again once the list is up.
+            if RemoteSessionService.shared.reachable { workspaceManager.forgetClosedWindow(id: id) }
+            return
+        }
+
+        // Drop the record before claiming: it is what reserves these sessions from the
+        // orphan sweep, so leaving it in place would let the next sweep undo the claims.
+        workspaceManager.forgetClosedWindow(id: id)
 
         // Display what was on screen when it closed, unless that one didn't come back.
         let displayId = closedWindow.displayedWorkspaceId.flatMap { restored.contains($0) ? $0 : nil }

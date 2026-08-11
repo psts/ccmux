@@ -87,6 +87,39 @@ final class ClosedWindowTests: XCTestCase {
         XCTAssertTrue(plan.local.isEmpty)
     }
 
+    // MARK: - detachDecision
+
+    func testDetachingTheWorkspaceYourOwnWindowShowsActuallyDetaches() {
+        // The reported dead menu item: the owner is the window asking, so fronting it
+        // changes nothing the user can see.
+        XCTAssertEqual(
+            WindowManager.detachDecision(askedByOwner: true, ownerDisplaysIt: true, ownerHasOthers: true),
+            .detach(repointOwner: true))
+    }
+
+    func testDetachingAWindowsOnlyWorkspaceRevealsInstead() {
+        // A new window would move it sideways, discard the old window's name, and leave
+        // an empty descriptor that comes back on next launch.
+        XCTAssertEqual(
+            WindowManager.detachDecision(askedByOwner: true, ownerDisplaysIt: true, ownerHasOthers: false),
+            .revealOwner)
+    }
+
+    func testDetachingFromAnotherWindowRevealsTheOwnerShowingIt() {
+        XCTAssertEqual(
+            WindowManager.detachDecision(askedByOwner: false, ownerDisplaysIt: true, ownerHasOthers: true),
+            .revealOwner)
+    }
+
+    func testDetachingOneTheOwnerIsNotShowingLeavesItsDisplayAlone() {
+        XCTAssertEqual(
+            WindowManager.detachDecision(askedByOwner: false, ownerDisplaysIt: false, ownerHasOthers: true),
+            .detach(repointOwner: false))
+        XCTAssertEqual(
+            WindowManager.detachDecision(askedByOwner: true, ownerDisplaysIt: false, ownerHasOthers: true),
+            .detach(repointOwner: false))
+    }
+
     // MARK: - Reserved by a closed window
 
     func testAClosedWindowsSessionIsNotAdoptedByAnotherWindow() throws {
