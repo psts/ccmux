@@ -30,6 +30,24 @@ The daemon then does everything else, and re-asserts it on every boot/change:
 Notes:
 - The tailnet IP is stable for the node's lifetime; if the node is ever
   re-registered the daemon rewrites the record at next startup — nothing to do.
+- **In a fleet, only the hub writes that record.** The domain has one A record
+  and the hub is the one node that can serve every host's hostnames (it proxies
+  each label to its owner). A member daemon with the same domain configured
+  routes proxied requests but never touches DNS.
+  - Ownership follows the `tag:ccmux-hub` tag, so make sure the hub node
+    actually carries it — an untagged fleet has no agreed owner, and the daemon
+    log says so on every reconcile.
+  - A hub that is merely offline keeps the record. Handing it to a member would
+    serve that one member's hostnames and break everyone else's, then flap when
+    the hub returns. Untag or delete the node to move ownership.
+  - The owner rewrites the record every 5 minutes, so a value something else
+    stomped heals on its own — no restart needed.
+- Each daemon with the domain configured issues its own copy of the wildcard
+  cert, so keep the Cloudflare token off members that don't need to serve
+  hostnames directly; hub-proxied requests use the member's own ts.net cert.
+- Symptom of a stolen record: `ccmux devhost: no workspace maps <name>` with an
+  empty "known hostnames" list, while the mappings are plainly still there in
+  the app. Check `dig +short '*.<domain>'` against the hub's tailnet IP.
 - CNAME to a ts.net name does NOT work and never will here: non-Funnel ts.net
   names don't exist in public DNS (verified 2026-07-16; see plan).
 

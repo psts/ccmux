@@ -11,19 +11,23 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
 // fakeState is an in-memory State. Cloudflare token stays empty in every test:
 // a non-empty token would arm real ACME issuance in ensureCertLocked.
 type fakeState struct {
-	mu        sync.Mutex
-	domain    string
-	authKey   string
-	lensName  string
-	hostnames map[string]int
-	stamped   map[string]string // name → url from the last stamp
-	listening map[int]bool      // port → listening from the last stamp
+	mu sync.Mutex
+	// reconciles counts Refresh passes: AllHostnames is read exactly once per
+	// pass, which is how the DNS-heal test observes the loop running.
+	reconciles atomic.Int64
+	domain     string
+	authKey    string
+	lensName   string
+	hostnames  map[string]int
+	stamped    map[string]string // name → url from the last stamp
+	listening  map[int]bool      // port → listening from the last stamp
 }
 
 func (f *fakeState) DevDomain() string        { return f.domain }
@@ -31,6 +35,7 @@ func (f *fakeState) CloudflareToken() string  { return "" }
 func (f *fakeState) TailscaleAuthKey() string { return f.authKey }
 func (f *fakeState) LensHostname() string     { return f.lensName }
 func (f *fakeState) AllHostnames() map[string]int {
+	f.reconciles.Add(1)
 	out := map[string]int{}
 	for k, v := range f.hostnames {
 		out[k] = v
@@ -54,7 +59,7 @@ func (n *fakeNode) Close() error { n.closed = true; return nil }
 
 func testServer(t *testing.T, st *fakeState) (*Server, map[string]*fakeNode) {
 	t.Helper()
-	s := NewServer(context.Background(), st, t.TempDir(), "tailtest.ts.net", netip.Addr{})
+	s := NewServer(context.Background(), st, t.TempDir(), "tailtest.ts.net", netip.Addr{}, func() bool { return true })
 	started := map[string]*fakeNode{}
 	s.newNode = func(name, _ string) nodeHandle {
 		n := &fakeNode{}

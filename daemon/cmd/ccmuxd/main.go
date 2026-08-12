@@ -171,9 +171,10 @@ func runDaemon() {
 	// push wires its notifier (the hub picks the federated variant).
 	var ts *tsnet.Server
 	var lc *local.Client
+	ownsDNS := func() bool { return true }
 	if *tsnetEnabled {
 		var err error
-		ts, lc, err = setupTailnetNode(ctx, mgr, apiSrv, *tsnetHostname, *tsnetDir, *hubEnabled, peersSvc)
+		ts, lc, ownsDNS, err = setupTailnetNode(ctx, mgr, apiSrv, *tsnetHostname, *tsnetDir, *hubEnabled, peersSvc)
 		if err != nil {
 			log.Fatalf("tsnet: %v", err)
 		}
@@ -197,7 +198,7 @@ func runDaemon() {
 	// dispatch) and TLS config (SNI dispatch). The loopback listener below gets the
 	// same dispatch (harmless, testable).
 	if *tsnetEnabled {
-		dh, err := serveTailnetHTTPS(ctx, ts, lc, mgr, apiSrv, handler, *tsnetHostname)
+		dh, err := serveTailnetHTTPS(ctx, ts, lc, mgr, apiSrv, handler, *tsnetHostname, ownsDNS)
 		if err != nil {
 			log.Fatalf("tsnet serve: %v", err)
 		}
@@ -232,15 +233,16 @@ func runDaemon() {
 // hub-conditional routes register and push picks the federated notifier. The auth
 // key comes from TS_AUTHKEY (or prior persisted state in dir); a first
 // unauthenticated run logs a login URL.
-func setupTailnetNode(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, hostname, dir string, hubEnabled bool, peersSvc *peers.Service) (*tsnet.Server, *local.Client, error) {
+// The third return is the devhost DNS-ownership predicate — see devhost.NewServer.
+func setupTailnetNode(ctx context.Context, mgr *manager.Manager, apiSrv *api.Server, hostname, dir string, hubEnabled bool, peersSvc *peers.Service) (*tsnet.Server, *local.Client, func() bool, error) {
 	ts := &tsnet.Server{Hostname: hostname, Dir: dir, UserLogf: log.Printf}
 	if _, err := ts.Up(ctx); err != nil {
-		return nil, nil, fmt.Errorf("node up: %w", err)
+		return nil, nil, nil, fmt.Errorf("node up: %w", err)
 	}
 	lc, err := ts.LocalClient()
 	if err != nil {
 		ts.Close()
-		return nil, nil, fmt.Errorf("local client: %w", err)
+		return nil, nil, nil, fmt.Errorf("local client: %w", err)
 	}
 	apiSrv.SetIdentityResolver(tailnet.NewLocalResolver(lc))
 
@@ -255,20 +257,54 @@ func setupTailnetNode(ctx context.Context, mgr *manager.Manager, apiSrv *api.Ser
 		apiSrv.SetHubURL(func() string { return *hubURL.Load() })
 		enableHostFederation(ts, hubURL, apiSrv, mgr.LocalURL, peersSvc)
 	}
-	return ts, lc, nil
+	return ts, lc, dnsOwnership(ctx, lc, hubEnabled), nil
+}
+
+// dnsOwnership builds devhost's DNS-ownership predicate over the live tailnet
+// status. hub.DevDNSOwner holds the rule; this wrapper supplies the status and
+// logs what it decided.
+//
+// Read live on each call rather than cached at boot: the answer changes while
+// the daemon runs, as a hub joins or leaves the tailnet. The read is a local
+// socket round-trip, but it happens inside devhost's reconcile lock, hence the
+// timeout — a wedged tailscaled must not hold that lock open.
+func dnsOwnership(ctx context.Context, lc *local.Client, hubRole bool) func() bool {
+	lastReason := ""
+	return func() bool {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		st, err := lc.Status(ctx)
+		if err != nil || st.Self == nil {
+			// Can't tell who the hub is. The safe answer for a record shared by
+			// the whole fleet is to leave it alone; the next reconcile retries.
+			cause := "the status has no self node"
+			if err != nil {
+				cause = err.Error()
+			}
+			log.Printf("devhost: not claiming the dev DNS record this cycle — tailnet status unreadable: %s", cause)
+			return false
+		}
+		owns, reason := hub.DevDNSOwner(st, firstLabel(st.Self.DNSName), hubRole)
+		if reason != "" && reason != lastReason {
+			log.Printf("devhost: dev DNS record: %s", reason)
+		}
+		lastReason = reason
+		return owns
+	}
 }
 
 // serveTailnetHTTPS serves the built handler over the node's :443 with a
 // tailnet-issued cert, wiring the devhost server (SNI + Host dispatch for dev
 // hostnames). Returns the devhost server so the loopback listener gets the same
 // dispatch.
-func serveTailnetHTTPS(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname string) (*devhost.Server, error) {
+func serveTailnetHTTPS(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname string, ownsDNS func() bool) (*devhost.Server, error) {
 	ip4, _ := ts.TailscaleIPs()
-	dh := devhost.NewServer(ctx, mgr, filepath.Join(configDir(), "devhost"), tsSuffix(ts, hostname), ip4)
+	dh := devhost.NewServer(ctx, mgr, filepath.Join(configDir(), "devhost"), tsSuffix(ts, hostname), ip4, ownsDNS)
 	mgr.OnDevhostChange = dh.Refresh
 	apiSrv.SetDevhostStatus(dh.CertStatus)
 	dh.Refresh()
 	dh.StartProbe(5 * time.Second)
+	dh.StartDNSHeal(devhost.DNSReassertInterval)
 
 	rawLn, err := ts.Listen("tcp", ":443")
 	if err != nil {

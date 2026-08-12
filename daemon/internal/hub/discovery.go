@@ -32,6 +32,79 @@ func DiscoverHub(ctx context.Context, lc *local.Client, selfID string) string {
 	return hubURLFromStatus(st, selfID)
 }
 
+// HubOwner returns the MagicDNS label of the tag:ccmux-hub node on the tailnet,
+// or "" when no node carries the tag. Unlike DiscoverHub it does NOT exclude
+// this node — the caller asking "who is the hub" is usually asking in order to
+// compare it against itself (see DevDNSOwner), and a predicate built on
+// DiscoverHub can't tell "I am the hub" from "there is no hub" since both
+// answer "".
+//
+// The lowest label wins if several nodes carry the tag, so that every node in
+// the fleet names the SAME owner. Answering "myself" wherever it is asked would
+// make two tagged nodes both claim, which for a single-value shared resource
+// means they overwrite each other forever.
+//
+// Offline and key-expired nodes still count. The hub is the only node that can
+// serve the whole fleet's dev hostnames — it proxies each one to its owner — so
+// a member seizing the record while the hub is down would not restore the fleet,
+// it would replace one broken state with a narrower one that then flaps when the
+// hub returns. The record waits for the hub.
+func HubOwner(st *ipnstate.Status) string {
+	if st == nil {
+		return ""
+	}
+	owner := ""
+	consider := func(ps *ipnstate.PeerStatus) {
+		if ps == nil || ps.DNSName == "" || !hasTag(peerTags(ps), HubTag) {
+			return
+		}
+		if label := magicDNSLabel(ps.DNSName); owner == "" || label < owner {
+			owner = label
+		}
+	}
+	consider(st.Self)
+	for _, ps := range st.Peer {
+		consider(ps)
+	}
+	return owner
+}
+
+// DevDNSOwner reports whether selfID may write the dev domain's wildcard A
+// record — one record, one correct value, so exactly one writer. hubRole is
+// whether this daemon runs with -hub. reason explains a refusal (and any
+// misconfiguration worth logging); it is "" when the answer needs no comment.
+//
+// The tag decides when it exists, because the tag is what every OTHER daemon
+// reads. Without it the fleet has no agreed hub, so the fallbacks are: a daemon
+// that believes it is the hub claims, a lone daemon claims, and anything else
+// defers rather than fight a neighbour for the record.
+func DevDNSOwner(st *ipnstate.Status, selfID string, hubRole bool) (owns bool, reason string) {
+	if owner := HubOwner(st); owner != "" {
+		if owner == selfID {
+			return true, ""
+		}
+		return false, fmt.Sprintf("%s owns it", owner)
+	}
+	if hubRole {
+		return true, fmt.Sprintf("no node carries %s — tag this node so member hosts defer to it", HubTag)
+	}
+	if others := otherMembers(st, selfID); others > 0 {
+		return false, fmt.Sprintf("no node carries %s and %d other ccmux host(s) are on the tailnet — tag the hub", HubTag, others)
+	}
+	return true, "" // alone on the tailnet: the record is this daemon's to hold
+}
+
+// otherMembers counts tag:ccmux nodes other than selfID.
+func otherMembers(st *ipnstate.Status, selfID string) int {
+	n := 0
+	for _, node := range nodesFromStatus(st, CcmuxTag) {
+		if node.ID != selfID {
+			n++
+		}
+	}
+	return n
+}
+
 // hubURLFromStatus is DiscoverHub's pure core: the base URL of the tag:ccmux-hub
 // node other than selfID, or "".
 func hubURLFromStatus(st *ipnstate.Status, selfID string) string {

@@ -36,6 +36,10 @@ type Server struct {
 	tsSuffix string     // the tailnet's MagicDNS suffix (e.g. tailb9053d.ts.net)
 	selfIP   netip.Addr // the daemon node's tailnet IPv4 — the A-record target
 
+	// ownsDNS reports whether THIS daemon is the one allowed to write the
+	// wildcard A record for the dev domain. See ensureDNSLocked.
+	ownsDNS func() bool
+
 	table      atomic.Pointer[Table]
 	domain     atomic.Pointer[string] // "" = ts.net fallback mode
 	lensHost   atomic.Pointer[string] // full host serving the web lens ("" = off)
@@ -44,10 +48,13 @@ type Server struct {
 	// in fallback mode); separate from s.magic so TLS never takes s.mu.
 	magicCfg atomic.Pointer[certmagic.Config]
 
-	mu     sync.Mutex // guards reconcile state below (never taken on the request path)
-	magic  *magicState
-	nodes  map[string]*fallbackNode
-	dnsKey string // (domain, token, ip) of the last successful A-record assert
+	mu       sync.Mutex // guards reconcile state below (never taken on the request path)
+	magic    *magicState
+	nodes    map[string]*fallbackNode
+	dnsKey   string        // (domain, token, ip) of the last successful A-record assert
+	dnsAt    time.Time     // when that assert landed — see dnsEvery
+	dnsEvery time.Duration // how stale an assert may get before a rewrite (0 = DNSReassertInterval)
+	dnsMuted bool          // a "not the DNS owner" skip was already logged
 	// newNode / newDNS are s.startNode and the Cloudflare provider in
 	// production; fakes in tests (reconcile logic must never dial the
 	// Tailscale control plane or the Cloudflare API).
@@ -57,8 +64,14 @@ type Server struct {
 
 // NewServer builds a devhost server. Call Refresh once at startup (after the
 // daemon's tsnet node is up) and wire manager.OnDevhostChange to Refresh.
-func NewServer(ctx context.Context, state State, dataDir, tsSuffix string, selfIP netip.Addr) *Server {
-	s := &Server{ctx: ctx, state: state, dataDir: dataDir, tsSuffix: tsSuffix, selfIP: selfIP, nodes: map[string]*fallbackNode{}}
+//
+// ownsDNS decides whether this daemon writes the dev domain's wildcard A record.
+// It is a func, not a bool, because the answer changes while the daemon runs: a
+// member host answers "no" the moment a hub appears on the tailnet. Passing
+// `func() bool { return true }` is the single-daemon answer.
+func NewServer(ctx context.Context, state State, dataDir, tsSuffix string, selfIP netip.Addr, ownsDNS func() bool) *Server {
+	s := &Server{ctx: ctx, state: state, dataDir: dataDir, tsSuffix: tsSuffix, selfIP: selfIP,
+		ownsDNS: ownsDNS, nodes: map[string]*fallbackNode{}}
 	s.newNode = s.startNode
 	s.newDNS = func(token string) dnsProvider { return &cloudflare.Provider{APIToken: token} }
 	empty, unset := "", "unset"
@@ -151,6 +164,33 @@ func (s *Server) StartProbe(interval time.Duration) {
 				if len(s.state.AllHostnames()) > 0 {
 					s.stampRuntime()
 				}
+			}
+		}
+	}()
+}
+
+// StartDNSHeal re-runs the reconcile so the DNS owner rewrites its wildcard A
+// record every `every`. Refresh is otherwise only called on a settings change,
+// which is why a record another daemon stomped used to stay stomped until
+// someone restarted the owner. Everything Refresh touches is keyed and
+// idempotent, so a quiet cycle does no work.
+func (s *Server) StartDNSHeal(every time.Duration) {
+	s.mu.Lock()
+	s.dnsEvery = every
+	s.mu.Unlock()
+	go func() {
+		// Half the interval, so a tick reliably finds the last assert stale.
+		// Ticking AT the interval never does: the assert is stamped when the
+		// tick fires, leaving every later tick a hair too early and halving the
+		// real heal rate.
+		t := time.NewTicker(every / 2)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-t.C:
+				s.Refresh()
 			}
 		}
 	}()
