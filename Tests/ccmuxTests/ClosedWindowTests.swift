@@ -13,13 +13,16 @@ final class ClosedWindowTests: XCTestCase {
 
     // MARK: - closingPlan
 
-    func testHostedOnlyWindowIsStillRecorded() {
+    func testHostedOnlyWindowArchivesItsSessionsAndIsRecorded() {
+        // Closing a window closes what is in it: the session is archived (revivable),
+        // never left running with nowhere to appear.
         let plan = WindowManager.closingPlan(
             owned: [hosted], displayed: hosted,
             isHosted: { $0 == self.hosted }, isOwnedElsewhere: { _ in false })
 
+        XCTAssertEqual(plan.archiveHosted, [hosted])
         XCTAssertEqual(plan.record, [hosted], "the window must be restorable")
-        XCTAssertTrue(plan.closeLocally.isEmpty, "a hosted session lives on the daemon; closing a window must not tear it down")
+        XCTAssertTrue(plan.closeLocally.isEmpty, "a hosted session has no local panes to tear down")
     }
 
     func testLocalWorkspacesAreBothClosedAndRecorded() {
@@ -28,15 +31,17 @@ final class ClosedWindowTests: XCTestCase {
             isHosted: { _ in false }, isOwnedElsewhere: { _ in false })
 
         XCTAssertEqual(plan.closeLocally, [local])
+        XCTAssertTrue(plan.archiveHosted.isEmpty)
         XCTAssertEqual(plan.record, [local])
     }
 
-    func testMixedWindowClosesOnlyTheLocalHalf() {
+    func testMixedWindowClosesLocallyAndArchivesHosted() {
         let plan = WindowManager.closingPlan(
             owned: [local, hosted], displayed: nil,
             isHosted: { $0 == self.hosted }, isOwnedElsewhere: { _ in false })
 
         XCTAssertEqual(plan.closeLocally, [local])
+        XCTAssertEqual(plan.archiveHosted, [hosted])
         XCTAssertEqual(Set(plan.record), [local, hosted])
     }
 
@@ -78,8 +83,9 @@ final class ClosedWindowTests: XCTestCase {
     }
 
     func testRestoreDropsSessionsThatNoLongerExist() {
-        // Deleted from the daemon, or gone cold, while the window was closed. Claiming
-        // one anyway writes a phantom id into the window descriptor that nothing prunes.
+        // Deleted from the daemon while the window was closed (going cold is no longer a
+        // reason to drop — that is the normal state now). Claiming one anyway writes a
+        // phantom id into the window descriptor that nothing prunes.
         let plan = WindowManager.restorePlan(
             ids: [hosted, local], isHosted: { _ in false }, isReopenable: { _ in false })
 
@@ -120,27 +126,43 @@ final class ClosedWindowTests: XCTestCase {
             .detach(repointOwner: false))
     }
 
-    // MARK: - Reserved by a closed window
+    // MARK: - Restoring what closing archived
 
-    func testAClosedWindowsSessionIsNotAdoptedByAnotherWindow() throws {
-        // The reported bug: close a window holding a hosted session and it jumped into
-        // whichever window was first, taking its daemon group with it, so restoring the
-        // window could not find it again.
-        let resolved = WindowManager.reconcileHostedOwnership(
-            workspaceIds: [hosted], groups: [hosted: "Dasha"], owned: [[], []],
-            displayed: [nil, nil], windowNames: ["ChartLabs", "Mixed"], reserved: [hosted])
-
-        XCTAssertNil(resolved, "a reserved session must not move; nil means nothing changed")
+    private func coldWorkspace(id: String, group: String = "Dasha") throws -> DaemonWorkspace {
+        let json = """
+        {"id":"\(id)","name":"kullio","repoPath":"/r","status":"cold","panes":[],
+         "group":"\(group)","hostnames":[],"devCommand":"","host":""}
+        """
+        return try JSONDecoder().decode(DaemonWorkspace.self, from: Data(json.utf8))
     }
 
-    func testAnUnreservedOrphanIsStillAdopted() throws {
-        // The reservation must not disable ordinary adoption — a session created by
-        // another lens still has to land somewhere visible.
-        let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [hosted], groups: [:], owned: [[], []],
-            displayed: [nil, nil], windowNames: ["ChartLabs", "Mixed"], reserved: [other]))
+    func testAColdSessionIsFoundByTheAppIdItsRecordHolds() throws {
+        // Closing archives, so by restore time the session is cold and has no
+        // attachment — the live daemonIds map has forgotten it. The record only holds
+        // the app UUID, and this deterministic mapping is the only route back to the
+        // daemon id that revives it.
+        let daemonId = "44442b4a-ce10-4aae-bb60-4f6e6935f654"
+        let appId = RemoteWorkspaceBuilder.workspaceUUID(daemonId)
+        let cold = [try coldWorkspace(id: daemonId)]
 
-        XCTAssertEqual(resolved, [[hosted], []])
+        XCTAssertEqual(RemoteWorkspaceBuilder.coldDaemonId(forApp: appId, in: cold), daemonId)
+    }
+
+    func testASessionTheDaemonNoLongerHasIsNotFound() throws {
+        let cold = [try coldWorkspace(id: "44442b4a-ce10-4aae-bb60-4f6e6935f654")]
+
+        XCTAssertNil(RemoteWorkspaceBuilder.coldDaemonId(forApp: other, in: cold))
+        XCTAssertNil(RemoteWorkspaceBuilder.coldDaemonId(forApp: hosted, in: []))
+    }
+
+    func testRestoreCountsColdSessionsSoAnArchivedWindowComesBack() {
+        // The predicate restore passes must accept cold sessions; keying off "is
+        // attached right now" would find nothing and throw the window away.
+        let plan = WindowManager.restorePlan(
+            ids: [hosted, other], isHosted: { $0 == self.hosted }, isReopenable: { _ in false })
+
+        XCTAssertEqual(plan.hosted, [hosted])
+        XCTAssertTrue(plan.local.isEmpty)
     }
 
     // MARK: - Stale closed-window references

@@ -219,6 +219,18 @@ final class RemoteSessionService: ObservableObject {
 
     func isHosted(_ id: UUID) -> Bool { controllers[id] != nil }
 
+    /// Daemon id for a hosted workspace, live OR cold. A cold session has no
+    /// attachment, so `daemonIds` has forgotten it; it is matched instead through the
+    /// deterministic app UUID its daemon id maps to.
+    func daemonId(forApp appId: UUID) -> String? {
+        daemonIds[appId] ?? RemoteWorkspaceBuilder.coldDaemonId(forApp: appId, in: coldWorkspaces)
+    }
+
+    /// Whether the daemon knows this workspace at all. Distinguishes a session that
+    /// merely went cold (archived — still on record, revivable) from one that is
+    /// genuinely gone, which callers must not treat alike.
+    func isKnownHosted(_ id: UUID) -> Bool { daemonId(forApp: id) != nil }
+
     /// The owning-host label for a hosted workspace ("" in single-host mode) —
     /// surfaced read-only in the sidebar context menu.
     func hostLabel(for id: UUID) -> String { hostLabels[id] ?? "" }
@@ -464,14 +476,26 @@ final class RemoteSessionService: ObservableObject {
     func deleteWorkspace(daemonId: String) async {
         _ = await send("DELETE", path: "/v1/workspaces/\(daemonId)", body: nil, expect: 204)
         await refresh()
+        // Announce it. The reconcile sweep only announces removals for workspaces it
+        // holds an ATTACHMENT for, and a cold one has none — which is now the normal
+        // state for anything in a closed window. Without this, deleting a cold session
+        // leaves its id in that window's record forever: a Restore Window entry
+        // pointing at nothing.
+        await MainActor.run { onWorkspaceRemoved?(RemoteWorkspaceBuilder.workspaceUUID(daemonId)) }
     }
 
     /// "Close Session": kill the tmux session but keep the recipe — the
     /// workspace goes cold (revivable with layout, hostnames, dev command).
-    func archiveWorkspace(_ id: UUID) async {
-        guard let daemonId = daemonIds[id] else { return }
-        _ = await post("/v1/workspaces/\(daemonId)/archive", body: [:], expect: 200)
+    /// Kill the tmux session, keep the recipe. Returns nil on success or the daemon's
+    /// error text — closing a window archives every session in it, and a silent failure
+    /// there leaves one running with no window to show it.
+    @discardableResult
+    func archiveWorkspace(_ id: UUID) async -> String? {
+        guard let daemonId = daemonIds[id] else { return "workspace is not hosted" }
+        let error = await sendReportingError(
+            "POST", path: "/v1/workspaces/\(daemonId)/archive", body: [:], expect: 200)
         await refresh()
+        return error
     }
 
     // MARK: - Layout sync
@@ -536,6 +560,11 @@ final class RemoteSessionService: ObservableObject {
         reachable = true
         lastError = nil
         let live = list.filter { $0.isLive }
+        // Publish the cold set BEFORE announcing removals. `onWorkspaceRemoved` asks
+        // whether the daemon still knows the workspace, to tell "archived" apart from
+        // "deleted" — and it would read a stale list here and call every archive a
+        // deletion, taking the closed-window record that restores it with it.
+        coldWorkspaces = list.filter { !$0.isLive }
         // Prune retained attention for workspaces the daemon no longer lists live,
         // while keeping it across a mere pane-signature rebuild (still live).
         let liveDaemonIds = Set(live.map { $0.id })
@@ -571,7 +600,6 @@ final class RemoteSessionService: ObservableObject {
             }
         }
         workspaces = rebuilt
-        coldWorkspaces = list.filter { !$0.isLive }
         applyGitAndActivity(live)
         syncFocusFrames() // fresh attachments start unfocused; keep them truthful
         onWorkspacesChanged?()

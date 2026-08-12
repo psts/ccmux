@@ -10,6 +10,17 @@ enum RemoteWorkspaceBuilder {
     static func workspaceUUID(_ id: String) -> UUID { UUID(uuidString: id) ?? deterministicUUID(seed: id) }
     static func paneUUID(_ id: String) -> UUID { UUID(uuidString: id) ?? deterministicUUID(seed: id) }
 
+    /// The daemon id of a cold session, found by the app UUID it maps to.
+    ///
+    /// A cold workspace has no attachment, so the live `daemonIds` map has forgotten it
+    /// — and since closing a window archives its sessions, cold is the normal state for
+    /// everything a closed window remembers. Restoring one has to get from the app id in
+    /// the record back to the daemon id that revives it, and this mapping is the only
+    /// route: `workspaceUUID` is deterministic, so it survives app and daemon restarts.
+    static func coldDaemonId(forApp appId: UUID, in cold: [DaemonWorkspace]) -> String? {
+        cold.first { workspaceUUID($0.id) == appId }?.id
+    }
+
     /// A hosted pane as a `TerminalConfig` tagged `.hosted`. `shell` is unused (no
     /// local process); `workingDirectory` powers local-clone file-link resolution.
     static func terminalConfig(for pane: DaemonPane, repoPath: String) -> TerminalConfig {
