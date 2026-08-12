@@ -498,7 +498,12 @@ struct SidebarView: View {
         }
         Button("Remove Session…", role: .destructive) {
             confirmRemoveSession(name: workspace.name) {
-                Task { await remoteService.deleteWorkspace(workspace.id) }
+                Task {
+                    guard let error = await remoteService.deleteWorkspace(workspace.id) else { return }
+                    await MainActor.run {
+                        reportFailure(action: "Remove “\(workspace.name)”", error: error)
+                    }
+                }
             }
         }
     }
@@ -525,7 +530,13 @@ struct SidebarView: View {
             Divider()
             Button("Remove Session…", role: .destructive) {
                 confirmRemoveSession(name: cold.name) {
-                    Task { await remoteService.deleteWorkspace(daemonId: cold.id) }
+                    Task {
+                        guard let error = await remoteService.deleteWorkspace(daemonId: cold.id)
+                        else { return }
+                        await MainActor.run {
+                            reportFailure(action: "Remove “\(cold.name)”", error: error)
+                        }
+                    }
                 }
             }
         }

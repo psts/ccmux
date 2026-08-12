@@ -605,6 +605,19 @@ class WorkspaceManager: ObservableObject {
         scheduleSave()
     }
 
+    /// Shrink a closed-window record to the members that still need restoring. Used when
+    /// a restore brought back only part of a window, so what it could not reach stays on
+    /// record instead of being consumed with it.
+    func replaceClosedWindowMembers(id: UUID, with ids: [UUID]) {
+        guard let idx = closedWindows.firstIndex(where: { $0.id == id }) else { return }
+        if ids.isEmpty {
+            closedWindows.remove(at: idx)
+        } else {
+            closedWindows[idx].workspaceIds = ids
+        }
+        scheduleSave()
+    }
+
     /// Permanently delete a closed window group.
     func deleteClosedWindow(id: UUID) {
         guard let window = closedWindows.first(where: { $0.id == id }) else { return }

@@ -323,6 +323,37 @@ class WindowManager {
         return (closeLocally, archiveHosted, record)
     }
 
+    /// What to do with a closed-window record after trying to restore it.
+    enum RecordFate: Equatable {
+        /// Nothing resolved and the daemon has not answered — keep it and try later.
+        case keep
+        /// Everything resolved (or the daemon says the rest is genuinely gone).
+        case forget
+        /// Some resolved; the record shrinks to the ids that did not.
+        case keepUnresolved([UUID])
+    }
+
+    /// Whether restoring consumes the record, shrinks it, or leaves it alone.
+    ///
+    /// Consuming it wholesale is the trap: a record holding both local and hosted ids,
+    /// restored while the daemon list has not landed (a daemon restart — which a fleet
+    /// upgrade causes), resolves the local ones and would delete the hosted ids with the
+    /// record. The sessions survive as cold rows, but the grouping the window existed to
+    /// remember is gone for good. So unresolved ids stay on record unless the daemon has
+    /// answered and simply does not have them.
+    static func recordFate(savedIds: [UUID], restored: [UUID], daemonAnswered: Bool) -> RecordFate {
+        let unresolved = savedIds.filter { !restored.contains($0) }
+        if unresolved.isEmpty { return .forget }
+        if daemonAnswered { return .forget }   // it answered and does not know them: really gone
+        return restored.isEmpty ? .keep : .keepUnresolved(unresolved)
+    }
+
+    /// Whether a workspace leaving the live list should be struck from closed-window
+    /// records. Only when the daemon no longer knows it at all: archiving also drops it
+    /// from that list, and a window close archives everything it held, so pruning on
+    /// mere absence would delete the record that restores it seconds after writing it.
+    static func shouldForgetRecordReferences(isKnownHosted: Bool) -> Bool { !isKnownHosted }
+
     /// Split a closed window's saved ids by how each one comes back: hosted sessions are
     /// re-claimed live from the daemon, local ones are reopened from `closedWorkspaces`.
     ///
@@ -415,18 +446,16 @@ class WindowManager {
         for wsId in plan.local { _ = workspaceManager.reopenWorkspace(id: wsId) }
 
         let restored = plan.hosted + plan.local
-        guard !restored.isEmpty else {
-            // Nothing resolved. That means "these sessions are gone" only if the daemon
-            // has actually answered — the hosted lists are empty for EVERY id until the
-            // first workspace fetch lands, which is the normal state during a daemon
-            // restart (a fleet upgrade does exactly that). Forgetting the record there
-            // would throw away a perfectly restorable window. Keep it and let the user
-            // try again once the list is up.
-            if service.reachable { workspaceManager.forgetClosedWindow(id: id) }
-            return
+        switch Self.recordFate(
+            savedIds: closedWindow.workspaceIds, restored: restored, daemonAnswered: service.reachable) {
+        case .keep:
+            return                                            // nothing resolved yet; try again later
+        case .forget:
+            workspaceManager.forgetClosedWindow(id: id)
+        case .keepUnresolved(let remaining):
+            workspaceManager.replaceClosedWindowMembers(id: id, with: remaining)
         }
-
-        workspaceManager.forgetClosedWindow(id: id)
+        guard !restored.isEmpty else { return }
 
         // Display what was on screen when it closed, unless that one didn't come back.
         let displayId = closedWindow.displayedWorkspaceId.flatMap { restored.contains($0) ? $0 : nil }
@@ -439,35 +468,42 @@ class WindowManager {
         // and two owners are deduped straight back out by the next orphan sweep.
         for wsId in plan.hosted { claimHostedWorkspace(wsId, into: wc) }
 
-        // Bring back what closing put to sleep. Ownership above already points at these
-        // ids, so each one appears in this window the moment the daemon reports it live.
-        for wsId in plan.hosted where !service.isHosted(wsId) {
-            guard let daemonId = service.daemonId(forApp: wsId) else { continue }
-            Task { @MainActor in
-                if let error = await service.reviveWorkspace(daemonId: daemonId) {
-                    // The record is already gone by now, so silence would leave an empty
-                    // window and no explanation. The session is still recoverable from
-                    // its cold row.
-                    NSLog("[ccmux] restoring window: reviving %@ failed: %@", daemonId, error)
-                    self.reportRestoreFailure(error)
-                    return
-                }
-                // Push this window's name as the session's group. syncHostedGroups skips
-                // anything not yet attached, so the pass triggered before the revive
-                // landed silently ignored it, leaving the daemon on the old group.
-                self.refreshOtherWindowIds()
-            }
-        }
-
+        reviveRestoredSessions(plan.hosted)
         refreshOtherWindowIds()
     }
 
-    /// A restore that could not bring a session back says so — the closed-window record
-    /// is consumed by then, so the alternative is an empty window and no explanation.
-    private func reportRestoreFailure(_ error: String) {
+    /// Wake the sessions a window close put to sleep. Ownership already points at them,
+    /// so each appears in the restored window the moment the daemon reports it live.
+    private func reviveRestoredSessions(_ ids: [UUID]) {
+        let service = RemoteSessionService.shared
+        let pending = ids.filter { !service.isHosted($0) }
+            .compactMap { service.daemonId(forApp: $0) }
+        guard !pending.isEmpty else { return }
+
+        Task { @MainActor in
+            var failures: [String] = []
+            for daemonId in pending {
+                if let error = await service.reviveWorkspace(daemonId: daemonId) {
+                    NSLog("[ccmux] restoring window: reviving %@ failed: %@", daemonId, error)
+                    failures.append(error)
+                }
+            }
+            // Push this window's name as each session's group. syncHostedGroups skips
+            // anything not yet attached, so the pass that ran before these revives
+            // landed ignored them, leaving the daemon on the old group.
+            self.refreshOtherWindowIds()
+            // One alert for the batch: the record is consumed by now, so silence would
+            // leave an empty window and no explanation — but N dead sessions must not
+            // mean N modal alerts stacked in front of the user.
+            if let first = failures.first { self.reportRestoreFailure(first, count: failures.count) }
+        }
+    }
+
+    /// A restore that could not bring sessions back says so.
+    private func reportRestoreFailure(_ error: String, count: Int) {
         let alert = NSAlert()
-        alert.messageText = "Could not restore a session"
-        alert.informativeText = "\(error)\n\nIt is still listed under Cold Sessions."
+        alert.messageText = count == 1 ? "Could not restore a session" : "Could not restore \(count) sessions"
+        alert.informativeText = "\(error)\n\nThey are still listed under Cold Sessions."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -695,10 +731,8 @@ class WindowManager {
         }
         // Closed windows remember hosted sessions too, so they need the same pruning
         // the local delete path gets — otherwise a record slowly fills with dead ids.
-        // Only when the session is really gone, though: archiving also drops it from
-        // the live list, and a window close archives everything it held, so pruning
-        // here would delete the very record that restores it, seconds after writing it.
-        if !RemoteSessionService.shared.isKnownHosted(id) {
+        if Self.shouldForgetRecordReferences(
+            isKnownHosted: RemoteSessionService.shared.isKnownHosted(id)) {
             workspaceManager.forgetClosedWindowReferences(to: id)
         }
         refreshOtherWindowIds()

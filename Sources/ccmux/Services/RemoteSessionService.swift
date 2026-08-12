@@ -466,22 +466,29 @@ final class RemoteSessionService: ObservableObject {
         return error
     }
 
-    func deleteWorkspace(_ id: UUID) async {
-        guard let daemonId = daemonIds[id] else { return }
-        await deleteWorkspace(daemonId: daemonId)
+    @discardableResult
+    func deleteWorkspace(_ id: UUID) async -> String? {
+        guard let daemonId = daemonIds[id] else { return "workspace is not hosted" }
+        return await deleteWorkspace(daemonId: daemonId)
     }
 
     /// Delete by daemon id — cold workspaces aren't materialized as app
     /// workspaces, so their rows act on the raw daemon id.
-    func deleteWorkspace(daemonId: String) async {
-        _ = await send("DELETE", path: "/v1/workspaces/\(daemonId)", body: nil, expect: 204)
+    @discardableResult
+    func deleteWorkspace(daemonId: String) async -> String? {
+        let error = await sendReportingError(
+            "DELETE", path: "/v1/workspaces/\(daemonId)", body: nil, expect: 204)
         await refresh()
-        // Announce it. The reconcile sweep only announces removals for workspaces it
-        // holds an ATTACHMENT for, and a cold one has none — which is now the normal
-        // state for anything in a closed window. Without this, deleting a cold session
-        // leaves its id in that window's record forever: a Restore Window entry
-        // pointing at nothing.
+        // Announce it — but only on success. The reconcile sweep announces removals only
+        // for workspaces it holds an ATTACHMENT for, and a cold one has none, which is
+        // the normal state for anything in a closed window; without this, deleting a
+        // cold session leaves its id in that window's record forever. Announcing a
+        // delete that FAILED is worse than not announcing: for a live session it strips
+        // ownership from every window and repoints whichever one displayed it, so the
+        // session vanishes with no error and is re-adopted seconds later somewhere else.
+        guard error == nil else { return error }
         await MainActor.run { onWorkspaceRemoved?(RemoteWorkspaceBuilder.workspaceUUID(daemonId)) }
+        return nil
     }
 
     /// "Close Session": kill the tmux session but keep the recipe — the

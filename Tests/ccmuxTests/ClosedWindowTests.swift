@@ -165,6 +165,45 @@ final class ClosedWindowTests: XCTestCase {
         XCTAssertTrue(plan.local.isEmpty)
     }
 
+    // MARK: - What a restore does to the record
+
+    func testAFullyRestoredRecordIsConsumed() {
+        XCTAssertEqual(
+            WindowManager.recordFate(savedIds: [hosted, local], restored: [hosted, local], daemonAnswered: true),
+            .forget)
+    }
+
+    func testAPartialRestoreKeepsWhatItCouldNotReach() {
+        // The trap: a record holding local AND hosted ids, restored while the daemon
+        // list has not landed. The local ones resolve, so a naive "we restored
+        // something" would delete the record and take the hosted ids with it — the
+        // sessions survive as cold rows but the grouping is gone for good.
+        XCTAssertEqual(
+            WindowManager.recordFate(savedIds: [hosted, local], restored: [local], daemonAnswered: false),
+            .keepUnresolved([hosted]))
+    }
+
+    func testNothingResolvedAndNoAnswerKeepsTheRecordIntact() {
+        XCTAssertEqual(
+            WindowManager.recordFate(savedIds: [hosted], restored: [], daemonAnswered: false),
+            .keep)
+    }
+
+    func testTheDaemonAnsweringAndNotHavingThemMeansTheyAreGone() {
+        // A session another lens deleted. Keeping the record would leave a Restore
+        // Window entry that does nothing, forever.
+        XCTAssertEqual(
+            WindowManager.recordFate(savedIds: [hosted], restored: [], daemonAnswered: true),
+            .forget)
+    }
+
+    func testArchivedSessionsKeepTheirRecordButDeletedOnesDoNot() {
+        // The single decision standing between a window close and erasing its own
+        // restore entry: closing archives, and an archived session is still known.
+        XCTAssertFalse(WindowManager.shouldForgetRecordReferences(isKnownHosted: true))
+        XCTAssertTrue(WindowManager.shouldForgetRecordReferences(isKnownHosted: false))
+    }
+
     // MARK: - Stale closed-window references
 
     /// A manager that cannot touch the user's real state.json — the save path has no
