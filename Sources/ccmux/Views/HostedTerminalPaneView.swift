@@ -6,6 +6,9 @@ import SwiftTerm
 /// `RemoteTermController`'s SwiftTerm view (owned by `RemoteSessionService`, reused
 /// across splits/reconnects) and overlays a status banner while (re)connecting.
 struct HostedTerminalPaneView: View {
+    /// TerminalConfig.id of the tab this pane is shown in — what PaneFocusCoordinator
+    /// addresses. Distinct from `paneId`, which the daemon owns.
+    let tabId: UUID
     /// Daemon pane id (`@ccmux_pane_id`).
     let paneId: String
     let workingDirectory: String
@@ -13,7 +16,7 @@ struct HostedTerminalPaneView: View {
 
     var body: some View {
         ZStack {
-            HostedTerminalContainer(paneId: paneId, workingDirectory: workingDirectory)
+            HostedTerminalContainer(tabId: tabId, paneId: paneId, workingDirectory: workingDirectory)
             let state = service.hostedConnectionState(paneId: paneId)
             if state != .connected {
                 ReconnectOverlay(state: state)
@@ -95,11 +98,12 @@ private struct ReconnectOverlay: View {
 /// the hosted analog of `TerminalContainerView`. No process to spawn; the daemon
 /// owns lifecycle, so this only embeds and asserts the on-screen size.
 private struct HostedTerminalContainer: NSViewRepresentable {
+    let tabId: UUID
     let paneId: String
     let workingDirectory: String
 
     func makeNSView(context: Context) -> HostedTerminalContainerView {
-        HostedTerminalContainerView(paneId: paneId, workingDirectory: workingDirectory)
+        HostedTerminalContainerView(tabId: tabId, paneId: paneId, workingDirectory: workingDirectory)
     }
 
     func updateNSView(_ nsView: HostedTerminalContainerView, context: Context) {
@@ -108,21 +112,33 @@ private struct HostedTerminalContainer: NSViewRepresentable {
 }
 
 final class HostedTerminalContainerView: NSView {
+    let tabId: UUID
     let paneId: String
     let workingDirectory: String
     private var hasAssertedSize = false
     private var keyObserver: NSObjectProtocol?
+    private var focusObserver: NSObjectProtocol?
 
-    init(paneId: String, workingDirectory: String) {
+    init(tabId: UUID, paneId: String, workingDirectory: String) {
+        self.tabId = tabId
         self.paneId = paneId
         self.workingDirectory = workingDirectory
         super.init(frame: .zero)
+        // A tab click on an already-embedded terminal never re-enters ensureEmbedded(),
+        // so the broadcast is the only way that case learns it should take focus.
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: PaneFocusCoordinator.didRequestFocus, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, note.object as? UUID == self.tabId else { return }
+            self.takeKeyboardFocusIfRequested()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
         if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
     }
 
     private var controller: RemoteTermController? {
@@ -144,6 +160,19 @@ final class HostedTerminalContainerView: NSView {
             hasAssertedSize = false
         }
         assertSizeIfReady()
+        // A tab switch rebuilds this container, so the click that asked for focus
+        // landed before the terminal existed here. Claim it now that it does.
+        takeKeyboardFocusIfRequested()
+    }
+
+    /// Make the terminal first responder if a tab click asked for it, so selecting a
+    /// tab is enough to type. Claiming comes last and is one-shot: a re-embed that
+    /// nobody asked for must not pull focus out of whatever the user is using.
+    private func takeKeyboardFocusIfRequested() {
+        guard let window, let terminal = controller?.terminalView,
+              terminal.superview === self else { return }
+        guard PaneFocusCoordinator.shared.claim(tabId: tabId) else { return }
+        window.makeFirstResponder(terminal)
     }
 
     override func layout() {
