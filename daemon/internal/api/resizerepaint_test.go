@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +112,73 @@ func TestAPI_UnchangedResizeSendsNoRepaint(t *testing.T) {
 	if got := snapshotsUntilQuiet(ch, pane0, time.Second); got != 0 {
 		t.Fatalf("unchanged resize gave %d snapshots, want 0", got)
 	}
+}
+
+// One attach socket carries every pane of a workspace, and a lens re-asserts the
+// size of every visible pane at once — on window focus and on reconnect. All of
+// them reflowed, so all of them owe a repaint; keeping only the newest request
+// would leave the neighbours drawn at the old width.
+func TestAPI_ResizeRepaintsEveryPaneInTheBurst(t *testing.T) {
+	_, base := floodStack(t, "ccmux-resizeburst-itest")
+
+	ws := createWS(t, base)
+	pane0 := ws.Panes[0].ID
+	pane1 := spawnPane(t, base, ws.ID)
+
+	c := attachAndHello(t, base, ws.ID)
+	defer c.Close()
+	ch := frames(c)
+	snapshotsUntilQuiet(ch, "", time.Second) // drain the attach seed for both panes
+
+	// Back to back, inside one settle window — what one window event looks like.
+	for _, p := range []string{pane0, pane1} {
+		if err := c.WriteJSON(wsMsg{T: "resize", Pane: p, Cols: 127, Rows: 37}); err != nil {
+			t.Fatalf("resize %s: %v", p, err)
+		}
+	}
+
+	got := map[string]int{}
+	deadline := time.After(3 * time.Second)
+	for len(got) < 2 {
+		select {
+		case m, ok := <-ch:
+			if !ok {
+				t.Fatalf("connection closed with snapshots for %v", got)
+			}
+			if m.T == "snapshot" {
+				got[m.Pane]++
+			}
+		case <-deadline:
+			t.Fatalf("only panes %v were repainted, want both %s and %s", got, pane0, pane1)
+		}
+	}
+	if got[pane0] != 1 || got[pane1] != 1 {
+		t.Fatalf("repaint counts = %v, want exactly 1 each", got)
+	}
+}
+
+// spawnPane adds a second pane to a workspace and returns its id.
+func spawnPane(t *testing.T, base, wsID string) string {
+	t.Helper()
+	body := `{"cwd":"/tmp","startupCommand":"","createdBy":"tester"}`
+	resp, err := http.Post(base+"/v1/workspaces/"+wsID+"/panes", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("spawn pane: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("spawn pane status = %d, want 201", resp.StatusCode)
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		t.Fatalf("decode pane: %v", err)
+	}
+	if p.ID == "" {
+		t.Fatal("spawned pane has no id")
+	}
+	return p.ID
 }
 
 // A read-only observer cannot resize, so it must not be able to make the daemon

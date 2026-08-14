@@ -1,6 +1,7 @@
 package api
 
 import (
+	"sort"
 	"testing"
 	"time"
 )
@@ -32,25 +33,67 @@ func TestResnapper_CoalescesADrag(t *testing.T) {
 	case <-time.After(2 * resizeSettle):
 		t.Fatal("never fired after the resizes stopped")
 	}
-	if got := rs.take(); got != "pane-1" {
-		t.Fatalf("take() = %q, want pane-1", got)
+	if got := rs.take(); len(got) != 1 || got[0] != "pane-1" {
+		t.Fatalf("take() = %v, want [pane-1]", got)
 	}
 }
 
-// The last pane to move is the one repainted, and taking it clears it — a second
-// timer tick must not repaint a pane nobody asked about.
-func TestResnapper_TakeIsOneShot(t *testing.T) {
+// Every pane that moved is repainted, not just the last one. One window event
+// re-asserts the size of every visible pane in a split, so a slot that only kept
+// the newest would leave the neighbours drawn at the old width.
+func TestResnapper_RepaintsEveryPaneThatMoved(t *testing.T) {
 	rs := newResnapper()
 	defer rs.stop()
 
 	rs.arm("pane-a")
 	rs.arm("pane-b")
+	rs.arm("pane-a") // a repeat is not a second repaint
 	<-rs.due()
-	if got := rs.take(); got != "pane-b" {
-		t.Fatalf("take() = %q, want pane-b", got)
+
+	got := rs.take()
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != "pane-a" || got[1] != "pane-b" {
+		t.Fatalf("take() = %v, want [pane-a pane-b]", got)
 	}
-	if got := rs.take(); got != "" {
-		t.Fatalf("second take() = %q, want empty", got)
+}
+
+// Taking clears the set — a later timer tick must not repaint a pane nobody
+// asked about.
+func TestResnapper_TakeIsOneShot(t *testing.T) {
+	rs := newResnapper()
+	defer rs.stop()
+
+	rs.arm("pane-a")
+	<-rs.due()
+	if got := rs.take(); len(got) != 1 || got[0] != "pane-a" {
+		t.Fatalf("take() = %v, want [pane-a]", got)
+	}
+	if got := rs.take(); len(got) != 0 {
+		t.Fatalf("second take() = %v, want empty", got)
+	}
+}
+
+// A burst from one window event must survive the channel: with a single slot,
+// every pane but one was dropped before the writer ever saw it.
+func TestResnapper_QueuesABurstOfDistinctPanes(t *testing.T) {
+	rs := newResnapper()
+	defer rs.stop()
+
+	panes := []string{"pane-a", "pane-b", "pane-c", "pane-d"}
+	for _, p := range panes {
+		rs.request(p)
+	}
+	for range panes {
+		select {
+		case pane := <-rs.requests():
+			rs.arm(pane)
+		default:
+			t.Fatal("a pane's request was dropped before the writer saw it")
+		}
+	}
+	<-rs.due()
+	if got := rs.take(); len(got) != len(panes) {
+		t.Fatalf("take() returned %d panes, want %d", len(got), len(panes))
 	}
 }
 

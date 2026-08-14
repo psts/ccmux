@@ -428,9 +428,9 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 	// widening once a lens attaches leaves everything it already printed wrapped
 	// at 80 in a pane that is no longer 80 wide.
 	_ = ctrl.Resize(pane0.ID, cols0, rows0)
-	pane0.Cols, pane0.Rows = cols0, rows0
 	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand)
 
+	applied := map[string][2]int{pane0.ID: {cols0, rows0}}
 	for _, p := range ws.Panes[1:] {
 		if err := ctrl.SpawnWindow(p.ID, p.CWD, m.paneEnv(p.ID)); err != nil {
 			ctrl.Close()
@@ -438,7 +438,7 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 		}
 		cols, rows := paneSize(p)
 		_ = ctrl.Resize(p.ID, cols, rows)
-		p.Cols, p.Rows = cols, rows
+		applied[p.ID] = [2]int{cols, rows}
 		m.deliverStartup(ctrl, p.ID, p.StartupCommand)
 		p.Status = model.StatusLive
 	}
@@ -447,6 +447,13 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 
 	m.mu.Lock()
 	e.ctrl = ctrl
+	// Under the lock, because ResizePane guards these same two fields with it and
+	// a lens attached to a cold workspace can resize while a revive is in flight.
+	for _, p := range ws.Panes {
+		if d, ok := applied[p.ID]; ok {
+			p.Cols, p.Rows = d[0], d[1]
+		}
+	}
 	m.mu.Unlock()
 	_ = m.store.SaveWorkspace(ws)
 	for _, p := range ws.Panes {

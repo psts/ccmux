@@ -139,7 +139,7 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 		case pane := <-rs.requests():
 			rs.arm(pane)
 		case <-rs.due():
-			if pane := rs.take(); pane != "" {
+			for _, pane := range rs.take() {
 				sendSnapshot(conn, ctrl, pane)
 			}
 		case ev, ok := <-sub.C:
