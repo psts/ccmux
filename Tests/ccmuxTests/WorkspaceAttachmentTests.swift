@@ -45,9 +45,10 @@ final class WorkspaceAttachmentTests: XCTestCase {
         XCTAssertEqual(att.lastReportedPresent, true)
     }
 
-    /// Presence changing on its own must still be reported. The screen locking
-    /// leaves focus exactly as it was, so deduping on the pane id alone would swallow
-    /// the one signal that tells the daemon to start pushing to the phone.
+    /// Presence changing on its own must still be reported. A workspace that was
+    /// never displayed already sits at focus "", so when the screen locks only the
+    /// presence half moves; deduping on the pane id alone would swallow the one
+    /// signal that tells the daemon to start pushing to the phone.
     func testReportFocusSendsWhenOnlyPresenceChanges() {
         let att = WorkspaceAttachment(workspaceId: UUID(), daemonId: "w1", repoPath: "/r", panes: [pane("p1")])
         att.reportFocus(paneId: "p1", present: true)

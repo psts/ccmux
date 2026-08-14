@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -29,7 +30,7 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.mgr.UnsubscribeEvents(id)
 
 	// Who is reading this stream; the alert flag is stamped for them alone.
-	login := s.resolveIdentity(r).Login
+	reader := s.readerFor(r)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -40,14 +41,14 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go drainReads(cancel, conn, s.ka)
+	go drainReads(cancel, conn, s.ka, reader.login)
 	go up.reconnectLoop(ctx, 10*time.Second)
 
 	// The ping belongs with the read deadline drainReads just armed, and this is
 	// the connection's only writer. Arming one without the other reaps every idle
 	// lens on schedule — and since s.events routes here whenever a hub is
 	// configured, this is THE firehose in a federation, not a side path.
-	ping := time.NewTicker(s.ka.ping)
+	ping := time.NewTicker(s.ka.pingEvery())
 	defer ping.Stop()
 
 	for {
@@ -56,18 +57,18 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ping.C:
 			if err := s.ka.writePing(conn); err != nil {
-				pingFailed("hub firehose", login, err)
+				pingFailed("hub firehose", reader.login, err)
 				return
 			}
 		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			if err := conn.WriteJSON(s.firehoseFrame(ev, login)); err != nil {
+			if err := conn.WriteJSON(s.firehoseFrame(ev, reader)); err != nil {
 				return
 			}
 		case raw := <-up.frames:
-			if err := conn.WriteMessage(websocket.TextMessage, s.restampAlert(raw, login)); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, s.restampAlert(raw, reader)); err != nil {
 				return
 			}
 		}
@@ -92,12 +93,12 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 // does not model is dropped here. The frame contract has to stay in lockstep
 // across the fleet; hosts already run mixed versions (hub.Health carries a
 // contract number), so a field added on one side needs this struct on the other.
-func (s *Server) restampAlert(raw []byte, login string) []byte {
+func (s *Server) restampAlert(raw []byte, reader firehoseReader) []byte {
 	var frame firehoseMsg
 	if err := json.Unmarshal(raw, &frame); err != nil || frame.T != "attention" {
 		return raw
 	}
-	frame.Alert = s.alertsFor(login, frame.State)
+	frame.Alert = s.alertsFor(reader, frame.State)
 	restamped, err := json.Marshal(frame)
 	if err != nil {
 		// The member's own verdict crosses instead — wrong, but a dropped frame
@@ -237,14 +238,22 @@ func dialHostEvents(ctx context.Context, wsDial func(context.Context, string) (*
 	// this inline, in sequence, for every member, and a lens gets no hello of its
 	// own until they all answer. Reusing the 90s idle deadline here would let two
 	// broken members hold a sidebar empty for three minutes.
-	_ = conn.SetReadDeadline(time.Now().Add(ka.hello))
+	_ = conn.SetReadDeadline(time.Now().Add(ka.helloWithin()))
 	_, data, err := conn.ReadMessage()
 	if err != nil {
 		conn.Close()
 		return nil, nil, err
 	}
 	var msg firehoseMsg
-	_ = json.Unmarshal(data, &msg)
+	if err := json.Unmarshal(data, &msg); err != nil {
+		// A hello this build cannot read is a FAILED dial, not a healthy one.
+		// Returning nil here let the caller clear the failure latch and announce
+		// the host as recovered, while its attention snapshot silently became
+		// empty — and mixed wire versions across the fleet are the stated
+		// operating condition, so this is a live case, not a hypothetical.
+		conn.Close()
+		return nil, nil, fmt.Errorf("hello did not decode (wire contract skew?): %w", err)
+	}
 	return conn, msg.Attention, nil
 }
 

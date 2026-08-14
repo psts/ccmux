@@ -557,6 +557,21 @@ async function attach(wsId, wantPane) {
   const conn = new WebSocket(`${attachOrigin(ws)}/v1/attach?${q}`);
   conn.onmessage = onMessage;
   conn.onopen = () => scheduleFit();
+  // The daemon now reaps a lens that stops answering pings, which a suspended tab
+  // does: backgrounded on a phone, bfcached, or on a laptop that slept. Before
+  // that deadline existed this socket could sit dead-but-open indefinitely and
+  // nobody noticed; now it is closed deterministically, so it MUST come back.
+  //
+  // Without this the failure is the nastiest shape available: the firehose has
+  // always reconnected on its own, so the sidebar keeps flashing and the app
+  // looks alive while the terminal is a dead rectangle eating every keystroke,
+  // recoverable only by a page reload the user has no reason to try.
+  conn.onclose = () => {
+    if (state.conn !== conn) return; // superseded by a newer attach
+    state.conn = null;
+    setTimeout(() => { if (!state.conn && state.wsId === wsId) attach(wsId, state.paneId); }, 2000);
+  };
+  conn.onerror = (e) => console.debug("attach socket failed", wsId, e);
   state.conn = conn;
 }
 

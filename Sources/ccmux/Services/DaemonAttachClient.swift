@@ -39,7 +39,17 @@ final class DaemonAttachClient {
         self.wsOrigin = wsOrigin ?? DaemonConfig.wsBaseURL
         pump = WebSocketPump(label: "attach-\(workspaceId)") { [weak self] in self?.url }
         pump.onText = { [weak self] text in
-            guard let self, let event = DaemonEvent.decode(text: text) else { return }
+            guard let self else { return }
+            // A frame the daemon wrote and this build cannot read is the last
+            // silent drop in this path: the socket stays healthy, so every
+            // indicator says the lens is fine while an attention change simply
+            // vanishes. Unknown KEYS decode fine; a changed type or a removed
+            // required field does not, which is the fleet-skew case.
+            guard let event = DaemonEvent.decode(text: text) else {
+                NSLog("[ccmux attach] dropped an undecodable frame (%d bytes): %@",
+                      text.utf8.count, String(text.prefix(120)))
+                return
+            }
             DispatchQueue.main.async { self.onEvent?(event) }
         }
         pump.onState = { [weak self] s in self?.onStateChange?(s) }

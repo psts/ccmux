@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"ccmux.dev/ccmuxd/internal/hub"
 )
 
 // silentMember serves a WebSocket that accepts the connection and then does
@@ -113,5 +115,76 @@ func TestEventUpstreams_ForwardKeepsAQuietMember(t *testing.T) {
 	case <-done:
 		t.Fatal("forward dropped a member that was answering pings")
 	case <-time.After(400 * time.Millisecond): // many ping intervals and deadlines
+	}
+}
+
+// The hello budget is a HANDSHAKE budget, and dialAll waits on it inline, in
+// sequence, for every member before the lens gets its own hello. Reusing the 90s
+// idle deadline here would let two broken members hold a sidebar empty for three
+// minutes; deleting it entirely parks dialAll forever.
+func TestDialHostEvents_GivesUpOnAMemberThatNeverSaysHello(t *testing.T) {
+	srv := silentMember(t, true) // reads (so it pongs), but never sends a frame
+	wsURL := strings.Replace(srv.URL, "http", "ws", 1)
+
+	ka := keepalive{ping: time.Second, read: time.Minute, hello: 80 * time.Millisecond}
+	dial := func(ctx context.Context, _ string) (*websocket.Conn, error) {
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		return conn, err
+	}
+
+	start := time.Now()
+	conn, _, err := dialHostEvents(context.Background(), dial, hub.Host{ID: "h1"}, ka)
+	if err == nil {
+		conn.Close()
+		t.Fatal("a member that never said hello was accepted as a healthy dial")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("waited %v for a hello: the idle deadline is being used as a handshake budget", elapsed)
+	}
+}
+
+// A hello this build cannot decode is a FAILED dial. Returning nil let the caller
+// clear the failure latch and announce the host as recovered while its attention
+// snapshot silently became empty — and mixed wire versions across the fleet are
+// the stated operating condition.
+func TestDialHostEvents_RejectsAnUndecodableHello(t *testing.T) {
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("this is not json"))
+		<-stop
+	}))
+	t.Cleanup(srv.Close)
+
+	dial := func(ctx context.Context, _ string) (*websocket.Conn, error) {
+		conn, _, err := websocket.DefaultDialer.Dial(strings.Replace(srv.URL, "http", "ws", 1), nil)
+		return conn, err
+	}
+
+	conn, _, err := dialHostEvents(context.Background(), dial, hub.Host{ID: "h1"}, keepalive{hello: time.Second})
+	if err == nil {
+		conn.Close()
+		t.Fatal("an undecodable hello was reported as a healthy dial")
+	}
+}
+
+// The zero keepalive must not panic. `&Server{...}` literals are the dominant
+// test constructor in this package and none of them set ka, so the next test that
+// dials a lens socket would otherwise hit time.NewTicker(0).
+func TestKeepalive_ZeroValueFallsBackToDefaults(t *testing.T) {
+	var zero keepalive
+	def := defaultKeepalive()
+	if zero.pingEvery() != def.ping || zero.readWithin() != def.read ||
+		zero.helloWithin() != def.hello || zero.pingWriteWithin() != def.pingWrite {
+		t.Errorf("zero value did not fall back to the defaults: %+v", zero)
+	}
+	if zero.pingEvery() <= 0 {
+		t.Fatal("a zero ping interval reaches time.NewTicker and panics")
 	}
 }

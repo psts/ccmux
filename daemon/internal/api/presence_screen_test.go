@@ -31,9 +31,12 @@ func TestActiveOwners_PresentWithoutAFocusedPane(t *testing.T) {
 }
 
 // The other direction: a locked or sleeping Mac reports present=false and must
-// stop counting, so the push actually goes to the phone. This must hold even
-// while a pane is still nominally focused, which is exactly the state a screen
-// lock leaves behind.
+// stop counting, so the push actually goes to the phone.
+//
+// Pinned with a focused pane still set, as a daemon-side invariant: an explicit
+// present=false outranks a stale focus, whatever a client happens to send. Today
+// every shipped lens clears the pane in the same frame, so this guards the
+// daemon against a future one that does not.
 func TestActiveOwners_AbsentEvenWithAFocusedPane(t *testing.T) {
 	h := newHub(t)
 	id := h.Join("ws1", ClientInfo{User: "dev"}, "dev", "")
@@ -98,7 +101,7 @@ func TestPresence_AlertAndPushAreMutuallyExclusive(t *testing.T) {
 		h.SetPresent("ws1", id, present)
 		s := &Server{presence: h, focus: h}
 
-		alerted := s.alertsFor("dev", model.AttentionNeedsInput)
+		alerted := s.alertsFor(named("dev"), model.AttentionNeedsInput)
 		pushSuppressed := h.ActiveOwners()["dev"]
 		if alerted != pushSuppressed {
 			t.Errorf("present=%v: lens alert=%v but push suppression=%v; one channel must fire, exactly one",
@@ -107,9 +110,12 @@ func TestPresence_AlertAndPushAreMutuallyExclusive(t *testing.T) {
 	}
 }
 
-// Re-reporting the same presence must not spam every attached lens with presence
-// broadcasts. The Mac calls syncFocusFrames on every wake, poll reconcile, and
-// window change.
+// A repeated identical report must not disturb the recorded presence. The Mac
+// calls syncFocusFrames on every wake, poll reconcile, and window change, so this
+// runs constantly.
+//
+// Note this does NOT pin the broadcast suppression in SetPresent's `unchanged`
+// guard: broadcast is a no-op here because the hub has no controller for ws1.
 func TestSetPresent_RepeatIsQuiet(t *testing.T) {
 	h := newHub(t)
 	id := h.Join("ws1", ClientInfo{User: "dev"}, "dev", "")

@@ -58,6 +58,30 @@ func defaultKeepalive() keepalive {
 	}
 }
 
+// The accessors below exist because the ZERO VALUE of this struct is reachable
+// and, untreated, fatal: `time.NewTicker(0)` panics, and a zero read deadline
+// kills a connection on its first read. `&Server{...}` literals are the dominant
+// test constructor in this package, and none of them set `ka` — so the next test
+// that dials /v1/events or /v1/attach would panic in a way that reads like a
+// WebSocket bug rather than a missing field.
+//
+// Clamping to the defaults rather than validating loudly is the right call for a
+// keepalive: the safe answer is known, and refusing to serve a connection over a
+// missing tuning value would be worse than the problem.
+func (k keepalive) pingEvery() time.Duration   { return orDuration(k.ping, 30*time.Second) }
+func (k keepalive) readWithin() time.Duration  { return orDuration(k.read, 90*time.Second) }
+func (k keepalive) helloWithin() time.Duration { return orDuration(k.hello, 5*time.Second) }
+func (k keepalive) pingWriteWithin() time.Duration {
+	return orDuration(k.pingWrite, 10*time.Second)
+}
+
+func orDuration(d, fallback time.Duration) time.Duration {
+	if d <= 0 {
+		return fallback
+	}
+	return d
+}
+
 // writePing sends one ping, returning the error rather than a bare bool.
 //
 // The error is the point. "The client went away" and "this link stalled for ten
@@ -72,7 +96,7 @@ func defaultKeepalive() keepalive {
 // is classed as a WRITE method, which is why the deadline travels as an argument
 // rather than a separate call.
 func (k keepalive) writePing(conn *websocket.Conn) error {
-	return conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(k.pingWrite))
+	return conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(k.pingWriteWithin()))
 }
 
 // pingFailed logs a ping failure worth a human's attention. The caller drops the
@@ -96,14 +120,14 @@ func pingFailed(what, who string, err error) {
 func (k keepalive) armReads(conn *websocket.Conn) {
 	k.touchReads(conn)
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(k.read))
+		return conn.SetReadDeadline(time.Now().Add(k.readWithin()))
 	})
 }
 
 // touchReads pushes the deadline out after a successful read. Any frame is proof
 // the peer is alive, so a chatty client never depends on pongs alone.
 func (k keepalive) touchReads(conn *websocket.Conn) {
-	_ = conn.SetReadDeadline(time.Now().Add(k.read))
+	_ = conn.SetReadDeadline(time.Now().Add(k.readWithin()))
 }
 
 // pingLoop pings until ctx ends or the connection breaks. It exists for the
@@ -120,7 +144,7 @@ func (k keepalive) touchReads(conn *websocket.Conn) {
 // answers a ping from inside whatever ReadMessage the peer is already blocked
 // in, so no member-side change is required and the fleet needs no upgrade order.
 func (k keepalive) pingLoop(ctx context.Context, conn *websocket.Conn, label string) {
-	t := time.NewTicker(k.ping)
+	t := time.NewTicker(k.pingEvery())
 	defer t.Stop()
 	for {
 		select {
@@ -132,5 +156,27 @@ func (k keepalive) pingLoop(ctx context.Context, conn *websocket.Conn, label str
 				return
 			}
 		}
+	}
+}
+
+// readEnded says why a read loop stopped, when that is worth saying.
+//
+// Arming a deadline changed what a bare `return` on a read error means. It used
+// to mean one thing — the peer went away — and now it also means WE decided the
+// peer was gone. Those are opposite diagnoses (their network vs our timer) and
+// collapsing them into the same silent exit leaves the one question this
+// keepalive exists to answer unanswerable from the logs.
+//
+// An ordinary close stays quiet: normal and going-away are how a lens is
+// supposed to leave, and logging them would cost a line per departing client.
+func readEnded(what, who string, err error, after time.Duration) {
+	var ne net.Error
+	switch {
+	case errors.As(err, &ne) && ne.Timeout():
+		log.Printf("%s: %q went silent for %v — reaped by the read deadline", what, who, after)
+	case websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway):
+	case errors.Is(err, net.ErrClosed):
+	default:
+		log.Printf("%s: read from %q failed (%v)", what, who, err)
 	}
 }

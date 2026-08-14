@@ -17,7 +17,7 @@ func TestRestampAlert_HubOverridesAMembersVerdict(t *testing.T) {
 	s := &Server{presence: p, focus: p}
 
 	memberSaidNo := `{"t":"attention","workspace":"ws1","pane":"p1","state":"needs_input"}`
-	out := s.restampAlert([]byte(memberSaidNo), "dev")
+	out := s.restampAlert([]byte(memberSaidNo), named("dev"))
 
 	var frame firehoseMsg
 	if err := json.Unmarshal(out, &frame); err != nil {
@@ -38,7 +38,7 @@ func TestRestampAlert_HubAlsoWithdrawsAnAlert(t *testing.T) {
 	s := &Server{presence: presenceWithFocus(nil), focus: presenceWithFocus(nil)}
 
 	memberSaidYes := `{"t":"attention","workspace":"ws1","pane":"p1","state":"needs_input","alert":true}`
-	out := s.restampAlert([]byte(memberSaidYes), "dev")
+	out := s.restampAlert([]byte(memberSaidYes), named("dev"))
 
 	var frame firehoseMsg
 	if err := json.Unmarshal(out, &frame); err != nil {
@@ -62,7 +62,7 @@ func TestRestampAlert_PassesEverythingElseThrough(t *testing.T) {
 		`not json at all`,
 		``,
 	} {
-		if got := string(s.restampAlert([]byte(raw), "dev")); got != raw {
+		if got := string(s.restampAlert([]byte(raw), named("dev"))); got != raw {
 			t.Errorf("frame was rewritten:\n in: %s\nout: %s", raw, got)
 		}
 	}
@@ -74,7 +74,7 @@ func TestRestampAlert_AppliesTheWholeRuleNotJustPresence(t *testing.T) {
 	p := presenceWithFocus(map[string]bool{"dev": true})
 	s := &Server{presence: p, focus: p}
 
-	out := s.restampAlert([]byte(`{"t":"attention","workspace":"ws1","pane":"p1","state":"done","alert":true}`), "dev")
+	out := s.restampAlert([]byte(`{"t":"attention","workspace":"ws1","pane":"p1","state":"done","alert":true}`), named("dev"))
 	var frame firehoseMsg
 	if err := json.Unmarshal(out, &frame); err != nil {
 		t.Fatal(err)

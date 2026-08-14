@@ -113,7 +113,7 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 	// Same placement as the firehose: this loop is the connection's only writer,
 	// so folding the ping into its select needs no synchronisation and adds no
 	// goroutine. See keepalive.go for why an idle attach needs pinging at all.
-	ping := time.NewTicker(ka.ping)
+	ping := time.NewTicker(ka.pingEvery())
 	defer ping.Stop()
 
 	for {
@@ -161,6 +161,7 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 	for {
 		var msg wsMsg
 		if err := conn.ReadJSON(&msg); err != nil {
+			readEnded("attach "+wsID, connID, err, s.ka.readWithin())
 			return
 		}
 		s.ka.touchReads(conn)

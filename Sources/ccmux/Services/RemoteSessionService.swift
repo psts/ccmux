@@ -119,9 +119,10 @@ final class RemoteSessionService: ObservableObject {
     /// Waking is the one moment we KNOW the old connections are suspect, so we do
     /// not make the user wait for that.
     ///
-    /// `didWakeNotification` is the system wake (lid, sleep). PresenceMonitor
-    /// already watches the DISPLAY notifications for its own purposes, and neither
-    /// of those fires for a machine that actually slept.
+    /// Separate from PresenceMonitor's observers, which also fire around sleep:
+    /// a presence flip only re-reports focus on sockets it believes are healthy
+    /// (syncFocusFrames), and never re-dials anything. Re-dialling is the whole
+    /// point here.
     ///
     /// Deliberately no refresh() here. The tailnet is usually still coming up, and
     /// a /v1/workspaces call that answers with a short list makes `reconcile` treat

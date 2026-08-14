@@ -168,9 +168,11 @@ func TestAttach_UnknownWorkspaceNeverUpgrades(t *testing.T) {
 
 // The hub firehose is a SEPARATE handler with its own write loop, and it is the
 // one every lens actually gets whenever a hub is configured (events() delegates
-// to it at the top). It shipped the read deadline without a ping ticker, so every
-// idle lens in the federation was reaped on a 90s timer and re-dialled every
-// member host on each reconnect. The plain-firehose test could not see it.
+// to it at the top). So it needs its own ping beside its own read deadline, and
+// the plain-firehose test above cannot see whether it has one.
+//
+// Getting that pairing wrong here reaps every idle lens in the federation on the
+// read deadline, and each reconnect re-dials every member host.
 func TestHubFirehose_IdleClientSurvivesTheReadDeadline(t *testing.T) {
 	st, err := store.Open(t.TempDir() + "/reg.db")
 	if err != nil {

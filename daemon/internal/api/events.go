@@ -62,7 +62,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	// Who is reading this stream. The alert flag is stamped per connection, so a
 	// lens is told to notify only when ITS OWN owner is at a screen.
-	login := s.resolveIdentity(r).Login
+	reader := s.readerFor(r)
 
 	if err := conn.WriteJSON(firehoseMsg{T: "hello", Attention: currentAttention(s.mgr)}); err != nil {
 		return
@@ -70,12 +70,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	go drainReads(cancel, conn, s.ka)
+	go drainReads(cancel, conn, s.ka, reader.login)
 
 	// The ticker lives INSIDE this select rather than in a goroutine of its own:
 	// this is the connection's only writer, so nothing has to be synchronised,
 	// and the soak test's goroutine-count assertion keeps holding.
-	ping := time.NewTicker(s.ka.ping)
+	ping := time.NewTicker(s.ka.pingEvery())
 	defer ping.Stop()
 
 	for {
@@ -84,14 +84,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ping.C:
 			if err := s.ka.writePing(conn); err != nil {
-				pingFailed("firehose", login, err)
+				pingFailed("firehose", reader.login, err)
 				return
 			}
 		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			if err := conn.WriteJSON(s.firehoseFrame(ev, login)); err != nil {
+			if err := conn.WriteJSON(s.firehoseFrame(ev, reader)); err != nil {
 				return
 			}
 		}
@@ -112,14 +112,48 @@ func currentAttention(mgr *manager.Manager) []attnEntry {
 	return out
 }
 
+// firehoseReader is who a firehose connection belongs to, and whether it told us.
+//
+// The second field is the compatibility hinge. A lens that names itself gets the
+// per-reader rule; one that does not gets the pre-existing global rule, so an
+// upgraded daemon never goes quiet on a lens that has not been rebuilt yet.
+type firehoseReader struct {
+	login      string
+	identified bool
+}
+
+// readerFor identifies a firehose connection.
+//
+// "Identified" deliberately means VERIFIED, not merely self-named. The per-reader
+// rule joins this login against a presence entry written by a different socket,
+// and those two sockets do not resolve identity the same way:
+//
+//   - the firehose is dialled at DaemonConfig.wsBaseURL, which on a Mac is
+//     loopback, where WhoIs declines and the name falls back to NSFullUserName();
+//   - the attach socket for a federated workspace goes DIRECT to the owning host
+//     over the tailnet, where WhoIs succeeds and the login is a verified email.
+//
+// So the join fails for the ordinary Mac-plus-remote-host arrangement, and a
+// self-declared name is not evidence enough to act on that failure. An alias
+// reconciles the two, but an alias is configuration that nothing here creates.
+//
+// Requiring verification keeps the sharper per-reader rule where identity is
+// actually trustworthy, and everywhere else answers the old global question —
+// which is what those lenses got before, so nothing regresses while the alias is
+// missing.
+func (s *Server) readerFor(r *http.Request) firehoseReader {
+	id := s.resolveIdentity(r)
+	return firehoseReader{login: id.Login, identified: id.Verified}
+}
+
 // firehoseFrame renders a manager firehose Event into its wire frame, stamping
 // the alert decision for the lens this frame is being written to.
-func (s *Server) firehoseFrame(ev manager.Event, login string) firehoseMsg {
+func (s *Server) firehoseFrame(ev manager.Event, reader firehoseReader) firehoseMsg {
 	switch ev.Kind {
 	case "attention":
 		return firehoseMsg{
 			T: "attention", Workspace: ev.WorkspaceID, Pane: ev.PaneID, State: ev.Attention,
-			Alert: s.alertsFor(login, ev.Attention),
+			Alert: s.alertsFor(reader, ev.Attention),
 		}
 	default:
 		return firehoseMsg{T: ev.Kind, Workspace: ev.WorkspaceID}
@@ -141,14 +175,27 @@ func (s *Server) firehoseFrame(ev manager.Event, login string) firehoseMsg {
 // screen and it does not belong to whichever machine owns the pane that spoke.
 // Reading only the local hub made a Linux session's "needs input" arrive at a Mac
 // as a silent sidebar flash.
-func (s *Server) alertsFor(login string, att model.Attention) bool {
+func (s *Server) alertsFor(reader firehoseReader, att model.Attention) bool {
 	if !notifyState(att) {
 		return false
 	}
+	owners := s.focus.ActiveOwners()
+	if !reader.identified {
+		// Nothing trustworthy to match against, so answer the OLD question — is
+		// anybody at a screen — which is exactly what every lens got before this
+		// became per-reader. See readerFor for why an unverified name is not
+		// enough to act on.
+		//
+		// This also covers the staged rollout. The daemon and the Mac app ship
+		// separately, so there is always a window where an older app talks to an
+		// upgraded daemon; without this it would lose every notification, which is
+		// the very failure the change exists to fix.
+		return len(owners) > 0
+	}
+	login := reader.login
 	if login == "" {
 		return false
 	}
-	owners := s.focus.ActiveOwners()
 	if owners[login] {
 		s.clearAlertMiss(login)
 		return true
@@ -212,11 +259,12 @@ func sortedLogins(owners map[string]bool) []string {
 // dead peer into a closed connection instead of a goroutine parked forever. The
 // deadline is armed here, not in the caller, because it must not race the
 // ReadMessage below.
-func drainReads(cancel context.CancelFunc, conn *websocket.Conn, ka keepalive) {
+func drainReads(cancel context.CancelFunc, conn *websocket.Conn, ka keepalive, who string) {
 	defer cancel()
 	ka.armReads(conn)
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
+			readEnded("firehose", who, err, ka.readWithin())
 			return
 		}
 		ka.touchReads(conn)
