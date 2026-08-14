@@ -1,5 +1,6 @@
-import Foundation
+import AppKit
 import Combine
+import Foundation
 
 /// The lens-side face of ccmuxd: fetches hosted workspaces over REST, materializes
 /// each as an app `Workspace` (`mode: .hosted`) + `SplitTreeController` rendered by
@@ -90,6 +91,8 @@ final class RemoteSessionService: ObservableObject {
     /// In-flight coalescing window for workspace-change refetches (see
     /// scheduleCoalescedRefresh). nil = nothing pending.
     private var pendingRefresh: Timer?
+    /// Wake observer, released in stop() (this service registers no others).
+    private var wakeObserver: NSObjectProtocol?
 
     // MARK: - Lifecycle
 
@@ -106,19 +109,65 @@ final class RemoteSessionService: ObservableObject {
         events.connect()
 
         presenceMonitor.onChange = { [weak self] _ in self?.syncFocusFrames() }
+        observeWake()
     }
 
-    /// Report focus to the daemon for every attached workspace: the displayed
-    /// ones carry a pane id while the user is at this Mac; everything else
-    /// clears. This is what keeps phone pushes quiet at the desk (the daemon
-    /// suppresses all pushes for a login with any focused lens) — and lets them
-    /// through the moment the screen locks, the screensaver starts, or the Mac
-    /// sleeps (sleep drops the connections outright).
+    /// Re-dial every daemon socket when the machine wakes.
+    ///
+    /// The pumps detect a dead path on their own now, but only after a ping goes
+    /// unanswered — up to about a minute of a blank sidebar and a frozen terminal.
+    /// Waking is the one moment we KNOW the old connections are suspect, so we do
+    /// not make the user wait for that.
+    ///
+    /// Separate from PresenceMonitor's observers, which also fire around sleep:
+    /// a presence flip only re-reports focus on sockets it believes are healthy
+    /// (syncFocusFrames), and never re-dials anything. Re-dialling is the whole
+    /// point here.
+    ///
+    /// Deliberately no refresh() here. The tailnet is usually still coming up, and
+    /// a /v1/workspaces call that answers with a short list makes `reconcile` treat
+    /// every missing workspace as deleted — tearing down controllers and blanking
+    /// panes. The 4s poll picks the list up a moment later, once the network is
+    /// genuinely back.
+    private func observeWake() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.reconnectAll()
+        }
+    }
+
+    /// Bounce the firehose AND every workspace attach. Both matter: the firehose
+    /// alone restores the sidebar flash while leaving every hosted terminal frozen.
+    func reconnectAll() {
+        events.forceReconnect()
+        for attachment in attachments.values { attachment.forceReconnect() }
+    }
+
+    /// Tell the daemon two separate things about this Mac.
+    ///
+    /// PRESENCE is about the machine: screen awake and unlocked, so a notification
+    /// posted here would actually be seen. It does not depend on which workspace is
+    /// on display, which is the whole point. You can be three Spaces away in another
+    /// app, or looking at a local workspace, and still be sitting right here — and
+    /// the old code, which inferred presence from "a hosted workspace is displayed",
+    /// called all of that nobody-is-home. The result was a silent Mac and a phone
+    /// that buzzed at the desk.
+    ///
+    /// FOCUS stays per workspace: which pane this lens is actually looking at. It
+    /// clears that workspace's flash and nothing more.
+    ///
+    /// Both ride the same frame, so one call keeps them consistent.
     func syncFocusFrames() {
-        let displayed = presenceMonitor.isPresent ? displayedHostedWorkspaceIds() : []
+        let present = presenceMonitor.isPresent
+        let displayed = present ? displayedHostedWorkspaceIds() : []
         for (appId, attachment) in attachments {
             let focused = displayed.contains(appId)
-            attachment.reportFocus(paneId: focused ? (attachment.anyPaneId ?? "") : "")
+            attachment.reportFocus(
+                paneId: focused ? (attachment.anyPaneId ?? "") : "",
+                present: present
+            )
         }
     }
 
@@ -127,6 +176,10 @@ final class RemoteSessionService: ObservableObject {
         pollTimer = nil
         pendingRefresh?.invalidate()
         pendingRefresh = nil
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
         events.disconnect()
         for id in Array(attachments.keys) { removeWorkspace(id) }
     }

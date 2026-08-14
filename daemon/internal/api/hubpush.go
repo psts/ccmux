@@ -209,7 +209,7 @@ func (s *Server) mergedNotifierEvents(ctx context.Context) <-chan manager.Event 
 		}
 	}()
 
-	up := &eventUpstreams{hub: s.hub, frames: make(chan []byte, 128), connected: map[string]bool{}}
+	up := &eventUpstreams{hub: s.hub, frames: make(chan []byte, 128), ka: s.ka, connected: map[string]bool{}}
 	up.dialAll(ctx) // ignore the hello snapshots — the notifier only pushes on transitions
 	go up.reconnectLoop(ctx, 10*time.Second)
 	go func() {

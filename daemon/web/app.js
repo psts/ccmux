@@ -467,9 +467,16 @@ function onActivity() {
   }
 }
 
+// Focus and presence are two different claims. Focus says which pane this lens is
+// watching, and clears that workspace's flash. Presence says this screen could
+// show a notification at all — for a browser, that it is visible rather than
+// buried or backgrounded. A visible-but-unfocused tab still counts as present:
+// the person is at the machine, which is what the daemon needs to know before it
+// decides whether to alert here or buzz their phone.
 function reportFocus() {
-  const watching = document.visibilityState === "visible" && document.hasFocus();
-  send({ t: "focus", pane: watching ? state.paneId : "" });
+  const visible = document.visibilityState === "visible";
+  const watching = visible && document.hasFocus();
+  send({ t: "focus", pane: watching ? state.paneId : "", present: visible });
 }
 
 // Below this the pane is considered broken, not a real request — a transient
@@ -550,6 +557,21 @@ async function attach(wsId, wantPane) {
   const conn = new WebSocket(`${attachOrigin(ws)}/v1/attach?${q}`);
   conn.onmessage = onMessage;
   conn.onopen = () => scheduleFit();
+  // The daemon now reaps a lens that stops answering pings, which a suspended tab
+  // does: backgrounded on a phone, bfcached, or on a laptop that slept. Before
+  // that deadline existed this socket could sit dead-but-open indefinitely and
+  // nobody noticed; now it is closed deterministically, so it MUST come back.
+  //
+  // Without this the failure is the nastiest shape available: the firehose has
+  // always reconnected on its own, so the sidebar keeps flashing and the app
+  // looks alive while the terminal is a dead rectangle eating every keystroke,
+  // recoverable only by a page reload the user has no reason to try.
+  conn.onclose = () => {
+    if (state.conn !== conn) return; // superseded by a newer attach
+    state.conn = null;
+    setTimeout(() => { if (!state.conn && state.wsId === wsId) attach(wsId, state.paneId); }, 2000);
+  };
+  conn.onerror = (e) => console.debug("attach socket failed", wsId, e);
   state.conn = conn;
 }
 
@@ -657,7 +679,12 @@ function setAttention(paneId, stateStr) {
 function connectFirehose() {
   fetchHosts(); // refresh the registry on each (re)connect — a host may have joined/left
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const fh = new WebSocket(`${proto}://${location.host}/v1/events`);
+  // The user is part of the URL because the daemon stamps each frame's alert flag
+  // for the lens it is writing to. It must be the same name the attach socket
+  // sends, or presence and alerting describe two different people.
+  const fh = new WebSocket(
+    `${proto}://${location.host}/v1/events?user=${encodeURIComponent(getUser())}&device=web`
+  );
   fh.onmessage = onFirehose;
   fh.onclose = () => { state.firehose = null; setTimeout(connectFirehose, 2000); };
   state.firehose = fh;

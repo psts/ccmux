@@ -17,7 +17,7 @@ func TestRestampAlert_HubOverridesAMembersVerdict(t *testing.T) {
 	s := &Server{presence: p, focus: p}
 
 	memberSaidNo := `{"t":"attention","workspace":"ws1","pane":"p1","state":"needs_input"}`
-	out := s.restampAlert([]byte(memberSaidNo))
+	out := s.restampAlert([]byte(memberSaidNo), named("dev"))
 
 	var frame firehoseMsg
 	if err := json.Unmarshal(out, &frame); err != nil {
@@ -32,19 +32,20 @@ func TestRestampAlert_HubOverridesAMembersVerdict(t *testing.T) {
 }
 
 // The override runs both ways. A member that claimed alert=true must not get one
-// past the hub when nobody is at any screen in the federation.
+// past the hub when the lens reading this stream belongs to somebody who is not
+// at a screen.
 func TestRestampAlert_HubAlsoWithdrawsAnAlert(t *testing.T) {
 	s := &Server{presence: presenceWithFocus(nil), focus: presenceWithFocus(nil)}
 
 	memberSaidYes := `{"t":"attention","workspace":"ws1","pane":"p1","state":"needs_input","alert":true}`
-	out := s.restampAlert([]byte(memberSaidYes))
+	out := s.restampAlert([]byte(memberSaidYes), named("dev"))
 
 	var frame firehoseMsg
 	if err := json.Unmarshal(out, &frame); err != nil {
 		t.Fatal(err)
 	}
 	if frame.Alert {
-		t.Error("nobody is at a screen anywhere — the member's alert must be withdrawn")
+		t.Error("this reader is not at a screen — the member's alert must be withdrawn")
 	}
 }
 
@@ -61,7 +62,7 @@ func TestRestampAlert_PassesEverythingElseThrough(t *testing.T) {
 		`not json at all`,
 		``,
 	} {
-		if got := string(s.restampAlert([]byte(raw))); got != raw {
+		if got := string(s.restampAlert([]byte(raw), named("dev"))); got != raw {
 			t.Errorf("frame was rewritten:\n in: %s\nout: %s", raw, got)
 		}
 	}
@@ -73,7 +74,7 @@ func TestRestampAlert_AppliesTheWholeRuleNotJustPresence(t *testing.T) {
 	p := presenceWithFocus(map[string]bool{"dev": true})
 	s := &Server{presence: p, focus: p}
 
-	out := s.restampAlert([]byte(`{"t":"attention","workspace":"ws1","pane":"p1","state":"done","alert":true}`))
+	out := s.restampAlert([]byte(`{"t":"attention","workspace":"ws1","pane":"p1","state":"done","alert":true}`), named("dev"))
 	var frame firehoseMsg
 	if err := json.Unmarshal(out, &frame); err != nil {
 		t.Fatal(err)

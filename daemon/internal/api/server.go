@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/websocket"
 
@@ -99,6 +100,16 @@ type Server struct {
 	// Never nil: NewServer seeds it with the local presence hub, so the alert
 	// path never has to check.
 	focus focusOracle
+
+	// alertMissed latches which logins have already been reported as matching no
+	// present lens, so the warning in alertsFor fires once rather than per frame.
+	alertMissMu sync.Mutex
+	alertMissed map[string]bool
+
+	// ka is the ping/read-deadline pair for the lens WebSockets. A field rather
+	// than a package global so a test can compress it without racing connection
+	// goroutines that outlive the test. See keepalive.go.
+	ka keepalive
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -107,6 +118,7 @@ func NewServer(mgr *manager.Manager) *Server {
 		mgr:          mgr,
 		presence:     presence,
 		focus:        presence,
+		ka:           defaultKeepalive(),
 		identity:     tailnet.NewResolver(),
 		spawnUpgrade: realSpawnUpgrade,
 		// Same-origin default; the web lens is served from this daemon, and

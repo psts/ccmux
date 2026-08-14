@@ -534,7 +534,11 @@ enum DaemonFirehoseEvent {
 enum DaemonCommand {
     case input(pane: String, bytes: ArraySlice<UInt8>)
     case resize(pane: String, cols: Int, rows: Int)
-    case focus(pane: String)
+    /// present says whether THIS screen is awake and unlocked, which is what the
+    /// daemon needs to decide who to alert and whose phone to leave alone. It is
+    /// a property of the device, not of the pane, and rides the focus frame only
+    /// because that is the channel the lens already has.
+    case focus(pane: String, present: Bool)
 
     func jsonData() -> Data? {
         var obj: [String: Any]
@@ -543,8 +547,8 @@ enum DaemonCommand {
             obj = ["t": "input", "pane": pane, "data": Data(bytes).base64EncodedString()]
         case .resize(let pane, let cols, let rows):
             obj = ["t": "resize", "pane": pane, "cols": cols, "rows": rows]
-        case .focus(let pane):
-            obj = ["t": "focus", "pane": pane]
+        case .focus(let pane, let present):
+            obj = ["t": "focus", "pane": pane, "present": present]
         }
         return try? JSONSerialization.data(withJSONObject: obj)
     }

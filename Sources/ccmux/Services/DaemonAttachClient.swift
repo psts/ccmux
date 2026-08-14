@@ -25,18 +25,7 @@ final class DaemonAttachClient {
     /// Called on the main thread whenever the connection state changes.
     var onStateChange: ((DaemonConnectionState) -> Void)?
 
-    private(set) var state: DaemonConnectionState = .connecting {
-        didSet {
-            guard state != oldValue else { return }
-            let s = state
-            DispatchQueue.main.async { [weak self] in self?.onStateChange?(s) }
-        }
-    }
-
-    private let session: URLSession
-    private var task: URLSessionWebSocketTask?
-    private var closed = false
-    private var reconnectAttempts = 0
+    private var pump: WebSocketPump!
 
     /// WS origin for this workspace's terminal stream. Federation: a workspace on
     /// a remote host attaches DIRECT to that host (wss://<host>.ts.net), never via
@@ -48,22 +37,32 @@ final class DaemonAttachClient {
         self.workspaceId = workspaceId
         self.readonly = readonly
         self.wsOrigin = wsOrigin ?? DaemonConfig.wsBaseURL
-        self.session = URLSession(configuration: .default)
+        pump = WebSocketPump(label: "attach-\(workspaceId)") { [weak self] in self?.url }
+        pump.onText = { [weak self] text in
+            guard let self else { return }
+            // A frame the daemon wrote and this build cannot read is the last
+            // silent drop in this path: the socket stays healthy, so every
+            // indicator says the lens is fine while an attention change simply
+            // vanishes. Unknown KEYS decode fine; a changed type or a removed
+            // required field does not, which is the fleet-skew case.
+            guard let event = DaemonEvent.decode(text: text) else {
+                NSLog("[ccmux attach] dropped an undecodable frame (%d bytes): %@",
+                      text.utf8.count, String(text.prefix(120)))
+                return
+            }
+            DispatchQueue.main.async { self.onEvent?(event) }
+        }
+        pump.onState = { [weak self] s in self?.onStateChange?(s) }
     }
 
     // MARK: - Lifecycle
 
-    func connect() {
-        closed = false
-        openSocket()
-    }
+    func connect() { pump.connect() }
 
-    func disconnect() {
-        closed = true
-        state = .closed
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
-    }
+    func disconnect() { pump.disconnect() }
+
+    /// Dial again now, without waiting for the socket to admit it is dead (wake).
+    func forceReconnect() { pump.forceReconnect() }
 
     // MARK: - Sending
 
@@ -73,7 +72,7 @@ final class DaemonAttachClient {
         if readonly, case .focus = command {} else if readonly { return }
         guard let data = command.jsonData(),
               let text = String(data: data, encoding: .utf8) else { return }
-        task?.send(.string(text)) { _ in }
+        pump.send(text)
     }
 
     // MARK: - Socket plumbing
@@ -90,53 +89,4 @@ final class DaemonAttachClient {
         return components?.url
     }
 
-    private func openSocket() {
-        guard !closed, let url else { return }
-        state = reconnectAttempts == 0 ? .connecting : .reconnecting
-        let task = session.webSocketTask(with: url)
-        self.task = task
-        task.resume()
-        // The first successful frame confirms the connection is live.
-        receiveLoop(on: task, firstFrame: true)
-    }
-
-    private func receiveLoop(on task: URLSessionWebSocketTask, firstFrame: Bool) {
-        task.receive { [weak self] result in
-            guard let self, !self.closed, task === self.task else { return }
-            switch result {
-            case .success(let message):
-                if firstFrame {
-                    self.reconnectAttempts = 0
-                    self.state = .connected
-                }
-                self.handle(message)
-                self.receiveLoop(on: task, firstFrame: false)
-            case .failure:
-                self.scheduleReconnect()
-            }
-        }
-    }
-
-    private func handle(_ message: URLSessionWebSocketTask.Message) {
-        let text: String?
-        switch message {
-        case .string(let s): text = s
-        case .data(let d): text = String(data: d, encoding: .utf8)
-        @unknown default: text = nil
-        }
-        guard let text, let event = DaemonEvent.decode(text: text) else { return }
-        DispatchQueue.main.async { [weak self] in self?.onEvent?(event) }
-    }
-
-    private func scheduleReconnect() {
-        guard !closed else { return }
-        state = .reconnecting
-        reconnectAttempts += 1
-        // 0.5s, 1s, 2s, 4s, capped at 5s.
-        let delay = min(0.5 * pow(2.0, Double(reconnectAttempts - 1)), 5.0)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, !self.closed else { return }
-            self.openSocket()
-        }
-    }
 }

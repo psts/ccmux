@@ -313,12 +313,26 @@ final class DaemonWireTests: XCTestCase {
     }
 
     func testFocusCommandEncodes() throws {
-        let cmd = DaemonCommand.focus(pane: "p3")
+        let cmd = DaemonCommand.focus(pane: "p3", present: true)
         let obj = try XCTUnwrap(cmd.jsonData().flatMap {
             try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
         })
         XCTAssertEqual(obj["t"] as? String, "focus")
         XCTAssertEqual(obj["pane"] as? String, "p3")
+        XCTAssertEqual(obj["present"] as? Bool, true)
+    }
+
+    /// Presence must be sent even when it is false and no pane is focused. The
+    /// daemon reads an absent `present` as "this lens is too old to know" and falls
+    /// back to treating a focused pane as presence — so omitting it here would
+    /// silently restore the behaviour the field exists to replace.
+    func testFocusCommandCarriesPresenceWhenAbsentAndUnfocused() throws {
+        let cmd = DaemonCommand.focus(pane: "", present: false)
+        let obj = try XCTUnwrap(cmd.jsonData().flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        })
+        XCTAssertEqual(obj["pane"] as? String, "")
+        XCTAssertEqual(obj["present"] as? Bool, false, "present must be explicit, never omitted")
     }
 }
 

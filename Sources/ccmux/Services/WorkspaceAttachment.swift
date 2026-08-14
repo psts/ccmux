@@ -46,6 +46,11 @@ final class WorkspaceAttachment {
     func connect() { attach.connect() }
     func disconnect() { attach.disconnect() }
 
+    /// Re-dial now (wake). The socket keeps its controllers and their terminal
+    /// buffers: the daemon re-sends hello plus a snapshot per pane, and `handle`
+    /// replays our focus on that hello, so nothing on screen blinks.
+    func forceReconnect() { attach.forceReconnect() }
+
     /// Get (or lazily create) the controller backing a pane, for the hosting view.
     func controller(forPane paneId: String, workingDirectory: String) -> RemoteTermController {
         controllers[paneId] ?? makeController(paneId: paneId, workingDirectory: workingDirectory)
@@ -57,18 +62,26 @@ final class WorkspaceAttachment {
 
     /// Last focus frame sent ("" = explicitly unfocused; nil = never reported).
     private(set) var lastReportedFocus: String?
+    /// Last presence reported alongside it (nil = never reported).
+    private(set) var lastReportedPresent: Bool?
 
     /// Any pane id of this workspace — the focus frame needs one; nil when empty.
     var anyPaneId: String? { controllers.keys.first }
 
-    /// Report this lens's focus to the daemon's presence hub (drives phone-push
-    /// suppression): a non-empty pane id means "the user is watching this
-    /// workspace at this screen"; "" clears it. Deduped; re-sent after every
-    /// reconnect because presence is per-connection.
-    func reportFocus(paneId: String) {
-        guard paneId != lastReportedFocus else { return }
+    /// Report this lens's focus AND this screen's presence to the daemon.
+    ///
+    /// The two are deliberately separate. Focus says which pane is on display and
+    /// clears the flash for it; presence says this screen could show a notification
+    /// at all. Collapsing them is what made alerts depend on whether a hosted
+    /// workspace happened to be the one in front of you.
+    ///
+    /// Deduped on the pair, and re-sent after every reconnect because presence is
+    /// per-connection on the daemon side.
+    func reportFocus(paneId: String, present: Bool) {
+        guard paneId != lastReportedFocus || present != lastReportedPresent else { return }
         lastReportedFocus = paneId
-        attach.send(.focus(pane: paneId))
+        lastReportedPresent = present
+        attach.send(.focus(pane: paneId, present: present))
     }
 
     /// Reconcile per-pane controllers after a daemon-side pane change, keeping the
@@ -108,9 +121,22 @@ final class WorkspaceAttachment {
                 controller(forPane: p.id, workingDirectory: p.cwd).setAuthoritativeSize(cols: p.cols, rows: p.rows)
             }
             // A hello means a (re)connect: the daemon's presence entry for this
-            // connection is fresh, so replay our focus state.
-            if let focus = lastReportedFocus, !focus.isEmpty {
-                attach.send(.focus(pane: focus))
+            // connection is fresh, so replay what we told the old one.
+            //
+            // Presence replays even when it is false and even with no focused
+            // pane, unlike focus. Staying silent would leave the new entry
+            // unreported, which the daemon reads as a lens too old to know — and
+            // that falls back to treating a focused pane as presence, the exact
+            // behaviour this replaced.
+            //
+            // Only what we actually observed is replayed. An earlier version
+            // invented `present: true` for the focus-without-presence case, which
+            // claimed this screen was occupied on no evidence and would have
+            // suppressed the owner's phone pushes fleet-wide. reportFocus always
+            // sets both, so that case cannot arise; asserting it in a comment
+            // beats fabricating a value if it ever does.
+            if let present = lastReportedPresent {
+                attach.send(.focus(pane: lastReportedFocus ?? "", present: present))
             }
         case .paneSize(let pane, let cols, let rows):
             controller(forPane: pane, workingDirectory: repoPath).setAuthoritativeSize(cols: cols, rows: rows)
