@@ -46,6 +46,15 @@ final class WorkspaceAttachment {
     func connect() { attach.connect() }
     func disconnect() { attach.disconnect() }
 
+    /// Called when this attachment — the last owner of every controller, and so of
+    /// every terminal view in the workspace — is about to be dropped. See
+    /// `NSView.detachFromResponderChain`.
+    func detachAllTerminals() {
+        for controller in controllers.values {
+            controller.terminalView.detachFromResponderChain()
+        }
+    }
+
     /// Re-dial now (wake). The socket keeps its controllers and their terminal
     /// buffers: the daemon re-sends hello plus a snapshot per pane, and `handle`
     /// replays our focus on that hello, so nothing on screen blinks.
@@ -95,7 +104,13 @@ final class WorkspaceAttachment {
         }
         let live = Set(panes.map { $0.id })
         let dead = controllers.keys.filter { !live.contains($0) }
-        for id in dead { controllers.removeValue(forKey: id) }
+        for id in dead {
+            // This dictionary owns the controller, and the controller owns the
+            // terminal view — so the view dies here. A closed pane is usually the
+            // one being typed in, and a window does not retain its first responder.
+            controllers[id]?.terminalView.detachFromResponderChain()
+            controllers.removeValue(forKey: id)
+        }
         return dead
     }
 

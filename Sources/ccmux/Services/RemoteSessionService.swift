@@ -773,6 +773,7 @@ final class RemoteSessionService: ObservableObject {
 
     private func removeWorkspace(_ appId: UUID) {
         attachments[appId]?.disconnect()
+        attachments[appId]?.detachAllTerminals()
         attachments.removeValue(forKey: appId)
         controllers.removeValue(forKey: appId)
         attentionMonitors[appId]?.stop()

@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var windowManager: WindowManager?
     private let workspaceManager = WorkspaceManager()
     private var quitConfirmationController: QuitConfirmationController?
@@ -296,6 +296,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ctrl.splitPane(id: id, direction: .vertical)
     }
 
+    /// The undo manager for whatever currently has the keyboard, or nil when that is
+    /// something with no undo stack — a terminal, most of the time.
+    ///
+    /// `firstResponder?.undoManager` is read through AppKit's own accessor rather
+    /// than by walking the chain by hand, and only ever on a live key window.
+    private var activeUndoManager: UndoManager? {
+        NSApp.keyWindow?.firstResponder?.undoManager
+    }
+
+    @objc private func performUndo(_ sender: Any?) {
+        guard let manager = activeUndoManager, manager.canUndo else { return }
+        manager.undo()
+    }
+
+    @objc private func performRedo(_ sender: Any?) {
+        guard let manager = activeUndoManager, manager.canRedo else { return }
+        manager.redo()
+    }
+
+    /// Greys Undo/Redo out when the focused thing has nothing to undo, instead of
+    /// offering an action that would silently do nothing.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(performUndo(_:)): return activeUndoManager?.canUndo ?? false
+        case #selector(performRedo(_:)): return activeUndoManager?.canRedo ?? false
+        default: return true
+        }
+    }
+
     @objc private func togglePeerMessages() {
         guard let keyWindow = NSApp.keyWindow,
               let wc = windowManager?.windowControllers.first(where: { $0.window === keyWindow })
@@ -385,7 +414,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func buildMainMenu() {
+    /// Internal rather than private so a test can assert Undo/Redo keep an explicit
+    /// target — a nil target is the crash, not a style choice.
+    func buildMainMenu() {
         let mainMenu = NSMenu()
 
         // App menu
@@ -439,9 +470,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let editMenu = NSMenu(title: "Edit")
         editMenuItem.submenu = editMenu
 
-        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        // Undo/Redo are aimed at this delegate, NOT sent as a bare `undo:` into the
+        // responder chain. ccmux crashed on Cmd+Z (SIGSEGV, with AppKit reporting
+        // "Performing @selector(undo:) from sender NSMenuItem"): nothing here or in
+        // SwiftTerm implements undo:, so it was the one Edit action that walked the
+        // chain end to end, and it did that starting from window.firstResponder
+        // right after a pane was closed. Cut/Copy/Paste never walked that far —
+        // SwiftTerm implements them, so their search stops at the terminal.
+        //
+        // An explicit target means AppKit dispatches straight here and never walks,
+        // so no stale link in the chain can be reached at all.
+        let undoItem = NSMenuItem(title: "Undo", action: #selector(performUndo(_:)), keyEquivalent: "z")
+        undoItem.target = self
+        editMenu.addItem(undoItem)
+        let redoItem = NSMenuItem(title: "Redo", action: #selector(performRedo(_:)), keyEquivalent: "z")
         redoItem.keyEquivalentModifierMask = [.command, .shift]
+        redoItem.target = self
         editMenu.addItem(redoItem)
         editMenu.addItem(.separator())
 
