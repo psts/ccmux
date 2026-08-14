@@ -108,6 +108,115 @@ func TestManager_ResizePaneReportsChange(t *testing.T) {
 	}
 }
 
+// A resize has to reach SQLite, not just memory. Revive reads the in-memory pane,
+// so every other test here would still pass with the persist deleted — and the
+// whole point is that the size survives a daemon restart.
+func TestManager_ResizePanePersists(t *testing.T) {
+	mgr, _ := paneSizeStack(t, "ccmux-resizepersist-itest")
+	st := mgr.store
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	if _, err := mgr.ResizePane(pane0, 131, 41); err != nil {
+		t.Fatalf("resize: %v", err)
+	}
+
+	saved, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, w := range saved {
+		if w.ID != ws.ID {
+			continue
+		}
+		for _, p := range w.Panes {
+			if p.ID != pane0 {
+				continue
+			}
+			if p.Cols != 131 || p.Rows != 41 {
+				t.Fatalf("registry has %dx%d, want 131x41", p.Cols, p.Rows)
+			}
+			return
+		}
+	}
+	t.Fatalf("pane %s not found in the registry", pane0)
+}
+
+// A size tmux cannot honour must be refused at the door. It would otherwise be
+// recorded, persisted by any later pane update, and then fail every future revive
+// at new-session with no way for a lens to undo it.
+func TestManager_ResizePaneRejectsOutOfRange(t *testing.T) {
+	mgr, _ := paneSizeStack(t, "ccmux-resizebounds-itest")
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	for _, tc := range []struct {
+		name       string
+		cols, rows int
+	}{
+		{"cols too large", maxCols + 1, 40},
+		{"rows too large", 120, maxRows + 1},
+		{"zero cols", 0, 40},
+		{"negative rows", 120, -1},
+	} {
+		if _, err := mgr.ResizePane(pane0, tc.cols, tc.rows); err == nil {
+			t.Fatalf("%s: %dx%d was accepted", tc.name, tc.cols, tc.rows)
+		}
+	}
+
+	// And the pane is untouched by the rejected attempts.
+	live := mgr.Workspace(ws.ID)
+	if live.Panes[0].Cols > maxCols || live.Panes[0].Rows > maxRows {
+		t.Fatalf("pane recorded an out-of-range size: %dx%d", live.Panes[0].Cols, live.Panes[0].Rows)
+	}
+}
+
+// A resize that tmux never applied must not be recorded. If it were, the client's
+// retry at those same dimensions would compute changed == false and then skip the
+// persist, the broadcast and the repaint permanently.
+func TestManager_FailedResizeLeavesTheSizeRetryable(t *testing.T) {
+	mgr, tsrv := paneSizeStack(t, "ccmux-resizeretry-itest")
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	// Kill the tmux session so the control connection's resize fails.
+	if err := tsrv.KillSession(ws.TmuxSession); err != nil {
+		t.Fatalf("kill-session: %v", err)
+	}
+	if _, err := mgr.ResizePane(pane0, 131, 41); err == nil {
+		t.Fatal("resize against a dead session reported success")
+	}
+
+	if !waitStatus(mgr, ws.ID, model.StatusCold, 3*time.Second) {
+		t.Fatalf("workspace did not go cold after session kill")
+	}
+	if _, err := mgr.ReviveWorkspace(ws.ID); err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+
+	// The same dimensions again: still a change, because the failed attempt was
+	// never recorded.
+	changed, err := mgr.ResizePane(pane0, 131, 41)
+	if err != nil {
+		t.Fatalf("resize after revive: %v", err)
+	}
+	if !changed {
+		t.Fatal("retry at the failed size reported no change — the failure was recorded as fact")
+	}
+}
+
 func paneSizeStack(t *testing.T, socket string) (*Manager, *tmux.Server) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {

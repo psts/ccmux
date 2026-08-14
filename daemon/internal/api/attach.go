@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"log"
 	"net/http"
 	"time"
 
@@ -102,15 +103,30 @@ func sendSnapshots(conn *websocket.Conn, ctrl *session.Controller, ws *model.Wor
 	}
 }
 
-// sendSnapshot seeds (or repaints) one pane. A capture that fails is skipped
-// rather than reported: the lens keeps whatever it had, which is strictly better
-// than clearing it, and the next resize or lag reseed tries again.
+// snapshotReset homes the cursor and erases the screen. Every snapshot frame is
+// prefixed with it so the frame means "this IS the screen" on its own, whatever
+// the receiving terminal already held.
+//
+// capture-pane emits row content with no leading clear, which was safe only while
+// snapshots arrived on a blank terminal (a fresh attach). They no longer do: a
+// repaint lands on a live screen, and a lens that writes the bytes straight into
+// its emulator would staircase them down from wherever the cursor sat. The Mac
+// lens clears on its own before painting a snapshot; the web lens does not, and
+// it reads the same frame — so the guarantee belongs here, in the frame, not in
+// each client. A lens that also clears just clears twice, which costs nothing.
+const snapshotReset = "\x1b[H\x1b[2J"
+
+// sendSnapshot seeds (or repaints) one pane. A capture that fails is skipped so
+// the lens keeps whatever it had, which beats clearing it to nothing — but it is
+// logged, because on the repaint path the screen on display is already wrong and
+// "the next resize will retry" means the user has to resize again to fix it.
 func sendSnapshot(conn *websocket.Conn, ctrl *session.Controller, paneID string) {
 	b, err := ctrl.Capture(paneID, 0)
 	if err != nil {
+		log.Printf("attach: capture pane %s: %v (lens keeps its current screen)", paneID, err)
 		return
 	}
-	_ = conn.WriteJSON(wsMsg{T: "snapshot", Pane: paneID, Data: b64(b)})
+	_ = conn.WriteJSON(wsMsg{T: "snapshot", Pane: paneID, Data: b64(append([]byte(snapshotReset), b...))})
 }
 
 // writeLoop forwards pane output to the client. When the subscriber has lagged
@@ -136,12 +152,10 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 				pingFailed("attach", ws.ID, err)
 				return
 			}
-		case pane := <-rs.requests():
-			rs.arm(pane)
+		case <-rs.wakeups():
+			rs.arm()
 		case <-rs.due():
-			for _, pane := range rs.take() {
-				sendSnapshot(conn, ctrl, pane)
-			}
+			rs.flush(conn, ctrl)
 		case ev, ok := <-sub.C:
 			if !ok {
 				return
@@ -195,17 +209,22 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 			if readonly {
 				continue
 			}
-			if msg.Cols > 0 && msg.Rows > 0 {
-				// Through the manager so the new size is recorded and broadcast to
-				// other lenses (drives the mobile "take over" affordance).
-				changed, err := s.mgr.ResizePane(msg.Pane, msg.Cols, msg.Rows)
-				if err == nil && changed {
-					// The pane just reflowed. A program that repaints on winch has
-					// already sent its own deltas; one that does not (a plain shell)
-					// would sit here wrapped at the old width, so ask the writer for a
-					// fresh capture once the resize stops moving.
-					rs.request(msg.Pane)
-				}
+			// Through the manager so the new size is recorded and broadcast to
+			// other lenses (drives the mobile "take over" affordance). It also
+			// bounds the size — a lens is not trusted to be sane about it.
+			changed, err := s.mgr.ResizePane(msg.Pane, msg.Cols, msg.Rows)
+			switch {
+			case err != nil:
+				// "my pane won't resize" is otherwise a report with no trace behind
+				// it: a reaped pane, a resize racing a revive and a dead tmux socket
+				// all look identical from the lens.
+				log.Printf("attach %s: resize pane %s to %dx%d: %v", wsID, msg.Pane, msg.Cols, msg.Rows, err)
+			case changed:
+				// The pane just reflowed. A program that repaints on winch has
+				// already sent its own deltas; one that does not (a plain shell)
+				// would sit here wrapped at the old width, so ask the writer for a
+				// fresh capture once the resize stops moving.
+				rs.request(msg.Pane)
 			}
 		case "focus":
 			s.presence.Focus(wsID, connID, msg.Pane)

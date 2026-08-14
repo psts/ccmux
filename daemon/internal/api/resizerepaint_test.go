@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -179,6 +181,51 @@ func spawnPane(t *testing.T, base, wsID string) string {
 		t.Fatal("spawned pane has no id")
 	}
 	return p.ID
+}
+
+// Every snapshot frame must carry its own clear. capture-pane emits row content
+// with no leading reset, which was safe only while snapshots arrived on a blank
+// terminal. A repaint lands on a live screen, and the web lens writes snapshot
+// bytes straight into its emulator — without the reset it staircases them down
+// from wherever the cursor sat.
+func TestAPI_SnapshotFrameCarriesItsOwnClear(t *testing.T) {
+	_, base := floodStack(t, "ccmux-snapreset-itest")
+
+	ws := createWS(t, base)
+	c := attachAndHello(t, base, ws.ID)
+	defer c.Close()
+
+	ch := frames(c)
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case m, ok := <-ch:
+			if !ok {
+				t.Fatal("connection closed before any snapshot arrived")
+			}
+			if m.T != "snapshot" {
+				continue
+			}
+			b, err := base64.StdEncoding.DecodeString(m.Data)
+			if err != nil {
+				t.Fatalf("decode snapshot: %v", err)
+			}
+			if !bytes.HasPrefix(b, []byte(snapshotReset)) {
+				t.Fatalf("snapshot for pane %s does not start with the home+clear reset: %q",
+					m.Pane, firstBytes(b))
+			}
+			return
+		case <-deadline:
+			t.Fatal("no snapshot frame arrived")
+		}
+	}
+}
+
+func firstBytes(b []byte) []byte {
+	if len(b) > 16 {
+		return b[:16]
+	}
+	return b
 }
 
 // A read-only observer cannot resize, so it must not be able to make the daemon

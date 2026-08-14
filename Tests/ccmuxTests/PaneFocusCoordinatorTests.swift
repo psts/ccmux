@@ -1,6 +1,7 @@
 import XCTest
 @testable import ccmux
 
+@MainActor
 final class PaneFocusCoordinatorTests: XCTestCase {
     private var clock = Date(timeIntervalSince1970: 1_000)
 

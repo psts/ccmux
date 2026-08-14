@@ -117,20 +117,15 @@ final class HostedTerminalContainerView: NSView {
     let workingDirectory: String
     private var hasAssertedSize = false
     private var keyObserver: NSObjectProtocol?
-    private var focusObserver: NSObjectProtocol?
+    private var focusClaim: PaneFocusClaim?
 
     init(tabId: UUID, paneId: String, workingDirectory: String) {
         self.tabId = tabId
         self.paneId = paneId
         self.workingDirectory = workingDirectory
         super.init(frame: .zero)
-        // A tab click on an already-embedded terminal never re-enters ensureEmbedded(),
-        // so the broadcast is the only way that case learns it should take focus.
-        focusObserver = NotificationCenter.default.addObserver(
-            forName: PaneFocusCoordinator.didRequestFocus, object: nil, queue: .main
-        ) { [weak self] note in
-            guard let self, note.object as? UUID == self.tabId else { return }
-            self.takeKeyboardFocusIfRequested()
+        focusClaim = PaneFocusClaim(tabId: tabId, host: self) { [weak self] in
+            self?.controller?.terminalView
         }
     }
 
@@ -138,7 +133,6 @@ final class HostedTerminalContainerView: NSView {
 
     deinit {
         if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
-        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
     }
 
     private var controller: RemoteTermController? {
@@ -162,17 +156,7 @@ final class HostedTerminalContainerView: NSView {
         assertSizeIfReady()
         // A tab switch rebuilds this container, so the click that asked for focus
         // landed before the terminal existed here. Claim it now that it does.
-        takeKeyboardFocusIfRequested()
-    }
-
-    /// Make the terminal first responder if a tab click asked for it, so selecting a
-    /// tab is enough to type. Claiming comes last and is one-shot: a re-embed that
-    /// nobody asked for must not pull focus out of whatever the user is using.
-    private func takeKeyboardFocusIfRequested() {
-        guard let window, let terminal = controller?.terminalView,
-              terminal.superview === self else { return }
-        guard PaneFocusCoordinator.shared.claim(tabId: tabId) else { return }
-        window.makeFirstResponder(terminal)
+        focusClaim?.claimIfRequested()
     }
 
     override func layout() {

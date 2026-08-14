@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/model"
@@ -36,8 +38,8 @@ func TestPaneSize_SurvivesAReload(t *testing.T) {
 	}
 }
 
-// A pane written before this column existed reloads as 0, which the manager reads
-// as "never sized" and falls back to the default. It must not fail to scan.
+// A pane saved through the new schema without a size reloads as 0, which the
+// manager reads as "never sized" and falls back to the default.
 func TestPaneSize_UnsizedPaneReloadsAsZero(t *testing.T) {
 	st := openTestStore(t)
 
@@ -52,6 +54,75 @@ func TestPaneSize_UnsizedPaneReloadsAsZero(t *testing.T) {
 	loaded := loadPane(t, st, "ws-2", "p-2")
 	if loaded.Cols != 0 || loaded.Rows != 0 {
 		t.Fatalf("unsized pane = %dx%d, want 0x0", loaded.Cols, loaded.Rows)
+	}
+}
+
+// The real upgrade: a registry written by a daemon that had no cols/rows columns
+// at all. Every install on the fleet is one of these. If the ALTER did not apply,
+// the widened SELECT fails and Load returns an error, which makes the daemon come
+// up with no workspaces — so this path needs a test that does not go through the
+// current CREATE TABLE.
+func TestPaneSize_PreMigrationRegistryUpgrades(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	writePreMigrationRegistry(t, path)
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open pre-migration registry: %v", err)
+	}
+	defer st.Close()
+
+	loaded := loadPane(t, st, "ws-old", "p-old")
+	if loaded.Cols != 0 || loaded.Rows != 0 {
+		t.Fatalf("migrated pane = %dx%d, want 0x0", loaded.Cols, loaded.Rows)
+	}
+	// The row survived intact, not just its new columns.
+	if loaded.CWD != "/tmp/old" || loaded.Title != "old pane" {
+		t.Fatalf("migrated pane lost fields: cwd=%q title=%q", loaded.CWD, loaded.Title)
+	}
+
+	// And the upgraded table still round-trips a size.
+	loaded.Cols, loaded.Rows = 137, 42
+	if err := st.SavePane(loaded); err != nil {
+		t.Fatalf("save into migrated table: %v", err)
+	}
+	again := loadPane(t, st, "ws-old", "p-old")
+	if again.Cols != 137 || again.Rows != 42 {
+		t.Fatalf("after migration size = %dx%d, want 137x42", again.Cols, again.Rows)
+	}
+}
+
+// writePreMigrationRegistry creates a registry with the panes table as it stood
+// before cols/rows existed — twelve columns, no size.
+func writePreMigrationRegistry(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	defer db.Close()
+	stmts := []string{
+		`CREATE TABLE workspaces (
+  id TEXT PRIMARY KEY, name TEXT, repo_path TEXT, created_by TEXT,
+  created_at INTEGER, tmux_session TEXT, status TEXT,
+  layout_json TEXT, layout_version INTEGER, ws_group TEXT DEFAULT '',
+  hostnames_json TEXT DEFAULT '', dev_command TEXT DEFAULT ''
+)`,
+		`CREATE TABLE panes (
+  id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, cwd TEXT,
+  startup_command TEXT, created_by TEXT, created_at INTEGER,
+  status TEXT, attention TEXT, is_dev INTEGER DEFAULT 0,
+  dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0
+)`,
+		`INSERT INTO workspaces (id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version)
+ VALUES ('ws-old','old','/tmp/old','tester',1,'ccmux-old','live','',0)`,
+		`INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude)
+ VALUES ('p-old','ws-old','old pane','/tmp/old','',' tester',1,'live','idle',0,0,0)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("seed pre-migration registry: %v", err)
+		}
 	}
 }
 

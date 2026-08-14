@@ -31,28 +31,21 @@ class TerminalContainerView: NSView {
     let workingDirectory: String
     let startupCommand: String?
     private var hasLaidOut = false
-    private var focusObserver: NSObjectProtocol?
+    private var focusClaim: PaneFocusClaim?
 
     init(terminalId: UUID, workingDirectory: String, startupCommand: String? = nil) {
         self.terminalId = terminalId
         self.workingDirectory = workingDirectory
         self.startupCommand = startupCommand
         super.init(frame: .zero)
-        // A tab click on an already-embedded terminal never re-enters embed/layout,
-        // so the broadcast is the only way that case learns it should take focus.
-        focusObserver = NotificationCenter.default.addObserver(
-            forName: PaneFocusCoordinator.didRequestFocus, object: nil, queue: .main
-        ) { [weak self] note in
-            guard let self, note.object as? UUID == self.terminalId else { return }
-            self.takeKeyboardFocusIfRequested()
+        focusClaim = PaneFocusClaim(tabId: terminalId, host: self) { [weak self] in
+            guard let self else { return nil }
+            return TerminalStore.shared.terminal(
+                for: self.terminalId, workingDirectory: self.workingDirectory, startupCommand: self.startupCommand)
         }
     }
 
     required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
-    }
 
     func ensureTerminalEmbedded() {
         // Always pass startupCommand: terminal(for:) only queues it on first creation,
@@ -79,18 +72,7 @@ class TerminalContainerView: NSView {
         fireStartupIfReady()
         // A tab switch rebuilds this container, so the click that asked for focus
         // landed before the terminal existed here. Claim it now that it does.
-        takeKeyboardFocusIfRequested()
-    }
-
-    /// Make the terminal first responder if a tab click asked for it, so selecting a
-    /// tab is enough to type. Claiming comes last and is one-shot: a re-embed that
-    /// nobody asked for must not pull focus out of whatever the user is using.
-    private func takeKeyboardFocusIfRequested() {
-        guard let window else { return }
-        let terminal = TerminalStore.shared.terminal(for: terminalId, workingDirectory: workingDirectory, startupCommand: startupCommand)
-        guard terminal.superview === self else { return }
-        guard PaneFocusCoordinator.shared.claim(tabId: terminalId) else { return }
-        window.makeFirstResponder(terminal)
+        focusClaim?.claimIfRequested()
     }
 
     override func layout() {

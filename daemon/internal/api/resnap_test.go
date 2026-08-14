@@ -6,6 +6,30 @@ import (
 	"time"
 )
 
+// drain reports the panes the writer would repaint right now, without a socket.
+func drain(r *resnapper) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	panes := make([]string, 0, len(r.pending))
+	for pane := range r.pending {
+		panes = append(panes, pane)
+	}
+	r.pending = map[string]struct{}{}
+	sort.Strings(panes)
+	return panes
+}
+
+// awaitDue fails the test rather than hanging forever if the settle window never
+// closes — a regression in arm() should report itself, not stall the package.
+func awaitDue(t *testing.T, r *resnapper) {
+	t.Helper()
+	select {
+	case <-r.due():
+	case <-time.After(2 * time.Second):
+		t.Fatal("settle window never closed")
+	}
+}
+
 // A resnapper must not fire until the resizes stop. A window drag emits one
 // resize per grid cell, and capturing on each would run a capture-pane per cell
 // of a screen the user is still dragging.
@@ -15,12 +39,8 @@ func TestResnapper_CoalescesADrag(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		rs.request("pane-1")
-		select {
-		case pane := <-rs.requests():
-			rs.arm(pane)
-		default:
-			t.Fatal("request was not queued")
-		}
+		<-rs.wakeups()
+		rs.arm()
 		select {
 		case <-rs.due():
 			t.Fatal("fired while resizes were still arriving")
@@ -28,78 +48,70 @@ func TestResnapper_CoalescesADrag(t *testing.T) {
 		}
 	}
 
-	select {
-	case <-rs.due():
-	case <-time.After(2 * resizeSettle):
-		t.Fatal("never fired after the resizes stopped")
-	}
-	if got := rs.take(); len(got) != 1 || got[0] != "pane-1" {
-		t.Fatalf("take() = %v, want [pane-1]", got)
+	awaitDue(t, rs)
+	if got := drain(rs); len(got) != 1 || got[0] != "pane-1" {
+		t.Fatalf("pending = %v, want [pane-1]", got)
 	}
 }
 
 // Every pane that moved is repainted, not just the last one. One window event
-// re-asserts the size of every visible pane in a split, so a slot that only kept
-// the newest would leave the neighbours drawn at the old width.
+// re-asserts the size of every visible pane in a split, so a design that kept
+// only the newest would leave the neighbours drawn at the old width.
 func TestResnapper_RepaintsEveryPaneThatMoved(t *testing.T) {
 	rs := newResnapper()
 	defer rs.stop()
 
-	rs.arm("pane-a")
-	rs.arm("pane-b")
-	rs.arm("pane-a") // a repeat is not a second repaint
-	<-rs.due()
+	rs.request("pane-a")
+	rs.request("pane-b")
+	rs.request("pane-a") // a repeat is not a second repaint
+	rs.arm()
+	awaitDue(t, rs)
 
-	got := rs.take()
-	sort.Strings(got)
+	got := drain(rs)
 	if len(got) != 2 || got[0] != "pane-a" || got[1] != "pane-b" {
-		t.Fatalf("take() = %v, want [pane-a pane-b]", got)
+		t.Fatalf("pending = %v, want [pane-a pane-b]", got)
 	}
 }
 
-// Taking clears the set — a later timer tick must not repaint a pane nobody
+// Flushing clears the set — a later timer tick must not repaint a pane nobody
 // asked about.
-func TestResnapper_TakeIsOneShot(t *testing.T) {
+func TestResnapper_FlushIsOneShot(t *testing.T) {
 	rs := newResnapper()
 	defer rs.stop()
 
-	rs.arm("pane-a")
-	<-rs.due()
-	if got := rs.take(); len(got) != 1 || got[0] != "pane-a" {
-		t.Fatalf("take() = %v, want [pane-a]", got)
+	rs.request("pane-a")
+	rs.arm()
+	awaitDue(t, rs)
+	if got := drain(rs); len(got) != 1 {
+		t.Fatalf("pending = %v, want one pane", got)
 	}
-	if got := rs.take(); len(got) != 0 {
-		t.Fatalf("second take() = %v, want empty", got)
+	if got := drain(rs); len(got) != 0 {
+		t.Fatalf("second drain = %v, want empty", got)
 	}
 }
 
-// A burst from one window event must survive the channel: with a single slot,
-// every pane but one was dropped before the writer ever saw it.
-func TestResnapper_QueuesABurstOfDistinctPanes(t *testing.T) {
+// The wake-up channel holds one slot, so a burst larger than it must still keep
+// every distinct pane. The previous design buffered pane ids in the channel:
+// once it filled with repeats of one pane, another pane's only request was
+// dropped and that pane never repainted. This is that case.
+func TestResnapper_KeepsEveryPaneWhenNobodyIsDraining(t *testing.T) {
 	rs := newResnapper()
 	defer rs.stop()
 
-	panes := []string{"pane-a", "pane-b", "pane-c", "pane-d"}
-	for _, p := range panes {
-		rs.request(p)
+	// Far more requests than any buffer, and the writer never wakes to consume.
+	for i := 0; i < 200; i++ {
+		rs.request("noisy-pane")
 	}
-	for range panes {
-		select {
-		case pane := <-rs.requests():
-			rs.arm(pane)
-		default:
-			t.Fatal("a pane's request was dropped before the writer saw it")
-		}
-	}
-	<-rs.due()
-	if got := rs.take(); len(got) != len(panes) {
-		t.Fatalf("take() returned %d panes, want %d", len(got), len(panes))
+	rs.request("quiet-pane")
+
+	got := drain(rs)
+	if len(got) != 2 || got[0] != "noisy-pane" || got[1] != "quiet-pane" {
+		t.Fatalf("pending = %v, want both panes kept", got)
 	}
 }
 
-// request must never block the read goroutine: it shares nothing with the writer
-// but this channel, and a writer busy sending output would otherwise stall input
-// for the whole connection.
+// request must never block the read goroutine: it would stall input for the whole
+// connection while the writer is busy sending output.
 func TestResnapper_RequestNeverBlocks(t *testing.T) {
 	rs := newResnapper()
 	defer rs.stop()

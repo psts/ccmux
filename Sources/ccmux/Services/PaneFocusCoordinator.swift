@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Hands keyboard focus to the terminal of a just-clicked pane tab, so one click on
@@ -11,11 +12,16 @@ import Foundation
 /// window yet.
 ///
 /// So a request is both broadcast (claimed immediately by a terminal already on screen)
-/// and parked (claimed by one still being embedded). It expires so a request no
-/// terminal ever claimed — a tab whose content is a browser, say — can't surface later
-/// and pull focus out of whatever the user is actually typing in.
+/// and parked (claimed by one still being embedded). It expires because a terminal tab
+/// can be rebuilt long after the click that named it — a pane scrolled out of view, a
+/// delayed re-embed — and claiming then would yank focus out of whatever the user has
+/// moved on to. A request no terminal ever holds, a browser tab's say, is simply never
+/// claimed.
 ///
-/// Main thread only; every caller is a SwiftUI closure or an NSView.
+/// `@MainActor` rather than a comment saying "main thread only": every caller is
+/// already a SwiftUI closure, an NSView method, or a `queue: .main` notification block,
+/// so the annotation costs nothing and makes the rule a compile error.
+@MainActor
 final class PaneFocusCoordinator {
     static let shared = PaneFocusCoordinator()
 
@@ -29,6 +35,9 @@ final class PaneFocusCoordinator {
     private var pending: (tabId: UUID, madeAt: Date)?
     private let now: () -> Date
 
+    /// The clock is injectable for tests only; production uses `shared`. Building a
+    /// second coordinator would compile and then silently focus nothing, since the
+    /// views only ever claim from `shared`.
     init(now: @escaping () -> Date = Date.init) {
         self.now = now
     }
@@ -45,5 +54,59 @@ final class PaneFocusCoordinator {
         guard let request = pending, request.tabId == tabId else { return false }
         pending = nil
         return now().timeIntervalSince(request.madeAt) <= Self.requestLifetime
+    }
+}
+
+/// One terminal container's end of the focus handshake: it listens for requests
+/// naming `tabId` and hands first responder to the terminal when one arrives.
+///
+/// Both container views (local and daemon-hosted) need the identical three-part
+/// protocol — observe, tear the observer down, claim-then-focus — and differ only in
+/// how they reach their terminal view. Keeping the policy here means the claim
+/// ordering, which is subtle, is written once.
+@MainActor
+final class PaneFocusClaim {
+    private let tabId: UUID
+    private weak var host: NSView?
+    private let terminal: () -> NSView?
+    private var observer: NSObjectProtocol?
+
+    /// - Parameters:
+    ///   - host: the container the terminal must currently be embedded in.
+    ///   - terminal: looks up the terminal view; may be nil before it exists.
+    init(tabId: UUID, host: NSView, terminal: @escaping () -> NSView?) {
+        self.tabId = tabId
+        self.host = host
+        self.terminal = terminal
+        // A tab click on an already-embedded terminal never re-enters embed or
+        // layout, so the broadcast is the only way that case learns it should focus.
+        observer = NotificationCenter.default.addObserver(
+            forName: PaneFocusCoordinator.didRequestFocus, object: nil, queue: .main
+        ) { [weak self] note in
+            guard note.object as? UUID == tabId else { return }
+            MainActor.assumeIsolated { self?.claimIfRequested() }
+        }
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    /// Make the terminal first responder if a tab click asked for it.
+    ///
+    /// Claiming comes LAST, after the window and embedding checks, so a request is
+    /// only consumed by a container that can actually act on it. That ordering also
+    /// settles the case where a reused terminal view is briefly observed by two
+    /// containers with the same tab id: only the one that currently holds it claims.
+    func claimIfRequested() {
+        guard let host, let window = host.window else { return }
+        guard let terminal = terminal(), terminal.superview === host else { return }
+        guard PaneFocusCoordinator.shared.claim(tabId: tabId) else { return }
+        if !window.makeFirstResponder(terminal) {
+            // The claim is already spent, so this is unrecoverable and otherwise
+            // looks exactly like an expired or unclaimed request: three different
+            // bugs, one symptom of clicking a tab and typing into nothing.
+            NSLog("[ccmux focus] tab \(tabId): AppKit refused first responder; terminal stays unfocused")
+        }
     }
 }

@@ -1,6 +1,13 @@
 package api
 
-import "time"
+import (
+	"sync"
+	"time"
+
+	"ccmux.dev/ccmuxd/internal/session"
+
+	"github.com/gorilla/websocket"
+)
 
 // resizeSettle is how long a pane must go without another resize before its
 // repaint is captured. A lens drags its window one grid cell at a time (the web
@@ -18,69 +25,75 @@ const resizeSettle = 150 * time.Millisecond
 // showing text wrapped at the old width until something forces a redraw. A fresh
 // capture is that redraw, and it costs nothing when no resize is happening.
 //
-// Threading: `request` is called from the connection's read goroutine; every
-// other method belongs to the write goroutine, which owns the timer and is the
-// connection's only writer. They meet only at the channel.
+// Pending is a SET, and requesting is LOSSLESS. One attach socket carries every
+// pane of a workspace, and a split shows several at once — each with its own
+// controller re-asserting its size, so one window-becomes-key or one reconnect
+// sends N resizes back to back. Dropping any one of them repaints that pane never
+// and leaves it drawn at the old width, which is the bug this exists to fix. An
+// earlier version buffered pane ids in a channel; a writer blocked in WriteJSON
+// while a drag filled the buffer with repeats of one pane could then drop another
+// pane's only request. The set absorbs repeats for free, so the channel carries
+// nothing but a one-slot wake-up.
 //
-// Pending is a SET, not a slot. One attach socket carries every pane of a
-// workspace, and a split shows several at once — each with its own controller
-// re-asserting its size, so one window-becomes-key or one reconnect sends N
-// resizes back to back. Keeping only the newest would repaint one pane and leave
-// its neighbours drawn at the old width, which is the bug this exists to fix.
+// Threading: the read goroutine calls `request`; the write goroutine, which is
+// the connection's only writer, calls everything else and solely owns the timer.
+// `pending` is shared, so it is behind `mu`.
 type resnapper struct {
-	req     chan string
-	timer   *time.Timer
+	wake  chan struct{}
+	timer *time.Timer
+
+	mu      sync.Mutex
 	pending map[string]struct{}
 }
-
-// reqBuffer holds the burst from one window event: a workspace shows a handful
-// of panes at once, never dozens. A full buffer drops the request rather than
-// blocking the read goroutine, which would stall input for the connection.
-const reqBuffer = 16
 
 func newResnapper() *resnapper {
 	t := time.NewTimer(time.Hour)
 	drainStop(t)
-	return &resnapper{req: make(chan string, reqBuffer), timer: t, pending: map[string]struct{}{}}
+	return &resnapper{wake: make(chan struct{}, 1), timer: t, pending: map[string]struct{}{}}
 }
 
-// request asks for a repaint of pane. Non-blocking: a full channel already holds
-// an unserved request, and the writer re-arms on whichever arrives, so dropping
-// one during a drag loses nothing.
+// request asks for a repaint of pane. Never blocks and never loses a pane: the id
+// goes into the set, and the channel only nudges the writer awake. A nudge that
+// finds the slot already full is redundant by definition — the writer has not
+// looked at the set yet, and when it does it will see this pane too.
 func (r *resnapper) request(pane string) {
+	r.mu.Lock()
+	r.pending[pane] = struct{}{}
+	r.mu.Unlock()
 	select {
-	case r.req <- pane:
+	case r.wake <- struct{}{}:
 	default:
 	}
 }
 
-// requests is the channel the write loop selects on for new requests.
-func (r *resnapper) requests() <-chan string { return r.req }
+// wakeups fires when at least one pane has been requested since the writer last
+// looked.
+func (r *resnapper) wakeups() <-chan struct{} { return r.wake }
 
-// due fires once a requested pane has gone quiet for resizeSettle.
+// due fires once the requested panes have gone quiet for resizeSettle.
 func (r *resnapper) due() <-chan time.Time { return r.timer.C }
 
-// arm adds a pane to the repaint set and restarts the settle window. The window
-// is shared: a drag that moves three panes settles once, then repaints all three.
-func (r *resnapper) arm(pane string) {
-	r.pending[pane] = struct{}{}
+// arm restarts the settle window. The window is shared across panes: a drag that
+// moves three of them settles once, then repaints all three.
+func (r *resnapper) arm() {
 	drainStop(r.timer)
 	r.timer.Reset(resizeSettle)
 }
 
-// take returns every pane whose shared settle window just closed, and clears
-// them. Empty means the timer fired with nothing pending, which the caller
-// should ignore.
-func (r *resnapper) take() []string {
-	if len(r.pending) == 0 {
-		return nil
-	}
+// flush repaints every pane whose shared settle window just closed. Runs on the
+// write goroutine, which is the only writer this connection has.
+func (r *resnapper) flush(conn *websocket.Conn, ctrl *session.Controller) {
+	r.mu.Lock()
 	panes := make([]string, 0, len(r.pending))
 	for pane := range r.pending {
 		panes = append(panes, pane)
 	}
 	r.pending = map[string]struct{}{}
-	return panes
+	r.mu.Unlock()
+
+	for _, pane := range panes {
+		sendSnapshot(conn, ctrl, pane)
+	}
 }
 
 func (r *resnapper) stop() { drainStop(r.timer) }
