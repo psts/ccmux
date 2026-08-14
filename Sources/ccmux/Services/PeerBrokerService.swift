@@ -48,13 +48,17 @@ struct PeerViewerAnswer: Decodable, Equatable {
         partial = try c.decodeIfPresent(Bool.self, forKey: .partial) ?? false
     }
 
-    /// nil when the body is not an answer at all. Kept pure and separate from the
-    /// request so it can be tested against real daemon payloads — the decode is
-    /// where this path was silently failing, with `[String: String]` against a
-    /// body whose `partial` is a Bool, so every 200 was discarded and the overlay
-    /// drew an empty panel with a caveat about an unconfirmed bus.
-    static func parse(_ data: Data) -> PeerViewerAnswer? {
-        try? JSONDecoder().decode(PeerViewerAnswer.self, from: data)
+    /// Kept pure and separate from the request so it can be tested against real
+    /// daemon payloads — the decode is where this path was silently failing, with
+    /// `[String: String]` against a body whose `partial` is a Bool, so every 200
+    /// was discarded and the overlay drew an empty panel with a caveat about an
+    /// unconfirmed bus.
+    ///
+    /// The error is carried out rather than swallowed with `try?`. Which key and
+    /// which type is the entire diagnosis for a contract drift, and throwing that
+    /// away is what made the last one take three days to find.
+    static func parse(_ data: Data) -> Result<PeerViewerAnswer, Error> {
+        Result { try JSONDecoder().decode(PeerViewerAnswer.self, from: data) }
     }
 }
 
@@ -145,11 +149,16 @@ class PeerBrokerService {
             NSLog("[ccmux peers] bus resolve answered HTTP \(status)")
             return false
         }
-        guard let answer = PeerViewerAnswer.parse(data) else {
+        let answer: PeerViewerAnswer
+        switch PeerViewerAnswer.parse(data) {
+        case .success(let parsed):
+            answer = parsed
+        case .failure(let error):
             // Distinct from the status log above: a 200 whose body we cannot read
             // is a contract mismatch between app and daemon, and reporting it as
-            // "answered HTTP 200" is how it hid for three days.
-            NSLog("[ccmux peers] bus resolve returned 200 with an unreadable body (\(data.count) bytes)")
+            // "answered HTTP 200" is how it hid for three days. The decoding error
+            // names the key and the type, which is the whole diagnosis.
+            NSLog("[ccmux peers] bus resolve returned 200 with an unreadable body (\(data.count) bytes): \(error)")
             return false
         }
         // A relative prefix ("/v1/hubbus") or "" — the daemon names a path on
@@ -159,8 +168,15 @@ class PeerBrokerService {
         viewerToken = answer.token.isEmpty ? nil : answer.token
         // partial means the daemon answered honestly that it pointed us at the
         // local registry because it has no credential for the hub. The read below
-        // will work; it just is not everything.
-        return !answer.partial
+        // will work; it just is not everything. Logged like the other four false
+        // returns, because it is the one with a remedy and it used to be the only
+        // one that said nothing.
+        if answer.partial {
+            NSLog("[ccmux peers] ccmuxd federates onto a hub but issued no viewer credential — "
+                + "reading this host's registry only, so the panel may be missing peers")
+            return false
+        }
+        return true
     }
 
     /// Authorizes a viewer read. The local routes take no token and ignore it;

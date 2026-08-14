@@ -50,41 +50,103 @@ func TestArgvLoadsChannel(t *testing.T) {
 	}
 }
 
-// Being unable to read the parent must never be reported as "no flag": marking a
-// healthy session poll-only tells every peer its replies are slow when they are
-// not, which is worse than the optimism it replaces.
-func TestUnreadableParentIsNotAVerdict(t *testing.T) {
-	_, known := readProcessArgv(-1)
+// The fail-open branch, asserted directly. Being unable to read the parent must
+// never be reported as "no flag": that would make the shim run keepRegistered
+// instead of runPushLoop and refuse every push, silencing a session that was
+// working — the exact harm this design is built around avoiding.
+//
+// The earlier version of this test never reached the branch. It asserted
+// !(known && enabled) against the real `go test` parent, which a plain
+// known=true, enabled=false satisfies, so flipping the fail-open `return true`
+// to false left it green.
+func TestUnreadableParentFailsOpen(t *testing.T) {
+	t.Setenv("CCMUX_PEERS_CHANNEL", "")
+	defer withParentArgv(nil, false)()
+
+	enabled, known := channelsEnabled()
 	if known {
+		t.Fatal("an unreadable parent produced a verdict")
+	}
+	if enabled {
+		t.Fatal("an unreadable parent reported channels as enabled")
+	}
+	if !resolveChannelMode() {
+		t.Fatal("an unreadable parent must keep push, not silence the session")
+	}
+}
+
+// A real nonexistent pid must also read as unreadable, not as an empty argv.
+func TestReadingAMissingPidIsUnreadable(t *testing.T) {
+	if _, known := readProcessArgv(-1); known {
 		t.Fatal("reading a nonexistent pid reported success")
 	}
+}
 
+// A parent we cannot recognise is not evidence about our session. The repo runs
+// pane startup through `sh -c`, so a wrapper between claude and this shim is a
+// realistic shape, and concluding "no flag" from someone else's argv would
+// silence a healthy session.
+func TestUnrecognisedParentIsNotAVerdict(t *testing.T) {
 	t.Setenv("CCMUX_PEERS_CHANNEL", "")
-	restore := parentArgvOverride
-	parentArgvOverride = nil
-	defer func() { parentArgvOverride = restore }()
 
-	// With no override, detection runs against this test binary's real parent
-	// (`go test`), which carries no channel flag — so it must resolve to a
-	// verdict either way without panicking, and the unknown path must default on.
-	if enabled, known := channelsEnabled(); known && enabled {
-		t.Fatal("the go test harness should not look like a channel-loading session")
+	for _, argv := range [][]string{
+		{"sh", "-c", "exec ccmux-peers"},
+		{"env", "FOO=1", "ccmux-peers"},
+		{"tmux", "server"},
+	} {
+		restore := withParentArgv(argv, true)
+		if _, known := channelsEnabled(); known {
+			t.Errorf("parent %q was treated as a verdict about our channels", argv)
+		}
+		if !resolveChannelMode() {
+			t.Errorf("parent %q silenced the session", argv)
+		}
+		restore()
 	}
+}
+
+// And a parent we DO recognise is judged, including the node-hosted spelling
+// where claude is the script rather than the executable.
+func TestRecognisedParentsAreJudged(t *testing.T) {
+	t.Setenv("CCMUX_PEERS_CHANNEL", "")
+
+	for _, tc := range []struct {
+		argv []string
+		want bool
+	}{
+		{[]string{"/usr/local/bin/claude", "--channels", "server:claude-peers"}, true},
+		{[]string{"/usr/local/bin/claude", "--resume", "abc"}, false},
+		{[]string{"node", "/opt/claude/cli.js", "--channels", "server:claude-peers"}, true},
+		{[]string{"node", "/opt/claude/cli.js", "--resume", "abc"}, false},
+	} {
+		restore := withParentArgv(tc.argv, true)
+		if _, known := channelsEnabled(); !known {
+			t.Errorf("parent %q was not recognised as a claude session", tc.argv)
+		}
+		if got := resolveChannelMode(); got != tc.want {
+			t.Errorf("resolveChannelMode() for %q = %v, want %v", tc.argv, got, tc.want)
+		}
+		restore()
+	}
+}
+
+// withParentArgv installs a fake parent reader and returns its undo.
+func withParentArgv(argv []string, ok bool) func() {
+	previous := parentArgvReader
+	parentArgvReader = func() ([]string, bool) { return argv, ok }
+	return func() { parentArgvReader = previous }
 }
 
 // The env var stays the escape hatch for a launcher this detection does not
 // understand, in both directions.
 func TestEnvOverridesDetection(t *testing.T) {
-	restore := parentArgvOverride
-	defer func() { parentArgvOverride = restore }()
-
-	parentArgvOverride = []string{"claude", "--channels", "server:claude-peers"}
+	defer withParentArgv([]string{"claude", "--channels", "server:claude-peers"}, true)()
 	t.Setenv("CCMUX_PEERS_CHANNEL", "0")
 	if resolveChannelMode() {
 		t.Error("CCMUX_PEERS_CHANNEL=0 did not disable push")
 	}
 
-	parentArgvOverride = []string{"claude"}
+	defer withParentArgv([]string{"claude"}, true)()
 	t.Setenv("CCMUX_PEERS_CHANNEL", "1")
 	if !resolveChannelMode() {
 		t.Error("CCMUX_PEERS_CHANNEL=1 did not force push on")
@@ -93,16 +155,15 @@ func TestEnvOverridesDetection(t *testing.T) {
 
 // The two verdicts the flag actually drives.
 func TestResolveChannelModeFollowsTheParent(t *testing.T) {
-	restore := parentArgvOverride
-	defer func() { parentArgvOverride = restore }()
 	t.Setenv("CCMUX_PEERS_CHANNEL", "")
 
-	parentArgvOverride = []string{"claude", "--dangerously-load-development-channels", "server:claude-peers"}
+	restore := withParentArgv([]string{"claude", "--dangerously-load-development-channels", "server:claude-peers"}, true)
 	if !resolveChannelMode() {
 		t.Error("a flagged session was reported as poll-only")
 	}
+	restore()
 
-	parentArgvOverride = []string{"claude", "--resume", "abc", "--permission-mode", "auto"}
+	defer withParentArgv([]string{"claude", "--resume", "abc", "--permission-mode", "auto"}, true)()
 	if resolveChannelMode() {
 		t.Error("a session with no channel flag still claimed push")
 	}
@@ -112,16 +173,15 @@ func TestResolveChannelModeFollowsTheParent(t *testing.T) {
 // Testing resolveChannelMode alone leaves the wiring free to drift back to
 // trusting an env var, which is the assumption this whole change removes.
 func TestNewAppTakesItsChannelModeFromDetection(t *testing.T) {
-	restore := parentArgvOverride
-	defer func() { parentArgvOverride = restore }()
 	t.Setenv("CCMUX_PEERS_CHANNEL", "")
 
-	parentArgvOverride = []string{"claude", "--resume", "abc"}
+	restore := withParentArgv([]string{"claude", "--resume", "abc"}, true)
 	if newApp().channelMode {
 		t.Error("a session with no channel flag was built claiming push")
 	}
+	restore()
 
-	parentArgvOverride = []string{"claude", "--dangerously-load-development-channels", "server:claude-peers"}
+	defer withParentArgv([]string{"claude", "--dangerously-load-development-channels", "server:claude-peers"}, true)()
 	if !newApp().channelMode {
 		t.Error("a flagged session was built as poll-only")
 	}

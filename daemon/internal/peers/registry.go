@@ -22,10 +22,12 @@ type RegisterReq struct {
 	Name        string `json:"name"`
 	RequestedID string `json:"requested_id"`
 	Summary     string `json:"summary"`
-	// PollOnly marks a session that opted out of live push
-	// (CCMUX_PEERS_CHANNEL=0): it collects messages by polling instead of
-	// holding a socket. Sent as the NEGATIVE so an older client, which sends
-	// nothing, defaults to push — the mode almost every session runs in.
+	// PollOnly marks a session that collects messages by polling instead of
+	// holding a socket. Usually NOT a choice: the shim reports it when the
+	// session was started without the claude-peers channel flag, which would
+	// make every push vanish silently. CCMUX_PEERS_CHANNEL=0 also sets it.
+	// Sent as the NEGATIVE so an older client, which sends nothing, defaults to
+	// push — the mode almost every session runs in.
 	PollOnly bool `json:"poll_only"`
 	// ShimVersion is the connecting shim's own version ("" = a pre-0.3.0 shim
 	// that predates the field). Diagnostic only today; it exists so a future

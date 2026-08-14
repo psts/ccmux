@@ -10,16 +10,19 @@ import XCTest
 /// These run against the real daemon payload rather than a hand-built one.
 final class PeerViewerAnswerTests: XCTestCase {
     private func parse(_ json: String) -> PeerViewerAnswer? {
-        PeerViewerAnswer.parse(Data(json.utf8))
+        try? PeerViewerAnswer.parse(Data(json.utf8)).get()
     }
 
-    /// Captured verbatim from `GET /v1/peers/viewer` on a federated member host.
-    func testParsesTheLiveDaemonAnswer() throws {
+    /// The shape a federated member host answers with. The token is synthetic on
+    /// purpose: a real one is a live fleet-wide read credential, and this repo is
+    /// public. Nothing here needs a real value — the assertion is that the field
+    /// round-trips, not what it contains.
+    func testParsesAFederatedAnswer() throws {
         let answer = try XCTUnwrap(parse(
-            #"{"bus":"/v1/hubbus","partial":false,"token":"e368921ffbe809cd28743670c3572790"}"#))
+            #"{"bus":"/v1/hubbus","partial":false,"token":"test-viewer-token"}"#))
 
         XCTAssertEqual(answer.bus, "/v1/hubbus")
-        XCTAssertEqual(answer.token, "e368921ffbe809cd28743670c3572790")
+        XCTAssertEqual(answer.token, "test-viewer-token")
         XCTAssertFalse(answer.partial)
     }
 
@@ -66,5 +69,16 @@ final class PeerViewerAnswerTests: XCTestCase {
         XCTAssertNil(parse("not json at all"))
         XCTAssertNil(parse("[]"))
         XCTAssertNil(parse(""))
+    }
+
+    /// The failure carries the decoding error out rather than collapsing to nil.
+    /// Which key and which type IS the diagnosis for a contract drift — throwing
+    /// it away is what let the last one hide behind "answered HTTP 200".
+    func testAFailureNamesWhatWentWrong() throws {
+        let result = PeerViewerAnswer.parse(Data(#"{"bus":123}"#.utf8))
+        guard case .failure(let error) = result else {
+            return XCTFail("a body with a wrong-typed field decoded successfully")
+        }
+        XCTAssertTrue(error is DecodingError, "the decoding error should survive, got \(error)")
     }
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -19,17 +20,46 @@ const serverChannelName = "claude-peers"
 // a healthy one over the protocol. The one place the truth exists is the flags
 // the session was started with, which is the parent process's command line.
 //
-// Getting this wrong in the pessimistic direction is the greater harm: a session
-// wrongly marked poll-only tells everyone its replies are slow when they are
-// not. So `known` is false unless the parent's argv was actually read, and the
-// caller keeps its optimistic default in that case — a wrapper process, a
-// platform without a reader, or a permissions refusal all land there.
+// Getting this wrong in the pessimistic direction is the greater harm, and not
+// only cosmetically: a false verdict makes the shim run keepRegistered instead
+// of runPushLoop and refuse every push, so it does not just mislabel a healthy
+// session, it silences one. `known` is therefore false unless we both read an
+// argv AND recognise it as a Claude Code session — an unreadable parent, a
+// platform without a reader, and a wrapper process (`sh -c`, `env`, a
+// relauncher) all land there and keep the caller's optimism.
 func channelsEnabled() (enabled, known bool) {
 	argv, ok := parentCommandLine()
 	if !ok || len(argv) == 0 {
 		return false, false
 	}
+	if !looksLikeClaude(argv) {
+		// Reading someone else's argv tells us nothing about our session's flags.
+		// Logged with what we saw, so a wrong verdict is one line to diagnose
+		// rather than a mystery about why push went quiet.
+		logf("parent %q does not look like a claude session — not concluding anything about channels", argv[0])
+		return false, false
+	}
 	return argvLoadsChannel(argv, serverChannelName), true
+}
+
+// looksLikeClaude reports whether an argv plausibly belongs to the Claude Code
+// session that started this shim, rather than to something between us and it.
+//
+// Deliberately generous: the cost of failing to recognise claude is one session
+// that keeps the old optimistic default, while the cost of mistaking a wrapper
+// for claude is a session silenced on the strength of somebody else's flags.
+func looksLikeClaude(argv []string) bool {
+	if strings.Contains(filepath.Base(argv[0]), "claude") {
+		return true
+	}
+	// A node-hosted CLI: the interpreter is argv[0] and claude's entry point is
+	// the script it was handed.
+	for _, arg := range argv[1:] {
+		if strings.Contains(arg, "claude") {
+			return true
+		}
+	}
+	return false
 }
 
 // argvLoadsChannel reports whether a Claude Code command line loads `server` as
@@ -113,25 +143,28 @@ func resolveChannelMode() bool {
 	enabled, known := channelsEnabled()
 	switch {
 	case !known:
-		logf("could not read the session's flags — assuming channel push works")
+		logf("could not read the session's flags (parent pid %d) — assuming channel push works. "+
+			"Set CCMUX_PEERS_CHANNEL=0 if this session in fact has no channels.", os.Getppid())
 		return true
 	case !enabled:
-		logf("this session was NOT started with --dangerously-load-development-channels %s:%s, "+
+		logf("this session was NOT started with --dangerously-load-development-channels server:%s, "+
 			"so pushed messages would be dropped silently. Registering poll-only: peers will be "+
 			"told delivery waits for check_messages. Restart with the flag for live push.",
-			"server", serverChannelName)
+			serverChannelName)
 		return false
 	}
 	return true
 }
 
-// parentArgvOverride lets the tests drive parentCommandLine without a real
-// process tree. Empty in production.
-var parentArgvOverride []string
+// parentArgvReader lets the tests drive parentCommandLine without a real process
+// tree. A function rather than a slice so a test can express "unreadable" — the
+// fail-open branch is the load-bearing safety property here, and a slice-shaped
+// seam could not reach it, which is how it went untested the first time.
+var parentArgvReader func() ([]string, bool)
 
 func parentCommandLine() ([]string, bool) {
-	if parentArgvOverride != nil {
-		return parentArgvOverride, true
+	if parentArgvReader != nil {
+		return parentArgvReader()
 	}
 	return readProcessArgv(os.Getppid())
 }

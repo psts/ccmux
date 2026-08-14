@@ -430,8 +430,16 @@ class WorkspaceManager: ObservableObject {
     /// this session replays the peers-enabled claude without its one-shot birth prompt;
     /// every other pane replays whatever command is currently running in it.
     private func capturedStartupCommand(forTerminal id: UUID) -> String? {
-        if teammateSeededTerminalIds.contains(id) { return SpawnRequest.peersEnabledClaude }
-        return TerminalStore.shared.detectRunningCommand(for: id)
+        Self.startupCommand(seeded: teammateSeededTerminalIds.contains(id),
+                            detected: TerminalStore.shared.detectRunningCommand(for: id))
+    }
+
+    /// The decision itself, free of the store and the id set so it can be tested.
+    /// Its whole point is that a seeded pane persists a command that KEEPS the
+    /// channel flag: it used to persist a bare `claude`, and the pane came back
+    /// from a restart unable to receive pushed peer messages.
+    static func startupCommand(seeded: Bool, detected: String?) -> String? {
+        seeded ? SpawnRequest.peersEnabledClaude : detected
     }
 
     /// Normalize a path for comparison: expand `~`, resolve `.`/`..`, drop trailing slash.

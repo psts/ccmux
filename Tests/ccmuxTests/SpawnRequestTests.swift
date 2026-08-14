@@ -132,4 +132,23 @@ final class SpawnRequestTests: XCTestCase {
         let spawn = SpawnRequest(repoPath: "/x", prompt: "hi", requester: nil).claudeStartupCommand()
         XCTAssertTrue(spawn.contains(SpawnRequest.peersEnabledClaude))
     }
+
+    /// The decision WorkspaceManager actually makes, not just the constant it
+    /// reaches for. Asserting the constant alone left the two call sites free to
+    /// go back to a bare `claude` with every test still green — which is the bug
+    /// itself, not a hypothetical.
+    func testASeededPanePersistsThePeersEnabledLauncher() {
+        XCTAssertEqual(
+            WorkspaceManager.startupCommand(seeded: true, detected: "claude"),
+            SpawnRequest.peersEnabledClaude)
+        XCTAssertEqual(
+            WorkspaceManager.startupCommand(seeded: true, detected: nil),
+            SpawnRequest.peersEnabledClaude)
+    }
+
+    /// Every other pane still replays whatever it is actually running.
+    func testAnUnseededPaneReplaysWhatIsRunning() {
+        XCTAssertEqual(WorkspaceManager.startupCommand(seeded: false, detected: "vim"), "vim")
+        XCTAssertNil(WorkspaceManager.startupCommand(seeded: false, detected: nil))
+    }
 }
