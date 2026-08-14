@@ -156,7 +156,7 @@ func (a *app) alreadyShown(seq int64) bool {
 }
 
 func main() {
-	a := &app{mcp: newMCPServer(), channelMode: os.Getenv("CCMUX_PEERS_CHANNEL") != "0"}
+	a := newApp()
 	a.cwd, _ = os.Getwd()
 	a.gitRoot = gitRoot(a.cwd)
 	a.name = os.Getenv("CLAUDE_PEERS_NAME")
