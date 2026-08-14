@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"ccmux.dev/ccmuxd/internal/model"
 	_ "modernc.org/sqlite" // pure-Go driver, registered as "sqlite"
@@ -18,6 +19,7 @@ import (
 type Store interface {
 	SaveWorkspace(*model.Workspace) error
 	SavePane(*model.Pane) error
+	UpdatePaneSize(paneID string, cols, rows int) error
 	DeleteWorkspace(id string) error
 	DeletePane(id string) error
 	SetWorkspaceStatus(id string, status model.Status) error
@@ -62,7 +64,8 @@ CREATE TABLE IF NOT EXISTS panes (
   id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, cwd TEXT,
   startup_command TEXT, created_by TEXT, created_at INTEGER,
   status TEXT, attention TEXT, is_dev INTEGER DEFAULT 0,
-  dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0
+  dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0,
+  cols INTEGER DEFAULT 0, rows INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -142,6 +145,23 @@ func Open(path string) (*SQLite, error) {
 	if _, err := db.Exec(`ALTER TABLE panes ADD COLUMN hosted_claude INTEGER DEFAULT 0`); err == nil {
 		_, _ = db.Exec(`UPDATE panes SET hosted_claude=1 WHERE startup_command LIKE 'claude%'`)
 	}
+	// A pane's size used to be runtime-only, so a daemon restart forgot it and a
+	// revive re-created every pane at 80x24 — the inner program then drew its
+	// output at a width the pane no longer had. 0 means "never sized", which the
+	// manager reads as "fall back to the default".
+	//
+	// Unlike the migrations above, only the expected error is swallowed. Every
+	// other one (locked database, read-only file, disk full) leaves the column
+	// missing, and the widened SELECT below then fails Load with "no such column:
+	// cols" — sending whoever debugs it after a missing column rather than the
+	// locked database that caused it.
+	for _, col := range []string{"cols", "rows"} {
+		if _, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col + ` INTEGER DEFAULT 0`); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrate panes.%s: %w", col, err)
+		}
+	}
 	// Pre-mailbox registries have cursors with no record of what they hang off,
 	// so nothing could ever garbage-collect them. The columns default empty;
 	// every registration backfills its own row (see TouchPeerMailbox).
@@ -171,15 +191,41 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
 	return err
 }
 
+// SavePane upserts a pane. cols/rows are written on INSERT (a new pane's starting
+// size) but deliberately NOT in the DO UPDATE set: callers build their `*p` copy
+// under the lock and then write it after unrelated work, so a title or attention
+// update carrying a stale size would put the old size back — and because memory
+// stays correct, ResizePane's `changed` check is false from then on and nothing
+// ever re-persists it. Size updates go through UpdatePaneSize instead.
 func (s *SQLite) SavePane(p *model.Pane) error {
 	_, err := s.db.Exec(`
-INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
   startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention,
   is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude`,
-		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude)
+		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows)
 	return err
+}
+
+// UpdatePaneSize writes only the size, and only for a pane that still has a row.
+// An UPDATE rather than an upsert on purpose: a resize can be in flight while the
+// pane is closed, and an upsert would reinsert the row DeletePane just removed,
+// leaving a phantom pane to be loaded on the next restart.
+//
+// Matching no row is reported as an error rather than passed off as success. Two
+// different things land here — a pane closed mid-resize (expected) and a pane
+// whose INSERT never happened (a bug) — and swallowing both means the second one
+// persists nothing, ever, with no trace. The caller decides which it is.
+func (s *SQLite) UpdatePaneSize(paneID string, cols, rows int) error {
+	res, err := s.db.Exec(`UPDATE panes SET cols=?, rows=? WHERE id=?`, cols, rows, paneID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("pane %s has no registry row (closed, or its insert failed)", paneID)
+	}
+	return nil
 }
 
 func (s *SQLite) DeleteWorkspace(id string) error {
@@ -292,14 +338,14 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 }
 
 func (s *SQLite) attachPanes(byID map[string]*model.Workspace) error {
-	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude FROM panes ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows FROM panes ORDER BY created_at`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		p := &model.Pane{}
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows); err != nil {
 			return err
 		}
 		if w := byID[p.WorkspaceID]; w != nil {

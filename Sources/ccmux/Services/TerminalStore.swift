@@ -411,6 +411,9 @@ class TerminalStore {
         }
         if let terminal = terminals.removeValue(forKey: paneId) {
             terminal.terminalDelegate = nil
+            // This dictionary is the terminal's last logical owner; detaching drops
+            // the view-hierarchy reference too, so the view dies here.
+            terminal.detachFromResponderChain()
             terminal.terminate()
         }
     }

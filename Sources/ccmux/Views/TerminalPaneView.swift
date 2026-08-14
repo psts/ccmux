@@ -31,12 +31,18 @@ class TerminalContainerView: NSView {
     let workingDirectory: String
     let startupCommand: String?
     private var hasLaidOut = false
+    private var focusClaim: PaneFocusClaim?
 
     init(terminalId: UUID, workingDirectory: String, startupCommand: String? = nil) {
         self.terminalId = terminalId
         self.workingDirectory = workingDirectory
         self.startupCommand = startupCommand
         super.init(frame: .zero)
+        focusClaim = PaneFocusClaim(tabId: terminalId, host: self) { [weak self] in
+            guard let self else { return nil }
+            return TerminalStore.shared.terminal(
+                for: self.terminalId, workingDirectory: self.workingDirectory, startupCommand: self.startupCommand)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -64,6 +70,9 @@ class TerminalContainerView: NSView {
         // Embedding may complete after the container's first layout() pass, so try
         // firing here too — whichever of embed/layout finishes last wins.
         fireStartupIfReady()
+        // A tab switch rebuilds this container, so the click that asked for focus
+        // landed before the terminal existed here. Claim it now that it does.
+        focusClaim?.claimIfRequested()
     }
 
     override func layout() {

@@ -22,7 +22,7 @@ struct PaneContentView: View {
             if let hostedPaneId = config.host.hostedPaneId {
                 // Hosted pane: attach to the daemon over WebSocket instead of spawning
                 // a local process. The local driver path below is untouched.
-                HostedTerminalPaneView(paneId: hostedPaneId, workingDirectory: config.workingDirectory)
+                HostedTerminalPaneView(tabId: config.id, paneId: hostedPaneId, workingDirectory: config.workingDirectory)
             } else {
                 TerminalPaneView(terminalId: config.id, workingDirectory: config.workingDirectory, startupCommand: config.startupCommand)
             }

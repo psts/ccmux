@@ -160,11 +160,19 @@ private struct LeafPaneView: View {
                 onSplitV: { controller.splitPane(id: paneId, direction: .vertical) },
                 onClose: { controller.closePane(id: paneId) },
                 onFocus: { controller.setFocus(paneId: paneId) },
+                // A new tab is made active, so it wants focus for the same reason a
+                // clicked one does. In a hosted workspace addTab routes to the daemon
+                // and this content is dropped; the request then simply expires.
                 onAddTab: { newContent in
                     controller.addTab(leafId: paneId, newContent: newContent)
+                    PaneFocusCoordinator.shared.requestFocus(tabId: newContent.id)
                 },
+                // The click only moves state; ask the clicked tab's terminal to take
+                // keyboard focus too, so there's no second click inside it. A tab that
+                // isn't a terminal simply leaves the request unclaimed.
                 onActivateTab: { tabId in
                     controller.activateTab(leafId: paneId, tabId: tabId)
+                    PaneFocusCoordinator.shared.requestFocus(tabId: tabId)
                 },
                 onCloseTab: { tabId in
                     controller.closeTab(leafId: paneId, tabId: tabId)

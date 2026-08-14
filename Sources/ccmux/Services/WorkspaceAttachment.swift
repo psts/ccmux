@@ -46,6 +46,15 @@ final class WorkspaceAttachment {
     func connect() { attach.connect() }
     func disconnect() { attach.disconnect() }
 
+    /// Called when this attachment — the last owner of every controller, and so of
+    /// every terminal view in the workspace — is about to be dropped. See
+    /// `NSView.detachFromResponderChain`.
+    func detachAllTerminals() {
+        for controller in controllers.values {
+            controller.terminalView.detachFromResponderChain()
+        }
+    }
+
     /// Re-dial now (wake). The socket keeps its controllers and their terminal
     /// buffers: the daemon re-sends hello plus a snapshot per pane, and `handle`
     /// replays our focus on that hello, so nothing on screen blinks.
@@ -59,6 +68,10 @@ final class WorkspaceAttachment {
     /// Whether this workspace owns the given daemon pane (used for the reverse lookup
     /// a hosted pane view does to find its controller/connection state).
     func hasPane(_ paneId: String) -> Bool { controllers[paneId] != nil }
+
+    /// A pane's terminal view, for tests that need to assert what happens to it when
+    /// the pane goes away. Production reaches views through `controller(forPane:)`.
+    func terminalView(forPane paneId: String) -> NSView? { controllers[paneId]?.terminalView }
 
     /// Last focus frame sent ("" = explicitly unfocused; nil = never reported).
     private(set) var lastReportedFocus: String?
@@ -95,7 +108,12 @@ final class WorkspaceAttachment {
         }
         let live = Set(panes.map { $0.id })
         let dead = controllers.keys.filter { !live.contains($0) }
-        for id in dead { controllers.removeValue(forKey: id) }
+        for id in dead {
+            // This dictionary owns the controller, which owns the terminal view;
+            // detaching drops the view-hierarchy reference too, so it dies here.
+            controllers[id]?.terminalView.detachFromResponderChain()
+            controllers.removeValue(forKey: id)
+        }
         return dead
     }
 
@@ -117,8 +135,20 @@ final class WorkspaceAttachment {
         case .output(let pane, let bytes):
             controller(forPane: pane, workingDirectory: repoPath).feedOutput(bytes)
         case .hello(let panes):
-            for p in panes where p.cols > 0 {
-                controller(forPane: p.id, workingDirectory: p.cwd).setAuthoritativeSize(cols: p.cols, rows: p.rows)
+            for p in panes {
+                let c = controller(forPane: p.id, workingDirectory: p.cwd)
+                if p.cols > 0 {
+                    c.setAuthoritativeSize(cols: p.cols, rows: p.rows)
+                }
+                // Re-drive the pane to what THIS window shows. A reconnect is the
+                // same claim as a window becoming key: the screen being looked at
+                // owns the size. Without it the daemon keeps whatever it last
+                // recorded — after its own restart that can be a phone's width, or
+                // nothing at all — and the pane stays drawn at a width this window
+                // does not have, with only the "Take over" pill to fix it by hand.
+                // Panes that are not on screen are dropped by forwardResize's
+                // superview guard, so a background tab never drives the size.
+                c.sendCurrentSize()
             }
             // A hello means a (re)connect: the daemon's presence entry for this
             // connection is fresh, so replay what we told the old one.
