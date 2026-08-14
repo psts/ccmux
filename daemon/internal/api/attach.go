@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -25,6 +26,11 @@ type wsMsg struct {
 	Clients       []ClientInfo    `json:"clients,omitempty"`
 	Layout        string          `json:"layout,omitempty"`
 	LayoutVersion int             `json:"layoutVersion,omitempty"`
+	// Present rides along on a client's focus frame: whether this screen is awake
+	// and unlocked. A POINTER because absent and false mean different things — a
+	// lens too old to report presence must keep the pre-presence behaviour rather
+	// than be counted as nobody-is-there. See client.atAScreen.
+	Present *bool `json:"present,omitempty"`
 }
 
 type paneInfo struct {
@@ -74,7 +80,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go s.readLoop(cancel, conn, ctrl, wsID, connID, readonly)
-	writeLoop(ctx, conn, ctrl, ws, sub)
+	writeLoop(ctx, conn, ctrl, ws, sub, s.ka)
 }
 
 func orDefault(s, def string) string {
@@ -103,11 +109,22 @@ func sendSnapshots(conn *websocket.Conn, ctrl *session.Controller, ws *model.Wor
 // event and any buffered control events (attention/presence/layout/pane
 // lifecycle) are NOT reseed-recoverable — a snapshot carries only pane bytes —
 // so those are delivered after the reseed; only stale "output" is dropped.
-func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controller, ws *model.Workspace, sub *session.Sub) {
+func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controller, ws *model.Workspace, sub *session.Sub, ka keepalive) {
+	// Same placement as the firehose: this loop is the connection's only writer,
+	// so folding the ping into its select needs no synchronisation and adds no
+	// goroutine. See keepalive.go for why an idle attach needs pinging at all.
+	ping := time.NewTicker(ka.ping)
+	defer ping.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ping.C:
+			if err := ka.writePing(conn); err != nil {
+				pingFailed("attach", ws.ID, err)
+				return
+			}
 		case ev, ok := <-sub.C:
 			if !ok {
 				return
@@ -137,11 +154,16 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 // — an observer must never crunch a driver's pane size).
 func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool) {
 	defer cancel()
+	// This goroutine owns the read deadline (see keepalive.go). Without it a lens
+	// whose network vanished holds its presence entry open forever, which also
+	// keeps suppressing that person's phone pushes.
+	s.ka.armReads(conn)
 	for {
 		var msg wsMsg
 		if err := conn.ReadJSON(&msg); err != nil {
 			return
 		}
+		s.ka.touchReads(conn)
 		switch msg.T {
 		case "input":
 			if readonly {
@@ -162,6 +184,9 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 			}
 		case "focus":
 			s.presence.Focus(wsID, connID, msg.Pane)
+			if msg.Present != nil {
+				s.presence.SetPresent(wsID, connID, *msg.Present)
+			}
 		}
 	}
 }

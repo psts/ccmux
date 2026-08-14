@@ -28,31 +28,46 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 	id, ch := s.mgr.SubscribeEvents()
 	defer s.mgr.UnsubscribeEvents(id)
 
+	// Who is reading this stream; the alert flag is stamped for them alone.
+	login := s.resolveIdentity(r).Login
+
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	up := &eventUpstreams{hub: s.hub, frames: make(chan []byte, 128), connected: map[string]bool{}}
+	up := &eventUpstreams{hub: s.hub, frames: make(chan []byte, 128), ka: s.ka, connected: map[string]bool{}}
 	hello := append(currentAttention(s.mgr), up.dialAll(ctx)...)
 	if err := conn.WriteJSON(firehoseMsg{T: "hello", Attention: hello}); err != nil {
 		return
 	}
 
-	go drainReads(cancel, conn)
+	go drainReads(cancel, conn, s.ka)
 	go up.reconnectLoop(ctx, 10*time.Second)
+
+	// The ping belongs with the read deadline drainReads just armed, and this is
+	// the connection's only writer. Arming one without the other reaps every idle
+	// lens on schedule — and since s.events routes here whenever a hub is
+	// configured, this is THE firehose in a federation, not a side path.
+	ping := time.NewTicker(s.ka.ping)
+	defer ping.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ping.C:
+			if err := s.ka.writePing(conn); err != nil {
+				pingFailed("hub firehose", login, err)
+				return
+			}
 		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			if err := conn.WriteJSON(s.firehoseFrame(ev)); err != nil {
+			if err := conn.WriteJSON(s.firehoseFrame(ev, login)); err != nil {
 				return
 			}
 		case raw := <-up.frames:
-			if err := conn.WriteMessage(websocket.TextMessage, s.restampAlert(raw)); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, s.restampAlert(raw, login)); err != nil {
 				return
 			}
 		}
@@ -77,12 +92,12 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 // does not model is dropped here. The frame contract has to stay in lockstep
 // across the fleet; hosts already run mixed versions (hub.Health carries a
 // contract number), so a field added on one side needs this struct on the other.
-func (s *Server) restampAlert(raw []byte) []byte {
+func (s *Server) restampAlert(raw []byte, login string) []byte {
 	var frame firehoseMsg
 	if err := json.Unmarshal(raw, &frame); err != nil || frame.T != "attention" {
 		return raw
 	}
-	frame.Alert = s.alertsLocally(frame.State)
+	frame.Alert = s.alertsFor(login, frame.State)
 	restamped, err := json.Marshal(frame)
 	if err != nil {
 		// The member's own verdict crosses instead — wrong, but a dropped frame
@@ -98,9 +113,34 @@ func (s *Server) restampAlert(raw []byte) []byte {
 type eventUpstreams struct {
 	hub    *hubMode
 	frames chan []byte
+	ka     keepalive
 
 	mu        sync.Mutex
 	connected map[string]bool
+	// failing latches which hosts have already reported a dial failure, so the
+	// 10s reconnect loop states the fault once and the recovery once instead of
+	// every tick. Same shape as federatedFocus.failing in hubpush.go.
+	failing map[string]bool
+}
+
+// noteDial logs a member dropping out of the merged firehose, and its return.
+// Silence here meant a permanently unreachable host vanished from the stream with
+// nothing anywhere naming it — the hub simply stopped relaying that machine's
+// attention, and stopped pushing for it, for as long as the daemon ran.
+func (u *eventUpstreams) noteDial(hostID string, err error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.failing == nil {
+		u.failing = map[string]bool{}
+	}
+	switch {
+	case err != nil && !u.failing[hostID]:
+		u.failing[hostID] = true
+		log.Printf("hub events: %s dropped out of the merged firehose (%v) — retrying every 10s", hostID, err)
+	case err == nil && u.failing[hostID]:
+		delete(u.failing, hostID)
+		log.Printf("hub events: %s is back in the merged firehose", hostID)
+	}
 }
 
 // dialAll connects to every listing remote host not already connected, returning
@@ -119,10 +159,12 @@ func (u *eventUpstreams) dialAll(ctx context.Context) []attnEntry {
 		if already {
 			continue
 		}
-		conn, attn, err := dialHostEvents(ctx, u.hub.wsDial, h)
+		conn, attn, err := dialHostEvents(ctx, u.hub.wsDial, h, u.ka)
 		if err != nil {
+			u.noteDial(h.ID, err)
 			continue
 		}
+		u.noteDial(h.ID, nil)
 		u.mu.Lock()
 		u.connected[h.ID] = true
 		u.mu.Unlock()
@@ -134,18 +176,30 @@ func (u *eventUpstreams) dialAll(ctx context.Context) []attnEntry {
 
 // forward pumps a host's non-hello frames onto u.frames until the connection
 // drops, then releases the host so reconnectLoop can re-dial it.
+//
+// The keepalive here is load-bearing, not hygiene. Without a read deadline this
+// loop parks in ReadMessage forever when a member dies without closing — a
+// sleeping laptop, a dropped tailnet path. The deferred cleanup never runs, so
+// `connected[hostID]` stays true, so dialAll's "already connected" check skips
+// that host on every reconnect tick, forever. The hub silently stops relaying
+// that host's attention AND stops pushing for it until ccmuxd restarts.
 func (u *eventUpstreams) forward(ctx context.Context, hostID string, conn *websocket.Conn) {
+	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
+		cancel()
 		conn.Close()
 		u.mu.Lock()
 		delete(u.connected, hostID)
 		u.mu.Unlock()
 	}()
+	go u.ka.pingLoop(ctx, conn, hostID)
+	u.ka.armReads(conn)
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
+		u.ka.touchReads(conn)
 		if isHelloFrame(data) {
 			continue // a reconnected host re-sends hello; the delta stream is what we forward
 		}
@@ -173,11 +227,17 @@ func (u *eventUpstreams) reconnectLoop(ctx context.Context, interval time.Durati
 
 // dialHostEvents opens a host's /v1/events and consumes its opening hello,
 // returning the connection and the host's current-attention snapshot.
-func dialHostEvents(ctx context.Context, wsDial func(context.Context, string) (*websocket.Conn, error), h hub.Host) (*websocket.Conn, []attnEntry, error) {
+func dialHostEvents(ctx context.Context, wsDial func(context.Context, string) (*websocket.Conn, error), h hub.Host, ka keepalive) (*websocket.Conn, []attnEntry, error) {
 	conn, err := wsDial(ctx, "wss://"+h.Addr+"/v1/events")
 	if err != nil {
 		return nil, nil, err
 	}
+	// A host that accepts the connection and then never speaks would otherwise
+	// park this dial forever. The HELLO budget, not the idle one: dialAll runs
+	// this inline, in sequence, for every member, and a lens gets no hello of its
+	// own until they all answer. Reusing the 90s idle deadline here would let two
+	// broken members hold a sidebar empty for three minutes.
+	_ = conn.SetReadDeadline(time.Now().Add(ka.hello))
 	_, data, err := conn.ReadMessage()
 	if err != nil {
 		conn.Close()

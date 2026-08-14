@@ -32,13 +32,27 @@ final class WorkspaceAttachmentTests: XCTestCase {
     func testReportFocusDedupesAndTracksState() {
         let att = WorkspaceAttachment(workspaceId: UUID(), daemonId: "w1", repoPath: "/r", panes: [pane("p1")])
         XCTAssertNil(att.lastReportedFocus, "nothing reported until asked")
+        XCTAssertNil(att.lastReportedPresent)
         XCTAssertEqual(att.anyPaneId, "p1")
 
-        att.reportFocus(paneId: "p1")
+        att.reportFocus(paneId: "p1", present: true)
         XCTAssertEqual(att.lastReportedFocus, "p1")
-        att.reportFocus(paneId: "p1")   // dedupe — no state churn
+        XCTAssertEqual(att.lastReportedPresent, true)
+        att.reportFocus(paneId: "p1", present: true)   // dedupe — no state churn
         XCTAssertEqual(att.lastReportedFocus, "p1")
-        att.reportFocus(paneId: "")     // unfocus (screen locked / not displayed)
+        att.reportFocus(paneId: "", present: true)     // still here, just looking elsewhere
         XCTAssertEqual(att.lastReportedFocus, "")
+        XCTAssertEqual(att.lastReportedPresent, true)
+    }
+
+    /// Presence changing on its own must still be reported. The screen locking
+    /// leaves focus exactly as it was, so deduping on the pane id alone would swallow
+    /// the one signal that tells the daemon to start pushing to the phone.
+    func testReportFocusSendsWhenOnlyPresenceChanges() {
+        let att = WorkspaceAttachment(workspaceId: UUID(), daemonId: "w1", repoPath: "/r", panes: [pane("p1")])
+        att.reportFocus(paneId: "p1", present: true)
+        att.reportFocus(paneId: "p1", present: false)
+        XCTAssertEqual(att.lastReportedPresent, false, "a presence flip must not be deduped away")
+        XCTAssertEqual(att.lastReportedFocus, "p1")
     }
 }
