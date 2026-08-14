@@ -19,6 +19,45 @@ enum PeerBrokerError: Error {
     }
 }
 
+/// The daemon's answer to "which bus should this lens read, and with what?"
+/// (GET /v1/peers/viewer).
+///
+/// `partial` is the daemon saying it knows of a hub bus but has no credential to
+/// read it, so it has pointed the lens at the local registry instead — a real
+/// answer that is nonetheless not the whole picture. It is the signal the overlay
+/// caveat is meant to hang on.
+///
+/// Every field is optional with a default because the app and the daemon ship
+/// separately: an older daemon predates `partial` entirely, and a decode that
+/// insisted on it would fail the whole resolve rather than lose one flag.
+struct PeerViewerAnswer: Decodable, Equatable {
+    var bus: String = ""
+    var token: String = ""
+    var partial: Bool = false
+
+    private enum CodingKeys: String, CodingKey { case bus, token, partial }
+
+    /// Written out rather than synthesized: Swift's generated decoder ignores
+    /// property defaults and demands every key, which would make an older daemon's
+    /// answer — one predating `partial` — fail to decode entirely. That is the
+    /// same shape as the bug this type exists to fix, in the other direction.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bus = try c.decodeIfPresent(String.self, forKey: .bus) ?? ""
+        token = try c.decodeIfPresent(String.self, forKey: .token) ?? ""
+        partial = try c.decodeIfPresent(Bool.self, forKey: .partial) ?? false
+    }
+
+    /// nil when the body is not an answer at all. Kept pure and separate from the
+    /// request so it can be tested against real daemon payloads — the decode is
+    /// where this path was silently failing, with `[String: String]` against a
+    /// body whose `partial` is a Bool, so every 200 was discarded and the overlay
+    /// drew an empty panel with a caveat about an unconfirmed bus.
+    static func parse(_ data: Data) -> PeerViewerAnswer? {
+        try? JSONDecoder().decode(PeerViewerAnswer.self, from: data)
+    }
+}
+
 /// Client for ccmuxd's built-in peers bus (the old external broker on :7899 is
 /// gone — the daemon now hosts history, peers, and the live listen stream under
 /// /v1/peers/*, keyed by window group name). Reads are read-only; the one write
@@ -82,8 +121,9 @@ class PeerBrokerService {
     /// Re-asked every time the overlay opens: a hub can appear, move, or go away
     /// while the app is running, and a value cached at launch would outlive it.
     ///
-    /// Returns false when the answer could not be obtained, so the caller can say
-    /// the list may be incomplete instead of drawing a confident empty panel.
+    /// Returns false when the picture cannot be trusted — either the answer never
+    /// arrived, or it arrived saying `partial` — so the caller can show the caveat
+    /// instead of drawing a confident empty panel.
     @discardableResult
     func refreshBus() async -> Bool {
         busURL = DaemonConfig.localURL
@@ -101,17 +141,26 @@ class PeerBrokerService {
         }
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401 { cachedToken = nil }
-        guard status == 200,
-              let answer = try? JSONDecoder().decode([String: String].self, from: data) else {
+        guard status == 200 else {
             NSLog("[ccmux peers] bus resolve answered HTTP \(status)")
+            return false
+        }
+        guard let answer = PeerViewerAnswer.parse(data) else {
+            // Distinct from the status log above: a 200 whose body we cannot read
+            // is a contract mismatch between app and daemon, and reporting it as
+            // "answered HTTP 200" is how it hid for three days.
+            NSLog("[ccmux peers] bus resolve returned 200 with an unreadable body (\(data.count) bytes)")
             return false
         }
         // A relative prefix ("/v1/hubbus") or "" — the daemon names a path on
         // itself, never a hub URL, so the app still talks only to 127.0.0.1 and
         // the tailnet hop wears the daemon's identity rather than this app's.
-        busURL = DaemonConfig.localURL + (answer["bus"] ?? "")
-        viewerToken = answer["token"].flatMap { $0.isEmpty ? nil : $0 }
-        return true
+        busURL = DaemonConfig.localURL + answer.bus
+        viewerToken = answer.token.isEmpty ? nil : answer.token
+        // partial means the daemon answered honestly that it pointed us at the
+        // local registry because it has no credential for the hub. The read below
+        // will work; it just is not everything.
+        return !answer.partial
     }
 
     /// Authorizes a viewer read. The local routes take no token and ignore it;
