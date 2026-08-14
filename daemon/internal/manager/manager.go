@@ -406,7 +406,8 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 	}
 
 	pane0 := ws.Panes[0]
-	if err := m.server.NewSession(ws.TmuxSession, pane0.CWD, defaultCols, defaultRows, m.paneEnv(pane0.ID)); err != nil {
+	cols0, rows0 := paneSize(pane0)
+	if err := m.server.NewSession(ws.TmuxSession, pane0.CWD, cols0, rows0, m.paneEnv(pane0.ID)); err != nil {
 		return nil, err
 	}
 	ctrl, err := session.Open(m.ctx, m.server, ws.TmuxSession, wsID)
@@ -422,7 +423,12 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 		ctrl.Close()
 		return nil, err
 	}
-	_ = ctrl.Resize(pane0.ID, defaultCols, defaultRows)
+	// Size BEFORE the startup command: the program is about to draw itself, and
+	// whatever width it draws at is baked into its output. Reviving at 80x24 and
+	// widening once a lens attaches leaves everything it already printed wrapped
+	// at 80 in a pane that is no longer 80 wide.
+	_ = ctrl.Resize(pane0.ID, cols0, rows0)
+	pane0.Cols, pane0.Rows = cols0, rows0
 	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand)
 
 	for _, p := range ws.Panes[1:] {
@@ -430,7 +436,9 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 			ctrl.Close()
 			return nil, err
 		}
-		_ = ctrl.Resize(p.ID, defaultCols, defaultRows)
+		cols, rows := paneSize(p)
+		_ = ctrl.Resize(p.ID, cols, rows)
+		p.Cols, p.Rows = cols, rows
 		m.deliverStartup(ctrl, p.ID, p.StartupCommand)
 		p.Status = model.StatusLive
 	}
@@ -716,6 +724,16 @@ func (m *Manager) newPane(wsID, cwd, startupCmd, createdBy string) *model.Pane {
 	}
 }
 
+// paneSize is a pane's remembered tmux size, falling back to the default for a
+// pane no lens has ever sized (0 from a pre-migration registry, or a pane created
+// and revived before any lens attached).
+func paneSize(p *model.Pane) (cols, rows int) {
+	if p.Cols > 0 && p.Rows > 0 {
+		return p.Cols, p.Rows
+	}
+	return defaultCols, defaultRows
+}
+
 // PaneSize is the payload of a "pane-size" event: a pane's new tmux dimensions,
 // broadcast so lenses know the authoritative size (a phone can then surface a
 // "take over" control when another lens drove the shared pane wider than it shows).
@@ -725,30 +743,38 @@ type PaneSize struct {
 }
 
 // ResizePane sets a pane's tmux size, records it on the pane, and — only when the
-// size actually changed — broadcasts the new size to every attached lens. This is
-// the single resize entry point for the API so size changes are always announced.
-func (m *Manager) ResizePane(paneID string, cols, rows int) error {
+// size actually changed — persists it and broadcasts the new size to every attached
+// lens. This is the single resize entry point for the API so size changes are always
+// announced. The reported `changed` is what tells a caller the pane has just
+// reflowed: tmux only winches the inner program on a real size change, so an
+// unchanged resize repaints nothing and needs no follow-up.
+func (m *Manager) ResizePane(paneID string, cols, rows int) (changed bool, err error) {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("unknown pane %s", paneID)
+		return false, fmt.Errorf("unknown pane %s", paneID)
 	}
 	ctrl := e.ctrl
-	changed := p.Cols != cols || p.Rows != rows
+	changed = p.Cols != cols || p.Rows != rows
 	p.Cols, p.Rows = cols, rows
+	saved := *p
 	m.mu.Unlock()
 
 	if ctrl == nil {
-		return fmt.Errorf("workspace for pane %s not live", paneID)
+		return false, fmt.Errorf("workspace for pane %s not live", paneID)
 	}
 	if err := ctrl.Resize(paneID, cols, rows); err != nil {
-		return err
+		return false, err
 	}
 	if changed {
+		// Persisted so a restart or revive rebuilds the pane at the size it was
+		// last drawn at. Without it the next revive re-creates it at 80x24 and the
+		// inner program's output stays wrapped at a width the pane no longer has.
+		_ = m.store.SavePane(&saved)
 		ctrl.Broadcast(session.Event{Kind: "pane-size", PaneID: paneID, Payload: PaneSize{Cols: cols, Rows: rows}})
 	}
-	return nil
+	return changed, nil
 }
 
 // BroadcastClipboard pushes tmux-copied text to every lens attached to the

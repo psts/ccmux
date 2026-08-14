@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS panes (
   id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, cwd TEXT,
   startup_command TEXT, created_by TEXT, created_at INTEGER,
   status TEXT, attention TEXT, is_dev INTEGER DEFAULT 0,
-  dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0
+  dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0,
+  cols INTEGER DEFAULT 0, rows INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -142,6 +143,12 @@ func Open(path string) (*SQLite, error) {
 	if _, err := db.Exec(`ALTER TABLE panes ADD COLUMN hosted_claude INTEGER DEFAULT 0`); err == nil {
 		_, _ = db.Exec(`UPDATE panes SET hosted_claude=1 WHERE startup_command LIKE 'claude%'`)
 	}
+	// A pane's size used to be runtime-only, so a daemon restart forgot it and a
+	// revive re-created every pane at 80x24 — the inner program then drew its
+	// output at a width the pane no longer had. 0 means "never sized", which the
+	// manager reads as "fall back to the default".
+	_, _ = db.Exec(`ALTER TABLE panes ADD COLUMN cols INTEGER DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE panes ADD COLUMN rows INTEGER DEFAULT 0`)
 	// Pre-mailbox registries have cursors with no record of what they hang off,
 	// so nothing could ever garbage-collect them. The columns default empty;
 	// every registration backfills its own row (see TouchPeerMailbox).
@@ -173,12 +180,13 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
 
 func (s *SQLite) SavePane(p *model.Pane) error {
 	_, err := s.db.Exec(`
-INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
   startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention,
-  is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude`,
-		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude)
+  is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude,
+  cols=excluded.cols, rows=excluded.rows`,
+		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows)
 	return err
 }
 
@@ -292,14 +300,14 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 }
 
 func (s *SQLite) attachPanes(byID map[string]*model.Workspace) error {
-	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude FROM panes ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows FROM panes ORDER BY created_at`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		p := &model.Pane{}
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows); err != nil {
 			return err
 		}
 		if w := byID[p.WorkspaceID]; w != nil {

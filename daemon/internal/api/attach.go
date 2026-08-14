@@ -79,8 +79,12 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	go s.readLoop(cancel, conn, ctrl, wsID, connID, readonly)
-	writeLoop(ctx, conn, ctrl, ws, sub, s.ka)
+	// Only the lens that drove the resize is repainted, so the repaint channel is
+	// per-connection rather than a broadcast event.
+	rs := newResnapper()
+	defer rs.stop()
+	go s.readLoop(cancel, conn, ctrl, wsID, connID, readonly, rs)
+	writeLoop(ctx, conn, ctrl, ws, sub, s.ka, rs)
 }
 
 func orDefault(s, def string) string {
@@ -94,12 +98,19 @@ func orDefault(s, def string) string {
 // blank.
 func sendSnapshots(conn *websocket.Conn, ctrl *session.Controller, ws *model.Workspace) {
 	for _, p := range ws.Panes {
-		b, err := ctrl.Capture(p.ID, 0)
-		if err != nil {
-			continue
-		}
-		_ = conn.WriteJSON(wsMsg{T: "snapshot", Pane: p.ID, Data: b64(b)})
+		sendSnapshot(conn, ctrl, p.ID)
 	}
+}
+
+// sendSnapshot seeds (or repaints) one pane. A capture that fails is skipped
+// rather than reported: the lens keeps whatever it had, which is strictly better
+// than clearing it, and the next resize or lag reseed tries again.
+func sendSnapshot(conn *websocket.Conn, ctrl *session.Controller, paneID string) {
+	b, err := ctrl.Capture(paneID, 0)
+	if err != nil {
+		return
+	}
+	_ = conn.WriteJSON(wsMsg{T: "snapshot", Pane: paneID, Data: b64(b)})
 }
 
 // writeLoop forwards pane output to the client. When the subscriber has lagged
@@ -109,7 +120,7 @@ func sendSnapshots(conn *websocket.Conn, ctrl *session.Controller, ws *model.Wor
 // event and any buffered control events (attention/presence/layout/pane
 // lifecycle) are NOT reseed-recoverable — a snapshot carries only pane bytes —
 // so those are delivered after the reseed; only stale "output" is dropped.
-func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controller, ws *model.Workspace, sub *session.Sub, ka keepalive) {
+func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controller, ws *model.Workspace, sub *session.Sub, ka keepalive, rs *resnapper) {
 	// Same placement as the firehose: this loop is the connection's only writer,
 	// so folding the ping into its select needs no synchronisation and adds no
 	// goroutine. See keepalive.go for why an idle attach needs pinging at all.
@@ -124,6 +135,12 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 			if err := ka.writePing(conn); err != nil {
 				pingFailed("attach", ws.ID, err)
 				return
+			}
+		case pane := <-rs.requests():
+			rs.arm(pane)
+		case <-rs.due():
+			if pane := rs.take(); pane != "" {
+				sendSnapshot(conn, ctrl, pane)
 			}
 		case ev, ok := <-sub.C:
 			if !ok {
@@ -152,7 +169,7 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, ctrl *session.Controll
 // readLoop applies client input/resize/focus until the connection closes.
 // Read-only observers can focus but cannot send input or resize (server-enforced
 // — an observer must never crunch a driver's pane size).
-func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool) {
+func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool, rs *resnapper) {
 	defer cancel()
 	// This goroutine owns the read deadline (see keepalive.go). Without it a lens
 	// whose network vanished holds its presence entry open forever, which also
@@ -181,7 +198,14 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 			if msg.Cols > 0 && msg.Rows > 0 {
 				// Through the manager so the new size is recorded and broadcast to
 				// other lenses (drives the mobile "take over" affordance).
-				_ = s.mgr.ResizePane(msg.Pane, msg.Cols, msg.Rows)
+				changed, err := s.mgr.ResizePane(msg.Pane, msg.Cols, msg.Rows)
+				if err == nil && changed {
+					// The pane just reflowed. A program that repaints on winch has
+					// already sent its own deltas; one that does not (a plain shell)
+					// would sit here wrapped at the old width, so ask the writer for a
+					// fresh capture once the resize stops moving.
+					rs.request(msg.Pane)
+				}
 			}
 		case "focus":
 			s.presence.Focus(wsID, connID, msg.Pane)

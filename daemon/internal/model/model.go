@@ -227,9 +227,11 @@ type Pane struct {
 	// #{pane_current_command}) that Title is derived from. Runtime-only.
 	RawTitle   string `json:"-"`
 	RawCommand string `json:"-"`
-	// Cols/Rows are the pane's current tmux size (runtime-only; the daemon owns it
-	// via resize-window). Lenses use it to detect when another lens drove the shared
+	// Cols/Rows are the pane's current tmux size; the daemon owns it via
+	// resize-window. Lenses use it to detect when another lens drove the shared
 	// pane to a different width — e.g. a phone showing a "take over" control.
+	// Persisted, so a restart or revive restores the size the pane was last
+	// drawn at instead of re-creating it at the 80x24 default. 0 = never sized.
 	Cols int `json:"cols,omitempty"`
 	Rows int `json:"rows,omitempty"`
 	// Host mirrors Workspace.Host for panes that surface in flat, cross-workspace

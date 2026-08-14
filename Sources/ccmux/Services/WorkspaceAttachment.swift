@@ -117,8 +117,20 @@ final class WorkspaceAttachment {
         case .output(let pane, let bytes):
             controller(forPane: pane, workingDirectory: repoPath).feedOutput(bytes)
         case .hello(let panes):
-            for p in panes where p.cols > 0 {
-                controller(forPane: p.id, workingDirectory: p.cwd).setAuthoritativeSize(cols: p.cols, rows: p.rows)
+            for p in panes {
+                let c = controller(forPane: p.id, workingDirectory: p.cwd)
+                if p.cols > 0 {
+                    c.setAuthoritativeSize(cols: p.cols, rows: p.rows)
+                }
+                // Re-drive the pane to what THIS window shows. A reconnect is the
+                // same claim as a window becoming key: the screen being looked at
+                // owns the size. Without it the daemon keeps whatever it last
+                // recorded — after its own restart that can be a phone's width, or
+                // nothing at all — and the pane stays drawn at a width this window
+                // does not have, with only the "Take over" pill to fix it by hand.
+                // Panes that are not on screen are dropped by forwardResize's
+                // superview guard, so a background tab never drives the size.
+                c.sendCurrentSize()
             }
             // A hello means a (re)connect: the daemon's presence entry for this
             // connection is fresh, so replay what we told the old one.
