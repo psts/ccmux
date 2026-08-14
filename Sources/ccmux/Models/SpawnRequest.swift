@@ -52,9 +52,21 @@ struct SpawnRequest: Equatable {
     /// The cwd itself is set by the spawning pane (see `WorkspaceManager.spawnTeammate`).
     func claudeStartupCommand() -> String {
         "env -u CLAUDE_PEERS_NAME -u CLAUDE_PEERS_PROJECT "
-            + "claude --dangerously-load-development-channels server:claude-peers -- "
+            + Self.peersEnabledClaude + " -- "
             + Self.shellSingleQuote(prompt)
     }
+
+    /// Launching claude so the claude-peers channel is loaded — and therefore so
+    /// pushed peer messages actually reach the session.
+    ///
+    /// Named once because it is needed in two places that had drifted: the spawn
+    /// above, and the command persisted for a seeded pane so a later restart
+    /// replays it (see WorkspaceManager). That persisted command used to be a
+    /// bare `claude`, which relaunches the pane without the flag — and Claude
+    /// Code drops channel pushes for a server the session did not load, silently
+    /// and with no error to the sender. The pane came back registered, listed as
+    /// online, able to send, and unable to hear a thing.
+    static let peersEnabledClaude = "claude --dangerously-load-development-channels server:claude-peers"
 
     /// POSIX-safe single-quote escaping: wrap in single quotes, and replace each
     /// embedded single quote with the `'\''` idiom (close-quote, escaped-quote,

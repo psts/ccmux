@@ -9,8 +9,15 @@
 // Identity: hosted panes carry CCMUX_DAEMON_URL / CCMUX_PANE_ID /
 // CCMUX_PANE_TOKEN in their environment; sessions outside ccmux read the
 // daemon-info file (~/Library/Application Support/ccmuxd/peers.json) and land
-// in the parent-directory fallback group. CCMUX_PEERS_CHANNEL=0 opts a session
-// out of live push (check_messages becomes the delivery path).
+// in the parent-directory fallback group.
+//
+// Live push needs the channel flag above. Claude Code drops channel
+// notifications for a server the session did not load and returns no error, so
+// the shim reads its parent's command line to find out rather than assuming, and
+// registers poll-only when the flag is absent — check_messages then becomes the
+// delivery path, and peers are told so instead of waiting on a session that
+// cannot hear them. CCMUX_PEERS_CHANNEL=0 forces poll-only and =1 forces push,
+// for a launcher the detection does not recognise.
 package main
 
 import (
@@ -156,7 +163,7 @@ func (a *app) alreadyShown(seq int64) bool {
 }
 
 func main() {
-	a := &app{mcp: newMCPServer(), channelMode: os.Getenv("CCMUX_PEERS_CHANNEL") != "0"}
+	a := newApp()
 	a.cwd, _ = os.Getwd()
 	a.gitRoot = gitRoot(a.cwd)
 	a.name = os.Getenv("CLAUDE_PEERS_NAME")

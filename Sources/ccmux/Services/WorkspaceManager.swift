@@ -379,12 +379,14 @@ class WorkspaceManager: ObservableObject {
     }
 
     /// Launch the teammate into an already-open, idle pane (the designated Claude pane).
-    /// The seed is sent as live input now; the pane's persisted command is set to a plain
-    /// `claude` so a restart resumes normally rather than re-firing the birth prompt.
+    /// The seed is sent as live input now; the pane's persisted command drops the birth
+    /// prompt so a restart resumes normally rather than re-firing it — but keeps the
+    /// channel flag, without which the restarted session would come back deaf to pushed
+    /// peer messages.
     private func deliverSeed(_ request: SpawnRequest, toExistingPane terminalId: UUID, in controller: SplitTreeController) {
         TerminalStore.shared.sendCommand(request.claudeStartupCommand(), to: terminalId)
         TerminalStore.shared.autoConfirmStartupPrompts(paneId: terminalId)
-        controller.setTerminalStartupCommand("claude", terminalId: terminalId)
+        controller.setTerminalStartupCommand(SpawnRequest.peersEnabledClaude, terminalId: terminalId)
         teammateSeededTerminalIds.insert(terminalId)
         if let leafId = controller.leafContaining(terminalId: terminalId) {
             controller.setFocus(paneId: leafId)
@@ -425,11 +427,19 @@ class WorkspaceManager: ObservableObject {
     }
 
     /// Startup command to persist for a terminal. A pane that received a teammate seed
-    /// this session always replays a plain `claude` (never the one-shot birth prompt);
+    /// this session replays the peers-enabled claude without its one-shot birth prompt;
     /// every other pane replays whatever command is currently running in it.
     private func capturedStartupCommand(forTerminal id: UUID) -> String? {
-        if teammateSeededTerminalIds.contains(id) { return "claude" }
-        return TerminalStore.shared.detectRunningCommand(for: id)
+        Self.startupCommand(seeded: teammateSeededTerminalIds.contains(id),
+                            detected: TerminalStore.shared.detectRunningCommand(for: id))
+    }
+
+    /// The decision itself, free of the store and the id set so it can be tested.
+    /// Its whole point is that a seeded pane persists a command that KEEPS the
+    /// channel flag: it used to persist a bare `claude`, and the pane came back
+    /// from a restart unable to receive pushed peer messages.
+    static func startupCommand(seeded: Bool, detected: String?) -> String? {
+        seeded ? SpawnRequest.peersEnabledClaude : detected
     }
 
     /// Normalize a path for comparison: expand `~`, resolve `.`/`..`, drop trailing slash.

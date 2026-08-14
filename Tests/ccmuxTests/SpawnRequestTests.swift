@@ -106,4 +106,49 @@ final class SpawnRequestTests: XCTestCase {
         XCTAssertTrue(cmd.contains(" -- 'hi'"))  // prompt is positional, after the option terminator
         XCTAssertTrue(cmd.hasPrefix("env -u CLAUDE_PEERS_NAME -u CLAUDE_PEERS_PROJECT "))
     }
+
+    // MARK: - the command a seeded pane replays on restart
+
+    /// A seeded pane persists this instead of its one-shot birth prompt. It used
+    /// to persist a bare `claude`, and the restarted session came back deaf:
+    /// Claude Code drops channel pushes for a server the session did not load,
+    /// silently and with no error to the sender, so the pane registered, listed
+    /// as online, sent fine, and never heard a reply.
+    func testPersistedRestartCommandKeepsTheChannelFlag() {
+        XCTAssertTrue(SpawnRequest.peersEnabledClaude
+            .contains("--dangerously-load-development-channels server:claude-peers"))
+    }
+
+    /// The point of persisting it separately is to drop the birth prompt — a
+    /// restart must resume, not re-fire the seed.
+    func testPersistedRestartCommandCarriesNoPrompt() {
+        XCTAssertFalse(SpawnRequest.peersEnabledClaude.contains(" -- "))
+        XCTAssertFalse(SpawnRequest.peersEnabledClaude.contains("'"))
+    }
+
+    /// One definition, used by both, so the launch and the restart cannot drift
+    /// apart again — which is exactly how the flag went missing.
+    func testSpawnAndRestartShareTheSameLauncher() {
+        let spawn = SpawnRequest(repoPath: "/x", prompt: "hi", requester: nil).claudeStartupCommand()
+        XCTAssertTrue(spawn.contains(SpawnRequest.peersEnabledClaude))
+    }
+
+    /// The decision WorkspaceManager actually makes, not just the constant it
+    /// reaches for. Asserting the constant alone left the two call sites free to
+    /// go back to a bare `claude` with every test still green — which is the bug
+    /// itself, not a hypothetical.
+    func testASeededPanePersistsThePeersEnabledLauncher() {
+        XCTAssertEqual(
+            WorkspaceManager.startupCommand(seeded: true, detected: "claude"),
+            SpawnRequest.peersEnabledClaude)
+        XCTAssertEqual(
+            WorkspaceManager.startupCommand(seeded: true, detected: nil),
+            SpawnRequest.peersEnabledClaude)
+    }
+
+    /// Every other pane still replays whatever it is actually running.
+    func testAnUnseededPaneReplaysWhatIsRunning() {
+        XCTAssertEqual(WorkspaceManager.startupCommand(seeded: false, detected: "vim"), "vim")
+        XCTAssertNil(WorkspaceManager.startupCommand(seeded: false, detected: nil))
+    }
 }

@@ -91,9 +91,11 @@ type Peer struct {
 	// registering, attaching its socket, acking, or polling. Presence is judged
 	// from it, so a session that stops proving anything stops being listed.
 	LastSeenAt int64
-	// PollOnly marks a session that opted out of live push and collects messages
-	// by polling. Such a peer never holds a socket, so "not connected" is its
-	// healthy resting state and must not be reported as a broken one.
+	// PollOnly marks a session that collects messages by polling rather than over
+	// a socket — usually because it was started without the claude-peers channel
+	// flag, not because anyone chose it. Such a peer never holds a socket, so
+	// "not connected" is its healthy resting state and must not be reported as a
+	// broken one.
 	PollOnly bool
 	// AwayAt is when the session left cleanly (stdin EOF → unregister), or 0
 	// while it is here. A pane peer that goes away keeps its record and its
