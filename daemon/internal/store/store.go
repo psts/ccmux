@@ -212,9 +212,20 @@ ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
 // An UPDATE rather than an upsert on purpose: a resize can be in flight while the
 // pane is closed, and an upsert would reinsert the row DeletePane just removed,
 // leaving a phantom pane to be loaded on the next restart.
+//
+// Matching no row is reported as an error rather than passed off as success. Two
+// different things land here — a pane closed mid-resize (expected) and a pane
+// whose INSERT never happened (a bug) — and swallowing both means the second one
+// persists nothing, ever, with no trace. The caller decides which it is.
 func (s *SQLite) UpdatePaneSize(paneID string, cols, rows int) error {
-	_, err := s.db.Exec(`UPDATE panes SET cols=?, rows=? WHERE id=?`, cols, rows, paneID)
-	return err
+	res, err := s.db.Exec(`UPDATE panes SET cols=?, rows=? WHERE id=?`, cols, rows, paneID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("pane %s has no registry row (closed, or its insert failed)", paneID)
+	}
+	return nil
 }
 
 func (s *SQLite) DeleteWorkspace(id string) error {

@@ -337,8 +337,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // neither @objc nor named `cut:`, so Cut answered nobody and walked exactly
         // as far as Undo did. Undo and Redo have no implementation anywhere.
         //
-        // An explicit target means AppKit dispatches straight here and never walks,
-        // so no stale link in the chain can be reached at all.
+        // An explicit target means AppKit dispatches straight here and never walks
+        // the chain. That removes the many stale links a full walk could reach, but
+        // NOT the head of it: the handlers below still read
+        // `NSApp.keyWindow?.firstResponder` themselves, and that one reference is
+        // where the original SIGSEGV was. What makes those reads safe is
+        // `detachFromResponderChain`, called wherever a terminal's last owner drops
+        // it — see ResponderDetachTests and DetachOnPaneCloseTests. Removing one of
+        // those calls is not made harmless by this targeting.
         let undoItem = NSMenuItem(title: "Undo", action: #selector(performUndo(_:)), keyEquivalent: "z")
         undoItem.target = self
         editMenu.addItem(undoItem)
@@ -407,8 +413,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         _ = responder.perform(cut, with: sender)
     }
 
-    /// Greys Undo/Redo out when the focused thing has nothing to undo, instead of
-    /// offering an action that would silently do nothing.
+    /// Greys Undo, Redo and Cut out when the focused thing cannot answer them,
+    /// instead of offering an action that would silently do nothing.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(performUndo(_:)): return activeUndoManager?.canUndo ?? false

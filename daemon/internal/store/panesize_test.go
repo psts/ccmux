@@ -72,9 +72,11 @@ func TestPaneSize_SavePaneDoesNotOverwriteTheSize(t *testing.T) {
 	}
 }
 
-// A size update for a pane that has been closed must not bring its row back. The
+// A size update for a pane that has been closed must not bring its row back — the
 // upsert used to do exactly that when a resize raced a close, leaving a phantom
-// pane to be loaded on the next restart.
+// pane to be loaded on the next restart — and it must say so rather than report
+// success, because the same "no row" also means "this pane's INSERT never
+// happened", which would otherwise persist nothing forever with no trace.
 func TestPaneSize_UpdatingAClosedPaneInsertsNothing(t *testing.T) {
 	st := openTestStore(t)
 
@@ -89,8 +91,8 @@ func TestPaneSize_UpdatingAClosedPaneInsertsNothing(t *testing.T) {
 		t.Fatalf("delete pane: %v", err)
 	}
 
-	if err := st.UpdatePaneSize("p-4", 131, 41); err != nil {
-		t.Fatalf("update size on a deleted pane: %v", err)
+	if err := st.UpdatePaneSize("p-4", 131, 41); err == nil {
+		t.Fatal("updating a pane with no row reported success")
 	}
 
 	all, err := st.Load()

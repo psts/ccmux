@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -197,8 +198,9 @@ func TestManager_ResizePanePersists(t *testing.T) {
 }
 
 // A size tmux cannot honour must be refused at the door. It would otherwise be
-// recorded, persisted by any later pane update, and then fail every future revive
-// at new-session with no way for a lens to undo it.
+// recorded in memory and written by the next UpdatePaneSize, and every revive
+// after that would ask new-session for a width tmux silently clamps — the pane
+// comes back at 10000 with nothing to say why.
 func TestManager_ResizePaneRejectsOutOfRange(t *testing.T) {
 	mgr, _ := paneSizeStack(t, "ccmux-resizebounds-itest")
 
@@ -272,6 +274,84 @@ func TestManager_FailedResizeLeavesTheSizeRetryable(t *testing.T) {
 	if !changed {
 		t.Fatal("retry at the failed size reported no change — the failure was recorded as fact")
 	}
+}
+
+// failingSizeStore is the real registry with UpdatePaneSize switchable to failing,
+// which is the one write whose failure has to stay recoverable.
+type failingSizeStore struct {
+	store.Store
+	fail bool
+}
+
+func (f *failingSizeStore) UpdatePaneSize(paneID string, cols, rows int) error {
+	if f.fail {
+		return fmt.Errorf("simulated registry failure")
+	}
+	return f.Store.UpdatePaneSize(paneID, cols, rows)
+}
+
+// A persist that fails must stay retryable. The recorded size is what `changed` is
+// computed from, so leaving the new size in memory after a failed write would make
+// the client's retry at those same dimensions read false and skip the persist for
+// good — a transient disk or lock error turned permanent.
+func TestManager_FailedPersistIsRetriedOnTheNextResize(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	tsrv := &tmux.Server{Socket: "ccmux-persistretry-itest", ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	real, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = real.Close() })
+	st := &failingSizeStore{Store: real}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mgr := New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	st.fail = true
+	if _, err := mgr.ResizePane(pane0, 131, 41); err != nil {
+		t.Fatalf("resize: %v", err) // tmux accepted it; only the registry write failed
+	}
+
+	// The same size again, with the registry healthy: it must still count as a
+	// change, or nothing ever persists it.
+	st.fail = false
+	changed, err := mgr.ResizePane(pane0, 131, 41)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if !changed {
+		t.Fatal("the retry reported no change — a failed persist was recorded as done")
+	}
+
+	saved, err := real.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, w := range saved {
+		for _, p := range w.Panes {
+			if p.ID == pane0 {
+				if p.Cols != 131 || p.Rows != 41 {
+					t.Fatalf("registry has %dx%d after the retry, want 131x41", p.Cols, p.Rows)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("pane not found in the registry")
 }
 
 func paneSizeStack(t *testing.T, socket string) (*Manager, *tmux.Server) {

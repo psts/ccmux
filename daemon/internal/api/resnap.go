@@ -29,11 +29,9 @@ const resizeSettle = 150 * time.Millisecond
 // pane of a workspace, and a split shows several at once — each with its own
 // controller re-asserting its size, so one window-becomes-key or one reconnect
 // sends N resizes back to back. Dropping any one of them repaints that pane never
-// and leaves it drawn at the old width, which is the bug this exists to fix. An
-// earlier version buffered pane ids in a channel; a writer blocked in WriteJSON
-// while a drag filled the buffer with repeats of one pane could then drop another
-// pane's only request. The set absorbs repeats for free, so the channel carries
-// nothing but a one-slot wake-up.
+// and leaves it drawn at the old width, which is the bug this exists to fix. The
+// set absorbs repeats for free, so the channel carries nothing but a one-slot
+// wake-up and no request can be crowded out by another pane's.
 //
 // Threading: the read goroutine calls `request`; the write goroutine, which is
 // the connection's only writer, calls everything else and solely owns the timer.
@@ -114,7 +112,7 @@ func (r *resnapper) flush(conn *websocket.Conn, ctrl *session.Controller) error 
 }
 
 // stop is the connection's teardown. Nothing rearms after it — it runs by defer
-// once writeLoop has returned — so the tick does not need draining.
+// once paneWriter.run has returned — so the tick does not need draining.
 func (r *resnapper) stop() { r.timer.Stop() }
 
 // drainStop stops a timer and clears any value it already delivered, so a later

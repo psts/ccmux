@@ -459,8 +459,10 @@ func (m *Manager) commitRevive(e *entry, ws *model.Workspace, ctrl *session.Cont
 		log.Printf("revive %s: persist workspace: %v", ws.ID, err)
 	}
 	for i := range saved {
-		// Logged, because a lost write here is the feature failing quietly: the
-		// next revive falls back to 80x24 with nothing to explain why.
+		// Status, cwd and title — NOT the size. SavePane's DO UPDATE deliberately
+		// leaves cols/rows alone (see its doc), and revive needs no size write
+		// anyway: `applied` only ever holds what the registry already said, or the
+		// default standing in for a row that says "never sized".
 		if err := m.store.SavePane(&saved[i]); err != nil {
 			log.Printf("revive %s: persist pane %s: %v", ws.ID, saved[i].ID, err)
 		}
@@ -845,7 +847,8 @@ func (m *Manager) ResizePane(paneID string, cols, rows int) (changed bool, err e
 		return false, fmt.Errorf("unknown pane %s", paneID)
 	}
 	ctrl := e.ctrl
-	changed = p.Cols != cols || p.Rows != rows
+	prev := paneDims{p.Cols, p.Rows}
+	changed = prev.cols != cols || prev.rows != rows
 	m.mu.Unlock()
 
 	if ctrl == nil {
@@ -864,15 +867,16 @@ func (m *Manager) ResizePane(paneID string, cols, rows int) (changed bool, err e
 	m.mu.Unlock()
 
 	if changed {
-		m.commitPaneSize(ctrl, paneID, cols, rows)
+		m.commitPaneSize(ctrl, paneID, prev, paneDims{cols, rows})
 	}
 	return changed, nil
 }
 
-// validPaneSize rejects what tmux will not honour. `resize-window` errors above
-// 10000 (measured on tmux 3.6b, which also refuses 65536 or more outright), so
-// bounding here turns a per-resize tmux error into one clear rejection at the API
-// edge — and keeps an absurd value away from a field that is now persisted.
+// validPaneSize rejects what tmux will not honour: `resize-window` errors on
+// anything above 10000 and leaves the size alone. Bounding here turns a per-resize
+// tmux error into one clear rejection at the API edge, and keeps an absurd value
+// away from a field that is now persisted. (See maxCols for how new-session
+// differs; the limit is stated in terms of the call this path actually makes.)
 func validPaneSize(paneID string, cols, rows int) error {
 	if cols <= 0 || rows <= 0 || cols > maxCols || rows > maxRows {
 		return fmt.Errorf("pane %s: size %dx%d out of range", paneID, cols, rows)
@@ -885,14 +889,30 @@ func validPaneSize(paneID string, cols, rows int) error {
 // The write is size-only (not SavePane) for two reasons: a full-row upsert would
 // carry whatever else the snapshot held, and it would reinsert a row that a
 // concurrent close had just deleted, leaving a phantom pane behind.
-func (m *Manager) commitPaneSize(ctrl *session.Controller, paneID string, cols, rows int) {
+//
+// On a failed write the pane is rolled back to `prev`, so the recorded size means
+// "persisted" rather than "attempted". Leaving the new size in memory would make
+// a transient failure permanent: `changed` is computed from that field, so the
+// client's retry at the same dimensions would read false and skip the persist for
+// good — the same trap the ordering above avoids for tmux, one layer down. tmux
+// is left at the new size either way, which is correct; it is the registry that
+// is behind, and rolling back is what lets the next resize notice and fix it.
+func (m *Manager) commitPaneSize(ctrl *session.Controller, paneID string, prev, next paneDims) {
 	// Persisted so a restart or revive rebuilds the pane at the size it was last
 	// drawn at. Without it the next revive re-creates it at 80x24 and the inner
 	// program's output stays wrapped at a width the pane no longer has.
-	if err := m.store.UpdatePaneSize(paneID, cols, rows); err != nil {
-		log.Printf("resize pane %s: persist %dx%d: %v", paneID, cols, rows, err)
+	if err := m.store.UpdatePaneSize(paneID, next.cols, next.rows); err != nil {
+		log.Printf("resize pane %s: persist %dx%d: %v (not durable; retrying on the next resize)",
+			paneID, next.cols, next.rows, err)
+		m.mu.Lock()
+		if _, p := m.findPaneLocked(paneID); p != nil {
+			p.Cols, p.Rows = prev.cols, prev.rows
+		}
+		m.mu.Unlock()
 	}
-	ctrl.Broadcast(session.Event{Kind: "pane-size", PaneID: paneID, Payload: PaneSize{Cols: cols, Rows: rows}})
+	// Broadcast the size tmux is actually at, whether or not it reached the
+	// registry — the other lenses are describing the live pane, not the record.
+	ctrl.Broadcast(session.Event{Kind: "pane-size", PaneID: paneID, Payload: PaneSize{Cols: next.cols, Rows: next.rows}})
 }
 
 // BroadcastClipboard pushes tmux-copied text to every lens attached to the

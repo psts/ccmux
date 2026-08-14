@@ -109,8 +109,8 @@ final class WorkspaceAttachment {
         let live = Set(panes.map { $0.id })
         let dead = controllers.keys.filter { !live.contains($0) }
         for id in dead {
-            // This dictionary owns the controller, which owns the terminal view —
-            // so the view dies here.
+            // This dictionary owns the controller, which owns the terminal view;
+            // detaching drops the view-hierarchy reference too, so it dies here.
             controllers[id]?.terminalView.detachFromResponderChain()
             controllers.removeValue(forKey: id)
         }

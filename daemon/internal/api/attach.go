@@ -76,7 +76,9 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	if err := conn.WriteJSON(wsMsg{T: "hello", Panes: paneInfos(ws), Layout: ws.LayoutJSON, LayoutVersion: ws.LayoutVersion}); err != nil {
 		return
 	}
-	sendSnapshots(conn, ctrl, ws)
+	if err := sendSnapshots(conn, ctrl, ws); err != nil {
+		return
+	}
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -113,7 +115,8 @@ func sendSnapshots(conn *websocket.Conn, ctrl *session.Controller, ws *model.Wor
 // capture-pane emits row content with no leading clear, which was safe only while
 // snapshots arrived on a blank terminal (a fresh attach). They no longer do: a
 // repaint lands on a live screen, and a lens that writes the bytes straight into
-// its emulator would staircase them down from wherever the cursor sat. The Mac
+// its emulator would paint them starting wherever the cursor happened to be,
+// scrolling the live content away instead of replacing it. The Mac
 // lens clears on its own before painting a snapshot; the web lens does not, and
 // it reads the same frame — so the guarantee belongs here, in the frame, not in
 // each client. A lens that also clears just clears twice, which costs nothing.
@@ -124,8 +127,8 @@ const snapshotReset = "\x1b[H\x1b[2J"
 // The two failures are not the same kind. A capture that fails is per-pane: the
 // lens keeps whatever it had, which beats clearing it to nothing, so this returns
 // nil and the caller carries on with the other panes. A write that fails is
-// per-connection — the socket is gone — so it is returned, and every caller ends
-// the write loop on it, like every other write in this file.
+// per-connection — the socket is gone — so it is returned, and every caller gives
+// up the connection on it, like every other write in this file.
 //
 // Both are logged. A dropped repaint leaves a screen that is already wrong, and
 // "the next resize will retry" means the user has to resize again to fix it.
