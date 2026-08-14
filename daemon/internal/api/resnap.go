@@ -47,8 +47,11 @@ type resnapper struct {
 }
 
 func newResnapper() *resnapper {
+	// Parked far out rather than left unset: a nil channel in the writer's select
+	// would be fine, but a real timer keeps `due()` a plain field read. It cannot
+	// have fired yet, so a plain Stop is enough here.
 	t := time.NewTimer(time.Hour)
-	drainStop(t)
+	t.Stop()
 	return &resnapper{wake: make(chan struct{}, 1), timer: t, pending: map[string]struct{}{}}
 }
 
@@ -81,8 +84,19 @@ func (r *resnapper) arm() {
 }
 
 // flush repaints every pane whose shared settle window just closed. Runs on the
-// write goroutine, which is the only writer this connection has.
-func (r *resnapper) flush(conn *websocket.Conn, ctrl *session.Controller) {
+// write goroutine, which is the only writer this connection has. Returns the
+// first write error so the caller can end the loop; a failed capture is per-pane
+// and does not stop the others.
+//
+// Known and accepted: the capture is a control-mode round-trip, and pane output
+// produced before it lands keeps queueing on the subscriber. Those bytes are in
+// the captured grid AND still in the queue, so they get written again after the
+// snapshot — a program streaming output can show a few duplicated lines right
+// after a resize. Draining the queue to avoid that would discard output produced
+// after the capture, which is not in the snapshot and would be lost for good.
+// Duplicated lines are cosmetic and the next redraw clears them; lost output is
+// not recoverable, so the duplication is the deliberate side to err on.
+func (r *resnapper) flush(conn *websocket.Conn, ctrl *session.Controller) error {
 	r.mu.Lock()
 	panes := make([]string, 0, len(r.pending))
 	for pane := range r.pending {
@@ -92,14 +106,20 @@ func (r *resnapper) flush(conn *websocket.Conn, ctrl *session.Controller) {
 	r.mu.Unlock()
 
 	for _, pane := range panes {
-		sendSnapshot(conn, ctrl, pane)
+		if err := sendSnapshot(conn, ctrl, pane); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func (r *resnapper) stop() { drainStop(r.timer) }
+// stop is the connection's teardown. Nothing rearms after it — it runs by defer
+// once writeLoop has returned — so the tick does not need draining.
+func (r *resnapper) stop() { r.timer.Stop() }
 
 // drainStop stops a timer and clears any value it already delivered, so a later
-// Reset cannot fire immediately on a stale tick.
+// Reset cannot fire immediately on a stale tick. Only `arm` needs it, being the
+// only caller that follows with a Reset.
 func drainStop(t *time.Timer) {
 	if !t.Stop() {
 		select {

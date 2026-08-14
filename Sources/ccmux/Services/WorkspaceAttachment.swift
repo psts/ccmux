@@ -69,6 +69,10 @@ final class WorkspaceAttachment {
     /// a hosted pane view does to find its controller/connection state).
     func hasPane(_ paneId: String) -> Bool { controllers[paneId] != nil }
 
+    /// A pane's terminal view, for tests that need to assert what happens to it when
+    /// the pane goes away. Production reaches views through `controller(forPane:)`.
+    func terminalView(forPane paneId: String) -> NSView? { controllers[paneId]?.terminalView }
+
     /// Last focus frame sent ("" = explicitly unfocused; nil = never reported).
     private(set) var lastReportedFocus: String?
     /// Last presence reported alongside it (nil = never reported).
@@ -105,9 +109,8 @@ final class WorkspaceAttachment {
         let live = Set(panes.map { $0.id })
         let dead = controllers.keys.filter { !live.contains($0) }
         for id in dead {
-            // This dictionary owns the controller, and the controller owns the
-            // terminal view — so the view dies here. A closed pane is usually the
-            // one being typed in, and a window does not retain its first responder.
+            // This dictionary owns the controller, which owns the terminal view —
+            // so the view dies here.
             controllers[id]?.terminalView.detachFromResponderChain()
             controllers.removeValue(forKey: id)
         }

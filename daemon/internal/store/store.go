@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"ccmux.dev/ccmuxd/internal/model"
 	_ "modernc.org/sqlite" // pure-Go driver, registered as "sqlite"
@@ -18,6 +19,7 @@ import (
 type Store interface {
 	SaveWorkspace(*model.Workspace) error
 	SavePane(*model.Pane) error
+	UpdatePaneSize(paneID string, cols, rows int) error
 	DeleteWorkspace(id string) error
 	DeletePane(id string) error
 	SetWorkspaceStatus(id string, status model.Status) error
@@ -147,8 +149,19 @@ func Open(path string) (*SQLite, error) {
 	// revive re-created every pane at 80x24 — the inner program then drew its
 	// output at a width the pane no longer had. 0 means "never sized", which the
 	// manager reads as "fall back to the default".
-	_, _ = db.Exec(`ALTER TABLE panes ADD COLUMN cols INTEGER DEFAULT 0`)
-	_, _ = db.Exec(`ALTER TABLE panes ADD COLUMN rows INTEGER DEFAULT 0`)
+	//
+	// Unlike the migrations above, only the expected error is swallowed. Every
+	// other one (locked database, read-only file, disk full) leaves the column
+	// missing, and the widened SELECT below then fails Load with "no such column:
+	// cols" — sending whoever debugs it after a missing column rather than the
+	// locked database that caused it.
+	for _, col := range []string{"cols", "rows"} {
+		if _, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col + ` INTEGER DEFAULT 0`); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrate panes.%s: %w", col, err)
+		}
+	}
 	// Pre-mailbox registries have cursors with no record of what they hang off,
 	// so nothing could ever garbage-collect them. The columns default empty;
 	// every registration backfills its own row (see TouchPeerMailbox).
@@ -178,15 +191,29 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
 	return err
 }
 
+// SavePane upserts a pane. cols/rows are written on INSERT (a new pane's starting
+// size) but deliberately NOT in the DO UPDATE set: callers build their `*p` copy
+// under the lock and then write it after unrelated work, so a title or attention
+// update carrying a stale size would put the old size back — and because memory
+// stays correct, ResizePane's `changed` check is false from then on and nothing
+// ever re-persists it. Size updates go through UpdatePaneSize instead.
 func (s *SQLite) SavePane(p *model.Pane) error {
 	_, err := s.db.Exec(`
 INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
   startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention,
-  is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude,
-  cols=excluded.cols, rows=excluded.rows`,
+  is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude`,
 		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows)
+	return err
+}
+
+// UpdatePaneSize writes only the size, and only for a pane that still has a row.
+// An UPDATE rather than an upsert on purpose: a resize can be in flight while the
+// pane is closed, and an upsert would reinsert the row DeletePane just removed,
+// leaving a phantom pane to be loaded on the next restart.
+func (s *SQLite) UpdatePaneSize(paneID string, cols, rows int) error {
+	_, err := s.db.Exec(`UPDATE panes SET cols=?, rows=? WHERE id=?`, cols, rows, paneID)
 	return err
 }
 

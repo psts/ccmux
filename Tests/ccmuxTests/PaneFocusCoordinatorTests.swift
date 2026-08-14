@@ -6,7 +6,7 @@ final class PaneFocusCoordinatorTests: XCTestCase {
     private var clock = Date(timeIntervalSince1970: 1_000)
 
     private func makeCoordinator() -> PaneFocusCoordinator {
-        PaneFocusCoordinator(now: { self.clock })
+        PaneFocusCoordinator.makeForTesting(now: { self.clock })
     }
 
     func testNoRequestMeansNoClaim() {

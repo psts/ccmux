@@ -772,9 +772,12 @@ final class RemoteSessionService: ObservableObject {
     }
 
     private func removeWorkspace(_ appId: UUID) {
-        attachments[appId]?.disconnect()
-        attachments[appId]?.detachAllTerminals()
-        attachments.removeValue(forKey: appId)
+        // Removing first makes the ordering the detach depends on visible: this is
+        // the last reference to the attachment, and therefore to its terminal views.
+        if let attachment = attachments.removeValue(forKey: appId) {
+            attachment.disconnect()
+            attachment.detachAllTerminals()
+        }
         controllers.removeValue(forKey: appId)
         attentionMonitors[appId]?.stop()
         attentionMonitors.removeValue(forKey: appId)

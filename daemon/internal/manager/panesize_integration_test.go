@@ -53,6 +53,56 @@ func TestManager_ReviveRestoresPaneSize(t *testing.T) {
 	}
 }
 
+// The case every real workspace is in: more than one pane, at different sizes.
+// Each ccmux pane is its own tmux window, and revive creates the session at pane
+// 0's size and then spawns the rest into it — so this is also the test of whether
+// a spawned window can hold a size of its own at all. If it cannot, per-pane
+// restore is broken for every split workspace.
+func TestManager_ReviveRestoresEachPanesOwnSize(t *testing.T) {
+	mgr, tsrv := paneSizeStack(t, "ccmux-revivemulti-itest")
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+	pane1, err := mgr.SpawnPane(ws.ID, "/tmp", "", "tester")
+	if err != nil {
+		t.Fatalf("spawn second pane: %v", err)
+	}
+
+	// Deliberately different, and different from the default.
+	if _, err := mgr.ResizePane(pane0, 131, 41); err != nil {
+		t.Fatalf("resize pane0: %v", err)
+	}
+	if _, err := mgr.ResizePane(pane1.ID, 97, 29); err != nil {
+		t.Fatalf("resize pane1: %v", err)
+	}
+
+	if err := tsrv.KillSession(ws.TmuxSession); err != nil {
+		t.Fatalf("kill-session: %v", err)
+	}
+	if !waitStatus(mgr, ws.ID, model.StatusCold, 3*time.Second) {
+		t.Fatalf("workspace did not go cold after session kill")
+	}
+	revived, err := mgr.ReviveWorkspace(ws.ID)
+	if err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+
+	want := map[string]paneDims{pane0: {131, 41}, pane1.ID: {97, 29}}
+	for _, p := range revived.Panes {
+		w := want[p.ID]
+		if p.Cols != w.cols || p.Rows != w.rows {
+			t.Errorf("pane %s records %dx%d, want %dx%d", p.ID, p.Cols, p.Rows, w.cols, w.rows)
+		}
+		// And tmux has to agree, per window — the record is worthless otherwise.
+		if cols := tmuxWidths(t, tsrv, ws.TmuxSession)[p.ID]; cols != w.cols {
+			t.Errorf("tmux window for pane %s is %d cols, want %d", p.ID, cols, w.cols)
+		}
+	}
+}
+
 // A pane nobody ever sized still has to come back. 0 means "never sized", which
 // must fall back to the default rather than asking tmux for a 0-column window.
 func TestManager_ReviveUnsizedPaneUsesDefault(t *testing.T) {
@@ -157,6 +207,10 @@ func TestManager_ResizePaneRejectsOutOfRange(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	pane0 := ws.Panes[0].ID
+	if _, err := mgr.ResizePane(pane0, 120, 35); err != nil {
+		t.Fatalf("baseline resize: %v", err)
+	}
+	before := *mgr.Workspace(ws.ID).Panes[0]
 
 	for _, tc := range []struct {
 		name       string
@@ -172,10 +226,13 @@ func TestManager_ResizePaneRejectsOutOfRange(t *testing.T) {
 		}
 	}
 
-	// And the pane is untouched by the rejected attempts.
+	// And the pane still records exactly what it had before — a rejection that
+	// left a wrong-but-in-range size (0, or one dimension applied) would be just
+	// as broken as one that stored the out-of-range value.
 	live := mgr.Workspace(ws.ID)
-	if live.Panes[0].Cols > maxCols || live.Panes[0].Rows > maxRows {
-		t.Fatalf("pane recorded an out-of-range size: %dx%d", live.Panes[0].Cols, live.Panes[0].Rows)
+	if live.Panes[0].Cols != before.Cols || live.Panes[0].Rows != before.Rows {
+		t.Fatalf("rejected resizes changed the pane to %dx%d, want %dx%d",
+			live.Panes[0].Cols, live.Panes[0].Rows, before.Cols, before.Rows)
 	}
 }
 
@@ -239,6 +296,32 @@ func paneSizeStack(t *testing.T, socket string) (*Manager, *tmux.Server) {
 		t.Fatalf("start: %v", err)
 	}
 	return mgr, tsrv
+}
+
+// tmuxWidths asks tmux for every window's width in a session, keyed by the ccmux
+// pane id stamped on the window — the same tag the daemon's own discovery uses.
+// Asserting against this rather than the registry is the point: it is the width
+// the program in the pane actually got.
+func tmuxWidths(t *testing.T, tsrv *tmux.Server, session string) map[string]int {
+	t.Helper()
+	out, err := exec.Command("tmux", "-L", tsrv.Socket, "list-windows", "-t", session,
+		"-F", "#{@ccmux_pane_id}|#{window_width}").Output()
+	if err != nil {
+		t.Fatalf("list-windows: %v", err)
+	}
+	widths := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		id, w, ok := strings.Cut(line, "|")
+		if !ok || id == "" {
+			continue
+		}
+		cols, err := strconv.Atoi(strings.TrimSpace(w))
+		if err != nil {
+			t.Fatalf("parse window_width %q: %v", w, err)
+		}
+		widths[id] = cols
+	}
+	return widths
 }
 
 // tmuxWindowCols asks tmux itself how wide the session's first window is, so the

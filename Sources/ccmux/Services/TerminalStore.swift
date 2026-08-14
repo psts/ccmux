@@ -412,8 +412,6 @@ class TerminalStore {
         if let terminal = terminals.removeValue(forKey: paneId) {
             terminal.terminalDelegate = nil
             // This dictionary is the terminal's last owner, so the view dies here.
-            // It is almost certainly the first responder — closing a pane means
-            // closing the one being typed in — and a window does not retain that.
             terminal.detachFromResponderChain()
             terminal.terminate()
         }

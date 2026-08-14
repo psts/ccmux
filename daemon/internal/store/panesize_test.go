@@ -27,14 +27,82 @@ func TestPaneSize_SurvivesAReload(t *testing.T) {
 		t.Fatalf("reloaded size = %dx%d, want 137x42", loaded.Cols, loaded.Rows)
 	}
 
-	// A resize is an upsert on an existing row, not an insert.
-	p.Cols, p.Rows = 96, 30
-	if err := st.SavePane(p); err != nil {
-		t.Fatalf("resave pane: %v", err)
+	// A resize goes through UpdatePaneSize, not SavePane.
+	if err := st.UpdatePaneSize("p-1", 96, 30); err != nil {
+		t.Fatalf("update size: %v", err)
 	}
 	loaded = loadPane(t, st, "ws-1", "p-1")
 	if loaded.Cols != 96 || loaded.Rows != 30 {
-		t.Fatalf("after upsert size = %dx%d, want 96x30", loaded.Cols, loaded.Rows)
+		t.Fatalf("after update size = %dx%d, want 96x30", loaded.Cols, loaded.Rows)
+	}
+}
+
+// SavePane must not carry a size. Callers snapshot the pane under the lock and
+// write it after unrelated work, so letting a title or attention update set the
+// size would restore an old one — and since memory stays correct, ResizePane's
+// `changed` check then reads false forever and never re-persists it.
+func TestPaneSize_SavePaneDoesNotOverwriteTheSize(t *testing.T) {
+	st := openTestStore(t)
+
+	ws := &model.Workspace{ID: "ws-3", Name: "w", RepoPath: "/tmp", TmuxSession: "s", Status: model.StatusLive}
+	if err := st.SaveWorkspace(ws); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	p := &model.Pane{ID: "p-3", WorkspaceID: ws.ID, CWD: "/tmp", Status: model.StatusLive, Title: "before"}
+	if err := st.SavePane(p); err != nil {
+		t.Fatalf("save pane: %v", err)
+	}
+	if err := st.UpdatePaneSize("p-3", 131, 41); err != nil {
+		t.Fatalf("update size: %v", err)
+	}
+
+	// A stale snapshot — the size it carries predates the resize above.
+	stale := *p
+	stale.Title = "after"
+	if err := st.SavePane(&stale); err != nil {
+		t.Fatalf("save stale snapshot: %v", err)
+	}
+
+	loaded := loadPane(t, st, "ws-3", "p-3")
+	if loaded.Cols != 131 || loaded.Rows != 41 {
+		t.Fatalf("a title write reset the size to %dx%d, want 131x41", loaded.Cols, loaded.Rows)
+	}
+	if loaded.Title != "after" {
+		t.Fatalf("title = %q, want it to have been updated", loaded.Title)
+	}
+}
+
+// A size update for a pane that has been closed must not bring its row back. The
+// upsert used to do exactly that when a resize raced a close, leaving a phantom
+// pane to be loaded on the next restart.
+func TestPaneSize_UpdatingAClosedPaneInsertsNothing(t *testing.T) {
+	st := openTestStore(t)
+
+	ws := &model.Workspace{ID: "ws-4", Name: "w", RepoPath: "/tmp", TmuxSession: "s", Status: model.StatusLive}
+	if err := st.SaveWorkspace(ws); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	if err := st.SavePane(&model.Pane{ID: "p-4", WorkspaceID: ws.ID, CWD: "/tmp", Status: model.StatusLive}); err != nil {
+		t.Fatalf("save pane: %v", err)
+	}
+	if err := st.DeletePane("p-4"); err != nil {
+		t.Fatalf("delete pane: %v", err)
+	}
+
+	if err := st.UpdatePaneSize("p-4", 131, 41); err != nil {
+		t.Fatalf("update size on a deleted pane: %v", err)
+	}
+
+	all, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, w := range all {
+		for _, p := range w.Panes {
+			if p.ID == "p-4" {
+				t.Fatal("the deleted pane came back")
+			}
+		}
 	}
 }
 
@@ -82,9 +150,8 @@ func TestPaneSize_PreMigrationRegistryUpgrades(t *testing.T) {
 	}
 
 	// And the upgraded table still round-trips a size.
-	loaded.Cols, loaded.Rows = 137, 42
-	if err := st.SavePane(loaded); err != nil {
-		t.Fatalf("save into migrated table: %v", err)
+	if err := st.UpdatePaneSize("p-old", 137, 42); err != nil {
+		t.Fatalf("update size in migrated table: %v", err)
 	}
 	again := loadPane(t, st, "ws-old", "p-old")
 	if again.Cols != 137 || again.Rows != 42 {

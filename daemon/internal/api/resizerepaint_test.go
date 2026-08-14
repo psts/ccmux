@@ -32,6 +32,21 @@ func frames(conn *websocket.Conn) <-chan wsMsg {
 	return ch
 }
 
+// drainUntilQuiet discards frames until nothing arrives for `quiet`. Named apart
+// from the counting helper because the count is not the point here.
+func drainUntilQuiet(ch <-chan wsMsg, quiet time.Duration) {
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-time.After(quiet):
+			return
+		}
+	}
+}
+
 // snapshotsUntilQuiet counts snapshot frames for pane until nothing arrives for
 // `quiet`.
 func snapshotsUntilQuiet(ch <-chan wsMsg, pane string, quiet time.Duration) int {
@@ -130,7 +145,7 @@ func TestAPI_ResizeRepaintsEveryPaneInTheBurst(t *testing.T) {
 	c := attachAndHello(t, base, ws.ID)
 	defer c.Close()
 	ch := frames(c)
-	snapshotsUntilQuiet(ch, "", time.Second) // drain the attach seed for both panes
+	drainUntilQuiet(ch, time.Second) // let the attach seed for both panes settle
 
 	// Back to back, inside one settle window — what one window event looks like.
 	for _, p := range []string{pane0, pane1} {

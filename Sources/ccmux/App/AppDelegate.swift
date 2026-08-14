@@ -296,6 +296,86 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         ctrl.splitPane(id: id, direction: .vertical)
     }
 
+    /// Builds the View menu.
+    private func viewMenuItem() -> NSMenuItem {
+        let viewMenuItem = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        viewMenuItem.submenu = viewMenu
+
+        let splitH = NSMenuItem(title: "Split Horizontal", action: #selector(splitHorizontal), keyEquivalent: "d")
+        viewMenu.addItem(splitH)
+
+        let splitV = NSMenuItem(title: "Split Vertical", action: #selector(splitVertical), keyEquivalent: "d")
+        splitV.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(splitV)
+
+        viewMenu.addItem(.separator())
+        let peerItem = NSMenuItem(title: "Peer Messages", action: #selector(togglePeerMessages), keyEquivalent: "p")
+        peerItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(peerItem)
+        return viewMenuItem
+    }
+
+    /// Builds the Edit menu. Separate from `buildMainMenu` because it is the one
+    /// menu with behaviour rather than just items — its first three entries have to
+    /// carry an explicit target — and because a test can then address it directly.
+    func editMenuItem() -> NSMenuItem {
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenuItem.submenu = editMenu
+
+        // Undo, Redo and Cut are aimed at this delegate, NOT sent as bare actions
+        // into the responder chain. ccmux crashed on Cmd+Z (SIGSEGV, with AppKit
+        // reporting "Performing @selector(undo:) from sender NSMenuItem"): with no
+        // target, AppKit walks the chain from window.firstResponder, and right
+        // after a pane closes that walk can reach something already gone.
+        //
+        // Which actions walk the WHOLE chain is what decides the exposure, and it
+        // comes down to what SwiftTerm exposes to the Objective-C runtime:
+        // `paste(_:)` and `copy(_:)` are @objc and `selectAll(_:)` overrides
+        // NSResponder, so those three stop at the terminal. `cut(sender:)` is
+        // neither @objc nor named `cut:`, so Cut answered nobody and walked exactly
+        // as far as Undo did. Undo and Redo have no implementation anywhere.
+        //
+        // An explicit target means AppKit dispatches straight here and never walks,
+        // so no stale link in the chain can be reached at all.
+        let undoItem = NSMenuItem(title: "Undo", action: #selector(performUndo(_:)), keyEquivalent: "z")
+        undoItem.target = self
+        editMenu.addItem(undoItem)
+        let redoItem = NSMenuItem(title: "Redo", action: #selector(performRedo(_:)), keyEquivalent: "z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        redoItem.target = self
+        editMenu.addItem(redoItem)
+        editMenu.addItem(.separator())
+
+        let cutItem = NSMenuItem(title: "Cut", action: #selector(performCut(_:)), keyEquivalent: "x")
+        cutItem.target = self
+        editMenu.addItem(cutItem)
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+
+        let findItem = NSMenuItem(title: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        findItem.tag = Int(NSTextFinder.Action.showFindInterface.rawValue)
+        editMenu.addItem(findItem)
+
+        let findReplaceItem = NSMenuItem(title: "Find and Replace…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        findReplaceItem.keyEquivalentModifierMask = [.command, .option]
+        findReplaceItem.tag = Int(NSTextFinder.Action.showReplaceInterface.rawValue)
+        editMenu.addItem(findReplaceItem)
+
+        let findNextItem = NSMenuItem(title: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+        findNextItem.tag = Int(NSTextFinder.Action.nextMatch.rawValue)
+        editMenu.addItem(findNextItem)
+
+        let findPrevItem = NSMenuItem(title: "Find Previous", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
+        findPrevItem.tag = Int(NSTextFinder.Action.previousMatch.rawValue)
+        editMenu.addItem(findPrevItem)
+        return editMenuItem
+    }
+
     /// The undo manager for whatever currently has the keyboard, or nil when that is
     /// something with no undo stack — a terminal, most of the time.
     ///
@@ -315,12 +395,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         manager.redo()
     }
 
+    /// Cut, delivered to the focused view directly rather than walked to.
+    ///
+    /// One hop, not a chain search: the thing being cut from is the thing with the
+    /// keyboard, and stopping there is what keeps a stale link further up the chain
+    /// out of reach. A terminal does not answer `cut:` at all, so Cmd+X there is a
+    /// no-op, which is what it already was.
+    @objc private func performCut(_ sender: Any?) {
+        let cut = #selector(NSText.cut(_:))
+        guard let responder = NSApp.keyWindow?.firstResponder, responder.responds(to: cut) else { return }
+        _ = responder.perform(cut, with: sender)
+    }
+
     /// Greys Undo/Redo out when the focused thing has nothing to undo, instead of
     /// offering an action that would silently do nothing.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(performUndo(_:)): return activeUndoManager?.canUndo ?? false
         case #selector(performRedo(_:)): return activeUndoManager?.canRedo ?? false
+        case #selector(performCut(_:)):
+            return NSApp.keyWindow?.firstResponder?.responds(to: #selector(NSText.cut(_:))) ?? false
         default: return true
         }
     }
@@ -446,72 +540,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         fileMenu.addItem(withTitle: "Close Pane", action: #selector(closeFocusedPane), keyEquivalent: "w")
         fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.close), keyEquivalent: "W")
 
-        // View menu
-        let viewMenuItem = NSMenuItem()
-        mainMenu.addItem(viewMenuItem)
-        let viewMenu = NSMenu(title: "View")
-        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(viewMenuItem())
 
-        let splitH = NSMenuItem(title: "Split Horizontal", action: #selector(splitHorizontal), keyEquivalent: "d")
-        viewMenu.addItem(splitH)
-
-        let splitV = NSMenuItem(title: "Split Vertical", action: #selector(splitVertical), keyEquivalent: "d")
-        splitV.keyEquivalentModifierMask = [.command, .shift]
-        viewMenu.addItem(splitV)
-
-        viewMenu.addItem(.separator())
-        let peerItem = NSMenuItem(title: "Peer Messages", action: #selector(togglePeerMessages), keyEquivalent: "p")
-        peerItem.keyEquivalentModifierMask = [.command, .shift]
-        viewMenu.addItem(peerItem)
-
-        // Edit menu
-        let editMenuItem = NSMenuItem()
-        mainMenu.addItem(editMenuItem)
-        let editMenu = NSMenu(title: "Edit")
-        editMenuItem.submenu = editMenu
-
-        // Undo/Redo are aimed at this delegate, NOT sent as a bare `undo:` into the
-        // responder chain. ccmux crashed on Cmd+Z (SIGSEGV, with AppKit reporting
-        // "Performing @selector(undo:) from sender NSMenuItem"): nothing here or in
-        // SwiftTerm implements undo:, so it was the one Edit action that walked the
-        // chain end to end, and it did that starting from window.firstResponder
-        // right after a pane was closed. Cut/Copy/Paste never walked that far —
-        // SwiftTerm implements them, so their search stops at the terminal.
-        //
-        // An explicit target means AppKit dispatches straight here and never walks,
-        // so no stale link in the chain can be reached at all.
-        let undoItem = NSMenuItem(title: "Undo", action: #selector(performUndo(_:)), keyEquivalent: "z")
-        undoItem.target = self
-        editMenu.addItem(undoItem)
-        let redoItem = NSMenuItem(title: "Redo", action: #selector(performRedo(_:)), keyEquivalent: "z")
-        redoItem.keyEquivalentModifierMask = [.command, .shift]
-        redoItem.target = self
-        editMenu.addItem(redoItem)
-        editMenu.addItem(.separator())
-
-        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        editMenu.addItem(.separator())
-
-        let findItem = NSMenuItem(title: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
-        findItem.tag = Int(NSTextFinder.Action.showFindInterface.rawValue)
-        editMenu.addItem(findItem)
-
-        let findReplaceItem = NSMenuItem(title: "Find and Replace…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
-        findReplaceItem.keyEquivalentModifierMask = [.command, .option]
-        findReplaceItem.tag = Int(NSTextFinder.Action.showReplaceInterface.rawValue)
-        editMenu.addItem(findReplaceItem)
-
-        let findNextItem = NSMenuItem(title: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
-        findNextItem.tag = Int(NSTextFinder.Action.nextMatch.rawValue)
-        editMenu.addItem(findNextItem)
-
-        let findPrevItem = NSMenuItem(title: "Find Previous", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
-        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
-        findPrevItem.tag = Int(NSTextFinder.Action.previousMatch.rawValue)
-        editMenu.addItem(findPrevItem)
+        mainMenu.addItem(editMenuItem())
 
         // Window menu
         let windowMenuItem = NSMenuItem()

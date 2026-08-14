@@ -35,12 +35,21 @@ final class PaneFocusCoordinator {
     private var pending: (tabId: UUID, madeAt: Date)?
     private let now: () -> Date
 
-    /// The clock is injectable for tests only; production uses `shared`. Building a
-    /// second coordinator would compile and then silently focus nothing, since the
-    /// views only ever claim from `shared`.
-    init(now: @escaping () -> Date = Date.init) {
+    /// Private so `shared` is the only instance production can reach. A second
+    /// coordinator would compile and then focus nothing at all, because every claim
+    /// goes through `shared` — an invariant worth having the compiler hold rather
+    /// than a comment.
+    private init(now: @escaping () -> Date = Date.init) {
         self.now = now
     }
+
+    #if DEBUG
+    /// Test seam: the same type with a clock you control. Not reachable from a
+    /// release build, so it cannot become a second production instance.
+    static func makeForTesting(now: @escaping () -> Date) -> PaneFocusCoordinator {
+        PaneFocusCoordinator(now: now)
+    }
+    #endif
 
     /// Ask the terminal owning `tabId` to take keyboard focus.
     func requestFocus(tabId: UUID) {
