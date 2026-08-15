@@ -3,7 +3,7 @@ package model
 import "testing"
 
 // The sidebar renders workspace lists verbatim, so this order IS the UI order:
-// alphabetical, case-insensitive, and stable for equal names.
+// alphabetical, case-insensitive, deterministic for equal names (ID tiebreak).
 func TestSortByName(t *testing.T) {
 	wss := []*Workspace{
 		{ID: "3", Name: "voc"},

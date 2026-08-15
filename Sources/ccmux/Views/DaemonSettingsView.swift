@@ -36,110 +36,126 @@ struct DaemonSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Who you are")
-                    .font(.headline)
-                Text("Your Tailscale login email. Notifications and phone-push muting match on it, so it must be the same address your phone signs in with. Empty uses your macOS name, which then needs an identity alias on the daemon.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                TextField("you@example.com", text: $identity)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("New workspace startup command")
-                    .font(.headline)
-                Text("Typed into every new hosted workspace's terminal, in every lens. Clear it to reset to the built-in default.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                TextField("claude …", text: $command)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Per-folder overrides")
-                    .font(.headline)
-                Text("Repos under a folder use its command instead; the longest matching folder wins.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                ForEach($rules) { $rule in
-                    HStack(spacing: 6) {
-                        TextField("/path/to/folder", text: $rule.pathPrefix)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11, design: .monospaced))
-                            .frame(minWidth: 220)
-                        TextField("command", text: $rule.command)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11, design: .monospaced))
-                        Button {
-                            rules.removeAll { $0.id == rule.id }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Remove rule")
-                    }
-                }
-                Button("Add folder rule") {
-                    rules.append(EditableRule(pathPrefix: "", command: ""))
-                }
-                .controlSize(.small)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Dev hostnames")
-                    .font(.headline)
-                Text("Serves workspace dev servers over the tailnet (right-click a hosted workspace → Hostnames…). With a domain: https://<name>.<domain> via one wildcard cert (needs a Cloudflare DNS-edit token for the zone). Without: one ts.net node per hostname (the auth key registers them silently).")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                TextField("dev.sanlabs.io (empty = ts.net mode)", text: $devDomain)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                TextField("ccmux (serves this web UI at <name>.<domain>; empty = off)", text: $lensHostname)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .disabled(devDomain.isEmpty)
-                    .help("Reserved name for the ccmux web UI itself, e.g. \"ccmux\" → https://ccmux.\(devDomain.isEmpty ? "<domain>" : devDomain). Needs a dev domain.")
-                SecureField("Cloudflare API token", text: $cloudflareToken)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                SecureField("Tailscale auth key (optional, ts.net mode)", text: $tailscaleAuthKey)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                if devCertStatus != "unset" {
-                    Text("Wildcard cert: \(devCertStatus)")
-                        .font(.system(size: 11))
-                        .foregroundColor(devCertStatus == "ready" ? .green : devCertStatus.hasPrefix("error") ? .red : .secondary)
-                }
-            }
-
-            HStack(spacing: 6) {
-                if saving {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Text(status)
-                    .font(.system(size: 11))
-                    .foregroundColor(statusColor)
-                    .lineLimit(2)
-                Spacer()
-                Button("Save") { Task { await save() } }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!loaded || saving)
-            }
+            identitySection
+            startupSection
+            rulesSection
+            devHostnamesSection
+            saveBar
         }
         .padding(18)
         .frame(width: 560)
         .task { await load() }
     }
 
+    private var identitySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Who you are")
+                .font(.headline)
+            Text("Your Tailscale login email. Notifications and phone-push muting match on it, so it must be the same address your phone signs in with. Empty uses your macOS name, which then needs an identity alias on the daemon.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("you@example.com", text: $identity)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+        }
+    }
+
+    private var startupSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("New workspace startup command")
+                .font(.headline)
+            Text("Typed into every new hosted workspace's terminal, in every lens. Clear it to reset to the built-in default.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            TextField("claude …", text: $command)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+        }
+    }
+
+    private var rulesSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Per-folder overrides")
+                .font(.headline)
+            Text("Repos under a folder use its command instead; the longest matching folder wins.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            ForEach($rules) { $rule in
+                HStack(spacing: 6) {
+                    TextField("/path/to/folder", text: $rule.pathPrefix)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(minWidth: 220)
+                    TextField("command", text: $rule.command)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                    Button {
+                        rules.removeAll { $0.id == rule.id }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove rule")
+                }
+            }
+            Button("Add folder rule") {
+                rules.append(EditableRule(pathPrefix: "", command: ""))
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private var devHostnamesSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Dev hostnames")
+                .font(.headline)
+            Text("Serves workspace dev servers over the tailnet (right-click a hosted workspace → Hostnames…). With a domain: https://<name>.<domain> via one wildcard cert (needs a Cloudflare DNS-edit token for the zone). Without: one ts.net node per hostname (the auth key registers them silently).")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("dev.sanlabs.io (empty = ts.net mode)", text: $devDomain)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+            TextField("ccmux (serves this web UI at <name>.<domain>; empty = off)", text: $lensHostname)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .disabled(devDomain.isEmpty)
+                .help("Reserved name for the ccmux web UI itself, e.g. \"ccmux\" → https://ccmux.\(devDomain.isEmpty ? "<domain>" : devDomain). Needs a dev domain.")
+            SecureField("Cloudflare API token", text: $cloudflareToken)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+            SecureField("Tailscale auth key (optional, ts.net mode)", text: $tailscaleAuthKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+            if devCertStatus != "unset" {
+                Text("Wildcard cert: \(devCertStatus)")
+                    .font(.system(size: 11))
+                    .foregroundColor(devCertStatus == "ready" ? .green : devCertStatus.hasPrefix("error") ? .red : .secondary)
+            }
+        }
+    }
+
+    private var saveBar: some View {
+        HStack(spacing: 6) {
+            if saving {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(status)
+                .font(.system(size: 11))
+                .foregroundColor(statusColor)
+                .lineLimit(2)
+            Spacer()
+            Button("Save") { Task { await save() } }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!loaded || saving)
+        }
+    }
+
     private func load() async {
-        identity = UserDefaults.standard.string(forKey: DaemonConfig.identityKey) ?? ""
+        identity = DaemonConfig.identity
         do {
             apply(try await RemoteSessionService.shared.fetchSettings())
             status = ""
@@ -150,18 +166,13 @@ struct DaemonSettingsView: View {
     }
 
     /// Persist the app-local developer identity (this Mac's self-declared login,
-    /// not a daemon setting) and re-dial every daemon socket when it changed —
-    /// the identity travels as a query param, so only a fresh dial presents it.
+    /// not a daemon setting); the storage rules live in DaemonConfig next to the
+    /// read side. A change re-dials every daemon socket — the identity travels
+    /// as a query param, so only a fresh dial presents it.
     private func persistIdentity() {
-        let trimmed = identity.trimmingCharacters(in: .whitespacesAndNewlines)
-        let previous = UserDefaults.standard.string(forKey: DaemonConfig.identityKey) ?? ""
-        guard trimmed != previous else { return }
-        if trimmed.isEmpty {
-            UserDefaults.standard.removeObject(forKey: DaemonConfig.identityKey)
-        } else {
-            UserDefaults.standard.set(trimmed, forKey: DaemonConfig.identityKey)
+        if DaemonConfig.setIdentity(identity) {
+            RemoteSessionService.shared.reconnectAll()
         }
-        RemoteSessionService.shared.reconnectAll()
     }
 
     private var statusColor: Color {

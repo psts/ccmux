@@ -56,6 +56,29 @@ enum DaemonConfig {
     /// UserDefaults key for the developer identity override (Settings window).
     static let identityKey = "developerIdentity"
 
+    /// The stored developer identity, "" when unset. Always already trimmed —
+    /// `setIdentity` is the only writer.
+    static var identity: String {
+        UserDefaults.standard.string(forKey: identityKey) ?? ""
+    }
+
+    /// Persist a new identity (trimmed; empty clears the override). Returns
+    /// whether it changed so the caller knows to re-dial the daemon sockets —
+    /// the identity travels as a query param, so only a fresh dial presents it.
+    /// Lives here, next to `resolvedUser`, so the write-side trim can never
+    /// drift from the read-side trim.
+    @discardableResult
+    static func setIdentity(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != identity else { return false }
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: identityKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: identityKey)
+        }
+        return true
+    }
+
     /// Self-declared name used only when the daemon can't verify identity over
     /// the tailnet (loopback). The configured developer identity — the Tailscale
     /// login email — wins when set: push subscriptions are keyed on that verified

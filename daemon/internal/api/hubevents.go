@@ -45,15 +45,10 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The read goroutine owns the presence removal, because it also delivers
-	// presence frames — see events for why a handler-side defer was a race. It
-	// cannot start before the hello here: drainReads arms the read deadline, and
-	// dialAll can block past it on broken members while the client legitimately
-	// sends nothing.
-	go func() {
-		defer s.presence.Leave(firehosePresenceWS, connID)
-		drainReads(cancel, conn, s.ka, reader.login, s.presenceFrames(connID))
-	}()
+	// Reads start AFTER the hello here, unlike events: drainReads arms the read
+	// deadline, and dialAll can block past it on broken members while the
+	// client legitimately sends nothing. Hence the explicit Leave above.
+	s.startFirehoseReads(cancel, conn, reader, connID)
 	go up.reconnectLoop(ctx, 10*time.Second)
 
 	// The ping belongs with the read deadline drainReads just armed, and this is

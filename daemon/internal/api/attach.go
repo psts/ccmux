@@ -71,12 +71,19 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 		ReadOnly: readonly,
 		Verified: id.Verified,
 	}, id.Login, id.Email)
-	defer s.presence.Leave(wsID, connID)
 
+	// The READ goroutine owns the presence removal, same as the firehose (see
+	// startFirehoseReads): readLoop delivers focus/present frames for this
+	// connID, and a handler-side deferred Leave ran while a buffered frame
+	// could still reach SetPresent — presence.go's should-be-impossible warning
+	// on every ordinary writer-side exit. Until the goroutine starts, the two
+	// early returns below own the removal explicitly.
 	if err := conn.WriteJSON(wsMsg{T: "hello", Panes: paneInfos(ws), Layout: ws.LayoutJSON, LayoutVersion: ws.LayoutVersion}); err != nil {
+		s.presence.Leave(wsID, connID)
 		return
 	}
 	if err := sendSnapshots(conn, ctrl, ws); err != nil {
+		s.presence.Leave(wsID, connID)
 		return
 	}
 
@@ -86,7 +93,10 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	// per-connection rather than a broadcast event.
 	rs := newResnapper()
 	defer rs.stop()
-	go s.readLoop(cancel, conn, ctrl, wsID, connID, readonly, rs)
+	go func() {
+		defer s.presence.Leave(wsID, connID)
+		s.readLoop(cancel, conn, ctrl, wsID, connID, readonly, rs)
+	}()
 	(&paneWriter{conn: conn, ctrl: ctrl, ws: ws, sub: sub, ka: s.ka, rs: rs}).run(ctx)
 }
 

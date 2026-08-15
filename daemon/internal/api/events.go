@@ -67,17 +67,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	// The READ goroutine owns the presence removal, because it is also the one
-	// delivering presence frames — removal-after-last-delivery then holds by
-	// construction. A handler-side defer ran Leave while a buffered focus frame
-	// could still reach SetPresent, tripping presence.go's should-be-impossible
-	// warning on every ordinary writer-side exit. Started before the hello write
-	// so every exit path after the join has an owner (the deferred conn.Close
-	// unwinds the read).
-	go func() {
-		defer s.presence.Leave(firehosePresenceWS, connID)
-		drainReads(cancel, conn, s.ka, reader.login, s.presenceFrames(connID))
-	}()
+	// Reads start BEFORE the hello write: nothing here blocks between them, and
+	// every exit path after the join then has an owner for the presence removal
+	// (the deferred conn.Close unwinds the read goroutine).
+	s.startFirehoseReads(cancel, conn, reader, connID)
 
 	if err := conn.WriteJSON(firehoseMsg{T: "hello", Attention: currentAttention(s.mgr)}); err != nil {
 		return
@@ -133,7 +126,8 @@ type firehoseReader struct {
 	identified bool
 }
 
-// readerFor identifies a firehose connection.
+// readerOf is the one place the verified-only rule is encoded. joinFirehose is
+// its sole production caller; the alertflag tests pin the rule here directly.
 //
 // "Identified" deliberately means VERIFIED, not merely self-named. The per-reader
 // rule joins this login against a presence entry written by a different socket,
@@ -152,12 +146,6 @@ type firehoseReader struct {
 // actually trustworthy, and everywhere else answers the old global question —
 // which is what those lenses got before, so nothing regresses while the alias is
 // missing.
-func (s *Server) readerFor(r *http.Request) firehoseReader {
-	return readerOf(s.resolveIdentity(r))
-}
-
-// readerOf is the one place the verified-only rule is encoded; readerFor and
-// joinFirehose both go through it so the tested rule IS the live rule.
 func readerOf(id identity) firehoseReader {
 	return firehoseReader{login: id.Login, identified: id.Verified}
 }
@@ -190,18 +178,44 @@ func (s *Server) joinFirehose(r *http.Request) (firehoseReader, string) {
 
 // presenceFrames returns the one client-frame handler the firehose has: a
 // focus frame carrying `present` updates this connection's presence entry.
-// Everything else is still discarded — the firehose carries no commands.
+// Non-focus frames are discarded silently — the firehose carries no commands.
+// The two CONTRACT violations are logged instead: the only peer that sends
+// frames here is our own app, and a wire drift that silently dropped every
+// presence report would reproduce the exact phone-buzzes-at-the-desk bug this
+// path exists to fix, with no trace on either end.
 func (s *Server) presenceFrames(connID string) func([]byte) {
 	return func(data []byte) {
 		var msg struct {
 			T       string `json:"t"`
 			Present *bool  `json:"present"`
 		}
-		if json.Unmarshal(data, &msg) != nil || msg.T != "focus" || msg.Present == nil {
+		if err := json.Unmarshal(data, &msg); err != nil {
+			log.Printf("firehose: dropping an unparseable client frame (%d bytes): %v", len(data), err)
+			return
+		}
+		if msg.T != "focus" {
+			return
+		}
+		if msg.Present == nil {
+			log.Printf("firehose: focus frame without a boolean 'present' — presence not updated (wire drift?)")
 			return
 		}
 		s.presence.SetPresent(firehosePresenceWS, connID, *msg.Present)
 	}
+}
+
+// startFirehoseReads spawns the read goroutine for one firehose connection.
+// The READ goroutine owns the presence removal, because it is also the one
+// delivering presence frames — removal-after-last-delivery then holds by
+// construction. A handler-side defer ran Leave while a buffered focus frame
+// could still reach SetPresent, tripping presence.go's should-be-impossible
+// warning on every ordinary writer-side exit. WHEN to call this differs per
+// handler (see the call sites); the ownership rule lives only here.
+func (s *Server) startFirehoseReads(cancel context.CancelFunc, conn *websocket.Conn, reader firehoseReader, connID string) {
+	go func() {
+		defer s.presence.Leave(firehosePresenceWS, connID)
+		drainReads(cancel, conn, s.ka, reader.login, s.presenceFrames(connID))
+	}()
 }
 
 // firehoseFrame renders a manager firehose Event into its wire frame, stamping
@@ -241,7 +255,7 @@ func (s *Server) alertsFor(reader firehoseReader, att model.Attention) bool {
 	if !reader.identified {
 		// Nothing trustworthy to match against, so answer the OLD question — is
 		// anybody at a screen — which is exactly what every lens got before this
-		// became per-reader. See readerFor for why an unverified name is not
+		// became per-reader. See readerOf for why an unverified name is not
 		// enough to act on.
 		//
 		// This also covers the staged rollout. The daemon and the Mac app ship

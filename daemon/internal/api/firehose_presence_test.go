@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/hub"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -69,6 +70,12 @@ func TestFirehose_PresenceWithoutAnAttach(t *testing.T) {
 		t.Fatal("a firehose join counted as at-a-screen before any presence report")
 	}
 
+	// The sentinel key must never resolve a real controller — its presence
+	// broadcasts are only harmless because this stays nil (see joinFirehose).
+	if srv.mgr.Controller(firehosePresenceWS) != nil {
+		t.Fatalf("%q resolved a live controller; the sentinel collides with a real workspace", firehosePresenceWS)
+	}
+
 	// A non-focus frame stays a no-op — the firehose still carries no commands.
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"t":"input","data":"x"}`)); err != nil {
 		t.Fatalf("write: %v", err)
@@ -82,6 +89,36 @@ func TestFirehose_PresenceWithoutAnAttach(t *testing.T) {
 	if err := conn.WriteJSON(map[string]any{"t": "focus", "present": false}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	waitForOwner(t, srv, "dev@example.com", false)
+}
+
+// The same lifecycle must hold on the HUB's merged firehose — in a federation
+// the Mac app's firehose lands there, and hubEvents is a separate handler with
+// its own join, so a green on the single-host path proves nothing about it.
+func TestHubFirehose_PresenceWithoutAnAttach(t *testing.T) {
+	srv, hs := presenceServer(t)
+	// A hub with no listing members: enough to route /v1/events into hubEvents.
+	reg := hub.NewRegistry("hub", hub.DefaultFloor,
+		func() ([]hub.Node, error) { return []hub.Node{{ID: "hub", Addr: "hub.invalid"}}, nil },
+		func(string) (hub.Health, error) { return hub.Health{}, nil },
+		func() int64 { return 1 },
+	)
+	srv.hub = &hubMode{reg: reg, selfID: "hub"}
+
+	conn, _, err := websocket.DefaultDialer.Dial(
+		strings.Replace(hs.URL, "http", "ws", 1)+"/v1/events?user=dev@example.com", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{"t": "focus", "present": true}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitForOwner(t, srv, "dev@example.com", true)
+
+	conn.Close()
 	waitForOwner(t, srv, "dev@example.com", false)
 }
 

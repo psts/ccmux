@@ -49,7 +49,6 @@ type federatedFocus struct {
 	local  focusOracle
 	hub    *hubMode
 	client *http.Client
-	now    func() time.Time // injectable clock for the staleness tests
 
 	mu     sync.RWMutex
 	remote map[string]bool
@@ -67,7 +66,6 @@ func (s *Server) newFederatedFocus(ctx context.Context) *federatedFocus {
 		local:  s.presence,
 		hub:    s.hub,
 		client: &http.Client{Transport: s.hub.client.Transport(), Timeout: 3 * time.Second},
-		now:    time.Now,
 		remote: map[string]bool{},
 	}
 	go f.refreshLoop(ctx, 3*time.Second)
@@ -120,10 +118,20 @@ func (f *federatedFocus) poll(ctx context.Context) {
 	previous := f.byHost
 	f.mu.RUnlock()
 
-	now := f.now()
+	now := time.Now()
 	fresh := map[string]memberOwners{}
 	for _, h := range f.hub.reg.List() {
-		if h.Self || !h.Healthy {
+		if h.Self {
+			continue
+		}
+		if !h.Healthy {
+			// A host the registry has already failed gets the SAME grace as one
+			// that failed only our fetch. The health probe flips on a single
+			// missed /v1/health on a 5s cycle, so without this branch a short
+			// blip skipped retainOrExpire entirely and dropped the host's
+			// watchers instantly — while the log below promised a minute.
+			retainOrExpire(fresh, previous, h.ID, now)
+			f.noteFailure(h.ID, fmt.Errorf("registry reports it unhealthy"))
 			continue
 		}
 		owners, err := f.fetchOwners(ctx, "https://"+h.Addr)
