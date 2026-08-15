@@ -103,6 +103,9 @@ func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 	a.groups = groups
 	a.hostnames = hostnames
 	a.mu.Unlock()
+	// Members land in completion order, which differs on every poll; unsorted,
+	// the merged list reshuffles every lens's sidebar every few seconds.
+	model.SortByName(all)
 	return all
 }
 

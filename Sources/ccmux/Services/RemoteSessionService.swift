@@ -634,7 +634,10 @@ final class RemoteSessionService: ObservableObject {
         // whether the daemon still knows the workspace, to tell "archived" apart from
         // "deleted" — and it would read a stale list here and call every archive a
         // deletion, taking the closed-window record that restores it with it.
+        // Sorted here as well as on the daemon: cold rows render in this array's
+        // order, and an older daemon still serves an every-poll shuffle.
         coldWorkspaces = list.filter { !$0.isLive }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         // Prune retained attention for workspaces the daemon no longer lists live,
         // while keeping it across a mere pane-signature rebuild (still live).
         let liveDaemonIds = Set(live.map { $0.id })

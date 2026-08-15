@@ -27,6 +27,25 @@ func twoHostRegistry(t *testing.T) *Registry {
 	return r
 }
 
+// The merged list must come back alphabetical whatever order members answer
+// in — completion-ordered appends reshuffled every sidebar on every poll.
+func TestAggregate_SortedByName(t *testing.T) {
+	agg := NewAggregator("hub", twoHostRegistry(t),
+		fakeLocal{wss: []*model.Workspace{{ID: "w2", Name: "voc"}, {ID: "w3", Name: "gamla-blocket"}}},
+		func(context.Context, Host) ([]*model.Workspace, error) {
+			return []*model.Workspace{{ID: "w1", Name: "Polytrader"}}, nil
+		},
+	)
+	out := agg.Aggregate(context.Background())
+	if len(out) != 3 || out[0].Name != "gamla-blocket" || out[1].Name != "Polytrader" || out[2].Name != "voc" {
+		names := make([]string, len(out))
+		for i, ws := range out {
+			names[i] = ws.Name
+		}
+		t.Fatalf("order = %v, want [gamla-blocket Polytrader voc]", names)
+	}
+}
+
 func TestAggregate_MergesStampsIndexes(t *testing.T) {
 	localWS := &model.Workspace{ID: "wl", Panes: []*model.Pane{{ID: "pl"}}}
 	remoteWS := &model.Workspace{ID: "wr", Panes: []*model.Pane{{ID: "pr"}}}
