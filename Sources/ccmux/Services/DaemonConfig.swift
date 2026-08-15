@@ -53,11 +53,26 @@ enum DaemonConfig {
         return base
     }
 
-    /// Self-declared name used only when the daemon can't verify identity over the
-    /// tailnet (loopback). `NSFullUserName()` matches how a human reads presence.
+    /// UserDefaults key for the developer identity override (Settings window).
+    static let identityKey = "developerIdentity"
+
+    /// Self-declared name used only when the daemon can't verify identity over
+    /// the tailnet (loopback). The configured developer identity — the Tailscale
+    /// login email — wins when set: push subscriptions are keyed on that verified
+    /// email, and suppression only works when this string and that key are the
+    /// SAME string. `NSFullUserName()` is the fallback, which is why an
+    /// unconfigured Mac needs a daemon-side identity alias to mute the phone.
     static var selfUser: String {
-        let name = NSFullUserName()
-        return name.isEmpty ? NSUserName() : name
+        resolvedUser(configured: UserDefaults.standard.string(forKey: identityKey),
+                     fullName: NSFullUserName(), userName: NSUserName())
+    }
+
+    /// Pure core of `selfUser`, split out for tests (same shape as `resolvedBase`):
+    /// configured identity (trimmed) beats the macOS full name beats the account name.
+    static func resolvedUser(configured: String?, fullName: String, userName: String) -> String {
+        let trimmed = configured?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty { return trimmed }
+        return fullName.isEmpty ? userName : fullName
     }
 
     /// Device label for presence (this Mac's host name).

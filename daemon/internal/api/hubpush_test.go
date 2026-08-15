@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
 )
@@ -44,6 +45,33 @@ func TestAttentionEventFromFrame(t *testing.T) {
 	}
 	if _, ok := attentionEventFromFrame([]byte(`not json`)); ok {
 		t.Error("garbage must not convert")
+	}
+}
+
+// TestRetainOrExpire: a member's last presence answer survives failed polls only
+// within presenceStaleAfter. Within the window a blip must not flicker alerts or
+// suppression; past it the member has hibernated or died, and pretending its
+// person is still at that screen is what kept phones silent when their Mac slept.
+func TestRetainOrExpire(t *testing.T) {
+	now := time.Unix(1000000, 0)
+	answered := memberOwners{owners: map[string]bool{"alice@example.com": true}, asOf: now}
+
+	fresh := map[string]memberOwners{}
+	retainOrExpire(fresh, map[string]memberOwners{"h1": answered}, "h1", now.Add(presenceStaleAfter))
+	if !fresh["h1"].owners["alice@example.com"] {
+		t.Fatal("an answer at the staleness boundary was dropped; a blip must keep the last answer")
+	}
+
+	fresh = map[string]memberOwners{}
+	retainOrExpire(fresh, map[string]memberOwners{"h1": answered}, "h1", now.Add(presenceStaleAfter+time.Second))
+	if _, kept := fresh["h1"]; kept {
+		t.Fatal("a stale answer was retained; a hibernated Mac must stop suppressing its person's pushes")
+	}
+
+	fresh = map[string]memberOwners{}
+	retainOrExpire(fresh, map[string]memberOwners{}, "h1", now)
+	if len(fresh) != 0 {
+		t.Fatalf("fresh = %v, want empty when the host never answered", fresh)
 	}
 }
 

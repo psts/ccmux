@@ -106,9 +106,19 @@ final class RemoteSessionService: ObservableObject {
         pollTimer = timer
 
         events.onEvent = { [weak self] in self?.handleFirehose($0) }
+        // Every fresh firehose socket is a fresh presence entry on the daemon
+        // (starting as "unreported"), so presence must be re-declared on each
+        // connect — frames sent while disconnected were dropped by the pump.
+        events.onStateChange = { [weak self] state in
+            guard let self, state == .connected else { return }
+            self.events.reportPresent(self.presenceMonitor.isPresent)
+        }
         events.connect()
 
-        presenceMonitor.onChange = { [weak self] _ in self?.syncFocusFrames() }
+        presenceMonitor.onChange = { [weak self] present in
+            self?.events.reportPresent(present)
+            self?.syncFocusFrames()
+        }
         observeWake()
     }
 

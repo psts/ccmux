@@ -27,6 +27,21 @@ func (s *Server) presenceOwners(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"owners": owners})
 }
 
+// presenceStaleAfter bounds how long a member's last-known watchers survive
+// failed polls. Short outages (a tailnet blip, a restart) keep their answer so
+// alerts and suppression stay steady; a member that stays silent past this is a
+// machine that hibernated or died, and the person its answer named is NOT at
+// that screen anymore. One minute: long enough to ride out a blip, short enough
+// that a closed laptop hands notifications to the phone promptly.
+const presenceStaleAfter = 60 * time.Second
+
+// memberOwners is one member host's last successful presence answer and when it
+// was given, so a failing host's retained answer can expire (see poll).
+type memberOwners struct {
+	owners map[string]bool
+	asOf   time.Time
+}
+
 // federatedFocus is the hub's push focusOracle: the union of the hub's own active
 // owners with a periodically-polled snapshot of every member host's, so a user at
 // a screen anywhere in the federation suppresses their phone pushes.
@@ -34,12 +49,13 @@ type federatedFocus struct {
 	local  focusOracle
 	hub    *hubMode
 	client *http.Client
+	now    func() time.Time // injectable clock for the staleness tests
 
 	mu     sync.RWMutex
 	remote map[string]bool
 	// byHost is the same data before the union, so one member failing to answer
 	// costs only its own entry rather than every member's (see poll).
-	byHost map[string]map[string]bool
+	byHost map[string]memberOwners
 	// failing latches which hosts have already reported a poll failure, so the
 	// 3s loop logs the fault once and the recovery once.
 	failing map[string]bool
@@ -51,6 +67,7 @@ func (s *Server) newFederatedFocus(ctx context.Context) *federatedFocus {
 		local:  s.presence,
 		hub:    s.hub,
 		client: &http.Client{Transport: s.hub.client.Transport(), Timeout: 3 * time.Second},
+		now:    time.Now,
 		remote: map[string]bool{},
 	}
 	go f.refreshLoop(ctx, 3*time.Second)
@@ -86,30 +103,32 @@ func (f *federatedFocus) refreshLoop(ctx context.Context, interval time.Duration
 }
 
 // poll refreshes every healthy remote member's active owners, keyed by host so a
-// member that fails to answer keeps its LAST KNOWN owners instead of vanishing.
+// member that fails to answer keeps its LAST KNOWN owners — for a while.
 //
-// That retention matters more than it used to. When only push read this, a
+// Both directions of that trade are load-bearing. When only push read this, a
 // failed poll was fail-safe: it under-counted watchers and sent the phone a
 // notification nobody needed. The alert flag reads it too now, and there the
 // same miss inverts — no owners means "nobody is at a screen", so the lens is
 // told not to raise a notification at all. A 3s tailnet hiccup would silently
-// reproduce the exact bug this path exists to fix, and leave no trace doing it.
+// reproduce the exact bug this path exists to fix, so a brief failure keeps the
+// last answer. But keeping it FOREVER is the opposite bug: a Mac that
+// hibernates stops answering with "its person is here" as its last word, and an
+// immortal retention of that answer suppresses their phone pushes exactly when
+// the phone is the only screen left. retainOrExpire draws the line.
 func (f *federatedFocus) poll(ctx context.Context) {
 	f.mu.RLock()
 	previous := f.byHost
 	f.mu.RUnlock()
 
-	fresh := map[string]map[string]bool{}
+	now := f.now()
+	fresh := map[string]memberOwners{}
 	for _, h := range f.hub.reg.List() {
 		if h.Self || !h.Healthy {
 			continue
 		}
 		owners, err := f.fetchOwners(ctx, "https://"+h.Addr)
 		if err != nil {
-			// Keep what this host last told us rather than erasing it.
-			if last, ok := previous[h.ID]; ok {
-				fresh[h.ID] = last
-			}
+			retainOrExpire(fresh, previous, h.ID, now)
 			f.noteFailure(h.ID, err)
 			continue
 		}
@@ -118,18 +137,35 @@ func (f *federatedFocus) poll(ctx context.Context) {
 		for _, login := range owners {
 			set[login] = true
 		}
-		fresh[h.ID] = set
+		fresh[h.ID] = memberOwners{owners: set, asOf: now}
 	}
 
 	union := map[string]bool{}
-	for _, owners := range fresh {
-		for login := range owners {
+	for _, mo := range fresh {
+		for login := range mo.owners {
 			union[login] = true
 		}
 	}
 	f.mu.Lock()
 	f.byHost, f.remote = fresh, union
 	f.mu.Unlock()
+}
+
+// retainOrExpire carries a failing member's last successful answer forward,
+// but only within presenceStaleAfter of when it was given. Past that the entry
+// is dropped — absent wins — and the drop is logged; it logs exactly once per
+// outage because the next poll finds no previous entry to expire.
+func retainOrExpire(fresh, previous map[string]memberOwners, hostID string, now time.Time) {
+	last, ok := previous[hostID]
+	if !ok {
+		return
+	}
+	if now.Sub(last.asOf) <= presenceStaleAfter {
+		fresh[hostID] = last
+		return
+	}
+	log.Printf("hub focus: %s has not answered a presence poll in %s — treating its watchers as absent",
+		hostID, presenceStaleAfter)
 }
 
 // noteFailure logs a member's first failed presence poll and stays quiet until
@@ -142,7 +178,7 @@ func (f *federatedFocus) noteFailure(host string, err error) {
 		f.failing = map[string]bool{}
 	}
 	if !f.failing[host] {
-		log.Printf("hub focus: %s presence poll failed (%v) — keeping its last known watchers", host, err)
+		log.Printf("hub focus: %s presence poll failed (%v) — keeping its last known watchers for up to %s", host, err, presenceStaleAfter)
 	}
 	f.failing[host] = true
 }

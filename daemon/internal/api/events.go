@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"sort"
@@ -39,10 +40,10 @@ type attnEntry struct {
 
 // events upgrades to a WebSocket and streams global attention changes for every
 // live workspace — the sidebar firehose. Unlike /v1/attach it carries no pane
-// output and accepts no client commands; a reader goroutine exists only to notice
-// the client closing. The opening hello seeds current attention so a lens joining
-// mid-session immediately knows what needs input (retained-state parity with the
-// per-workspace attach hello).
+// output and accepts no client commands; the one thing a client may send is a
+// focus frame reporting presence (see presenceFrames). The opening hello seeds
+// current attention so a lens joining mid-session immediately knows what needs
+// input (retained-state parity with the per-workspace attach hello).
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if s.hub != nil {
 		s.hubEvents(w, r) // aggregate every member host's firehose
@@ -62,15 +63,25 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	// Who is reading this stream. The alert flag is stamped per connection, so a
 	// lens is told to notify only when ITS OWN owner is at a screen.
-	reader := s.readerFor(r)
+	reader, connID := s.joinFirehose(r)
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	// The READ goroutine owns the presence removal, because it is also the one
+	// delivering presence frames — removal-after-last-delivery then holds by
+	// construction. A handler-side defer ran Leave while a buffered focus frame
+	// could still reach SetPresent, tripping presence.go's should-be-impossible
+	// warning on every ordinary writer-side exit. Started before the hello write
+	// so every exit path after the join has an owner (the deferred conn.Close
+	// unwinds the read).
+	go func() {
+		defer s.presence.Leave(firehosePresenceWS, connID)
+		drainReads(cancel, conn, s.ka, reader.login, s.presenceFrames(connID))
+	}()
 
 	if err := conn.WriteJSON(firehoseMsg{T: "hello", Attention: currentAttention(s.mgr)}); err != nil {
 		return
 	}
-
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	go drainReads(cancel, conn, s.ka, reader.login)
 
 	// The ticker lives INSIDE this select rather than in a goroutine of its own:
 	// this is the connection's only writer, so nothing has to be synchronised,
@@ -142,8 +153,55 @@ type firehoseReader struct {
 // which is what those lenses got before, so nothing regresses while the alias is
 // missing.
 func (s *Server) readerFor(r *http.Request) firehoseReader {
-	id := s.resolveIdentity(r)
+	return readerOf(s.resolveIdentity(r))
+}
+
+// readerOf is the one place the verified-only rule is encoded; readerFor and
+// joinFirehose both go through it so the tested rule IS the live rule.
+func readerOf(id identity) firehoseReader {
 	return firehoseReader{login: id.Login, identified: id.Verified}
+}
+
+// firehosePresenceWS keys firehose lenses in the presence hub. Not a real
+// workspace id (real ones are UUIDs), so its presence broadcasts resolve no
+// controller and go nowhere — the entry exists purely for ActiveOwners.
+const firehosePresenceWS = "!firehose"
+
+// joinFirehose identifies a firehose connection and registers it in the
+// presence hub, so a lens whose ONLY daemon connection is the firehose still
+// counts as a person at a screen once it reports presence. Before this, the Mac
+// app only reported presence over per-workspace attach sockets — a Mac with no
+// hosted workspace attached (or only local panes) was invisible to
+// ActiveOwners, so its person's phone buzzed while they sat at the desk.
+//
+// The entry starts with no presence reported and no focused pane, so it counts
+// as at-a-screen only after the lens says so (see client.atAScreen) — a lens
+// that never reports, like the hub dialing a member's firehose, adds nothing.
+func (s *Server) joinFirehose(r *http.Request) (firehoseReader, string) {
+	id := s.resolveIdentity(r)
+	connID := s.presence.Join(firehosePresenceWS, ClientInfo{
+		User:     id.Display,
+		Device:   r.URL.Query().Get("device"),
+		ReadOnly: true,
+		Verified: id.Verified,
+	}, id.Login, id.Email)
+	return readerOf(id), connID
+}
+
+// presenceFrames returns the one client-frame handler the firehose has: a
+// focus frame carrying `present` updates this connection's presence entry.
+// Everything else is still discarded — the firehose carries no commands.
+func (s *Server) presenceFrames(connID string) func([]byte) {
+	return func(data []byte) {
+		var msg struct {
+			T       string `json:"t"`
+			Present *bool  `json:"present"`
+		}
+		if json.Unmarshal(data, &msg) != nil || msg.T != "focus" || msg.Present == nil {
+			return
+		}
+		s.presence.SetPresent(firehosePresenceWS, connID, *msg.Present)
+	}
 }
 
 // firehoseFrame renders a manager firehose Event into its wire frame, stamping
@@ -251,22 +309,24 @@ func sortedLogins(owners map[string]bool) []string {
 	return out
 }
 
-// drainReads discards anything the client sends (the firehose is read-only for
-// clients) and cancels the context when the connection closes, unwinding the
-// write loop.
+// drainReads hands every client frame to onFrame (which ignores all but the
+// presence-reporting focus frame — the firehose carries no commands) and
+// cancels the context when the connection closes, unwinding the write loop.
 //
 // It also owns this connection's read deadline, which is what turns a silently
 // dead peer into a closed connection instead of a goroutine parked forever. The
 // deadline is armed here, not in the caller, because it must not race the
 // ReadMessage below.
-func drainReads(cancel context.CancelFunc, conn *websocket.Conn, ka keepalive, who string) {
+func drainReads(cancel context.CancelFunc, conn *websocket.Conn, ka keepalive, who string, onFrame func([]byte)) {
 	defer cancel()
 	ka.armReads(conn)
 	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
 			readEnded("firehose", who, err, ka.readWithin())
 			return
 		}
 		ka.touchReads(conn)
+		onFrame(data)
 	}
 }

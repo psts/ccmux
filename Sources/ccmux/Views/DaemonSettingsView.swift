@@ -10,6 +10,7 @@ struct DaemonSettingsView: View {
     var onDone: (() -> Void)?
 
     @State private var command = ""
+    @State private var identity = ""
     @State private var rules: [EditableRule] = []
     @State private var status = ""
     @State private var saving = false
@@ -35,6 +36,18 @@ struct DaemonSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Who you are")
+                    .font(.headline)
+                Text("Your Tailscale login email. Notifications and phone-push muting match on it, so it must be the same address your phone signs in with. Empty uses your macOS name, which then needs an identity alias on the daemon.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField("you@example.com", text: $identity)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text("New workspace startup command")
                     .font(.headline)
@@ -126,6 +139,7 @@ struct DaemonSettingsView: View {
     }
 
     private func load() async {
+        identity = UserDefaults.standard.string(forKey: DaemonConfig.identityKey) ?? ""
         do {
             apply(try await RemoteSessionService.shared.fetchSettings())
             status = ""
@@ -133,6 +147,21 @@ struct DaemonSettingsView: View {
         } catch {
             status = "Couldn't reach ccmuxd at \(DaemonConfig.baseURL)"
         }
+    }
+
+    /// Persist the app-local developer identity (this Mac's self-declared login,
+    /// not a daemon setting) and re-dial every daemon socket when it changed —
+    /// the identity travels as a query param, so only a fresh dial presents it.
+    private func persistIdentity() {
+        let trimmed = identity.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previous = UserDefaults.standard.string(forKey: DaemonConfig.identityKey) ?? ""
+        guard trimmed != previous else { return }
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: DaemonConfig.identityKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: DaemonConfig.identityKey)
+        }
+        RemoteSessionService.shared.reconnectAll()
     }
 
     private var statusColor: Color {
@@ -155,6 +184,7 @@ struct DaemonSettingsView: View {
         saving = true
         defer { saving = false }
         status = "Saving…"
+        persistIdentity() // app-local; saved even if the daemon rejects the rest
         let outgoing = rules.map { DaemonStartupRule(pathPrefix: $0.pathPrefix, command: $0.command) }
         guard let saved = await RemoteSessionService.shared.updateSettings(
             startupCommand: command, startupRules: outgoing,
