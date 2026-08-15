@@ -656,6 +656,7 @@ func (m *Manager) List() []*model.Workspace {
 	for _, e := range m.byID {
 		out = append(out, e.ws)
 	}
+	model.SortByName(out) // map iteration order shuffles the sidebar otherwise
 	return out
 }
 

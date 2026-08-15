@@ -29,8 +29,11 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 	id, ch := s.mgr.SubscribeEvents()
 	defer s.mgr.UnsubscribeEvents(id)
 
-	// Who is reading this stream; the alert flag is stamped for them alone.
-	reader := s.readerFor(r)
+	// Who is reading this stream; the alert flag is stamped for them alone. The
+	// join matters most HERE: in a federation the Mac app's firehose lands on
+	// the hub, and this is the entry that keeps its person visible to
+	// ActiveOwners when no workspace is attached (see joinFirehose).
+	reader, connID := s.joinFirehose(r)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -38,10 +41,14 @@ func (s *Server) hubEvents(w http.ResponseWriter, r *http.Request) {
 	up := &eventUpstreams{hub: s.hub, frames: make(chan []byte, 128), ka: s.ka, connected: map[string]bool{}}
 	hello := append(currentAttention(s.mgr), up.dialAll(ctx)...)
 	if err := conn.WriteJSON(firehoseMsg{T: "hello", Attention: hello}); err != nil {
+		s.presence.Leave(firehosePresenceWS, connID) // the read goroutine below never starts
 		return
 	}
 
-	go drainReads(cancel, conn, s.ka, reader.login)
+	// Reads start AFTER the hello here, unlike events: drainReads arms the read
+	// deadline, and dialAll can block past it on broken members while the
+	// client legitimately sends nothing. Hence the explicit Leave above.
+	s.startFirehoseReads(cancel, conn, reader, connID)
 	go up.reconnectLoop(ctx, 10*time.Second)
 
 	// The ping belongs with the read deadline drainReads just armed, and this is

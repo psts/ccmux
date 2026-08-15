@@ -25,4 +25,22 @@ final class DaemonConfigTests: XCTestCase {
             DaemonConfig.resolvedBase(env: nil, hub: "https://hub.ts.net/"),
             "https://hub.ts.net")
     }
+
+    /// The identity string is what push suppression matches against the phone's
+    /// verified login — a wrong resolution here fails silently (phone buzzes at
+    /// the desk, or never buzzes), so its priority order is pinned like the URL's.
+    func testResolvedUserPriorityConfiguredBeatsFullNameBeatsUserName() {
+        XCTAssertEqual(
+            DaemonConfig.resolvedUser(configured: "dev@example.com", fullName: "Patric S", userName: "patric"),
+            "dev@example.com")
+        XCTAssertEqual(
+            DaemonConfig.resolvedUser(configured: " dev@example.com\n", fullName: "Patric S", userName: "patric"),
+            "dev@example.com")
+        XCTAssertEqual(
+            DaemonConfig.resolvedUser(configured: nil, fullName: "Patric S", userName: "patric"),
+            "Patric S")
+        XCTAssertEqual(
+            DaemonConfig.resolvedUser(configured: "   ", fullName: "", userName: "patric"),
+            "patric")
+    }
 }

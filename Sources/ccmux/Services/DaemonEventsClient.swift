@@ -48,6 +48,20 @@ final class DaemonEventsClient {
         pump.onState = { [weak self] s in self?.onStateChange?(s) }
     }
 
+    /// Report whether this Mac's screen can show a notification right now (awake,
+    /// unlocked, no screensaver). Rides the firehose so a Mac with NO hosted
+    /// workspace attached still counts as a person at a screen — presence used to
+    /// travel only on attach sockets, and an attachment-less Mac was invisible,
+    /// so its person's phone buzzed at the desk. Same frame shape as the attach
+    /// socket's focus frame; the daemon accepts nothing else on this connection.
+    ///
+    /// Frames sent while disconnected are dropped by the pump, so the owner must
+    /// re-report on every `.connected` transition (a fresh socket is a fresh
+    /// presence entry on the daemon, which starts as "unreported").
+    func reportPresent(_ present: Bool) {
+        pump.send("{\"t\":\"focus\",\"present\":\(present)}")
+    }
+
     // MARK: - Lifecycle
 
     func connect() { pump.connect() }

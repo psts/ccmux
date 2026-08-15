@@ -138,7 +138,7 @@ func TestFirehoseFrame_UnidentifiedLensKeepsTheOldGlobalRule(t *testing.T) {
 	}
 }
 
-// readerFor is where "identified" is decided, and only VERIFICATION counts.
+// readerOf is where "identified" is decided, and only VERIFICATION counts.
 //
 // A self-declared name is not enough, because the per-reader rule joins this
 // login against a presence entry written by a socket that may have resolved
@@ -149,12 +149,12 @@ func TestReaderFor_OnlyVerifiedCallersGetThePerReaderRule(t *testing.T) {
 	s := &Server{mgr: manager.New(context.Background(), nil, nil), identity: declinedWhois{}}
 
 	bare := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
-	if s.readerFor(bare).identified {
+	if readerOf(s.resolveIdentity(bare)).identified {
 		t.Error("an anonymous socket must not be treated as identified")
 	}
 
 	named := httptest.NewRequest(http.MethodGet, "/v1/events?user=dev", nil)
-	if r := s.readerFor(named); r.identified {
+	if r := readerOf(s.resolveIdentity(named)); r.identified {
 		t.Errorf("a self-declared name is not verification: %+v", r)
 	}
 }
