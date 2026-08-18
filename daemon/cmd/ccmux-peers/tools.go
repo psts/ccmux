@@ -11,11 +11,19 @@ import (
 	"strings"
 )
 
+// serverInstructions goes into the session's system prompt. Most of it is
+// frozen wording that running sessions pattern-match on, but the SendMessage
+// paragraph deliberately is not: it used to say SendMessage "is for subagent
+// communication, not peer messaging", and Claude Code v2.1.224 made that false
+// by giving SendMessage cross-session delivery. The directive is unchanged and
+// still right — one bus, this one — but a true directive resting on a false
+// premise is worse than no reason at all, because the session can check the
+// premise and will then weigh the whole block accordingly.
 const serverInstructions = `You are connected to the claude-peers messaging network. Peers are named after their repo directory (e.g., "backend", "website").
 
 Messages arrive as <channel source="claude-peers" from_name="..." from_id="..." from_summary="..." from_cwd="...">. When you receive one, RESPOND IMMEDIATELY — pause your current work, reply, then resume. Treat it like a coworker tapping your shoulder.
 
-To reply, call the send_message tool (snake_case) with to_id set to the from_id from the channel tag. Always use to_id (not to_name) for replies — multiple peers can share a repo name, and to_id guarantees the reply reaches the specific peer that messaged you. Do NOT use the built-in SendMessage tool — that is for subagent communication, not peer messaging. The correct tool for peer messaging is always send_message.
+To reply, call the send_message tool (snake_case) with to_id set to the from_id from the channel tag. Always use to_id (not to_name) for replies — multiple peers can share a repo name, and to_id guarantees the reply reaches the specific peer that messaged you. Do NOT use the built-in SendMessage tool, and discover peers with list_peers rather than ListAgents. SendMessage can reach other Claude Code sessions, so this is not a claim that it would fail — it is that it goes around this bus: nothing is queued for a peer whose session is not running, nothing shows up in ccmux for the human, and delegation tracking and the permission relay do not see it. The correct tool for peer messaging is always send_message.
 
 When a peer asks you to do work, acknowledge the request, do the work, and then send a completion message back to that peer summarizing what you did and the outcome (success, failure, or questions). Always close the loop — the peer that gave you the task should not have to ask for a status update.
 
@@ -163,6 +171,28 @@ var toolsList = []map[string]any{
 			"properties": map[string]any{},
 		},
 	},
+}
+
+// Claude Code defers MCP tools behind its ToolSearch step unless they opt out,
+// and a deferred tool is not in context when the session reads its first
+// instruction. Every tool here opts out, because every one of them is named by
+// text the session is guaranteed to meet and told to act on at once:
+// serverInstructions says to answer a channel message IMMEDIATELY with
+// send_message and to call set_summary on startup, a delegation header says to
+// call update_task now, the relay text says to answer with send_message, and a
+// poll-only session has no way to collect its mail except check_messages. A
+// tool that a standing order names but that is not loaded is a trap — the
+// session reads the order and cannot obey it without a search round trip it was
+// never told to make.
+//
+// The cost is real and is the reason this is a deliberate list rather than a
+// default: these six schemas sit in every session's context from startup. Drop
+// a tool from the loop below if that trade stops being worth it, but drop it
+// from the instructions in the same edit.
+func init() {
+	for _, tool := range toolsList {
+		tool["_meta"] = map[string]any{"anthropic/alwaysLoad": true}
+	}
 }
 
 func (a *app) callTool(name string, args json.RawMessage) any {

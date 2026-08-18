@@ -126,16 +126,22 @@ func TestAPI_FloodReseedNoStaleReplay(t *testing.T) {
 		t.Fatalf("first frame = %q, want hello", m.T)
 	}
 
-	// An UNBOUNDED, strictly-increasing flood. The client below reads SLOWLY, so
-	// the server's writeLoop stays blocked on the socket while the subscriber buffer
-	// overflows and drops — the sub is continually flagged lagged, firing the
-	// drain+reseed path mid-stream (with live output still arriving after each
-	// reseed). This is deterministic regardless of OS socket-buffer sizing, unlike a
-	// bounded burst that can land whole in the socket.
+	// An UNBOUNDED, strictly-increasing flood, read by a client that STOPS READING
+	// outright partway through. The stop is the load-bearing part, and a slow read
+	// is not a substitute for it: every stage from awk to the socket back-pressures
+	// the one before it, so a client that keeps reading — however slowly — throttles
+	// awk itself to that same rate and nothing anywhere overflows. This test used to
+	// sleep 4ms per frame and assert the reseed fired; it stopped firing, and the
+	// self-check below is what caught it (reseedSeen=false, one snapshot, no lag).
+	//
+	// Not reading at all is what breaks the back-pressure chain: the socket buffer
+	// fills, paneWriter blocks on WriteJSON, the 512-slot subscriber buffer fills
+	// behind it, and fanout starts dropping and flags the sub lagged. That is the
+	// drain+reseed path, and it fires on the resume below.
 	flood := `awk 'BEGIN{for(i=1;;i++)printf "SEQ%08d\n",i}'` + "\n"
 	_ = conn.WriteJSON(wsMsg{T: "input", Pane: pane0, Data: base64.StdEncoding.EncodeToString([]byte(flood))})
 
-	// Read slowly for a bounded window. A "reseed" is a snapshot that arrives AFTER
+	// Read for a bounded window, stalling once mid-stream. A "reseed" is a snapshot that arrives AFTER
 	// we've already seen live output — it reflects the current screen up to SEQ
 	// snapMax. Correct behavior: every later output is strictly NEW (SEQ > snapMax).
 	// The bug replayed the stale buffered backlog on top of the reseed, so a
@@ -143,16 +149,24 @@ func TestAPI_FloodReseedNoStaleReplay(t *testing.T) {
 	// already scrolled off.
 	floor := 0
 	reseedSeen := false
+	stalled := false
 	outputsSeen := 0
 	snapsSeen := 0
-	deadline := time.Now().Add(4 * time.Second)
+	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		var m wsMsg
 		if err := conn.ReadJSON(&m); err != nil {
 			break
 		}
-		time.Sleep(4 * time.Millisecond) // stay behind the producer → sustained lag
+		// Once live output is definitely flowing, go away for long enough that the
+		// socket buffer and the subscriber buffer both fill. Sized against buffers,
+		// not against a frame rate, so a faster machine does not read its way out of
+		// the stall the way the old per-frame sleep did.
+		if outputsSeen >= 5 && !stalled {
+			stalled = true
+			time.Sleep(2 * time.Second)
+		}
 		b, err := base64.StdEncoding.DecodeString(m.Data)
 		if err != nil {
 			continue

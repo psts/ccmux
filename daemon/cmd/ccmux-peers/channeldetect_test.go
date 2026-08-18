@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 // Claude Code drops channel notifications for a server the session did not load
@@ -196,7 +197,20 @@ func TestReadProcessArgvReadsARealProcess(t *testing.T) {
 	}
 	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
 
-	argv, ok := readProcessArgv(cmd.Process.Pid)
+	// cmd.Start returns once the child is forked, which is BEFORE it has exec'd
+	// sleep — and until that exec lands, /proc/<pid>/cmdline is empty and
+	// readProcessArgv correctly reports "cannot read". Reading once right after
+	// Start therefore fails whenever the exec loses the race, which on this box was
+	// about four runs in five. Poll until the exec is visible instead; the deadline
+	// is what keeps a genuinely unreadable process a failure rather than a hang.
+	var argv []string
+	var ok bool
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if argv, ok = readProcessArgv(cmd.Process.Pid); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if !ok {
 		t.Fatal("could not read a process this test just started")
 	}

@@ -60,6 +60,38 @@ func TestMCP_InitializeDeclaresChannelCapabilities(t *testing.T) {
 			t.Fatalf("instructions missing %q", marker)
 		}
 	}
+	// The directive must not go back to resting on the old false premise:
+	// SendMessage gained cross-session delivery in Claude Code v2.1.224, so
+	// "that is for subagent communication" is now a checkable falsehood sitting
+	// in the system prompt. Keep the order, keep the reason true.
+	if strings.Contains(instr, "for subagent communication") {
+		t.Error("instructions claim SendMessage is subagent-only — false since Claude Code v2.1.224")
+	}
+	if !strings.Contains(instr, "goes around this bus") {
+		t.Error("instructions dropped the true reason for preferring send_message")
+	}
+}
+
+// A deferred tool is not in context when the session reads an instruction
+// naming it, so the reactive contract (answer a channel message IMMEDIATELY,
+// call update_task now) only holds if Claude Code loads these upfront.
+func TestMCP_EveryToolOptsOutOfToolSearchDeferral(t *testing.T) {
+	frames := runFrames(t, `{"jsonrpc":"2.0","id":8,"method":"tools/list"}`)
+	tools := frames[0]["result"].(map[string]any)["tools"].([]any)
+	if len(tools) == 0 {
+		t.Fatal("no tools returned")
+	}
+	for _, tl := range tools {
+		tool := tl.(map[string]any)
+		meta, ok := tool["_meta"].(map[string]any)
+		if !ok {
+			t.Errorf("tool %v has no _meta — it would sit behind ToolSearch", tool["name"])
+			continue
+		}
+		if meta["anthropic/alwaysLoad"] != true {
+			t.Errorf("tool %v: anthropic/alwaysLoad = %v, want true", tool["name"], meta["anthropic/alwaysLoad"])
+		}
+	}
 }
 
 func TestMCP_ToolsListIsVerbatimSurface(t *testing.T) {

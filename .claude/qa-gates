@@ -7,8 +7,24 @@
 #
 # This file REPLACES auto-detection. Anything not listed here stops being gated, so
 # add a line when a stack is added rather than assuming detection will pick it up.
+#
+# The Swift lines are guarded on the toolchain being present, so on a Linux host
+# they SKIP and a green signed there covers the Go daemon only. Guarding beats not
+# guarding: `swift build` where there is no swift is not a gate that fails, it is a
+# gate that cannot run, and it took the whole receipt down with it — no Go gating
+# either, and no green recordable from Linux at all.
+#
+# Read the skip as permanent: development is Linux-only and goes straight to CI,
+# so nobody runs these two lines. What that leaves is worth knowing but has not
+# been a problem in practice — release.yml's macos-15 job builds the app on every
+# v* tag, and that has been catching what it needs to. Recorded as scope, not as
+# a defect: a green from this file covers the Go daemon, and Swift is covered by
+# the tag build. `swift test` is not run by either.
 
 cd daemon && go vet ./...
 cd daemon && go test ./...
-swift build
-swift test
+# Written as if/else, NOT `command -v swift && swift build || echo ...`. That shorter
+# form passes the gate whenever `swift build` FAILS, because `||` cannot tell a missing
+# toolchain from a broken build. if/else keeps the real exit code when swift is there.
+if command -v swift >/dev/null 2>&1; then swift build; else echo "qa-gates: no swift toolchain — SKIPPING swift build (Go gates still ran)"; fi
+if command -v swift >/dev/null 2>&1; then swift test; else echo "qa-gates: no swift toolchain — SKIPPING swift test (Go gates still ran)"; fi
