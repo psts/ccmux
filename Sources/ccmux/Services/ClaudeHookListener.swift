@@ -144,10 +144,10 @@ final class ClaudeHookListener {
         case .set(let newState):
             ctx["attention"] = String(describing: newState)
             // Suppress when you're already watching this workspace — nothing to flag.
-            if isCurrentlyWatched(workspace.id) {
+            if windowManager?.isWatching(workspace.id) ?? false {
                 monitor.clear()
                 HookTrace.write(decision: "suppressed", fields: ctx.merging(
-                    ["detail": "this workspace is the key window"]) { _, new in new })
+                    ["detail": "key window, on your current Space"]) { _, new in new })
                 return
             }
             monitor.set(newState)
@@ -163,15 +163,6 @@ final class ClaudeHookListener {
             notifier.post(for: workspace, state: newState)
             HookTrace.write(decision: "posted", fields: ctx)
         }
-    }
-
-    /// True when ccmux is frontmost AND the key window is displaying this workspace.
-    private func isCurrentlyWatched(_ id: UUID) -> Bool {
-        guard NSApp.isActive,
-              let keyWindow = NSApp.keyWindow,
-              let wc = windowManager?.windowControllers.first(where: { $0.window === keyWindow })
-        else { return false }
-        return wc.windowContext.displayedWorkspaceId == id
     }
 
     // MARK: - Pure event mapping (tested)

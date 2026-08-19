@@ -151,7 +151,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// attention flash + notifications the local hook path uses.
     private func startRemoteSessions() {
         let service = RemoteSessionService.shared
-        service.isWatched = { [weak self] id in self?.isWatchingWorkspace(id) ?? false }
+        service.isWatched = { [weak self] id in self?.windowManager?.isWatching(id) ?? false }
         // Displayed hosted workspaces get a daemon focus frame while the user is
         // at this Mac — that's what keeps phone pushes quiet at the desk.
         service.displayedHostedWorkspaceIds = { [weak self] in
@@ -179,17 +179,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             RemoteSessionService.shared.revealFile(wsId, path: absolutePath)
         }
         service.start()
-    }
-
-    /// True when ccmux is frontmost AND the key window displays this (hosted)
-    /// workspace — mirrors `ClaudeHookListener.isCurrentlyWatched` for local ones, so
-    /// a workspace you're already looking at doesn't flash or notify.
-    private func isWatchingWorkspace(_ id: UUID) -> Bool {
-        guard NSApp.isActive,
-              let keyWindow = NSApp.keyWindow,
-              let wc = windowManager?.windowControllers.first(where: { $0.window === keyWindow })
-        else { return false }
-        return wc.windowContext.displayedWorkspaceId == id
     }
 
     /// Wire up the macOS-notification delegate and the hook-event socket listener.

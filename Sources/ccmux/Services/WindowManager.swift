@@ -516,6 +516,43 @@ class WindowManager {
         windowControllers.first { $0.windowContext.displayedWorkspaceId == workspaceId }
     }
 
+    /// True when this workspace is one you are demonstrably looking at *right now*:
+    /// ccmux is frontmost, and its key window both displays the workspace and sits
+    /// on the Space you are currently on.
+    ///
+    /// The Space term is not decoration. A key window stays key across a Space
+    /// switch — macOS only re-points it when the Space you arrive at has another
+    /// app's window to activate — so on an empty Space, or one holding nothing but
+    /// ccmux's own windows, the app stays active with a key window you cannot see.
+    /// Without the Space check every alert for that workspace was swallowed as
+    /// "already watching", and the only way to learn Claude was blocked was to
+    /// switch back and look.
+    ///
+    /// One copy on purpose. The local hook listener and the hosted firehose both
+    /// ask this question, they had already drifted into two identical private
+    /// copies, and the missing Space term would have had to be fixed in both.
+    func isWatching(_ id: UUID) -> Bool {
+        guard let keyWindow = NSApp.keyWindow,
+              let wc = windowControllers.first(where: { $0.window === keyWindow })
+        else { return false }
+        return Self.watched(
+            appActive: NSApp.isActive,
+            keyWindowOnActiveSpace: keyWindow.isOnActiveSpace,
+            displayedByKeyWindow: wc.windowContext.displayedWorkspaceId,
+            target: id
+        )
+    }
+
+    /// The rule itself, lifted clear of AppKit state so it can be tested.
+    static func watched(
+        appActive: Bool,
+        keyWindowOnActiveSpace: Bool,
+        displayedByKeyWindow: UUID?,
+        target: UUID
+    ) -> Bool {
+        appActive && keyWindowOnActiveSpace && displayedByKeyWindow == target
+    }
+
     // MARK: - Persistence
 
     /// Get current window descriptors for saving (including Space snapshot).
