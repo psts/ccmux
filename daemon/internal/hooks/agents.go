@@ -37,6 +37,16 @@ const agentTTL = 30 * time.Minute
 // fired at all — reinstating the false "needs your input" this whole file exists
 // to remove, just later.
 
+// session is one Claude session's outstanding work.
+//
+// prompted lives here rather than in a map of its own so that it cannot outlive
+// the agents it qualifies: the whole entry is dropped the moment the last agent
+// finishes, which is also the moment prompted stops meaning anything.
+type session struct {
+	agents   map[string]time.Time // agent id → started at
+	prompted bool                 // a prompt arrived AFTER these agents started
+}
+
 // agentTracker records which subagents each Claude session still has running.
 //
 // It exists because Claude Code's idle reminder fires 60 seconds after the main
@@ -52,71 +62,121 @@ const agentTTL = 30 * time.Minute
 // submitted, and background agents routinely outlive the turn that spawned them.
 type agentTracker struct {
 	mu   sync.Mutex
-	open map[string]map[string]time.Time // session id → agent id → started at
+	open map[string]*session
+	// now is the clock. A test ages an agent past the TTL through this rather
+	// than by reaching into the map and binding itself to its shape.
+	now func() time.Time
 }
 
 func newAgentTracker() *agentTracker {
-	return &agentTracker{open: map[string]map[string]time.Time{}}
+	return &agentTracker{open: map[string]*session{}, now: time.Now}
 }
 
 // start records a subagent as running and returns how many the session now has.
 // A session id is required: without one there is nothing to attribute the agent
 // to, and a shared empty key would pool every anonymous session together.
-func (t *agentTracker) start(session, agent string) int {
-	if session == "" || agent == "" {
+func (t *agentTracker) start(sess, agent string) int {
+	if sess == "" || agent == "" {
 		return 0
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.open[session] == nil {
-		t.open[session] = map[string]time.Time{}
+	s := t.open[sess]
+	if s == nil {
+		s = &session{agents: map[string]time.Time{}}
+		t.open[sess] = s
 	}
-	t.open[session][agent] = time.Now()
-	return len(t.open[session])
+	s.agents[agent] = t.now()
+	return len(s.agents)
 }
 
 // stop clears a subagent and reports whether it was one we were tracking. The
 // false case is the inner-loop stop described on the type: routine, not an error.
-func (t *agentTracker) stop(session, agent string) (known bool, left int) {
+func (t *agentTracker) stop(sess, agent string) (known bool, left int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	running := t.open[session]
-	if _, ok := running[agent]; !ok {
-		return false, len(running)
+	s := t.open[sess]
+	if s == nil {
+		return false, 0
 	}
-	delete(running, agent)
-	if len(running) == 0 {
-		delete(t.open, session)
+	if _, ok := s.agents[agent]; !ok {
+		return false, len(s.agents)
 	}
-	return true, len(running)
+	delete(s.agents, agent)
+	if len(s.agents) == 0 {
+		delete(t.open, sess)
+	}
+	return true, len(s.agents)
 }
 
 // clear forgets a session's agents wholesale, for a session that just started or
 // ended. Deliberately NOT called on a new user prompt: a background agent
 // commonly reports its stop after the next prompt has already been submitted, so
 // clearing there would drop agents that are genuinely still running.
-func (t *agentTracker) clear(session string) {
+func (t *agentTracker) clear(sess string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.open, session)
+	delete(t.open, sess)
 }
 
-// busy reports how many subagents a session still has running, dropping any that
-// have outlived agentTTL first.
-func (t *agentTracker) busy(session string) int {
+// notePrompt records whether the human is currently being asked for something,
+// so that a later hold can tell a stale flag from a live one.
+//
+// Only a prompt that arrives while agents are ALREADY running is recorded: one
+// from before them was necessarily answered, because Claude could not have
+// dispatched an agent while blocked on it. Measured over 322 holds, 31 of the 32
+// that met an already-flagged pane were that stale case and exactly 1 was a live
+// prompt from a running agent.
+func (t *agentTracker) notePrompt(sess string, prompting bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	running := t.open[session]
-	cutoff := time.Now().Add(-agentTTL)
-	for agent, started := range running {
-		if started.Before(cutoff) {
-			delete(running, agent)
+	if s := t.open[sess]; s != nil {
+		s.prompted = prompting
+	}
+}
+
+// promptPending reports whether a prompt landed after this session's agents
+// started, meaning it may still be blocking one of them.
+func (t *agentTracker) promptPending(sess string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.open[sess]
+	return s != nil && s.prompted
+}
+
+// busy reports how many subagents the named session still has running, and how
+// many of ITS agents were dropped for outliving agentTTL — a lost stop, which the
+// caller traces. Every other session is swept too, so a client that dies without
+// a session_end cannot pin its entry there for the daemon's lifetime.
+func (t *agentTracker) busy(sess string) (running, expired int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cutoff := t.now().Add(-agentTTL)
+	for id, s := range t.open {
+		gone := s.sweep(cutoff)
+		if id == sess {
+			expired = gone
+		}
+		if len(s.agents) == 0 {
+			delete(t.open, id)
 		}
 	}
-	if len(running) == 0 {
-		delete(t.open, session)
+	if s := t.open[sess]; s != nil {
+		running = len(s.agents)
 	}
-	return len(running)
+	return running, expired
+}
+
+// sweep drops every agent that started before cutoff and reports how many went.
+func (s *session) sweep(cutoff time.Time) int {
+	dropped := 0
+	for agent, started := range s.agents {
+		if started.Before(cutoff) {
+			delete(s.agents, agent)
+			dropped++
+		}
+	}
+	return dropped
 }
 
 // agentCount renders a count for the trace, where these lines are read next to

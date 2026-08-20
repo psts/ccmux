@@ -35,8 +35,9 @@ type hookMsg struct {
 	// it, so the trace file reads as one story per hook. Absent from older
 	// scripts; an empty id just means the route line stands on its own.
 	TraceID string `json:"trace_id"`
-	// AgentID is set only on the subagent events, and is the only field that
-	// pairs a subagent's start with its stop — see agents.go.
+	// AgentID is read only on the subagent events, where it is the only field
+	// that pairs a start with its stop — see agents.go. A Stop carries one too,
+	// naming the subagent it came from, and it is ignored there.
 	AgentID string `json:"agent_id"`
 }
 
@@ -163,15 +164,15 @@ func (l *Listener) trackAgents(msg hookMsg) bool {
 		if !l.attributable(msg) {
 			return true
 		}
+		// A running subagent emits a stop at every turn of its own inner loop,
+		// under an id that never started. Expected, and in the log only because
+		// the log is where a held alert is explained.
 		known, left := l.agents.stop(msg.SessionID, msg.AgentID)
+		decision := "agent-stop"
 		if !known {
-			// A running subagent emits one of these at every turn of its own
-			// inner loop, under an id that never started. Expected, and loud in
-			// the trace only because the trace is where a held alert is explained.
-			l.trace(msg, hooktrace.Line{Decision: "agent-unknown", Detail: agentCount(left)})
-			return true
+			decision = "agent-unknown"
 		}
-		l.trace(msg, hooktrace.Line{Decision: "agent-stop", Detail: agentCount(left)})
+		l.trace(msg, hooktrace.Line{Decision: decision, Detail: agentCount(left)})
 		return true
 	case "session_start", "session_end":
 		l.agents.clear(msg.SessionID)
@@ -209,8 +210,8 @@ func endsTurn(eventType, notificationType string) bool {
 
 func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
 	if endsTurn(msg.Type, msg.NotificationType) {
-		if n := l.agents.busy(msg.SessionID); n > 0 {
-			l.trace(msg, hooktrace.Line{Decision: "held", Attention: string(att), Detail: agentCount(n)})
+		att = l.holdWhileWorking(msg, att)
+		if att == "" {
 			return
 		}
 	}
@@ -220,7 +221,51 @@ func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
 		return
 	}
 	l.router.ApplyAttention(paneID, att)
+	// Whether the human is being asked for something is what lets a later hold
+	// tell a stale flag from a live one. Recorded after the apply, so the
+	// tracker only ever learns about attention a pane actually took on.
+	l.agents.notePrompt(msg.SessionID, att == model.AttentionNeedsInput)
 	l.trace(msg, hooktrace.Line{Decision: "attention", Resolved: paneID, Attention: string(att)})
+}
+
+// holdWhileWorking rewrites a turn-ending claim made while subagents are still
+// running. It returns the attention to apply, or "" to drop the event outright.
+//
+// Dropping is not enough on its own. Attention is sticky — manager.ApplyAttention
+// is the only writer — so a pane already showing needs_input keeps showing it for
+// the whole agent run, which is the very false alert this file exists to remove,
+// preserved rather than created. Measured over 322 holds, 32 met a flagged pane.
+// So a hold asserts idle instead: the turn is not over, and Claude is not waiting
+// on the human.
+//
+// Unless a prompt landed after the agents started, in which case one of them may
+// be blocked right now and clearing its flag would strand it silently. That was
+// 1 of the 32. There the event is dropped and whatever is on screen stays.
+func (l *Listener) holdWhileWorking(msg hookMsg, att model.Attention) model.Attention {
+	if msg.SessionID == "" {
+		// Same silence as an unattributable subagent event, from the consuming
+		// side: with no session id there are no agents to count, so the hold is
+		// skipped and nothing else would ever say so.
+		l.trace(msg, hooktrace.Line{Decision: "hold-unchecked", Attention: string(att),
+			Detail: "hook carries no session id; agents cannot be counted"})
+		return att
+	}
+	running, expired := l.agents.busy(msg.SessionID)
+	if expired > 0 {
+		l.trace(msg, hooktrace.Line{Decision: "agent-expired",
+			Detail: agentCount(expired) + " never reported a stop; dropped after " + agentTTL.String()})
+	}
+	if running == 0 {
+		return att
+	}
+	if l.agents.promptPending(msg.SessionID) {
+		l.trace(msg, hooktrace.Line{Decision: "held", Attention: string(att),
+			Detail: agentCount(running) + "; a prompt may still be live, leaving the pane as it is"})
+		return ""
+	}
+	l.trace(msg, hooktrace.Line{Decision: "held", Attention: string(model.AttentionIdle),
+		Detail: agentCount(running)})
+	return model.AttentionIdle
 }
 
 func (l *Listener) applySession(msg hookMsg, sig model.SessionSignal) {

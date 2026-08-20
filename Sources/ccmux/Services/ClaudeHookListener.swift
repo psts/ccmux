@@ -190,7 +190,8 @@ final class ClaudeHookListener {
     /// The subagent events carry no attention meaning of their own — they exist
     /// so `endsTurn` can tell a turn that finished from a turn that has stopped
     /// talking while its agents work. `session_start`/`session_end` reset the set
-    /// and then fall through, because they mean plenty besides.
+    /// and then fall through: `session_end` clears attention besides, and
+    /// `session_start` falls through for its trace line.
     private func trackSubagents(type: String, obj: [String: Any], ctx: [String: String]) -> Bool {
         let session = obj["session_id"] as? String ?? ""
         let agent = obj["agent_id"] as? String ?? ""

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ccmux.dev/ccmuxd/internal/model"
 )
 
 const notifyScript = "../../../hooks/ccmux-notify.sh"
@@ -234,10 +236,8 @@ func TestNotifyScript_IdleReminderIsHeldEndToEnd(t *testing.T) {
 	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.sigCalls > 0 })
 	time.Sleep(200 * time.Millisecond)
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.calls != 0 {
-		t.Fatalf("attention applied %d times (last %q) while two Explore agents were running", r.calls, r.gotAtt)
+	if r.applied(model.AttentionNeedsInput) || r.applied(model.AttentionDone) {
+		t.Fatalf("pane was told the turn ended while two Explore agents were running: %v", r.atts)
 	}
 }
 
@@ -268,5 +268,41 @@ func TestNotifyScript_SubagentEventNeedsNoCwd(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a subagent_start without a cwd was dropped; the hold would silently stop working")
+	}
+}
+
+// install-hooks.sh claims --routed-only "cannot quietly prune the pair and
+// restore the false alerts". Moving those two tuples back into TRACE_ONLY would
+// disable the whole feature for anyone who runs the flag, and until this test
+// existed nothing would have failed.
+func TestInstallHooks_RoutedOnlyKeepsTheSubagentPair(t *testing.T) {
+	requireScript(t)
+	installer := "../../../hooks/install-hooks.sh"
+	if _, err := os.Stat(installer); err != nil {
+		t.Skipf("installer not found at %s", installer)
+	}
+	settings := filepath.Join(t.TempDir(), "settings.json")
+
+	for _, args := range [][]string{{}, {"--routed-only"}} {
+		cmd := exec.Command("bash", append([]string{installer}, args...)...)
+		cmd.Env = append(scrubbedEnv(), "CCMUX_CLAUDE_SETTINGS="+settings)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("installer %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	data, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatalf("no settings written: %v", err)
+	}
+	for _, want := range []string{"SubagentStart", "SubagentStop", "subagent-start", "subagent-stop"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("--routed-only pruned %s; the hold is silently dead for anyone who runs it", want)
+		}
+	}
+	// The trace-only set really is pruned, so the test proves the flag works
+	// rather than that it does nothing.
+	if strings.Contains(string(data), "TeammateIdle") {
+		t.Error("--routed-only kept a trace-only hook; this test would pass even if the flag were a no-op")
 	}
 }

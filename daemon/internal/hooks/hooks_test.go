@@ -48,10 +48,14 @@ func TestOutcome(t *testing.T) {
 }
 
 type mockRouter struct {
-	mu       sync.Mutex
-	resolve  string
-	gotPane  string
-	gotAtt   model.Attention
+	mu      sync.Mutex
+	resolve string
+	gotPane string
+	gotAtt  model.Attention
+	// atts is every attention applied, in order. A hold can now rewrite an
+	// event rather than only dropping it, so "what did the pane end up
+	// showing" needs the sequence, not just a count.
+	atts     []model.Attention
 	calls    int
 	gotSig   model.SessionSignal
 	gotSess  string
@@ -73,6 +77,19 @@ func (r *mockRouter) ApplyAttention(paneID string, att model.Attention) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.gotPane, r.gotAtt, r.calls = paneID, att, r.calls+1
+	r.atts = append(r.atts, att)
+}
+
+// applied reports whether any attention in the sequence matches.
+func (r *mockRouter) applied(want model.Attention) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, a := range r.atts {
+		if a == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *mockRouter) ApplySession(paneID, sessionID string, sig model.SessionSignal) {

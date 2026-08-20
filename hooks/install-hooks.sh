@@ -38,7 +38,7 @@ notify = os.environ["NOTIFY"]
 settings_path = os.environ["SETTINGS"]
 routed_only = bool(os.environ.get("ROUTED_ONLY"))
 
-# (event name, matcher, ccmux-notify.sh arg) — these drive ccmux attention.
+# (event name, matcher, ccmux-notify.sh arg) — these reach ccmux.
 ROUTED = [
     ("Notification",      "",                "notification"),
     ("PermissionRequest", "*",               "permission-request"),
@@ -47,7 +47,7 @@ ROUTED = [
     ("UserPromptSubmit",  "",                "user-prompt-submit"),
     ("SessionStart",      "",                "session-start"),
     ("SessionEnd",        "",                "session-end"),
-    # Not attention events themselves: they tell the daemon which subagents a
+    # Not attention events themselves: they tell ccmux which subagents a
     # session still has running, so an idle reminder that lands while agents work
     # is not mistaken for a finished turn. Routed, not trace-only, so that
     # --routed-only cannot quietly prune the pair and restore the false alerts.
@@ -122,7 +122,7 @@ with open(settings_path, "w") as f:
 present = len(EVENTS) - added
 print(f"ccmux hooks: {added} added, {present} already present → {settings_path}")
 if routed_only:
-    print(f"trace-only hooks: {removed} removed (attention hooks untouched)")
+    print(f"trace-only hooks: {removed} removed (routed hooks untouched)")
 else:
     print(f"  {len(ROUTED)} routed (reach ccmux), {len(TRACE_ONLY)} trace-only (logged, never acted on)")
 PY

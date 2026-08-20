@@ -58,9 +58,12 @@ COLOR = {
     "push":  "\033[33m",  # yellow — a phone was or was not buzzed
     "local": "\033[32m",  # green  — the Mac alert
 }
-# The decisions worth spotting at a glance: something reached a human, or
-# something was deliberately dropped.
-LOUD = {"posted", "sent", "routed"}
+# The decisions worth spotting at a glance: something reached a human, or a
+# fault did. QUIET is the routine half — deliberate drops that are working as
+# intended. The three subagent faults are bold because each one means the hold
+# quietly stopped working, and a silent hold looks exactly like a healthy one.
+LOUD = {"posted", "sent", "routed",
+        "agent-unattributed", "hold-unchecked", "agent-expired"}
 QUIET = {"suppressed", "ignored", "trace-only", "no-push", "unresolved",
          "session-unresolved", "no-cwd", "no-listener", "held", "agent-unknown"}
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"

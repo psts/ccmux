@@ -91,9 +91,9 @@ fi
 
 # Map the CLI event arg to the canonical type string ccmux's listener expects.
 # ROUTED=0 means "trace it, don't send it": the event is registered purely so it
-# shows up in the log next to the notification it might explain (a subagent
-# finishing, an idle reminder), and adding it here must not change what ccmux
-# does with attention.
+# shows up in the log next to the notification it might explain (a task
+# completing, a permission denial), and adding it here must not change what
+# ccmux does with attention.
 ROUTED=1
 case "${1:-unknown}" in
     notification|Notification)               TYPE="notification" ;;
@@ -104,9 +104,11 @@ case "${1:-unknown}" in
     session-start|SessionStart)              TYPE="session_start" ;;
     session-end|SessionEnd)                  TYPE="session_end" ;;
 
-    # Not attention events: these tell the daemon which subagents a session
-    # still has running, so an idle reminder that arrives while agents work is
-    # not mistaken for a turn that ended. See internal/hooks/agents.go.
+    # Not attention events: these tell ccmux which subagents a session still
+    # has running, so an idle reminder that arrives while agents work is not
+    # mistaken for a turn that ended. Consumed by the daemon in
+    # daemon/internal/hooks/agents.go and by the app in
+    # Sources/ccmux/Services/SubagentTracker.swift, which are twins.
     subagent-start|SubagentStart)            TYPE="subagent_start" ;;
     subagent-stop|SubagentStop)              TYPE="subagent_stop" ;;
 
@@ -236,10 +238,11 @@ print(json.dumps({
     "session_id": payload.get("session_id") or "",
     "pane_id": os.environ.get("CCMUX_PANE_ID") or "",
     "trace_id": trace_id,
-    # Only the subagent events carry one. It is the id the daemon pairs a start
-    # with its stop by, and nothing else identifies a subagent: prompt_id is
-    # restamped when a new prompt is submitted, so an agent that outlives the
-    # turn that spawned it reports its parent turn under the NEXT prompt id.
+    # Read only on the subagent events, ignored elsewhere — a Stop carries one
+    # too, naming the subagent it came from. It is the id a start is paired with
+    # its stop by, and nothing else identifies a subagent: prompt_id is restamped
+    # when a new prompt is submitted, so an agent that outlives the turn that
+    # spawned it reports its parent turn under the NEXT prompt id.
     "agent_id": payload.get("agent_id") or "",
 }))
 ' 2>/dev/null)
