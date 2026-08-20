@@ -11,8 +11,8 @@
 #      so an unexplained notification can be traced back to the hook behind it. The
 #      daemon and the native app append their own decisions to the same file.
 #   2. Forwards a compact message to the listening ccmux endpoint over its Unix
-#      domain socket — but only for the events ccmux actually routes to attention.
-#      Everything else is traced and stops here.
+#      domain socket — but only for the events ccmux acts on. Everything else is
+#      traced and stops here.
 #
 # Socket selection: hosted panes (spawned by the daemon) inherit CCMUX_HOOKS_SOCK
 # pointing at the DAEMON's socket, so their hooks reach the daemon. Local panes
@@ -26,9 +26,10 @@
 #
 # Usage:  ccmux-notify.sh <event-name>
 #   Routed events:     notification, permission-request, ask-user-question, stop,
-#                      user-prompt-submit, session-start, session-end
-#   Trace-only events: subagent-start, subagent-stop, task-completed,
-#                      teammate-idle, permission-denied, stop-failure, elicitation
+#                      user-prompt-submit, session-start, session-end,
+#                      subagent-start, subagent-stop
+#   Trace-only events: task-completed, teammate-idle, permission-denied,
+#                      stop-failure, elicitation
 
 # This hook is registered in ~/.claude/settings.json, which is user-level, so it
 # runs for EVERY Claude session on the machine — including ones started in a plain
@@ -103,8 +104,12 @@ case "${1:-unknown}" in
     session-start|SessionStart)              TYPE="session_start" ;;
     session-end|SessionEnd)                  TYPE="session_end" ;;
 
-    subagent-start|SubagentStart)            TYPE="subagent_start";    ROUTED=0 ;;
-    subagent-stop|SubagentStop)              TYPE="subagent_stop";     ROUTED=0 ;;
+    # Not attention events: these tell the daemon which subagents a session
+    # still has running, so an idle reminder that arrives while agents work is
+    # not mistaken for a turn that ended. See internal/hooks/agents.go.
+    subagent-start|SubagentStart)            TYPE="subagent_start" ;;
+    subagent-stop|SubagentStop)              TYPE="subagent_stop" ;;
+
     task-completed|TaskCompleted)            TYPE="task_completed";    ROUTED=0 ;;
     teammate-idle|TeammateIdle)              TYPE="teammate_idle";     ROUTED=0 ;;
     permission-denied|PermissionDenied)      TYPE="permission_denied"; ROUTED=0 ;;
@@ -164,10 +169,16 @@ cwd = payload.get("cwd") or ""
 routed = os.environ["ROUTED"] == "1"
 sock_ok = os.environ["SOCK_OK"] == "1"
 
+# A cwd is what maps a hook to a workspace, so an event with no cwd has nowhere to
+# land — except the subagent pair, which is tracked by session id and never
+# resolves to a pane at all. Requiring one there would silently disable the hold
+# that keeps a working session from claiming it needs you.
+needs_cwd = os.environ["TYPE"] not in ("subagent_start", "subagent_stop")
+
 # Why this hook did or did not become a ccmux message. Read the log for these.
 if not routed:
     decision = "trace-only"
-elif not cwd:
+elif needs_cwd and not cwd:
     decision = "no-cwd"        # nothing to map to a workspace
 elif not sock_ok:
     decision = "no-listener"   # neither the daemon nor the app is bound
@@ -225,6 +236,11 @@ print(json.dumps({
     "session_id": payload.get("session_id") or "",
     "pane_id": os.environ.get("CCMUX_PANE_ID") or "",
     "trace_id": trace_id,
+    # Only the subagent events carry one. It is the id the daemon pairs a start
+    # with its stop by, and nothing else identifies a subagent: prompt_id is
+    # restamped when a new prompt is submitted, so an agent that outlives the
+    # turn that spawned it reports its parent turn under the NEXT prompt id.
+    "agent_id": payload.get("agent_id") or "",
 }))
 ' 2>/dev/null)
 

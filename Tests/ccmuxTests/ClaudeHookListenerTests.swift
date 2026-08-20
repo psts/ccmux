@@ -52,4 +52,28 @@ final class ClaudeHookListenerTests: XCTestCase {
         XCTAssertEqual(outcome("pre_tool_use"), .ignore)
         XCTAssertEqual(outcome(""), .ignore)
     }
+
+    // MARK: - which claims get held while agents run
+
+    private func endsTurn(_ type: String, _ notif: String? = nil) -> Bool {
+        ClaudeHookListener.endsTurn(forEvent: type, notificationType: notif)
+    }
+
+    /// Both assert the turn is over. Stop fires when the main loop stops talking,
+    /// which is exactly what it does while waiting for background agents.
+    func testTurnEndingClaimsAreHeldable() {
+        XCTAssertTrue(endsTurn("stop"))
+        XCTAssertTrue(endsTurn("notification", "idle_prompt"))
+    }
+
+    /// Being blocked on the human is not being finished. Holding one of these
+    /// would strand the very agents being waited on.
+    func testBlockingPromptsAreNeverHeld() {
+        XCTAssertFalse(endsTurn("notification", "permission_prompt"))
+        XCTAssertFalse(endsTurn("notification", "elicitation_dialog"))
+        XCTAssertFalse(endsTurn("permission_request"))
+        XCTAssertFalse(endsTurn("ask_user_question"))
+        XCTAssertFalse(endsTurn("user_prompt_submit"))
+        XCTAssertFalse(endsTurn("session_end"))
+    }
 }

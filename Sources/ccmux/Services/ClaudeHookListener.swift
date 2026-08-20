@@ -7,7 +7,12 @@ import AppKit
 ///
 /// Independent of claude-deck: ccmux owns its own socket and its own hook entry in
 /// `~/.claude/settings.json`. The hook sends one compact JSON message per event
-/// (`{type, cwd, notification_type}`) then closes, mirroring claude-deck's pattern.
+/// (`{type, cwd, notification_type}`, plus `agent_id` on the subagent events)
+/// then closes, mirroring claude-deck's pattern.
+///
+/// This handles the app's own local panes only. Daemon-hosted panes send to the
+/// daemon's socket instead, where `daemon/internal/hooks` makes the same
+/// decisions — the two mappings are twins and have to stay that way.
 final class ClaudeHookListener {
     static let socketPath = "/tmp/ccmux-hooks.sock"
 
@@ -21,6 +26,9 @@ final class ClaudeHookListener {
     private weak var workspaceManager: WorkspaceManager?
     private weak var windowManager: WindowManager?
     private let notifier: AttentionNotifier
+    /// Which sessions still have background agents running, so a turn that has
+    /// only stopped talking is not mistaken for a turn that ended.
+    private let subagents = SubagentTracker()
 
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
@@ -123,6 +131,11 @@ final class ClaudeHookListener {
         ctx["cwd"] = obj["cwd"] as? String
         ctx["session_id"] = obj["session_id"] as? String
 
+        // Before the workspace lookup: agents belong to a session, and a session
+        // whose cwd matches no local workspace still has to be counted correctly
+        // if it ever gets one.
+        if trackSubagents(type: type, obj: obj, ctx: ctx) { return }
+
         guard let cwd = obj["cwd"] as? String, !cwd.isEmpty,
               let wm = workspaceManager,
               let workspace = wm.workspace(forCwd: cwd),
@@ -143,6 +156,10 @@ final class ClaudeHookListener {
                 ["detail": obj["notification_type"] as? String ?? "no attention meaning"]) { _, new in new })
         case .set(let newState):
             ctx["attention"] = String(describing: newState)
+            // A turn that claims to be over while its agents are still working is
+            // claiming the wrong thing. Held before the monitor is touched, so
+            // the sidebar does not flash either.
+            if heldForSubagents(type: type, obj: obj, ctx: ctx) { return }
             // Suppress when you're already watching this workspace — nothing to flag.
             if windowManager?.isWatching(workspace.id) ?? false {
                 monitor.clear()
@@ -163,6 +180,61 @@ final class ClaudeHookListener {
             notifier.post(for: workspace, state: newState)
             HookTrace.write(decision: "posted", fields: ctx)
         }
+    }
+
+    // MARK: - Background agents
+
+    /// Keep the session's outstanding-subagent set current; returns true when the
+    /// hook was handled here and needs no further routing.
+    ///
+    /// The subagent events carry no attention meaning of their own — they exist
+    /// so `endsTurn` can tell a turn that finished from a turn that has stopped
+    /// talking while its agents work. `session_start`/`session_end` reset the set
+    /// and then fall through, because they mean plenty besides.
+    private func trackSubagents(type: String, obj: [String: Any], ctx: [String: String]) -> Bool {
+        let session = obj["session_id"] as? String ?? ""
+        let agent = obj["agent_id"] as? String ?? ""
+        if type == "subagent_start" || type == "subagent_stop", session.isEmpty || agent.isEmpty {
+            // Loud, because the consequence is silence: an unattributable start
+            // means this session's alerts will never be held, and nothing else
+            // would ever say so.
+            HookTrace.write(decision: "agent-unattributed", fields: ctx.merging(
+                ["detail": "no session id or agent id; this session's alerts cannot be held"]) { _, new in new })
+            return true
+        }
+        switch type {
+        case "subagent_start":
+            let running = subagents.start(session: session, agent: agent)
+            HookTrace.write(decision: "agent-start", fields: ctx.merging(
+                ["detail": SubagentTracker.describe(running)]) { _, new in new })
+            return true
+        case "subagent_stop":
+            let (known, left) = subagents.stop(session: session, agent: agent)
+            // A running subagent emits one of these at every turn of its own
+            // inner loop, under an id that never started. Expected, and in the
+            // log only because the log is where a held alert is explained.
+            HookTrace.write(decision: known ? "agent-stop" : "agent-unknown", fields: ctx.merging(
+                ["detail": SubagentTracker.describe(left)]) { _, new in new })
+            return true
+        case "session_start", "session_end":
+            subagents.clear(session: session)
+            return false
+        default:
+            return false
+        }
+    }
+
+    /// True when this event asserts the turn is over and the session still has
+    /// agents running — the case the alert is held back for.
+    private func heldForSubagents(type: String, obj: [String: Any], ctx: [String: String]) -> Bool {
+        guard Self.endsTurn(forEvent: type, notificationType: obj["notification_type"] as? String) else {
+            return false
+        }
+        let running = subagents.busy(session: obj["session_id"] as? String ?? "")
+        guard running > 0 else { return false }
+        HookTrace.write(decision: "held", fields: ctx.merging(
+            ["detail": SubagentTracker.describe(running)]) { _, new in new })
+        return true
     }
 
     // MARK: - Pure event mapping (tested)
@@ -186,5 +258,19 @@ final class ClaudeHookListener {
         default:
             return .ignore
         }
+    }
+
+    /// Whether a hook is a claim that the turn is OVER, as opposed to a claim
+    /// that Claude is blocked on the human. Only the first kind is held back
+    /// while subagents are still running, and the distinction is the whole safety
+    /// argument: a permission prompt or a question needs an answer whether or not
+    /// agents are running, and holding one would strand the very agents being
+    /// waited on.
+    ///
+    /// `stop` is included as well as the idle reminder because both assert the
+    /// same untrue thing. Stop fires when the main loop stops talking, which is
+    /// exactly what it does while it waits for background agents to report.
+    static func endsTurn(forEvent type: String, notificationType: String?) -> Bool {
+        type == "stop" || (type == "notification" && notificationType == "idle_prompt")
     }
 }

@@ -8,10 +8,12 @@
 #
 # Two kinds of registration go in:
 #
-#   ROUTED events drive ccmux attention (a pane flashes, a phone buzzes).
+#   ROUTED events reach ccmux. Most drive attention directly (a pane flashes, a
+#   phone buzzes); the subagent pair instead tells ccmux which sessions still
+#   have agents running, which is what holds an idle reminder back.
 #   TRACE-ONLY events drive nothing. They are registered so that the hook trace
 #   (~/Library/Logs/ccmux-hooks.jsonl) shows them beside the notifications they
-#   might explain — a subagent finishing, an idle reminder, a permission denial.
+#   might explain — a task completing, a teammate idling, a permission denial.
 #   ccmux-notify.sh logs them and stops; they never reach ccmux's socket.
 #
 # Run with --routed-only to skip the trace-only events once you've finished
@@ -45,6 +47,12 @@ ROUTED = [
     ("UserPromptSubmit",  "",                "user-prompt-submit"),
     ("SessionStart",      "",                "session-start"),
     ("SessionEnd",        "",                "session-end"),
+    # Not attention events themselves: they tell the daemon which subagents a
+    # session still has running, so an idle reminder that lands while agents work
+    # is not mistaken for a finished turn. Routed, not trace-only, so that
+    # --routed-only cannot quietly prune the pair and restore the false alerts.
+    ("SubagentStart",     "",                "subagent-start"),
+    ("SubagentStop",      "",                "subagent-stop"),
 ]
 
 # Logged, never acted on. Chosen because each one can fire close enough to a
@@ -52,8 +60,6 @@ ROUTED = [
 # PostToolBatch, MessageDisplay and the file/config watchers — they fire on a
 # cadence that would bury the events you're actually reading the log for.
 TRACE_ONLY = [
-    ("SubagentStart",    "",  "subagent-start"),
-    ("SubagentStop",     "",  "subagent-stop"),
     ("TaskCompleted",    "",  "task-completed"),
     ("TeammateIdle",     "",  "teammate-idle"),
     ("PermissionDenied", "*", "permission-denied"),
@@ -118,7 +124,7 @@ print(f"ccmux hooks: {added} added, {present} already present → {settings_path
 if routed_only:
     print(f"trace-only hooks: {removed} removed (attention hooks untouched)")
 else:
-    print(f"  {len(ROUTED)} routed (drive attention), {len(TRACE_ONLY)} trace-only (logged, never acted on)")
+    print(f"  {len(ROUTED)} routed (reach ccmux), {len(TRACE_ONLY)} trace-only (logged, never acted on)")
 PY
 
 echo "Done. Restart any running 'claude' sessions for the hooks to take effect."

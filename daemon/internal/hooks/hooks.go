@@ -1,7 +1,8 @@
 // Package hooks ingests Claude Code hook events over a Unix domain socket and
 // routes them to pane attention updates. The wire format is the existing
-// ccmux-notify.sh message ({type, cwd, notification_type} plus session_id and
-// pane_id), so the daemon binds the same socket the app used in driver mode.
+// ccmux-notify.sh message ({type, cwd, notification_type} plus session_id,
+// pane_id and, on the subagent events, agent_id), so the daemon binds the same
+// socket the app used in driver mode.
 package hooks
 
 import (
@@ -34,6 +35,9 @@ type hookMsg struct {
 	// it, so the trace file reads as one story per hook. Absent from older
 	// scripts; an empty id just means the route line stands on its own.
 	TraceID string `json:"trace_id"`
+	// AgentID is set only on the subagent events, and is the only field that
+	// pairs a subagent's start with its stop — see agents.go.
+	AgentID string `json:"agent_id"`
 }
 
 // Listener owns the hooks Unix socket.
@@ -41,6 +45,7 @@ type Listener struct {
 	path   string
 	router Router
 	ln     net.Listener
+	agents *agentTracker
 }
 
 // Listen binds path (removing any stale socket) and serves hook messages. The
@@ -83,7 +88,7 @@ func WritePointer(path, socket string) error {
 // newListener builds the routing half of a Listener, with no socket bound. Tests
 // route messages through this; Listen adds the socket.
 func newListener(r Router) *Listener {
-	return &Listener{router: r}
+	return &Listener{router: r, agents: newAgentTracker()}
 }
 
 func (l *Listener) serve() {
@@ -115,6 +120,9 @@ func (l *Listener) handle(conn net.Conn) {
 // as useful to a reader chasing a stray notification as "the daemon flashed a
 // pane" — the silent branches are exactly where a missing flash hides.
 func (l *Listener) route(msg hookMsg) {
+	if l.trackAgents(msg) {
+		return
+	}
 	att, wantAtt := outcome(msg.Type, msg.NotificationType)
 	sig, wantSig := sessionOutcome(msg.Type)
 	if !wantAtt && !wantSig {
@@ -135,7 +143,77 @@ func (l *Listener) route(msg hookMsg) {
 	}
 }
 
+// trackAgents keeps the session's outstanding-subagent set current and reports
+// whether the hook was handled here and needs no further routing.
+//
+// The subagent events carry no attention or session meaning of their own — they
+// exist so that endsTurn below can tell a turn that finished from a turn that
+// has stopped talking while its agents work. session_start and session_end reset
+// the set and then fall through, because they mean plenty besides.
+func (l *Listener) trackAgents(msg hookMsg) bool {
+	switch msg.Type {
+	case "subagent_start":
+		if !l.attributable(msg) {
+			return true
+		}
+		n := l.agents.start(msg.SessionID, msg.AgentID)
+		l.trace(msg, hooktrace.Line{Decision: "agent-start", Detail: agentCount(n)})
+		return true
+	case "subagent_stop":
+		if !l.attributable(msg) {
+			return true
+		}
+		known, left := l.agents.stop(msg.SessionID, msg.AgentID)
+		if !known {
+			// A running subagent emits one of these at every turn of its own
+			// inner loop, under an id that never started. Expected, and loud in
+			// the trace only because the trace is where a held alert is explained.
+			l.trace(msg, hooktrace.Line{Decision: "agent-unknown", Detail: agentCount(left)})
+			return true
+		}
+		l.trace(msg, hooktrace.Line{Decision: "agent-stop", Detail: agentCount(left)})
+		return true
+	case "session_start", "session_end":
+		l.agents.clear(msg.SessionID)
+	}
+	return false
+}
+
+// attributable reports whether a subagent event names both the session it belongs
+// to and the agent it is about. It traces the failure itself, because the
+// consequence is silence: an unattributable start means this session's alerts
+// will never be held, and nothing else would ever say so.
+func (l *Listener) attributable(msg hookMsg) bool {
+	if msg.SessionID != "" && msg.AgentID != "" {
+		return true
+	}
+	l.trace(msg, hooktrace.Line{Decision: "agent-unattributed",
+		Detail: "no session id or agent id; this session's alerts cannot be held"})
+	return false
+}
+
+// endsTurn reports whether a hook is a claim that the turn is OVER, as opposed
+// to a claim that Claude is blocked on the human. Only the first kind is held
+// back while subagents are still running, and the distinction is the whole
+// safety argument: a permission prompt or a question needs an answer whether or
+// not agents are running, and holding one would strand the very agents being
+// waited on.
+//
+// stop is included as well as the idle reminder because both assert the same
+// untrue thing. Stop fires when the main loop stops talking, which is exactly
+// what it does while it waits for background agents to report.
+func endsTurn(eventType, notificationType string) bool {
+	return eventType == "stop" ||
+		(eventType == "notification" && notificationType == "idle_prompt")
+}
+
 func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
+	if endsTurn(msg.Type, msg.NotificationType) {
+		if n := l.agents.busy(msg.SessionID); n > 0 {
+			l.trace(msg, hooktrace.Line{Decision: "held", Attention: string(att), Detail: agentCount(n)})
+			return
+		}
+	}
 	paneID := l.router.ResolvePane(msg.PaneID, msg.CWD)
 	if paneID == "" {
 		l.trace(msg, hooktrace.Line{Decision: "unresolved", Detail: "no pane matches this pane id or cwd"})

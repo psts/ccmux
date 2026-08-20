@@ -62,14 +62,15 @@ COLOR = {
 # something was deliberately dropped.
 LOUD = {"posted", "sent", "routed"}
 QUIET = {"suppressed", "ignored", "trace-only", "no-push", "unresolved",
-         "session-unresolved", "no-cwd", "no-listener"}
+         "session-unresolved", "no-cwd", "no-listener", "held", "agent-unknown"}
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
 
 # --alerts-only drops the hooks that are pure lifecycle bookkeeping. Everything
-# else stays, including subagent_stop and permission_denied: they alert nobody
-# themselves, but they are the events most likely to be sitting next to the
-# notification you are trying to explain.
-NEVER_ALERTS = {"user_prompt_submit", "session_start", "session_end", "subagent_start"}
+# else stays, including the subagent pair and permission_denied: they alert
+# nobody themselves, but they are the events most likely to be sitting next to
+# the notification you are trying to explain — and a subagent_start is now the
+# reason an idle reminder never became one ("held").
+NEVER_ALERTS = {"user_prompt_submit", "session_start", "session_end"}
 
 def detail_for(stage, d):
     """The one thing you need to know about this line, per stage."""

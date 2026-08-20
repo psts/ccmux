@@ -3,8 +3,10 @@ package hooks
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const notifyScript = "../../../hooks/ccmux-notify.sh"
@@ -153,4 +155,118 @@ func scrubbedEnv() []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// The subagent events have to reach the daemon, not stop at the trace: they are
+// the only thing that tells it a quiet session is still working. They were
+// trace-only for as long as they were treated as debugging noise, which is
+// exactly how long the false idle alerts lasted.
+func TestNotifyScript_SubagentEventsAreDeliveredWithTheirAgentID(t *testing.T) {
+	requireScript(t)
+	dir := sockDir(t)
+	sock := filepath.Join(dir, "hooks.sock")
+
+	for _, c := range []struct{ arg, want string }{
+		{"subagent-start", "subagent_start"},
+		{"subagent-stop", "subagent_stop"},
+	} {
+		got := listenOnce(t, sock)
+		cmd := exec.Command("bash", notifyScript, c.arg)
+		cmd.Stdin = strings.NewReader(`{"session_id":"s1","cwd":"/repo","agent_id":"a-42"}`)
+		cmd.Env = append(scrubbedEnv(),
+			"CCMUX_HOOK_TRACE="+filepath.Join(dir, "trace.jsonl"),
+			"CCMUX_PANE_ID=pane-1",
+			"CCMUX_HOOKS_SOCK="+sock,
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("script failed: %v\n%s", err, out)
+		}
+		select {
+		case line := <-got:
+			for _, want := range []string{`"type": "` + c.want + `"`, `"agent_id": "a-42"`, `"session_id": "s1"`} {
+				if !strings.Contains(line, want) {
+					t.Errorf("%s payload is missing %s: %q", c.arg, want, line)
+				}
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never reached the socket", c.arg)
+		}
+		_ = os.Remove(sock)
+	}
+}
+
+// End to end, through the real script and the real socket: the incident this
+// was built for. Two agents start, the main loop stops talking, Claude Code's
+// idle reminder lands 60 seconds later — and the pane must not be flagged.
+func TestNotifyScript_IdleReminderIsHeldEndToEnd(t *testing.T) {
+	requireScript(t)
+	dir := sockDir(t)
+	sock := filepath.Join(dir, "hooks.sock")
+
+	r := &mockRouter{resolve: "pane-1"}
+	l, err := Listen(sock, r)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+
+	fire := func(arg, payload string) {
+		t.Helper()
+		cmd := exec.Command("bash", notifyScript, arg)
+		cmd.Stdin = strings.NewReader(payload)
+		cmd.Env = append(scrubbedEnv(),
+			"CCMUX_HOOK_TRACE="+filepath.Join(dir, "trace.jsonl"),
+			"CCMUX_PANE_ID=pane-1",
+			"CCMUX_HOOKS_SOCK="+sock,
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s failed: %v\n%s", arg, err, out)
+		}
+	}
+
+	fire("subagent-start", `{"session_id":"s1","cwd":"/repo","agent_id":"a1","agent_type":"Explore"}`)
+	fire("subagent-start", `{"session_id":"s1","cwd":"/repo","agent_id":"a2","agent_type":"Explore"}`)
+	fire("stop", `{"session_id":"s1","cwd":"/repo"}`)
+	fire("notification", `{"session_id":"s1","cwd":"/repo","notification_type":"idle_prompt","message":"Claude is waiting for your input"}`)
+
+	// The session signal from `stop` is the proof the messages arrived at all —
+	// without it a broken socket would pass this test by delivering nothing.
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.sigCalls > 0 })
+	time.Sleep(200 * time.Millisecond)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.calls != 0 {
+		t.Fatalf("attention applied %d times (last %q) while two Explore agents were running", r.calls, r.gotAtt)
+	}
+}
+
+// A cwd is what maps a hook to a workspace, and the subagent events do not need
+// one — they are tracked by session id. Requiring one would silently disable the
+// hold instead of failing loudly.
+func TestNotifyScript_SubagentEventNeedsNoCwd(t *testing.T) {
+	requireScript(t)
+	dir := sockDir(t)
+	sock := filepath.Join(dir, "hooks.sock")
+	got := listenOnce(t, sock)
+
+	cmd := exec.Command("bash", notifyScript, "subagent-start")
+	cmd.Stdin = strings.NewReader(`{"session_id":"s1","agent_id":"a-42"}`)
+	cmd.Env = append(scrubbedEnv(),
+		"CCMUX_HOOK_TRACE="+filepath.Join(dir, "trace.jsonl"),
+		"CCMUX_PANE_ID=pane-1",
+		"CCMUX_HOOKS_SOCK="+sock,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script failed: %v\n%s", err, out)
+	}
+
+	select {
+	case line := <-got:
+		if !strings.Contains(line, `"agent_id": "a-42"`) {
+			t.Errorf("delivered payload = %q", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a subagent_start without a cwd was dropped; the hold would silently stop working")
+	}
 }
