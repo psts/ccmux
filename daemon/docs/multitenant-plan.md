@@ -68,13 +68,17 @@ so two people attaching still means one terminal, as today.
   no view row for you render in an **Available** section, labeled `Patric · CHARTLABS`;
   opening one writes your view row. This is the "she sees my windows, closed for her,
   can open them" behavior.
-- **The peers-bus group boundary keys on the owner's view.** The hub already resolves a
-  peer's group by joining pane → workspace → group against its aggregate
-  (`multihost-plan.md:161`); that join now reads `views[owner]`. Two Claudes are
-  teammates when *the owner* put their sessions in one window — deterministic, no
-  dependence on who else is watching. If the owner holds no row (they put it away while
-  someone else uses it), the existing directory-name fallback applies
-  (`peers/service.go:353-373`).
+- **The peers-bus group boundary keys on the owner's view — by NAME.** The hub already
+  resolves a peer's group by joining pane → workspace → group against its aggregate
+  (`multihost-plan.md:161`); that join now reads `views[owner]` (owner's row → legacy
+  group until imported → "" once put away, whereupon the directory-name fallback
+  applies, `peers/service.go:353-373`). Two Claudes are teammates when *the owner* put
+  their sessions in one window — deterministic, no dependence on who else is watching.
+  The bus deliberately stays name-based rather than `(login, window)`-scoped: group
+  names flow through human-typed `to_group` addressing, error strings, and the
+  directory-name fallback that lets a plain-terminal Claude join its project, and all
+  of those match by bare name. Consequence, accepted: two users who name a window
+  identically share one bus group — same fuzziness the folder fallback always had.
 - **No `contract` bump.** Every change is additive fields, hub-local semantics, or
   lens-side. A member host on the old build still lists and attaches; the hub's view
   stamping and archive guard sit in front of it either way.
@@ -193,8 +197,9 @@ the caller is not the owner, same override.
 4. **Revive placement.** A revives a cold repo from window CHARTLABS while B has a
    window named `dasha`: it lands in CHARTLABS on every one of A's lenses and appears
    only in B's Available. The original bug, replayed.
-5. **Name collisions.** A and B both name a window `shared`: sessions do not co-mingle
-   and peers grouping does not merge them.
+5. **Name collisions.** A and B both name a window `shared`: their *sidebars* do not
+   co-mingle (views are keyed by login). The peers bus, being name-based (see the
+   decision above), does treat the two as one project group.
 6. **Peers.** Two Claudes in one owner-window message each other across hosts as
    before; a session B opened into her window does not join her bus groups.
 7. **Push and attribution.** Loopback Mac on an owned host keys pushes and co-author to

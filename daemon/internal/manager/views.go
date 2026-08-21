@@ -52,6 +52,27 @@ func (m *Manager) ViewImports() map[string]bool {
 	return imported
 }
 
+// ViewResolver snapshots the view rows and import markers once and returns a
+// resolver for "which window does OWNER keep this workspace in": the owner's
+// row when one exists; the legacy persisted group until the import has run;
+// and "" once the owner has put it away (row deleted after import) — the bus
+// then falls to its directory-name grouping, exactly like an ungrouped session.
+func (m *Manager) ViewResolver() func(owner, wsID, legacy string) string {
+	views, imported := m.Views(), m.ViewImports()
+	return func(owner, wsID, legacy string) string {
+		if owner == "" {
+			return legacy
+		}
+		if g, ok := views[wsID][owner]; ok {
+			return g
+		}
+		if imported != nil && imported[wsID] {
+			return ""
+		}
+		return legacy
+	}
+}
+
 // Views returns every view row, keyed workspace → login → window. Empty (never
 // nil) without a store, so list stamping stays off the handlers' panic path.
 func (m *Manager) Views() map[string]map[string]string {

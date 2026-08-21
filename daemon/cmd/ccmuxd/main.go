@@ -348,6 +348,23 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	)
 	client := hub.NewClient(transport)
 	agg := hub.NewAggregator(selfID, reg, mgr, client.Workspaces)
+	// The peers pane→group index follows each workspace OWNER's window (their
+	// view row in the hub's store), not the frozen legacy group the member
+	// fetch carries. A fresh snapshot per aggregation pass.
+	agg.SetGroupResolver(func() func(hostID, wsID, legacy string) string {
+		resolve := mgr.ViewResolver()
+		return func(hostID, wsID, legacy string) string {
+			hostOwner := mgr.Owner()
+			if hostID != selfID {
+				host, ok := reg.Get(hostID)
+				if !ok {
+					return legacy
+				}
+				hostOwner = host.Owner
+			}
+			return resolve(hostOwner, wsID, legacy)
+		}
+	})
 	reg.StartProbe(ctx, 5*time.Second)
 	agg.StartRefresh(ctx, 5*time.Second) // keep the pane→group/host indexes fresh for peers
 

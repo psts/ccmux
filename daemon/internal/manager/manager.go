@@ -980,21 +980,26 @@ func (m *Manager) WorkspaceForPane(paneID string) string {
 // resolves a pane peer's group through this at operation time, so a window
 // rename or move re-groups live sessions immediately.
 func (m *Manager) GroupForPane(paneID string) (string, bool) {
+	// The bus files a workspace under its OWNER's window: the arrangement moved
+	// into per-login views, so the legacy ws.Group only stands until imported.
+	resolve := m.ViewResolver()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if e, _ := m.findPaneLocked(paneID); e != nil {
-		return e.ws.Group, true
+		return resolve(m.Owner(), e.ws.ID, e.ws.Group), true
 	}
 	return "", false
 }
 
 // LiveWorkspaceForRepo finds a live workspace in the given sidebar group whose
 // repo directory's basename matches name — the peers-bus native spawn target.
+// Group matching follows the owner's view, same as GroupForPane.
 func (m *Manager) LiveWorkspaceForRepo(group, name string) (wsID, repoPath string, ok bool) {
+	resolve, owner := m.ViewResolver(), m.Owner()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, e := range m.byID {
-		if e.ctrl == nil || e.ws.Group != group {
+		if e.ctrl == nil || resolve(owner, e.ws.ID, e.ws.Group) != group {
 			continue
 		}
 		if e.ws.RepoPath != "" && baseName(e.ws.RepoPath) == name {

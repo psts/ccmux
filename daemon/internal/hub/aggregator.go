@@ -26,9 +26,16 @@ type Aggregator struct {
 	local  LocalLister
 	fetch  RemoteFetcher
 
+	// groupResolver, when set, supplies a per-aggregation resolver mapping a
+	// workspace to the window its OWNER keeps it in (per-login views live in
+	// the hub's store, not on the fetched workspaces). The factory runs once
+	// per Aggregate so each pass reads a fresh snapshot; nil keeps the fetched
+	// legacy group. See docs/multitenant-plan.md.
+	groupResolver func() func(hostID, wsID, legacy string) string
+
 	mu        sync.RWMutex
 	owner     map[string]string      // workspace id + pane id → owning host
-	groups    map[string]string      // pane id → owning workspace's group (for peers federation)
+	groups    map[string]string      // pane id → owning workspace's OWNER-view group (for peers federation)
 	hostnames map[string]hostnameLoc // dev-hostname label → owning host + workspace (global registrar)
 }
 
@@ -46,6 +53,12 @@ func NewAggregator(selfID string, reg *Registry, local LocalLister, fetch Remote
 		groups:    map[string]string{},
 		hostnames: map[string]hostnameLoc{},
 	}
+}
+
+// SetGroupResolver installs the owner-view group source (see the field doc).
+// Call before StartRefresh; not safe to swap while aggregations run.
+func (a *Aggregator) SetGroupResolver(factory func() func(hostID, wsID, legacy string) string) {
+	a.groupResolver = factory
 }
 
 // StartRefresh re-aggregates on an interval so the ownership + pane→group indexes
@@ -70,11 +83,15 @@ func (a *Aggregator) StartRefresh(ctx context.Context, interval time.Duration) {
 // ownership index. Remote hosts are fetched concurrently; a fetch error drops
 // that host's workspaces for this cycle (it stays visible in GET /v1/hosts).
 func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
+	resolve := func(_, _, legacy string) string { return legacy }
+	if a.groupResolver != nil {
+		resolve = a.groupResolver()
+	}
 	all := stampAll(a.local.List(), a.selfID) // local always included
 	owner := map[string]string{}
 	groups := map[string]string{}
 	hostnames := map[string]hostnameLoc{}
-	indexInto(owner, groups, hostnames, all, a.selfID)
+	indexInto(owner, groups, hostnames, all, a.selfID, resolve)
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -92,7 +109,7 @@ func (a *Aggregator) Aggregate(ctx context.Context) []*model.Workspace {
 			stamped := stampAll(wss, h.ID)
 			mu.Lock()
 			all = append(all, stamped...)
-			indexInto(owner, groups, hostnames, stamped, h.ID)
+			indexInto(owner, groups, hostnames, stamped, h.ID, resolve)
 			mu.Unlock()
 		}(h)
 	}
@@ -149,8 +166,9 @@ func (a *Aggregator) OwnerOrRefresh(ctx context.Context, id string) (string, boo
 }
 
 // indexInto records each workspace's and pane's owning host, each pane's
-// owning-workspace group (peers resolver), and each dev-hostname's owner (registrar).
-func indexInto(owner, groups map[string]string, hostnames map[string]hostnameLoc, wss []*model.Workspace, hostID string) {
+// owning-workspace group (peers resolver, via the owner-view resolve), and each
+// dev-hostname's owner (registrar).
+func indexInto(owner, groups map[string]string, hostnames map[string]hostnameLoc, wss []*model.Workspace, hostID string, resolve func(hostID, wsID, legacy string) string) {
 	for _, ws := range wss {
 		owner[ws.ID] = hostID
 		for _, hn := range ws.Hostnames {
@@ -158,9 +176,10 @@ func indexInto(owner, groups map[string]string, hostnames map[string]hostnameLoc
 				hostnames[hn.Name] = hostnameLoc{Host: hostID, Workspace: ws.ID}
 			}
 		}
+		group := resolve(hostID, ws.ID, ws.Group)
 		for _, p := range ws.Panes {
 			owner[p.ID] = hostID
-			groups[p.ID] = ws.Group
+			groups[p.ID] = group
 		}
 	}
 }
