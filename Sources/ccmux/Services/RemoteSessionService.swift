@@ -842,11 +842,17 @@ final class RemoteSessionService: ObservableObject {
 
     /// setGroup by raw daemon id — cold sessions aren't materialized as app
     /// workspaces, and the revive-claim path must place one BEFORE reviving it
-    /// so it lands in the window the user clicked in. Returns success.
+    /// so it lands in the window the user clicked in. Returns success. The
+    /// local cache updates like the appId variant's does — a stale cached
+    /// group here is what the diff-based sync would happily push back.
     @discardableResult
     func setGroup(daemonId: String, to name: String) async -> Bool {
         let body = try? JSONSerialization.data(withJSONObject: ["group": name])
-        return await send("PUT", path: "/v1/workspaces/\(daemonId)/group", body: body, expect: 204)
+        guard await send("PUT", path: "/v1/workspaces/\(daemonId)/group", body: body, expect: 204) else {
+            return false
+        }
+        await MainActor.run { self.groups[RemoteWorkspaceBuilder.workspaceUUID(daemonId)] = name }
+        return true
     }
 
     // MARK: - Dev hostnames

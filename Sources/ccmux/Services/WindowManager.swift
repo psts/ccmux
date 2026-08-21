@@ -278,11 +278,24 @@ class WindowManager {
         plan: (closeLocally: [UUID], archiveHosted: [UUID], record: [UUID])
     ) {
         for wsId in plan.archiveHosted {
-            // Resolve the daemon id NOW: once archived, the workspace goes cold
-            // and the live-attachment map forgets it, and the put-away below
-            // must still reach the daemon.
             let daemonId = RemoteSessionService.shared.daemonId(forApp: wsId)
             Task { @MainActor in
+                // Put away FIRST, archive second. archiveWorkspace refreshes
+                // internally, and that refresh runs the orphan sweep — with our
+                // stale row still on the daemon and the window list already
+                // renumbered, the sweep would re-home the session into a
+                // surviving window and the group sync would push that window's
+                // name right back over the row. Row first = the sweep sees
+                // nothing to adopt. A failed put-away means the row survives
+                // and the session reappears next launch — log it, or that
+                // ghost is untraceable.
+                if let daemonId {
+                    if !(await RemoteSessionService.shared.setGroup(daemonId: daemonId, to: "")) {
+                        NSLog("[ccmux] closing window: put-away of %@ failed; it will reappear on next launch", daemonId)
+                    }
+                } else {
+                    NSLog("[ccmux] closing window: no daemon id for %@; view row not put away", wsId.uuidString)
+                }
                 // The daemon 409s an archive of a session that is not ours, or
                 // that someone else still keeps in a window (views are per-user).
                 // We deliberately never force from a window close: the session
@@ -290,18 +303,6 @@ class WindowManager {
                 if let error = await RemoteSessionService.shared.archiveWorkspace(wsId) {
                     NSLog("[ccmux] closing window: archiving %@ refused (left running): %@",
                           wsId.uuidString, error)
-                }
-                // Closing always puts away our view row — with or without the
-                // archive. The session leaves our windows; anyone else's
-                // arrangement is untouched. A failed put-away means the row
-                // survives and the session reappears next launch — log it, or
-                // that ghost is untraceable.
-                if let daemonId {
-                    if !(await RemoteSessionService.shared.setGroup(daemonId: daemonId, to: "")) {
-                        NSLog("[ccmux] closing window: put-away of %@ failed; it will reappear on next launch", daemonId)
-                    }
-                } else {
-                    NSLog("[ccmux] closing window: no daemon id for %@; view row not put away", wsId.uuidString)
                 }
             }
         }
@@ -754,6 +755,15 @@ class WindowManager {
     /// that window's name over our row) is exactly the interference this
     /// replaced. A multiply-owned workspace keeps the window displaying it,
     /// else its first owner. Returns nil when nothing changes.
+    /// The one rule for "does this group name mean this window": case-
+    /// insensitive, because rows written from web/phone may not match a window
+    /// name's capitalisation. Adoption, the sidebar's cold bucketing, and the
+    /// group sync must all use it — a site comparing with == puts the same
+    /// session in two different places depending on who spelled the name.
+    static func sameWindowName(_ a: String, _ b: String) -> Bool {
+        a.caseInsensitiveCompare(b) == .orderedSame
+    }
+
     static func reconcileHostedOwnership(
         workspaceIds: [UUID], groups: [UUID: String], owned: [Set<UUID>], displayed: [UUID?],
         windowNames: [String]
@@ -764,12 +774,9 @@ class WindowManager {
         for id in workspaceIds {
             let owners = result.indices.filter { result[$0].contains(id) }
             if owners.isEmpty {
-                // Case-insensitive: rows written from web/phone may not match a
-                // window name's capitalisation, same rule as the peers bus.
                 guard let group = groups[id], !group.isEmpty,
-                      let target = windowNames.firstIndex(where: {
-                          $0.caseInsensitiveCompare(group) == .orderedSame
-                      }) else { continue }
+                      let target = windowNames.firstIndex(where: { sameWindowName($0, group) })
+                else { continue }
                 result[target].insert(id)
                 changed = true
             } else if owners.count > 1 {
@@ -851,7 +858,7 @@ class WindowManager {
         for wc in windowControllers {
             let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
             for wsId in wc.windowContext.ownedWorkspaceIds
-            where service.isHosted(wsId) && service.groups[wsId] != name {
+            where service.isHosted(wsId) && !Self.sameWindowName(service.groups[wsId] ?? "", name) {
                 Task { await service.setGroup(wsId, to: name) }
             }
         }

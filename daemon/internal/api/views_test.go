@@ -148,6 +148,35 @@ func TestViews_UnownedHostKeepsLegacyGroups(t *testing.T) {
 	}
 }
 
+// The create path persists the legacy ws_group column for compat AND seeds the
+// creator's row with an import marker. Putting the session away must therefore
+// stick: without the marker, the next list would "import" the legacy column
+// back as the owner's row and the closed session would pop back into a window.
+func TestViews_PutAwayAfterCreateDoesNotResurrect(t *testing.T) {
+	ws := &model.Workspace{ID: "w1", Group: "CHARTLABS"} // legacy column, as create writes it
+	s := viewsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
+	if err := s.mgr.SetOwner("patric@x.com"); err != nil {
+		t.Fatal(err)
+	}
+	// What createWorkspace's seeding does:
+	if err := s.mgr.ImportView("patric@x.com", "w1", "CHARTLABS"); err != nil {
+		t.Fatal(err)
+	}
+	// Close the window: the row goes away.
+	if err := s.mgr.SetView("patric@x.com", "w1", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := listAs(t, s); got[0].Group != "" {
+		t.Fatalf("put-away workspace came back in %q", got[0].Group)
+	}
+	// The peers bus must agree: put away means the directory fallback, not the
+	// legacy group.
+	if g := s.mgr.ViewResolver()("patric@x.com", "w1", "CHARTLABS"); g != "" {
+		t.Fatalf("bus still groups the put-away workspace under %q", g)
+	}
+}
+
 func TestViews_PutGroupWritesCallerRowOnly(t *testing.T) {
 	ws := &model.Workspace{ID: "w1"}
 	s := viewsFixture(t, fakeResolver{login: "dasha@x.com", ok: true}, ws)

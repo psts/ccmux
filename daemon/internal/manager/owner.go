@@ -21,7 +21,14 @@ func (m *Manager) Owner() string {
 	return m.getSetting(settingOwner)
 }
 
-// SetOwner persists the host-owner login; empty clears it.
+// SetOwner persists the host-owner login; empty clears it. Lowercased: the
+// login is compared against WhoIs results and used as the views map key, and a
+// hand-typed "Patric@Example.com" must not lock the real owner out of their
+// own archive guard or blank every OwnerGroup label.
 func (m *Manager) SetOwner(login string) error {
-	return m.store.SetSetting(settingOwner, strings.TrimSpace(login))
+	if err := m.store.SetSetting(settingOwner, strings.ToLower(strings.TrimSpace(login))); err != nil {
+		return err
+	}
+	m.invalidateViews() // the owner is part of the cached view snapshot
+	return nil
 }

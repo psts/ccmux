@@ -639,10 +639,14 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The creator's view row: the new workspace starts in the window they
-	// created it from. Local creates only — a hub proxying to a remote host
-	// seeds in hostCreateRoute instead.
+	// created it from. ImportView, not SetView: it also writes the import
+	// marker, because the legacy ws_group column is persisted at create for
+	// compat and must NEVER act as a source for a workspace born with view
+	// rows — without the marker, putting the session away would resurrect it
+	// into the owner's window on the next list. Local creates only — a hub
+	// proxying to a remote host seeds in hostCreateRoute instead.
 	if req.Group != "" {
-		if verr := s.mgr.SetView(s.resolveIdentity(r).Login, ws.ID, req.Group); verr != nil {
+		if verr := s.mgr.ImportView(s.resolveIdentity(r).Login, ws.ID, req.Group); verr != nil {
 			log.Printf("views: seeding creator's row for %s failed: %v", ws.ID, verr)
 		}
 	}

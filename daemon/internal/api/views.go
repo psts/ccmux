@@ -197,7 +197,10 @@ func (s *Server) hostCreateRoute() http.HandlerFunc {
 				r.PathValue("host"), cw.status, req.Group)
 			return
 		}
-		if err := s.mgr.SetView(login, ws.ID, req.Group); err != nil {
+		// ImportView, not SetView: the marker keeps the member's persisted
+		// legacy group from ever resurrecting this workspace after a put-away
+		// (see createWorkspace).
+		if err := s.mgr.ImportView(login, ws.ID, req.Group); err != nil {
 			log.Printf("views: seeding creator's row for %s failed: %v", ws.ID, err)
 		}
 	}

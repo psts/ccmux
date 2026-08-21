@@ -40,15 +40,18 @@ struct SidebarView: View {
     /// inside its section so a session that merely went cold doesn't visually
     /// leave the window it belongs to.
     private func coldWorkspaces(inGroup name: String) -> [DaemonWorkspace] {
-        remoteService.coldWorkspaces.filter { $0.group == name }
+        remoteService.coldWorkspaces.filter { WindowManager.sameWindowName($0.group, name) }
     }
 
     /// Cold sessions with no matching window section ("" — not in our windows —
     /// or a window that was closed): they render under AVAILABLE.
     private var ungroupedColdWorkspaces: [DaemonWorkspace] {
-        var names = Set(windowContext.otherWindowGroups.map(\.name))
-        names.insert(thisWindowName)
-        return remoteService.coldWorkspaces.filter { !names.contains($0.group) }
+        // Lowercased set: the same case-insensitive rule as
+        // WindowManager.sameWindowName, or a row spelled differently lands in
+        // a window section AND here.
+        var names = Set(windowContext.otherWindowGroups.map { $0.name.lowercased() })
+        names.insert(thisWindowName.lowercased())
+        return remoteService.coldWorkspaces.filter { !names.contains($0.group.lowercased()) }
     }
 
     /// Live hosted sessions no window of ours owns — someone else's, or ours
@@ -608,12 +611,13 @@ struct SidebarView: View {
     /// Resurrect a cold session, reporting a refusal instead of swallowing it.
     /// The click has no other visible effect when it fails, so silence reads as a
     /// dead row. claimHere places it into this window BEFORE the revive (see
-    /// coldRow) — a failed claim still revives, it just lands by name match.
+    /// coldRow) — after a failed claim the revive still runs, but with no row
+    /// the session comes up under AVAILABLE instead of this window.
     private func revive(_ cold: DaemonWorkspace, claimHere: Bool = false) {
         let windowName = thisWindowName
         Task {
             if claimHere, !(await remoteService.setGroup(daemonId: cold.id, to: windowName)) {
-                NSLog("[ccmux] revive: claiming %@ into %@ failed; placement falls to name match",
+                NSLog("[ccmux] revive: claiming %@ into %@ failed; it will come up under AVAILABLE",
                       cold.id, windowName)
             }
             guard let error = await remoteService.reviveWorkspace(daemonId: cold.id) else { return }
