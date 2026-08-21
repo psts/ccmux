@@ -118,6 +118,9 @@ func (m *Manager) SharedGroupResolver() func(wsID, legacy string) string {
 // this sits on the per-attention notification path. The returned map is the
 // snapshot's own: read-only for callers.
 func (m *Manager) WindowOpenLogins(wsID string) (map[string]bool, bool) {
+	if m == nil { // bare Servers (tests, health) must not panic the alert path
+		return nil, false
+	}
 	st := m.windowSnapshot()
 	wid, ok := st.members[wsID]
 	if !ok {
