@@ -109,7 +109,7 @@ case "${1:-unknown}" in
     # mistaken for a turn that ended. Consumed by the daemon in
     # daemon/internal/hooks/agents.go (the lead implementation) and by the app
     # in Sources/ccmux/Services/SubagentTracker.swift (a lagging subset until
-    # the v0.1.30 parity refactor).
+    # the planned parity refactor).
     subagent-start|SubagentStart)            TYPE="subagent_start" ;;
     subagent-stop|SubagentStop)              TYPE="subagent_stop" ;;
 

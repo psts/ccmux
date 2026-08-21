@@ -18,7 +18,7 @@ import Foundation
 /// (`daemon/internal/hooks/agents.go`) and is the LEAD implementation; this
 /// copy serves the app's own local panes, which never reach the daemon's
 /// socket, and deliberately lags it (no prompt tracking, single-session sweep,
-/// no expiry trace) pending the v0.1.30 parity refactor. Treat the Go file as
+/// no expiry trace) pending the planned parity refactor. Treat the Go file as
 /// the reference when they disagree.
 ///
 /// All mutation happens on the main thread — `ClaudeHookListener` hops to main

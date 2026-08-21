@@ -16,8 +16,9 @@ import AppKit
 /// turn-end to idle (clearing a stale needs_input flag), honors a live prompt
 /// via promptPending, and traces hold-unchecked/agent-expired; this side drops
 /// the held event and traces none of that. Deliberate — the parity refactor is
-/// v0.1.30 scope (see commit "a hold says idle..."). Until then, the daemon is
-/// the reference; do not propagate Swift-side changes back as if equal.
+/// a planned follow-up (see the v0.1.30 release commit "a hold says idle...").
+/// Until then, the daemon is the reference; do not propagate Swift-side changes
+/// back as if the two were equal.
 final class ClaudeHookListener {
     static let socketPath = "/tmp/ccmux-hooks.sock"
 
