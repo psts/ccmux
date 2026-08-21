@@ -277,39 +277,22 @@ class WindowManager {
         controller: WorkspaceWindowController,
         plan: (closeLocally: [UUID], archiveHosted: [UUID], record: [UUID])
     ) {
-        for wsId in plan.archiveHosted {
-            let daemonId = RemoteSessionService.shared.daemonId(forApp: wsId)
+        // Hosted members ride the SHARED close (v2): clear this login's open
+        // flag; the daemon answers whether that was the last opener, and only
+        // then do the members archive (inside closeSharedWindow). Someone else
+        // still having the window open means nothing sleeps — their window,
+        // their panes, untouched.
+        if !plan.archiveHosted.isEmpty {
+            let name = controller.windowContext.windowName ?? autoWindowName(for: controller)
             Task { @MainActor in
-                // Put away FIRST, archive second. archiveWorkspace refreshes
-                // internally, and that refresh runs the orphan sweep — with our
-                // stale row still on the daemon and the window list already
-                // renumbered, the sweep would re-home the session into a
-                // surviving window and the group sync would push that window's
-                // name right back over the row. Row first = the sweep sees
-                // nothing to adopt. A failed put-away means the row survives
-                // and the session reappears next launch — log it, or that
-                // ghost is untraceable.
-                if let daemonId {
-                    if !(await RemoteSessionService.shared.setGroup(daemonId: daemonId, to: "")) {
-                        NSLog("[ccmux] closing window: put-away of %@ failed; it will reappear on next launch", daemonId)
-                    }
-                } else {
-                    NSLog("[ccmux] closing window: no daemon id for %@; view row not put away", wsId.uuidString)
-                }
-                // The daemon 409s an archive of a session that is not ours, or
-                // that someone else still keeps in a window (views are per-user).
-                // We deliberately never force from a window close: the session
-                // stays running for whoever holds it, and only OUR row goes.
-                if let error = await RemoteSessionService.shared.archiveWorkspace(wsId) {
-                    NSLog("[ccmux] closing window: archiving %@ refused (left running): %@",
-                          wsId.uuidString, error)
-                }
+                await RemoteSessionService.shared.closeSharedWindow(named: name)
             }
         }
 
-        // The window that grouped these (its name, frame, and membership) is ours to
-        // remember; without the record there is nothing for Restore Window to rebuild.
-        guard !plan.record.isEmpty else { return }
+        // A closed-window record is only for windows holding LOCAL workspaces:
+        // hosted windows are restorable from the daemon's shared list, and a
+        // duplicate local record would resurrect stale membership.
+        guard !plan.closeLocally.isEmpty else { return }
         let frame = controller.window?.frame ?? NSRect(x: 100, y: 100, width: 1200, height: 800)
         workspaceManager.saveClosedWindow(ClosedWindow(
             id: UUID(),
@@ -429,6 +412,20 @@ class WindowManager {
         targetController.windowContext.displayedWorkspaceId = id
         targetController.windowContext.ownedWorkspaceIds.insert(id)
         targetController.updateWindowTitle()
+        // A move is an EXPLICIT user action, so it pushes the shared membership
+        // (v2: the one place besides create/revive/rename that writes it). The
+        // optimistic note keeps the reconcile that runs before the daemon's ack
+        // from bouncing the workspace back.
+        if RemoteSessionService.shared.isHosted(id) {
+            let name = targetController.windowContext.windowName ?? autoWindowName(for: targetController)
+            RemoteSessionService.shared.noteGroup(id, to: name)
+            Task { @MainActor in
+                if !(await RemoteSessionService.shared.setGroup(id, to: name)) {
+                    NSLog("[ccmux] windows: shared move of %@ into %@ failed; it will bounce back on the next refresh",
+                          id.uuidString, name)
+                }
+            }
+        }
         // Only mark it active when the target is where the user actually is: a
         // drag dropped on ANOTHER window's section must not point menu actions
         // at a workspace the key window doesn't display.
@@ -729,21 +726,64 @@ class WindowManager {
     /// deduped to exactly one.
     func adoptOrphanHostedWorkspaces() {
         guard pendingHostedCreates == 0 else { return } // a local create is claiming; don't race it
+        defer { syncOpenFlags() }
         guard let resolved = Self.reconcileHostedOwnership(
             workspaceIds: RemoteSessionService.shared.workspaces.map(\.id),
             groups: RemoteSessionService.shared.groups,
             owned: windowControllers.map { $0.windowContext.ownedWorkspaceIds },
-            displayed: windowControllers.map { $0.windowContext.displayedWorkspaceId },
             windowNames: windowControllers.map { $0.windowContext.windowName ?? autoWindowName(for: $0) })
         else { return }
         for (wc, ids) in zip(windowControllers, resolved) where wc.windowContext.ownedWorkspaceIds != ids {
             wc.windowContext.ownedWorkspaceIds = ids
+            // A window whose displayed workspace was moved elsewhere falls back
+            // to its next owned one — leaving it displaying a workspace it no
+            // longer owns breaks the click-routing invariant.
+            if let shown = wc.windowContext.displayedWorkspaceId, !ids.contains(shown),
+               RemoteSessionService.shared.isHosted(shown) {
+                wc.windowContext.displayedWorkspaceId = ids.first
+                wc.updateWindowTitle()
+            }
         }
         refreshOtherWindowIds()
         // Ownership lives only in the window descriptor, and nothing here trips the
         // autosave: without this the saved state keeps insisting a session is
         // unowned while the running app has already re-homed it.
         workspaceManager.scheduleSaveFromWindow()
+    }
+
+    /// Every on-screen window whose name matches a shared window should hold
+    /// this login's open flag — having it open IS the flag. Diff-gated on the
+    /// daemon-reported state; the daemon-side write is idempotent.
+    private func syncOpenFlags() {
+        let service = RemoteSessionService.shared
+        for wc in windowControllers {
+            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
+            if let win = service.sharedWindows.first(where: { Self.sameWindowName($0.name, name) }),
+               !win.open {
+                Task { @MainActor in await service.openSharedWindow(id: win.id) }
+            }
+        }
+    }
+
+    /// Open a shared window from the closed list: create the Mac window, own
+    /// its live members, mark the flag, and wake the cold ones — opening a
+    /// sleeping window is how it comes back, everywhere.
+    func openSharedWindow(_ win: DaemonWindow) {
+        let service = RemoteSessionService.shared
+        let memberIds = win.workspaceIds.map { RemoteWorkspaceBuilder.workspaceUUID($0) }
+        let live = memberIds.filter { service.isHosted($0) }
+        let wc = createWindow(displayingWorkspace: live.first, name: win.name)
+        wc.windowContext.ownedWorkspaceIds = Set(live)
+        Task { @MainActor in
+            await service.openSharedWindow(id: win.id)
+            for daemonId in win.workspaceIds
+            where service.coldWorkspaces.contains(where: { $0.id == daemonId }) {
+                if let error = await service.reviveWorkspace(daemonId: daemonId) {
+                    NSLog("[ccmux] windows: waking %@ failed: %@", daemonId, error)
+                }
+            }
+        }
+        refreshOtherWindowIds()
     }
 
     /// The one rule for "does this group name mean this window": case-
@@ -755,36 +795,31 @@ class WindowManager {
         a.caseInsensitiveCompare(b) == .orderedSame
     }
 
-    /// Pure ownership resolution (index = window order). An orphan is adopted
-    /// ONLY into the window whose name matches its group — OUR view row on the
-    /// daemon (views are per-user; see docs/multitenant-plan.md). No row, or a
-    /// row naming a window that is not open, means it stays unowned and renders
-    /// in the sidebar's AVAILABLE section instead: adopting someone else's
-    /// session (or force-homing our own into the wrong window and then pushing
-    /// that window's name over our row) is exactly the interference this
-    /// replaced. A multiply-owned workspace keeps the window displaying it,
-    /// else its first owner. Returns nil when nothing changes.
+    /// Pure ownership resolution (index = window order). The SHARED membership
+    /// is authoritative (v2): a hosted workspace belongs to the on-screen
+    /// window whose name is its group — moved there if some other window held
+    /// it, released everywhere if its window is not open here (it lives in a
+    /// closed shared window, or is ungrouped → AVAILABLE). The daemon leads;
+    /// this Mac follows. Returns nil when nothing changes.
     static func reconcileHostedOwnership(
-        workspaceIds: [UUID], groups: [UUID: String], owned: [Set<UUID>], displayed: [UUID?],
+        workspaceIds: [UUID], groups: [UUID: String], owned: [Set<UUID>],
         windowNames: [String]
     ) -> [Set<UUID>]? {
         guard !owned.isEmpty else { return nil }
         var result = owned
         var changed = false
         for id in workspaceIds {
-            let owners = result.indices.filter { result[$0].contains(id) }
-            if owners.isEmpty {
-                guard let group = groups[id], !group.isEmpty,
-                      let target = windowNames.firstIndex(where: { sameWindowName($0, group) })
-                else { continue }
+            let group = groups[id] ?? ""
+            let target = group.isEmpty
+                ? nil
+                : windowNames.firstIndex(where: { sameWindowName($0, group) })
+            for i in result.indices where i != target && result[i].contains(id) {
+                result[i].remove(id)
+                changed = true
+            }
+            if let target, !result[target].contains(id) {
                 result[target].insert(id)
                 changed = true
-            } else if owners.count > 1 {
-                let keeper = owners.first { displayed[$0] == id } ?? owners[0]
-                for i in owners where i != keeper {
-                    result[i].remove(id)
-                    changed = true
-                }
             }
         }
         return changed ? result : nil
@@ -835,33 +870,21 @@ class WindowManager {
                 wc.windowContext.otherWindowGroups = otherGroups
             }
             // Keep the published auto name truthful to window order, so the
-            // sidebar displays and matches the SAME name the group sync pushes.
+            // sidebar displays and matches the SAME name membership resolves.
             let auto = autoWindowName(for: wc)
             if wc.windowContext.autoName != auto {
                 wc.windowContext.autoName = auto
             }
         }
-        syncHostedGroups()
+        // Deliberately NO blanket membership push here (v2): the daemon is the
+        // window authority and this Mac follows it. Membership writes happen
+        // only on explicit user actions (drag, create, revive-into-window,
+        // rename) — a steady-state sync is exactly the write-back fight that
+        // made two lenses overwrite each other's arrangement.
         syncLocalPaneGroups()
         // Displayed workspaces may have changed — keep the daemon focus frames
         // (phone-push suppression) truthful.
         RemoteSessionService.shared.syncFocusFrames()
-    }
-
-    /// Push each hosted workspace's owning-window name to the daemon as its
-    /// shared `group`, so non-Mac lenses (web/phone) render the same sidebar
-    /// grouping. This Mac is the source of truth; the diff against the daemon's
-    /// last-known value keeps steady-state silent. Runs on every ownership/name
-    /// change via refreshOtherWindowIds (move, detach, adopt, create, rename).
-    private func syncHostedGroups() {
-        let service = RemoteSessionService.shared
-        for wc in windowControllers {
-            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
-            for wsId in wc.windowContext.ownedWorkspaceIds
-            where service.isHosted(wsId) && !Self.sameWindowName(service.groups[wsId] ?? "", name) {
-                Task { await service.setGroup(wsId, to: name) }
-            }
-        }
     }
 
     /// Push the complete local-pane→window-name map to the daemon's peers bus,
@@ -899,7 +922,24 @@ class WindowManager {
     /// change a workspace before quitting.
     func renameWindow(id: UUID, newName: String?) {
         guard let wc = windowControllers.first(where: { $0.windowId == id }) else { return }
+        let oldName = wc.windowContext.windowName ?? autoWindowName(for: wc)
         wc.windowContext.windowName = newName
+        // A rename is an explicit shared edit (v2): when the old name matched a
+        // shared window, rename that window for everyone. A collision refusal
+        // reverts the local name — a window answering to a name the daemon does
+        // not know would shed its repos on the next reconcile.
+        let service = RemoteSessionService.shared
+        if let newName,
+           let win = service.sharedWindows.first(where: { Self.sameWindowName($0.name, oldName) }),
+           !Self.sameWindowName(oldName, newName) {
+            Task { @MainActor in
+                if let error = await service.renameSharedWindow(id: win.id, to: newName) {
+                    NSLog("[ccmux] windows: shared rename %@ → %@ refused: %@", oldName, newName, error)
+                    wc.windowContext.windowName = oldName == self.autoWindowName(for: wc) ? nil : oldName
+                    self.refreshOtherWindowIds()
+                }
+            }
+        }
         refreshOtherWindowIds()
         workspaceManager.scheduleSaveFromWindow()
     }

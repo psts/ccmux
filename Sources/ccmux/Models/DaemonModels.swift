@@ -149,6 +149,26 @@ struct DaemonStartupRule: Codable {
     var command: String
 }
 
+/// One SHARED window from GET /v1/windows: the same arrangement for everyone;
+/// `open` is caller-relative (does THIS login have it open), `openBy` lists
+/// everyone who does. See docs/multitenant-plan.md ("v2: shared windows").
+struct DaemonWindow: Codable, Identifiable {
+    let id: String
+    var name: String
+    var workspaceIds: [String]
+    var openBy: [String]
+    var open: Bool
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        workspaceIds = try c.decodeIfPresent([String].self, forKey: .workspaceIds) ?? []
+        openBy = try c.decodeIfPresent([String].self, forKey: .openBy) ?? []
+        open = try c.decodeIfPresent(Bool.self, forKey: .open) ?? false
+    }
+}
+
 struct DaemonWorkspace: Codable, Identifiable {
     let id: String
     var name: String

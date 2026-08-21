@@ -1,75 +1,70 @@
 import XCTest
 @testable import ccmux
 
-/// Pins hosted-workspace window ownership resolution: every live hosted
-/// workspace ends up owned by EXACTLY one window. This is the guard against
-/// the create/adopt race (a new session claimed by the creating window while
-/// the reconcile-driven orphan sweep adopts it into the first window) and it
-/// heals double-ownership that older builds persisted.
+/// Pins hosted-workspace window ownership resolution under the SHARED windows
+/// model (v2): the daemon's membership is authoritative — a workspace belongs
+/// to the on-screen window whose name is its group, moves there when another
+/// window held it, and is released everywhere when its window is not open
+/// here (closed shared window, or ungrouped → AVAILABLE).
 final class WindowOwnershipTests: XCTestCase {
     private let ws1 = UUID()
     private let ws2 = UUID()
 
-    func testUnplacedOrphanIsNotAdopted() {
-        // No group row means "not in our windows" — someone else's session, or
-        // ours put away. Adopting it anyway is the multi-lens interference the
-        // per-user views replaced; it renders under AVAILABLE instead.
+    func testUngroupedIsNotAdopted() {
+        // No membership means AVAILABLE — force-homing it into window 0 was
+        // the original multi-lens interference.
         XCTAssertNil(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [:], owned: [[], [ws2]], displayed: [nil, nil],
+            workspaceIds: [ws1], groups: [:], owned: [[], [ws2]],
             windowNames: ["A", "B"]),
-            "an unplaced session must stay unowned (AVAILABLE), not land in window 0")
+            "an ungrouped session must stay unowned (AVAILABLE), not land in window 0")
     }
 
-    func testOrphanAdoptsIntoTheWindowMatchingItsGroup() throws {
-        // A session created from web/phone with group "MIXED" must land in the
-        // window of that name, not the first one.
+    func testAdoptsIntoTheWindowMatchingItsGroup() throws {
         let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [ws1: "MIXED"], owned: [[], []], displayed: [nil, nil],
+            workspaceIds: [ws1], groups: [ws1: "MIXED"], owned: [[], []],
             windowNames: ["CHARTLABS", "MIXED"]))
         XCTAssertEqual(resolved, [[], [ws1]])
     }
 
     func testGroupMatchIgnoresCase() throws {
-        // Rows written from web/phone may not match a window name's
-        // capitalisation — same rule as the peers bus.
         let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [ws1: "chartlabs"], owned: [[], []], displayed: [nil, nil],
+            workspaceIds: [ws1], groups: [ws1: "chartlabs"], owned: [[], []],
             windowNames: ["CHARTLABS", "B"]))
         XCTAssertEqual(resolved, [[ws1], []])
     }
 
-    func testOrphanWithUnmatchedGroupStaysAvailable() {
-        // Our row names a window that is not open: force-homing it into window 0
-        // would let the group sync push window 0's name over the row we chose
-        // from another lens. It waits in AVAILABLE instead.
-        XCTAssertNil(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [ws1: "NOPE"], owned: [[], []], displayed: [nil, nil],
-            windowNames: ["A", "B"]),
-            "a row naming an unopened window must not be force-homed")
-    }
-
-    func testDuplicateKeepsTheDisplayingWindow() throws {
-        // ws1 owned by both windows; the SECOND window displays it — it wins.
+    func testSharedMoveRelocatesBetweenOpenWindows() throws {
+        // Someone moved ws1 to window B on another lens: this Mac follows.
         let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [:], owned: [[ws1], [ws1]], displayed: [nil, ws1],
+            workspaceIds: [ws1], groups: [ws1: "B"], owned: [[ws1], []],
             windowNames: ["A", "B"]))
         XCTAssertEqual(resolved, [[], [ws1]])
     }
 
-    func testDuplicateWithoutDisplayKeepsFirstOwner() throws {
+    func testMembershipInAClosedWindowReleasesOwnership() throws {
+        // ws1 now belongs to a shared window that is not open on this Mac: it
+        // must leave the local window (it is reachable by opening its window),
+        // not squat where it no longer lives.
         let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [:], owned: [[ws1], [ws1]], displayed: [nil, nil],
+            workspaceIds: [ws1], groups: [ws1: "ELSEWHERE"], owned: [[ws1], []],
             windowNames: ["A", "B"]))
-        XCTAssertEqual(resolved, [[ws1], []])
+        XCTAssertEqual(resolved, [[], []])
+    }
+
+    func testDuplicateCollapsesToTheMembershipWindow() throws {
+        let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
+            workspaceIds: [ws1], groups: [ws1: "B"], owned: [[ws1], [ws1]],
+            windowNames: ["A", "B"]))
+        XCTAssertEqual(resolved, [[], [ws1]])
     }
 
     func testNoChangeReturnsNil() {
         XCTAssertNil(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1, ws2], groups: [:], owned: [[ws1], [ws2]], displayed: [ws1, ws2],
+            workspaceIds: [ws1, ws2], groups: [ws1: "A", ws2: "B"], owned: [[ws1], [ws2]],
             windowNames: ["A", "B"]),
-            "clean single ownership → nil, so callers skip churn")
+            "clean matching ownership → nil, so callers skip churn")
         XCTAssertNil(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [:], owned: [], displayed: [], windowNames: []),
+            workspaceIds: [ws1], groups: [:], owned: [], windowNames: []),
             "no windows → nothing to do")
     }
 }

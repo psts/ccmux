@@ -298,7 +298,7 @@ function openWsMenu(ws, x, y) {
   // Windows are YOUR arrangement (per-user on the daemon): placing, moving,
   // and putting away touch only your own view row — never anyone else's.
   add(ws.group ? "Move to Window…" : "Add to Window…", () => moveToWindow(ws));
-  if (ws.group) add("Put Away (remove from window)", () => putGroup(ws.id, ""));
+  if (ws.group) add("Remove from Window (for everyone)", () => putGroup(ws.id, ""));
   sep();
   if (ws.status === "cold") {
     add("Revive", () => reviveWorkspace(ws.id));

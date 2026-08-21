@@ -20,6 +20,9 @@ struct SidebarView: View {
     /// Drag-and-drop move: (workspaceId, targetWindowId). Any window section —
     /// this window's or another's — accepts a dropped workspace row.
     var onMoveToWindow: ((UUID, UUID) -> Void)?
+    /// Open a shared window this login has closed (v2): the same window
+    /// everyone else sees, brought on screen here and woken if asleep.
+    var onOpenSharedWindow: ((DaemonWindow) -> Void)?
 
     /// Workspaces belonging to this window — local and hosted alike; a hosted
     /// workspace lives in whatever window group the user put it in, marked only
@@ -43,29 +46,31 @@ struct SidebarView: View {
         remoteService.coldWorkspaces.filter { WindowManager.sameWindowName($0.group, name) }
     }
 
-    /// Cold sessions with no matching window section ("" — not in our windows —
-    /// or a window that was closed): they render under AVAILABLE.
+    /// Cold sessions in NO window (ungrouped): they render under AVAILABLE.
+    /// Cold members of an open window render inside its section; cold members
+    /// of a CLOSED shared window are that window's business — opening it wakes
+    /// them — and rendering them here too would put one session in two places.
     private var ungroupedColdWorkspaces: [DaemonWorkspace] {
-        // The SAME predicate as every other bucketing site — .lowercased() is
-        // not the same relation as caseInsensitiveCompare, and a row that
-        // matched a section under one rule but not the other would render in
-        // a window section AND here.
-        let names = windowContext.otherWindowGroups.map(\.name) + [thisWindowName]
-        return remoteService.coldWorkspaces.filter { cold in
-            !names.contains { WindowManager.sameWindowName($0, cold.group) }
-        }
+        remoteService.coldWorkspaces.filter { $0.group.isEmpty }
     }
 
-    /// Live hosted sessions no window of ours owns — someone else's, or ours
-    /// put away / homed to a window we don't have open. They render under
-    /// AVAILABLE; a click adds them to this window (our view row only).
+    /// Live hosted sessions in NO window at all (ungrouped) — sessions in a
+    /// closed shared window belong to that window and are reachable by opening
+    /// it, not here. A click adds one to this window (a shared edit).
     private var availableLiveWorkspaces: [Workspace] {
         remoteService.workspaces
             .filter {
-                !windowContext.ownedWorkspaceIds.contains($0.id)
+                (remoteService.groups[$0.id] ?? "").isEmpty
+                    && !windowContext.ownedWorkspaceIds.contains($0.id)
                     && !windowContext.otherWindowWorkspaceIds.contains($0.id)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Shared windows this login has closed — one row each in the Open Window
+    /// menu; opening one brings the same window everyone else sees.
+    private var closedSharedWindows: [DaemonWindow] {
+        remoteService.sharedWindows.filter { !$0.open }
     }
 
     /// "patric · CHARTLABS" — whose session an AVAILABLE row is, and where its
@@ -212,7 +217,25 @@ struct SidebarView: View {
                         }
                     }
 
-                    // Restore Window section
+                    // Open Window: shared windows this login has closed — the
+                    // same window everyone else sees; opening wakes it.
+                    if !closedSharedWindows.isEmpty {
+                        Divider()
+                        Text("Open Window")
+
+                        ForEach(closedSharedWindows, id: \.id) { win in
+                            Button {
+                                onOpenSharedWindow?(win)
+                            } label: {
+                                Label(
+                                    "\(win.name) (\(win.workspaceIds.count))",
+                                    systemImage: "macwindow.on.rectangle")
+                            }
+                        }
+                    }
+
+                    // Restore Window section (local-workspace windows only —
+                    // hosted windows live in the shared list above)
                     if !manager.closedWindows.isEmpty {
                         Divider()
                         Text("Restore Window")

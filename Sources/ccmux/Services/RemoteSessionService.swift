@@ -35,10 +35,12 @@ final class RemoteSessionService: ObservableObject {
     /// same observable types the local sidebar rows use, fed from daemon data.
     private(set) var gitMonitors: [UUID: GitStatusMonitor] = [:]
     private(set) var claudeMonitors: [UUID: ClaudeProcessMonitor] = [:]
-    /// Last-known sidebar group per hosted workspace — OUR view row, per-user
-    /// on the daemon. WindowManager diffs its window names against this before
-    /// pushing; empty means "not in our windows" (the AVAILABLE section).
+    /// Last-known SHARED window name per hosted workspace (v2: one arrangement
+    /// for everyone). Empty = ungrouped (the AVAILABLE section).
     private(set) var groups: [UUID: String] = [:]
+    /// The shared window list (GET /v1/windows) — names, members, and who has
+    /// each open. `open` is this login's flag.
+    @Published private(set) var sharedWindows: [DaemonWindow] = []
     /// Whose session each live hosted workspace is (owning host's owner login),
     /// and the owner's own window name for it — the AVAILABLE row label.
     private(set) var owners: [UUID: String] = [:]
@@ -356,12 +358,29 @@ final class RemoteSessionService: ObservableObject {
                 throw URLError(.badServerResponse)
             }
             let list = try JSONDecoder().decode([DaemonWorkspace].self, from: data)
-            await MainActor.run { self.reconcile(list) }
+            let windows = await fetchSharedWindows()
+            await MainActor.run {
+                self.sharedWindows = windows
+                self.reconcile(list)
+            }
         } catch {
             await MainActor.run {
                 self.reachable = false
                 self.lastError = error.localizedDescription
             }
+        }
+    }
+
+    /// The shared window list (GET /v1/windows). A failure keeps the last
+    /// list rather than blanking every closed-window row on a blip.
+    private func fetchSharedWindows() async -> [DaemonWindow] {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows") else { return sharedWindows }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return sharedWindows }
+            return try JSONDecoder().decode([DaemonWindow].self, from: data)
+        } catch {
+            return sharedWindows
         }
     }
 
@@ -834,18 +853,18 @@ final class RemoteSessionService: ObservableObject {
     /// name — this Mac is the source of truth; web/phone render the same groups).
     /// The local cache updates optimistically so the diff-based sync stays quiet
     /// until the next reconcile confirms.
-    func setGroup(_ appId: UUID, to name: String) async {
-        guard let daemonId = daemonIds[appId] else { return }
+    @discardableResult
+    func setGroup(_ appId: UUID, to name: String) async -> Bool {
+        guard let daemonId = daemonIds[appId] else { return false }
         // Delegates: workspaceUUID(daemonId) inverts daemonIds, so the cache
         // write in the daemon-id variant lands on the same key.
-        _ = await setGroup(daemonId: daemonId, to: name)
+        return await setGroup(daemonId: daemonId, to: name)
     }
 
     /// setGroup by raw daemon id — cold sessions aren't materialized as app
     /// workspaces, and the revive-claim path must place one BEFORE reviving it
-    /// so it lands in the window the user clicked in. Returns success. The
-    /// local cache updates like the appId variant's does — a stale cached
-    /// group here is what the diff-based sync would happily push back.
+    /// so it lands in the window the user clicked in. A SHARED edit: the
+    /// assignment moves the session for everyone. Returns success.
     @discardableResult
     func setGroup(daemonId: String, to name: String) async -> Bool {
         let body = try? JSONSerialization.data(withJSONObject: ["group": name])
@@ -854,6 +873,82 @@ final class RemoteSessionService: ObservableObject {
         }
         await MainActor.run { self.groups[RemoteWorkspaceBuilder.workspaceUUID(daemonId)] = name }
         return true
+    }
+
+    /// Optimistic local note of a group change, so the reconcile that runs
+    /// between a drag and the daemon's ack does not bounce the workspace back.
+    func noteGroup(_ appId: UUID, to name: String) {
+        groups[appId] = name
+    }
+
+    // MARK: - Shared windows (v2)
+
+    /// Mark the shared window open for this login. Idempotent on the daemon.
+    func openSharedWindow(id: String) async {
+        if !(await send("POST", path: "/v1/windows/\(id)/open", body: Data(), expect: 200)) {
+            NSLog("[ccmux] windows: open flag for %@ failed; the list will show it closed until the next open", id)
+        }
+        await refresh()
+    }
+
+    /// Clear this login's open flag on the shared window named `name`; when
+    /// that made it nobody's, the window goes to sleep — archive the members
+    /// the daemon reported (force: nobody has it open, which is the model's
+    /// own permission).
+    func closeSharedWindow(named name: String) async {
+        guard let win = sharedWindows.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
+            NSLog("[ccmux] windows: no shared window named %@ to close", name)
+            return
+        }
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(win.id)/close") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                NSLog("[ccmux] windows: close of %@ failed (HTTP %d); it stays open on the daemon",
+                      name, (resp as? HTTPURLResponse)?.statusCode ?? -1)
+                return
+            }
+            struct CloseResp: Codable {
+                var last: Bool
+                var members: [String]?
+            }
+            let out = try JSONDecoder().decode(CloseResp.self, from: data)
+            if out.last {
+                for daemonId in out.members ?? [] {
+                    if let error = await sendReportingError(
+                        "POST", path: "/v1/workspaces/\(daemonId)/archive?force=1", body: [:], expect: 200) {
+                        NSLog("[ccmux] windows: sleeping %@ failed (left running): %@", daemonId, error)
+                    }
+                }
+            }
+        } catch {
+            NSLog("[ccmux] windows: close of %@ failed: %@", name, error.localizedDescription)
+            return
+        }
+        await refresh()
+    }
+
+    /// Rename the shared window (everyone sees it). Returns nil on success or
+    /// the daemon's error text (a case-insensitive name collision).
+    func renameSharedWindow(id: String, to name: String) async -> String? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(id)") else { return "bad daemon URL" }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name])
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
+            if code == 204 {
+                await refresh()
+                return nil
+            }
+            return String(data: data, encoding: .utf8) ?? "HTTP \(code)"
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     // MARK: - Dev hostnames
