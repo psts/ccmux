@@ -366,6 +366,10 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"startupCommand": s.mgr.DefaultStartupCommand(),
 		"startupRules":   s.mgr.StartupRules(),
+		// The host owner's login. Not write-only like the alias logins: the whole
+		// point of the owner is to be shown — it labels this host's sessions in
+		// every lens (see docs/multitenant-plan.md).
+		"owner": s.mgr.Owner(),
 		// Dev hostnames: secrets are write-only — GET reports presence, never values.
 		"devDomain":           s.mgr.DevDomain(),
 		"lensHostname":        s.mgr.LensHostname(),
@@ -409,6 +413,8 @@ type settingsRequest struct {
 	// Replaces the whole alias map rather than merging: an alias you couldn't
 	// remove by sending the map without it would be a trap.
 	IdentityAliases *map[string]string `json:"identityAliases"`
+	// The host owner's tailnet login (email); empty clears it.
+	Owner *string `json:"owner"`
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -480,6 +486,7 @@ func (s *Server) applySettings(req settingsRequest) error {
 		{req.CloudflareToken, s.mgr.SetCloudflareToken},
 		{req.TailscaleAuthKey, s.mgr.SetTailscaleAuthKey},
 		{req.StartupCommand, func(v string) error { return s.mgr.SetDefaultStartupCommand(strings.TrimSpace(v)) }},
+		{req.Owner, s.mgr.SetOwner},
 	}
 	for _, f := range strs {
 		if f.val == nil {

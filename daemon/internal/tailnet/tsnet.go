@@ -38,5 +38,11 @@ func (r *LocalResolver) Resolve(remoteAddr string) (login, display string, ok bo
 	if err != nil || who == nil || who.UserProfile == nil || who.UserProfile.LoginName == "" {
 		return "", "", false
 	}
+	// A tagged node is a machine, never a person (see taggedDevicesLogin): the
+	// fleet's own daemons carry tag:ccmux, and their calls must not resolve to
+	// the synthetic tagged-devices user as if WhoIs had vouched for a human.
+	if (who.Node != nil && len(who.Node.Tags) > 0) || who.UserProfile.LoginName == taggedDevicesLogin {
+		return "", "", false
+	}
 	return who.UserProfile.LoginName, who.UserProfile.DisplayName, true
 }

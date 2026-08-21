@@ -72,6 +72,59 @@ func TestResolveIdentity_SelfDeclaredFallback(t *testing.T) {
 	}
 }
 
+// The owner tier: a host that knows its human treats any caller WhoIs cannot
+// name as that human. This is the loopback case — the person at this machine's
+// keyboard is exactly who WhoIs declines to identify.
+func TestResolveIdentity_OwnerClaimsUnverifiedCallers(t *testing.T) {
+	s := newIdentityServer(t, fakeResolver{ok: false})
+	if err := s.mgr.SetOwner("sandelin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	id := s.resolveIdentity(req("127.0.0.1:5000", "?user=Patric%20Sandelin"))
+	if id.Login != "sandelin@example.com" {
+		t.Errorf("login = %q, want the host owner", id.Login)
+	}
+	if id.Display != "Patric Sandelin" {
+		t.Errorf("display = %q, want the declared name kept", id.Display)
+	}
+	if id.Verified || id.Email != "" {
+		t.Errorf("owner tier must not look verified: %+v", id)
+	}
+
+	// Nothing declared at all (hooks): the owner is the best name we have.
+	if got := s.resolveIdentity(req("127.0.0.1:5000", "")); got.Login != "sandelin@example.com" || got.Display != "sandelin@example.com" {
+		t.Errorf("anon on an owned host = %+v, want the owner", got)
+	}
+}
+
+// An alias is a deliberate per-name mapping; the owner is a blanket default.
+// The specific rule must beat the general one, or a configured guest alias on
+// an owned host would misattribute the guest to the owner.
+func TestResolveIdentity_AliasBeatsOwner(t *testing.T) {
+	s := newIdentityServer(t, fakeResolver{ok: false})
+	if err := s.mgr.SetOwner("sandelin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.mgr.SetIdentityAliases(map[string]string{"dasha": "dasha@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.resolveIdentity(req("127.0.0.1:5000", "?user=dasha")).Login; got != "dasha@example.com" {
+		t.Errorf("login = %q, want the alias, not the owner", got)
+	}
+}
+
+// A verified tailnet caller is never re-attributed to the host owner.
+func TestResolveIdentity_OwnerNeverOverridesVerified(t *testing.T) {
+	s := newIdentityServer(t, fakeResolver{login: "carol@example.com", ok: true})
+	if err := s.mgr.SetOwner("sandelin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.resolveIdentity(req("100.64.0.9:5000", "")).Login; got != "carol@example.com" {
+		t.Errorf("login = %q, want the verified caller", got)
+	}
+}
+
 func TestValidPushEndpoint(t *testing.T) {
 	ok := []string{
 		"https://fcm.googleapis.com/fcm/send/abc",

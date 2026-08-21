@@ -17,6 +17,31 @@ func TestParseWhoisProfile(t *testing.T) {
 	}
 }
 
+// A tagged node (the fleet's own daemons carry tag:ccmux) is a machine, never a
+// person: Tailscale reports the synthetic "tagged-devices" user for it, and
+// accepting that as verified would record daemon→daemon calls as a human.
+func TestParseWhoisProfile_TaggedNodeIsNotAPerson(t *testing.T) {
+	for name, data := range map[string]string{
+		"tags on node":   `{"Node":{"ID":2,"Tags":["tag:ccmux"]},"UserProfile":{"LoginName":"someone@example.com","DisplayName":"Someone"}}`,
+		"synthetic user": `{"Node":{"ID":2},"UserProfile":{"LoginName":"tagged-devices","DisplayName":"Tagged Devices"}}`,
+		"tags and synth": `{"Node":{"Tags":["tag:ccmux","tag:ccmux-hub"]},"UserProfile":{"LoginName":"tagged-devices"}}`,
+	} {
+		if login, _, err := parseWhoisProfile([]byte(data)); err != nil || login != "" {
+			t.Errorf("%s: parse = (%q, err %v), want no login", name, login, err)
+		}
+	}
+}
+
+func TestResolve_TaggedCallerFallsBack(t *testing.T) {
+	r := NewResolver()
+	r.run = func(string) ([]byte, error) {
+		return []byte(`{"Node":{"Tags":["tag:ccmux"]},"UserProfile":{"LoginName":"tagged-devices"}}`), nil
+	}
+	if _, _, ok := r.Resolve("100.64.0.7:1"); ok {
+		t.Error("tagged caller resolved as a verified person")
+	}
+}
+
 func TestResolve_LoopbackIsLocal(t *testing.T) {
 	r := NewResolver()
 	called := false

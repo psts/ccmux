@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -91,6 +92,10 @@ type installOpts struct {
 	Tsnet        bool
 	Hub          bool
 	RegisterMCP  bool
+	// Owner is seeded into the daemon's settings after start, not saved here:
+	// the settings store is its single home, so a later edit in a lens is not
+	// silently reverted by the next update install.
+	Owner string `json:"-"`
 }
 
 // parseInstallFlags also reports WHICH flags the caller set explicitly, so an
@@ -105,6 +110,7 @@ func parseInstallFlags(args []string) (*installOpts, map[string]bool, error) {
 	// Default empty (NOT os.Getenv): flag echoes defaults in -h, and the auth key
 	// is a secret. The env fallback is applied after parsing instead.
 	fs.StringVar(&o.AuthKey, "authkey", "", "Tailscale auth key for the first-run join (or set TS_AUTHKEY)")
+	fs.StringVar(&o.Owner, "owner", "", "this host's owner: a tailnet login (email), used to attribute local callers and this host's sessions")
 	noTsnet := fs.Bool("no-tsnet", false, "install a purely local daemon (no tailnet node)")
 	fs.BoolVar(&o.Hub, "hub", false, "run the hub role (aggregates every tag:ccmux host; exactly one per fleet)")
 	fs.BoolVar(&o.RegisterMCP, "register-peers-mcp", true, "register the ccmux-peers MCP server for Claude Code on this host")
@@ -176,7 +182,34 @@ func cmdInstall(args []string) error {
 		registerPeersMCP(filepath.Join(filepath.Dir(self), "ccmux-peers"))
 	}
 	reportHealthAndNext(o)
+	if o.Owner != "" {
+		seedOwner(o.Addr, o.Owner)
+	}
 	return nil
+}
+
+// seedOwner pushes the owner login into the now-running daemon's settings. It
+// goes through the API rather than the SQLite file so the daemon stays the
+// setting's single writer; a failure is reported, not fatal — the same value
+// can be set later from any lens's Settings.
+func seedOwner(addr, owner string) {
+	body, _ := json.Marshal(map[string]string{"owner": owner})
+	req, err := http.NewRequest(http.MethodPut, loopbackURL(addr)+"/v1/settings", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("  could not set owner (%v); set it later in Settings\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("  could not set owner (HTTP %d); set it later in Settings\n", resp.StatusCode)
+		return
+	}
+	fmt.Printf("  owner: %s\n", owner)
 }
 
 func cmdUninstall(args []string) error {
@@ -272,6 +305,9 @@ func fillInteractive(o *installOpts, t *tty) {
 		if t != nil {
 			o.Hostname = t.ask("Tailnet node name", o.Hostname)
 		}
+	}
+	if o.Owner == "" && t != nil {
+		o.Owner = t.ask("Owner login (your Tailscale email; blank = unowned host)", "")
 	}
 	if !o.Tsnet {
 		return

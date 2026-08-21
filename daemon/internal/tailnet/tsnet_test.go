@@ -59,6 +59,20 @@ func TestLocalResolver_WhoisErrorOrEmpty(t *testing.T) {
 	}
 }
 
+// A tagged node is a machine, never a person — same rule as the CLI resolver.
+func TestLocalResolver_TaggedCallerFallsBack(t *testing.T) {
+	tagged := whois("someone@example.com", "Someone")
+	tagged.Node = &tailcfg.Node{Tags: []string{"tag:ccmux"}}
+	for name, w := range map[string]fakeWhoIser{
+		"node tags":      {resp: tagged},
+		"synthetic user": {resp: whois("tagged-devices", "Tagged Devices")},
+	} {
+		if _, _, ok := NewLocalResolver(w).Resolve("100.64.0.5:41000"); ok {
+			t.Errorf("%s: tagged caller resolved as a verified person", name)
+		}
+	}
+}
+
 // whoIserFunc adapts a func into a WhoIser for the loopback test.
 type whoIserFunc func() (*apitype.WhoIsResponse, error)
 

@@ -73,10 +73,21 @@ func (r *Resolver) lookup(host string) (string, string, bool) {
 	return login, display, true
 }
 
+// taggedDevicesLogin is the synthetic user Tailscale reports for a tagged node.
+// It is a machine class, not a person, and must never pass as a verified login —
+// the ccmux daemons themselves are tagged (tag:ccmux), so accepting it would let
+// any daemon→daemon call be recorded as a user named "tagged-devices".
+const taggedDevicesLogin = "tagged-devices"
+
 // parseWhoisProfile extracts the UserProfile identity from `tailscale whois
-// --json` output.
+// --json` output. A tagged caller (Node.Tags set, or the synthetic
+// tagged-devices profile) is a machine, never a person: it resolves to no
+// login, and the caller falls through to its unverified tiers.
 func parseWhoisProfile(data []byte) (login, display string, err error) {
 	var v struct {
+		Node struct {
+			Tags []string
+		}
 		UserProfile struct {
 			LoginName   string
 			DisplayName string
@@ -84,6 +95,9 @@ func parseWhoisProfile(data []byte) (login, display string, err error) {
 	}
 	if err = json.Unmarshal(data, &v); err != nil {
 		return "", "", err
+	}
+	if len(v.Node.Tags) > 0 || v.UserProfile.LoginName == taggedDevicesLogin {
+		return "", "", nil
 	}
 	return v.UserProfile.LoginName, v.UserProfile.DisplayName, nil
 }

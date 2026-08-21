@@ -29,10 +29,28 @@ type identity struct {
 //
 // Display keeps the name the client declared: the alias is about who the daemon
 // keys on, not about what presence shows a human.
+//
+// Between "verified" and "self-declared" sits the host-owner tier: a machine
+// with a configured owner login treats any caller WhoIs cannot name as that
+// owner. Loopback is the case that matters — the person at this machine's
+// keyboard is exactly the one WhoIs declines to identify. An alias still wins
+// over the owner (it is a deliberate per-name mapping; the owner is a blanket
+// default), and neither ever claims Verified or an attribution Email — those
+// remain WhoIs-vouched only.
 func (s *Server) resolveIdentity(r *http.Request) identity {
 	if login, display, ok := s.identity.Resolve(r.RemoteAddr); ok {
 		return identity{Login: login, Display: orDefault(display, login), Email: login, Verified: true}
 	}
 	u := orDefault(r.URL.Query().Get("user"), "anon")
-	return identity{Login: s.mgr.ResolveAlias(u), Display: u, Verified: false}
+	if login := s.mgr.ResolveAlias(u); login != u {
+		return identity{Login: login, Display: u, Verified: false}
+	}
+	if owner := s.mgr.Owner(); owner != "" {
+		display := u
+		if display == "anon" {
+			display = owner // nothing was declared; the owner IS the best name we have
+		}
+		return identity{Login: owner, Display: display, Verified: false}
+	}
+	return identity{Login: u, Display: u, Verified: false}
 }
