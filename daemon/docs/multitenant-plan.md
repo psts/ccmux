@@ -91,6 +91,16 @@ so two people attaching still means one terminal, as today.
   kept as `Display`; else the `?user=`/anon path. Push keying, presence suppression,
   and driver attribution all inherit the fix for free, since they already flow through
   this one function (`identity.go:21`).
+- **Tagged callers are machines, never people.** The ccmux daemon nodes themselves
+  carry `tag:ccmux`, and a tagged Tailscale node has no user login — WhoIs answers
+  with the synthetic `tagged-devices` profile. Both resolvers today would accept that
+  as a *verified person* (`tailnet/whois.go:70`, `tailnet/tsnet.go:38` — any non-empty
+  `LoginName` passes). Guard both: a response whose node carries tags (or whose login
+  is `tagged-devices`) resolves `ok=false`, falling through to the `owner`/self-
+  declared tiers like loopback does. Human identity therefore only ever comes from an
+  untagged personal device (a laptop, a phone, a browser) — which is exactly what
+  lenses connect from — while daemon↔daemon calls stay authorized by tag membership,
+  as designed (`multihost-plan.md:87`).
 
 ### 2. Views at the hub
 
@@ -189,6 +199,9 @@ the caller is not the owner, same override.
    before; a session B opened into her window does not join her bus groups.
 7. **Push and attribution.** Loopback Mac on an owned host keys pushes and co-author to
    the owner login with no alias configured.
+7b. **Tagged caller.** A request arriving from a `tag:ccmux` node resolves as no-person
+   (not as a verified `tagged-devices` user): presence, driver, and view writes all
+   fall to the owner/self-declared tiers.
 8. **Single machine, single user.** One daemon, one person, `owner` set: behavior is
    indistinguishable from today, including close-archives.
 
