@@ -241,9 +241,6 @@ func (f *federatedFocus) noteRecovery(host string) {
 	}
 }
 
-// fetchOwners reports a member's focused logins, or an error. The error is the
-// point: an empty list and an unreachable host mean opposite things to the alert
-// flag, and returning nil for both is what let a blip read as "nobody is here".
 // DriverLogin answers who is driving a workspace, hub-wide: the hub's own
 // presence first (workspaces attached through it), then the polled member
 // maps — a workspace lives on exactly one host, so the first hit is the one.
@@ -291,6 +288,9 @@ func (f *federatedFocus) fetchDrivers(ctx context.Context, baseURL string) (map[
 	return out.Drivers, nil
 }
 
+// fetchOwners reports a member's focused logins, or an error. The error is the
+// point: an empty list and an unreachable host mean opposite things to the alert
+// flag, and returning nil for both is what let a blip read as "nobody is here".
 func (f *federatedFocus) fetchOwners(ctx context.Context, baseURL string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/presence", nil)
 	if err != nil {

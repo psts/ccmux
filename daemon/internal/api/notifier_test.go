@@ -153,3 +153,42 @@ func TestNotifier_PayloadCarriesTagAndDeepLink(t *testing.T) {
 		t.Errorf("title = %q, want workspace name", p.Title)
 	}
 }
+
+// The push half of audience routing: a bounded audience routes a phone away
+// (the trace names the reason) while the member's push still sends — a routing
+// mistake here is a phone that never buzzes, so this is the branch to pin.
+func TestNotifier_BoundedAudienceRoutesAway(t *testing.T) {
+	sender := &fakeSender{}
+	store := &fakeStore{subs: []*model.PushSubscription{
+		{ID: "a", Login: "patric@x.com", Address: `{"endpoint":"e-patric"}`},
+		{ID: "b", Login: "dasha@x.com", Address: `{"endpoint":"e-dasha"}`},
+	}}
+	n := newNotifier(sender, store, fakeFocus{}) // nobody at a screen
+	n.audience = func(string) (map[string]bool, bool) {
+		return map[string]bool{"patric@x.com": true}, true
+	}
+
+	n.onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+
+	if len(sender.sent) != 1 || sender.sent[0].address != `{"endpoint":"e-patric"}` {
+		t.Fatalf("sent = %+v; want only the audience member's phone", sender.sent)
+	}
+}
+
+// An unbounded audience (ungrouped repo, no routing data) keeps the old
+// everyone-not-at-a-screen behavior — routing must never silence by default.
+func TestNotifier_UnboundedAudienceSendsToAll(t *testing.T) {
+	sender := &fakeSender{}
+	store := &fakeStore{subs: []*model.PushSubscription{
+		{ID: "a", Login: "patric@x.com", Address: `{"endpoint":"e-patric"}`},
+		{ID: "b", Login: "dasha@x.com", Address: `{"endpoint":"e-dasha"}`},
+	}}
+	n := newNotifier(sender, store, fakeFocus{})
+	n.audience = func(string) (map[string]bool, bool) { return nil, false }
+
+	n.onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+
+	if len(sender.sent) != 2 {
+		t.Fatalf("sent = %+v; want both phones", sender.sent)
+	}
+}

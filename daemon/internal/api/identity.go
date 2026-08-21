@@ -51,7 +51,11 @@ func (s *Server) resolveIdentity(r *http.Request) identity {
 	}
 	u := orDefault(r.URL.Query().Get("user"), "anon")
 	if login := s.mgr.ResolveAlias(u); login != u {
-		return identity{Login: login, Display: u, Verified: false}
+		// Vouched: an alias is a deliberate per-name mapping — STRONGER than
+		// the blanket owner tier below, which vouches. Leaving this branch
+		// unvouched made configuring an alias worse than not having one (the
+		// reader fell to the global alert rule and received everything).
+		return identity{Login: login, Display: u, Verified: false, Vouched: true}
 	}
 	if owner := s.mgr.Owner(); owner != "" && loopback(r.RemoteAddr) {
 		display := u

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -138,5 +139,56 @@ func TestPresenceDrivers_Endpoint(t *testing.T) {
 	}
 	if strings.Contains(body, `"w2"`) {
 		t.Fatalf("anon driver must not be served (it would route notifications to nobody real): %s", body)
+	}
+}
+
+// The federation fetch behind the driver tier: real payloads decode, a 404
+// (old member) is empty-and-fine, and a 500 is an error — because "no drivers"
+// and "could not ask" must stay distinguishable (the poll latches the latter).
+func TestFetchDrivers(t *testing.T) {
+	member := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/presence/drivers":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"drivers":{"w1":{"login":"patric@x.com","atMillis":42}}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer member.Close()
+	f := &federatedFocus{client: member.Client()}
+
+	drivers, err := f.fetchDrivers(t.Context(), member.URL)
+	if err != nil || drivers["w1"].Login != "patric@x.com" || drivers["w1"].AtMillis != 42 {
+		t.Fatalf("fetch = %v, %v", drivers, err)
+	}
+
+	empty, err := f.fetchDrivers(t.Context(), member.URL+"/old")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("404 must mean an old member with nothing to say: %v, %v", empty, err)
+	}
+
+	broken := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer broken.Close()
+	f.client = broken.Client()
+	if _, err := f.fetchDrivers(t.Context(), broken.URL); err == nil {
+		t.Fatal("a 500 must be an error, not an empty map")
+	}
+}
+
+// The alias tier vouches its reader — an alias is a deliberate per-name
+// mapping, STRONGER than the blanket owner tier. Before this, configuring an
+// alias was worse than none: the reader fell to the global alert rule and
+// received every repo's notification.
+func TestReaderOf_AliasIsIdentified(t *testing.T) {
+	s := newIdentityServer(t, fakeResolver{ok: false})
+	if err := s.mgr.SetIdentityAliases(map[string]string{"Patric Sandelin": "patric@x.com"}); err != nil {
+		t.Fatal(err)
+	}
+	id := s.resolveIdentity(req("127.0.0.1:5000", "?user=Patric%20Sandelin"))
+	if r := readerOf(id); !r.identified || r.login != "patric@x.com" {
+		t.Fatalf("aliased reader = %+v, want identified under the aliased login", r)
 	}
 }
