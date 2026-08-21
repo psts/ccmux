@@ -201,9 +201,9 @@ func (s *Server) Handler() http.Handler {
 	// The hub also exposes the registry and explicit per-host create/projects.
 	if s.hub != nil {
 		mux.HandleFunc("GET /v1/hosts", s.hub.listHosts)
-		mux.HandleFunc("GET /v1/workspaces", s.hub.listWorkspaces)
+		mux.HandleFunc("GET /v1/workspaces", s.hubListWorkspaces)
 		mux.HandleFunc("GET /v1/hosts/{host}/projects", s.hub.hostScoped(s.listProjects, "/v1/projects"))
-		mux.HandleFunc("POST /v1/hosts/{host}/workspaces", s.hub.hostScoped(s.createWorkspace, "/v1/workspaces"))
+		mux.HandleFunc("POST /v1/hosts/{host}/workspaces", s.hostCreateRoute())
 		// Per-host settings: the lens configures any member host's startup command,
 		// dev domain, tokens, etc. through the hub (self runs local).
 		mux.HandleFunc("GET /v1/hosts/{host}/settings", s.hub.hostScoped(s.getSettings, "/v1/settings"))
@@ -218,10 +218,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.scoped(s.deleteWorkspace))
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.scoped(s.spawnPane))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/panes/{paneId}", s.scoped(s.killPane))
-	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.scoped(s.archiveWorkspace))
+	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveGuard(s.scoped(s.archiveWorkspace)))
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.scoped(s.reviveWorkspace))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.scoped(s.putLayout))
-	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.scoped(s.putGroup))
+	// group is the caller's view row: handled HERE (hub or lone daemon), never
+	// proxied — the daemon the lens talks to is the view authority.
+	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.hostnamesRoute(s.putHostnames))
 	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.scoped(s.portSuggestions))
 	mux.HandleFunc("POST /v1/workspaces/{id}/dev-server", s.scoped(s.devServer))
@@ -350,11 +352,23 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"ok":       true,
 		"version":  version.Build,
 		"contract": version.Contract,
+		// The host's owner login, so the hub can attribute this host's
+		// sessions to their human on every probe. Additive: an old hub
+		// ignores it, an old host just reports nothing.
+		"owner": s.mgr.Owner(),
 	})
 }
 
-func (s *Server) listWorkspaces(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.mgr.List())
+// listWorkspaces serves the local list, view-stamped per caller. ?raw=1 skips
+// the stamping — the hub fetches members with it, because the member's view
+// rows are not the authority for a hub-fronted lens (the hub's are), and the
+// hub's import needs the legacy group intact.
+func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("raw") == "1" {
+		writeJSON(w, http.StatusOK, s.mgr.List())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.stampViews(s.mgr.List(), s.resolveIdentity(r).Login))
 }
 
 // getSettings/putSettings expose the daemon-wide lens settings: the global
@@ -623,6 +637,14 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The creator's view row: the new workspace starts in the window they
+	// created it from. Local creates only — a hub proxying to a remote host
+	// seeds in hostCreateRoute instead.
+	if req.Group != "" {
+		if verr := s.mgr.SetView(s.resolveIdentity(r).Login, ws.ID, req.Group); verr != nil {
+			log.Printf("views: seeding creator's row for %s failed: %v", ws.ID, verr)
+		}
+	}
 	writeJSON(w, http.StatusCreated, ws)
 }
 
@@ -681,22 +703,6 @@ func (s *Server) reviveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
-}
-
-// putGroup sets a workspace's shared sidebar group (the owning Mac window's
-// name); the change is broadcast so every lens re-groups its list.
-func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Group string `json:"group"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if err := s.mgr.SetGroup(r.PathValue("id"), req.Group); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 type layoutReq struct {

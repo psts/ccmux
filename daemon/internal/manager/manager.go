@@ -609,6 +609,10 @@ func (m *Manager) KillWorkspace(wsID string) error {
 	}
 	_ = m.server.KillSession(session)
 	m.events.publish(Event{Kind: "workspace-removed", WorkspaceID: wsID})
+	// Every login's view row goes with the workspace. (A hub deleting a REMOTE
+	// workspace routes through the owning host, so its own rows for that id go
+	// stale instead — harmless: stamping only reads rows for listed ids.)
+	_ = m.store.DeleteWorkspaceViews(wsID)
 	return m.store.DeleteWorkspace(wsID)
 }
 

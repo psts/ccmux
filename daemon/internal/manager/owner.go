@@ -12,9 +12,10 @@ import "strings"
 
 const settingOwner = "owner"
 
-// Owner returns the configured host-owner login ("" when unset).
+// Owner returns the configured host-owner login ("" when unset). Nil-safe:
+// /v1/health reports it, and health must answer even on a bare Server.
 func (m *Manager) Owner() string {
-	if m.store == nil {
+	if m == nil || m.store == nil {
 		return ""
 	}
 	return m.getSetting(settingOwner)

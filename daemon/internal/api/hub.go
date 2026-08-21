@@ -111,12 +111,6 @@ func (h *hubMode) listHosts(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.reg.List())
 }
 
-// listWorkspaces serves the aggregated GET /v1/workspaces (local + every listing
-// remote host, host-stamped).
-func (h *hubMode) listWorkspaces(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.agg.Aggregate(r.Context()))
-}
-
 // ownerRoute wraps a {id}-scoped handler: local when the hub owns the id,
 // otherwise proxy to the owning host (compat-gated). The owner index covers both
 // workspace and pane ids, so pane routes resolve too.

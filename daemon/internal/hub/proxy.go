@@ -31,7 +31,10 @@ func (c *Client) Transport() http.RoundTripper { return c.transport }
 
 // Workspaces fetches and decodes a host's GET /v1/workspaces (a RemoteFetcher).
 func (c *Client) Workspaces(ctx context.Context, host Host) ([]*model.Workspace, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host.Addr+"/v1/workspaces", nil)
+	// raw=1: the member must not stamp per-caller views onto this fetch — the
+	// hub is the view authority for hub-fronted lenses, and its legacy-group
+	// import needs the member's persisted group intact.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host.Addr+"/v1/workspaces?raw=1", nil)
 	if err != nil {
 		return nil, err
 	}

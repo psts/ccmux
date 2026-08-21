@@ -43,6 +43,9 @@ type Node struct {
 type Health struct {
 	Version  string `json:"version"`
 	Contract int    `json:"contract"`
+	// Owner is the host's configured owner login — whose human the host's
+	// sessions belong to. "" from an old or unowned host.
+	Owner string `json:"owner"`
 }
 
 // Host is one member node as the hub and lenses see it. Addr is hub-internal
@@ -55,6 +58,7 @@ type Host struct {
 	Self     bool   `json:"self,omitempty"` // the hub node itself (also a host)
 	Version  string `json:"version,omitempty"`
 	Contract int    `json:"contract,omitempty"`
+	Owner    string `json:"owner,omitempty"` // the host's human (from its health report)
 	Compat   string `json:"compat"`
 	Reason   string `json:"reason,omitempty"`
 	LastSeen int64  `json:"lastSeen"`
@@ -127,6 +131,7 @@ func (r *Registry) probeOne(n Node) Host {
 	h.Healthy = true
 	h.Version = hp.Version
 	h.Contract = hp.Contract
+	h.Owner = hp.Owner
 	h.Compat, h.Reason = classify(hp.Contract, version.Contract, r.floor)
 	return h
 }

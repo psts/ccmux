@@ -90,10 +90,19 @@ type Workspace struct {
 	// a workspace's host is implicit in which daemon served it). A host daemon's
 	// own responses leave it ""; the hub fills it. See daemon/docs/multihost-plan.md.
 	Host string `json:"host,omitempty"`
-	// Group is the workspace's sidebar group, shared across lenses. The Mac app
-	// is the source of truth: it pushes the owning window's name here so the
-	// web/phone lens renders the same grouping. Empty = ungrouped.
+	// Group is THE CALLER's window for this workspace — their view row, stamped
+	// per request by the serving daemon (runtime on the wire; the persisted
+	// ws_group column underneath is legacy, read only to import pre-view
+	// arrangements). Empty = not in the caller's windows: the lens shows it
+	// under Available. See docs/multitenant-plan.md.
 	Group string `json:"group,omitempty"`
+	// Owner is the login of the human this workspace belongs to — in v1, the
+	// owner of the host it runs on. Runtime-stamped like Host, never persisted.
+	Owner string `json:"owner,omitempty"`
+	// OwnerGroup is the owner's window name for this workspace (their view
+	// row), so a lens can label an Available session "Patric · CHARTLABS".
+	// Runtime-stamped; empty when the owner has no row (or no owner is known).
+	OwnerGroup string `json:"ownerGroup,omitempty"`
 	// Hostnames are the workspace's dev-hostname mappings (see model.Hostname).
 	Hostnames []Hostname `json:"hostnames,omitempty"`
 	// DevCommand starts this workspace's dev server (the ▶ on a hostname row).

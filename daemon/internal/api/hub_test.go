@@ -160,9 +160,11 @@ func TestHub_DevhostRouting(t *testing.T) {
 
 func TestHub_ListHostsAndWorkspaces(t *testing.T) {
 	h, _ := hubFixture(t, version.Contract)
+	s := newIdentityServer(t, fakeResolver{ok: false})
+	s.hub = h
 
 	rec := httptest.NewRecorder()
-	h.listWorkspaces(rec, httptest.NewRequest("GET", "/v1/workspaces", nil))
+	s.hubListWorkspaces(rec, httptest.NewRequest("GET", "/v1/workspaces", nil))
 	body := rec.Body.String()
 	if !strings.Contains(body, `"wl"`) || !strings.Contains(body, `"wr"`) {
 		t.Fatalf("aggregate missing local or remote workspace: %s", body)

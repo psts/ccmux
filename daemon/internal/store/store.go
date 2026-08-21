@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
 	_ "modernc.org/sqlite" // pure-Go driver, registered as "sqlite"
@@ -27,6 +28,19 @@ type Store interface {
 	SetWorkspaceHostnames(id, hostnamesJSON string) error
 	SetWorkspaceDevCommand(id, cmd string) error
 	Load() ([]*model.Workspace, error)
+
+	// Per-user views: which window a given login keeps a workspace in. The
+	// daemon a lens talks to (the hub in a federation, a lone daemon otherwise)
+	// is the view authority; rows may reference remote workspace ids the local
+	// manager has never heard of. See docs/multitenant-plan.md.
+	SetView(login, wsID, window string) error
+	AllViews() (map[string]map[string]string, error)
+	DeleteWorkspaceViews(wsID string) error
+	// The one-time legacy-group import per workspace: without the marker,
+	// "no view rows" is indistinguishable from "the owner put it away", and
+	// the import would resurrect a deliberately cleared arrangement.
+	MarkViewImported(wsID string) error
+	ViewImports() (map[string]bool, error)
 
 	// Push notification subscriptions (transport-generic, keyed by login).
 	SavePushSubscription(*model.PushSubscription) error
@@ -118,6 +132,13 @@ CREATE INDEX IF NOT EXISTS peer_tasks_by_from ON peer_tasks(from_id, updated_at)
 CREATE INDEX IF NOT EXISTS peer_tasks_by_to ON peer_tasks(to_id, updated_at);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT
+);
+CREATE TABLE IF NOT EXISTS views (
+  login TEXT, ws_id TEXT, window TEXT NOT NULL,
+  updated_at INTEGER, PRIMARY KEY (login, ws_id)
+);
+CREATE TABLE IF NOT EXISTS view_imports (
+  ws_id TEXT PRIMARY KEY
 );`
 
 // Open opens (creating if needed) the registry at path.
@@ -299,6 +320,77 @@ func (s *SQLite) SetWorkspaceStatus(id string, status model.Status) error {
 func (s *SQLite) SetWorkspaceGroup(id, group string) error {
 	_, err := s.db.Exec(`UPDATE workspaces SET ws_group=? WHERE id=?`, group, id)
 	return err
+}
+
+// SetView upserts one login's window for a workspace; an empty window deletes
+// the row (the login put the workspace away).
+func (s *SQLite) SetView(login, wsID, window string) error {
+	if window == "" {
+		_, err := s.db.Exec(`DELETE FROM views WHERE login=? AND ws_id=?`, login, wsID)
+		return err
+	}
+	_, err := s.db.Exec(`
+INSERT INTO views (login, ws_id, window, updated_at) VALUES (?,?,?,?)
+ON CONFLICT(login, ws_id) DO UPDATE SET window=excluded.window, updated_at=excluded.updated_at`,
+		login, wsID, window, time.Now().UnixMilli())
+	return err
+}
+
+// AllViews returns every view row, keyed workspace → login → window. One query:
+// callers stamp whole workspace lists per request, so per-row lookups would be
+// N queries on the list path.
+func (s *SQLite) AllViews() (map[string]map[string]string, error) {
+	rows, err := s.db.Query(`SELECT ws_id, login, window FROM views`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]string{}
+	for rows.Next() {
+		var ws, login, window string
+		if err := rows.Scan(&ws, &login, &window); err != nil {
+			return nil, err
+		}
+		if out[ws] == nil {
+			out[ws] = map[string]string{}
+		}
+		out[ws][login] = window
+	}
+	return out, rows.Err()
+}
+
+// DeleteWorkspaceViews drops every login's row for a workspace (it was deleted),
+// and its import marker with it — a future workspace can reuse nothing here.
+func (s *SQLite) DeleteWorkspaceViews(wsID string) error {
+	if _, err := s.db.Exec(`DELETE FROM view_imports WHERE ws_id=?`, wsID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM views WHERE ws_id=?`, wsID)
+	return err
+}
+
+// MarkViewImported records that a workspace's legacy group has been imported.
+func (s *SQLite) MarkViewImported(wsID string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO view_imports (ws_id) VALUES (?)`, wsID)
+	return err
+}
+
+// ViewImports returns the set of workspaces whose legacy group was imported.
+func (s *SQLite) ViewImports() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT ws_id FROM view_imports`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var ws string
+		if err := rows.Scan(&ws); err != nil {
+			return nil, err
+		}
+		out[ws] = true
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLite) SetWorkspaceHostnames(id, hostnamesJSON string) error {
