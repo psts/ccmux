@@ -144,7 +144,8 @@ safe.
 `POST /v1/workspaces/{id}/archive` at the hub: if any *other* login holds a view row,
 respond `409 {holder: login}` instead of proxying. `?force=1` overrides (surfaced in
 the lens as an explicit "Archive anyway"). Owner check: refuse with 409 likewise when
-the caller is not the owner, same override.
+the caller is not the owner, same override. `DELETE /v1/workspaces/{id}` gets the same
+guard — delete is archive plus permanence.
 
 ### 5. Peers
 

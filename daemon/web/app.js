@@ -98,13 +98,15 @@ function syncPaneTitles() {
   if (changed) renderTabs();
 }
 
-// renderList mirrors the Mac sidebar: workspaces grouped under their window's
-// name (shared via ws.group — the Mac app pushes it), sorted by name within
-// each group, each row carrying the full git dashboard.
+// renderList mirrors the Mac sidebar: YOUR windows first (ws.group is the
+// caller's own view row, per-user on the daemon), then everything you have not
+// placed under AVAILABLE, labeled with whose session it is and which window
+// its owner keeps it in.
 function renderList() {
   const ul = $("ws-list");
   ul.innerHTML = "";
-  for (const [group, list] of groupedWorkspaces()) {
+  const grouped = groupedWorkspaces();
+  for (const [group, list] of grouped) {
     if (group) {
       const h = document.createElement("li");
       h.className = "group-hdr";
@@ -115,14 +117,20 @@ function renderList() {
         window.ccmuxPeers.open(group);
       };
       ul.appendChild(h);
+    } else if (grouped.length > 1) {
+      // Header only when there is something to separate from: a deployment
+      // where nothing is grouped keeps its plain flat list.
+      const h = document.createElement("li");
+      h.className = "group-hdr";
+      h.innerHTML = "<span>AVAILABLE</span>";
+      ul.appendChild(h);
     }
     for (const ws of list) ul.appendChild(wsRow(ws));
   }
 }
 
-// groupedWorkspaces buckets by shared group: ungrouped ("") first with no
-// header (daemon-only deployments where no Mac has pushed groups), then named
-// groups alphabetically; workspaces sort by name inside each.
+// groupedWorkspaces buckets by the caller's view: named windows alphabetically,
+// then the not-in-my-windows bucket ("") last; workspaces sort by name inside.
 function groupedWorkspaces() {
   const byGroup = new Map();
   for (const ws of state.workspaces) {
@@ -134,7 +142,15 @@ function groupedWorkspaces() {
     list.sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
   }
   return [...byGroup.entries()].sort(([a], [b]) =>
-    a === "" ? -1 : b === "" ? 1 : a.localeCompare(b));
+    a === "" ? 1 : b === "" ? -1 : a.localeCompare(b));
+}
+
+// ownerLabel says whose session an Available row is and where its owner keeps
+// it: "patric · CHARTLABS". Empty for your own placed rows (redundant there).
+function ownerLabel(ws) {
+  if (ws.group || (!ws.owner && !ws.ownerGroup)) return "";
+  const who = (ws.owner || "").split("@")[0];
+  return [who, ws.ownerGroup].filter(Boolean).join(" · ");
 }
 
 function wsRow(ws) {
@@ -152,6 +168,7 @@ function wsRow(ws) {
     `<span class="exp${open ? " open" : " closed"}"></span>` +
     `<span class="dot ${esc(ws.status)}"></span>` +
     `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
+    (ownerLabel(ws) ? `<span class="owner-tag">${esc(ownerLabel(ws))}</span>` : "") +
     (running ? `<span class="bolt">⚡</span>` : "") +
     (cold ? `<span class="cold-tag">zzz</span>` : gitBadges(ws.git)) +
     `<button class="more" title="Session menu">⋯</button>` +
@@ -199,6 +216,11 @@ function openWsMenu(ws, x, y) {
   const sep = () => menu.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
 
   add("Open in New Tab", () => window.open(`/?ws=${ws.id}`, "_blank"));
+  sep();
+  // Windows are YOUR arrangement (per-user on the daemon): placing, moving,
+  // and putting away touch only your own view row — never anyone else's.
+  add(ws.group ? "Move to Window…" : "Add to Window…", () => moveToWindow(ws));
+  if (ws.group) add("Put Away (remove from window)", () => putGroup(ws.id, ""));
   sep();
   if (ws.status === "cold") {
     add("Revive", () => reviveWorkspace(ws.id));
@@ -315,9 +337,50 @@ async function reviveWorkspace(id) {
   attach(id, null);
 }
 
+// putGroup writes YOUR view row: which of your windows the session sits in.
+// "" puts it away (back to Available). Nobody else's arrangement changes.
+async function putGroup(id, group) {
+  const r = await fetch(`/v1/workspaces/${id}/group`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group }),
+  });
+  if (!r.ok) { alert("window change failed: " + (await r.text())); return; }
+  fetchWorkspaces();
+}
+
+function moveToWindow(ws) {
+  const mine = [...new Set(state.workspaces.map((w) => w.group).filter(Boolean))].sort();
+  const hint = mine.length ? `\n\nYour windows: ${mine.join(", ")}` : "";
+  const g = prompt("Window name:" + hint, ws.group || ws.ownerGroup || "");
+  if (g === null) return;
+  putGroup(ws.id, g.trim());
+}
+
+// guarded409 runs an archive/remove-style call; on the daemon's 409 guard
+// (someone else's session, or someone still has it in a window) it asks, and
+// retries with force=1 on yes.
+async function guarded409(makeReq, label) {
+  const r = await makeReq(false);
+  if (r.status === 409) {
+    let msg = "HTTP 409";
+    try { msg = (await r.json()).error || msg; } catch (_) {}
+    if (confirm(msg.replace(/ — pass force=1.*$/, "") + `\n\n${label} anyway?`)) {
+      const rf = await makeReq(true);
+      if (!rf.ok) { alert(label + " failed: " + (await rf.text())); return null; }
+      return rf;
+    }
+    return null;
+  }
+  if (!r.ok) { alert(label + " failed: " + (await r.text())); return null; }
+  return r;
+}
+
 async function closeSession(id) {
-  const r = await fetch(`/v1/workspaces/${id}/archive`, { method: "POST" });
-  if (!r.ok) { alert("close failed: " + (await r.text())); return; }
+  const r = await guarded409(
+    (force) => fetch(`/v1/workspaces/${id}/archive` + (force ? "?force=1" : ""), { method: "POST" }),
+    "Close");
+  if (!r) return;
   detachIfCurrent(id);
   fetchWorkspaces();
 }
@@ -328,8 +391,10 @@ async function removeSession(ws) {
     `panes, layout, hostnames, and dev command. Use “Close session” instead to ` +
     `keep them for a later revive.`);
   if (!sure) return;
-  const r = await fetch(`/v1/workspaces/${ws.id}`, { method: "DELETE" });
-  if (!r.ok) { alert("remove failed: " + (await r.text())); return; }
+  const r = await guarded409(
+    (force) => fetch(`/v1/workspaces/${ws.id}` + (force ? "?force=1" : ""), { method: "DELETE" }),
+    "Remove");
+  if (!r) return;
   detachIfCurrent(ws.id);
   fetchWorkspaces();
 }

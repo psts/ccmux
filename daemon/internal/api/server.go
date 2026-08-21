@@ -215,7 +215,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces", s.createWorkspace) // bare = create on this node
 	// Workspace/pane-scoped routes: s.scoped proxies them to the owning host in
 	// hub mode (self runs local), and is a no-op in host-only mode.
-	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.scoped(s.deleteWorkspace))
+	// Delete gets the same guard as archive: it is archive plus permanence.
+	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.archiveGuard(s.scoped(s.deleteWorkspace)))
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.scoped(s.spawnPane))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/panes/{paneId}", s.scoped(s.killPane))
 	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveGuard(s.scoped(s.archiveWorkspace)))
