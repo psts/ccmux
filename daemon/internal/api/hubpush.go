@@ -12,11 +12,6 @@ import (
 	"ccmux.dev/ccmuxd/internal/manager"
 )
 
-// presenceOwners serves GET /v1/presence: the identity logins with a focused lens
-// on THIS daemon right now (presenceHub.ActiveOwners). The hub polls each member's
-// endpoint and unions the results, so unified push suppression stays correct when
-// a user watches a remote-host session directly (its focus is known only to that
-// host). Tailnet-gated like the rest of the API; returns only logins.
 // presenceDrivers serves GET /v1/presence/drivers: this host's per-workspace
 // driver map (who typed last, and when), for the hub's notification routing.
 // The response is an object so it can grow; the owners list at /v1/presence is
@@ -29,6 +24,11 @@ func (s *Server) presenceDrivers(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"drivers": drivers})
 }
 
+// presenceOwners serves GET /v1/presence: the identity logins with a focused lens
+// on THIS daemon right now (presenceHub.ActiveOwners). The hub polls each member's
+// endpoint and unions the results, so unified push suppression stays correct when
+// a user watches a remote-host session directly (its focus is known only to that
+// host). Tailnet-gated like the rest of the API; returns only logins.
 func (s *Server) presenceOwners(w http.ResponseWriter, _ *http.Request) {
 	owners := make([]string, 0)
 	if s.presence != nil {
@@ -161,12 +161,18 @@ func (f *federatedFocus) poll(ctx context.Context) {
 		for _, login := range owners {
 			set[login] = true
 		}
-		// Best-effort: a missing driver map never MISROUTES — the audience
-		// only widens to the window's holders — so a failed or 404 (old
-		// member) drivers fetch degrades silently to empty.
+		// A failed drivers fetch is a real fault (fetchDrivers already treats
+		// a 404 from an old member as empty-and-fine): logged latched like the
+		// owners fetch, and the last-known map is retained within the same
+		// staleness bound — dropping it instantly would treat the driver tier
+		// as lapsed on every blip, and if the driver does not also hold the
+		// window open, their own needs-input would route away from them.
 		drivers, derr := f.fetchDrivers(ctx, "https://"+h.Addr)
 		if derr != nil {
-			drivers = map[string]DriverStamp{}
+			f.noteFailure(h.ID+" (drivers)", derr)
+			drivers = lastDrivers(previous, h.ID, now)
+		} else {
+			f.noteRecovery(h.ID + " (drivers)")
 		}
 		fresh[h.ID] = memberOwners{owners: set, drivers: drivers, asOf: now}
 	}
@@ -180,6 +186,18 @@ func (f *federatedFocus) poll(ctx context.Context) {
 	f.mu.Lock()
 	f.byHost, f.remote = fresh, union
 	f.mu.Unlock()
+}
+
+// lastDrivers carries a member's last-known driver map through a failed
+// drivers fetch, within the same staleness bound retainOrExpire applies to
+// owners. Past it (or with no previous answer): empty, and routing widens to
+// the window holders.
+func lastDrivers(previous map[string]memberOwners, hostID string, now time.Time) map[string]DriverStamp {
+	last, ok := previous[hostID]
+	if !ok || now.Sub(last.asOf) > presenceStaleAfter || last.drivers == nil {
+		return map[string]DriverStamp{}
+	}
+	return last.drivers
 }
 
 // retainOrExpire carries a failing member's last successful answer forward,
