@@ -105,7 +105,7 @@ func (s *Server) restampAlert(raw []byte, reader firehoseReader) []byte {
 	if err := json.Unmarshal(raw, &frame); err != nil || frame.T != "attention" {
 		return raw
 	}
-	frame.Alert = s.alertsFor(reader, frame.State)
+	frame.Alert = s.alertsFor(reader, frame.Workspace, frame.State)
 	restamped, err := json.Marshal(frame)
 	if err != nil {
 		// The member's own verdict crosses instead — wrong, but a dropped frame

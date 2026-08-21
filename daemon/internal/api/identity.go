@@ -14,6 +14,11 @@ type identity struct {
 	Display  string
 	Email    string
 	Verified bool
+	// Vouched: the Login is trustworthy enough to KEY decisions on — WhoIs
+	// said so (Verified), or the host's owner setting did (the loopback tier).
+	// The self-declared ?user= path is never vouched. Weaker than Verified,
+	// which additionally gates git attribution.
+	Vouched bool
 }
 
 // resolveIdentity determines who is calling. When the daemon runs as its own
@@ -42,7 +47,7 @@ type identity struct {
 // remain WhoIs-vouched only.
 func (s *Server) resolveIdentity(r *http.Request) identity {
 	if login, display, ok := s.identity.Resolve(r.RemoteAddr); ok {
-		return identity{Login: login, Display: orDefault(display, login), Email: login, Verified: true}
+		return identity{Login: login, Display: orDefault(display, login), Email: login, Verified: true, Vouched: true}
 	}
 	u := orDefault(r.URL.Query().Get("user"), "anon")
 	if login := s.mgr.ResolveAlias(u); login != u {
@@ -53,7 +58,7 @@ func (s *Server) resolveIdentity(r *http.Request) identity {
 		if display == "anon" {
 			display = owner // nothing was declared; the owner IS the best name we have
 		}
-		return identity{Login: owner, Display: display, Verified: false}
+		return identity{Login: owner, Display: display, Verified: false, Vouched: true}
 	}
 	return identity{Login: u, Display: u, Verified: false}
 }

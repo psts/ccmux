@@ -27,6 +27,8 @@ func TestFederatedFocus_Union(t *testing.T) {
 // copyingFocus mimics presenceHub.ActiveOwners: a fresh map per call.
 type copyingFocus map[string]bool
 
+func (c copyingFocus) DriverLogin(string) (string, int64, bool) { return "", 0, false }
+
 func (c copyingFocus) ActiveOwners() map[string]bool {
 	out := map[string]bool{}
 	for k, v := range c {

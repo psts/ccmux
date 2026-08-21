@@ -173,7 +173,7 @@ func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore
 	// two pollers hitting every member's /v1/presence every 3s, and — worse —
 	// two answers to "is anybody at a screen" that disagree between polls, so a
 	// pane could alert a lens and push to the same person's phone.
-	n := &notifier{sender: sender, subs: ps, focus: s.focus, names: s.mgr}
+	n := &notifier{sender: sender, subs: ps, focus: s.focus, names: s.mgr, audience: s.alertAudience}
 	if s.hub != nil {
 		// Hub owns push: notify on attention across ALL member hosts (merged
 		// events) with merged presence suppression, so it never over-notifies a
@@ -248,6 +248,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/clipboard", s.clipboard)
 	mux.HandleFunc("GET /v1/events", s.events)
 	mux.HandleFunc("GET /v1/presence", s.presenceOwners) // hub polls members to union push suppression
+	mux.HandleFunc("GET /v1/presence/drivers", s.presenceDrivers)
 	mux.HandleFunc("POST /v1/peers/register", s.peersRegister)
 	mux.HandleFunc("POST /v1/peers/pane-token", s.peersMintPaneToken)
 	mux.HandleFunc("POST /v1/peers/host-token", s.peersHostToken)

@@ -168,7 +168,7 @@ func TestAlertsFor_LoopbackMacStillAlertsWhilePresenceIsUnderAnotherLogin(t *tes
 	s := &Server{presence: present, focus: present}
 
 	loopback := firehoseReader{login: "Patric Sandelin", identified: false}
-	if !s.alertsFor(loopback, model.AttentionNeedsInput) {
+	if !s.alertsFor(loopback, "w1", model.AttentionNeedsInput) {
 		t.Error("an unverified lens must fall back to the global rule, not fail closed")
 	}
 }

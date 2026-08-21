@@ -105,6 +105,51 @@ func (h *presenceHub) Join(wsID string, info ClientInfo, login, email string) st
 	return id
 }
 
+// DriverStamp is one workspace's current driver for notification routing: the
+// canonical login and when they last typed. Federated via
+// GET /v1/presence/drivers (attaches go DIRECT to the owning host, so only
+// that host knows who is typing; the hub polls).
+type DriverStamp struct {
+	Login    string `json:"login"`
+	AtMillis int64  `json:"atMillis"`
+}
+
+// DriverLogin returns the canonical login of the workspace's current driver
+// and when they last typed. ok=false when nobody is driving, or the driver has
+// no usable login ("anon" would route every notification to nobody real).
+func (h *presenceHub) DriverLogin(wsID string) (string, int64, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	wp := h.byWS[wsID]
+	if wp == nil || wp.driver == "" {
+		return "", 0, false
+	}
+	c := wp.clients[wp.driver]
+	if c == nil || c.login == "" || c.login == "anon" {
+		return "", 0, false
+	}
+	return c.login, c.lastInput, true
+}
+
+// AllDriverLogins returns every workspace's current driver — the member half
+// of driver federation (served as GET /v1/presence/drivers).
+func (h *presenceHub) AllDriverLogins() map[string]DriverStamp {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]DriverStamp{}
+	for wsID, wp := range h.byWS {
+		if wp.driver == "" {
+			continue
+		}
+		c := wp.clients[wp.driver]
+		if c == nil || c.login == "" || c.login == "anon" {
+			continue
+		}
+		out[wsID] = DriverStamp{Login: c.login, AtMillis: c.lastInput}
+	}
+	return out
+}
+
 // Driver returns the identity of the workspace's current driver (the most recent
 // non-readonly typist), or ok=false when nobody is driving.
 func (h *presenceHub) Driver(wsID string) (DriverIdentity, bool) {

@@ -17,6 +17,18 @@ import (
 // endpoint and unions the results, so unified push suppression stays correct when
 // a user watches a remote-host session directly (its focus is known only to that
 // host). Tailnet-gated like the rest of the API; returns only logins.
+// presenceDrivers serves GET /v1/presence/drivers: this host's per-workspace
+// driver map (who typed last, and when), for the hub's notification routing.
+// The response is an object so it can grow; the owners list at /v1/presence is
+// a bare array and cannot.
+func (s *Server) presenceDrivers(w http.ResponseWriter, _ *http.Request) {
+	drivers := map[string]DriverStamp{}
+	if s.presence != nil {
+		drivers = s.presence.AllDriverLogins()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"drivers": drivers})
+}
+
 func (s *Server) presenceOwners(w http.ResponseWriter, _ *http.Request) {
 	owners := make([]string, 0)
 	if s.presence != nil {
@@ -39,7 +51,11 @@ const presenceStaleAfter = 60 * time.Second
 // was given, so a failing host's retained answer can expire (see poll).
 type memberOwners struct {
 	owners map[string]bool
-	asOf   time.Time
+	// drivers is the member's per-workspace driver map (who typed last, and
+	// when) — attaches go direct to the owning host, so only that host knows.
+	// Empty from members too old to serve /v1/presence/drivers.
+	drivers map[string]DriverStamp
+	asOf    time.Time
 }
 
 // federatedFocus is the hub's push focusOracle: the union of the hub's own active
@@ -145,7 +161,14 @@ func (f *federatedFocus) poll(ctx context.Context) {
 		for _, login := range owners {
 			set[login] = true
 		}
-		fresh[h.ID] = memberOwners{owners: set, asOf: now}
+		// Best-effort: a missing driver map never MISROUTES — the audience
+		// only widens to the window's holders — so a failed or 404 (old
+		// member) drivers fetch degrades silently to empty.
+		drivers, derr := f.fetchDrivers(ctx, "https://"+h.Addr)
+		if derr != nil {
+			drivers = map[string]DriverStamp{}
+		}
+		fresh[h.ID] = memberOwners{owners: set, drivers: drivers, asOf: now}
 	}
 
 	union := map[string]bool{}
@@ -203,6 +226,53 @@ func (f *federatedFocus) noteRecovery(host string) {
 // fetchOwners reports a member's focused logins, or an error. The error is the
 // point: an empty list and an unreachable host mean opposite things to the alert
 // flag, and returning nil for both is what let a blip read as "nobody is here".
+// DriverLogin answers who is driving a workspace, hub-wide: the hub's own
+// presence first (workspaces attached through it), then the polled member
+// maps — a workspace lives on exactly one host, so the first hit is the one.
+func (f *federatedFocus) DriverLogin(wsID string) (string, int64, bool) {
+	if login, at, ok := f.local.DriverLogin(wsID); ok {
+		return login, at, ok
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	for _, mo := range f.byHost {
+		if d, ok := mo.drivers[wsID]; ok {
+			return d.Login, d.AtMillis, true
+		}
+	}
+	return "", 0, false
+}
+
+// fetchDrivers reads one member's per-workspace driver map. A 404 is an old
+// member with nothing to say, not an error.
+func (f *federatedFocus) fetchDrivers(ctx context.Context, baseURL string) (map[string]DriverStamp, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/presence/drivers", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return map[string]DriverStamp{}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("presence drivers HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Drivers map[string]DriverStamp `json:"drivers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if out.Drivers == nil {
+		out.Drivers = map[string]DriverStamp{}
+	}
+	return out.Drivers, nil
+}
+
 func (f *federatedFocus) fetchOwners(ctx context.Context, baseURL string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/presence", nil)
 	if err != nil {

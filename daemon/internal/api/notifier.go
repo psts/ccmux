@@ -28,10 +28,12 @@ type pushStore interface {
 }
 
 // focusOracle reports which devs currently have a focused lens anywhere —
-// they're at a screen, so the notifier suppresses their pushes entirely.
-// *presenceHub satisfies it.
+// they're at a screen, so the notifier suppresses their pushes entirely — and
+// who is driving each workspace, for notification routing. *presenceHub
+// satisfies it locally; *federatedFocus unions the members on a hub.
 type focusOracle interface {
 	ActiveOwners() map[string]bool
+	DriverLogin(wsID string) (login string, atMillis int64, ok bool)
 }
 
 // workspaceNamer resolves a workspace id to metadata for the notification title.
@@ -50,6 +52,9 @@ type notifier struct {
 	subs   pushStore
 	focus  focusOracle
 	names  workspaceNamer
+	// audience is the notification-routing rule (Server.alertAudience): who a
+	// workspace's attention belongs to. nil = unbounded (tests).
+	audience func(wsID string) (map[string]bool, bool)
 }
 
 // pushPayload is the JSON the service worker's `push` handler receives.
@@ -115,9 +120,20 @@ func (n *notifier) onAttention(ctx context.Context, wsID string, att model.Atten
 	}
 	suppressed := n.focus.ActiveOwners()
 	focused := focusedLogins(suppressed)
+	audience, bounded := map[string]bool(nil), false
+	if n.audience != nil {
+		audience, bounded = n.audience(wsID)
+	}
 	body, _ := json.Marshal(n.payloadFor(wsID, att))
 	topic := push.Topic(wsID)
 	for _, sub := range subs {
+		// Routing before suppression: not-your-repo beats at-a-screen, and the
+		// trace should say WHICH rule kept the phone quiet.
+		if bounded && !audience[sub.Login] {
+			n.trace(wsID, att, hooktrace.Line{Decision: "routed-away", Login: sub.Login,
+				Detail: "not this workspace's driver or window holder"})
+			continue
+		}
 		if suppressed[sub.Login] {
 			n.trace(wsID, att, hooktrace.Line{Decision: "suppressed", Login: sub.Login, Suppressed: sub.Login})
 			continue

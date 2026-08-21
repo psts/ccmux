@@ -46,6 +46,8 @@ type fakeFocus map[string]bool
 
 func (f fakeFocus) ActiveOwners() map[string]bool { return f }
 
+func (f fakeFocus) DriverLogin(string) (string, int64, bool) { return "", 0, false }
+
 type fakeNamer struct{ ws *model.Workspace }
 
 func (f fakeNamer) Workspace(string) *model.Workspace { return f.ws }

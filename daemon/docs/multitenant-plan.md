@@ -325,3 +325,17 @@ and the events/cache plumbing all carry over unchanged.
 5. Dasha moves repo XYZ to another window: it moves for Patric too, on every lens.
 6. Archive/remove of a session whose window the other person has open: 409 with
    the person's name; force works; the Mac shows the same "anyway" flow as web.
+
+### Notification routing (v2 follow-up, 2026-08-21)
+
+An attention event belongs to the people working in that repo, not to everyone
+at a screen. `alertsFor` (Mac alert flag) and the push notifier now share one
+audience rule (`api/audience.go`): the login who typed there within 30 minutes
+gets it alone; else everyone holding the workspace's window open; else —
+ungrouped workspace, window open by nobody, or unknowable state — everyone,
+the pre-multi-user behavior, because silencing a needs-input is worse than a
+spare buzz. Drivers are federated (attach goes direct to the owning host):
+members serve `GET /v1/presence/drivers`, the hub polls it beside
+`/v1/presence`, and a 404 from an old member just widens routing to the
+window holders. The loopback owner tier now also identifies a firehose reader
+(`identity.Vouched`), so a Mac on the hub box gets per-reader routing too.

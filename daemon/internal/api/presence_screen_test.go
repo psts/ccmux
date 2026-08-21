@@ -101,7 +101,7 @@ func TestPresence_AlertAndPushAreMutuallyExclusive(t *testing.T) {
 		h.SetPresent("ws1", id, present)
 		s := &Server{presence: h, focus: h}
 
-		alerted := s.alertsFor(named("dev"), model.AttentionNeedsInput)
+		alerted := s.alertsFor(named("dev"), "w1", model.AttentionNeedsInput)
 		pushSuppressed := h.ActiveOwners()["dev"]
 		if alerted != pushSuppressed {
 			t.Errorf("present=%v: lens alert=%v but push suppression=%v; one channel must fire, exactly one",

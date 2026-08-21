@@ -142,12 +142,14 @@ type firehoseReader struct {
 // self-declared name is not evidence enough to act on that failure. An alias
 // reconciles the two, but an alias is configuration that nothing here creates.
 //
-// Requiring verification keeps the sharper per-reader rule where identity is
-// actually trustworthy, and everywhere else answers the old global question —
-// which is what those lenses got before, so nothing regresses while the alias is
-// missing.
+// Requiring a VOUCHED login keeps the sharper per-reader rule where identity
+// is actually trustworthy — WhoIs said so, or the host's owner setting did
+// (the loopback Mac tier, which produces the same canonical email the attach
+// socket resolves over the tailnet, so the join holds). Everything else
+// answers the old global question — which is what those lenses got before, so
+// nothing regresses where neither vouch exists.
 func readerOf(id identity) firehoseReader {
-	return firehoseReader{login: id.Login, identified: id.Verified}
+	return firehoseReader{login: id.Login, identified: id.Vouched}
 }
 
 // firehosePresenceWS keys firehose lenses in the presence hub. Not a real
@@ -225,7 +227,7 @@ func (s *Server) firehoseFrame(ev manager.Event, reader firehoseReader) firehose
 	case "attention":
 		return firehoseMsg{
 			T: "attention", Workspace: ev.WorkspaceID, Pane: ev.PaneID, State: ev.Attention,
-			Alert: s.alertsFor(reader, ev.Attention),
+			Alert: s.alertsFor(reader, ev.WorkspaceID, ev.Attention),
 		}
 	default:
 		return firehoseMsg{T: ev.Kind, Workspace: ev.WorkspaceID}
@@ -247,7 +249,7 @@ func (s *Server) firehoseFrame(ev manager.Event, reader firehoseReader) firehose
 // screen and it does not belong to whichever machine owns the pane that spoke.
 // Reading only the local hub made a Linux session's "needs input" arrive at a Mac
 // as a silent sidebar flash.
-func (s *Server) alertsFor(reader firehoseReader, att model.Attention) bool {
+func (s *Server) alertsFor(reader firehoseReader, wsID string, att model.Attention) bool {
 	if !notifyState(att) {
 		return false
 	}
@@ -270,6 +272,13 @@ func (s *Server) alertsFor(reader firehoseReader, att model.Attention) bool {
 	}
 	if owners[login] {
 		s.clearAlertMiss(login)
+		// Present — but is this THEIR repo? Routing (see alertAudience): the
+		// recent driver alone, else the window's holders, else everyone. A
+		// bounded miss is deliberate quiet, not an identity problem, so no
+		// mismatch note.
+		if audience, bounded := s.alertAudience(wsID); bounded && !audience[login] {
+			return false
+		}
 		return true
 	}
 	if len(owners) > 0 {

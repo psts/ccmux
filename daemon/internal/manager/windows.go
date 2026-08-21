@@ -113,6 +113,19 @@ func (m *Manager) SharedGroupResolver() func(wsID, legacy string) string {
 	return m.windowSnapshot().resolve
 }
 
+// WindowOpenLogins returns who has the workspace's window open, and whether
+// the workspace HAS a window at all (grouped). From the cached snapshot —
+// this sits on the per-attention notification path. The returned map is the
+// snapshot's own: read-only for callers.
+func (m *Manager) WindowOpenLogins(wsID string) (map[string]bool, bool) {
+	st := m.windowSnapshot()
+	wid, ok := st.members[wsID]
+	if !ok {
+		return nil, false
+	}
+	return st.opens[wid], true
+}
+
 // HasMembership reports whether a workspace already sits in some window, from
 // the cached snapshot — the legacy import's second guard: an existing
 // arrangement is never imported over, marker or no marker.
