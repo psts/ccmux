@@ -352,9 +352,13 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	// view row in the hub's store), not the frozen legacy group the member
 	// fetch carries. A fresh snapshot per aggregation pass.
 	agg.SetGroupResolver(func() func(hostID, wsID, legacy string) string {
+		// Both reads happen HERE, once per aggregation pass — the returned
+		// closure runs per workspace and must not touch the store (Owner is a
+		// SQLite read; the snapshot rule in manager/views.go).
 		resolve := mgr.ViewResolver()
+		selfOwner := mgr.Owner()
 		return func(hostID, wsID, legacy string) string {
-			hostOwner := mgr.Owner()
+			hostOwner := selfOwner
 			if hostID != selfID {
 				host, ok := reg.Get(hostID)
 				if !ok {

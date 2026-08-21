@@ -14,9 +14,12 @@ import Foundation
 /// tempting alternative and is not one: it is restamped whenever a new prompt is
 /// submitted, and background agents routinely outlive the turn that spawned them.
 ///
-/// The Go daemon keeps the same state for hosted panes
-/// (`daemon/internal/hooks/agents.go`); this copy serves the app's own local
-/// panes, which never reach the daemon's socket. Change one, change both.
+/// The Go daemon keeps this state for hosted panes
+/// (`daemon/internal/hooks/agents.go`) and is the LEAD implementation; this
+/// copy serves the app's own local panes, which never reach the daemon's
+/// socket, and deliberately lags it (no prompt tracking, single-session sweep,
+/// no expiry trace) pending the v0.1.30 parity refactor. Treat the Go file as
+/// the reference when they disagree.
 ///
 /// All mutation happens on the main thread — `ClaudeHookListener` hops to main
 /// before handling a message — following `ClaudeAttentionMonitor`'s convention.

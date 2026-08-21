@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/hooktrace"
@@ -252,8 +253,11 @@ func (l *Listener) holdWhileWorking(msg hookMsg, att model.Attention) model.Atte
 	}
 	running, expired := l.agents.busy(msg.SessionID)
 	if expired > 0 {
+		// Not agentCount: that renders "N subagents RUNNING", the opposite of
+		// what an eviction means, on the one line an operator reads to learn
+		// the hold quietly stopped working.
 		l.trace(msg, hooktrace.Line{Decision: "agent-expired",
-			Detail: agentCount(expired) + " never reported a stop; dropped after " + agentTTL.String()})
+			Detail: strconv.Itoa(expired) + " subagent(s) never reported a stop; dropped after " + agentTTL.String()})
 	}
 	if running == 0 {
 		return att

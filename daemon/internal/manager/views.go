@@ -35,7 +35,7 @@ func (st *viewState) resolve(owner, wsID, legacy string) string {
 	if g, ok := st.views[wsID][owner]; ok {
 		return g
 	}
-	if st.imported != nil && st.imported[wsID] {
+	if st.imported[wsID] { // nil map indexes false, which correctly blocks nothing here
 		return ""
 	}
 	return legacy

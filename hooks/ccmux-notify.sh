@@ -107,8 +107,9 @@ case "${1:-unknown}" in
     # Not attention events: these tell ccmux which subagents a session still
     # has running, so an idle reminder that arrives while agents work is not
     # mistaken for a turn that ended. Consumed by the daemon in
-    # daemon/internal/hooks/agents.go and by the app in
-    # Sources/ccmux/Services/SubagentTracker.swift, which are twins.
+    # daemon/internal/hooks/agents.go (the lead implementation) and by the app
+    # in Sources/ccmux/Services/SubagentTracker.swift (a lagging subset until
+    # the v0.1.30 parity refactor).
     subagent-start|SubagentStart)            TYPE="subagent_start" ;;
     subagent-stop|SubagentStop)              TYPE="subagent_stop" ;;
 

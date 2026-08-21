@@ -113,6 +113,42 @@ func TestAggregate_GroupForPane(t *testing.T) {
 	}
 }
 
+// The installed group resolver replaces the fetched legacy group in the
+// pane→group index — per-host, with the legacy value passed through for a
+// host the resolver declines. If the factory were never installed or its
+// result ignored, the peers bus would silently keep routing on frozen legacy
+// groups after every owner rearranged their windows.
+func TestAggregate_GroupResolverOverridesLegacy(t *testing.T) {
+	localWS := &model.Workspace{ID: "wl", Group: "LEGACY", Panes: []*model.Pane{{ID: "pl"}}}
+	remoteWS := &model.Workspace{ID: "wr", Group: "LEGACY", Panes: []*model.Pane{{ID: "pr"}}}
+	agg := NewAggregator("hub", twoHostRegistry(t),
+		fakeLocal{wss: []*model.Workspace{localWS}},
+		func(_ context.Context, h Host) ([]*model.Workspace, error) {
+			return []*model.Workspace{remoteWS}, nil
+		})
+	factoryRuns := 0
+	agg.SetGroupResolver(func() func(hostID, wsID, legacy string) string {
+		factoryRuns++
+		return func(hostID, wsID, legacy string) string {
+			if wsID == "wl" {
+				return "OWNERWIN"
+			}
+			return legacy
+		}
+	})
+	agg.Aggregate(context.Background())
+
+	if g, ok := agg.GroupForPane("pl"); !ok || g != "OWNERWIN" {
+		t.Errorf("resolved pane group = %q,%v; want OWNERWIN", g, ok)
+	}
+	if g, ok := agg.GroupForPane("pr"); !ok || g != "LEGACY" {
+		t.Errorf("declined pane group = %q,%v; want legacy passthrough", g, ok)
+	}
+	if factoryRuns != 1 {
+		t.Errorf("factory ran %d times; want once per Aggregate pass", factoryRuns)
+	}
+}
+
 // TestAggregate_HostnameOwner: the global dev-hostname registrar maps each label
 // to its owning host + workspace across the federation.
 func TestAggregate_HostnameOwner(t *testing.T) {

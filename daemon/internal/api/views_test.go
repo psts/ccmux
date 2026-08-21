@@ -5,20 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/hub"
+	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/version"
 )
 
-// viewsFixture is a hub-mode server whose aggregate holds the given local
-// workspaces — the cheapest way to a Server with KNOWN workspace ids and no
-// tmux. res decides who the caller resolves to.
-func viewsFixture(t *testing.T, res whoisResolver, wss ...*model.Workspace) *Server {
-	t.Helper()
-	s := newIdentityServer(t, res)
+// hubWire puts a Server into hub mode with the given local workspaces in its
+// aggregate — the cheapest way to KNOWN workspace ids and no tmux.
+func hubWire(s *Server, wss ...*model.Workspace) {
 	reg := hub.NewRegistry("hub", hub.DefaultFloor,
 		func() ([]hub.Node, error) { return []hub.Node{{ID: "hub", Addr: "hub.invalid"}}, nil },
 		func(string) (hub.Health, error) { return hub.Health{Contract: version.Contract}, nil },
@@ -30,6 +30,14 @@ func viewsFixture(t *testing.T, res whoisResolver, wss ...*model.Workspace) *Ser
 	})
 	agg.Aggregate(context.Background())
 	s.hub = &hubMode{reg: reg, agg: agg, selfID: "hub"}
+}
+
+// viewsFixture is a hub-mode server over a working store; res decides who the
+// caller resolves to.
+func viewsFixture(t *testing.T, res whoisResolver, wss ...*model.Workspace) *Server {
+	t.Helper()
+	s := newIdentityServer(t, res)
+	hubWire(s, wss...)
 	return s
 }
 
@@ -148,6 +156,60 @@ func TestViews_UnownedHostKeepsLegacyGroups(t *testing.T) {
 	}
 }
 
+// The hub's cross-host create: the proxied response is teed, the new id parsed,
+// and the creator's view row seeded WITH an import marker — every failure here
+// is silent by design (log-only), so this test is the alarm. Also pins the
+// group-less passthrough: no group, no row, plain proxy.
+func TestViews_HostCreateSeedsCreatorRow(t *testing.T) {
+	remote := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"wr-new","name":"repo"}`))
+	}))
+	defer remote.Close()
+	remoteAddr := strings.TrimPrefix(remote.URL, "https://")
+
+	s := newIdentityServer(t, fakeResolver{login: "dasha@x.com", ok: true})
+	reg := hub.NewRegistry("hub", hub.DefaultFloor,
+		func() ([]hub.Node, error) {
+			return []hub.Node{{ID: "hub", Addr: "hub.invalid"}, {ID: "remote", Addr: remoteAddr}}, nil
+		},
+		func(string) (hub.Health, error) { return hub.Health{Contract: version.Contract}, nil },
+		func() int64 { return 1 },
+	)
+	reg.Refresh()
+	agg := hub.NewAggregator("hub", reg, fakeLister{}, func(context.Context, hub.Host) ([]*model.Workspace, error) {
+		return nil, nil
+	})
+	agg.Aggregate(context.Background())
+	s.hub = &hubMode{reg: reg, agg: agg, client: hub.NewClient(remote.Client().Transport), selfID: "hub"}
+
+	create := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/hosts/remote/workspaces", strings.NewReader(body))
+		req.SetPathValue("host", "remote")
+		s.hostCreateRoute()(rec, req)
+		return rec
+	}
+
+	if rec := create(`{"repoPath":"/r","group":"WIN"}`); rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), "wr-new") {
+		t.Fatalf("proxied create = %d (%s)", rec.Code, rec.Body)
+	}
+	if rows := s.mgr.Views()["wr-new"]; rows["dasha@x.com"] != "WIN" {
+		t.Fatalf("creator's row = %v, want WIN", rows)
+	}
+	if !s.mgr.ViewImports()["wr-new"] {
+		t.Fatal("create must mark the import: the member's legacy column must never resurrect this workspace")
+	}
+
+	if rec := create(`{"repoPath":"/r2"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("group-less create = %d", rec.Code)
+	}
+	if len(s.mgr.Views()) != 1 {
+		t.Fatalf("group-less create seeded a row: %v", s.mgr.Views())
+	}
+}
+
 // The create path persists the legacy ws_group column for compat AND seeds the
 // creator's row with an import marker. Putting the session away must therefore
 // stick: without the marker, the next list would "import" the legacy column
@@ -203,6 +265,36 @@ func TestViews_PutGroupWritesCallerRowOnly(t *testing.T) {
 
 	if rec := putGroupAs(t, s, "nope", "x"); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown workspace = %d, want 404", rec.Code)
+	}
+}
+
+// The guard's core safety claim: an unreadable views table answers 503, never
+// "no rows" — a DB hiccup must not impersonate permission to stop a session
+// for everyone. Pins ViewsStrict (a swap to the error-swallowing Views() would
+// fail this). force=1 still overrides, as the 503 message advertises.
+func TestViews_ArchiveGuardFailsClosedOnUnreadableRows(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "guard.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(manager.New(context.Background(), nil, st))
+	s.identity = fakeResolver{login: "patric@x.com", ok: true}
+	hubWire(s, &model.Workspace{ID: "w1"})
+	_ = st.Close() // the guard's evidence is now unreadable
+
+	archive := func(url string) (*httptest.ResponseRecorder, bool) {
+		ran := false
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", url, nil)
+		req.SetPathValue("id", "w1")
+		s.archiveGuard(func(http.ResponseWriter, *http.Request) { ran = true })(rec, req)
+		return rec, ran
+	}
+	if rec, ran := archive("/v1/workspaces/w1/archive"); rec.Code != http.StatusServiceUnavailable || ran {
+		t.Fatalf("guard with unreadable rows = %d ran=%v, want 503 blocked", rec.Code, ran)
+	}
+	if rec, ran := archive("/v1/workspaces/w1/archive?force=1"); !ran {
+		t.Fatalf("force=1 must still override (got %d)", rec.Code)
 	}
 }
 

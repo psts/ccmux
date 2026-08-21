@@ -114,6 +114,20 @@ func TestResolveIdentity_AliasBeatsOwner(t *testing.T) {
 	}
 }
 
+// The owner tier is bounded to the machine's own keyboard: a NON-loopback
+// caller WhoIs cannot name (a tagged member daemon, most importantly) must not
+// resolve to the host's human — a hub proxying to a member would otherwise
+// authenticate as the member's owner and walk through its archive guard.
+func TestResolveIdentity_OwnerDoesNotClaimRemoteCallers(t *testing.T) {
+	s := newIdentityServer(t, fakeResolver{ok: false})
+	if err := s.mgr.SetOwner("sandelin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.resolveIdentity(req("100.64.0.7:5000", "?user=machine")).Login; got != "machine" {
+		t.Errorf("remote unnameable caller = %q, want its self-declared name, not the owner", got)
+	}
+}
+
 // A verified tailnet caller is never re-attributed to the host owner.
 func TestResolveIdentity_OwnerNeverOverridesVerified(t *testing.T) {
 	s := newIdentityServer(t, fakeResolver{login: "carol@example.com", ok: true})

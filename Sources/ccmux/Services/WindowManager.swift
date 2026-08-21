@@ -746,15 +746,6 @@ class WindowManager {
         workspaceManager.scheduleSaveFromWindow()
     }
 
-    /// Pure ownership resolution (index = window order). An orphan is adopted
-    /// ONLY into the window whose name matches its group — OUR view row on the
-    /// daemon (views are per-user; see docs/multitenant-plan.md). No row, or a
-    /// row naming a window that is not open, means it stays unowned and renders
-    /// in the sidebar's AVAILABLE section instead: adopting someone else's
-    /// session (or force-homing our own into the wrong window and then pushing
-    /// that window's name over our row) is exactly the interference this
-    /// replaced. A multiply-owned workspace keeps the window displaying it,
-    /// else its first owner. Returns nil when nothing changes.
     /// The one rule for "does this group name mean this window": case-
     /// insensitive, because rows written from web/phone may not match a window
     /// name's capitalisation. Adoption, the sidebar's cold bucketing, and the
@@ -764,6 +755,15 @@ class WindowManager {
         a.caseInsensitiveCompare(b) == .orderedSame
     }
 
+    /// Pure ownership resolution (index = window order). An orphan is adopted
+    /// ONLY into the window whose name matches its group — OUR view row on the
+    /// daemon (views are per-user; see docs/multitenant-plan.md). No row, or a
+    /// row naming a window that is not open, means it stays unowned and renders
+    /// in the sidebar's AVAILABLE section instead: adopting someone else's
+    /// session (or force-homing our own into the wrong window and then pushing
+    /// that window's name over our row) is exactly the interference this
+    /// replaced. A multiply-owned workspace keeps the window displaying it,
+    /// else its first owner. Returns nil when nothing changes.
     static func reconcileHostedOwnership(
         workspaceIds: [UUID], groups: [UUID: String], owned: [Set<UUID>], displayed: [UUID?],
         windowNames: [String]

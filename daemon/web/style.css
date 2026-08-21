@@ -54,11 +54,12 @@ body {
 .dot.live { background: var(--accent); }
 .dot.cold { background: #55585d; }
 
-/* window-group headers (shared groups pushed by the Mac app) */
+/* owner label on AVAILABLE rows ("patric · CHARTLABS") */
 .ws .owner-tag {
   font-size: 10px; opacity: 0.55; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; max-width: 40%;
 }
+/* window-group headers (the caller's own view rows, per-user on the daemon) */
 .group-hdr {
   list-style: none; margin: 10px 4px 2px; font-size: 9px; font-weight: 600;
   letter-spacing: 1.2px; color: var(--muted); opacity: .75; cursor: default;

@@ -11,8 +11,13 @@ import AppKit
 /// then closes, mirroring claude-deck's pattern.
 ///
 /// This handles the app's own local panes only. Daemon-hosted panes send to the
-/// daemon's socket instead, where `daemon/internal/hooks` makes the same
-/// decisions — the two mappings are twins and have to stay that way.
+/// daemon's socket instead, where `daemon/internal/hooks` is the LEAD
+/// implementation. This copy is a lagging subset: the daemon rewrites a held
+/// turn-end to idle (clearing a stale needs_input flag), honors a live prompt
+/// via promptPending, and traces hold-unchecked/agent-expired; this side drops
+/// the held event and traces none of that. Deliberate — the parity refactor is
+/// v0.1.30 scope (see commit "a hold says idle..."). Until then, the daemon is
+/// the reference; do not propagate Swift-side changes back as if equal.
 final class ClaudeHookListener {
     static let socketPath = "/tmp/ccmux-hooks.sock"
 

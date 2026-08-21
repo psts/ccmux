@@ -79,6 +79,12 @@ func (r *Resolver) lookup(host string) (string, string, bool) {
 // any daemon→daemon call be recorded as a user named "tagged-devices".
 const taggedDevicesLogin = "tagged-devices"
 
+// machineCaller is the one home of that rule, shared by both resolver backends
+// so it cannot rot in one of them.
+func machineCaller(tags []string, login string) bool {
+	return len(tags) > 0 || login == taggedDevicesLogin
+}
+
 // parseWhoisProfile extracts the UserProfile identity from `tailscale whois
 // --json` output. A tagged caller (Node.Tags set, or the synthetic
 // tagged-devices profile) is a machine, never a person: it resolves to no
@@ -96,7 +102,7 @@ func parseWhoisProfile(data []byte) (login, display string, err error) {
 	if err = json.Unmarshal(data, &v); err != nil {
 		return "", "", err
 	}
-	if len(v.Node.Tags) > 0 || v.UserProfile.LoginName == taggedDevicesLogin {
+	if machineCaller(v.Node.Tags, v.UserProfile.LoginName) {
 		return "", "", nil
 	}
 	return v.UserProfile.LoginName, v.UserProfile.DisplayName, nil

@@ -200,7 +200,9 @@ func seedOwner(addr, owner string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	// Bounded: a hung daemon must not hang the installer on its last step.
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("  could not set owner (%v); set it later in Settings\n", err)
 		return

@@ -46,12 +46,14 @@ struct SidebarView: View {
     /// Cold sessions with no matching window section ("" — not in our windows —
     /// or a window that was closed): they render under AVAILABLE.
     private var ungroupedColdWorkspaces: [DaemonWorkspace] {
-        // Lowercased set: the same case-insensitive rule as
-        // WindowManager.sameWindowName, or a row spelled differently lands in
+        // The SAME predicate as every other bucketing site — .lowercased() is
+        // not the same relation as caseInsensitiveCompare, and a row that
+        // matched a section under one rule but not the other would render in
         // a window section AND here.
-        var names = Set(windowContext.otherWindowGroups.map { $0.name.lowercased() })
-        names.insert(thisWindowName.lowercased())
-        return remoteService.coldWorkspaces.filter { !names.contains($0.group.lowercased()) }
+        let names = windowContext.otherWindowGroups.map(\.name) + [thisWindowName]
+        return remoteService.coldWorkspaces.filter { cold in
+            !names.contains { WindowManager.sameWindowName($0, cold.group) }
+        }
     }
 
     /// Live hosted sessions no window of ours owns — someone else's, or ours

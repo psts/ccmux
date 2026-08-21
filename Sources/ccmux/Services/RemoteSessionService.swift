@@ -811,6 +811,8 @@ final class RemoteSessionService: ObservableObject {
         gitMonitors.removeValue(forKey: appId)
         claudeMonitors.removeValue(forKey: appId)
         groups.removeValue(forKey: appId)
+        owners.removeValue(forKey: appId)
+        ownerGroups.removeValue(forKey: appId)
         hostLabels.removeValue(forKey: appId)
         hostnames.removeValue(forKey: appId)
         devRunning.removeValue(forKey: appId)
@@ -834,10 +836,9 @@ final class RemoteSessionService: ObservableObject {
     /// until the next reconcile confirms.
     func setGroup(_ appId: UUID, to name: String) async {
         guard let daemonId = daemonIds[appId] else { return }
-        let body = try? JSONSerialization.data(withJSONObject: ["group": name])
-        if await send("PUT", path: "/v1/workspaces/\(daemonId)/group", body: body, expect: 204) {
-            await MainActor.run { self.groups[appId] = name }
-        }
+        // Delegates: workspaceUUID(daemonId) inverts daemonIds, so the cache
+        // write in the daemon-id variant lands on the same key.
+        _ = await setGroup(daemonId: daemonId, to: name)
     }
 
     /// setGroup by raw daemon id — cold sessions aren't materialized as app

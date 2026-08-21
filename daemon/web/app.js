@@ -21,7 +21,10 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+// Quotes included: group names are user-typed (moveToWindow's prompt) and get
+// interpolated into title="..." attributes — a bare " would break out.
+const esc = (s) => String(s).replace(/[<>&"']/g,
+  (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // A display name for presence; asked once and remembered. Tailscale identity
 // will replace this on the tailnet.
@@ -161,6 +164,7 @@ function wsRow(ws) {
   const open = !!state.gitOpen[ws.id];
   const running = (ws.panes || []).some((p) => p.attention === "running");
   const cold = ws.status === "cold";
+  const label = ownerLabel(ws);
   const li = document.createElement("li");
   li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "") + (cold ? " cold" : "");
   li.innerHTML =
@@ -168,7 +172,7 @@ function wsRow(ws) {
     `<span class="exp${open ? " open" : " closed"}"></span>` +
     `<span class="dot ${esc(ws.status)}"></span>` +
     `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
-    (ownerLabel(ws) ? `<span class="owner-tag">${esc(ownerLabel(ws))}</span>` : "") +
+    (label ? `<span class="owner-tag">${esc(label)}</span>` : "") +
     (running ? `<span class="bolt">⚡</span>` : "") +
     (cold ? `<span class="cold-tag">zzz</span>` : gitBadges(ws.git)) +
     `<button class="more" title="Session menu">⋯</button>` +
@@ -340,11 +344,19 @@ async function reviveWorkspace(id) {
 // putGroup writes YOUR view row: which of your windows the session sits in.
 // "" puts it away (back to Available). Nobody else's arrangement changes.
 async function putGroup(id, group) {
-  const r = await fetch(`/v1/workspaces/${id}/group`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ group }),
-  });
+  // try/catch: on a phone a network failure otherwise dies as an unhandled
+  // rejection — no alert, no console, a tap that just does nothing.
+  let r;
+  try {
+    r = await fetch(`/v1/workspaces/${id}/group`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group }),
+    });
+  } catch (e) {
+    alert("window change failed: " + e.message);
+    return;
+  }
   if (!r.ok) { alert("window change failed: " + (await r.text())); return; }
   fetchWorkspaces();
 }
@@ -357,16 +369,30 @@ function moveToWindow(ws) {
   putGroup(ws.id, g.trim());
 }
 
-// guarded409 runs an archive/remove-style call; on the daemon's 409 guard
-// (someone else's session, or someone still has it in a window) it asks, and
-// retries with force=1 on yes.
+// guarded409 runs an archive/remove-style call; when the daemon's guard
+// refuses — 409 (someone else's session, or someone still has it in a window)
+// or 503 (the guard could not read its evidence) — it asks, and retries with
+// force=1 on yes. Network failures alert instead of dying as unhandled
+// rejections (a phone has no console).
 async function guarded409(makeReq, label) {
-  const r = await makeReq(false);
-  if (r.status === 409) {
-    let msg = "HTTP 409";
+  let r;
+  try {
+    r = await makeReq(false);
+  } catch (e) {
+    alert(label + " failed: " + e.message);
+    return null;
+  }
+  if (r.status === 409 || r.status === 503) {
+    let msg = "HTTP " + r.status;
     try { msg = (await r.json()).error || msg; } catch (_) {}
-    if (confirm(msg.replace(/ — pass force=1.*$/, "") + `\n\n${label} anyway?`)) {
-      const rf = await makeReq(true);
+    if (confirm(msg.replace(/ — (pass force=1|retry).*$/, "") + `\n\n${label} anyway?`)) {
+      let rf;
+      try {
+        rf = await makeReq(true);
+      } catch (e) {
+        alert(label + " failed: " + e.message);
+        return null;
+      }
       if (!rf.ok) { alert(label + " failed: " + (await rf.text())); return null; }
       return rf;
     }

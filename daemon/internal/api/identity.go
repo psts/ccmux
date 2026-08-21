@@ -1,6 +1,9 @@
 package api
 
-import "net/http"
+import (
+	"net"
+	"net/http"
+)
 
 // identity is a resolved caller identity. Login is the key subscriptions and
 // push-suppression match on (the verified tailnet login/email when known, else
@@ -45,7 +48,7 @@ func (s *Server) resolveIdentity(r *http.Request) identity {
 	if login := s.mgr.ResolveAlias(u); login != u {
 		return identity{Login: login, Display: u, Verified: false}
 	}
-	if owner := s.mgr.Owner(); owner != "" {
+	if owner := s.mgr.Owner(); owner != "" && loopback(r.RemoteAddr) {
 		display := u
 		if display == "anon" {
 			display = owner // nothing was declared; the owner IS the best name we have
@@ -53,4 +56,20 @@ func (s *Server) resolveIdentity(r *http.Request) identity {
 		return identity{Login: owner, Display: display, Verified: false}
 	}
 	return identity{Login: u, Display: u, Verified: false}
+}
+
+// loopback bounds the owner tier to the machine's own keyboard. Without it,
+// every caller WhoIs declines would resolve to the owner — including tagged
+// tailnet nodes, which the tagged-caller guard deliberately makes unnameable:
+// a hub proxying to a member must not authenticate as the member's human.
+func loopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
