@@ -10,6 +10,12 @@ class WindowContext: ObservableObject {
     @Published var ownedWorkspaceIds: Set<UUID> = []
     /// Custom window name, nil = auto-generated "Window N"
     @Published var windowName: String?
+    /// The auto-generated name an unnamed window ACTUALLY answers to ("Window N",
+    /// maintained by refreshOtherWindowIds). The sidebar must fall back to this,
+    /// not a cosmetic "This Window": group rows are matched by name, and a window
+    /// that displays one name while matching another can never claim its own
+    /// cold sessions.
+    @Published var autoName: String = "Window"
     /// Info about other windows for sidebar display
     @Published var otherWindowGroups: [WindowGroup] = []
     /// Workspace IDs whose sidebar disclosure is collapsed in this window.
@@ -272,9 +278,24 @@ class WindowManager {
         plan: (closeLocally: [UUID], archiveHosted: [UUID], record: [UUID])
     ) {
         for wsId in plan.archiveHosted {
+            // Resolve the daemon id NOW: once archived, the workspace goes cold
+            // and the live-attachment map forgets it, and the put-away below
+            // must still reach the daemon.
+            let daemonId = RemoteSessionService.shared.daemonId(forApp: wsId)
             Task { @MainActor in
+                // The daemon 409s an archive of a session that is not ours, or
+                // that someone else still keeps in a window (views are per-user).
+                // We deliberately never force from a window close: the session
+                // stays running for whoever holds it, and only OUR row goes.
                 if let error = await RemoteSessionService.shared.archiveWorkspace(wsId) {
-                    NSLog("[ccmux] closing window: archiving %@ failed: %@", wsId.uuidString, error)
+                    NSLog("[ccmux] closing window: archiving %@ refused (left running): %@",
+                          wsId.uuidString, error)
+                }
+                // Closing always puts away our view row — with or without the
+                // archive. The session leaves our windows; anyone else's
+                // arrangement is untouched.
+                if let daemonId {
+                    await RemoteSessionService.shared.setGroup(daemonId: daemonId, to: "")
                 }
             }
         }
@@ -718,18 +739,15 @@ class WindowManager {
         workspaceManager.scheduleSaveFromWindow()
     }
 
-    /// Pure ownership resolution (index = window order): every listed workspace
-    /// ends up owned by exactly one window. Orphans go to the window whose name
-    /// matches their shared group (so a web/phone-created session lands in the
-    /// group the user picked), else the first window; a multiply-owned workspace
-    /// keeps the window displaying it, else its first owner. Returns nil when
-    /// nothing changes.
-    ///
-    /// Every LIVE hosted session must end up owned by exactly one open window, so it
-    /// has somewhere to appear. A closed window's sessions do not need protecting here:
-    /// closing archives them, so they are cold, and a cold session is not in this list
-    /// at all. One revived by hand is adopted normally — the window record stays until
-    /// "Restore Window" uses it.
+    /// Pure ownership resolution (index = window order). An orphan is adopted
+    /// ONLY into the window whose name matches its group — OUR view row on the
+    /// daemon (views are per-user; see docs/multitenant-plan.md). No row, or a
+    /// row naming a window that is not open, means it stays unowned and renders
+    /// in the sidebar's AVAILABLE section instead: adopting someone else's
+    /// session (or force-homing our own into the wrong window and then pushing
+    /// that window's name over our row) is exactly the interference this
+    /// replaced. A multiply-owned workspace keeps the window displaying it,
+    /// else its first owner. Returns nil when nothing changes.
     static func reconcileHostedOwnership(
         workspaceIds: [UUID], groups: [UUID: String], owned: [Set<UUID>], displayed: [UUID?],
         windowNames: [String]
@@ -740,7 +758,12 @@ class WindowManager {
         for id in workspaceIds {
             let owners = result.indices.filter { result[$0].contains(id) }
             if owners.isEmpty {
-                let target = groups[id].flatMap { windowNames.firstIndex(of: $0) } ?? 0
+                // Case-insensitive: rows written from web/phone may not match a
+                // window name's capitalisation, same rule as the peers bus.
+                guard let group = groups[id], !group.isEmpty,
+                      let target = windowNames.firstIndex(where: {
+                          $0.caseInsensitiveCompare(group) == .orderedSame
+                      }) else { continue }
                 result[target].insert(id)
                 changed = true
             } else if owners.count > 1 {
@@ -798,9 +821,11 @@ class WindowManager {
             if wc.windowContext.otherWindowGroups != otherGroups {
                 wc.windowContext.otherWindowGroups = otherGroups
             }
-            // Auto-assign window name if not custom
-            if wc.windowContext.windowName == nil {
-                // Don't publish — just for display fallback
+            // Keep the published auto name truthful to window order, so the
+            // sidebar displays and matches the SAME name the group sync pushes.
+            let auto = autoWindowName(for: wc)
+            if wc.windowContext.autoName != auto {
+                wc.windowContext.autoName = auto
             }
         }
         syncHostedGroups()

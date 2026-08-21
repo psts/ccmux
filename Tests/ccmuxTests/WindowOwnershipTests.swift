@@ -10,11 +10,14 @@ final class WindowOwnershipTests: XCTestCase {
     private let ws1 = UUID()
     private let ws2 = UUID()
 
-    func testOrphanAdoptsIntoFirstWindow() throws {
-        let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
+    func testUnplacedOrphanIsNotAdopted() {
+        // No group row means "not in our windows" — someone else's session, or
+        // ours put away. Adopting it anyway is the multi-lens interference the
+        // per-user views replaced; it renders under AVAILABLE instead.
+        XCTAssertNil(WindowManager.reconcileHostedOwnership(
             workspaceIds: [ws1], groups: [:], owned: [[], [ws2]], displayed: [nil, nil],
-            windowNames: ["A", "B"]))
-        XCTAssertEqual(resolved, [[ws1], [ws2]])
+            windowNames: ["A", "B"]),
+            "an unplaced session must stay unowned (AVAILABLE), not land in window 0")
     }
 
     func testOrphanAdoptsIntoTheWindowMatchingItsGroup() throws {
@@ -26,11 +29,23 @@ final class WindowOwnershipTests: XCTestCase {
         XCTAssertEqual(resolved, [[], [ws1]])
     }
 
-    func testOrphanWithUnknownGroupFallsBackToFirstWindow() throws {
+    func testGroupMatchIgnoresCase() throws {
+        // Rows written from web/phone may not match a window name's
+        // capitalisation — same rule as the peers bus.
         let resolved = try XCTUnwrap(WindowManager.reconcileHostedOwnership(
-            workspaceIds: [ws1], groups: [ws1: "NOPE"], owned: [[], []], displayed: [nil, nil],
-            windowNames: ["A", "B"]))
+            workspaceIds: [ws1], groups: [ws1: "chartlabs"], owned: [[], []], displayed: [nil, nil],
+            windowNames: ["CHARTLABS", "B"]))
         XCTAssertEqual(resolved, [[ws1], []])
+    }
+
+    func testOrphanWithUnmatchedGroupStaysAvailable() {
+        // Our row names a window that is not open: force-homing it into window 0
+        // would let the group sync push window 0's name over the row we chose
+        // from another lens. It waits in AVAILABLE instead.
+        XCTAssertNil(WindowManager.reconcileHostedOwnership(
+            workspaceIds: [ws1], groups: [ws1: "NOPE"], owned: [[], []], displayed: [nil, nil],
+            windowNames: ["A", "B"]),
+            "a row naming an unopened window must not be force-homed")
     }
 
     func testDuplicateKeepsTheDisplayingWindow() throws {

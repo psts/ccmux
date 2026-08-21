@@ -43,16 +43,38 @@ struct SidebarView: View {
         remoteService.coldWorkspaces.filter { $0.group == name }
     }
 
-    /// Cold sessions with no matching window section ("" or a window that was
-    /// closed) — the only ones the global COLD SESSIONS bucket shows.
+    /// Cold sessions with no matching window section ("" — not in our windows —
+    /// or a window that was closed): they render under AVAILABLE.
     private var ungroupedColdWorkspaces: [DaemonWorkspace] {
         var names = Set(windowContext.otherWindowGroups.map(\.name))
         names.insert(thisWindowName)
         return remoteService.coldWorkspaces.filter { !names.contains($0.group) }
     }
 
+    /// Live hosted sessions no window of ours owns — someone else's, or ours
+    /// put away / homed to a window we don't have open. They render under
+    /// AVAILABLE; a click adds them to this window (our view row only).
+    private var availableLiveWorkspaces: [Workspace] {
+        remoteService.workspaces
+            .filter {
+                !windowContext.ownedWorkspaceIds.contains($0.id)
+                    && !windowContext.otherWindowWorkspaceIds.contains($0.id)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// "patric · CHARTLABS" — whose session an AVAILABLE row is, and where its
+    /// owner keeps it. Empty when the daemon knows neither.
+    private func ownerLabel(owner: String, ownerGroup: String) -> String {
+        let who = owner.split(separator: "@").first.map(String.init) ?? owner
+        return [who, ownerGroup].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// This window's ANSWERABLE name: the custom name, else the same auto name
+    /// ("Window N") the group sync pushes. Never a cosmetic "This Window" — the
+    /// name is matched against group rows, not just displayed.
     private var thisWindowName: String {
-        windowContext.windowName ?? "This Window"
+        windowContext.windowName ?? windowContext.autoName
     }
 
     var body: some View {
@@ -107,7 +129,7 @@ struct SidebarView: View {
                         .contextMenu {
                             if let windowId = currentWindowId {
                                 Button("Rename Window...") {
-                                    onRenameWindow?(windowId, windowContext.windowName ?? "This Window")
+                                    onRenameWindow?(windowId, thisWindowName)
                                 }
                             }
                         }
@@ -144,19 +166,23 @@ struct SidebarView: View {
                     }
                 }
 
-                // Cold hosted sessions (archived, or the host restarted): the
-                // daemon keeps their full recipe — click revives in place.
-                // Cold rows whose shared group matches a window render INSIDE
-                // that window's section above (revive re-adopts them there via
-                // reconcileHostedOwnership's group match); this global bucket
-                // only catches ones with no matching window.
-                if !ungroupedColdWorkspaces.isEmpty {
+                // AVAILABLE: everything not in our windows — views are per-user
+                // on the daemon, so this holds other people's sessions (labeled
+                // "who · their window") and our own put-away or unhomed ones.
+                // A live row's click adds it to THIS window (writes only our
+                // view row); a cold row's click claims it here and revives.
+                // Cold rows whose group matches an open window still render
+                // inside that window's section above.
+                if !availableLiveWorkspaces.isEmpty || !ungroupedColdWorkspaces.isEmpty {
                     Section {
+                        ForEach(availableLiveWorkspaces) { workspace in
+                            availableRow(workspace)
+                        }
                         ForEach(ungroupedColdWorkspaces, id: \.id) { cold in
-                            coldRow(cold)
+                            coldRow(cold, claimHere: true)
                         }
                     } header: {
-                        windowSectionHeader(name: "COLD SESSIONS", isCurrentWindow: false)
+                        windowSectionHeader(name: "AVAILABLE", isCurrentWindow: false)
                     }
                 }
             }
@@ -508,24 +534,61 @@ struct SidebarView: View {
         }
     }
 
+    /// A live hosted session not in any of our windows: named, labeled with
+    /// whose it is, and a click adds it to THIS window — which writes only our
+    /// own view row on the daemon, never anyone else's arrangement.
+    private func availableRow(_ workspace: Workspace) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.system(size: 11))
+            Text(workspace.name)
+                .lineLimit(1)
+            Spacer()
+            Text(ownerLabel(owner: remoteService.owners[workspace.id] ?? "",
+                            ownerGroup: remoteService.ownerGroups[workspace.id] ?? ""))
+                .font(.system(size: 10))
+                .foregroundColor(Color.secondary.opacity(0.7))
+                .lineLimit(1)
+        }
+        .foregroundColor(.secondary)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onMoveToThisWindow(workspace.id)
+        }
+        .contextMenu {
+            Button("Add to This Window") {
+                onMoveToThisWindow(workspace.id)
+            }
+        }
+    }
+
     /// A cold hosted session: dimmed, with a moon icon; click (or the menu's
     /// Revive) recreates the tmux session from the daemon's stored recipe.
-    private func coldRow(_ cold: DaemonWorkspace) -> some View {
+    /// claimHere (the AVAILABLE bucket) first writes our view row for THIS
+    /// window, so the revived session lands where the click happened — on this
+    /// Mac and every other lens — instead of wherever a name match falls.
+    private func coldRow(_ cold: DaemonWorkspace, claimHere: Bool = false) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "moon.zzz")
                 .font(.system(size: 11))
             Text(cold.name)
                 .lineLimit(1)
             Spacer()
+            if claimHere {
+                Text(ownerLabel(owner: cold.owner, ownerGroup: cold.ownerGroup))
+                    .font(.system(size: 10))
+                    .foregroundColor(Color.secondary.opacity(0.7))
+                    .lineLimit(1)
+            }
         }
         .foregroundColor(.secondary)
         .contentShape(Rectangle())
         .onTapGesture {
-            revive(cold)
+            revive(cold, claimHere: claimHere)
         }
         .contextMenu {
-            Button("Revive") {
-                revive(cold)
+            Button(claimHere ? "Revive in This Window" : "Revive") {
+                revive(cold, claimHere: claimHere)
             }
             Divider()
             Button("Remove Session…", role: .destructive) {
@@ -544,9 +607,14 @@ struct SidebarView: View {
 
     /// Resurrect a cold session, reporting a refusal instead of swallowing it.
     /// The click has no other visible effect when it fails, so silence reads as a
-    /// dead row.
-    private func revive(_ cold: DaemonWorkspace) {
+    /// dead row. claimHere places it into this window BEFORE the revive (see
+    /// coldRow) — a failed claim still revives, it just lands by name match.
+    private func revive(_ cold: DaemonWorkspace, claimHere: Bool = false) {
+        let windowName = thisWindowName
         Task {
+            if claimHere {
+                _ = await remoteService.setGroup(daemonId: cold.id, to: windowName)
+            }
             guard let error = await remoteService.reviveWorkspace(daemonId: cold.id) else { return }
             await MainActor.run { reportFailure(action: "Revive “\(cold.name)”", error: error) }
         }

@@ -35,9 +35,14 @@ final class RemoteSessionService: ObservableObject {
     /// same observable types the local sidebar rows use, fed from daemon data.
     private(set) var gitMonitors: [UUID: GitStatusMonitor] = [:]
     private(set) var claudeMonitors: [UUID: ClaudeProcessMonitor] = [:]
-    /// Last-known shared sidebar group per hosted workspace (from the daemon).
-    /// WindowManager diffs its window names against this before pushing.
+    /// Last-known sidebar group per hosted workspace — OUR view row, per-user
+    /// on the daemon. WindowManager diffs its window names against this before
+    /// pushing; empty means "not in our windows" (the AVAILABLE section).
     private(set) var groups: [UUID: String] = [:]
+    /// Whose session each live hosted workspace is (owning host's owner login),
+    /// and the owner's own window name for it — the AVAILABLE row label.
+    private(set) var owners: [UUID: String] = [:]
+    private(set) var ownerGroups: [UUID: String] = [:]
     /// Federation registry (GET /v1/hosts), label → host. Empty in single-host
     /// mode. Resolves a workspace's owning host for direct attach + the context line.
     @Published private(set) var hosts: [String: DaemonHost] = [:]
@@ -686,6 +691,8 @@ final class RemoteSessionService: ObservableObject {
         for dw in live {
             let appId = RemoteWorkspaceBuilder.workspaceUUID(dw.id)
             groups[appId] = dw.group
+            owners[appId] = dw.owner
+            ownerGroups[appId] = dw.ownerGroup
             hostLabels[appId] = dw.host
             hostnames[appId] = dw.hostnames
             devRunning[appId] = dw.panes.contains { $0.devServer }
@@ -831,6 +838,15 @@ final class RemoteSessionService: ObservableObject {
         if await send("PUT", path: "/v1/workspaces/\(daemonId)/group", body: body, expect: 204) {
             await MainActor.run { self.groups[appId] = name }
         }
+    }
+
+    /// setGroup by raw daemon id — cold sessions aren't materialized as app
+    /// workspaces, and the revive-claim path must place one BEFORE reviving it
+    /// so it lands in the window the user clicked in. Returns success.
+    @discardableResult
+    func setGroup(daemonId: String, to name: String) async -> Bool {
+        let body = try? JSONSerialization.data(withJSONObject: ["group": name])
+        return await send("PUT", path: "/v1/workspaces/\(daemonId)/group", body: body, expect: 204)
     }
 
     // MARK: - Dev hostnames

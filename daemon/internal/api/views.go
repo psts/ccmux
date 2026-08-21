@@ -41,7 +41,13 @@ func (s *Server) stampViews(list []*model.Workspace, caller string) []*model.Wor
 		}
 		cp.Owner = owner
 		cp.OwnerGroup = rows[owner]
-		cp.Group = rows[caller]
+		// Compat: an UNOWNED host with no rows keeps its legacy shared group on
+		// the wire — an upgrade must not collapse a single-user sidebar into
+		// Available before anyone has typed their email. Multi-tenancy switches
+		// on per host the moment its owner is set (and the import runs).
+		if owner != "" || len(rows) > 0 {
+			cp.Group = rows[caller]
+		}
 		out[i] = &cp
 	}
 	return out

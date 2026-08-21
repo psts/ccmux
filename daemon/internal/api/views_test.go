@@ -134,13 +134,14 @@ func TestViews_LegacyGroupImportsToOwner(t *testing.T) {
 	}
 }
 
-// No owner configured → nothing to import onto, and that must be safe: the
-// session simply shows as Available (no group), not lost.
-func TestViews_LegacyGroupWithoutOwnerStaysAvailable(t *testing.T) {
+// No owner configured → nothing to import onto, and the upgrade must not eat
+// the sidebar: an unowned host keeps serving its legacy shared group exactly
+// as before, to every caller. Multi-tenancy engages once the owner is set.
+func TestViews_UnownedHostKeepsLegacyGroups(t *testing.T) {
 	ws := &model.Workspace{ID: "w1", Group: "CHARTLABS"}
 	s := viewsFixture(t, fakeResolver{login: "dasha@x.com", ok: true}, ws)
-	if got := listAs(t, s); got[0].Group != "" || got[0].Owner != "" {
-		t.Fatalf("unowned legacy ws = group %q owner %q, want Available", got[0].Group, got[0].Owner)
+	if got := listAs(t, s); got[0].Group != "CHARTLABS" || got[0].Owner != "" {
+		t.Fatalf("unowned legacy ws = group %q owner %q, want the legacy group for everyone", got[0].Group, got[0].Owner)
 	}
 	if len(s.mgr.Views()["w1"]) != 0 {
 		t.Fatal("import ran without an owner to attribute to")
