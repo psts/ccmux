@@ -1,6 +1,14 @@
-# Multi-tenant plan (per-user windows)
+# Multi-tenant plan (per-user windows → shared windows)
 
-> **Status (2026-08-21): built, unit-tested, awaiting the two-box E2E.** All daemon
+> **Status v2 (2026-08-21, same day): superseded in part.** The per-user-views model
+> below shipped as v0.1.31 and immediately failed its first real test: a two-person
+> team does not want two private arrangements — they want ONE shared arrangement and
+> personal open/closed. See the **v2: shared windows** section at the bottom, which
+> replaces the "views are per-login rows" decision while keeping the identity layer,
+> the owner attribution, the guard shape, and most of the plumbing. Rows in `views`
+> become the migration source and are then retired.
+>
+> **Status v1 (2026-08-21): built, unit-tested, awaiting the two-box E2E.** All daemon
 > phases (owner setting + identity tiers + tagged-caller guard; hub views + per-caller
 > stamping + one-time legacy import; archive/delete guard; owner-view peers grouping),
 > the web lens, and the Mac lens (view-scoped adoption + AVAILABLE section + put-away
@@ -254,3 +262,65 @@ guard — delete is archive plus permanence.
   flat labels. Start flat.
 - Whether a 409-blocked archive should notify the row-holder ("A wants to stop
   CHARTLABS"). Start silent; the session simply stays in their Available/window.
+
+## v2: shared windows (supersedes per-user views, 2026-08-21)
+
+The model, in Patric's words: a repo is the source — one session, one set of panes,
+Claude included — and every lens shows the same view of it. Windows are shared the
+same way: ONE arrangement (window name + member repos, a repo in at most one window),
+identical for every person on every lens. The only personal state is which windows
+each login has OPEN right now. When the LAST person closes a window, its sessions
+archive — exactly pre-multi-user behavior, generalized.
+
+### Decisions
+
+- **Windows are first-class shared entities at the hub.** Three tables replace the
+  per-login `views` rows: `windows(id, name)`, `window_members(ws_id PK, window_id)`
+  (a workspace lives in at most one window), `window_open(login, window_id)`. Names
+  are unique case-insensitively; the id survives renames.
+- **The wire keeps its shape.** `Workspace.Group` goes back to meaning the shared
+  window name — for every caller. `PUT /v1/workspaces/{id}/group` assigns membership
+  by name, creating the window if new; empty removes it. Old lenses keep working.
+- **New surface:** `GET /v1/windows` → `[{id, name, open, openBy, workspaceIds}]`
+  (open = for the caller); `POST /v1/windows/{id}/open` and `/close`;
+  `PUT /v1/windows/{id}` renames. Close reports `{last: true, members: [...]}` when
+  the caller was the final opener — the LENS then archives the members through the
+  existing guarded archive route (keeps the daemon handler simple and reuses the
+  Mac's existing close loop).
+- **The archive guard keys on open state, not view rows:** archiving or deleting a
+  session is refused (409, force=1 overrides) while its window is open by someone
+  ELSE. The owner check and the fail-closed 503 stay.
+- **The Mac app follows the daemon; it never blanket-syncs window names up.** The
+  steady-state push (`syncHostedGroups`) dies — it is exactly the write-back fight
+  that made v1's bugs. Membership writes happen only on explicit user actions: drag,
+  create, revive-into-window, rename. Reconcile moves repos BETWEEN local windows
+  when the shared membership changed elsewhere, and releases repos whose window is
+  not open here.
+- **Restore Window becomes shared.** The sidebar's closed-window list is
+  `GET /v1/windows` where the caller has it closed; opening one opens the same
+  window everyone else sees. Mac-local `ClosedWindow` records remain only for
+  windows of purely local workspaces.
+- **The peers bus reads the shared membership** — group = the window name, global
+  again, matching multihost §3's original "groups are global" decision.
+- **Migration:** one shot on first hub start after upgrade — distinct window names in
+  `views` (case-insensitively merged) become `windows`; membership prefers the host
+  owner's row, else any row; every login's rows become open flags. A wiped `views`
+  table migrates to nothing, which is the recommended clean start.
+
+### What v1 keeps contributing
+
+Identity (verified / owner-at-the-keyboard / self-declared), the tagged-caller
+guard, host owner attribution and labels, `?raw=1`, the fail-closed guard pattern,
+and the events/cache plumbing all carry over unchanged.
+
+### Verification (two boxes, replaces v1 list where it conflicts)
+
+1. Patric arranges CHARTLABS; Dasha's lens shows the same window with the same
+   repos, closed for her until she opens it.
+2. Both open CHARTLABS: both see the same panes in repo XYZ, live.
+3. Dasha closes CHARTLABS: nothing changes for Patric; sessions keep running.
+4. Patric closes it too (last): sessions archive; the window sits in both
+   Restore lists; either can reopen and revive.
+5. Dasha moves repo XYZ to another window: it moves for Patric too, on every lens.
+6. Archive/remove of a session whose window the other person has open: 409 with
+   the person's name; force works; the Mac shows the same "anyway" flow as web.
