@@ -41,10 +41,9 @@ final class RemoteSessionService: ObservableObject {
     /// The shared window list (GET /v1/windows) — names, members, and who has
     /// each open. `open` is this login's flag.
     @Published private(set) var sharedWindows: [DaemonWindow] = []
-    /// Whose session each live hosted workspace is (owning host's owner login),
-    /// and the owner's own window name for it — the AVAILABLE row label.
+    /// Whose session each live hosted workspace is (owning host's owner
+    /// login) — the ungrouped AVAILABLE row label.
     private(set) var owners: [UUID: String] = [:]
-    private(set) var ownerGroups: [UUID: String] = [:]
     /// Federation registry (GET /v1/hosts), label → host. Empty in single-host
     /// mode. Resolves a workspace's owning host for direct attach + the context line.
     @Published private(set) var hosts: [String: DaemonHost] = [:]
@@ -711,7 +710,6 @@ final class RemoteSessionService: ObservableObject {
             let appId = RemoteWorkspaceBuilder.workspaceUUID(dw.id)
             groups[appId] = dw.group
             owners[appId] = dw.owner
-            ownerGroups[appId] = dw.ownerGroup
             hostLabels[appId] = dw.host
             hostnames[appId] = dw.hostnames
             devRunning[appId] = dw.panes.contains { $0.devServer }
@@ -831,7 +829,6 @@ final class RemoteSessionService: ObservableObject {
         claudeMonitors.removeValue(forKey: appId)
         groups.removeValue(forKey: appId)
         owners.removeValue(forKey: appId)
-        ownerGroups.removeValue(forKey: appId)
         hostLabels.removeValue(forKey: appId)
         hostnames.removeValue(forKey: appId)
         devRunning.removeValue(forKey: appId)

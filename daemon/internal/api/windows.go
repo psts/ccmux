@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 
+	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
@@ -31,14 +33,16 @@ func (s *Server) stampShared(list []*model.Workspace) []*model.Workspace {
 	out := make([]*model.Workspace, len(list))
 	for i, ws := range list {
 		cp := *ws
-		if cp.Group != "" && imported != nil && !imported[cp.ID] {
+		// Both guards, deliberately: the marker (a removal must stick) AND
+		// existing membership (an arrangement someone made is never imported
+		// over, even where v1 forgot to write markers).
+		if cp.Group != "" && imported != nil && !imported[cp.ID] && !s.mgr.HasMembership(cp.ID) {
 			if err := s.mgr.SeedWindowMembership(cp.ID, cp.Group); err != nil {
 				log.Printf("windows: importing legacy group %q for %s failed: %v", cp.Group, cp.ID, err)
 			}
 		}
 		cp.Owner = s.hostOwner(cp.Host)
 		cp.Group = resolve(cp.ID, cp.Group)
-		cp.OwnerGroup = ""
 		out[i] = &cp
 	}
 	return out
@@ -108,7 +112,10 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 // listWindows serves GET /v1/windows: every shared window, with a
-// caller-relative `open` flag beside the shared openBy list.
+// caller-relative `open` flag beside the shared openBy list. Strict read,
+// 503 on error: lenses ACT on this list (close decisions hang off it), and a
+// 200-empty from unreadable tables would defeat every keep-last-list fallback
+// while a person's open flag quietly blocks everyone else's archives.
 func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 	login := s.resolveIdentity(r).Login
 	type windowResp struct {
@@ -118,7 +125,12 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		OpenBy       []string `json:"openBy"`
 		Open         bool     `json:"open"`
 	}
-	windows := s.mgr.Windows()
+	windows, err := s.mgr.WindowsListStrict()
+	if err != nil {
+		log.Printf("windows: listing failed: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "window state unreadable — retry")
+		return
+	}
 	out := make([]windowResp, 0, len(windows))
 	for _, win := range windows {
 		wr := windowResp{ID: win.ID, Name: win.Name, WorkspaceIDs: win.WorkspaceIDs, OpenBy: win.OpenBy}
@@ -141,7 +153,13 @@ func (s *Server) setWindowOpen(open bool) http.HandlerFunc {
 		login := s.resolveIdentity(r).Login
 		last, members, err := s.mgr.SetWindowOpen(login, r.PathValue("id"), open)
 		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
+			// 404 only for what the caller got wrong; a store failure is a
+			// 503, or a lens takes the wrong branch off the status code.
+			if errors.Is(err, manager.ErrUnknownWindow) {
+				writeError(w, http.StatusNotFound, err.Error())
+			} else {
+				writeError(w, http.StatusServiceUnavailable, err.Error())
+			}
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"last": last, "members": members})
@@ -158,7 +176,13 @@ func (s *Server) renameWindow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.mgr.RenameSharedWindow(r.PathValue("id"), req.Name); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		// The Mac reverts a local rename on 409 (a collision is user-fixable);
+		// a store failure must not wear that costume.
+		if errors.Is(err, manager.ErrNameTaken) {
+			writeError(w, http.StatusConflict, err.Error())
+		} else {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+		}
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

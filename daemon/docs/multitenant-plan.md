@@ -303,9 +303,10 @@ archive — exactly pre-multi-user behavior, generalized.
 - **The peers bus reads the shared membership** — group = the window name, global
   again, matching multihost §3's original "groups are global" decision.
 - **Migration:** one shot on first hub start after upgrade — distinct window names in
-  `views` (case-insensitively merged) become `windows`; membership prefers the host
-  owner's row, else any row; every login's rows become open flags. A wiped `views`
-  table migrates to nothing, which is the recommended clean start.
+  `views` (case-insensitively merged) become `windows`; membership takes the
+  lexicographically-first login's row (the per-login model has no better tiebreak,
+  and the manager cannot see host owners); every login's rows become open flags. A
+  wiped `views` table migrates to nothing, which is the recommended clean start.
 
 ### What v1 keeps contributing
 

@@ -13,15 +13,17 @@ final class ClosedWindowTests: XCTestCase {
 
     // MARK: - closingPlan
 
-    func testHostedOnlyWindowArchivesItsSessionsAndIsRecorded() {
-        // Closing a window closes what is in it: the session is archived (revivable),
-        // never left running with nowhere to appear.
+    func testHostedOnlyWindowArchivesItsSessionsAndRecordsNothing() {
+        // Closing a window closes what is in it — the hosted sessions ride the
+        // shared close (v2) and are restorable from the daemon's window list,
+        // so no LOCAL record is written for them: one window must not appear
+        // in both Restore lists with stale membership.
         let plan = WindowManager.closingPlan(
             owned: [hosted], displayed: hosted,
             isHosted: { $0 == self.hosted }, isOwnedElsewhere: { _ in false })
 
         XCTAssertEqual(plan.archiveHosted, [hosted])
-        XCTAssertEqual(plan.record, [hosted], "the window must be restorable")
+        XCTAssertTrue(plan.record.isEmpty, "hosted windows restore from the shared list")
         XCTAssertTrue(plan.closeLocally.isEmpty, "a hosted session has no local panes to tear down")
     }
 
@@ -42,7 +44,7 @@ final class ClosedWindowTests: XCTestCase {
 
         XCTAssertEqual(plan.closeLocally, [local])
         XCTAssertEqual(plan.archiveHosted, [hosted])
-        XCTAssertEqual(Set(plan.record), [local, hosted])
+        XCTAssertEqual(plan.record, [local], "only the local half needs a local record")
     }
 
     func testWorkspaceOwnedByAnotherWindowIsLeftAlone() {

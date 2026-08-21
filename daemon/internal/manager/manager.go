@@ -615,10 +615,12 @@ func (m *Manager) KillWorkspace(wsID string) error {
 	}
 	_ = m.server.KillSession(session)
 	m.events.publish(Event{Kind: "workspace-removed", WorkspaceID: wsID})
-	// The workspace's window membership goes with it. (A hub deleting a REMOTE
-	// workspace routes through the owning host, so its own membership row goes
-	// stale instead — harmless: stamping only reads rows for listed ids.)
-	_ = m.store.RemoveWindowMember(wsID)
+	// The workspace's window membership goes with it — GET /v1/windows serves
+	// workspaceIds straight from the table, so a leftover row is a ghost
+	// member in every lens's window rows, not harmless stamping residue.
+	if err := m.store.RemoveWindowMember(wsID); err != nil {
+		log.Printf("windows: removing membership for deleted %s failed (ghost member until removed by hand): %v", wsID, err)
+	}
 	_ = m.store.DeleteWorkspaceViews(wsID)
 	m.invalidateWindows()
 	return m.store.DeleteWorkspace(wsID)

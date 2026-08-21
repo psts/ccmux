@@ -106,6 +106,23 @@ func TestWindows_LegacyImportOnceAndRemovalSticks(t *testing.T) {
 	}
 }
 
+// The reviewer's migration repro: a workspace whose membership exists (e.g.
+// written by the v1→v2 migration) but whose import MARKER is missing must NOT
+// have its create-time legacy group imported over the arrangement — the
+// membership guard catches what v1's missing markers left behind.
+func TestWindows_LegacyImportNeverOverwritesExistingMembership(t *testing.T) {
+	ws := &model.Workspace{ID: "w1", Group: "OLD"}
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
+	// Membership without a marker — what a v1 daemon that never wrote markers
+	// migrates into.
+	if err := s.mgr.AssignWorkspace("w1", "NEW"); err != nil {
+		t.Fatal(err)
+	}
+	if got := listStamped(t, s); got[0].Group != "NEW" {
+		t.Fatalf("stamped group = %q; the legacy OLD must not overwrite the arrangement", got[0].Group)
+	}
+}
+
 // Window names are one namespace, case-insensitively: assigning to "chartlabs"
 // joins the window named "CHARTLABS" instead of minting a twin.
 func TestWindows_AssignMergesNamesCaseInsensitively(t *testing.T) {

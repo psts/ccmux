@@ -19,6 +19,14 @@ import (
 // API layer validates existence against the surface it serves.
 // See docs/multitenant-plan.md ("v2: shared windows").
 
+// Sentinel errors, so the API layer can answer 404/409 for what the caller
+// got wrong and 5xx for what the store did — a disk error must never dress up
+// as "unknown window" or a name collision.
+var (
+	ErrUnknownWindow = errors.New("unknown window")
+	ErrNameTaken     = errors.New("window name already taken")
+)
+
 // WindowInfo is one shared window as lenses see it (GET /v1/windows).
 type WindowInfo struct {
 	ID           string   `json:"id"`
@@ -105,19 +113,34 @@ func (m *Manager) SharedGroupResolver() func(wsID, legacy string) string {
 	return m.windowSnapshot().resolve
 }
 
-// Windows lists every shared window, sorted by name.
+// HasMembership reports whether a workspace already sits in some window, from
+// the cached snapshot — the legacy import's second guard: an existing
+// arrangement is never imported over, marker or no marker.
+func (m *Manager) HasMembership(wsID string) bool {
+	_, ok := m.windowSnapshot().members[wsID]
+	return ok
+}
+
+// Windows lists every shared window from the cached snapshot, sorted by name.
+// Fine for display defaults and tests; anything a lens ACTS on should read
+// WindowsListStrict instead.
 func (m *Manager) Windows() []WindowInfo {
 	st := m.windowSnapshot()
+	return buildWindowList(st.names, st.members, st.opens)
+}
+
+// buildWindowList assembles the lens-facing window list from the three tables.
+func buildWindowList(names, members map[string]string, opens map[string]map[string]bool) []WindowInfo {
 	byID := map[string]*WindowInfo{}
-	for id, name := range st.names {
+	for id, name := range names {
 		byID[id] = &WindowInfo{ID: id, Name: name, WorkspaceIDs: []string{}, OpenBy: []string{}}
 	}
-	for ws, wid := range st.members {
+	for ws, wid := range members {
 		if w := byID[wid]; w != nil {
 			w.WorkspaceIDs = append(w.WorkspaceIDs, ws)
 		}
 	}
-	for wid, logins := range st.opens {
+	for wid, logins := range opens {
 		if w := byID[wid]; w != nil {
 			for login := range logins {
 				w.OpenBy = append(w.OpenBy, login)
@@ -145,7 +168,10 @@ func (m *Manager) WindowByName(name string) (string, bool) {
 	return "", false
 }
 
-// EnsureWindow finds or creates the window of that name.
+// EnsureWindow finds or creates the window of that name. Uniqueness is
+// enforced by the store's case-insensitive index, not just the lookup: on a
+// create conflict (two concurrent assignments minting the same name) the
+// loser joins the winner's window instead of failing the assignment.
 func (m *Manager) EnsureWindow(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -159,6 +185,10 @@ func (m *Manager) EnsureWindow(name string) (string, error) {
 	}
 	id := uuid.NewString()
 	if err := m.store.CreateWindow(id, name); err != nil {
+		m.invalidateWindows()
+		if existing, ok := m.WindowByName(name); ok {
+			return existing, nil
+		}
 		return "", err
 	}
 	m.invalidateWindows()
@@ -167,11 +197,14 @@ func (m *Manager) EnsureWindow(name string) (string, error) {
 
 // AssignWorkspace puts a workspace in the window of that name (creating the
 // window if new); an empty name removes it from any window. This is a SHARED
-// edit — every lens sees it — broadcast as workspace-status.
+// edit — every lens sees it — broadcast as workspace-status. A window left
+// with no members and no open flags is pruned, so moved-out-of windows do not
+// pile up as empty rows in every lens.
 func (m *Manager) AssignWorkspace(wsID, windowName string) error {
 	if m.store == nil {
 		return errors.New("no store: windows are not available")
 	}
+	previous := m.windowSnapshot().members[wsID]
 	windowName = strings.TrimSpace(windowName)
 	if windowName == "" {
 		if err := m.store.RemoveWindowMember(wsID); err != nil {
@@ -187,8 +220,31 @@ func (m *Manager) AssignWorkspace(wsID, windowName string) error {
 		}
 	}
 	m.invalidateWindows()
+	m.pruneWindowIfAbandoned(previous)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return nil
+}
+
+// pruneWindowIfAbandoned deletes a window that ended up with no members and
+// no open flags — best-effort tidying, so errors are logged, never returned.
+func (m *Manager) pruneWindowIfAbandoned(windowID string) {
+	if windowID == "" {
+		return
+	}
+	members, opens, _, err := m.WindowsStrict()
+	if err != nil || len(opens[windowID]) > 0 {
+		return
+	}
+	for _, wid := range members {
+		if wid == windowID {
+			return
+		}
+	}
+	if err := m.store.DeleteWindow(windowID); err != nil {
+		log.Printf("windows: pruning empty window %s failed: %v", windowID, err)
+		return
+	}
+	m.invalidateWindows()
 }
 
 // SeedWindowMembership is AssignWorkspace plus the import marker — the create
@@ -206,28 +262,46 @@ func (m *Manager) SeedWindowMembership(wsID, windowName string) error {
 
 // SetWindowOpen records one login's open/close of a window. On a close it
 // reports whether that was the LAST opener — the lens then archives the
-// members (the agreed model: nobody has it open, the window goes to sleep) —
-// along with the member workspace ids.
+// members with force (the agreed model: nobody has it open, the window goes
+// to sleep) — along with the member workspace ids.
+//
+// last is computed from a STRICT read, never the lossy snapshot: a swallowed
+// store error would make "unreadable" look like "nobody has it open", and the
+// lens would force-archive sessions out from under whoever still does. The
+// existence check runs BEFORE the write, so an open against a bad id cannot
+// leave a dangling flag behind the error.
 func (m *Manager) SetWindowOpen(login, windowID string, open bool) (last bool, members []string, err error) {
 	if m.store == nil {
 		return false, nil, errors.New("no store: windows are not available")
+	}
+	names, err := m.store.AllWindows()
+	if err != nil {
+		return false, nil, fmt.Errorf("window state unreadable: %w", err)
+	}
+	if _, known := names[windowID]; !known {
+		return false, nil, fmt.Errorf("%w: %s", ErrUnknownWindow, windowID)
 	}
 	if err := m.store.SetWindowOpen(login, windowID, open); err != nil {
 		return false, nil, err
 	}
 	m.invalidateWindows()
-	st := m.windowSnapshot()
-	if _, known := st.names[windowID]; !known {
-		return false, nil, fmt.Errorf("unknown window %s", windowID)
-	}
-	if !open && len(st.opens[windowID]) == 0 {
-		last = true
-		for ws, wid := range st.members {
-			if wid == windowID {
-				members = append(members, ws)
-			}
+	if !open {
+		memberOf, opens, _, serr := m.WindowsStrict()
+		if serr != nil {
+			// The close itself landed; only the sleep decision is refused.
+			// Failing to sleep is recoverable — force-archiving someone's
+			// live window is not.
+			return false, nil, fmt.Errorf("window state unreadable after close; not reporting last: %w", serr)
 		}
-		sort.Strings(members)
+		if len(opens[windowID]) == 0 {
+			last = true
+			for ws, wid := range memberOf {
+				if wid == windowID {
+					members = append(members, ws)
+				}
+			}
+			sort.Strings(members)
+		}
 	}
 	m.events.publish(Event{Kind: "workspace-status"})
 	return last, members, nil
@@ -245,7 +319,7 @@ func (m *Manager) RenameSharedWindow(id, name string) error {
 		return errors.New("a window needs a name")
 	}
 	if other, ok := m.WindowByName(name); ok && other != id {
-		return fmt.Errorf("a window named %q already exists", name)
+		return fmt.Errorf("%w: %q", ErrNameTaken, name)
 	}
 	if err := m.store.RenameWindow(id, name); err != nil {
 		return err
@@ -253,6 +327,18 @@ func (m *Manager) RenameSharedWindow(id, name string) error {
 	m.invalidateWindows()
 	m.events.publish(Event{Kind: "workspace-status"})
 	return nil
+}
+
+// WindowsListStrict is Windows over strict reads: the list the lenses act on
+// (close decisions hang off it) must answer an error, not a 200-empty that a
+// lens cannot tell from "no windows exist". The lossy snapshot stays only for
+// the peers-bus resolver, the one caller with the no-I/O constraint.
+func (m *Manager) WindowsListStrict() ([]WindowInfo, error) {
+	members, opens, names, err := m.WindowsStrict()
+	if err != nil {
+		return nil, err
+	}
+	return buildWindowList(names, members, opens), nil
 }
 
 // WindowsStrict reads membership, open flags, and names straight from the
@@ -317,6 +403,12 @@ func (m *Manager) MigrateViewsToWindows() error {
 			if err := m.store.SetWindowOpen(login, wid, true); err != nil {
 				return err
 			}
+		}
+		// Marked, or the legacy-group import would re-seed the CREATE-time
+		// group over what was just migrated — undoing every move the user
+		// made under v1 on the first list after the upgrade.
+		if err := m.store.MarkViewImported(ws); err != nil {
+			return err
 		}
 	}
 	m.invalidateWindows()

@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS view_imports (
 CREATE TABLE IF NOT EXISTS windows (
   id TEXT PRIMARY KEY, name TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS windows_by_name ON windows(lower(name));
 CREATE TABLE IF NOT EXISTS window_members (
   ws_id TEXT PRIMARY KEY, window_id TEXT NOT NULL
 );

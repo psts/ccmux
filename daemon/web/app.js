@@ -56,10 +56,12 @@ async function fetchWorkspaces() {
   try {
     const [wr, winr] = await Promise.all([fetch("/v1/workspaces"), fetch("/v1/windows")]);
     state.workspaces = (await wr.json()) || [];
-    state.windows = winr.ok ? (await winr.json()) || [] : [];
+    // Keep the last window list on a failed read (503 = tables unreadable,
+    // per the daemon) — blanking it would make every window look closed and
+    // feed wrong close decisions. Same fallback the Mac lens uses.
+    if (winr.ok) state.windows = (await winr.json()) || [];
   } catch (_) {
     state.workspaces = [];
-    state.windows = [];
   }
   syncPaneTitles();
   renderList();
@@ -199,7 +201,8 @@ async function openWindow(win) {
     for (const wsId of win.workspaceIds || []) {
       const ws = state.workspaces.find((w) => w.id === wsId);
       if (ws && ws.status === "cold") {
-        await fetch(`/v1/workspaces/${wsId}/revive`, { method: "POST" });
+        const rr = await fetch(`/v1/workspaces/${wsId}/revive`, { method: "POST" });
+        if (!rr.ok) alert(`could not wake ${ws.name || wsId}: ` + (await rr.text()));
       }
     }
   } catch (e) {
@@ -220,7 +223,10 @@ async function closeWindow(win) {
     if (out.last) {
       for (const wsId of out.members || []) {
         detachIfCurrent(wsId);
-        await fetch(`/v1/workspaces/${wsId}/archive?force=1`, { method: "POST" });
+        const ar = await fetch(`/v1/workspaces/${wsId}/archive?force=1`, { method: "POST" });
+        // A member that failed to sleep keeps running — say so, or it reads
+        // as a ghost later.
+        if (!ar.ok) alert(`could not sleep ${wsId}: ` + (await ar.text()));
       }
     }
   } catch (e) {
@@ -295,8 +301,8 @@ function openWsMenu(ws, x, y) {
 
   add("Open in New Tab", () => window.open(`/?ws=${ws.id}`, "_blank"));
   sep();
-  // Windows are YOUR arrangement (per-user on the daemon): placing, moving,
-  // and putting away touch only your own view row — never anyone else's.
+  // Windows are SHARED (v2): placing, moving, and removing change the one
+  // arrangement everyone sees.
   add(ws.group ? "Move to Window…" : "Add to Window…", () => moveToWindow(ws));
   if (ws.group) add("Remove from Window (for everyone)", () => putGroup(ws.id, ""));
   sep();

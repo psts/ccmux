@@ -183,16 +183,13 @@ struct DaemonWorkspace: Codable, Identifiable {
     /// Daemon-computed git dashboard (the repo lives on the daemon's host).
     /// nil until the daemon's first collection (~5s after a workspace goes live).
     var git: DaemonGitStatus?
-    /// THE CALLER's window for this session — our own view row, stamped per
-    /// request by the daemon (views are per-user; see docs/multitenant-plan.md).
-    /// "" = not in our windows: the sidebar shows it under AVAILABLE.
+    /// The SHARED window this session sits in — one arrangement for everyone
+    /// (see docs/multitenant-plan.md, "v2: shared windows"). "" = ungrouped:
+    /// the sidebar shows it under AVAILABLE.
     var group: String
     /// Whose session this is (the owning host's configured owner login).
     /// "" when the host has no owner set.
     var owner: String
-    /// The owner's own window name for it — labels an AVAILABLE row as
-    /// "patric · CHARTLABS". "" when the owner has none.
-    var ownerGroup: String
     /// Dev-hostname mappings (right-click → Hostnames…).
     var hostnames: [DaemonHostname]
     /// Dev-server command override ("" = daemon detects from repo config).
@@ -218,7 +215,6 @@ struct DaemonWorkspace: Codable, Identifiable {
         git = try c.decodeIfPresent(DaemonGitStatus.self, forKey: .git)
         group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
         owner = try c.decodeIfPresent(String.self, forKey: .owner) ?? ""
-        ownerGroup = try c.decodeIfPresent(String.self, forKey: .ownerGroup) ?? ""
         hostnames = try c.decodeIfPresent([DaemonHostname].self, forKey: .hostnames) ?? []
         devCommand = try c.decodeIfPresent(String.self, forKey: .devCommand) ?? ""
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""

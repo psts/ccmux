@@ -289,10 +289,11 @@ class WindowManager {
             }
         }
 
-        // A closed-window record is only for windows holding LOCAL workspaces:
-        // hosted windows are restorable from the daemon's shared list, and a
-        // duplicate local record would resurrect stale membership.
-        guard !plan.closeLocally.isEmpty else { return }
+        // A closed-window record is only for LOCAL workspaces (closingPlan
+        // records only those): hosted ones are restorable from the daemon's
+        // shared list, and recording them here too would put one window in
+        // both Restore lists with stale membership.
+        guard !plan.record.isEmpty else { return }
         let frame = controller.window?.frame ?? NSRect(x: 100, y: 100, width: 1200, height: 800)
         workspaceManager.saveClosedWindow(ClosedWindow(
             id: UUID(),
@@ -328,8 +329,15 @@ class WindowManager {
         var archiveHosted: [UUID] = []
         var record: [UUID] = []
         for id in ids where !isOwnedElsewhere(id) {
-            if isHosted(id) { archiveHosted.append(id) } else { closeLocally.append(id) }
-            record.append(id)
+            if isHosted(id) {
+                archiveHosted.append(id)
+                // NOT recorded: hosted sessions are restorable from the shared
+                // window list (v2); a local record too would put one window in
+                // both Restore lists with stale membership.
+            } else {
+                closeLocally.append(id)
+                record.append(id)
+            }
         }
         return (closeLocally, archiveHosted, record)
     }
@@ -715,6 +723,21 @@ class WindowManager {
             wc.updateWindowTitle()
         }
         controller.windowContext.ownedWorkspaceIds.insert(id)
+        // A claim is an explicit action (create, restore), so it writes the
+        // SHARED membership — without this, the next reconcile sees an
+        // ungrouped workspace and releases it straight into AVAILABLE. The
+        // optimistic note bridges the gap until the daemon acks.
+        let name = controller.windowContext.windowName ?? autoWindowName(for: controller)
+        if RemoteSessionService.shared.isHosted(id),
+           !Self.sameWindowName(RemoteSessionService.shared.groups[id] ?? "", name) {
+            RemoteSessionService.shared.noteGroup(id, to: name)
+            Task { @MainActor in
+                if !(await RemoteSessionService.shared.setGroup(id, to: name)) {
+                    NSLog("[ccmux] windows: claiming %@ into %@ failed; it will fall to AVAILABLE on the next refresh",
+                          id.uuidString, name)
+                }
+            }
+        }
         refreshOtherWindowIds()
         workspaceManager.scheduleSaveFromWindow()
     }
@@ -937,6 +960,14 @@ class WindowManager {
                     NSLog("[ccmux] windows: shared rename %@ → %@ refused: %@", oldName, newName, error)
                     wc.windowContext.windowName = oldName == self.autoWindowName(for: wc) ? nil : oldName
                     self.refreshOtherWindowIds()
+                    // The name visibly snaps back; without the reason that
+                    // reads as "renaming is broken sometimes".
+                    let alert = NSAlert()
+                    alert.messageText = "Could not rename “\(oldName)”"
+                    alert.informativeText = error
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
                 }
             }
         }

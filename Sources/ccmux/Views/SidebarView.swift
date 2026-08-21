@@ -73,16 +73,15 @@ struct SidebarView: View {
         remoteService.sharedWindows.filter { !$0.open }
     }
 
-    /// "patric · CHARTLABS" — whose session an AVAILABLE row is, and where its
-    /// owner keeps it. Empty when the daemon knows neither.
-    private func ownerLabel(owner: String, ownerGroup: String) -> String {
-        let who = owner.split(separator: "@").first.map(String.init) ?? owner
-        return [who, ownerGroup].filter { !$0.isEmpty }.joined(separator: " · ")
+    /// "patric" — whose session an ungrouped AVAILABLE row is. Empty when the
+    /// owning host has no owner configured.
+    private func ownerLabel(owner: String) -> String {
+        owner.split(separator: "@").first.map(String.init) ?? owner
     }
 
-    /// This window's ANSWERABLE name: the custom name, else the same auto name
-    /// ("Window N") the group sync pushes. Never a cosmetic "This Window" — the
-    /// name is matched against group rows, not just displayed.
+    /// This window's ANSWERABLE name: the custom name, else the auto name
+    /// ("Window N"). Never a cosmetic "This Window" — the name is matched
+    /// against the shared membership, not just displayed.
     private var thisWindowName: String {
         windowContext.windowName ?? windowContext.autoName
     }
@@ -572,8 +571,7 @@ struct SidebarView: View {
             Text(workspace.name)
                 .lineLimit(1)
             Spacer()
-            Text(ownerLabel(owner: remoteService.owners[workspace.id] ?? "",
-                            ownerGroup: remoteService.ownerGroups[workspace.id] ?? ""))
+            Text(ownerLabel(owner: remoteService.owners[workspace.id] ?? ""))
                 .font(.system(size: 10))
                 .foregroundColor(Color.secondary.opacity(0.7))
                 .lineLimit(1)
@@ -603,7 +601,7 @@ struct SidebarView: View {
                 .lineLimit(1)
             Spacer()
             if claimHere {
-                Text(ownerLabel(owner: cold.owner, ownerGroup: cold.ownerGroup))
+                Text(ownerLabel(owner: cold.owner))
                     .font(.system(size: 10))
                     .foregroundColor(Color.secondary.opacity(0.7))
                     .lineLimit(1)
