@@ -5,6 +5,7 @@
 
 const state = {
   workspaces: [],
+  windows: [],       // shared windows from GET /v1/windows: {id, name, open, openBy, workspaceIds}
   hosts: {},         // federation: host label -> {id, addr, ...} from GET /v1/hosts
   createHost: "",    // host chosen in the New-workspace picker ("" = hub/self)
   wsId: null,
@@ -53,10 +54,12 @@ function bytesToB64(u8) {
 // --- workspace list ---
 async function fetchWorkspaces() {
   try {
-    const r = await fetch("/v1/workspaces");
-    state.workspaces = (await r.json()) || [];
+    const [wr, winr] = await Promise.all([fetch("/v1/workspaces"), fetch("/v1/windows")]);
+    state.workspaces = (await wr.json()) || [];
+    state.windows = winr.ok ? (await winr.json()) || [] : [];
   } catch (_) {
     state.workspaces = [];
+    state.windows = [];
   }
   syncPaneTitles();
   renderList();
@@ -101,26 +104,38 @@ function syncPaneTitles() {
   if (changed) renderTabs();
 }
 
-// renderList mirrors the Mac sidebar: YOUR windows first (ws.group is the
-// caller's own view row, per-user on the daemon), then everything you have not
-// placed under AVAILABLE, labeled with whose session it is and which window
-// its owner keeps it in.
+// renderList renders the SHARED arrangement (v2): windows you have OPEN as
+// sections, windows you have closed as one-line rows you can open, and
+// ungrouped sessions under AVAILABLE. The arrangement is the same for
+// everyone; open/closed is yours.
 function renderList() {
   const ul = $("ws-list");
   ul.innerHTML = "";
   const grouped = groupedWorkspaces();
+  const winByName = new Map(state.windows.map((w) => [w.name.toLowerCase(), w]));
+  const closed = state.windows.filter((w) => !w.open);
+
   for (const [group, list] of grouped) {
     if (group) {
+      const win = winByName.get(group.toLowerCase());
+      if (win && !win.open) continue; // rendered below as a closed-window row
       const h = document.createElement("li");
       h.className = "group-hdr";
       h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
+        (win ? `<button class="grp-close" title="Close window">–</button>` : "") +
         `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>`;
       h.querySelector(".grp-msgs").onclick = (e) => {
         e.stopPropagation();
         window.ccmuxPeers.open(group);
       };
+      if (win) {
+        h.querySelector(".grp-close").onclick = (e) => {
+          e.stopPropagation();
+          closeWindow(win);
+        };
+      }
       ul.appendChild(h);
-    } else if (grouped.length > 1) {
+    } else if (grouped.length > 1 || closed.length) {
       // Header only when there is something to separate from: a deployment
       // where nothing is grouped keeps its plain flat list.
       const h = document.createElement("li");
@@ -130,10 +145,30 @@ function renderList() {
     }
     for (const ws of list) ul.appendChild(wsRow(ws));
   }
+
+  if (closed.length) {
+    const h = document.createElement("li");
+    h.className = "group-hdr";
+    h.innerHTML = "<span>CLOSED WINDOWS</span>";
+    ul.appendChild(h);
+    for (const win of closed) {
+      const li = document.createElement("li");
+      li.className = "ws closed-window";
+      const n = (win.workspaceIds || []).length;
+      li.innerHTML = `<div class="ws-row">` +
+        `<span class="dot cold"></span>` +
+        `<span class="name">${esc(win.name)}</span>` +
+        `<span class="owner-tag">${n} repo${n === 1 ? "" : "s"}</span>` +
+        `<button class="more" title="Open window">▸</button>` +
+        `</div>`;
+      li.onclick = () => openWindow(win);
+      ul.appendChild(li);
+    }
+  }
 }
 
-// groupedWorkspaces buckets by the caller's view: named windows alphabetically,
-// then the not-in-my-windows bucket ("") last; workspaces sort by name inside.
+// groupedWorkspaces buckets by the shared window name: named windows
+// alphabetically, the ungrouped bucket ("") last; workspaces sort by name.
 function groupedWorkspaces() {
   const byGroup = new Map();
   for (const ws of state.workspaces) {
@@ -148,12 +183,51 @@ function groupedWorkspaces() {
     a === "" ? 1 : b === "" ? -1 : a.localeCompare(b));
 }
 
-// ownerLabel says whose session an Available row is and where its owner keeps
-// it: "patric · CHARTLABS". Empty for your own placed rows (redundant there).
+// ownerLabel says whose session an ungrouped row is: "patric". Empty for
+// grouped rows (the window is shared; whose host it runs on is a detail).
 function ownerLabel(ws) {
-  if (ws.group || (!ws.owner && !ws.ownerGroup)) return "";
-  const who = (ws.owner || "").split("@")[0];
-  return [who, ws.ownerGroup].filter(Boolean).join(" · ");
+  if (ws.group || !ws.owner) return "";
+  return (ws.owner || "").split("@")[0];
+}
+
+// openWindow marks the shared window open for this login and wakes its cold
+// members — opening a sleeping window is how it comes back everywhere.
+async function openWindow(win) {
+  try {
+    const r = await fetch(`/v1/windows/${win.id}/open`, { method: "POST" });
+    if (!r.ok) { alert("open failed: " + (await r.text())); return; }
+    for (const wsId of win.workspaceIds || []) {
+      const ws = state.workspaces.find((w) => w.id === wsId);
+      if (ws && ws.status === "cold") {
+        await fetch(`/v1/workspaces/${wsId}/revive`, { method: "POST" });
+      }
+    }
+  } catch (e) {
+    alert("open failed: " + e.message);
+    return;
+  }
+  fetchWorkspaces();
+}
+
+// closeWindow clears this login's open flag; when that was the LAST opener,
+// the window goes to sleep — its members archive (force: nobody has it open,
+// which is the model's own permission).
+async function closeWindow(win) {
+  try {
+    const r = await fetch(`/v1/windows/${win.id}/close`, { method: "POST" });
+    if (!r.ok) { alert("close failed: " + (await r.text())); return; }
+    const out = await r.json();
+    if (out.last) {
+      for (const wsId of out.members || []) {
+        detachIfCurrent(wsId);
+        await fetch(`/v1/workspaces/${wsId}/archive?force=1`, { method: "POST" });
+      }
+    }
+  } catch (e) {
+    alert("close failed: " + e.message);
+    return;
+  }
+  fetchWorkspaces();
 }
 
 function wsRow(ws) {
@@ -362,9 +436,9 @@ async function putGroup(id, group) {
 }
 
 function moveToWindow(ws) {
-  const mine = [...new Set(state.workspaces.map((w) => w.group).filter(Boolean))].sort();
-  const hint = mine.length ? `\n\nYour windows: ${mine.join(", ")}` : "";
-  const g = prompt("Window name:" + hint, ws.group || ws.ownerGroup || "");
+  const names = state.windows.map((w) => w.name).sort();
+  const hint = names.length ? `\n\nWindows: ${names.join(", ")}` : "";
+  const g = prompt("Window name (shared — moves it for everyone):" + hint, ws.group || "");
   if (g === null) return;
   putGroup(ws.id, g.trim());
 }
