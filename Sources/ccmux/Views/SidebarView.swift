@@ -612,8 +612,9 @@ struct SidebarView: View {
     private func revive(_ cold: DaemonWorkspace, claimHere: Bool = false) {
         let windowName = thisWindowName
         Task {
-            if claimHere {
-                _ = await remoteService.setGroup(daemonId: cold.id, to: windowName)
+            if claimHere, !(await remoteService.setGroup(daemonId: cold.id, to: windowName)) {
+                NSLog("[ccmux] revive: claiming %@ into %@ failed; placement falls to name match",
+                      cold.id, windowName)
             }
             guard let error = await remoteService.reviveWorkspace(daemonId: cold.id) else { return }
             await MainActor.run { reportFailure(action: "Revive “\(cold.name)”", error: error) }

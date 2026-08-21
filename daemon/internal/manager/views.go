@@ -76,10 +76,7 @@ func (m *Manager) ViewResolver() func(owner, wsID, legacy string) string {
 // Views returns every view row, keyed workspace → login → window. Empty (never
 // nil) without a store, so list stamping stays off the handlers' panic path.
 func (m *Manager) Views() map[string]map[string]string {
-	if m.store == nil {
-		return map[string]map[string]string{}
-	}
-	views, err := m.store.AllViews()
+	views, err := m.ViewsStrict()
 	if err != nil {
 		// Loud: an unreadable views table renders as "everything is Available /
 		// nobody has windows", which looks like data loss, not a DB error.
@@ -87,4 +84,14 @@ func (m *Manager) Views() map[string]map[string]string {
 		return map[string]map[string]string{}
 	}
 	return views
+}
+
+// ViewsStrict is Views for callers that must not mistake an unreadable table
+// for an empty one — the archive guard fails CLOSED on the error, because
+// "no rows" is its permission to stop a session for everyone.
+func (m *Manager) ViewsStrict() (map[string]map[string]string, error) {
+	if m.store == nil {
+		return map[string]map[string]string{}, nil
+	}
+	return m.store.AllViews()
 }

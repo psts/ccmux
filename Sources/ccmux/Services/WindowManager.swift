@@ -293,9 +293,15 @@ class WindowManager {
                 }
                 // Closing always puts away our view row — with or without the
                 // archive. The session leaves our windows; anyone else's
-                // arrangement is untouched.
+                // arrangement is untouched. A failed put-away means the row
+                // survives and the session reappears next launch — log it, or
+                // that ghost is untraceable.
                 if let daemonId {
-                    await RemoteSessionService.shared.setGroup(daemonId: daemonId, to: "")
+                    if !(await RemoteSessionService.shared.setGroup(daemonId: daemonId, to: "")) {
+                        NSLog("[ccmux] closing window: put-away of %@ failed; it will reappear on next launch", daemonId)
+                    }
+                } else {
+                    NSLog("[ccmux] closing window: no daemon id for %@; view row not put away", wsId.uuidString)
                 }
             }
         }

@@ -1,9 +1,22 @@
 # Multi-tenant plan (per-user windows)
 
-> **Status (2026-08-21):** proposed, nothing built. Written after the first real two-person
-> deployment (patric-ccmux + dasha-ccmux, one hub) surfaced the interference: user B's
-> fresh lens adopted user A's sessions, B closing "her" windows archived A's sessions
-> globally, and A reviving a cold repo landed it on B's newly created window.
+> **Status (2026-08-21): built, unit-tested, awaiting the two-box E2E.** All daemon
+> phases (owner setting + identity tiers + tagged-caller guard; hub views + per-caller
+> stamping + one-time legacy import; archive/delete guard; owner-view peers grouping),
+> the web lens, and the Mac lens (view-scoped adoption + AVAILABLE section + put-away
+> close + claim-on-revive + window-name unification) are committed. Two deltas from the
+> plan as written, both recorded inline: the peers bus stays name-based (§ decisions),
+> and an UNOWNED host serves its legacy shared groups unchanged, so upgrading before
+> setting an owner changes nothing (compat rule in `api/views.go`).
+>
+> **To switch it on:** set each host's owner — `owner` in the lens Settings, or
+> `--owner you@example.com` on the installer — then restart lenses. Verification list
+> below is the E2E script.
+>
+> Written after the first real two-person deployment (patric-ccmux + dasha-ccmux, one
+> hub) surfaced the interference: user B's fresh lens adopted user A's sessions, B
+> closing "her" windows archived A's sessions globally, and A reviving a cold repo
+> landed it on B's newly created window.
 
 Two people share one hub today and the daemon cannot tell their arrangements apart,
 because there is nothing to tell apart: a *window* exists only inside one Mac's

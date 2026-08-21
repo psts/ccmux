@@ -196,6 +196,7 @@ func seedOwner(addr, owner string) {
 	body, _ := json.Marshal(map[string]string{"owner": owner})
 	req, err := http.NewRequest(http.MethodPut, loopbackURL(addr)+"/v1/settings", bytes.NewReader(body))
 	if err != nil {
+		fmt.Printf("  could not set owner (%v); set it later in Settings\n", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")

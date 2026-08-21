@@ -129,11 +129,23 @@ func (s *Server) archiveGuard(next http.HandlerFunc) http.HandlerFunc {
 		}
 		id := r.PathValue("id")
 		caller := s.resolveIdentity(r).Login
+		// An unknown owner ("") falls through to the holder check: a genuinely
+		// unowned host is permissive by design, and a registry gap still hits
+		// the owner route's own 404/502 right after this guard.
 		if owner := s.workspaceOwner(r.Context(), id); owner != "" && caller != owner {
 			writeError(w, http.StatusConflict, "workspace belongs to "+owner+" — pass force=1 to archive anyway")
 			return
 		}
-		for login := range s.mgr.Views()[id] {
+		// Fail CLOSED on an unreadable table: "no rows" is this guard's
+		// permission to stop a session for everyone, and a DB hiccup must not
+		// impersonate it — that would replay the exact bug the guard exists for.
+		views, err := s.mgr.ViewsStrict()
+		if err != nil {
+			log.Printf("views: archive guard for %s could not read view rows: %v", id, err)
+			writeError(w, http.StatusServiceUnavailable, "view rows unreadable — retry, or pass force=1 to archive anyway")
+			return
+		}
+		for login := range views[id] {
 			if login != caller {
 				writeError(w, http.StatusConflict, login+" still has this workspace in a window — pass force=1 to archive anyway")
 				return
@@ -168,6 +180,10 @@ func (s *Server) hostCreateRoute() http.HandlerFunc {
 			return
 		}
 		login := s.resolveIdentity(r).Login // before the proxy consumes the request
+		// The tee below reads the response bytes as JSON, so the member must
+		// not compress them — a gzip'd create response would fail the parse on
+		// every cross-host create, silently, forever.
+		r.Header.Set("Accept-Encoding", "identity")
 		cw := &captureWriter{ResponseWriter: w, status: http.StatusOK}
 		proxied(cw, r)
 		if cw.status/100 != 2 {
@@ -176,10 +192,13 @@ func (s *Server) hostCreateRoute() http.HandlerFunc {
 		var ws struct {
 			ID string `json:"id"`
 		}
-		if json.Unmarshal(cw.body.Bytes(), &ws) == nil && ws.ID != "" {
-			if err := s.mgr.SetView(login, ws.ID, req.Group); err != nil {
-				log.Printf("views: seeding creator's row for %s failed: %v", ws.ID, err)
-			}
+		if json.Unmarshal(cw.body.Bytes(), &ws) != nil || ws.ID == "" {
+			log.Printf("views: create on %s returned %d but no workspace id parsed; creator's row for group %q not seeded",
+				r.PathValue("host"), cw.status, req.Group)
+			return
+		}
+		if err := s.mgr.SetView(login, ws.ID, req.Group); err != nil {
+			log.Printf("views: seeding creator's row for %s failed: %v", ws.ID, err)
 		}
 	}
 }
