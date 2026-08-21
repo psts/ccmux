@@ -85,11 +85,11 @@ type Manager struct {
 	mu   sync.RWMutex
 	byID map[string]*entry
 
-	// viewsMu guards viewCache — the store-backed snapshot the view resolver
-	// reads, kept so group resolution never does I/O under the peers bus
-	// mutex. See views.go.
-	viewsMu   sync.Mutex
-	viewCache *viewState
+	// viewsMu guards windowCache — the store-backed snapshot the group
+	// resolver reads, kept so resolution never does I/O under the peers bus
+	// mutex. See windows.go.
+	viewsMu     sync.Mutex
+	windowCache *windowState
 }
 
 // New builds a Manager. ctx bounds the lifetime of spawned control connections.
@@ -615,11 +615,12 @@ func (m *Manager) KillWorkspace(wsID string) error {
 	}
 	_ = m.server.KillSession(session)
 	m.events.publish(Event{Kind: "workspace-removed", WorkspaceID: wsID})
-	// Every login's view row goes with the workspace. (A hub deleting a REMOTE
-	// workspace routes through the owning host, so its own rows for that id go
+	// The workspace's window membership goes with it. (A hub deleting a REMOTE
+	// workspace routes through the owning host, so its own membership row goes
 	// stale instead — harmless: stamping only reads rows for listed ids.)
+	_ = m.store.RemoveWindowMember(wsID)
 	_ = m.store.DeleteWorkspaceViews(wsID)
-	m.invalidateViews()
+	m.invalidateWindows()
 	return m.store.DeleteWorkspace(wsID)
 }
 
@@ -963,29 +964,27 @@ func (m *Manager) WorkspaceForPane(paneID string) string {
 // resolves a pane peer's group through this at operation time, so a window
 // rename or move re-groups live sessions immediately.
 func (m *Manager) GroupForPane(paneID string) (string, bool) {
-	// The bus files a workspace under its OWNER's window: the arrangement moved
-	// into per-login views, so the legacy ws.Group only stands until imported.
-	// One cached snapshot, taken BEFORE m.mu: this runs under the peers bus
-	// mutex, where store I/O is forbidden.
-	st := m.viewSnapshot()
+	// The bus files a workspace under its SHARED window; the legacy ws.Group
+	// only stands until imported. One cached snapshot, taken BEFORE m.mu:
+	// this runs under the peers bus mutex, where store I/O is forbidden.
+	st := m.windowSnapshot()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if e, _ := m.findPaneLocked(paneID); e != nil {
-		return st.resolve(st.owner, e.ws.ID, e.ws.Group), true
+		return st.resolve(e.ws.ID, e.ws.Group), true
 	}
 	return "", false
 }
 
 // LiveWorkspaceForRepo finds a live workspace in the given sidebar group whose
 // repo directory's basename matches name — the peers-bus native spawn target.
-// Group matching follows the owner's view, same as GroupForPane.
+// Group matching follows the shared window, same as GroupForPane.
 func (m *Manager) LiveWorkspaceForRepo(group, name string) (wsID, repoPath string, ok bool) {
-	st := m.viewSnapshot()
-	resolve, owner := st.resolve, st.owner
+	st := m.windowSnapshot()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, e := range m.byID {
-		if e.ctrl == nil || resolve(owner, e.ws.ID, e.ws.Group) != group {
+		if e.ctrl == nil || st.resolve(e.ws.ID, e.ws.Group) != group {
 			continue
 		}
 		if e.ws.RepoPath != "" && baseName(e.ws.RepoPath) == name {

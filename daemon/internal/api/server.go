@@ -222,9 +222,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveGuard(s.scoped(s.archiveWorkspace)))
 	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.scoped(s.reviveWorkspace))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.scoped(s.putLayout))
-	// group is the caller's view row: handled HERE (hub or lone daemon), never
-	// proxied — the daemon the lens talks to is the view authority.
+	// group is the SHARED window assignment: handled HERE (hub or lone
+	// daemon), never proxied — the daemon the lens talks to is the window
+	// authority. Same for the windows surface below.
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
+	mux.HandleFunc("GET /v1/windows", s.listWindows)
+	mux.HandleFunc("POST /v1/windows/{id}/open", s.setWindowOpen(true))
+	mux.HandleFunc("POST /v1/windows/{id}/close", s.setWindowOpen(false))
+	mux.HandleFunc("PUT /v1/windows/{id}", s.renameWindow)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.hostnamesRoute(s.putHostnames))
 	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.scoped(s.portSuggestions))
 	mux.HandleFunc("POST /v1/workspaces/{id}/dev-server", s.scoped(s.devServer))
@@ -360,16 +365,16 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// listWorkspaces serves the local list, view-stamped per caller. ?raw=1 skips
-// the stamping — the hub fetches members with it, because the member's view
-// rows are not the authority for a hub-fronted lens (the hub's are), and the
-// hub's import needs the legacy group intact.
+// listWorkspaces serves the local list, window-stamped. ?raw=1 skips the
+// stamping — the hub fetches members with it, because the member's window
+// tables are not the authority for a hub-fronted lens (the hub's are), and
+// the hub's import needs the legacy group intact.
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("raw") == "1" {
 		writeJSON(w, http.StatusOK, s.mgr.List())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.stampViews(s.mgr.List(), s.resolveIdentity(r).Login))
+	writeJSON(w, http.StatusOK, s.stampShared(s.mgr.List()))
 }
 
 // getSettings/putSettings expose the daemon-wide lens settings: the global
@@ -638,16 +643,15 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// The creator's view row: the new workspace starts in the window they
-	// created it from. ImportView, not SetView: it also writes the import
-	// marker, because the legacy ws_group column is persisted at create for
-	// compat and must NEVER act as a source for a workspace born with view
-	// rows — without the marker, putting the session away would resurrect it
-	// into the owner's window on the next list. Local creates only — a hub
-	// proxying to a remote host seeds in hostCreateRoute instead.
+	// The new workspace starts in the shared window it was created into.
+	// SeedWindowMembership also writes the import marker, because the legacy
+	// ws_group column is persisted at create for compat and must NEVER act as
+	// a source for a workspace born with membership — without the marker,
+	// removing it from the window would resurrect it on the next list. Local
+	// creates only — a hub proxying to a remote host seeds in hostCreateRoute.
 	if req.Group != "" {
-		if verr := s.mgr.ImportView(s.resolveIdentity(r).Login, ws.ID, req.Group); verr != nil {
-			log.Printf("views: seeding creator's row for %s failed: %v", ws.ID, verr)
+		if verr := s.mgr.SeedWindowMembership(ws.ID, req.Group); verr != nil {
+			log.Printf("windows: seeding membership for %s failed: %v", ws.ID, verr)
 		}
 	}
 	writeJSON(w, http.StatusCreated, ws)

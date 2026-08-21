@@ -131,6 +131,12 @@ func runDaemon() {
 	if err := mgr.Start(); err != nil {
 		log.Fatalf("manager start: %v", err)
 	}
+	// One-shot v1→v2: retired per-login view rows become shared windows. A
+	// failure is loud, not fatal — the daemon still serves; unmigrated rows
+	// just stay invisible until the next start retries.
+	if err := mgr.MigrateViewsToWindows(); err != nil {
+		log.Printf("windows: migrating view rows failed (will retry next start): %v", err)
+	}
 	// Daemon-side git dashboard (branch/ahead-behind/changed files) for every
 	// live workspace — lenses render it; they can't read the daemon's repos.
 	mgr.StartGitStatus(5 * time.Second)
@@ -348,25 +354,13 @@ func enableHub(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *man
 	)
 	client := hub.NewClient(transport)
 	agg := hub.NewAggregator(selfID, reg, mgr, client.Workspaces)
-	// The peers pane→group index follows each workspace OWNER's window (their
-	// view row in the hub's store), not the frozen legacy group the member
-	// fetch carries. A fresh snapshot per aggregation pass.
+	// The peers pane→group index follows the SHARED window membership (v2),
+	// not the frozen legacy group the member fetch carries. One snapshot per
+	// aggregation pass; the closure must not touch the store.
 	agg.SetGroupResolver(func() func(hostID, wsID, legacy string) string {
-		// Both reads happen HERE, once per aggregation pass — the returned
-		// closure runs per workspace and must not touch the store (Owner is a
-		// SQLite read; the snapshot rule in manager/views.go).
-		resolve := mgr.ViewResolver()
-		selfOwner := mgr.Owner()
-		return func(hostID, wsID, legacy string) string {
-			hostOwner := selfOwner
-			if hostID != selfID {
-				host, ok := reg.Get(hostID)
-				if !ok {
-					return legacy
-				}
-				hostOwner = host.Owner
-			}
-			return resolve(hostOwner, wsID, legacy)
+		resolve := mgr.SharedGroupResolver()
+		return func(_, wsID, legacy string) string {
+			return resolve(wsID, legacy)
 		}
 	})
 	reg.StartProbe(ctx, 5*time.Second)

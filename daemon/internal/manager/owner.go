@@ -26,9 +26,5 @@ func (m *Manager) Owner() string {
 // hand-typed "Patric@Example.com" must not lock the real owner out of their
 // own archive guard or blank every OwnerGroup label.
 func (m *Manager) SetOwner(login string) error {
-	if err := m.store.SetSetting(settingOwner, strings.ToLower(strings.TrimSpace(login))); err != nil {
-		return err
-	}
-	m.invalidateViews() // the owner is part of the cached view snapshot
-	return nil
+	return m.store.SetSetting(settingOwner, strings.ToLower(strings.TrimSpace(login)))
 }

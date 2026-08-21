@@ -32,15 +32,29 @@ type Store interface {
 	// Per-user views: which window a given login keeps a workspace in. The
 	// daemon a lens talks to (the hub in a federation, a lone daemon otherwise)
 	// is the view authority; rows may reference remote workspace ids the local
-	// manager has never heard of. See docs/multitenant-plan.md.
+	// manager has never heard of. RETIRED by the shared-windows model (v2) —
+	// kept as the one-shot migration source. See docs/multitenant-plan.md.
 	SetView(login, wsID, window string) error
 	AllViews() (map[string]map[string]string, error)
 	DeleteWorkspaceViews(wsID string) error
 	// The one-time legacy-group import per workspace: without the marker,
-	// "no view rows" is indistinguishable from "the owner put it away", and
-	// the import would resurrect a deliberately cleared arrangement.
+	// "no membership" is indistinguishable from "deliberately removed", and
+	// the import would resurrect a cleared arrangement.
 	MarkViewImported(wsID string) error
 	ViewImports() (map[string]bool, error)
+
+	// Shared windows (v2): ONE arrangement for everyone — window entities,
+	// membership (a workspace lives in at most one window), and per-login
+	// open flags. See docs/multitenant-plan.md ("v2: shared windows").
+	CreateWindow(id, name string) error
+	RenameWindow(id, name string) error
+	DeleteWindow(id string) error
+	AllWindows() (map[string]string, error) // id → name
+	SetWindowMember(wsID, windowID string) error
+	RemoveWindowMember(wsID string) error
+	WindowMembers() (map[string]string, error) // ws_id → window id
+	SetWindowOpen(login, windowID string, open bool) error
+	WindowOpens() (map[string]map[string]bool, error) // window id → logins
 
 	// Push notification subscriptions (transport-generic, keyed by login).
 	SavePushSubscription(*model.PushSubscription) error
@@ -139,6 +153,15 @@ CREATE TABLE IF NOT EXISTS views (
 );
 CREATE TABLE IF NOT EXISTS view_imports (
   ws_id TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS windows (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS window_members (
+  ws_id TEXT PRIMARY KEY, window_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS window_open (
+  login TEXT, window_id TEXT, PRIMARY KEY (login, window_id)
 );`
 
 // Open opens (creating if needed) the registry at path.
@@ -367,6 +390,104 @@ func (s *SQLite) DeleteWorkspaceViews(wsID string) error {
 	}
 	_, err := s.db.Exec(`DELETE FROM views WHERE ws_id=?`, wsID)
 	return err
+}
+
+// CreateWindow inserts a shared window entity.
+func (s *SQLite) CreateWindow(id, name string) error {
+	_, err := s.db.Exec(`INSERT INTO windows (id, name) VALUES (?,?)`, id, name)
+	return err
+}
+
+// RenameWindow changes a window's display name; the id (what membership and
+// open flags reference) survives.
+func (s *SQLite) RenameWindow(id, name string) error {
+	_, err := s.db.Exec(`UPDATE windows SET name=? WHERE id=?`, name, id)
+	return err
+}
+
+// DeleteWindow removes a window entity plus its membership and open flags.
+func (s *SQLite) DeleteWindow(id string) error {
+	if _, err := s.db.Exec(`DELETE FROM window_members WHERE window_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM window_open WHERE window_id=?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM windows WHERE id=?`, id)
+	return err
+}
+
+// AllWindows returns every shared window, id → name.
+func (s *SQLite) AllWindows() (map[string]string, error) {
+	return s.twoColumnMap(`SELECT id, name FROM windows`)
+}
+
+// SetWindowMember places a workspace in a window (at most one: upsert).
+func (s *SQLite) SetWindowMember(wsID, windowID string) error {
+	_, err := s.db.Exec(`
+INSERT INTO window_members (ws_id, window_id) VALUES (?,?)
+ON CONFLICT(ws_id) DO UPDATE SET window_id=excluded.window_id`, wsID, windowID)
+	return err
+}
+
+// RemoveWindowMember takes a workspace out of whatever window holds it.
+func (s *SQLite) RemoveWindowMember(wsID string) error {
+	_, err := s.db.Exec(`DELETE FROM window_members WHERE ws_id=?`, wsID)
+	return err
+}
+
+// WindowMembers returns the whole membership, ws_id → window id.
+func (s *SQLite) WindowMembers() (map[string]string, error) {
+	return s.twoColumnMap(`SELECT ws_id, window_id FROM window_members`)
+}
+
+// SetWindowOpen records (or clears) one login's open flag on a window.
+func (s *SQLite) SetWindowOpen(login, windowID string, open bool) error {
+	if !open {
+		_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=?`, login, windowID)
+		return err
+	}
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO window_open (login, window_id) VALUES (?,?)`, login, windowID)
+	return err
+}
+
+// WindowOpens returns who has each window open, window id → set of logins.
+func (s *SQLite) WindowOpens() (map[string]map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT window_id, login FROM window_open`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]bool{}
+	for rows.Next() {
+		var id, login string
+		if err := rows.Scan(&id, &login); err != nil {
+			return nil, err
+		}
+		if out[id] == nil {
+			out[id] = map[string]bool{}
+		}
+		out[id][login] = true
+	}
+	return out, rows.Err()
+}
+
+// twoColumnMap runs a two-string-column query into a map.
+func (s *SQLite) twoColumnMap(query string) (map[string]string, error) {
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
 }
 
 // MarkViewImported records that a workspace's legacy group has been imported.
