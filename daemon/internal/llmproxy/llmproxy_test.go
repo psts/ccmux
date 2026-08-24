@@ -237,6 +237,75 @@ func TestBrokenStoreRefusesEverywhere(t *testing.T) {
 	}
 }
 
+// A pane override beats the global route; other panes keep following it; a
+// cleared override falls back.
+func TestPaneRoutePrecedence(t *testing.T) {
+	var got seen
+	up1 := upstream(t, &got)
+	defer up1.Close()
+	var got2 seen
+	up2 := upstream(t, &got2)
+	defer up2.Close()
+	s := New(fakeStore{})
+	accs := []Account{{Name: "one", BaseURL: up1.URL}, {Name: "two", BaseURL: up2.URL}}
+	route := "one"
+	_ = s.Apply(&accs, &route)
+	if err := s.SetPaneRoute("p2", "two"); err != nil {
+		t.Fatal(err)
+	}
+	p := mount(s)
+	defer p.Close()
+
+	call(t, p.URL, "/llm/pane/p1/v1/messages", "")
+	if got.path == "" || got2.path != "" {
+		t.Fatalf("pane without override went to %q/%q, want global account", got.path, got2.path)
+	}
+	got, got2 = seen{}, seen{}
+	call(t, p.URL, "/llm/pane/p2/v1/messages", "")
+	if got2.path == "" || got.path != "" {
+		t.Fatal("pane override did not win over the global route")
+	}
+	if err := s.SetPaneRoute("p2", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, got2 = seen{}, seen{}
+	call(t, p.URL, "/llm/pane/p2/v1/messages", "")
+	if got.path == "" {
+		t.Fatal("cleared override did not fall back to the global route")
+	}
+}
+
+func TestSetPaneRouteUnknownAccount(t *testing.T) {
+	s := New(fakeStore{})
+	if err := s.SetPaneRoute("p1", "ghost"); !errors.Is(err, ErrUnknownAccount) {
+		t.Fatalf("err = %v, want ErrUnknownAccount", err)
+	}
+}
+
+// Removing an account releases its panes back to the global route instead of
+// leaving a dangling override that 502s the pane.
+func TestAccountRemovalPrunesPaneRoutes(t *testing.T) {
+	s := New(fakeStore{})
+	accs := []Account{{Name: "keep", BaseURL: "http://127.0.0.1"}, {Name: "gone", BaseURL: "http://127.0.0.2"}}
+	_ = s.Apply(&accs, nil)
+	_ = s.SetPaneRoute("p1", "gone")
+	_ = s.SetPaneRoute("p2", "keep")
+	kept := []Account{{Name: "keep", BaseURL: "http://127.0.0.1"}}
+	if err := s.Apply(&kept, nil); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := s.PaneRoutes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := routes["p1"]; ok {
+		t.Fatal("route to removed account survived the removal")
+	}
+	if routes["p2"] != "keep" {
+		t.Fatalf("unrelated pane route was dropped: %v", routes)
+	}
+}
+
 // Re-applying an account with an empty key keeps the stored key — the settings
 // UI round-trips the redacted list, and that must not wipe secrets.
 func TestApplyKeepsKeyOnEmptyResubmit(t *testing.T) {

@@ -293,6 +293,10 @@ func (s *Server) Handler() http.Handler {
 		for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
 			mux.HandleFunc(m+" /llm/pane/{pane}/{rest...}", guarded)
 		}
+		// Per-pane route override — scoped, so a hub-fronted lens lands on the
+		// host whose proxy actually resolves that pane.
+		mux.HandleFunc("GET /v1/panes/{id}/llm-route", s.scoped(s.getPaneLLMRoute))
+		mux.HandleFunc("PUT /v1/panes/{id}/llm-route", s.scoped(s.putPaneLLMRoute))
 	}
 	if s.hubBus != nil {
 		// Registered only on a member host with hub discovery armed, so a hub or

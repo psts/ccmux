@@ -34,7 +34,7 @@ func (s *Service) Handler() http.Handler {
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		account, err := s.resolve()
+		account, err := s.resolve(r.PathValue("pane"))
 		if err != nil {
 			http.Error(w, "ccmux llm proxy: "+err.Error(), http.StatusBadGateway)
 			return

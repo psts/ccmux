@@ -19,6 +19,7 @@ package llmproxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -56,9 +57,14 @@ type RedactedAccount struct {
 }
 
 const (
-	settingAccounts = "llm_accounts"
-	settingRoute    = "llm_route"
+	settingAccounts   = "llm_accounts"
+	settingRoute      = "llm_route"
+	settingPaneRoutes = "llm_pane_routes"
 )
+
+// ErrUnknownAccount marks a route naming no configured account — the API
+// layer answers it with a 400, not a 500.
+var ErrUnknownAccount = errors.New("names no llm account")
 
 // DefaultUpstream answers when no route is configured: straight to Anthropic,
 // byte-for-byte what the pane would have done with no proxy at all.
@@ -121,6 +127,57 @@ func (s *Service) Snapshot() ([]RedactedAccount, string, error) {
 		out = append(out, RedactedAccount{Name: a.Name, Kind: a.Kind, BaseURL: a.BaseURL, APIKeySet: a.APIKey != ""})
 	}
 	return out, route, nil
+}
+
+// PaneRoutes returns the per-pane overrides (paneID → account name). Same
+// unreadable-is-not-empty rule as Accounts.
+func (s *Service) PaneRoutes() (map[string]string, error) {
+	raw, err := s.store.GetSetting(settingPaneRoutes)
+	if err != nil {
+		return nil, fmt.Errorf("llm pane routes unreadable: %w", err)
+	}
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+	var routes map[string]string
+	if err := json.Unmarshal([]byte(raw), &routes); err != nil {
+		return nil, fmt.Errorf("llm pane routes corrupt: %w", err)
+	}
+	return routes, nil
+}
+
+// SetPaneRoute points one pane at an account by name; "" clears the override
+// so the pane follows the global route again. A name matching no account is
+// ErrUnknownAccount.
+func (s *Service) SetPaneRoute(paneID, route string) error {
+	route = strings.TrimSpace(route)
+	if route != "" {
+		accs, err := s.Accounts()
+		if err != nil {
+			return err
+		}
+		if findAccount(accs, route) == nil {
+			return fmt.Errorf("pane route %q %w", route, ErrUnknownAccount)
+		}
+	}
+	routes, err := s.PaneRoutes()
+	if err != nil {
+		return fmt.Errorf("refusing to write llm pane routes: %w", err)
+	}
+	if route == "" {
+		delete(routes, paneID)
+	} else {
+		routes[paneID] = route
+	}
+	return s.writePaneRoutes(routes)
+}
+
+func (s *Service) writePaneRoutes(routes map[string]string) error {
+	b, err := json.Marshal(routes)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(settingPaneRoutes, string(b))
 }
 
 // Reject validates a proposed settings change before anything persists. Either
@@ -206,11 +263,19 @@ func (s *Service) Apply(accs *[]Account, route *string) error {
 		if err != nil {
 			return fmt.Errorf("refusing to write llm accounts: %w", err)
 		}
-		b, err := json.Marshal(merged(old, *accs))
+		next := merged(old, *accs)
+		b, err := json.Marshal(next)
 		if err != nil {
 			return err
 		}
 		if err := s.store.SetSetting(settingAccounts, string(b)); err != nil {
+			return err
+		}
+		// Removing an account releases the panes pointed at it back to the
+		// global route, in the same write. A dangling pane override would
+		// otherwise 502 that pane until someone found why (Reject guards the
+		// global route this way; panes are too many to hold hostage).
+		if err := s.prunePaneRoutes(next); err != nil {
 			return err
 		}
 	}
@@ -218,6 +283,40 @@ func (s *Service) Apply(accs *[]Account, route *string) error {
 		return s.store.SetSetting(settingRoute, strings.TrimSpace(*route))
 	}
 	return nil
+}
+
+// PaneStatus reports a pane's routing for the lenses: the explicit override
+// ("" when the pane follows the global route) and the name of the account
+// actually answering right now.
+func (s *Service) PaneStatus(paneID string) (explicit, effective string, err error) {
+	routes, err := s.PaneRoutes()
+	if err != nil {
+		return "", "", err
+	}
+	acct, err := s.resolve(paneID)
+	if err != nil {
+		return "", "", err
+	}
+	return routes[paneID], acct.Name, nil
+}
+
+// prunePaneRoutes drops pane overrides naming accounts that no longer exist.
+func (s *Service) prunePaneRoutes(accs []Account) error {
+	routes, err := s.PaneRoutes()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for pane, name := range routes {
+		if findAccount(accs, name) == nil {
+			delete(routes, pane)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.writePaneRoutes(routes)
 }
 
 // merged is the state an incoming accounts list persists as: names and URLs
@@ -250,13 +349,12 @@ func findAccount(accs []Account, name string) *Account {
 	return nil
 }
 
-// resolve picks the account answering for a pane right now. Today the pane
-// only scopes logging — per-pane rules are the next phase — but the URL shape
-// carries it from day one so no pane ever needs new env to gain them. Any
+// resolve picks the account answering for a pane right now: the pane's own
+// override, else the global route, else the Anthropic pass-through. Any
 // failure to read the truth is a loud error, never a silent default: a proxy
 // that guesses where to send tokens is worse than one that refuses.
-func (s *Service) resolve() (Account, error) {
-	route, err := s.Route()
+func (s *Service) resolve(paneID string) (Account, error) {
+	route, err := s.routeFor(paneID)
 	if err != nil {
 		return Account{}, err
 	}
@@ -270,7 +368,20 @@ func (s *Service) resolve() (Account, error) {
 	if a := findAccount(accs, route); a != nil {
 		return *a, nil
 	}
-	// Reject should make this unreachable; if the registry was edited out from
-	// under us, failing loudly beats silently burning tokens somewhere else.
+	// SetPaneRoute validation and Apply's prune should make this unreachable;
+	// if the registry was edited out from under us, failing loudly beats
+	// silently burning tokens somewhere else.
 	return Account{}, fmt.Errorf("llm route %q names no account", route)
+}
+
+// routeFor is the route name resolve acts on: pane override beats global.
+func (s *Service) routeFor(paneID string) (string, error) {
+	routes, err := s.PaneRoutes()
+	if err != nil {
+		return "", err
+	}
+	if name, ok := routes[paneID]; ok {
+		return name, nil
+	}
+	return s.Route()
 }

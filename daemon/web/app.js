@@ -822,8 +822,50 @@ function renderTabs() {
     b.title = p.dormant ? "Claude exited — shell only" : "";
     b.textContent = p.title || `pane ${i + 1}`;
     b.onclick = () => attach(state.wsId, p.id);
+    b.oncontextmenu = (e) => { e.preventDefault(); openPaneLLMMenu(p.id, e.clientX, e.clientY); };
     tabs.appendChild(b);
   });
+}
+
+// Right-click on a pane tab: pick which LLM account answers THIS pane. The
+// choice applies to the pane's next request — no restart. "Global default"
+// clears the override so the pane follows the settings-modal route again.
+async function openPaneLLMMenu(paneId, x, y) {
+  let cur;
+  try {
+    const r = await fetch(`/v1/panes/${paneId}/llm-route`);
+    if (!r.ok) return; // proxy not mounted or pane unknown — no menu to offer
+    cur = await r.json();
+  } catch (_) { return; }
+
+  const menu = $("ctx-menu");
+  menu.innerHTML = "";
+  const line = document.createElement("div");
+  line.className = "host-line";
+  line.textContent = "LLM route · now: " + cur.effective;
+  menu.appendChild(line);
+
+  const put = async (route) => {
+    const r = await fetch(`/v1/panes/${paneId}/llm-route`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ route }),
+    });
+    if (!r.ok) alert("llm route: " + (await r.text()));
+  };
+  const add = (label, route, marked) => {
+    const b = document.createElement("button");
+    b.textContent = (marked ? "● " : "○ ") + label;
+    b.onclick = () => { closeWsMenu(); put(route); };
+    menu.appendChild(b);
+  };
+  add("Global default", "", cur.route === "");
+  for (const name of cur.accounts || []) add(name, name, cur.route === name);
+
+  menu.classList.remove("hidden");
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
 }
 
 function renderPresence(clients) {
