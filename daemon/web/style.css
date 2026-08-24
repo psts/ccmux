@@ -93,7 +93,12 @@ body {
 /* status line, not a boxed callout — undo .sheet .hint's border/padding */
 .setting-hint { margin: 6px 0 2px; background: transparent; border: 0; padding: 0; }
 .rules-list { display: flex; flex-direction: column; gap: 6px; }
-.rule-row { display: flex; gap: 6px; align-items: center; }
+.rule-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rule-row .llm-name { min-width: 90px; }
+.rule-row .llm-url { min-width: 150px; }
+.rule-row .llm-key { min-width: 110px; }
+.rule-row .llm-aliases { min-width: 170px; }
+.rule-row .hx-cmd { min-width: 170px; }
 .rule-row .rule-prefix { flex: 3; }
 .rule-row .rule-cmd { flex: 2; }
 .rule-row .llm-name { flex: 1.2; }
