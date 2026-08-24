@@ -15,6 +15,9 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -35,6 +38,13 @@ type Harness struct {
 	// startup prompts (built for claude's trust prompt; other harnesses opt in
 	// when their prompts are known to be safe to confirm blind).
 	Autoconfirm bool `json:"autoconfirm"`
+	// Accounts names the llm accounts this harness may be paired with (empty =
+	// any). Declarative for now: the pickers will read it once pairing exists.
+	Accounts []string `json:"accounts,omitempty"`
+	// Source labels where a listed entry came from — "builtin", "detected"
+	// (binary found on this host), or "" for a user-configured entry. Stamped
+	// by List for the editors; stripped on Apply.
+	Source string `json:"source,omitempty"`
 }
 
 const settingHarnesses = "harnesses"
@@ -42,32 +52,78 @@ const settingHarnesses = "harnesses"
 // Builtin is the harness every daemon has without configuration.
 const Builtin = "claude"
 
+// known are the harnesses the daemon recognizes on sight: if the program is
+// installed on this host, the harness exists — settings and pickers included,
+// zero configuration. A user entry with the same name overrides the detected
+// default wholesale.
+var known = []Harness{
+	{Name: "pi", Icon: "π", Command: "pi"},
+	{Name: "opencode", Icon: "⌬", Command: "opencode"},
+	{Name: "aider", Icon: "✎", Command: "aider"},
+}
+
 type Service struct {
 	store Store
 	// claudeCommand resolves the built-in claude harness's command — wired to
 	// the manager's DefaultStartupCommand so the existing setting keeps working.
 	claudeCommand func() string
+	// lookPath answers "is this program installed here" (exec.LookPath in
+	// production; tests inject).
+	lookPath func(string) (string, error)
 }
 
 func New(store Store, claudeCommand func() string) *Service {
-	return &Service{store: store, claudeCommand: claudeCommand}
+	return &Service{store: store, claudeCommand: claudeCommand, lookPath: lookPathUserBins}
 }
 
-// List returns every harness, built-in claude first unless a user entry named
-// "claude" overrides it. Unreadable is not empty (see llmproxy.Accounts): a
-// read failure is an error, never a silently shorter list.
+// lookPathUserBins is exec.LookPath widened with ~/.local/bin. Panes run
+// LOGIN shells whose profile puts user bins on PATH, but the daemon runs
+// under systemd with the bare system PATH — a harness the pane can start
+// would otherwise be invisible to detection.
+func lookPathUserBins(name string) (string, error) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(home, ".local", "bin", name)
+	if info, err := os.Stat(p); err == nil && !info.IsDir() {
+		return p, nil
+	}
+	return "", fmt.Errorf("%s: not found", name)
+}
+
+// List returns every harness: built-in claude first (unless a user entry
+// named "claude" overrides it), then user entries, then detected known
+// programs not already named. Unreadable is not empty (see llmproxy.Accounts):
+// a read failure is an error, never a silently shorter list.
 func (s *Service) List() ([]Harness, error) {
 	user, err := s.userHarnesses()
 	if err != nil {
 		return nil, err
 	}
+	named := map[string]bool{}
+	out := make([]Harness, 0, len(user)+len(known)+1)
 	for _, h := range user {
-		if h.Name == Builtin {
-			return user, nil
-		}
+		named[h.Name] = true
 	}
-	builtin := Harness{Name: Builtin, Icon: "✳", Command: s.claudeCommand(), Autoconfirm: true}
-	return append([]Harness{builtin}, user...), nil
+	if !named[Builtin] {
+		out = append(out, Harness{Name: Builtin, Icon: "✳", Command: s.claudeCommand(), Autoconfirm: true, Source: "builtin"})
+	}
+	out = append(out, user...)
+	for _, k := range known {
+		if named[k.Name] {
+			continue
+		}
+		if _, err := s.lookPath(k.Name); err != nil {
+			continue
+		}
+		k.Source = "detected"
+		out = append(out, k)
+	}
+	return out, nil
 }
 
 // Resolve returns the named harness, or an error naming what is missing —
@@ -112,6 +168,7 @@ func (s *Service) Apply(hs []Harness) error {
 	for _, h := range hs {
 		h.Name = strings.TrimSpace(h.Name)
 		h.Command = strings.TrimSpace(h.Command)
+		h.Source = "" // stamped by List, never stored
 		next = append(next, h)
 	}
 	b, err := json.Marshal(next)

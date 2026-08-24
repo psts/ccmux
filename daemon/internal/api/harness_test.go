@@ -106,8 +106,10 @@ func TestHarnessSettingsListsBuiltin(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&cfg)
 	resp.Body.Close()
-	if len(cfg.Harnesses) != 1 || cfg.Harnesses[0].Name != "claude" {
-		t.Fatalf("harnesses = %+v, want built-in claude", cfg.Harnesses)
+	// Detected entries are host-dependent (pi/opencode may be installed on the
+	// build host); the invariant is claude first, as the builtin.
+	if len(cfg.Harnesses) == 0 || cfg.Harnesses[0].Name != "claude" || cfg.Harnesses[0].Source != "builtin" {
+		t.Fatalf("harnesses = %+v, want built-in claude first", cfg.Harnesses)
 	}
 }
 

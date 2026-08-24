@@ -25,12 +25,18 @@ func needsSystemTurnCompat(a Account) bool {
 	return !strings.Contains(a.BaseURL, "api.anthropic.com")
 }
 
-// downgradeSystemTurns rewrites r's body so messages[].role "system" becomes
-// "user", buffering the body to do it. Anything that stops the rewrite — too
-// big, unreadable, not the JSON shape it expects — forwards the original
-// bytes untouched: the upstream's parser owns malformed requests, not us.
-func downgradeSystemTurns(r *http.Request) {
-	if r.Body == nil || r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/v1/messages") {
+// rewriteRequest applies the account's request transforms — system-turn
+// downgrade for non-Anthropic upstreams, and model aliasing — buffering the
+// body once for both. Anything that stops the rewrite (too big, unreadable,
+// not the JSON shape it expects) forwards the original bytes untouched: the
+// upstream's parser owns malformed requests, not us. The path check covers
+// /v1/messages and its sub-resources (count_tokens carries a model too).
+func rewriteRequest(r *http.Request, a Account) {
+	turns := needsSystemTurnCompat(a)
+	if r.Body == nil || r.Method != http.MethodPost || !strings.Contains(r.URL.Path, "/v1/messages") {
+		return
+	}
+	if !turns && len(a.ModelAliases) == 0 {
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxCompatBody+1))
@@ -40,14 +46,34 @@ func downgradeSystemTurns(r *http.Request) {
 		return
 	}
 	var req map[string]json.RawMessage
-	if json.Unmarshal(body, &req) != nil || req["messages"] == nil {
+	if json.Unmarshal(body, &req) != nil {
 		restoreBody(r, body)
 		return
 	}
-	var msgs []map[string]json.RawMessage
-	if json.Unmarshal(req["messages"], &msgs) != nil {
+	changed := aliasModel(req, a.ModelAliases)
+	if turns {
+		changed = downgradeSystemTurns(req) || changed
+	}
+	if !changed {
 		restoreBody(r, body)
 		return
+	}
+	if rewritten, err := json.Marshal(req); err == nil {
+		restoreBody(r, rewritten)
+	} else {
+		restoreBody(r, body)
+	}
+}
+
+// downgradeSystemTurns flips messages[].role "system" to "user" in place,
+// reporting whether anything changed.
+func downgradeSystemTurns(req map[string]json.RawMessage) bool {
+	if req["messages"] == nil {
+		return false
+	}
+	var msgs []map[string]json.RawMessage
+	if json.Unmarshal(req["messages"], &msgs) != nil {
+		return false
 	}
 	changed := false
 	for _, m := range msgs {
@@ -58,23 +84,47 @@ func downgradeSystemTurns(r *http.Request) {
 		}
 	}
 	if !changed {
-		restoreBody(r, body)
-		return
+		return false
 	}
-	if rewritten, err := marshalRewrite(req, msgs); err == nil {
-		restoreBody(r, rewritten)
-	} else {
-		restoreBody(r, body)
+	b, err := json.Marshal(msgs)
+	if err != nil {
+		return false
 	}
+	req["messages"] = b
+	return true
 }
 
-func marshalRewrite(req map[string]json.RawMessage, msgs []map[string]json.RawMessage) ([]byte, error) {
-	m, err := json.Marshal(msgs)
-	if err != nil {
-		return nil, err
+// aliasModel rewrites the request's model through the account's alias list —
+// what lets a local upstream answer for model names it has never heard of,
+// like the haiku names Claude Code's background calls hardwire. First match
+// wins; a From ending in '*' matches by prefix.
+func aliasModel(req map[string]json.RawMessage, aliases []ModelAlias) bool {
+	if len(aliases) == 0 || req["model"] == nil {
+		return false
 	}
-	req["messages"] = m
-	return json.Marshal(req)
+	var model string
+	if json.Unmarshal(req["model"], &model) != nil {
+		return false
+	}
+	for _, al := range aliases {
+		if !aliasMatches(al.From, model) || al.To == model {
+			continue
+		}
+		b, err := json.Marshal(al.To)
+		if err != nil {
+			return false
+		}
+		req["model"] = b
+		return true
+	}
+	return false
+}
+
+func aliasMatches(pattern, model string) bool {
+	if p, ok := strings.CutSuffix(pattern, "*"); ok {
+		return strings.HasPrefix(model, p)
+	}
+	return pattern == model
 }
 
 func restoreBody(r *http.Request, body []byte) {

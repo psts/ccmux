@@ -46,14 +46,28 @@ type Account struct {
 	// lets the settings UI round-trip the redacted list without wiping secrets.
 	// Deleting the account is what clears its key.
 	APIKey string `json:"apiKey,omitempty"`
+	// ModelAliases rewrite request model names on the way through (first match
+	// wins; a From ending in '*' matches by prefix). This is what lets a local
+	// upstream answer for names it has never heard of — Claude Code's
+	// background calls hardwire haiku model names that 404 on Ollama.
+	ModelAliases []ModelAlias `json:"modelAliases,omitempty"`
+}
+
+// ModelAlias maps one requested model name (or '*'-suffixed prefix) to the
+// model the account's upstream actually serves.
+type ModelAlias struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // RedactedAccount is what GET /v1/settings reports: presence, never the key.
+// Aliases are not secrets, so they round-trip in full for the editor.
 type RedactedAccount struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	BaseURL   string `json:"baseURL"`
-	APIKeySet bool   `json:"apiKeySet"`
+	Name         string       `json:"name"`
+	Kind         string       `json:"kind"`
+	BaseURL      string       `json:"baseURL"`
+	APIKeySet    bool         `json:"apiKeySet"`
+	ModelAliases []ModelAlias `json:"modelAliases,omitempty"`
 }
 
 const (
@@ -124,7 +138,10 @@ func (s *Service) Snapshot() ([]RedactedAccount, string, error) {
 	}
 	out := make([]RedactedAccount, 0, len(accs))
 	for _, a := range accs {
-		out = append(out, RedactedAccount{Name: a.Name, Kind: a.Kind, BaseURL: a.BaseURL, APIKeySet: a.APIKey != ""})
+		out = append(out, RedactedAccount{
+			Name: a.Name, Kind: a.Kind, BaseURL: a.BaseURL,
+			APIKeySet: a.APIKey != "", ModelAliases: a.ModelAliases,
+		})
 	}
 	return out, route, nil
 }
@@ -230,6 +247,11 @@ func validateAccounts(accs []Account) string {
 		}
 		if a.APIKey == "" && !passthroughHostAllowed(u.Hostname()) {
 			return fmt.Sprintf("llm account %q has no api key, so each pane's own Claude login would be forwarded to it — that is only allowed to api.anthropic.com, localhost, or a private-network IP", a.Name)
+		}
+		for _, al := range a.ModelAliases {
+			if strings.TrimSpace(al.From) == "" || strings.TrimSpace(al.To) == "" {
+				return fmt.Sprintf("llm account %q: model alias with an empty side", a.Name)
+			}
 		}
 	}
 	return ""

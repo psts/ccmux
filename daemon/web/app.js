@@ -106,13 +106,14 @@ function syncPaneTitles() {
     // atShell/harness arrive late for a fresh pane (the attach hello races
     // tmux's first command signal), so the harness bar re-derives from every
     // registry refresh — the firehose fires one for exactly this change.
-    if (!!q.atShell !== !!p.atShell || (q.harness || "") !== (p.harness || "")) {
+    if (!!q.atShell !== !!p.atShell || !!q.dormant !== !!p.dormant || (q.harness || "") !== (p.harness || "")) {
       p.atShell = q.atShell;
+      p.dormant = q.dormant;
       p.harness = q.harness;
       shellChanged = true;
     }
   }
-  if (changed) renderTabs();
+  if (changed || shellChanged) renderTabs(); // dormant styling rides the tabs
   if (shellChanged) updateHarnessBar();
 }
 
@@ -895,7 +896,9 @@ async function updateHarnessBar() {
   const bar = $("harness-bar");
   const paneId = state.paneId;
   const p = state.panes.find((x) => x.id === paneId);
-  if (!p || p.harness || !p.atShell || p.devServer) { setHarnessBar(false); return; }
+  // A pane at a bare shell gets the bar: no harness yet = "Start here:",
+  // harness recorded but exited (its shell is back) = "Restart:".
+  if (!p || p.devServer || !(p.atShell || p.dormant)) { setHarnessBar(false); return; }
   const ws = state.workspaces.find((w) => w.id === state.wsId);
   let cfg;
   try {
@@ -904,14 +907,15 @@ async function updateHarnessBar() {
   if (state.paneId !== paneId) return; // switched tabs while fetching
   const harnesses = cfg.harnesses || [];
   if (!harnesses.length) { setHarnessBar(false); return; }
+  const suggested = p.harness || cfg.resolvedHarness;
   bar.innerHTML = "";
   const label = document.createElement("span");
   label.className = "harness-label";
-  label.textContent = "Start here:";
+  label.textContent = p.harness ? "Restart:" : "Start here:";
   bar.appendChild(label);
   for (const h of harnesses) {
     const b = document.createElement("button");
-    b.className = "harness-btn" + (h.name === cfg.resolvedHarness ? " suggested" : "");
+    b.className = "harness-btn" + (h.name === suggested ? " suggested" : "");
     b.textContent = (h.icon ? h.icon + " " : "") + h.name;
     b.title = h.command;
     b.onclick = () => startHarness(paneId, h.name);
@@ -1271,6 +1275,7 @@ function wireLLMSettings() {
     const row = document.createElement("div");
     row.className = "rule-row";
     const keyHint = a.apiKeySet ? "key set — empty keeps it" : "api key (none = your own login, local hosts only)";
+    const aliases = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
     row.innerHTML =
       `<input class="setting-input llm-name" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
       `<select class="setting-input llm-kind">` +
@@ -1278,6 +1283,7 @@ function wireLLMSettings() {
       `<option value="openai"${a.kind === "openai" ? " selected" : ""}>openai</option></select>` +
       `<input class="setting-input llm-url" type="text" spellcheck="false" placeholder="http://localhost:11434" value="${esc(a.baseURL || "")}">` +
       `<input class="setting-input llm-key" type="password" autocomplete="off" placeholder="${esc(keyHint)}">` +
+      `<input class="setting-input llm-aliases" type="text" spellcheck="false" placeholder="model aliases: claude-haiku-*=qwen3-4b-32k" value="${esc(aliases)}">` +
       `<button class="rule-del" type="button" title="Remove account">&times;</button>`;
     for (const el of row.querySelectorAll("input, select")) {
       el.addEventListener("change", saveAccounts);
@@ -1287,12 +1293,21 @@ function wireLLMSettings() {
     return row;
   }
 
+  // "from=to, from2=to2" — rows without an '=' are dropped as half-typed.
+  function parseAliases(text) {
+    return text.split(",").map((s) => s.trim()).filter((s) => s.includes("=")).map((s) => {
+      const i = s.indexOf("=");
+      return { from: s.slice(0, i).trim(), to: s.slice(i + 1).trim() };
+    }).filter((x) => x.from && x.to);
+  }
+
   function collectAccounts() {
     return [...box.querySelectorAll(".rule-row")].map((row) => ({
       name: row.querySelector(".llm-name").value.trim(),
       kind: row.querySelector(".llm-kind").value,
       baseURL: row.querySelector(".llm-url").value.trim(),
       apiKey: row.querySelector(".llm-key").value, // empty keeps the stored key
+      modelAliases: parseAliases(row.querySelector(".llm-aliases").value),
     })).filter((a) => a.name || a.baseURL); // a fully blank editor row isn't an account
   }
 
@@ -1360,6 +1375,95 @@ function wireLLMSettings() {
   });
 }
 wireLLMSettings();
+
+// --- settings: harnesses. The daemon lists claude (builtin) and every known
+// program it finds installed (detected) with zero config; editing one of
+// those rows saves a user OVERRIDE by name, and only overrides and new
+// entries are persisted — an untouched builtin/detected row stays live-
+// resolved (claude keeps following the startup-command setting, a detected
+// harness disappears when uninstalled). Deleting an override restores the
+// default. The command field is where per-harness flags live, e.g. claude's
+// --dangerously-load-development-channels. ---
+function wireHarnessSettings() {
+  const box = $("harness-list"), addBtn = $("harness-add"), state = $("harness-state");
+  if (!box) return;
+
+  function harnessRow(h) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+    row.dataset.orig = JSON.stringify({ icon: h.icon || "", name: h.name || "", command: h.command || "", autoconfirm: !!h.autoconfirm });
+    row.dataset.source = h.source || "";
+    const badge = h.source ? `<span class="harness-src">${esc(h.source)}</span>` : "";
+    row.innerHTML =
+      `<input class="setting-input hx-icon" type="text" spellcheck="false" placeholder="✳" value="${esc(h.icon || "")}">` +
+      `<input class="setting-input hx-name" type="text" spellcheck="false" placeholder="name" value="${esc(h.name || "")}">` +
+      `<input class="setting-input hx-cmd" type="text" spellcheck="false" placeholder="command + flags" value="${esc(h.command || "")}">` +
+      `<label class="hx-confirm" title="Press Enter through its startup prompts"><input type="checkbox" ${h.autoconfirm ? "checked" : ""}>auto-ok</label>` +
+      badge +
+      (h.source ? "" : `<button class="rule-del" type="button" title="Remove harness">&times;</button>`);
+    for (const el of row.querySelectorAll("input")) {
+      el.addEventListener("change", save);
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
+    }
+    const del = row.querySelector(".rule-del");
+    if (del) del.onclick = () => { row.remove(); save(); };
+    return row;
+  }
+
+  function rowValue(row) {
+    return {
+      icon: row.querySelector(".hx-icon").value.trim(),
+      name: row.querySelector(".hx-name").value.trim(),
+      command: row.querySelector(".hx-cmd").value.trim(),
+      autoconfirm: row.querySelector(".hx-confirm input").checked,
+    };
+  }
+
+  function collect() {
+    const out = [];
+    for (const row of box.querySelectorAll(".rule-row")) {
+      const v = rowValue(row);
+      if (!v.name && !v.command) continue; // blank editor row
+      const untouchedDefault = row.dataset.source &&
+        JSON.stringify({ icon: v.icon, name: v.name, command: v.command, autoconfirm: v.autoconfirm }) === row.dataset.orig;
+      if (untouchedDefault) continue; // stays live-resolved, not frozen
+      out.push(v);
+    }
+    return out;
+  }
+
+  async function load() {
+    try {
+      const cfg = await (await fetch("/v1/settings")).json();
+      box.innerHTML = "";
+      for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h));
+      state.textContent = "Installed harnesses appear on their own; edit a row to override it.";
+    } catch (_) {
+      state.textContent = "Couldn't load harnesses.";
+    }
+  }
+
+  async function save() {
+    try {
+      const r = await fetch("/v1/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ harnesses: collect() }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      state.textContent = "Saved.";
+    } catch (e) {
+      state.textContent = "Not saved: " + e.message;
+    }
+  }
+
+  $("open-settings").addEventListener("click", load);
+  addBtn.addEventListener("click", () => {
+    box.appendChild(harnessRow({}));
+    box.lastChild.querySelector(".hx-name").focus();
+  });
+}
+wireHarnessSettings();
 
 // Opened from a notification tap (/?ws=<id>): attach straight to that workspace.
 // Without a deep link there's nothing on screen but "Select a workspace", so

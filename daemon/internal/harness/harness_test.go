@@ -17,7 +17,38 @@ func (brokenStore) GetSetting(string) (string, error) { return "", errors.New("d
 func (brokenStore) SetSetting(string, string) error   { return nil }
 
 func testService(st Store) *Service {
-	return New(st, func() string { return "env -u TMUX claude --dangerously-load-development-channels server:claude-peers" })
+	s := New(st, func() string { return "env -u TMUX claude --dangerously-load-development-channels server:claude-peers" })
+	// Tests must not depend on what the build host has installed.
+	s.lookPath = func(string) (string, error) { return "", errors.New("not installed") }
+	return s
+}
+
+// An installed known program IS a harness — no configuration — and a user
+// entry with its name takes over completely.
+func TestDetectedHarnesses(t *testing.T) {
+	s := testService(fakeStore{})
+	s.lookPath = func(name string) (string, error) {
+		if name == "opencode" {
+			return "/usr/local/bin/opencode", nil
+		}
+		return "", errors.New("not installed")
+	}
+	hs, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hs) != 2 || hs[0].Name != "claude" || hs[1].Name != "opencode" {
+		t.Fatalf("list = %+v, want claude + detected opencode", hs)
+	}
+	if hs[0].Source != "builtin" || hs[1].Source != "detected" {
+		t.Fatalf("sources = %q/%q", hs[0].Source, hs[1].Source)
+	}
+	// Overriding the detected entry replaces it; Source never persists.
+	_ = s.Apply([]Harness{{Name: "opencode", Command: "opencode --model x", Source: "detected"}})
+	hs, _ = s.List()
+	if len(hs) != 2 || hs[1].Command != "opencode --model x" || hs[1].Source != "" {
+		t.Fatalf("after override = %+v", hs)
+	}
 }
 
 // An unconfigured daemon still has the claude harness, wired to the

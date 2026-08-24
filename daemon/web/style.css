@@ -98,8 +98,17 @@ body {
 .rule-row .rule-cmd { flex: 2; }
 .rule-row .llm-name { flex: 1.2; }
 .rule-row .llm-kind { flex: 0 0 auto; }
-.rule-row .llm-url { flex: 2.5; }
-.rule-row .llm-key { flex: 1.5; }
+.rule-row .llm-url { flex: 2; }
+.rule-row .llm-key { flex: 1.3; }
+.rule-row .llm-aliases { flex: 1.7; }
+.rule-row .hx-icon { flex: 0 0 3em; text-align: center; }
+.rule-row .hx-name { flex: 1; }
+.rule-row .hx-cmd { flex: 3; }
+.hx-confirm { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.harness-src {
+  font-size: 10px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 7px; white-space: nowrap;
+}
 .rule-del {
   background: transparent; border: 0; color: var(--muted);
   font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px;
