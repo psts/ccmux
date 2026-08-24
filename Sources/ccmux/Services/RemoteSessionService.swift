@@ -433,7 +433,9 @@ final class RemoteSessionService: ObservableObject {
     func updateSettings(
         startupCommand: String? = nil, startupRules: [DaemonStartupRule]? = nil,
         devDomain: String? = nil, lensHostname: String? = nil,
-        cloudflareToken: String? = nil, tailscaleAuthKey: String? = nil
+        cloudflareToken: String? = nil, tailscaleAuthKey: String? = nil,
+        llmRoute: String? = nil, llmAccounts: [[String: Any]]? = nil,
+        harnesses: [[String: Any]]? = nil
     ) async -> DaemonSettings? {
         var body: [String: Any] = [:]
         if let startupCommand { body["startupCommand"] = startupCommand }
@@ -444,6 +446,9 @@ final class RemoteSessionService: ObservableObject {
         if let lensHostname { body["lensHostname"] = lensHostname }
         if let cloudflareToken { body["cloudflareToken"] = cloudflareToken }
         if let tailscaleAuthKey { body["tailscaleAuthKey"] = tailscaleAuthKey }
+        if let llmRoute { body["llmRoute"] = llmRoute }
+        if let llmAccounts { body["llmAccounts"] = llmAccounts }
+        if let harnesses { body["harnesses"] = harnesses }
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"

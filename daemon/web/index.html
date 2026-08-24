@@ -95,33 +95,48 @@
   </div>
 
   <div id="settings-modal" class="modal hidden">
-    <div class="sheet">
+    <div class="sheet settings-sheet">
       <header>
         <span>Settings</span>
         <button id="settings-close" title="Close">&times;</button>
       </header>
-      <label class="setting-label" for="startup-cmd">New workspace startup command</label>
-      <input id="startup-cmd" class="setting-input" type="text" spellcheck="false"
-             placeholder="claude …" autocomplete="off">
-      <label class="setting-label">Per-folder overrides (longest match wins)</label>
-      <div id="startup-rules" class="rules-list"></div>
-      <button id="startup-rule-add" class="rule-add" type="button">+ Add folder rule</button>
-      <p id="startup-cmd-state" class="hint setting-hint"></p>
-      <label class="setting-label" for="llm-route">LLM routing</label>
-      <select id="llm-route" class="setting-input"></select>
-      <div id="llm-accounts" class="rules-list"></div>
-      <button id="llm-account-add" class="rule-add" type="button">+ Add LLM account</button>
-      <p id="llm-state" class="hint setting-hint"></p>
-      <label class="setting-label">Harnesses</label>
-      <div id="harness-list" class="rules-list"></div>
-      <button id="harness-add" class="rule-add" type="button">+ Add harness</button>
-      <p id="harness-state" class="hint setting-hint"></p>
-      <p class="setting-label">Notifications</p>
-      <p id="notif-status" class="status"></p>
-      <p id="ios-hint" class="hint hidden"></p>
-      <div class="sheet-actions">
-        <button id="notif-enable" class="primary hidden">Enable notifications</button>
-        <button id="notif-disable" class="hidden">Turn off</button>
+      <nav id="settings-tabs" class="settings-tabs">
+        <button class="settings-tab active" data-page="general" type="button">General</button>
+        <button class="settings-tab" data-page="llm" type="button">Models</button>
+        <button class="settings-tab" data-page="harnesses" type="button">Harnesses</button>
+        <button class="settings-tab" data-page="notifications" type="button">Notifications</button>
+      </nav>
+      <div class="settings-body">
+        <section class="settings-page" data-page="general">
+          <label class="setting-label" for="startup-cmd">New workspace startup command</label>
+          <input id="startup-cmd" class="setting-input" type="text" spellcheck="false"
+                 placeholder="claude …" autocomplete="off">
+          <label class="setting-label">Per-folder overrides (longest match wins)</label>
+          <div id="startup-rules" class="rules-list"></div>
+          <button id="startup-rule-add" class="rule-add" type="button">+ Add folder rule</button>
+          <p id="startup-cmd-state" class="hint setting-hint"></p>
+        </section>
+        <section class="settings-page hidden" data-page="llm">
+          <label class="setting-label" for="llm-route">Route all panes to</label>
+          <select id="llm-route" class="setting-input"></select>
+          <label class="setting-label">Accounts</label>
+          <div id="llm-accounts" class="rules-list"></div>
+          <button id="llm-account-add" class="rule-add" type="button">+ Add LLM account</button>
+          <p id="llm-state" class="hint setting-hint"></p>
+        </section>
+        <section class="settings-page hidden" data-page="harnesses">
+          <div id="harness-list" class="rules-list"></div>
+          <button id="harness-add" class="rule-add" type="button">+ Add harness</button>
+          <p id="harness-state" class="hint setting-hint"></p>
+        </section>
+        <section class="settings-page hidden" data-page="notifications">
+          <p id="notif-status" class="status"></p>
+          <p id="ios-hint" class="hint hidden"></p>
+          <div class="sheet-actions">
+            <button id="notif-enable" class="primary hidden">Enable notifications</button>
+            <button id="notif-disable" class="hidden">Turn off</button>
+          </div>
+        </section>
       </div>
     </div>
   </div>

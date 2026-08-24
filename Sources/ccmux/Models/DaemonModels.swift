@@ -87,9 +87,23 @@ struct DaemonSettings: Codable {
     var tailscaleAuthKeySet: Bool
     /// Wildcard-cert lifecycle: unset | pending | ready | error: <cause> | unknown.
     var devCertStatus: String
+    /// LLM routing: which account answers pane LLM traffic ("" = direct
+    /// Anthropic with the user's own login) and the configured accounts
+    /// (redacted — key presence only). Absent on daemons without the proxy.
+    var llmRoute: String
+    var llmAccounts: [DaemonLLMAccount]
+    /// The daemon-resolved harness list (builtin + detected + user entries).
+    var harnesses: [DaemonHarness]
+    /// Whether this daemon's settings carried the llm/harness keys at all — an
+    /// older daemon omits them AND would 400 a write that includes them, so
+    /// the editors must not send what the daemon never offered.
+    var supportsLLM: Bool
+    var supportsHarnesses: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        supportsLLM = c.contains(.llmRoute) || c.contains(.llmAccounts)
+        supportsHarnesses = c.contains(.harnesses)
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand) ?? ""
         startupRules = try c.decodeIfPresent([DaemonStartupRule].self, forKey: .startupRules) ?? []
         devDomain = try c.decodeIfPresent(String.self, forKey: .devDomain) ?? ""
@@ -97,7 +111,37 @@ struct DaemonSettings: Codable {
         cloudflareTokenSet = try c.decodeIfPresent(Bool.self, forKey: .cloudflareTokenSet) ?? false
         tailscaleAuthKeySet = try c.decodeIfPresent(Bool.self, forKey: .tailscaleAuthKeySet) ?? false
         devCertStatus = try c.decodeIfPresent(String.self, forKey: .devCertStatus) ?? "unset"
+        llmRoute = try c.decodeIfPresent(String.self, forKey: .llmRoute) ?? ""
+        llmAccounts = try c.decodeIfPresent([DaemonLLMAccount].self, forKey: .llmAccounts) ?? []
+        harnesses = try c.decodeIfPresent([DaemonHarness].self, forKey: .harnesses) ?? []
     }
+}
+
+/// One LLM account as GET /v1/settings reports it: key PRESENCE only, never
+/// the key. Model aliases round-trip in full (not secrets).
+struct DaemonLLMAccount: Codable, Identifiable {
+    let name: String
+    var kind: String
+    var baseURL: String
+    var apiKeySet: Bool
+    var modelAliases: [DaemonModelAlias]
+    var id: String { name }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "anthropic"
+        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+        apiKeySet = try c.decodeIfPresent(Bool.self, forKey: .apiKeySet) ?? false
+        modelAliases = try c.decodeIfPresent([DaemonModelAlias].self, forKey: .modelAliases) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, kind, baseURL, apiKeySet, modelAliases }
+}
+
+struct DaemonModelAlias: Codable {
+    let from: String
+    let to: String
 }
 
 /// One detected port suggestion for the Hostnames sheet (GET
@@ -307,6 +351,10 @@ struct DaemonHarness: Codable, Identifiable {
     let name: String
     var icon: String?
     var command: String?
+    /// Whether the startup-prompt autoconfirm watcher is armed for it.
+    var autoconfirm: Bool
+    /// "builtin" | "detected" | "" (user-configured) — stamped by the daemon.
+    var source: String
     var id: String { name }
 
     init(from decoder: Decoder) throws {
@@ -314,9 +362,11 @@ struct DaemonHarness: Codable, Identifiable {
         name = try c.decode(String.self, forKey: .name)
         icon = try c.decodeIfPresent(String.self, forKey: .icon)
         command = try c.decodeIfPresent(String.self, forKey: .command)
+        autoconfirm = try c.decodeIfPresent(Bool.self, forKey: .autoconfirm) ?? false
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
     }
 
-    private enum CodingKeys: String, CodingKey { case name, icon, command }
+    private enum CodingKeys: String, CodingKey { case name, icon, command, autoconfirm, source }
 }
 
 /// A daemon pane = one tmux window (single tmux pane). `id` is the stable

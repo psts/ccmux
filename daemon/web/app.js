@@ -1275,18 +1275,24 @@ function wireLLMSettings() {
 
   function accountRow(a) {
     const row = document.createElement("div");
-    row.className = "rule-row";
-    const keyHint = a.apiKeySet ? "key set — empty keeps it" : "api key (none = your own login, local hosts only)";
+    row.className = "entry-card";
+    const keyHint = a.apiKeySet ? "key set — empty keeps it" : "empty = your own login";
     const aliases = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
     row.innerHTML =
-      `<input class="setting-input llm-name" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
+      `<div class="entry-line">` +
+      `<input class="setting-input llm-name grow" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
       `<select class="setting-input llm-kind">` +
       `<option value="anthropic"${a.kind !== "openai" ? " selected" : ""}>anthropic</option>` +
       `<option value="openai"${a.kind === "openai" ? " selected" : ""}>openai</option></select>` +
-      `<input class="setting-input llm-url" type="text" spellcheck="false" placeholder="http://localhost:11434" value="${esc(a.baseURL || "")}">` +
-      `<input class="setting-input llm-key" type="password" autocomplete="off" placeholder="${esc(keyHint)}">` +
-      `<input class="setting-input llm-aliases" type="text" spellcheck="false" placeholder="model aliases: claude-haiku-*=qwen3-4b-32k" value="${esc(aliases)}">` +
-      `<button class="rule-del" type="button" title="Remove account">&times;</button>`;
+      `<button class="rule-del" type="button" title="Remove account">&times;</button>` +
+      `</div>` +
+      `<div class="entry-line">` +
+      `<input class="setting-input llm-url grow" type="text" spellcheck="false" placeholder="base URL, e.g. http://localhost:11434" value="${esc(a.baseURL || "")}">` +
+      `</div>` +
+      `<div class="entry-line">` +
+      `<input class="setting-input llm-key grow" type="password" autocomplete="off" placeholder="api key: ${esc(keyHint)}">` +
+      `<input class="setting-input llm-aliases grow" type="text" spellcheck="false" placeholder="aliases: claude-haiku-*=qwen3-4b-32k" value="${esc(aliases)}">` +
+      `</div>`;
     for (const el of row.querySelectorAll("input, select")) {
       el.addEventListener("change", saveAccounts);
       el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
@@ -1304,7 +1310,7 @@ function wireLLMSettings() {
   }
 
   function collectAccounts() {
-    return [...box.querySelectorAll(".rule-row")].map((row) => ({
+    return [...box.querySelectorAll(".entry-card")].map((row) => ({
       name: row.querySelector(".llm-name").value.trim(),
       kind: row.querySelector(".llm-kind").value,
       baseURL: row.querySelector(".llm-url").value.trim(),
@@ -1392,17 +1398,21 @@ function wireHarnessSettings() {
 
   function harnessRow(h) {
     const row = document.createElement("div");
-    row.className = "rule-row";
+    row.className = "entry-card";
     row.dataset.orig = JSON.stringify({ icon: h.icon || "", name: h.name || "", command: h.command || "", autoconfirm: !!h.autoconfirm });
     row.dataset.source = h.source || "";
     const badge = h.source ? `<span class="harness-src">${esc(h.source)}</span>` : "";
     row.innerHTML =
+      `<div class="entry-line">` +
       `<input class="setting-input hx-icon" type="text" spellcheck="false" placeholder="✳" value="${esc(h.icon || "")}">` +
-      `<input class="setting-input hx-name" type="text" spellcheck="false" placeholder="name" value="${esc(h.name || "")}">` +
-      `<input class="setting-input hx-cmd" type="text" spellcheck="false" placeholder="command + flags" value="${esc(h.command || "")}">` +
-      `<label class="hx-confirm" title="Press Enter through its startup prompts"><input type="checkbox" ${h.autoconfirm ? "checked" : ""}>auto-ok</label>` +
+      `<input class="setting-input hx-name grow" type="text" spellcheck="false" placeholder="name" value="${esc(h.name || "")}">` +
       badge +
-      (h.source ? "" : `<button class="rule-del" type="button" title="Remove harness">&times;</button>`);
+      `<label class="hx-confirm" title="Press Enter through its startup prompts"><input type="checkbox" ${h.autoconfirm ? "checked" : ""}>auto-ok</label>` +
+      (h.source ? "" : `<button class="rule-del" type="button" title="Remove harness">&times;</button>`) +
+      `</div>` +
+      `<div class="entry-line">` +
+      `<input class="setting-input hx-cmd grow" type="text" spellcheck="false" placeholder="command + flags" value="${esc(h.command || "")}">` +
+      `</div>`;
     for (const el of row.querySelectorAll("input")) {
       el.addEventListener("change", save);
       el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
@@ -1423,7 +1433,7 @@ function wireHarnessSettings() {
 
   function collect() {
     const out = [];
-    for (const row of box.querySelectorAll(".rule-row")) {
+    for (const row of box.querySelectorAll(".entry-card")) {
       const v = rowValue(row);
       if (!v.name && !v.command) continue; // blank editor row
       const untouchedDefault = row.dataset.source &&
@@ -1466,6 +1476,21 @@ function wireHarnessSettings() {
   });
 }
 wireHarnessSettings();
+
+// --- settings tabs: one page at a time instead of one long scroll. ---
+function wireSettingsTabs() {
+  const tabs = [...document.querySelectorAll("#settings-tabs .settings-tab")];
+  if (!tabs.length) return;
+  for (const tab of tabs) {
+    tab.onclick = () => {
+      for (const t of tabs) t.classList.toggle("active", t === tab);
+      for (const page of document.querySelectorAll(".settings-page")) {
+        page.classList.toggle("hidden", page.dataset.page !== tab.dataset.page);
+      }
+    };
+  }
+}
+wireSettingsTabs();
 
 // Opened from a notification tap (/?ws=<id>): attach straight to that workspace.
 // Without a deep link there's nothing on screen but "Select a workspace", so

@@ -22,6 +22,11 @@ struct DaemonSettingsView: View {
     @State private var cloudflareTokenSet = false
     @State private var tailscaleAuthKeySet = false
     @State private var devCertStatus = "unset"
+    @State private var llmRoute = ""
+    @State private var accounts: [EditableAccount] = []
+    @State private var harnesses: [EditableHarness] = []
+    @State private var supportsLLM = false
+    @State private var supportsHarnesses = false
 
     /// Stands in for a stored secret the daemon never echoes back: renders as
     /// dots so the field doesn't look mysteriously wiped after save. Untouched
@@ -34,17 +39,70 @@ struct DaemonSettingsView: View {
         var command: String
     }
 
+    struct EditableAccount: Identifiable {
+        let id = UUID()
+        var name: String
+        var kind: String
+        var baseURL: String
+        /// Empty = keep the stored key (the daemon's write-only semantics).
+        var apiKey: String
+        var apiKeySet: Bool
+        /// "from=to, from2=to2" — parsed on save.
+        var aliases: String
+    }
+
+    struct EditableHarness: Identifiable {
+        let id = UUID()
+        var icon: String
+        var name: String
+        var command: String
+        var autoconfirm: Bool
+        let source: String
+        /// The daemon-resolved defaults this row started as: an untouched
+        /// builtin/detected row is NOT persisted, so it stays live-resolved.
+        let orig: [String]
+
+        var untouchedDefault: Bool {
+            !source.isEmpty && orig == [icon, name, command, autoconfirm ? "1" : "0"]
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            identitySection
-            startupSection
-            rulesSection
-            devHostnamesSection
+        VStack(alignment: .leading, spacing: 12) {
+            // One page per concern instead of one long scroll — mirrors the
+            // web lens's settings tabs.
+            TabView {
+                generalTab.tabItem { Text("General") }
+                if supportsLLM { modelsTab.tabItem { Text("Models") } }
+                if supportsHarnesses { harnessesTab.tabItem { Text("Harnesses") } }
+                devTab.tabItem { Text("Dev Hostnames") }
+            }
+            .frame(minHeight: 400)
             saveBar
         }
         .padding(18)
-        .frame(width: 560)
+        .frame(width: 640)
         .task { await load() }
+    }
+
+    private var generalTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                identitySection
+                startupSection
+                rulesSection
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var devTab: some View {
+        ScrollView {
+            devHostnamesSection
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var identitySection: some View {
@@ -137,6 +195,143 @@ struct DaemonSettingsView: View {
         }
     }
 
+    private var modelsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Route all panes to")
+                        .font(.headline)
+                    Text("Which account answers every pane's LLM traffic. Applies to each pane's next request — no restarts. Per-pane overrides win over this.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Picker("", selection: $llmRoute) {
+                        Text("Anthropic (direct, your Claude login)").tag("")
+                        ForEach(accounts) { a in
+                            if !a.name.isEmpty { Text(a.name).tag(a.name) }
+                        }
+                    }
+                    .labelsHidden()
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Accounts")
+                        .font(.headline)
+                    ForEach($accounts) { $account in
+                        accountCard($account)
+                    }
+                    Button("Add account") {
+                        accounts.append(EditableAccount(
+                            name: "", kind: "anthropic", baseURL: "", apiKey: "", apiKeySet: false, aliases: ""))
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func accountCard(_ account: Binding<EditableAccount>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("name", text: account.name)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                Picker("", selection: account.kind) {
+                    Text("anthropic").tag("anthropic")
+                    Text("openai").tag("openai")
+                }
+                .labelsHidden()
+                .frame(width: 110)
+                Button {
+                    accounts.removeAll { $0.id == account.wrappedValue.id }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove account")
+            }
+            TextField("base URL, e.g. http://localhost:11434", text: account.baseURL)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+            HStack(spacing: 6) {
+                SecureField(
+                    account.wrappedValue.apiKeySet ? "key set — empty keeps it" : "api key (empty = your own login)",
+                    text: account.apiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                TextField("aliases: claude-haiku-*=qwen3-4b-32k", text: account.aliases)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+    }
+
+    private var harnessesTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Installed harnesses appear on their own; editing a builtin/detected row saves an override, deleting nothing — untouched rows stay live-resolved. The command field is where per-harness flags live.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach($harnesses) { $harness in
+                    harnessCard($harness)
+                }
+                Button("Add harness") {
+                    harnesses.append(EditableHarness(
+                        icon: "", name: "", command: "", autoconfirm: false, source: "", orig: []))
+                }
+                .controlSize(.small)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func harnessCard(_ harness: Binding<EditableHarness>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("✳", text: harness.icon)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .frame(width: 44)
+                TextField("name", text: harness.name)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                if !harness.wrappedValue.source.isEmpty {
+                    Text(harness.wrappedValue.source)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.15)))
+                }
+                Toggle("auto-ok", isOn: harness.autoconfirm)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 11))
+                    .help("Press Enter through its startup prompts")
+                if harness.wrappedValue.source.isEmpty {
+                    Button {
+                        harnesses.removeAll { $0.id == harness.wrappedValue.id }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove harness")
+                }
+            }
+            TextField("command + flags", text: harness.command)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+    }
+
     private var saveBar: some View {
         HStack(spacing: 6) {
             if saving {
@@ -201,7 +396,12 @@ struct DaemonSettingsView: View {
             startupCommand: command, startupRules: outgoing,
             devDomain: devDomain, lensHostname: lensHostname,
             cloudflareToken: outgoingSecret(cloudflareToken, wasSet: cloudflareTokenSet),
-            tailscaleAuthKey: outgoingSecret(tailscaleAuthKey, wasSet: tailscaleAuthKeySet)) else {
+            tailscaleAuthKey: outgoingSecret(tailscaleAuthKey, wasSet: tailscaleAuthKeySet),
+            // Only what the daemon offered: an older daemon 400s unknown llm
+            // and harness fields, and this Mac may front several hosts.
+            llmRoute: supportsLLM ? llmRoute : nil,
+            llmAccounts: supportsLLM ? outgoingAccounts() : nil,
+            harnesses: supportsHarnesses ? outgoingHarnesses() : nil) else {
             status = "✗ Couldn't save — a domain needs a Cloudflare token, the lens name must be a free DNS label, and the daemon must be running."
             return
         }
@@ -236,9 +436,56 @@ struct DaemonSettingsView: View {
         return "pending"
     }
 
+    /// A blank editor row isn't an account; empty apiKey keeps the stored key.
+    private func outgoingAccounts() -> [[String: Any]] {
+        accounts.filter { !$0.name.isEmpty || !$0.baseURL.isEmpty }.map { a in
+            [
+                "name": a.name, "kind": a.kind, "baseURL": a.baseURL,
+                "apiKey": a.apiKey, "modelAliases": Self.parseAliases(a.aliases),
+            ]
+        }
+    }
+
+    /// Only overrides and new entries persist — an untouched builtin/detected
+    /// row stays live-resolved on the daemon (same rule as the web editor).
+    private func outgoingHarnesses() -> [[String: Any]] {
+        harnesses.compactMap { h in
+            if h.name.isEmpty && h.command.isEmpty { return nil }
+            if h.untouchedDefault { return nil }
+            return ["name": h.name, "icon": h.icon, "command": h.command, "autoconfirm": h.autoconfirm]
+        }
+    }
+
+    /// "from=to, from2=to2" — rows without both sides are dropped as half-typed.
+    private static func parseAliases(_ text: String) -> [[String: String]] {
+        text.split(separator: ",").compactMap { part in
+            let s = part.trimmingCharacters(in: .whitespaces)
+            guard let eq = s.firstIndex(of: "=") else { return nil }
+            let from = String(s[..<eq]).trimmingCharacters(in: .whitespaces)
+            let to = String(s[s.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            if from.isEmpty || to.isEmpty { return nil }
+            return ["from": from, "to": to]
+        }
+    }
+
     private func apply(_ settings: DaemonSettings) {
         command = settings.startupCommand
         rules = settings.startupRules.map { EditableRule(pathPrefix: $0.pathPrefix, command: $0.command) }
+        supportsLLM = settings.supportsLLM
+        supportsHarnesses = settings.supportsHarnesses
+        llmRoute = settings.llmRoute
+        accounts = settings.llmAccounts.map {
+            EditableAccount(
+                name: $0.name, kind: $0.kind, baseURL: $0.baseURL,
+                apiKey: "", apiKeySet: $0.apiKeySet,
+                aliases: $0.modelAliases.map { "\($0.from)=\($0.to)" }.joined(separator: ", "))
+        }
+        harnesses = settings.harnesses.map {
+            EditableHarness(
+                icon: $0.icon ?? "", name: $0.name, command: $0.command ?? "",
+                autoconfirm: $0.autoconfirm, source: $0.source,
+                orig: [$0.icon ?? "", $0.name, $0.command ?? "", $0.autoconfirm ? "1" : "0"])
+        }
         devDomain = settings.devDomain
         lensHostname = settings.lensHostname
         cloudflareTokenSet = settings.cloudflareTokenSet
