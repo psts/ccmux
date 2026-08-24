@@ -946,7 +946,10 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 		// the proxy is a pure Anthropic pass-through — auth untouched, so a
 		// Max OAuth login behaves exactly as without it. Injected even into
 		// plain shells: a claude started by hand in a hosted pane should route
-		// the same as one ccmux started.
+		// the same as one ccmux started. The trade: while the daemon is down,
+		// pane LLM calls fail instead of reaching Anthropic directly. The off
+		// switch is the shell itself — an `export ANTHROPIC_BASE_URL=…` in the
+		// user's rc runs after tmux stamps this and wins.
 		env["ANTHROPIC_BASE_URL"] = m.LocalURL + "/llm/pane/" + paneID
 	}
 	if m.HooksSocket != "" {

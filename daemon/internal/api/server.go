@@ -432,9 +432,16 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.llm != nil {
 		// LLM routing: accounts follow the write-only rule above (key presence,
-		// never key values); absent keys mean the proxy isn't mounted.
-		resp["llmAccounts"] = s.llm.Redacted()
-		resp["llmRoute"] = s.llm.Route()
+		// never key values); absent keys mean the proxy isn't mounted. A read
+		// failure is a 503, never an empty list — a blank page the user then
+		// saves would wipe the stored accounts.
+		accs, route, err := s.llm.Snapshot()
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		resp["llmAccounts"] = accs
+		resp["llmRoute"] = route
 	}
 	if repo := r.URL.Query().Get("repoPath"); repo != "" {
 		resp["resolvedStartupCommand"] = s.mgr.StartupCommandFor(repo)

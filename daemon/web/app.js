@@ -1109,7 +1109,7 @@ function wireLLMSettings() {
   function accountRow(a) {
     const row = document.createElement("div");
     row.className = "rule-row";
-    const keyHint = a.apiKeySet ? "key set — empty keeps it" : "api key (empty = pass-through)";
+    const keyHint = a.apiKeySet ? "key set — empty keeps it" : "api key (none = your own login, local hosts only)";
     row.innerHTML =
       `<input class="setting-input llm-name" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
       `<select class="setting-input llm-kind">` +
