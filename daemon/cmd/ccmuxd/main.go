@@ -31,6 +31,7 @@ import (
 	"ccmux.dev/ccmuxd/config"
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/devhost"
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/hub"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
@@ -110,6 +111,10 @@ func runDaemon() {
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
+	// Harness registry: named ways of working (claude built in, more via
+	// settings). The built-in claude command stays the manager's configured
+	// startup command, so the existing setting and folder rules keep working.
+	mgr.Harnesses = harness.New(st, mgr.DefaultStartupCommand)
 
 	// Built-in peers bus: pane env gets the bearer token (must be wired before
 	// any pane is created), pane-less sessions discover url+token via the info

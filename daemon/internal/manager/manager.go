@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"ccmux.dev/ccmuxd/internal/autoconfirm"
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
 	"ccmux.dev/ccmuxd/internal/shellint"
@@ -72,6 +73,11 @@ type Manager struct {
 	// bus injects its bearer token here). Set once at startup, before any pane is
 	// created. Nil = no extras.
 	ExtraPaneEnv func(paneID string) map[string]string
+
+	// Harnesses resolves named harnesses for spawn and revive (see
+	// internal/harness). Set once at startup; nil disables harness spawns and
+	// makes revive treat every pane as legacy (autoconfirm armed).
+	Harnesses *harness.Service
 
 	// OnDevhostChange, when set, is invoked (on its own goroutine) after any
 	// dev-hostname or dev-setting mutation so the devhost server reconciles.
@@ -294,7 +300,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy, gr
 		return nil, err
 	}
 	_ = ctrl.Resize(pane0.ID, defaultCols, defaultRows)
-	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand)
+	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand, true)
 
 	ws := &model.Workspace{
 		ID: wsID, Name: name, RepoPath: repoPath, CreatedBy: createdBy,
@@ -316,7 +322,15 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy, gr
 
 // SpawnPane adds a pane (tmux window) to a live workspace.
 func (m *Manager) SpawnPane(wsID, cwd, startupCmd, createdBy string) (*model.Pane, error) {
-	return m.spawnPane(wsID, cwd, startupCmd, startupCmd, createdBy)
+	return m.spawnPane(wsID, cwd, startupCmd, startupCmd, createdBy, "", true)
+}
+
+// SpawnHarnessPane adds a pane that runs a named harness: the harness's
+// command is typed into the new shell and its NAME is recorded on the pane,
+// so revive and the lenses know what this pane is without guessing from
+// command text.
+func (m *Manager) SpawnHarnessPane(wsID, cwd, createdBy string, h harness.Harness) (*model.Pane, error) {
+	return m.spawnPane(wsID, cwd, h.Command, h.Command, createdBy, h.Name, h.Autoconfirm)
 }
 
 // KillPane kills one pane (SIGTERM through tmux) and drops it from the
@@ -375,14 +389,15 @@ func (m *Manager) KillPane(wsID, paneID string) error {
 // never persisted: a revive brings the pane back as a plain shell. This is the
 // peers-bus teammate spawn — the birth prompt must fire exactly once.
 func (m *Manager) SpawnEphemeralPane(wsID, cwd, oneShotCmd, createdBy string) error {
-	_, err := m.spawnPane(wsID, cwd, "", oneShotCmd, createdBy)
+	_, err := m.spawnPane(wsID, cwd, "", oneShotCmd, createdBy, "", true)
 	return err
 }
 
 // spawnPane creates the pane with persistCmd on record while deliverCmd is what
 // actually types into the new shell — equal for normal panes, split for
-// ephemeral ones.
-func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy string) (*model.Pane, error) {
+// ephemeral ones. harnessName overrides the startup-command guess when the
+// caller knows what this pane is for; confirm gates the autoconfirm watcher.
+func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnessName string, confirm bool) (*model.Pane, error) {
 	e := m.entry(wsID)
 	if e == nil || e.ctrl == nil {
 		return nil, fmt.Errorf("workspace %s not live", wsID)
@@ -391,11 +406,14 @@ func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy string)
 		cwd = e.ws.RepoPath
 	}
 	p := m.newPane(wsID, cwd, persistCmd, createdBy)
+	if harnessName != "" {
+		p.Harness = harnessName
+	}
 	if err := e.ctrl.SpawnWindow(p.ID, cwd, m.paneEnv(p.ID)); err != nil {
 		return nil, err
 	}
 	_ = e.ctrl.Resize(p.ID, defaultCols, defaultRows)
-	m.deliverStartup(e.ctrl, p.ID, deliverCmd)
+	m.deliverStartup(e.ctrl, p.ID, deliverCmd, confirm)
 
 	m.mu.Lock()
 	e.ws.Panes = append(e.ws.Panes, p)
@@ -546,9 +564,23 @@ func (m *Manager) sizeAndStart(ctrl *session.Controller, p *model.Pane, d paneDi
 	} else {
 		sized = true
 	}
-	m.deliverStartup(ctrl, p.ID, p.StartupCommand)
+	m.deliverStartup(ctrl, p.ID, p.StartupCommand, m.confirmFor(p))
 	p.Status = model.StatusLive
 	return sized
+}
+
+// confirmFor answers whether a revived pane's startup gets the autoconfirm
+// watcher: a pane with a recorded harness follows that harness's word; a
+// legacy pane keeps the always-armed behavior (its command may alias claude).
+func (m *Manager) confirmFor(p *model.Pane) bool {
+	if p.Harness == "" || m.Harnesses == nil {
+		return true
+	}
+	h, err := m.Harnesses.Resolve(p.Harness)
+	if err != nil {
+		return true // a renamed/removed harness degrades to legacy, not to silence
+	}
+	return h.Autoconfirm
 }
 
 // ArchiveWorkspace kills a workspace's tmux session but KEEPS its registry
@@ -798,9 +830,22 @@ func (m *Manager) newPane(wsID, cwd, startupCmd, createdBy string) *model.Pane {
 		ID: uuid.NewString(), WorkspaceID: wsID, CWD: cwd, StartupCommand: startupCmd,
 		CreatedBy: createdBy, CreatedAt: nowMillis(), Status: model.StatusLive,
 		Attention: model.AttentionIdle,
-		Title:     initialPaneTitle(startupCmd),   // refined live by tmux signals
-		Cols:      defaultCols, Rows: defaultRows, // matches the initial ctrl.Resize
+		Title:     initialPaneTitle(startupCmd), // refined live by tmux signals
+		// The command-text guess only SEEDS the harness; a caller that knows
+		// (SpawnHarnessPane) overrides it. Same relationship hosted_claude has
+		// to its seed.
+		Harness: guessHarness(startupCmd),
+		Cols:    defaultCols, Rows: defaultRows, // matches the initial ctrl.Resize
 	}
+}
+
+// guessHarness maps a raw startup command to the harness it starts, for panes
+// created by command rather than by name ("" = plain shell or unrecognized).
+func guessHarness(startupCmd string) string {
+	if startsClaude(startupCmd) {
+		return harness.Builtin
+	}
+	return ""
 }
 
 // paneSize is a pane's remembered tmux size, falling back to the default for a
@@ -1018,15 +1063,19 @@ func baseName(p string) string {
 
 // deliverStartup sends a pane's startup command as keystrokes (the sanctioned
 // startup mechanism — not mid-session injection). Sizing is already set, so no
-// wrap dance is needed. Because a startup command may launch a dev-channels
-// claude (possibly via a shell alias), we arm the hands-free auto-confirm
-// watcher for the pane's first ~120s.
-func (m *Manager) deliverStartup(ctrl *session.Controller, paneID, cmd string) {
+// wrap dance is needed. confirm arms the hands-free auto-confirm watcher for
+// the pane's first ~120s — built for claude's startup prompts, so a harness
+// says whether its own prompts are safe to Enter through blind (legacy
+// command paths keep it armed: a startup command may launch a dev-channels
+// claude via a shell alias, which no text guess can see).
+func (m *Manager) deliverStartup(ctrl *session.Controller, paneID, cmd string, confirm bool) {
 	if cmd == "" {
 		return
 	}
 	_ = ctrl.SendInput(paneID, []byte(cmd+"\r"))
-	go autoconfirm.Watch(m.ctx, ctrl, paneID)
+	if confirm {
+		go autoconfirm.Watch(m.ctx, ctrl, paneID)
+	}
 }
 
 // watch consumes a controller's notices and reflects them into the registry:

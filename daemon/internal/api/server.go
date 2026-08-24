@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -447,6 +448,15 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		resp["llmAccounts"] = accs
 		resp["llmRoute"] = route
 	}
+	if s.mgr.Harnesses != nil {
+		// Resolved list, built-in claude included — what a picker renders.
+		hs, err := s.mgr.Harnesses.List()
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		resp["harnesses"] = hs
+	}
 	if repo := r.URL.Query().Get("repoPath"); repo != "" {
 		resp["resolvedStartupCommand"] = s.mgr.StartupCommandFor(repo)
 	}
@@ -485,6 +495,10 @@ type settingsRequest struct {
 	// stored key, so the redacted GET view round-trips safely.
 	LLMAccounts *[]llmproxy.Account `json:"llmAccounts"`
 	LLMRoute    *string             `json:"llmRoute"`
+	// The user harness list replaces wholly (same trap-avoidance as aliases).
+	// GET reports the resolved list with the built-in claude included; an
+	// entry named "claude" here overrides that built-in.
+	Harnesses *[]harness.Harness `json:"harnesses"`
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -543,6 +557,14 @@ func (s *Server) rejectSettings(req settingsRequest) (string, bool) {
 			return msg, false
 		}
 	}
+	if req.Harnesses != nil {
+		if s.mgr.Harnesses == nil {
+			return "harnesses are not available on this daemon", false
+		}
+		if msg := s.mgr.Harnesses.Reject(*req.Harnesses); msg != "" {
+			return msg, false
+		}
+	}
 	// An alias row missing either side is the caller's mistake, not something to
 	// silently drop and then answer 200 to.
 	if req.IdentityAliases != nil {
@@ -584,6 +606,11 @@ func (s *Server) applySettings(req settingsRequest) error {
 	}
 	if req.LLMAccounts != nil || req.LLMRoute != nil {
 		if err := s.llm.Apply(req.LLMAccounts, req.LLMRoute); err != nil {
+			return err
+		}
+	}
+	if req.Harnesses != nil {
+		if err := s.mgr.Harnesses.Apply(*req.Harnesses); err != nil {
 			return err
 		}
 	}
@@ -735,6 +762,10 @@ type spawnPaneReq struct {
 	CWD            string `json:"cwd"`
 	StartupCommand string `json:"startupCommand"`
 	CreatedBy      string `json:"createdBy"`
+	// Harness spawns the pane by harness NAME instead of raw command — the
+	// pane records what it is, and the harness's own command and autoconfirm
+	// rules apply. Mutually exclusive with startupCommand.
+	Harness string `json:"harness"`
 }
 
 func (s *Server) spawnPane(w http.ResponseWriter, r *http.Request) {
@@ -742,7 +773,33 @@ func (s *Server) spawnPane(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.Harness != "" {
+		s.spawnHarnessPane(w, r.PathValue("id"), req)
+		return
+	}
 	p, err := s.mgr.SpawnPane(r.PathValue("id"), req.CWD, req.StartupCommand, req.CreatedBy)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
+}
+
+func (s *Server) spawnHarnessPane(w http.ResponseWriter, wsID string, req spawnPaneReq) {
+	if req.StartupCommand != "" {
+		writeError(w, http.StatusBadRequest, "harness and startupCommand are mutually exclusive")
+		return
+	}
+	if s.mgr.Harnesses == nil {
+		writeError(w, http.StatusBadRequest, "harnesses are not available on this daemon")
+		return
+	}
+	h, err := s.mgr.Harnesses.Resolve(req.Harness)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	p, err := s.mgr.SpawnHarnessPane(wsID, req.CWD, req.CreatedBy, h)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

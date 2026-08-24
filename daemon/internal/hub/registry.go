@@ -55,13 +55,13 @@ type Host struct {
 	Addr     string   `json:"addr"`
 	IPs      []string `json:"-"` // hub-internal: authorizes inbound member peers-bus conns
 	Healthy  bool     `json:"healthy"`
-	Self     bool   `json:"self,omitempty"` // the hub node itself (also a host)
-	Version  string `json:"version,omitempty"`
-	Contract int    `json:"contract,omitempty"`
-	Owner    string `json:"owner,omitempty"` // the host's human (from its health report)
-	Compat   string `json:"compat"`
-	Reason   string `json:"reason,omitempty"`
-	LastSeen int64  `json:"lastSeen"`
+	Self     bool     `json:"self,omitempty"` // the hub node itself (also a host)
+	Version  string   `json:"version,omitempty"`
+	Contract int      `json:"contract,omitempty"`
+	Owner    string   `json:"owner,omitempty"` // the host's human (from its health report)
+	Compat   string   `json:"compat"`
+	Reason   string   `json:"reason,omitempty"`
+	LastSeen int64    `json:"lastSeen"`
 }
 
 // Registry tracks the federation's member hosts. Refresh rediscovers and

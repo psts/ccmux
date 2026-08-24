@@ -52,13 +52,13 @@ type Controller struct {
 	wsID    string
 	client  *tmux.Client
 
-	mu          sync.RWMutex
-	byTmuxPane  map[string]*paneRef // "%0" -> ref
-	byID        map[string]*paneRef // uuid -> ref
-	subs        map[int]*subscriber
-	nextSub     int
-	notices     chan Notice
-	closed      bool
+	mu         sync.RWMutex
+	byTmuxPane map[string]*paneRef // "%0" -> ref
+	byID       map[string]*paneRef // uuid -> ref
+	subs       map[int]*subscriber
+	nextSub    int
+	notices    chan Notice
+	closed     bool
 }
 
 // Open dials control mode for an existing session, stamps the session's managed

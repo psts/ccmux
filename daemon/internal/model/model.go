@@ -204,17 +204,22 @@ const (
 
 // Pane is one terminal (a tmux window with a single pane).
 type Pane struct {
-	ID             string    `json:"id"` // stable uuid → tmux @ccmux_pane_id
-	WorkspaceID    string    `json:"workspaceId"`
-	TmuxWindow     string    `json:"tmuxWindow,omitempty"` // @N, runtime-only
-	TmuxPane       string    `json:"tmuxPane,omitempty"`   // %N, runtime-only
-	Title          string    `json:"title"`
-	CWD            string    `json:"cwd"`
-	StartupCommand string    `json:"startupCommand,omitempty"`
-	CreatedBy      string    `json:"createdBy"`
-	CreatedAt      int64     `json:"createdAt"`
-	Status         Status    `json:"status"`
-	Attention      Attention `json:"attention"`
+	ID             string `json:"id"` // stable uuid → tmux @ccmux_pane_id
+	WorkspaceID    string `json:"workspaceId"`
+	TmuxWindow     string `json:"tmuxWindow,omitempty"` // @N, runtime-only
+	TmuxPane       string `json:"tmuxPane,omitempty"`   // %N, runtime-only
+	Title          string `json:"title"`
+	CWD            string `json:"cwd"`
+	StartupCommand string `json:"startupCommand,omitempty"`
+	// Harness names the way of working this pane was started with ("claude",
+	// "pi", …; "" = plain shell). Recorded at spawn — the durable answer to the
+	// question startupProgram() used to guess from command text — and what a
+	// revive or restart uses to bring the right thing back.
+	Harness   string    `json:"harness,omitempty"`
+	CreatedBy string    `json:"createdBy"`
+	CreatedAt int64     `json:"createdAt"`
+	Status    Status    `json:"status"`
+	Attention Attention `json:"attention"`
 	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
 	// ■). Its presence is the "running" signal lenses render.
 	DevServer bool `json:"devServer,omitempty"`

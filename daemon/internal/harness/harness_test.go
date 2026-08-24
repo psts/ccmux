@@ -1,0 +1,108 @@
+package harness
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+type fakeStore map[string]string
+
+func (f fakeStore) GetSetting(key string) (string, error) { return f[key], nil }
+func (f fakeStore) SetSetting(key, value string) error    { f[key] = value; return nil }
+
+type brokenStore struct{}
+
+func (brokenStore) GetSetting(string) (string, error) { return "", errors.New("disk io error") }
+func (brokenStore) SetSetting(string, string) error   { return nil }
+
+func testService(st Store) *Service {
+	return New(st, func() string { return "env -u TMUX claude --dangerously-load-development-channels server:claude-peers" })
+}
+
+// An unconfigured daemon still has the claude harness, wired to the
+// configured startup command, with autoconfirm armed.
+func TestBuiltinClaudeAlwaysPresent(t *testing.T) {
+	s := testService(fakeStore{})
+	hs, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hs) != 1 || hs[0].Name != "claude" || !hs[0].Autoconfirm {
+		t.Fatalf("list = %+v, want the built-in claude", hs)
+	}
+	if !strings.Contains(hs[0].Command, "claude") {
+		t.Fatalf("builtin command = %q", hs[0].Command)
+	}
+	h, err := s.Resolve("claude")
+	if err != nil || h.Name != "claude" {
+		t.Fatalf("resolve claude = %+v, %v", h, err)
+	}
+	if _, err := s.Resolve("pi"); err == nil {
+		t.Fatal("resolving an unknown harness must error")
+	}
+}
+
+// A user entry named "claude" replaces the built-in wholesale; other entries
+// append after it.
+func TestUserListAndClaudeOverride(t *testing.T) {
+	s := testService(fakeStore{})
+	user := []Harness{
+		{Name: "pi", Icon: "π", Command: "pi"},
+		{Name: "claude", Command: "claude --continue", Autoconfirm: false},
+	}
+	if msg := s.Reject(user); msg != "" {
+		t.Fatalf("reject: %s", msg)
+	}
+	if err := s.Apply(user); err != nil {
+		t.Fatal(err)
+	}
+	hs, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hs) != 2 {
+		t.Fatalf("list = %+v, want no duplicate claude", hs)
+	}
+	c, _ := s.Resolve("claude")
+	if c.Command != "claude --continue" || c.Autoconfirm {
+		t.Fatalf("override lost: %+v", c)
+	}
+	if p, _ := s.Resolve("pi"); p.Command != "pi" {
+		t.Fatalf("pi = %+v", p)
+	}
+}
+
+func TestRejectValidation(t *testing.T) {
+	s := testService(fakeStore{})
+	cases := []struct {
+		hs   []Harness
+		want string
+	}{
+		{[]Harness{{Name: "pi", Command: "pi"}}, ""},
+		{[]Harness{{Name: "", Command: "x"}}, "empty name"},
+		{[]Harness{{Name: "a", Command: "x"}, {Name: "a", Command: "y"}}, "duplicate"},
+		{[]Harness{{Name: "a", Command: "  "}}, "no command"},
+	}
+	for i, c := range cases {
+		msg := s.Reject(c.hs)
+		if c.want == "" && msg != "" {
+			t.Errorf("case %d rejected: %s", i, msg)
+		}
+		if c.want != "" && !strings.Contains(msg, c.want) {
+			t.Errorf("case %d = %q, want %q", i, msg, c.want)
+		}
+	}
+}
+
+// Unreadable is not empty: a failing store errors instead of quietly
+// shrinking the list to just the built-in.
+func TestBrokenStoreErrors(t *testing.T) {
+	s := testService(brokenStore{})
+	if _, err := s.List(); err == nil {
+		t.Fatal("List on broken store returned no error")
+	}
+	if _, err := s.Resolve("claude"); err == nil {
+		t.Fatal("Resolve on broken store returned no error")
+	}
+}

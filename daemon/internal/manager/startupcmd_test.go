@@ -43,3 +43,22 @@ func TestInitialPaneTitle_FallbackCommand(t *testing.T) {
 		t.Error("startsClaude(FallbackStartupCommand) = false, want true")
 	}
 }
+
+// guessHarness is the SEED for a pane's harness when it is created by raw
+// command: claude-shaped commands are claude panes, everything else is a
+// plain shell until a harness spawn says otherwise.
+func TestGuessHarness(t *testing.T) {
+	cases := map[string]string{
+		"claude": "claude",
+		"env -u TMUX claude --dangerously-load-development-channels x": "claude",
+		"FOO=1 claude --continue":                                      "claude",
+		":":                                                            "",
+		"":                                                             "",
+		"vim":                                                          "",
+	}
+	for cmd, want := range cases {
+		if got := guessHarness(cmd); got != want {
+			t.Errorf("guessHarness(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}
