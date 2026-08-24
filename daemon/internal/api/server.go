@@ -283,6 +283,13 @@ func (s *Server) Handler() http.Handler {
 		// Pane LLM traffic (ANTHROPIC_BASE_URL points every pane here). Loopback
 		// only: keyed accounts inject stored credentials, and panes are local —
 		// a tailnet caller has no business borrowing this host's LLM accounts.
+		// Within loopback there is deliberately no further gate: any local
+		// process can use the routed account, pane id unverified. On this
+		// single-user host every local process is the owner's own, and the
+		// pane id is a routing/logging scope, not an identity. The day another
+		// ACCOUNT shares the host, this needs a per-pane token like the peers
+		// bus bearer (pane env already carries per-pane secrets — see
+		// shellint.EnvForPane), not a bigger loopback check.
 		// Per-METHOD patterns for the same reason as the relay below; GET also
 		// covers HEAD (claude probes HEAD /api/hello on startup).
 		llmH := s.llm.Handler()

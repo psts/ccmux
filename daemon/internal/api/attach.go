@@ -41,11 +41,14 @@ type paneInfo struct {
 	Attention model.Attention `json:"attention"`
 	Cols      int             `json:"cols,omitempty"`
 	Rows      int             `json:"rows,omitempty"`
-	// Harness/AtShell drive the lens's harness pickers: a shell pane with no
-	// harness gets offered the "start here" bar (see model.Pane).
-	Harness string `json:"harness,omitempty"`
-	AtShell bool   `json:"atShell,omitempty"`
-	Dormant bool   `json:"dormant,omitempty"`
+	// Harness/AtShell/DevServer drive the lens's harness pickers: a shell pane
+	// with no harness gets offered the "start here" bar, and the dev-server
+	// pane never does — its shell coming back means the dev server exited,
+	// not that it wants a harness (see model.Pane).
+	Harness   string `json:"harness,omitempty"`
+	AtShell   bool   `json:"atShell,omitempty"`
+	Dormant   bool   `json:"dormant,omitempty"`
+	DevServer bool   `json:"devServer,omitempty"`
 }
 
 // attach upgrades to a WebSocket and streams one workspace's panes. Only this
@@ -361,6 +364,7 @@ func paneInfos(ws *model.Workspace) []paneInfo {
 			ID: p.ID, Title: p.Title, CWD: p.CWD, Attention: p.Attention,
 			Cols: p.Cols, Rows: p.Rows,
 			Harness: p.Harness, AtShell: p.AtShell, Dormant: p.Dormant,
+			DevServer: p.DevServer,
 		}
 	}
 	return out

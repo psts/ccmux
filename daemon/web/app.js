@@ -106,9 +106,11 @@ function syncPaneTitles() {
     // atShell/harness arrive late for a fresh pane (the attach hello races
     // tmux's first command signal), so the harness bar re-derives from every
     // registry refresh — the firehose fires one for exactly this change.
-    if (!!q.atShell !== !!p.atShell || !!q.dormant !== !!p.dormant || (q.harness || "") !== (p.harness || "")) {
+    if (!!q.atShell !== !!p.atShell || !!q.dormant !== !!p.dormant ||
+        !!q.devServer !== !!p.devServer || (q.harness || "") !== (p.harness || "")) {
       p.atShell = q.atShell;
       p.dormant = q.dormant;
+      p.devServer = q.devServer;
       p.harness = q.harness;
       shellChanged = true;
     }
@@ -1268,7 +1270,7 @@ wireStartupCommandSetting();
 // keeps its stored one, so re-saving this form never wipes a secret. ---
 function wireLLMSettings() {
   const routeSel = $("llm-route"), box = $("llm-accounts");
-  const addBtn = $("llm-account-add"), state = $("llm-state");
+  const addBtn = $("llm-account-add"), statusEl = $("llm-state");
   if (!routeSel) return;
 
   function accountRow(a) {
@@ -1342,9 +1344,9 @@ function wireLLMSettings() {
       box.innerHTML = "";
       for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a));
       renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
-      state.textContent = "Applies to every pane's next request — no restarts.";
+      statusEl.textContent = "Applies to every pane's next request — no restarts.";
     } catch (_) {
-      state.textContent = "Couldn't load LLM settings.";
+      statusEl.textContent = "Couldn't load LLM settings.";
     }
   }
 
@@ -1352,9 +1354,9 @@ function wireLLMSettings() {
     try {
       const cfg = await put({ llmAccounts: collectAccounts() });
       renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
-      state.textContent = "Saved.";
+      statusEl.textContent = "Saved.";
     } catch (e) {
-      state.textContent = "Not saved: " + e.message;
+      statusEl.textContent = "Not saved: " + e.message;
     }
   }
 
@@ -1362,10 +1364,10 @@ function wireLLMSettings() {
   routeSel.addEventListener("change", async () => {
     try {
       await put({ llmRoute: routeSel.value });
-      state.textContent = routeSel.value
+      statusEl.textContent = routeSel.value
         ? `Routing all panes to ${routeSel.value}.` : "Routing direct to Anthropic.";
     } catch (e) {
-      state.textContent = "Not saved: " + e.message;
+      statusEl.textContent = "Not saved: " + e.message;
       load(); // the picker now lies — reload truth
     }
   });
@@ -1385,7 +1387,7 @@ wireLLMSettings();
 // default. The command field is where per-harness flags live, e.g. claude's
 // --dangerously-load-development-channels. ---
 function wireHarnessSettings() {
-  const box = $("harness-list"), addBtn = $("harness-add"), state = $("harness-state");
+  const box = $("harness-list"), addBtn = $("harness-add"), statusEl = $("harness-state");
   if (!box) return;
 
   function harnessRow(h) {
@@ -1437,9 +1439,9 @@ function wireHarnessSettings() {
       const cfg = await (await fetch("/v1/settings")).json();
       box.innerHTML = "";
       for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h));
-      state.textContent = "Installed harnesses appear on their own; edit a row to override it.";
+      statusEl.textContent = "Installed harnesses appear on their own; edit a row to override it.";
     } catch (_) {
-      state.textContent = "Couldn't load harnesses.";
+      statusEl.textContent = "Couldn't load harnesses.";
     }
   }
 
@@ -1451,9 +1453,9 @@ function wireHarnessSettings() {
         body: JSON.stringify({ harnesses: collect() }),
       });
       if (!r.ok) throw new Error(await r.text());
-      state.textContent = "Saved.";
+      statusEl.textContent = "Saved.";
     } catch (e) {
-      state.textContent = "Not saved: " + e.message;
+      statusEl.textContent = "Not saved: " + e.message;
     }
   }
 

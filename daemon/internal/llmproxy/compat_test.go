@@ -1,6 +1,7 @@
 package llmproxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -125,5 +126,37 @@ func TestModelAliases(t *testing.T) {
 	}
 	if m := send("qwen27:latest"); m != "qwen27:latest" {
 		t.Fatalf("unmatched model rewritten to %q", m)
+	}
+}
+
+// A body past the rewrite buffer cap must reach the upstream byte-complete —
+// the buffered prefix plus the unread remainder, original length intact. The
+// old restoreBody path forwarded a well-formed request carrying truncated
+// JSON, which an upstream half-parses instead of refusing.
+func TestOversizeBodyForwardedComplete(t *testing.T) {
+	var gotLen int
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotLen = len(b)
+	}))
+	defer up.Close()
+	s := New(fakeStore{})
+	accs := []Account{{Name: "ollama", BaseURL: up.URL}}
+	route := "ollama"
+	_ = s.Apply(&accs, &route)
+	p := mount(s)
+	defer p.Close()
+
+	size := maxCompatBody + 4096
+	body := append([]byte(`{"model":"m","pad":"`), bytes.Repeat([]byte("x"), size)...)
+	body = append(body, []byte(`"}`)...)
+	req, _ := http.NewRequest("POST", p.URL+"/llm/pane/p1/v1/messages", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotLen != len(body) {
+		t.Fatalf("upstream received %d of %d bytes — truncated", gotLen, len(body))
 	}
 }

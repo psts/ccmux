@@ -40,11 +40,16 @@ func rewriteRequest(r *http.Request, a Account) {
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxCompatBody+1))
-	r.Body.Close()
 	if err != nil || len(body) > maxCompatBody {
-		restoreBody(r, body)
+		// Forward GENUINELY untouched: the buffered prefix followed by the
+		// unread remainder, with the client's own Content-Length intact.
+		// restoreBody here would truncate — it stamps the length of what we
+		// happened to buffer, turning an oversized request into well-formed
+		// HTTP carrying cut-off JSON the upstream would half-parse.
+		r.Body = prefixedBody{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
 		return
 	}
+	r.Body.Close()
 	var req map[string]json.RawMessage
 	if json.Unmarshal(body, &req) != nil {
 		restoreBody(r, body)
@@ -131,4 +136,11 @@ func restoreBody(r *http.Request, body []byte) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.Header.Del("Content-Length")
+}
+
+// prefixedBody re-heads a partially-read request body: the buffered bytes
+// first, then whatever the original reader still holds.
+type prefixedBody struct {
+	io.Reader
+	io.Closer
 }
