@@ -98,12 +98,22 @@ function attachOrigin(ws) {
 function syncPaneTitles() {
   const ws = state.workspaces.find((w) => w.id === state.wsId);
   if (!ws || !ws.panes) return;
-  let changed = false;
+  let changed = false, shellChanged = false;
   for (const p of state.panes) {
     const q = ws.panes.find((x) => x.id === p.id);
-    if (q && q.title !== p.title) { p.title = q.title; changed = true; }
+    if (!q) continue;
+    if (q.title !== p.title) { p.title = q.title; changed = true; }
+    // atShell/harness arrive late for a fresh pane (the attach hello races
+    // tmux's first command signal), so the harness bar re-derives from every
+    // registry refresh — the firehose fires one for exactly this change.
+    if (!!q.atShell !== !!p.atShell || (q.harness || "") !== (p.harness || "")) {
+      p.atShell = q.atShell;
+      p.harness = q.harness;
+      shellChanged = true;
+    }
   }
   if (changed) renderTabs();
+  if (shellChanged) updateHarnessBar();
 }
 
 // renderList renders the SHARED arrangement (v2): windows you have OPEN as

@@ -41,6 +41,11 @@ type paneInfo struct {
 	Attention model.Attention `json:"attention"`
 	Cols      int             `json:"cols,omitempty"`
 	Rows      int             `json:"rows,omitempty"`
+	// Harness/AtShell drive the lens's harness pickers: a shell pane with no
+	// harness gets offered the "start here" bar (see model.Pane).
+	Harness string `json:"harness,omitempty"`
+	AtShell bool   `json:"atShell,omitempty"`
+	Dormant bool   `json:"dormant,omitempty"`
 }
 
 // attach upgrades to a WebSocket and streams one workspace's panes. Only this
@@ -352,7 +357,11 @@ func frameFor(ev session.Event) wsMsg {
 func paneInfos(ws *model.Workspace) []paneInfo {
 	out := make([]paneInfo, len(ws.Panes))
 	for i, p := range ws.Panes {
-		out[i] = paneInfo{ID: p.ID, Title: p.Title, CWD: p.CWD, Attention: p.Attention, Cols: p.Cols, Rows: p.Rows}
+		out[i] = paneInfo{
+			ID: p.ID, Title: p.Title, CWD: p.CWD, Attention: p.Attention,
+			Cols: p.Cols, Rows: p.Rows,
+			Harness: p.Harness, AtShell: p.AtShell, Dormant: p.Dormant,
+		}
 	}
 	return out
 }
