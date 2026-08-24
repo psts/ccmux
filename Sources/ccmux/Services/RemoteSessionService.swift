@@ -496,14 +496,24 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// POST a new pane to the daemon and decode the created pane (nil on failure).
-    private func postSpawnPane(daemonId: String, cwd: String = "", startupCommand: String = "") async -> DaemonPane? {
+    /// A non-empty harness spawns BY NAME — the daemon applies that harness's own
+    /// command and autoconfirm rules and records the pane's kind (startupCommand
+    /// must then stay empty; the daemon refuses both together).
+    private func postSpawnPane(
+        daemonId: String, cwd: String = "", startupCommand: String = "", harness: String = ""
+    ) async -> DaemonPane? {
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/panes") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "cwd": cwd, "startupCommand": startupCommand, "createdBy": DaemonConfig.selfUser,
-        ])
+        ]
+        if !harness.isEmpty {
+            body["harness"] = harness
+            body["startupCommand"] = ""
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, resp) = try await session.data(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 201 else { return nil }
@@ -518,9 +528,11 @@ final class RemoteSessionService: ObservableObject {
     /// the daemon (a tmux pane every lens sees), never as a local child shell.
     /// Spawn it, then land it exactly where the user asked. The final refresh
     /// converges the pane signature; the patch path makes it churn-free.
-    private func placeSpawnedTerminal(appId: UUID, leafId: UUID, direction: SplitDirection?) async {
+    private func placeSpawnedTerminal(
+        appId: UUID, leafId: UUID, direction: SplitDirection?, harness: String = ""
+    ) async {
         guard let daemonId = daemonIds[appId],
-              let pane = await postSpawnPane(daemonId: daemonId) else { return }
+              let pane = await postSpawnPane(daemonId: daemonId, harness: harness) else { return }
         await MainActor.run {
             guard let controller = controllers[appId], let attachment = attachments[appId] else { return }
             _ = attachment.controller(forPane: pane.id, workingDirectory: pane.cwd) // warm before the view asks
@@ -531,6 +543,21 @@ final class RemoteSessionService: ObservableObject {
             }
         }
         await refresh()
+    }
+
+    /// The daemon-resolved harness list (built-in claude + detected + user
+    /// entries) for the tab bar's picker. nil on any failure — the picker
+    /// simply stays empty rather than offering stale names.
+    private func fetchHarnesses() async -> [DaemonHarness]? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
+        struct SettingsHarnesses: Codable { var harnesses: [DaemonHarness]? }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            return try JSONDecoder().decode(SettingsHarnesses.self, from: data).harnesses ?? []
+        } catch {
+            return nil
+        }
     }
 
     /// Kill a hosted pane on the daemon (a hosted tab's ✕ — the tab is already
@@ -781,6 +808,15 @@ final class RemoteSessionService: ObservableObject {
         controller.fileSource = DaemonFileSource(daemonId: dw.id)
         controller.onHostedTerminalRequest = { [weak self] leafId, direction in
             Task { await self?.placeSpawnedTerminal(appId: appId, leafId: leafId, direction: direction) }
+        }
+        controller.onHostedHarnessRequest = { [weak self] leafId, name in
+            Task { await self?.placeSpawnedTerminal(appId: appId, leafId: leafId, direction: nil, harness: name) }
+        }
+        // Feed the harness picker; a fetch failure just leaves the menu empty.
+        Task { [weak self, weak controller] in
+            if let hs = await self?.fetchHarnesses(), let controller {
+                await MainActor.run { controller.harnesses = hs }
+            }
         }
         controller.onHostedPaneClosed = { [weak self] paneId in
             Task { await self?.killHostedPane(appId: appId, paneId: paneId) }

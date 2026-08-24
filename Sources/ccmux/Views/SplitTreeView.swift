@@ -188,6 +188,12 @@ private struct LeafPaneView: View {
                 claudePaneId: controller.claudePaneId,
                 onDesignateClaudePane: { terminalId in
                     controller.setClaudePane(terminalId: terminalId)
+                },
+                // harnesses stays empty in driver mode (never fed), which hides
+                // the picker; addHarnessTab no-ops without a hosted handler.
+                harnesses: controller.harnesses,
+                onAddHarnessTab: { name in
+                    controller.addHarnessTab(leafId: paneId, harness: name)
                 }
             )
 

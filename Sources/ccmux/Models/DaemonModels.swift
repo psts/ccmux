@@ -299,6 +299,26 @@ struct DaemonGitStatus: Codable {
     }
 }
 
+/// A harness the daemon offers: a named way of working in a pane (claude is
+/// built in; installed programs like pi/opencode are auto-detected). Read
+/// from GET /v1/settings "harnesses"; the daemon resolves the list, this is
+/// display + spawn-by-name only.
+struct DaemonHarness: Codable, Identifiable {
+    let name: String
+    var icon: String?
+    var command: String?
+    var id: String { name }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        icon = try c.decodeIfPresent(String.self, forKey: .icon)
+        command = try c.decodeIfPresent(String.self, forKey: .command)
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, icon, command }
+}
+
 /// A daemon pane = one tmux window (single tmux pane). `id` is the stable
 /// `@ccmux_pane_id` used as the `pane` field in attach WS frames.
 struct DaemonPane: Codable, Identifiable {

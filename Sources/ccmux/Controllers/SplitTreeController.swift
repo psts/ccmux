@@ -26,6 +26,13 @@ class SplitTreeController: ObservableObject {
     /// direction (nil = append as a tab). The service spawns the pane and inserts
     /// the hosted tab/split itself.
     var onHostedTerminalRequest: ((UUID, SplitDirection?) -> Void)?
+    /// Spawn a pane running a named harness (hosted workspaces only — the
+    /// daemon resolves the harness and records the pane's kind). nil in
+    /// driver mode, which hides the picker.
+    var onHostedHarnessRequest: ((UUID, String) -> Void)?
+    /// The daemon's resolved harness list, fed by the session service for the
+    /// tab bar's picker. Empty until (unless) the fetch lands.
+    @Published var harnesses: [DaemonHarness] = []
     /// Fired with the daemon pane id of every hosted terminal tab the user closes,
     /// so the service kills the remote pane (otherwise it would keep running and
     /// the next reconcile's merge would resurface it).
@@ -141,6 +148,12 @@ class SplitTreeController: ObservableObject {
         pane.addTab(newContent)
         tree = tree.replaceContent(leafId: leafId, newContent: pane)
         focusedPaneId = leafId
+    }
+
+    /// Spawn a harness pane next to leafId (hosted only; a no-op in driver
+    /// mode where no request handler is wired).
+    func addHarnessTab(leafId: UUID, harness: String) {
+        onHostedHarnessRequest?(leafId, harness)
     }
 
     /// Switch the active tab within a pane.

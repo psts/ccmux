@@ -19,6 +19,10 @@ struct PaneTabBar: View {
     var claudePaneId: UUID?
     /// Toggle a terminal tab as the designated Claude pane.
     var onDesignateClaudePane: ((UUID) -> Void)?
+    /// The daemon's harness list for the picker; empty (or a nil handler)
+    /// hides the button — driver-mode workspaces have no harness spawns.
+    var harnesses: [DaemonHarness] = []
+    var onAddHarnessTab: ((String) -> Void)?
 
     @EnvironmentObject var dragState: PaneDragState
 
@@ -77,6 +81,22 @@ struct PaneTabBar: View {
                 TabBarButton(icon: "terminal", tooltip: "New Terminal Tab") {
                     onAddTab(.defaultTerminal(workingDirectory: workingDirectory))
                 }
+                if let onAddHarnessTab, !harnesses.isEmpty {
+                    Menu {
+                        ForEach(harnesses) { h in
+                            Button("\(h.icon ?? "▸") \(h.name)") { onAddHarnessTab(h.name) }
+                                .help(h.command ?? "")
+                        }
+                    } label: {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10))
+                            .frame(width: 22, height: 22)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("New harness tab (claude, pi, …)")
+                }
                 TabBarButton(icon: "globe", tooltip: "New Browser Tab") {
                     onAddTab(.browser(BrowserConfig(id: UUID(), urlString: "https://google.com")))
                 }
@@ -121,6 +141,11 @@ struct PaneTabBar: View {
     @ViewBuilder
     private var addTabMenu: some View {
         Button("New Terminal Tab") { onAddTab(.defaultTerminal(workingDirectory: workingDirectory)) }
+        if let onAddHarnessTab {
+            ForEach(harnesses) { h in
+                Button("New \(h.name) Tab") { onAddHarnessTab(h.name) }
+            }
+        }
         Button("New Browser Tab") {
             onAddTab(.browser(BrowserConfig(id: UUID(), urlString: "https://google.com")))
         }
