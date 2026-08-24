@@ -1096,6 +1096,110 @@ function wireStartupCommandSetting() {
 }
 wireStartupCommandSetting();
 
+// --- settings: LLM routing. Accounts are places pane LLM traffic can go
+// (Ollama, OpenRouter, a keyed Anthropic org); the route picks which one
+// answers right now. Empty route = direct Anthropic pass-through (the Max
+// OAuth default). Keys are write-only: an account saved with an empty key
+// keeps its stored one, so re-saving this form never wipes a secret. ---
+function wireLLMSettings() {
+  const routeSel = $("llm-route"), box = $("llm-accounts");
+  const addBtn = $("llm-account-add"), state = $("llm-state");
+  if (!routeSel) return;
+
+  function accountRow(a) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+    const keyHint = a.apiKeySet ? "key set — empty keeps it" : "api key (empty = pass-through)";
+    row.innerHTML =
+      `<input class="setting-input llm-name" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
+      `<select class="setting-input llm-kind">` +
+      `<option value="anthropic"${a.kind !== "openai" ? " selected" : ""}>anthropic</option>` +
+      `<option value="openai"${a.kind === "openai" ? " selected" : ""}>openai</option></select>` +
+      `<input class="setting-input llm-url" type="text" spellcheck="false" placeholder="http://localhost:11434" value="${esc(a.baseURL || "")}">` +
+      `<input class="setting-input llm-key" type="password" autocomplete="off" placeholder="${esc(keyHint)}">` +
+      `<button class="rule-del" type="button" title="Remove account">&times;</button>`;
+    for (const el of row.querySelectorAll("input, select")) {
+      el.addEventListener("change", saveAccounts);
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
+    }
+    row.querySelector(".rule-del").onclick = () => { row.remove(); saveAccounts(); };
+    return row;
+  }
+
+  function collectAccounts() {
+    return [...box.querySelectorAll(".rule-row")].map((row) => ({
+      name: row.querySelector(".llm-name").value.trim(),
+      kind: row.querySelector(".llm-kind").value,
+      baseURL: row.querySelector(".llm-url").value.trim(),
+      apiKey: row.querySelector(".llm-key").value, // empty keeps the stored key
+    })).filter((a) => a.name || a.baseURL); // a fully blank editor row isn't an account
+  }
+
+  function renderRoute(accounts, route) {
+    routeSel.innerHTML = "";
+    const direct = document.createElement("option");
+    direct.value = "";
+    direct.textContent = "Anthropic (direct, your Claude login)";
+    routeSel.appendChild(direct);
+    for (const a of accounts) {
+      const o = document.createElement("option");
+      o.value = a.name;
+      o.textContent = a.name + (a.baseURL ? "  →  " + a.baseURL : "");
+      routeSel.appendChild(o);
+    }
+    routeSel.value = route || "";
+  }
+
+  async function put(body) {
+    const r = await fetch("/v1/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  async function load() {
+    try {
+      const cfg = await (await fetch("/v1/settings")).json();
+      box.innerHTML = "";
+      for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a));
+      renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
+      state.textContent = "Applies to every pane's next request — no restarts.";
+    } catch (_) {
+      state.textContent = "Couldn't load LLM settings.";
+    }
+  }
+
+  async function saveAccounts() {
+    try {
+      const cfg = await put({ llmAccounts: collectAccounts() });
+      renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
+      state.textContent = "Saved.";
+    } catch (e) {
+      state.textContent = "Not saved: " + e.message;
+    }
+  }
+
+  $("open-settings").addEventListener("click", load);
+  routeSel.addEventListener("change", async () => {
+    try {
+      await put({ llmRoute: routeSel.value });
+      state.textContent = routeSel.value
+        ? `Routing all panes to ${routeSel.value}.` : "Routing direct to Anthropic.";
+    } catch (e) {
+      state.textContent = "Not saved: " + e.message;
+      load(); // the picker now lies — reload truth
+    }
+  });
+  addBtn.addEventListener("click", () => {
+    box.appendChild(accountRow({}));
+    box.lastChild.querySelector(".llm-name").focus();
+  });
+}
+wireLLMSettings();
+
 // Opened from a notification tap (/?ws=<id>): attach straight to that workspace.
 // Without a deep link there's nothing on screen but "Select a workspace", so
 // surface the session list (the flyout drawer on mobile) instead of a dead end.

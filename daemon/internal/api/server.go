@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/llmproxy"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/peers"
@@ -92,6 +93,12 @@ type Server struct {
 	// the owning host. nil in host-only mode.
 	hub *hubMode
 
+	// llm, when set by SetLLMProxy, mounts the pane-scoped LLM routing proxy
+	// (/llm/pane/…) and its accounts/route settings. nil in tests that don't
+	// exercise it — the settings surface then rejects llm fields rather than
+	// half-applying them.
+	llm *llmproxy.Service
+
 	// focus answers "is anybody at a screen?" for the alert flag and for push.
 	// On a single host that is this daemon's own presence; on a hub it is the
 	// union across every member, because a person sits at ONE screen and it does
@@ -153,6 +160,9 @@ func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
 // next watchdog tick, in lockstep — and a rotated secret would park them locally
 // for good.
 func (s *Server) SetBusResolver(f func(paneID string) (string, string, error)) { s.busResolver = f }
+
+// SetLLMProxy mounts the LLM routing proxy (see llm).
+func (s *Server) SetLLMProxy(svc *llmproxy.Service) { s.llm = svc }
 
 // SetLocalGroupsForwarder arms the onward push of this host's local-pane map to
 // the hub (see localGroupsSink). Called on member hosts only.
@@ -267,6 +277,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers/messages", s.peersGroupMessages)
 	mux.HandleFunc("GET /v1/peers", s.peersGroupPeers)
 	mux.HandleFunc("GET /v1/peers/viewer", s.peersViewerCredential)
+	if s.llm != nil {
+		// Pane LLM traffic (ANTHROPIC_BASE_URL points every pane here). Loopback
+		// only: keyed accounts inject stored credentials, and panes are local —
+		// a tailnet caller has no business borrowing this host's LLM accounts.
+		// Per-METHOD patterns for the same reason as the relay below; GET also
+		// covers HEAD (claude probes HEAD /api/hello on startup).
+		llmH := s.llm.Handler()
+		guarded := func(w http.ResponseWriter, r *http.Request) {
+			if !requireLoopback(w, r) {
+				return
+			}
+			llmH.ServeHTTP(w, r)
+		}
+		for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
+			mux.HandleFunc(m+" /llm/pane/{pane}/{rest...}", guarded)
+		}
+	}
 	if s.hubBus != nil {
 		// Registered only on a member host with hub discovery armed, so a hub or
 		// a single-host node has no relay surface at all. Per-METHOD patterns,
@@ -403,6 +430,12 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// alone answer the question you'd read this for: is my lens aliased or not.
 		"identityAliasNames": aliasNames(s.mgr.IdentityAliases()),
 	}
+	if s.llm != nil {
+		// LLM routing: accounts follow the write-only rule above (key presence,
+		// never key values); absent keys mean the proxy isn't mounted.
+		resp["llmAccounts"] = s.llm.Redacted()
+		resp["llmRoute"] = s.llm.Route()
+	}
 	if repo := r.URL.Query().Get("repoPath"); repo != "" {
 		resp["resolvedStartupCommand"] = s.mgr.StartupCommandFor(repo)
 	}
@@ -436,6 +469,11 @@ type settingsRequest struct {
 	IdentityAliases *map[string]string `json:"identityAliases"`
 	// The host owner's tailnet login (email); empty clears it.
 	Owner *string `json:"owner"`
+	// LLM routing: the accounts list replaces wholly (same trap-avoidance as
+	// aliases), but an account resubmitted with an empty apiKey keeps its
+	// stored key, so the redacted GET view round-trips safely.
+	LLMAccounts *[]llmproxy.Account `json:"llmAccounts"`
+	LLMRoute    *string             `json:"llmRoute"`
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -483,6 +521,17 @@ func (s *Server) rejectSettings(req settingsRequest) (string, bool) {
 			}
 		}
 	}
+	// LLM fields are validated as the state they'd produce (a request can't
+	// route to an account it also removes); without the proxy mounted they'd
+	// be silently dropped, which a 200 must not pretend was applied.
+	if req.LLMAccounts != nil || req.LLMRoute != nil {
+		if s.llm == nil {
+			return "llm proxy is not available on this daemon", false
+		}
+		if msg := s.llm.Reject(req.LLMAccounts, req.LLMRoute); msg != "" {
+			return msg, false
+		}
+	}
 	// An alias row missing either side is the caller's mistake, not something to
 	// silently drop and then answer 200 to.
 	if req.IdentityAliases != nil {
@@ -519,6 +568,11 @@ func (s *Server) applySettings(req settingsRequest) error {
 	}
 	if req.IdentityAliases != nil {
 		if err := s.mgr.SetIdentityAliases(*req.IdentityAliases); err != nil {
+			return err
+		}
+	}
+	if req.LLMAccounts != nil || req.LLMRoute != nil {
+		if err := s.llm.Apply(req.LLMAccounts, req.LLMRoute); err != nil {
 			return err
 		}
 	}

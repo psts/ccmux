@@ -939,6 +939,15 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 	env := shellint.EnvForPane(paneID)
 	if m.LocalURL != "" {
 		env["CCMUX_DAEMON_URL"] = m.LocalURL
+		// Every pane's LLM traffic flows through the daemon's routing proxy.
+		// The URL is decision-free on purpose: pane env freezes here and tmux
+		// sessions outlive daemon restarts, so WHICH upstream answers is
+		// resolved per request from settings (internal/llmproxy). Unrouted,
+		// the proxy is a pure Anthropic pass-through — auth untouched, so a
+		// Max OAuth login behaves exactly as without it. Injected even into
+		// plain shells: a claude started by hand in a hosted pane should route
+		// the same as one ccmux started.
+		env["ANTHROPIC_BASE_URL"] = m.LocalURL + "/llm/pane/" + paneID
 	}
 	if m.HooksSocket != "" {
 		env["CCMUX_HOOKS_SOCK"] = m.HooksSocket

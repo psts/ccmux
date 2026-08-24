@@ -33,6 +33,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/devhost"
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/hub"
+	"ccmux.dev/ccmuxd/internal/llmproxy"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/push"
@@ -161,6 +162,10 @@ func runDaemon() {
 
 	apiSrv := api.NewServer(mgr)
 	apiSrv.SetProjectsRoot(*projectsRoot)
+	// LLM routing proxy: every pane's ANTHROPIC_BASE_URL points at
+	// /llm/pane/<id> on this daemon (stamped in paneEnv); accounts and the
+	// route live in the settings table, resolved per request.
+	apiSrv.SetLLMProxy(llmproxy.New(st))
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)

@@ -96,6 +96,10 @@ body {
 .rule-row { display: flex; gap: 6px; align-items: center; }
 .rule-row .rule-prefix { flex: 3; }
 .rule-row .rule-cmd { flex: 2; }
+.rule-row .llm-name { flex: 1.2; }
+.rule-row .llm-kind { flex: 0 0 auto; }
+.rule-row .llm-url { flex: 2.5; }
+.rule-row .llm-key { flex: 1.5; }
 .rule-del {
   background: transparent; border: 0; color: var(--muted);
   font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px;
