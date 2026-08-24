@@ -248,6 +248,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/workspaces/{id}/files", s.scoped(s.putFile))
 	mux.HandleFunc("GET /v1/workspaces/{id}/dir", s.scoped(s.listDir))
 	mux.HandleFunc("POST /v1/workspaces/{id}/paste", s.scoped(s.pasteImage))
+	mux.HandleFunc("POST /v1/panes/{id}/harness", s.scoped(s.startPaneHarness))
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.scoped(s.paneSnapshot))
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.scoped(s.paneDriver))
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
@@ -458,7 +459,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		resp["harnesses"] = hs
 	}
 	if repo := r.URL.Query().Get("repoPath"); repo != "" {
-		resp["resolvedStartupCommand"] = s.mgr.StartupCommandFor(repo)
+		cmd := s.mgr.StartupCommandFor(repo)
+		resp["resolvedStartupCommand"] = cmd
+		if s.mgr.Harnesses != nil {
+			// What a picker preselects for a workspace created there. The rule
+			// SUGGESTS; nothing auto-starts (see docs: empty-with-preselect).
+			resp["resolvedHarness"] = s.resolvedHarnessFor(cmd)
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

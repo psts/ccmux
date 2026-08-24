@@ -274,6 +274,28 @@ body {
 }
 #app.stale #takeover:hover { filter: brightness(1.06); }
 #tabs { display: flex; gap: 4px; }
+#pane-add {
+  background: none; border: 1px dashed var(--line); border-radius: 6px;
+  color: var(--muted); cursor: pointer; font-size: 14px;
+  line-height: 1; padding: 2px 8px;
+}
+#pane-add:hover { color: var(--fg); border-color: var(--muted); }
+.harness-bar {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg2);
+}
+.harness-label { font-size: 12px; color: var(--muted); }
+.harness-btn {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--fg); cursor: pointer; font-size: 12px; padding: 4px 10px;
+}
+.harness-btn:hover { border-color: var(--accent); }
+.harness-btn.suggested { border-color: var(--accent); box-shadow: 0 0 4px var(--accent); }
+.harness-dismiss {
+  margin-left: auto; background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 14px;
+}
+.harness-dismiss:hover { color: var(--fg); }
 #presence { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .chip {
   display: inline-flex; align-items: center; gap: 5px;

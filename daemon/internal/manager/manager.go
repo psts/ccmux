@@ -333,6 +333,44 @@ func (m *Manager) SpawnHarnessPane(wsID, cwd, createdBy string, h harness.Harnes
 	return m.spawnPane(wsID, cwd, h.Command, h.Command, createdBy, h.Name, h.Autoconfirm)
 }
 
+// ErrPaneBusy refuses a harness start into a pane whose foreground is not a
+// bare shell: keystrokes into a running program are input, not startup.
+var ErrPaneBusy = errors.New("pane is busy")
+
+// StartHarnessInPane types a harness's command into an EXISTING pane's shell
+// and records the pane as that harness — the picker's "start it here", as
+// opposed to SpawnHarnessPane's new tab. The harness command also becomes the
+// pane's startup command, so a revive brings the harness back.
+func (m *Manager) StartHarnessInPane(paneID string, h harness.Harness) error {
+	m.mu.Lock()
+	e, p := m.findPaneLocked(paneID)
+	if p == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("unknown pane %s", paneID)
+	}
+	if e.ctrl == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("workspace %s not live", e.ws.ID)
+	}
+	if !atBareShell(p) {
+		m.mu.Unlock()
+		return fmt.Errorf("%w (%s is running)", ErrPaneBusy, strings.TrimSpace(p.RawCommand))
+	}
+	p.Harness = h.Name
+	p.StartupCommand = h.Command
+	ctrl, wsID, saved := e.ctrl, e.ws.ID, *p
+	m.mu.Unlock()
+	_ = m.store.SavePane(&saved)
+	m.deliverStartup(ctrl, paneID, h.Command, h.Autoconfirm)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return nil
+}
+
+// GuessHarness maps a raw startup command to the harness it starts ("" for a
+// plain shell or anything unrecognized) — exported for the settings surface's
+// picker preselection.
+func (m *Manager) GuessHarness(cmd string) string { return guessHarness(cmd) }
+
 // KillPane kills one pane (SIGTERM through tmux) and drops it from the
 // workspace — the generic close-a-pane path behind a hosted tab's ✕ in any
 // lens. Idempotent: a pane the workspace doesn't hold is a no-op.

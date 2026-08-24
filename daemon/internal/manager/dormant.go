@@ -60,12 +60,15 @@ func isClaudeCommand(rawCommand string) bool {
 	return versionish.MatchString(cmd) || startupProgram(cmd) == "claude"
 }
 
-// refreshDormantLocked recomputes a pane's dormant flag, returning whether it
-// changed so the caller can persist and broadcast exactly once.
+// refreshDormantLocked recomputes a pane's dormant and at-shell flags,
+// returning whether either changed so the caller can persist and broadcast
+// exactly once. AtShell rides along because it derives from the same
+// RawCommand signal and the harness pickers key on it.
 func refreshDormantLocked(p *model.Pane) bool {
-	was := p.Dormant
+	wasDormant, wasShell := p.Dormant, p.AtShell
 	p.Dormant = isDormant(p)
-	return p.Dormant != was
+	p.AtShell = atBareShell(p)
+	return p.Dormant != wasDormant || p.AtShell != wasShell
 }
 
 // PaneAtShell reports whether a pane's foreground is a bare shell right now.

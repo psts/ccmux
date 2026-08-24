@@ -715,6 +715,7 @@ async function attach(wsId, wantPane) {
   state.wantPane = wantPane;
   delete state.attn[wsId]; // opening it marks its attention seen
   $("empty").style.display = "none";
+  $("harness-bar").classList.add("hidden"); // re-derived from the next hello
   ensureTerm();
   state.term.reset();
   renderList();
@@ -755,6 +756,7 @@ function onMessage(ev) {
       state.wantPane = null;
       state.paneCols = paneColsOf(state.paneId);
       renderTabs();
+      updateHarnessBar();
       scheduleFit();
       reportFocus();
       updateTakeover();
@@ -866,6 +868,111 @@ async function openPaneLLMMenu(paneId, x, y) {
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
   menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+}
+
+// settingsURLFor targets the settings of the host that owns ws (the hub
+// proxies member hosts), with the repoPath so the response carries the
+// folder rule's preselection.
+function settingsURLFor(ws) {
+  const base = ws && ws.host ? `/v1/hosts/${encodeURIComponent(ws.host)}/settings` : "/v1/settings";
+  return ws && ws.repoPath ? `${base}?repoPath=${encodeURIComponent(ws.repoPath)}` : base;
+}
+
+// --- harness bar: shown when the ACTIVE pane sits at a bare shell with no
+// harness recorded — the empty-new-workspace flow, and any shell tab. The
+// folder rule only PRESELECTS (highlighted); nothing ever auto-starts. ---
+async function updateHarnessBar() {
+  const bar = $("harness-bar");
+  const paneId = state.paneId;
+  const p = state.panes.find((x) => x.id === paneId);
+  if (!p || p.harness || !p.atShell || p.devServer) { setHarnessBar(false); return; }
+  const ws = state.workspaces.find((w) => w.id === state.wsId);
+  let cfg;
+  try {
+    cfg = await (await fetch(settingsURLFor(ws))).json();
+  } catch (_) { setHarnessBar(false); return; }
+  if (state.paneId !== paneId) return; // switched tabs while fetching
+  const harnesses = cfg.harnesses || [];
+  if (!harnesses.length) { setHarnessBar(false); return; }
+  bar.innerHTML = "";
+  const label = document.createElement("span");
+  label.className = "harness-label";
+  label.textContent = "Start here:";
+  bar.appendChild(label);
+  for (const h of harnesses) {
+    const b = document.createElement("button");
+    b.className = "harness-btn" + (h.name === cfg.resolvedHarness ? " suggested" : "");
+    b.textContent = (h.icon ? h.icon + " " : "") + h.name;
+    b.title = h.command;
+    b.onclick = () => startHarness(paneId, h.name);
+    bar.appendChild(b);
+  }
+  const x = document.createElement("button");
+  x.className = "harness-dismiss";
+  x.title = "Keep the shell";
+  x.innerHTML = "&times;";
+  x.onclick = () => setHarnessBar(false);
+  bar.appendChild(x);
+  setHarnessBar(true);
+}
+
+function setHarnessBar(show) {
+  $("harness-bar").classList.toggle("hidden", !show);
+  scheduleFit(); // the bar changes the terminal's height
+}
+
+async function startHarness(paneId, name) {
+  setHarnessBar(false);
+  const r = await fetch(`/v1/panes/${paneId}/harness`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ harness: name }),
+  });
+  if (!r.ok) {
+    alert(`start ${name}: ` + (await r.text()));
+    updateHarnessBar(); // the pane may still deserve the offer
+  }
+}
+
+// --- "+" in the tab strip: a new pane running a harness, or a plain shell. ---
+function wirePaneAdd() {
+  const btn = $("pane-add");
+  if (!btn) return;
+  btn.onclick = async (e) => {
+    e.stopPropagation(); // the document-level closer would eat the menu
+    if (!state.wsId) return;
+    const ws = state.workspaces.find((w) => w.id === state.wsId);
+    let cfg = {};
+    try { cfg = await (await fetch(settingsURLFor(ws))).json(); } catch (_) {}
+    const menu = $("ctx-menu");
+    menu.innerHTML = "";
+    const add = (label, fn) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.onclick = () => { closeWsMenu(); fn(); };
+      menu.appendChild(b);
+    };
+    for (const h of cfg.harnesses || []) {
+      add((h.icon ? h.icon + " " : "") + h.name, () => spawnWebPane({ harness: h.name }));
+    }
+    add("▸ Terminal", () => spawnWebPane({}));
+    menu.classList.remove("hidden");
+    const br = btn.getBoundingClientRect(), mr = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(br.left, window.innerWidth - mr.width - 8)) + "px";
+    menu.style.top = br.bottom + 4 + "px";
+  };
+}
+wirePaneAdd();
+
+async function spawnWebPane(body) {
+  const r = await fetch(`/v1/workspaces/${state.wsId}/panes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, createdBy: getUser() }),
+  });
+  if (!r.ok) { alert("new pane: " + (await r.text())); return; }
+  const p = await r.json();
+  attach(state.wsId, p.id); // land on the pane just asked for
 }
 
 function renderPresence(clients) {
@@ -1038,9 +1145,11 @@ async function browseProjects(relPath) {
 function closeProjectModal() { $("project-modal").classList.add("hidden"); }
 
 async function createWorkspace(p) {
-  // startupCommand omitted = the daemon resolves it (per-folder rules, then
-  // the Settings default); the picker's field is a one-off override.
-  const body = { name: p.name, repoPath: p.path, createdBy: "web" };
+  // New workspaces open EMPTY (explicit "" overrides the daemon's resolve):
+  // the harness bar then offers what to start, with the folder rule only
+  // preselecting. The picker's command field stays as a one-off escape hatch
+  // that types exactly what it says.
+  const body = { name: p.name, repoPath: p.path, createdBy: "web", startupCommand: "" };
   const override = ($("project-cmd").value || "").trim();
   if (override) body.startupCommand = override;
   const group = ($("project-group").value || "").trim();

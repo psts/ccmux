@@ -234,6 +234,11 @@ type Pane struct {
 	// comes from the PANE, not from the command line, which is what the old
 	// startup-command guess could never see.
 	HostedClaude bool `json:"hostedClaude,omitempty"`
+	// AtShell reports that the pane's foreground is a bare shell right now —
+	// the observation the harness pickers key on: only a pane at a shell can
+	// have a harness started IN it. Derived from RawCommand alongside Dormant;
+	// runtime-observed, serialized for the lenses, never persisted.
+	AtShell bool `json:"atShell,omitempty"`
 	// RawTitle/RawCommand are the tmux runtime signals (#{pane_title},
 	// #{pane_current_command}) that Title is derived from. Runtime-only.
 	RawTitle   string `json:"-"`

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/manager"
@@ -17,7 +18,7 @@ import (
 
 // harnessStack is floodStack plus the harness registry wired the way main
 // wires it.
-func harnessStack(t *testing.T) string {
+func harnessStack(t *testing.T) (*manager.Manager, string) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
@@ -41,11 +42,11 @@ func harnessStack(t *testing.T) string {
 	}
 	hs := httptest.NewServer(NewServer(mgr).Handler())
 	t.Cleanup(hs.Close)
-	return hs.URL
+	return mgr, hs.URL
 }
 
 func TestSpawnPaneByHarness(t *testing.T) {
-	base := harnessStack(t)
+	_, base := harnessStack(t)
 	ws := createWS(t, base)
 
 	// Configure a harmless harness, then spawn a pane by its name.
@@ -94,7 +95,7 @@ func TestSpawnPaneByHarness(t *testing.T) {
 
 // The settings surface lists the resolved set, built-in claude included.
 func TestHarnessSettingsListsBuiltin(t *testing.T) {
-	base := harnessStack(t)
+	_, base := harnessStack(t)
 
 	resp, err := http.Get(base + "/v1/settings")
 	if err != nil {
@@ -107,5 +108,90 @@ func TestHarnessSettingsListsBuiltin(t *testing.T) {
 	resp.Body.Close()
 	if len(cfg.Harnesses) != 1 || cfg.Harnesses[0].Name != "claude" {
 		t.Fatalf("harnesses = %+v, want built-in claude", cfg.Harnesses)
+	}
+}
+
+// Starting a harness IN an existing shell pane records it and delivers its
+// command; a busy pane refuses with 409, and the folder-rule preselection
+// rides the settings response.
+func TestStartHarnessInPane(t *testing.T) {
+	mgr, base := harnessStack(t)
+	ws := createWS(t, base)
+	pane := ws.Panes[0].ID
+
+	// Wait for tmux's command signal so the daemon knows the pane is a shell.
+	deadline := time.Now().Add(5 * time.Second)
+	for !mgr.PaneAtShell(pane) {
+		if time.Now().After(deadline) {
+			t.Fatal("pane never reported a bare shell")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	put, _ := http.NewRequest("PUT", base+"/v1/settings",
+		strings.NewReader(`{"harnesses":[{"name":"sleeper","command":"sleep 5"}]}`))
+	if resp, err := http.DefaultClient.Do(put); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("put harnesses: %v %v", err, resp.StatusCode)
+	}
+
+	start := func() *http.Response {
+		r, err := http.Post(base+"/v1/panes/"+pane+"/harness", "application/json",
+			strings.NewReader(`{"harness":"sleeper"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		return r
+	}
+	if r := start(); r.StatusCode != 200 {
+		t.Fatalf("start = %d, want 200", r.StatusCode)
+	}
+
+	// The command signal flips the pane to busy; a second start must refuse.
+	deadline = time.Now().Add(5 * time.Second)
+	for mgr.PaneAtShell(pane) {
+		if time.Now().After(deadline) {
+			t.Fatal("pane never reported the sleeper running")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if r := start(); r.StatusCode != http.StatusConflict {
+		t.Fatalf("start on busy pane = %d, want 409", r.StatusCode)
+	}
+
+	// The pane recorded what it runs, and the recipe revives it.
+	resp, err := http.Get(base + "/v1/workspaces")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var list []struct {
+		ID    string `json:"id"`
+		Panes []struct {
+			ID, Harness, StartupCommand string
+		} `json:"panes"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	for _, w := range list {
+		if w.ID != ws.ID {
+			continue
+		}
+		if w.Panes[0].Harness != "sleeper" || w.Panes[0].StartupCommand != "sleep 5" {
+			t.Fatalf("pane = %+v, want harness and recipe recorded", w.Panes[0])
+		}
+	}
+
+	// Preselection: /tmp has no folder rule, so the default (claude) answers.
+	resp2, err := http.Get(base + "/v1/settings?repoPath=/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var cfg struct {
+		ResolvedHarness string `json:"resolvedHarness"`
+	}
+	_ = json.NewDecoder(resp2.Body).Decode(&cfg)
+	if cfg.ResolvedHarness != "claude" {
+		t.Fatalf("resolvedHarness = %q, want claude", cfg.ResolvedHarness)
 	}
 }
