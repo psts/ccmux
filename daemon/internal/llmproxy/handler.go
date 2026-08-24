@@ -40,6 +40,9 @@ func (s *Service) Handler() http.Handler {
 			return
 		}
 		info := reqInfo{account: account, pane: r.PathValue("pane"), rest: r.PathValue("rest")}
+		if needsSystemTurnCompat(account) {
+			downgradeSystemTurns(r)
+		}
 		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), infoKey{}, info)))
 	})
 }
