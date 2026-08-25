@@ -296,9 +296,10 @@ func (s *Server) applyResize(msg wsMsg, wsID string, rs *resnapper) {
 	}
 }
 
-// readLoop applies client input/resize/focus until the connection closes.
-// Read-only observers can focus but cannot send input or resize (server-enforced
-// — an observer must never crunch a driver's pane size).
+// readLoop applies client input/resize/repaint/focus until the connection
+// closes. Read-only observers can focus but cannot send input, resize, or
+// repaint (server-enforced — an observer must never crunch a driver's pane size
+// nor drive capture-pane at will).
 func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool, rs *resnapper) {
 	defer cancel()
 	// This goroutine owns the read deadline (see keepalive.go). Without it a lens
@@ -323,6 +324,22 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 				continue
 			}
 			s.applyResize(msg, wsID, rs)
+		case "repaint":
+			if readonly {
+				continue
+			}
+			// Activation, not resize. A lens that re-shows a long-lived emulator
+			// (the Mac app re-embedding a pane, its window becoming key) re-asserts
+			// a size the pane usually already has — changed == false in applyResize,
+			// so no capture — while its local copy may have drifted: another lens
+			// drove the shared pane, or output was dropped, while this one was in
+			// the background. The screen lives only in tmux, so the one cure is a
+			// fresh capture; this verb asks for one with no resize attached. Routed
+			// through the resnapper so the writer goroutine stays the connection's
+			// only writer and the request coalesces with the resize an activation
+			// sends alongside it. An unknown pane id costs one failed capture,
+			// logged and dropped per-pane in sendSnapshot.
+			rs.request(msg.Pane)
 		case "focus":
 			s.presence.Focus(wsID, connID, msg.Pane)
 			if msg.Present != nil {

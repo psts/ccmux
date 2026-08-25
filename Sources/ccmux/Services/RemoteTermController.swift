@@ -177,6 +177,20 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
         forwardResize(cols: t.cols, rows: t.rows)
     }
 
+    /// Ask the daemon for a fresh capture of this pane's screen. sendCurrentSize()
+    /// alone is not enough on activation: the daemon only repaints when the size
+    /// actually CHANGED, and an activated pane usually re-asserts the size it
+    /// already has — while this long-lived emulator may have drifted (another lens
+    /// drove the shared pane, output was dropped in the background). Without the
+    /// capture the stale screen sits there until the user forces a redraw by hand
+    /// (Ctrl+L). Guarded like forwardResize: an off-screen pane asks for nothing.
+    /// The daemon coalesces this with the resize sent alongside it, so the pair
+    /// costs one capture, not two.
+    func requestRepaint() {
+        guard terminalView.superview != nil else { return }
+        attach?.send(.repaint(pane: paneId))
+    }
+
     // MARK: - TerminalViewDelegate (view → daemon)
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {

@@ -322,6 +322,20 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertEqual(obj["present"] as? Bool, true)
     }
 
+    /// Repaint carries no size and no data: it only names the pane whose screen
+    /// the daemon should re-capture. The daemon matches on `t == "repaint"`
+    /// exactly; a drifted spelling would be silently dropped by its read switch
+    /// and the activated pane would stay stale — the bug the verb exists to fix.
+    func testRepaintCommandEncodes() throws {
+        let cmd = DaemonCommand.repaint(pane: "p4")
+        let obj = try XCTUnwrap(cmd.jsonData().flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        })
+        XCTAssertEqual(obj["t"] as? String, "repaint")
+        XCTAssertEqual(obj["pane"] as? String, "p4")
+        XCTAssertEqual(obj.count, 2, "repaint is pane-only; stray fields invite contract drift")
+    }
+
     /// Presence must be sent even when it is false and no pane is focused. The
     /// daemon reads an absent `present` as "this lens is too old to know" and falls
     /// back to treating a focused pane as presence — so omitting it here would

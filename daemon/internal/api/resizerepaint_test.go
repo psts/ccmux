@@ -174,6 +174,76 @@ func TestAPI_ResizeRepaintsEveryPaneInTheBurst(t *testing.T) {
 	}
 }
 
+// A repaint frame re-captures the pane even though nothing resized. This is the
+// activation path: a lens re-showing a long-lived emulator re-asserts a size the
+// pane already has (changed == false, no capture), while its local copy may have
+// drifted — the whole reason the user reaches for Ctrl+L. The repaint verb is
+// that redraw, minus the round-trip through the inner program.
+func TestAPI_RepaintFrameResendsSnapshotWithoutResize(t *testing.T) {
+	_, base := floodStack(t, "ccmux-repaint-itest")
+
+	ws := createWS(t, base)
+	pane0 := ws.Panes[0].ID
+
+	c := attachAndHello(t, base, ws.ID)
+	defer c.Close()
+	ch := frames(c)
+	snapshotsUntilQuiet(ch, pane0, time.Second)
+
+	if err := c.WriteJSON(wsMsg{T: "repaint", Pane: pane0}); err != nil {
+		t.Fatalf("repaint: %v", err)
+	}
+	if got := snapshotsUntilQuiet(ch, pane0, time.Second); got != 1 {
+		t.Fatalf("repaint gave %d snapshots, want exactly 1", got)
+	}
+}
+
+// An activation sends resize and repaint back to back. Both land in the same
+// resnapper set, so the pane is captured once, not twice — the coalescing is
+// what makes sending both unconditionally affordable.
+func TestAPI_RepaintCoalescesWithResize(t *testing.T) {
+	_, base := floodStack(t, "ccmux-repaintcoalesce-itest")
+
+	ws := createWS(t, base)
+	pane0 := ws.Panes[0].ID
+
+	c := attachAndHello(t, base, ws.ID)
+	defer c.Close()
+	ch := frames(c)
+	snapshotsUntilQuiet(ch, pane0, time.Second)
+
+	if err := c.WriteJSON(wsMsg{T: "resize", Pane: pane0, Cols: 141, Rows: 47}); err != nil {
+		t.Fatalf("resize: %v", err)
+	}
+	if err := c.WriteJSON(wsMsg{T: "repaint", Pane: pane0}); err != nil {
+		t.Fatalf("repaint: %v", err)
+	}
+	if got := snapshotsUntilQuiet(ch, pane0, time.Second); got != 1 {
+		t.Fatalf("resize+repaint gave %d snapshots, want exactly 1", got)
+	}
+}
+
+// Same rule as resize: a read-only observer must not be able to drive
+// capture-pane on someone else's pane at will.
+func TestAPI_ReadOnlyRepaintIsIgnored(t *testing.T) {
+	_, base := floodStack(t, "ccmux-repaintreadonly-itest")
+
+	ws := createWS(t, base)
+	pane0 := ws.Panes[0].ID
+
+	c := attachAndHello(t, base, ws.ID+"&readonly=1")
+	defer c.Close()
+	ch := frames(c)
+	snapshotsUntilQuiet(ch, pane0, time.Second)
+
+	if err := c.WriteJSON(wsMsg{T: "repaint", Pane: pane0}); err != nil {
+		t.Fatalf("repaint: %v", err)
+	}
+	if got := snapshotsUntilQuiet(ch, pane0, time.Second); got != 0 {
+		t.Fatalf("read-only repaint gave %d snapshots, want 0", got)
+	}
+}
+
 // spawnPane adds a second pane to a workspace and returns its id.
 func spawnPane(t *testing.T, base, wsID string) string {
 	t.Helper()

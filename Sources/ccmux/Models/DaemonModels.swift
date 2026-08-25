@@ -664,6 +664,13 @@ enum DaemonCommand {
     /// a property of the device, not of the pane, and rides the focus frame only
     /// because that is the channel the lens already has.
     case focus(pane: String, present: Bool)
+    /// Ask the daemon to re-capture this pane's screen and send it back as a
+    /// snapshot, with no resize attached. The daemon only repaints on a resize
+    /// that CHANGED the pane, and an activated pane usually re-asserts the size
+    /// it already has — so a drifted local emulator would keep its stale screen
+    /// forever. Older daemons ignore the frame (unknown `t` falls through their
+    /// read switch), which degrades to the pre-repaint behaviour.
+    case repaint(pane: String)
 
     func jsonData() -> Data? {
         var obj: [String: Any]
@@ -674,6 +681,8 @@ enum DaemonCommand {
             obj = ["t": "resize", "pane": pane, "cols": cols, "rows": rows]
         case .focus(let pane, let present):
             obj = ["t": "focus", "pane": pane, "present": present]
+        case .repaint(let pane):
+            obj = ["t": "repaint", "pane": pane]
         }
         return try? JSONSerialization.data(withJSONObject: obj)
     }
