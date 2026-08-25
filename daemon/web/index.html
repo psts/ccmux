@@ -103,7 +103,6 @@
       <nav id="settings-tabs" class="settings-tabs">
         <button class="settings-tab active" data-page="general" type="button">General</button>
         <button class="settings-tab" data-page="accounts" type="button">Accounts</button>
-        <button class="settings-tab" data-page="llm" type="button">Models</button>
         <button class="settings-tab" data-page="harnesses" type="button">Harnesses</button>
         <button class="settings-tab" data-page="notifications" type="button">Notifications</button>
       </nav>
@@ -118,15 +117,13 @@
           <p id="startup-cmd-state" class="hint setting-hint"></p>
         </section>
         <section class="settings-page hidden" data-page="accounts">
+          <label class="setting-label" for="llm-route">Default account (all panes)</label>
+          <select id="llm-route" class="setting-input"></select>
+          <p id="llm-route-state" class="hint setting-hint"></p>
           <label class="setting-label">LLM accounts</label>
           <div id="llm-accounts" class="rules-list"></div>
           <button id="llm-account-add" class="rule-add" type="button">+ Add account</button>
           <p id="llm-state" class="hint setting-hint"></p>
-        </section>
-        <section class="settings-page hidden" data-page="llm">
-          <label class="setting-label" for="llm-route">Route all panes to</label>
-          <select id="llm-route" class="setting-input"></select>
-          <p id="llm-route-state" class="hint setting-hint"></p>
         </section>
         <section class="settings-page hidden" data-page="harnesses">
           <div id="harness-list" class="rules-list"></div>

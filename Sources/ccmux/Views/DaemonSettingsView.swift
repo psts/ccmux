@@ -76,7 +76,6 @@ struct DaemonSettingsView: View {
             TabView {
                 generalTab.tabItem { Text("General") }
                 if supportsLLM { accountsTab.tabItem { Text("Accounts") } }
-                if supportsLLM { modelsTab.tabItem { Text("Models") } }
                 if supportsHarnesses { harnessesTab.tabItem { Text("Harnesses") } }
                 devTab.tabItem { Text("Dev Hostnames") }
             }
@@ -200,35 +199,25 @@ struct DaemonSettingsView: View {
         }
     }
 
-    private var modelsTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Route all panes to")
-                        .font(.headline)
-                    Text("Which account answers every pane's LLM traffic. Applies to each pane's next request — no restarts. Per-pane overrides win over this.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Picker("", selection: $llmRoute) {
-                        Text("Anthropic (direct, your Claude login)").tag("")
-                        ForEach(accounts) { a in
-                            if !a.name.isEmpty { Text(a.name).tag(a.name) }
-                        }
-                    }
-                    .labelsHidden()
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
     private var accountsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
+                Text("Default account (all panes)")
+                    .font(.headline)
+                Text("Which account answers a pane with no override of its own. Applies to each pane's next request — no restarts.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Picker("", selection: $llmRoute) {
+                    Text("Anthropic (direct, your Claude login)").tag("")
+                    ForEach(accounts) { a in
+                        if !a.name.isEmpty { Text(a.name).tag(a.name) }
+                    }
+                }
+                .labelsHidden()
                 Text("Accounts")
                     .font(.headline)
+                    .padding(.top, 6)
                 Text("Claude accounts hold a token from `claude setup-token` and form a failover pool: when one hits its limit, the proxy switches to the next. Usage updates from live traffic.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
