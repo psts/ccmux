@@ -436,7 +436,7 @@ final class RemoteSessionService: ObservableObject {
         cloudflareToken: String? = nil, tailscaleAuthKey: String? = nil,
         llmRoute: String? = nil, llmAccounts: [[String: Any]]? = nil,
         harnesses: [[String: Any]]? = nil
-    ) async -> DaemonSettings? {
+    ) async -> (settings: DaemonSettings?, error: String?) {
         var body: [String: Any] = [:]
         if let startupCommand { body["startupCommand"] = startupCommand }
         if let startupRules {
@@ -449,14 +449,31 @@ final class RemoteSessionService: ObservableObject {
         if let llmRoute { body["llmRoute"] = llmRoute }
         if let llmAccounts { body["llmAccounts"] = llmAccounts }
         if let harnesses { body["harnesses"] = harnesses }
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else {
+            return (nil, "bad daemon URL")
+        }
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        guard let (data, resp) = try? await session.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return try? JSONDecoder().decode(DaemonSettings.self, from: data)
+        guard let (data, resp) = try? await session.data(for: req) else {
+            return (nil, "couldn't reach the daemon at \(DaemonConfig.baseURL)")
+        }
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            // Surface the daemon's OWN refusal ({"error": …} from writeError) —
+            // its validation messages name the actual problem field, and a
+            // generic stand-in used to send people chasing Cloudflare tokens.
+            return (nil, Self.daemonError(data))
+        }
+        return (try? JSONDecoder().decode(DaemonSettings.self, from: data), nil)
+    }
+
+    private static func daemonError(_ data: Data) -> String {
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let msg = obj["error"] as? String {
+            return msg
+        }
+        return String(data: data, encoding: .utf8) ?? "save refused"
     }
 
     /// Create a hosted workspace and return its app-side id (nil on failure), so

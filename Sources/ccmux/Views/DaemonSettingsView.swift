@@ -244,6 +244,7 @@ struct DaemonSettingsView: View {
                 .labelsHidden()
                 .frame(width: 110)
                 Button {
+                    if llmRoute == account.wrappedValue.name { llmRoute = "" }
                     accounts.removeAll { $0.id == account.wrappedValue.id }
                 } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -391,8 +392,14 @@ struct DaemonSettingsView: View {
         defer { saving = false }
         status = "Saving…"
         persistIdentity() // app-local; saved even if the daemon rejects the rest
+        // A route pointing at an account that was deleted or renamed in this
+        // editing session falls back to direct — sending the stale name would
+        // 400 the whole save with a message about none of the visible fields.
+        if !llmRoute.isEmpty && !accounts.contains(where: { $0.name == llmRoute }) {
+            llmRoute = ""
+        }
         let outgoing = rules.map { DaemonStartupRule(pathPrefix: $0.pathPrefix, command: $0.command) }
-        guard let saved = await RemoteSessionService.shared.updateSettings(
+        let result = await RemoteSessionService.shared.updateSettings(
             startupCommand: command, startupRules: outgoing,
             devDomain: devDomain, lensHostname: lensHostname,
             cloudflareToken: outgoingSecret(cloudflareToken, wasSet: cloudflareTokenSet),
@@ -401,8 +408,9 @@ struct DaemonSettingsView: View {
             // and harness fields, and this Mac may front several hosts.
             llmRoute: supportsLLM ? llmRoute : nil,
             llmAccounts: supportsLLM ? outgoingAccounts() : nil,
-            harnesses: supportsHarnesses ? outgoingHarnesses() : nil) else {
-            status = "✗ Couldn't save — a domain needs a Cloudflare token, the lens name must be a free DNS label, and the daemon must be running."
+            harnesses: supportsHarnesses ? outgoingHarnesses() : nil)
+        guard let saved = result.settings else {
+            status = "✗ \(result.error ?? "Couldn't save — is the daemon running?")"
             return
         }
         apply(saved) // show the resolved command + the rules that survived validation
