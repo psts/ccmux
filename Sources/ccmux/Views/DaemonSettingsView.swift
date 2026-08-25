@@ -54,19 +54,29 @@ struct DaemonSettingsView: View {
         var aliases: String
     }
 
+    /// The account-kind checkboxes, in the same order the web editor renders
+    /// them — the order also keeps the dirty-check snapshot stable.
+    static let accountKindOptions = ["anthropic", "openai", "claude", "codex"]
+
     struct EditableHarness: Identifiable {
         let id = UUID()
         var icon: String
         var name: String
         var command: String
         var autoconfirm: Bool
+        /// Which llm account kinds this harness may use; empty = its default.
+        var kinds: Set<String>
         let source: String
         /// The daemon-resolved defaults this row started as: an untouched
         /// builtin/detected row is NOT persisted, so it stays live-resolved.
         let orig: [String]
 
+        var kindsText: String {
+            DaemonSettingsView.accountKindOptions.filter(kinds.contains).joined(separator: ", ")
+        }
+
         var untouchedDefault: Bool {
-            !source.isEmpty && orig == [icon, name, command, autoconfirm ? "1" : "0"]
+            !source.isEmpty && orig == [icon, name, command, autoconfirm ? "1" : "0", kindsText]
         }
     }
 
@@ -316,7 +326,7 @@ struct DaemonSettingsView: View {
                 }
                 Button("Add harness") {
                     harnesses.append(EditableHarness(
-                        icon: "", name: "", command: "", autoconfirm: false, source: "", orig: []))
+                        icon: "", name: "", command: "", autoconfirm: false, kinds: [], source: "", orig: []))
                 }
                 .controlSize(.small)
                 if supportsHarnessRules {
@@ -365,9 +375,34 @@ struct DaemonSettingsView: View {
             TextField("command + flags", text: harness.command)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
+            // Which llm account kinds this harness can use — same row as the
+            // web editor; none checked = the harness's default pairing.
+            HStack(spacing: 8) {
+                Text("accounts:")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                ForEach(Self.accountKindOptions, id: \.self) { kind in
+                    Toggle(kind, isOn: kindBinding(harness, kind))
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 11))
+                }
+            }
+            .help("Which llm account kinds this harness can use; none checked = its default")
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+    }
+
+    private func kindBinding(_ harness: Binding<EditableHarness>, _ kind: String) -> Binding<Bool> {
+        Binding(
+            get: { harness.wrappedValue.kinds.contains(kind) },
+            set: { on in
+                if on {
+                    harness.wrappedValue.kinds.insert(kind)
+                } else {
+                    harness.wrappedValue.kinds.remove(kind)
+                }
+            })
     }
 
     private var saveBar: some View {
@@ -494,11 +529,16 @@ struct DaemonSettingsView: View {
 
     /// Only overrides and new entries persist — an untouched builtin/detected
     /// row stays live-resolved on the daemon (same rule as the web editor).
+    /// accountKinds only travel when at least one is checked; empty inherits
+    /// the harness's default pairing on the daemon.
     private func outgoingHarnesses() -> [[String: Any]] {
         harnesses.compactMap { h in
             if h.name.isEmpty && h.command.isEmpty { return nil }
             if h.untouchedDefault { return nil }
-            return ["name": h.name, "icon": h.icon, "command": h.command, "autoconfirm": h.autoconfirm]
+            var out: [String: Any] = ["name": h.name, "icon": h.icon, "command": h.command, "autoconfirm": h.autoconfirm]
+            let kinds = Self.accountKindOptions.filter(h.kinds.contains)
+            if !kinds.isEmpty { out["accountKinds"] = kinds }
+            return out
         }
     }
 
@@ -528,10 +568,12 @@ struct DaemonSettingsView: View {
                 aliases: $0.modelAliases.map { "\($0.from)=\($0.to)" }.joined(separator: ", "))
         }
         harnesses = settings.harnesses.map {
-            EditableHarness(
+            let kindsText = Self.accountKindOptions
+                .filter(Set($0.accountKinds).contains).joined(separator: ", ")
+            return EditableHarness(
                 icon: $0.icon ?? "", name: $0.name, command: $0.command ?? "",
-                autoconfirm: $0.autoconfirm, source: $0.source,
-                orig: [$0.icon ?? "", $0.name, $0.command ?? "", $0.autoconfirm ? "1" : "0"])
+                autoconfirm: $0.autoconfirm, kinds: Set($0.accountKinds), source: $0.source,
+                orig: [$0.icon ?? "", $0.name, $0.command ?? "", $0.autoconfirm ? "1" : "0", kindsText])
         }
         devDomain = settings.devDomain
         lensHostname = settings.lensHostname

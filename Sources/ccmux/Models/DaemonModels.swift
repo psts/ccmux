@@ -389,6 +389,9 @@ struct DaemonHarness: Codable, Identifiable {
     var autoconfirm: Bool
     /// "builtin" | "detected" | "" (user-configured) — stamped by the daemon.
     var source: String
+    /// Which llm account KINDS this harness can use — stamped resolved by the
+    /// daemon (an entry that says nothing gets its name's default).
+    var accountKinds: [String]
     var id: String { name }
 
     init(from decoder: Decoder) throws {
@@ -398,9 +401,10 @@ struct DaemonHarness: Codable, Identifiable {
         command = try c.decodeIfPresent(String.self, forKey: .command)
         autoconfirm = try c.decodeIfPresent(Bool.self, forKey: .autoconfirm) ?? false
         source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
+        accountKinds = try c.decodeIfPresent([String].self, forKey: .accountKinds) ?? []
     }
 
-    private enum CodingKeys: String, CodingKey { case name, icon, command, autoconfirm, source }
+    private enum CodingKeys: String, CodingKey { case name, icon, command, autoconfirm, source, accountKinds }
 }
 
 /// A daemon pane = one tmux window (single tmux pane). `id` is the stable
