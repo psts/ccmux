@@ -1,23 +1,25 @@
-package manager
+package harness
 
 import (
 	"path/filepath"
 	"strings"
 )
 
-// startupProgram returns the base name of the program a startup command runs,
+// StartupProgram returns the base name of the program a startup command runs,
 // looking past the wrappers a command line puts in front of it: leading
 // `VAR=value` assignments and an `env` invocation with its options.
 //
-// It exists because two callers ask the same question ("is this a claude
-// pane?") and used to answer it differently — one matched fields[0] == "claude",
-// the other skipped only `VAR=value`. Neither survived the claude command
-// (harness.FallbackClaudeCommand) gaining its `env -u TMUX` prefix: panes came
-// up titled "Terminal".
+// It exists because several callers ask the same question ("what does this
+// command run?") and used to answer it differently — one matched
+// fields[0] == "claude", another skipped only `VAR=value`. Neither survived
+// the claude command (FallbackClaudeCommand) gaining its `env -u TMUX`
+// prefix: panes came up titled "Terminal". The manager's pane titling and
+// dormant detection read it, and the legacy-rule migration matches commands
+// to harnesses by it.
 //
 // Returns "" when there is no program (empty command, or `env` with nothing
 // after its flags).
-func startupProgram(startupCmd string) string {
+func StartupProgram(startupCmd string) string {
 	fields := strings.Fields(startupCmd)
 	for i := 0; i < len(fields); i++ {
 		f := fields[i]

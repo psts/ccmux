@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
@@ -53,7 +54,7 @@ func derivePaneTitle(rawTitle, rawCommand string, defaultTitles map[string]bool)
 // arrives (~1s): panes born to run claude are "Claude", everything else starts
 // as a shell.
 func initialPaneTitle(startupCmd string) string {
-	if startupProgram(startupCmd) == "claude" {
+	if harness.StartupProgram(startupCmd) == "claude" {
 		return "Claude"
 	}
 	return "Terminal"

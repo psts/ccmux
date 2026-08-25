@@ -62,7 +62,9 @@ func (s *Service) migrateDefaultCommand() error {
 // migrateRules converts raw-command folder rules to harness-name rules: an
 // exact match against a harness's command wins (run after
 // migrateDefaultCommand, so a rule repeating the old default maps to the new
-// claude override), else the injected guess, else the rule is dropped with a
+// claude override), else a harness running the same PROGRAM (StartupProgram
+// sees through env/VAR= wrappers and flags, so `env FOO=1 pi --fast` maps to
+// the detected pi), else the injected guess, else the rule is dropped with a
 // log line — a raw command no harness runs has no place in the new model.
 func (s *Service) migrateRules(guess func(string) string) error {
 	raw, err := s.store.GetSetting(legacySettingStartupRules)
@@ -83,13 +85,7 @@ func (s *Service) migrateRules(guess func(string) string) error {
 	}
 	converted := make([]Rule, 0, len(legacy))
 	for _, lr := range legacy {
-		name := guess(lr.Command)
-		for _, h := range list {
-			if h.Command == lr.Command {
-				name = h.Name
-				break
-			}
-		}
+		name := ruleHarnessName(list, lr.Command, guess)
 		if name == "" {
 			log.Printf("harness: dropping startup rule for %q — no harness runs %q", lr.PathPrefix, lr.Command)
 			continue
@@ -100,4 +96,23 @@ func (s *Service) migrateRules(guess func(string) string) error {
 		return err
 	}
 	return s.store.SetSetting(legacySettingStartupRules, "")
+}
+
+// ruleHarnessName maps one legacy raw command to a harness name, strongest
+// signal first: exact command match, same program, the injected guess. ""
+// means no harness runs it.
+func ruleHarnessName(list []Harness, cmd string, guess func(string) string) string {
+	for _, h := range list {
+		if h.Command == cmd {
+			return h.Name
+		}
+	}
+	if prog := StartupProgram(cmd); prog != "" {
+		for _, h := range list {
+			if StartupProgram(h.Command) == prog {
+				return h.Name
+			}
+		}
+	}
+	return guess(cmd)
 }

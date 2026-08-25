@@ -11,6 +11,7 @@ package manager
 import (
 	"strings"
 
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
@@ -19,7 +20,7 @@ import (
 // for the one-time migration of existing ones; it is never the runtime test,
 // because it cannot see a Claude the user launched by hand.
 func startsClaude(startupCmd string) bool {
-	return startupProgram(startupCmd) == "claude"
+	return harness.StartupProgram(startupCmd) == "claude"
 }
 
 // isDormant is the whole rule, in the two facts a pane carries: the last thing
@@ -57,7 +58,7 @@ func runsClaude(p *model.Pane) bool { return isClaudeCommand(p.RawCommand) }
 // can never disagree about it — the same reason atBareShell shares shellNames.
 func isClaudeCommand(rawCommand string) bool {
 	cmd := strings.TrimSpace(rawCommand)
-	return versionish.MatchString(cmd) || startupProgram(cmd) == "claude"
+	return versionish.MatchString(cmd) || harness.StartupProgram(cmd) == "claude"
 }
 
 // refreshDormantLocked recomputes a pane's dormant and at-shell flags,

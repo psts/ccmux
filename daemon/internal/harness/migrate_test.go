@@ -1,32 +1,25 @@
 package harness
 
 import (
-	"strings"
+	"errors"
 	"testing"
 )
 
-// guessLikeManager mirrors the manager's text guess closely enough for these
-// tests: a command whose program is claude → "claude", pi → "pi", else "".
+// guessLikeManager mirrors the manager's real GuessHarness EXACTLY: it only
+// ever answers "claude" (for claude-shaped commands) or "". A more capable
+// fake here would pin a migration path production does not have.
 func guessLikeManager(cmd string) string {
-	fields := strings.Fields(cmd)
-	for _, f := range fields {
-		switch {
-		case strings.Contains(f, "="), f == "env", f == "-u", f == "TMUX":
-			continue
-		case strings.HasPrefix(f, "claude"):
-			return "claude"
-		case f == "pi":
-			return "pi"
-		default:
-			return ""
-		}
+	if StartupProgram(cmd) == "claude" {
+		return "claude"
 	}
 	return ""
 }
 
-// The full conversion: a custom default becomes the claude override, rules map
-// by exact command match, then by guess, and the unmappable are dropped; both
-// legacy keys are cleared and a second run is a no-op.
+// The full conversion: a custom default becomes the claude override, rules
+// map by exact command match, then by program (an INSTALLED pi answers for
+// `env FOO=1 pi --fast`), and the unmappable — including a program no
+// harness runs — are dropped; both legacy keys are cleared and a second run
+// is a no-op.
 func TestMigrateLegacyStartupSettings(t *testing.T) {
 	st := fakeStore{
 		legacySettingStartupCommand: "claude --dangerously-load-development-channels server:claude-peers",
@@ -36,6 +29,12 @@ func TestMigrateLegacyStartupSettings(t *testing.T) {
 			{"pathPrefix":"/w/odd","command":"./run.sh"}]`,
 	}
 	s := testService(st)
+	s.lookPath = func(name string) (string, error) {
+		if name == "pi" {
+			return "/usr/local/bin/pi", nil
+		}
+		return "", errors.New("not installed")
+	}
 	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +49,9 @@ func TestMigrateLegacyStartupSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// /w/CL matched the migrated claude override's command exactly; /w/pi only
-	// resolves via the guess; ./run.sh maps to nothing and is dropped.
+	// /w/CL matched the migrated claude override's command exactly; /w/pi
+	// resolves by PROGRAM against the detected pi harness (the real guess
+	// only knows claude); ./run.sh maps to nothing and is dropped.
 	if len(rules) != 2 || rules[0].Harness != "claude" || rules[1].Harness != "pi" {
 		t.Fatalf("rules after migration = %+v", rules)
 	}
