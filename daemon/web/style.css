@@ -113,6 +113,8 @@ body {
 .llm-kind { flex: 0 0 auto; }
 .hx-icon { flex: 0 0 3.2em; text-align: center; }
 .hx-confirm { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.hx-kinds { flex-wrap: wrap; }
+.hx-kinds-label { font-size: 11px; color: var(--muted); }
 .harness-src {
   font-size: 10px; color: var(--muted); border: 1px solid var(--line);
   border-radius: 999px; padding: 1px 7px; white-space: nowrap;

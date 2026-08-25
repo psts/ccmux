@@ -1475,8 +1475,11 @@ function wireHarnessSettings() {
       `</div>` +
       `<div class="entry-line">` +
       `<input class="setting-input hx-cmd grow" type="text" spellcheck="false" placeholder="command + flags" value="${esc(h.command || "")}">` +
-      `<input class="setting-input hx-kinds" type="text" spellcheck="false" placeholder="accounts: any kind"` +
-      ` title="Which llm account kinds this harness can use (anthropic, claude, openai, codex); empty = its default" value="${esc(kindsText)}">` +
+      `</div>` +
+      `<div class="entry-line hx-kinds" title="Which llm account kinds this harness can use; none checked = its default">` +
+      `<span class="hx-kinds-label">accounts:</span>` +
+      ["anthropic", "openai", "claude", "codex"].map((k) =>
+        `<label class="hx-confirm"><input type="checkbox" data-kind="${k}"${(h.accountKinds || []).includes(k) ? " checked" : ""}>${k}</label>`).join("") +
       `</div>`;
     for (const el of row.querySelectorAll("input")) {
       el.addEventListener("change", save);
@@ -1488,8 +1491,8 @@ function wireHarnessSettings() {
   }
 
   function rowValue(row) {
-    const kinds = row.querySelector(".hx-kinds").value
-      .split(",").map((s) => s.trim()).filter(Boolean);
+    const kinds = [...row.querySelectorAll(".hx-kinds input:checked")]
+      .map((el) => el.dataset.kind);
     const v = {
       icon: row.querySelector(".hx-icon").value.trim(),
       name: row.querySelector(".hx-name").value.trim(),
