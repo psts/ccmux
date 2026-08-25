@@ -9,6 +9,15 @@ enum DaemonConnectionState: Equatable {
     case closed
 }
 
+/// The slice of the attach connection a pane controller needs: somewhere to send
+/// commands, and the workspace they belong to. A protocol so a test can stand a
+/// spy in for the real client, which owns a live socket and offers nothing to
+/// observe — the untestable seam that left the activation wiring unpinned.
+protocol AttachCommandSink: AnyObject {
+    var workspaceId: String { get }
+    func send(_ command: DaemonCommand)
+}
+
 /// One WebSocket attach to a hosted workspace (`GET /v1/attach?workspace=…`),
 /// multiplexing every pane in that workspace. Decodes `DaemonEvent`s and forwards
 /// them on the main thread; accepts `DaemonCommand`s to send back. Auto-reconnects
@@ -16,7 +25,7 @@ enum DaemonConnectionState: Equatable {
 ///
 /// Modeled on `PeerBrokerService`'s URLSessionWebSocketTask pump, but stateful:
 /// the daemon must stay the sole tmux client, so the lens speaks only this contract.
-final class DaemonAttachClient {
+final class DaemonAttachClient: AttachCommandSink {
     let workspaceId: String
     private let readonly: Bool
 

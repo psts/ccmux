@@ -29,9 +29,8 @@ struct HostedTerminalPaneView: View {
             if service.hostedConnectionState(paneId: paneId) == .connected,
                service.hostedIsStale(paneId: paneId) {
                 TakeoverButton {
-                    let c = service.hostedController(paneId: paneId, workingDirectory: workingDirectory)
-                    c?.sendCurrentSize()
-                    c?.requestRepaint()
+                    service.hostedController(paneId: paneId, workingDirectory: workingDirectory)?
+                        .reassertOnActivation()
                 }
                 .padding(8)
             }
@@ -184,28 +183,23 @@ final class HostedTerminalContainerView: NSView {
         }
     }
 
-    /// Force-push this on-screen pane's size to the daemon (window became key).
-    /// The repaint rides along because the size usually did NOT change: without
-    /// it the daemon sends nothing and the pane keeps whatever this emulator
-    /// drifted to while the window was in the background.
+    /// Window became key: activate the on-screen pane (size re-assert + repaint,
+    /// see RemoteTermController.reassertOnActivation).
     private func reassertSizeOnFocus() {
         guard bounds.width > 0, bounds.height > 0,
               let controller, controller.terminalView.superview === self else { return }
-        controller.sendCurrentSize()
-        controller.requestRepaint()
+        controller.reassertOnActivation()
     }
 
-    /// Once embedded at a real size, push the grid dimensions to the daemon so tmux
-    /// (window-size manual) matches what the user sees and re-seeds at the right size.
-    /// The ongoing case (drag-resize) is handled by RemoteTermController.sizeChanged.
-    /// The repaint covers the size-unchanged case, which is the common one: a tab
-    /// or workspace switch rebuilds this container around a reused emulator whose
-    /// grid matches the pane exactly, so the size assert alone repaints nothing.
+    /// Once embedded at a real size, activate the pane: push the grid to the daemon
+    /// so tmux (window-size manual) matches what the user sees, and repaint for the
+    /// common case where the size is unchanged (a tab or workspace switch rebuilds
+    /// this container around a reused emulator whose grid already matches). The
+    /// ongoing case (drag-resize) stays with RemoteTermController.sizeChanged.
     private func assertSizeIfReady() {
         guard !hasAssertedSize, bounds.width > 0, bounds.height > 0,
               let controller, controller.terminalView.superview === self else { return }
         hasAssertedSize = true
-        controller.sendCurrentSize()
-        controller.requestRepaint()
+        controller.reassertOnActivation()
     }
 }

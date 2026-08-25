@@ -656,7 +656,8 @@ enum DaemonFirehoseEvent {
 }
 
 /// Client→server attach command. Serializes to the same `wsMsg` envelope.
-enum DaemonCommand {
+/// Equatable so a test spy can assert the exact command sequence a controller sent.
+enum DaemonCommand: Equatable {
     case input(pane: String, bytes: ArraySlice<UInt8>)
     case resize(pane: String, cols: Int, rows: Int)
     /// present says whether THIS screen is awake and unlocked, which is what the

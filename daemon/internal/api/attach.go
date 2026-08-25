@@ -297,9 +297,8 @@ func (s *Server) applyResize(msg wsMsg, wsID string, rs *resnapper) {
 }
 
 // readLoop applies client input/resize/repaint/focus until the connection
-// closes. Read-only observers can focus but cannot send input, resize, or
-// repaint (server-enforced — an observer must never crunch a driver's pane size
-// nor drive capture-pane at will).
+// closes. Read-only observers may only focus (server-enforced — an observer
+// must never crunch a driver's pane size nor drive capture-pane at will).
 func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool, rs *resnapper) {
 	defer cancel()
 	// This goroutine owns the read deadline (see keepalive.go). Without it a lens
@@ -313,21 +312,20 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 			return
 		}
 		s.ka.touchReads(conn)
+		// Focus is the one verb an observer may send: it reports what they are
+		// looking at and drives nothing shared. Everything else — input, resize,
+		// repaint — acts on the pane, so it is refused up front. An allowlist,
+		// not a per-verb guard, so a future verb starts refused for observers
+		// rather than trusted by omission.
+		if readonly && msg.T != "focus" {
+			continue
+		}
 		switch msg.T {
 		case "input":
-			if readonly {
-				continue
-			}
 			s.applyInput(ctrl, msg, wsID, connID)
 		case "resize":
-			if readonly {
-				continue
-			}
 			s.applyResize(msg, wsID, rs)
 		case "repaint":
-			if readonly {
-				continue
-			}
 			// Activation, not resize. A lens that re-shows a long-lived emulator
 			// (the Mac app re-embedding a pane, its window becoming key) re-asserts
 			// a size the pane usually already has — changed == false in applyResize,

@@ -60,7 +60,7 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
     let paneId: String
     let workingDirectory: String
     let terminalView: TerminalView
-    weak var attach: DaemonAttachClient?
+    weak var attach: (any AttachCommandSink)?
 
     /// Routes a clicked file link (absolute local path) to the app. Hosted panes
     /// resolve links against the *local* clone at `workingDirectory` — the v1 scope
@@ -104,7 +104,7 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
         }
     }
 
-    init(paneId: String, workingDirectory: String, attach: DaemonAttachClient?) {
+    init(paneId: String, workingDirectory: String, attach: (any AttachCommandSink)?) {
         self.paneId = paneId
         self.workingDirectory = workingDirectory
         self.attach = attach
@@ -185,6 +185,19 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
         lastSentCols = -1
         lastSentRows = -1
         forwardResize(cols: t.cols, rows: t.rows)
+    }
+
+    /// Activation: this pane is being shown again (re-embedded after a tab or
+    /// workspace switch, window became key, take-over). The two calls always
+    /// travel together — the size re-assert repaints only when the size actually
+    /// changed daemon-side, and the repaint covers the usual case where it did
+    /// not — so the pairing lives here, where a future activation path cannot
+    /// forget half of it. A reconnect's hello is NOT an activation: the daemon
+    /// has just snapshotted every pane, so that path calls sendCurrentSize()
+    /// alone.
+    func reassertOnActivation() {
+        sendCurrentSize()
+        requestRepaint()
     }
 
     /// Ask the daemon for a fresh capture of this pane's screen. sendCurrentSize()
