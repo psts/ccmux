@@ -33,6 +33,17 @@ class SplitTreeController: ObservableObject {
     /// The daemon's resolved harness list, fed by the session service for the
     /// tab bar's picker. Empty until (unless) the fetch lands.
     @Published var harnesses: [DaemonHarness] = []
+    /// LLM account names for the per-pane route picker in the tab context
+    /// menu (hosted only; empty hides the menu, as in driver mode).
+    @Published var llmAccounts: [String] = []
+    /// The global llm route ("" = direct Anthropic) — named in the picker's
+    /// "follow global" row so the default is legible, not a mystery.
+    @Published var llmGlobalRoute: String = ""
+    /// Per-pane llm overrides by DAEMON pane id (absent = follows global).
+    @Published var llmPaneRoutes: [String: String] = [:]
+    /// Point one hosted pane's llm route at an account by name ("" clears the
+    /// override). nil in driver mode, which has no proxy.
+    var onSetPaneLLMRoute: ((String, String) -> Void)?
     /// Fired with the daemon pane id of every hosted terminal tab the user closes,
     /// so the service kills the remote pane (otherwise it would keep running and
     /// the next reconcile's merge would resurface it).

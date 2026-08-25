@@ -463,6 +463,14 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp["llmAccountStatus"] = sts
+		// Per-pane overrides (pane id → account name) so a client can render
+		// every pane's route picker from one fetch instead of N calls.
+		routes, err := s.llm.PaneRoutes()
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		resp["llmPaneRoutes"] = routes
 	}
 	if s.mgr.Harnesses != nil {
 		// Resolved list, built-in claude included — what a picker renders.

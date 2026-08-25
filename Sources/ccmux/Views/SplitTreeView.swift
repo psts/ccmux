@@ -194,7 +194,12 @@ private struct LeafPaneView: View {
                 harnesses: controller.harnesses,
                 onAddHarnessTab: { name in
                     controller.addHarnessTab(leafId: paneId, harness: name)
-                }
+                },
+                // Same rule for the route picker: all empty/nil in driver mode.
+                llmAccounts: controller.llmAccounts,
+                llmGlobalRoute: controller.llmGlobalRoute,
+                llmPaneRoutes: controller.llmPaneRoutes,
+                onSetPaneLLMRoute: controller.onSetPaneLLMRoute
             )
 
             Divider()

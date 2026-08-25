@@ -23,6 +23,13 @@ struct PaneTabBar: View {
     /// hides the button — driver-mode workspaces have no harness spawns.
     var harnesses: [DaemonHarness] = []
     var onAddHarnessTab: ((String) -> Void)?
+    /// LLM account names, the global route, and per-DAEMON-pane overrides for
+    /// the tab menu's route picker. Empty accounts or a nil setter hides it —
+    /// driver mode has no proxy.
+    var llmAccounts: [String] = []
+    var llmGlobalRoute: String = ""
+    var llmPaneRoutes: [String: String] = [:]
+    var onSetPaneLLMRoute: ((String, String) -> Void)?
 
     @EnvironmentObject var dragState: PaneDragState
 
@@ -60,15 +67,7 @@ struct PaneTabBar: View {
                                     onActivateTab(tab.id)
                                 })
                         )
-                        .contextMenu {
-                            addTabMenu
-                            if case .terminal = tab {
-                                Divider()
-                                Button(tab.id == claudePaneId ? "✓ Claude pane (spawns land here)" : "Use as Claude pane") {
-                                    onDesignateClaudePane?(tab.id)
-                                }
-                            }
-                        }
+                        .contextMenu { tabContextMenu(for: tab) }
                     }
                 }
             }
@@ -138,22 +137,63 @@ struct PaneTabBar: View {
         }
     }
 
+    /// The tab's right-click menu, grouped: everything spawnable lives under
+    /// one "New Tab" submenu, and a hosted terminal adds its own concerns —
+    /// which model account answers this pane, and the Claude-pane designation.
     @ViewBuilder
-    private var addTabMenu: some View {
-        Button("New Terminal Tab") { onAddTab(.defaultTerminal(workingDirectory: workingDirectory)) }
-        if let onAddHarnessTab {
-            ForEach(harnesses) { h in
-                Button("New \(h.name) Tab") { onAddHarnessTab(h.name) }
+    private func tabContextMenu(for tab: PaneContent) -> some View {
+        newTabMenu
+        if case .terminal(let config) = tab {
+            if let hostedId = config.host.hostedPaneId, onSetPaneLLMRoute != nil, !llmAccounts.isEmpty {
+                Divider()
+                llmRouteMenu(paneId: hostedId)
+            }
+            Divider()
+            Button(tab.id == claudePaneId ? "✓ Claude pane (spawns land here)" : "Use as Claude pane") {
+                onDesignateClaudePane?(tab.id)
             }
         }
-        Button("New Browser Tab") {
-            onAddTab(.browser(BrowserConfig(id: UUID(), urlString: "https://google.com")))
+    }
+
+    private var newTabMenu: some View {
+        Menu("New Tab") {
+            // Shell-backed tabs first — a plain terminal, then the harnesses
+            // that run in one — then the content tabs.
+            Button("Terminal") { onAddTab(.defaultTerminal(workingDirectory: workingDirectory)) }
+            if let onAddHarnessTab {
+                ForEach(harnesses) { h in
+                    Button("\(h.icon ?? "▸") \(h.name)") { onAddHarnessTab(h.name) }
+                }
+            }
+            Divider()
+            Button("Browser") {
+                onAddTab(.browser(BrowserConfig(id: UUID(), urlString: "https://google.com")))
+            }
+            Button("Scratchpad") {
+                onAddTab(.scratchpad(ScratchpadConfig(id: UUID(), title: "Scratchpad", content: scratchpadContent)))
+            }
+            Button("Files") {
+                onAddTab(.defaultFileExplorer(rootPath: workingDirectory))
+            }
         }
-        Button("New Scratchpad Tab") {
-            onAddTab(.scratchpad(ScratchpadConfig(id: UUID(), title: "Scratchpad", content: scratchpadContent)))
-        }
-        Button("New Files Tab") {
-            onAddTab(.defaultFileExplorer(rootPath: workingDirectory))
+    }
+
+    /// Which llm account answers this pane: "follow global" (named, so the
+    /// default is legible) or an explicit account. The ✓ marks the current
+    /// choice, same style the Claude-pane row uses.
+    private func llmRouteMenu(paneId: String) -> some View {
+        let current = llmPaneRoutes[paneId] ?? ""
+        let globalName = llmGlobalRoute.isEmpty ? "Anthropic direct" : llmGlobalRoute
+        return Menu("Model Account") {
+            Button((current.isEmpty ? "✓ " : "") + "Follow global (\(globalName))") {
+                onSetPaneLLMRoute?(paneId, "")
+            }
+            Divider()
+            ForEach(llmAccounts, id: \.self) { name in
+                Button((current == name ? "✓ " : "") + name) {
+                    onSetPaneLLMRoute?(paneId, name)
+                }
+            }
         }
     }
 }

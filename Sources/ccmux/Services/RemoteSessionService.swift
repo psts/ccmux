@@ -567,16 +567,23 @@ final class RemoteSessionService: ObservableObject {
         await refresh()
     }
 
-    /// The daemon-resolved harness list (built-in claude + detected + user
-    /// entries) for the tab bar's picker. nil on any failure — the picker
-    /// simply stays empty rather than offering stale names.
-    private func fetchHarnesses() async -> [DaemonHarness]? {
+    /// The settings slice the tab bar needs: the harness list for the picker,
+    /// plus the llm accounts and routes for the per-pane route menu. nil on
+    /// any failure — the pickers simply stay empty rather than offering
+    /// stale names.
+    struct TabBarSettings: Codable {
+        var harnesses: [DaemonHarness]?
+        var llmAccounts: [DaemonLLMAccount]?
+        var llmRoute: String?
+        var llmPaneRoutes: [String: String]?
+    }
+
+    private func fetchTabBarSettings() async -> TabBarSettings? {
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
-        struct SettingsHarnesses: Codable { var harnesses: [DaemonHarness]? }
         do {
             let (data, resp) = try await session.data(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-            return try JSONDecoder().decode(SettingsHarnesses.self, from: data).harnesses ?? []
+            return try JSONDecoder().decode(TabBarSettings.self, from: data)
         } catch {
             return nil
         }
@@ -834,10 +841,27 @@ final class RemoteSessionService: ObservableObject {
         controller.onHostedHarnessRequest = { [weak self] leafId, name in
             Task { await self?.placeSpawnedTerminal(appId: appId, leafId: leafId, direction: nil, harness: name) }
         }
-        // Feed the harness picker; a fetch failure just leaves the menu empty.
+        // Feed the harness picker and the per-pane route menu; a fetch
+        // failure just leaves both menus empty.
         Task { [weak self, weak controller] in
-            if let hs = await self?.fetchHarnesses(), let controller {
-                await MainActor.run { controller.harnesses = hs }
+            if let s = await self?.fetchTabBarSettings(), let controller {
+                await MainActor.run {
+                    controller.harnesses = s.harnesses ?? []
+                    controller.llmAccounts = (s.llmAccounts ?? []).map(\.name)
+                    controller.llmGlobalRoute = s.llmRoute ?? ""
+                    controller.llmPaneRoutes = s.llmPaneRoutes ?? [:]
+                }
+            }
+        }
+        controller.onSetPaneLLMRoute = { [weak self, weak controller] paneId, route in
+            Task {
+                guard let self else { return }
+                let err = await self.sendReportingError(
+                    "PUT", path: "/v1/panes/\(paneId)/llm-route", body: ["route": route], expect: 200)
+                guard err == nil, let controller else { return }
+                await MainActor.run {
+                    if route.isEmpty { controller.llmPaneRoutes.removeValue(forKey: paneId) } else { controller.llmPaneRoutes[paneId] = route }
+                }
             }
         }
         controller.onHostedPaneClosed = { [weak self] paneId in
