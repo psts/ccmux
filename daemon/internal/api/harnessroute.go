@@ -2,8 +2,12 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/manager"
 )
 
@@ -31,13 +35,13 @@ func (s *Server) startPaneHarness(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	route, err := s.llmRouteForHarness(h.Name)
+	route, err := s.llmRouteForHarness(h)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	if route == "" {
-		s.clearForeignPaneRoute(paneID)
+		s.clearForeignPaneRoute(paneID, h)
 	}
 	if err := s.mgr.StartHarnessInPane(paneID, h, route); err != nil {
 		code := http.StatusInternalServerError
@@ -51,26 +55,52 @@ func (s *Server) startPaneHarness(w http.ResponseWriter, r *http.Request) {
 }
 
 // llmRouteForHarness resolves the llm account a harness start must route its
-// pane to ("" = leave routing alone). Keyed by harness NAME, not a stored
-// field, so a user override of the codex entry (different flags, icon) keeps
-// its pairing: codex can only talk to a ChatGPT-backed account, so its pane
-// is pointed at the first codex-kind account before the command types.
-func (s *Server) llmRouteForHarness(name string) (string, error) {
-	if name != "codex" {
+// pane to ("" = the pane's default routing already works). It reads the
+// harness's resolved AccountKinds (registry defaults fill empty ones, so a
+// user override of the codex command keeps codex's pairing): when the global
+// route's account kind is not among them, the pane is pointed at the first
+// account of an allowed kind before the command types.
+func (s *Server) llmRouteForHarness(h harness.Harness) (string, error) {
+	if len(h.AccountKinds) == 0 {
 		return "", nil
 	}
 	if s.llm == nil {
-		return "", errors.New("the codex harness needs the llm proxy, which is not available on this daemon")
+		return "", fmt.Errorf("the %s harness needs the llm proxy, which is not available on this daemon", h.Name)
 	}
-	return s.llm.AccountNameForKind("codex")
+	globalKind, err := s.globalRouteKind()
+	if err != nil {
+		return "", err
+	}
+	if slices.Contains(h.AccountKinds, globalKind) {
+		return "", nil
+	}
+	for _, k := range h.AccountKinds {
+		if name, err := s.llm.AccountNameForKind(k); err == nil {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("the %s harness pairs with %s llm accounts — add one under settings, Accounts", h.Name, strings.Join(h.AccountKinds, " or "))
 }
 
-// clearForeignPaneRoute drops a pane's llm override when it names a
-// codex-kind account and a NON-codex harness is about to start there:
-// Anthropic-dialect traffic into the ChatGPT backend fails on every request
-// (and the proxy refuses it — see llmproxy.Handler). Best-effort: a read
-// failure leaves the route for the proxy's own loud errors to surface.
-func (s *Server) clearForeignPaneRoute(paneID string) {
+// globalRouteKind is the kind of the account the global route names —
+// "anthropic" for the empty route's direct pass-through.
+func (s *Server) globalRouteKind() (string, error) {
+	route, err := s.llm.Route()
+	if err != nil {
+		return "", err
+	}
+	if route == "" {
+		return "anthropic", nil
+	}
+	return s.llm.KindOf(route)
+}
+
+// clearForeignPaneRoute drops a pane's llm override when the harness about
+// to start there cannot use it (a codex route left behind for a claude
+// start, say) — otherwise every request fails on a stale decision.
+// Best-effort: a read failure leaves the route for the proxy's own loud
+// errors to surface.
+func (s *Server) clearForeignPaneRoute(paneID string, h harness.Harness) {
 	if s.llm == nil {
 		return
 	}
@@ -82,7 +112,11 @@ func (s *Server) clearForeignPaneRoute(paneID string) {
 	if !ok {
 		return
 	}
-	if kind, err := s.llm.KindOf(name); err == nil && kind == "codex" {
+	kind, err := s.llm.KindOf(name)
+	if err != nil || kind == "" {
+		return
+	}
+	if !kindAllowed(h.AccountKinds, kind) {
 		_ = s.llm.SetPaneRoute(paneID, "")
 	}
 }

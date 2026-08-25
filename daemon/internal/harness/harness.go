@@ -38,9 +38,14 @@ type Harness struct {
 	// startup prompts (built for claude's trust prompt; other harnesses opt in
 	// when their prompts are known to be safe to confirm blind).
 	Autoconfirm bool `json:"autoconfirm"`
-	// Accounts names the llm accounts this harness may be paired with (empty =
-	// any). Declarative for now: the pickers will read it once pairing exists.
-	Accounts []string `json:"accounts,omitempty"`
+	// AccountKinds names the llm account KINDS this harness can talk to —
+	// compatibility is a protocol property, so it keys on kind, never on
+	// account names (those rot as accounts come and go). Empty inherits the
+	// registry default for this NAME (see defaultAccountKinds), so a user
+	// override of e.g. the codex command keeps codex's pairing; a name with
+	// no default means any kind. The spawn pairing, the route guard, and the
+	// pane route picker all read this one declaration.
+	AccountKinds []string `json:"accountKinds,omitempty"`
 	// Source labels where a listed entry came from — "builtin", "detected"
 	// (binary found on this host), or "" for a user-configured entry. Stamped
 	// by List for the editors; stripped on Apply.
@@ -48,6 +53,16 @@ type Harness struct {
 }
 
 const settingHarnesses = "harnesses"
+
+// defaultAccountKinds is what AccountKinds resolves to when an entry leaves
+// it empty, keyed by harness name: claude speaks the Anthropic dialect
+// (a keyed org account or an injected subscription token both serve it);
+// codex speaks OpenAI's Responses dialect, which only a codex account's
+// upstream answers. Absent names (pi, opencode, custom entries) mean any.
+var defaultAccountKinds = map[string][]string{
+	Builtin: {"anthropic", "claude"},
+	"codex": {"codex"},
+}
 
 // Builtin is the harness every daemon has without configuration.
 const Builtin = "claude"
@@ -139,6 +154,14 @@ func (s *Service) List() ([]Harness, error) {
 		k.Source = "detected"
 		out = append(out, k)
 	}
+	for i := range out {
+		// Stamp the resolved pairing, like Source: an entry that says nothing
+		// gets its name's default, so overriding a builtin/detected harness's
+		// command never silently drops what it can pair with.
+		if len(out[i].AccountKinds) == 0 {
+			out[i].AccountKinds = defaultAccountKinds[out[i].Name]
+		}
+	}
 	return out, nil
 }
 
@@ -172,6 +195,15 @@ func (s *Service) Reject(hs []Harness) string {
 		if strings.TrimSpace(h.Command) == "" {
 			return fmt.Sprintf("harness %q has no command", name)
 		}
+		for _, k := range h.AccountKinds {
+			// An unknown kind is a rule that matches nothing — the harness
+			// would refuse every account and nothing would say why.
+			switch strings.TrimSpace(k) {
+			case "anthropic", "openai", "claude", "codex":
+			default:
+				return fmt.Sprintf("harness %q: unknown account kind %q (anthropic, openai, claude, or codex)", name, k)
+			}
+		}
 	}
 	return ""
 }
@@ -185,6 +217,13 @@ func (s *Service) Apply(hs []Harness) error {
 		h.Name = strings.TrimSpace(h.Name)
 		h.Command = strings.TrimSpace(h.Command)
 		h.Source = "" // stamped by List, never stored
+		kinds := make([]string, 0, len(h.AccountKinds))
+		for _, k := range h.AccountKinds {
+			if k = strings.TrimSpace(k); k != "" {
+				kinds = append(kinds, k)
+			}
+		}
+		h.AccountKinds = kinds
 		next = append(next, h)
 	}
 	b, err := json.Marshal(next)

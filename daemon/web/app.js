@@ -1461,7 +1461,8 @@ function wireHarnessSettings() {
   function harnessRow(h) {
     const row = document.createElement("div");
     row.className = "entry-card";
-    row.dataset.orig = JSON.stringify({ icon: h.icon || "", name: h.name || "", command: h.command || "", autoconfirm: !!h.autoconfirm });
+    const kindsText = (h.accountKinds || []).join(", ");
+    row.dataset.orig = JSON.stringify({ icon: h.icon || "", name: h.name || "", command: h.command || "", autoconfirm: !!h.autoconfirm, kinds: kindsText });
     row.dataset.source = h.source || "";
     const badge = h.source ? `<span class="harness-src">${esc(h.source)}</span>` : "";
     row.innerHTML =
@@ -1474,6 +1475,8 @@ function wireHarnessSettings() {
       `</div>` +
       `<div class="entry-line">` +
       `<input class="setting-input hx-cmd grow" type="text" spellcheck="false" placeholder="command + flags" value="${esc(h.command || "")}">` +
+      `<input class="setting-input hx-kinds" type="text" spellcheck="false" placeholder="accounts: any kind"` +
+      ` title="Which llm account kinds this harness can use (anthropic, claude, openai, codex); empty = its default" value="${esc(kindsText)}">` +
       `</div>`;
     for (const el of row.querySelectorAll("input")) {
       el.addEventListener("change", save);
@@ -1485,12 +1488,16 @@ function wireHarnessSettings() {
   }
 
   function rowValue(row) {
-    return {
+    const kinds = row.querySelector(".hx-kinds").value
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    const v = {
       icon: row.querySelector(".hx-icon").value.trim(),
       name: row.querySelector(".hx-name").value.trim(),
       command: row.querySelector(".hx-cmd").value.trim(),
       autoconfirm: row.querySelector(".hx-confirm input").checked,
     };
+    if (kinds.length) v.accountKinds = kinds;
+    return v;
   }
 
   function collect() {
@@ -1499,7 +1506,7 @@ function wireHarnessSettings() {
       const v = rowValue(row);
       if (!v.name && !v.command) continue; // blank editor row
       const untouchedDefault = row.dataset.source &&
-        JSON.stringify({ icon: v.icon, name: v.name, command: v.command, autoconfirm: v.autoconfirm }) === row.dataset.orig;
+        JSON.stringify({ icon: v.icon, name: v.name, command: v.command, autoconfirm: v.autoconfirm, kinds: (v.accountKinds || []).join(", ") }) === row.dataset.orig;
       if (untouchedDefault) continue; // stays live-resolved, not frozen
       out.push(v);
     }

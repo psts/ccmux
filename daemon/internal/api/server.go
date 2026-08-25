@@ -832,7 +832,7 @@ func (s *Server) spawnHarnessPane(w http.ResponseWriter, wsID string, req spawnP
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	route, err := s.llmRouteForHarness(h.Name)
+	route, err := s.llmRouteForHarness(h)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

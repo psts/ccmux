@@ -236,8 +236,17 @@ func (s *Service) Reject(accs *[]Account, route *string) string {
 	if route != nil {
 		effRoute = strings.TrimSpace(*route)
 	}
-	if effRoute != "" && findAccount(effAccs, effRoute) == nil {
-		return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
+	if effRoute != "" {
+		a := findAccount(effAccs, effRoute)
+		if a == nil {
+			return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
+		}
+		// Every pane follows the global route by default, and only codex
+		// panes can use a codex account — those get their route per pane at
+		// harness start, so a codex global route would break everything else.
+		if a.Kind == "codex" {
+			return fmt.Sprintf("llmRoute %q is a codex account, which serves only codex panes — codex pairing is per pane, never global", effRoute)
+		}
 	}
 	return ""
 }

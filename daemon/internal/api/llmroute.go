@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
 	"ccmux.dev/ccmuxd/internal/llmproxy"
 )
@@ -59,27 +61,51 @@ func (s *Server) llmAccountModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
-// rejectRouteDialect refuses a route whose account speaks the wrong protocol
-// for what the pane runs: codex talks OpenAI's Responses dialect, which only
-// a codex account's upstream serves, and a codex account serves nothing
-// else. A plain shell pane ("" harness) may route anywhere — the proxy's own
-// request-time guard still protects tokens. Returns the refusal, "" to allow.
+// kindAllowed is THE compatibility rule, read from a harness's resolved
+// AccountKinds: empty means any kind EXCEPT codex — a codex account's
+// upstream answers only the codex dialect, so it never serves a harness that
+// didn't declare it.
+func kindAllowed(kinds []string, kind string) bool {
+	if len(kinds) == 0 {
+		return kind != "codex"
+	}
+	return slices.Contains(kinds, kind)
+}
+
+// harnessKinds resolves a harness name's allowed account kinds. nil = no
+// restriction: a shell pane, a stale/unknown name, or a harness that
+// declares nothing.
+func (s *Server) harnessKinds(name string) []string {
+	if name == "" || s.mgr.Harnesses == nil {
+		return nil
+	}
+	h, err := s.mgr.Harnesses.Resolve(name)
+	if err != nil {
+		return nil
+	}
+	return h.AccountKinds
+}
+
+// rejectRouteDialect refuses a route whose account cannot serve what the
+// pane runs, at click time instead of as 404s in the pane. Returns the
+// refusal, "" to allow.
 func (s *Server) rejectRouteDialect(paneID, route string) string {
 	if route == "" {
 		return ""
 	}
 	kind, err := s.llm.KindOf(route)
-	if err != nil {
-		return "" // unreadable accounts: SetPaneRoute will refuse loudly
+	if err != nil || kind == "" {
+		return "" // unknown account or unreadable list: SetPaneRoute refuses loudly
 	}
 	h := s.mgr.HarnessForPane(paneID)
-	if h == "codex" && kind != "codex" {
-		return fmt.Sprintf("this pane runs codex, which speaks the OpenAI dialect — account %q (%s) cannot serve it; only a codex account can", route, kind)
+	kinds := s.harnessKinds(h)
+	if kindAllowed(kinds, kind) {
+		return ""
 	}
-	if h != "" && h != "codex" && kind == "codex" {
-		return fmt.Sprintf("account %q is a codex account, which only serves codex panes — this pane runs %s", route, h)
+	if kind == "codex" {
+		return fmt.Sprintf("account %q is a codex account, which only serves codex panes", route)
 	}
-	return ""
+	return fmt.Sprintf("this pane runs %s, which pairs with %s llm accounts — account %q is %s", h, strings.Join(kinds, " or "), route, kind)
 }
 
 // respondPaneLLMRoute is the shared answer shape: the explicit override (""
@@ -101,9 +127,14 @@ func (s *Server) respondPaneLLMRoute(w http.ResponseWriter, paneID string) {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
+	// The picker only offers accounts that can actually serve this pane's
+	// harness — an impossible choice hidden beats one refused.
+	kinds := s.harnessKinds(s.mgr.HarnessForPane(paneID))
 	names := make([]string, 0, len(accs))
 	for _, a := range accs {
-		names = append(names, a.Name)
+		if kindAllowed(kinds, a.Kind) {
+			names = append(names, a.Name)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pane": paneID, "route": explicit, "effective": effective, "accounts": names,

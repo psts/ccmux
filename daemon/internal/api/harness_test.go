@@ -286,30 +286,56 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 	if r := setRoute(pane.ID, "local"); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("codex pane routed to anthropic account = %d, want 400", r.StatusCode)
 	}
-
-	// A shell pane routed at the codex account must lose that override when a
-	// NON-codex harness starts there — Anthropic-dialect traffic into the
-	// ChatGPT backend fails on every request.
-	shell := ws.Panes[0].ID
-	deadline := time.Now().Add(5 * time.Second)
-	for !mgr.PaneAtShell(shell) {
-		if time.Now().After(deadline) {
-			t.Fatal("pane never reported a bare shell")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	req, _ := http.NewRequest("PUT", base+"/v1/panes/"+shell+"/llm-route", strings.NewReader(`{"route":"cx"}`))
-	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
-		t.Fatalf("route shell pane: %v %d", err, resp.StatusCode)
-	}
-	resp, err := http.Post(base+"/v1/panes/"+shell+"/harness", "application/json",
-		strings.NewReader(`{"harness":"noop"}`))
+	// The picker itself hides the impossible: a codex pane is offered only
+	// codex accounts.
+	rr, err := http.Get(base + "/v1/panes/" + pane.ID + "/llm-route")
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("start noop = %d, want 200", resp.StatusCode)
+	var picker struct {
+		Accounts []string `json:"accounts"`
+	}
+	_ = json.NewDecoder(rr.Body).Decode(&picker)
+	rr.Body.Close()
+	if len(picker.Accounts) != 1 || picker.Accounts[0] != "cx" {
+		t.Fatalf("codex pane picker = %v, want only the codex account", picker.Accounts)
+	}
+
+	// A codex route left on a pane must be cleared when a NON-codex harness
+	// starts there. Plant it the way it happens for real: start the codex
+	// harness in the shell pane (pairing routes it to cx; the command exits
+	// straight back to the shell), then start noop over it.
+	shell := ws.Panes[0].ID
+	waitShell := func() {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !mgr.PaneAtShell(shell) {
+			if time.Now().After(deadline) {
+				t.Fatal("pane never reported a bare shell")
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	startIn := func(name string) int {
+		t.Helper()
+		r, err := http.Post(base+"/v1/panes/"+shell+"/harness", "application/json",
+			strings.NewReader(`{"harness":"`+name+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		return r.StatusCode
+	}
+	waitShell()
+	if code := startIn("codex"); code != 200 {
+		t.Fatalf("start codex in shell pane = %d, want 200", code)
+	}
+	if got := routeOf(shell); got != "cx" {
+		t.Fatalf("pane route after codex start = %q, want cx", got)
+	}
+	waitShell()
+	if code := startIn("noop"); code != 200 {
+		t.Fatalf("start noop = %d, want 200", code)
 	}
 	if got := routeOf(shell); got != "" {
 		t.Fatalf("shell pane route after noop start = %q, want cleared", got)

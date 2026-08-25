@@ -179,8 +179,9 @@ func TestRejectValidation(t *testing.T) {
 		{[]Account{{Name: "a", Kind: "openai", BaseURL: "https://openrouter.ai/api", APIKey: "k"}}, "", ""},
 		// Codex: keyless to chatgpt.com is THE configuration (empty baseURL
 		// defaults there); a key is meaningless and refused; the chatgpt.com
-		// allowance is codex-only, so a Claude login can't be routed at it.
-		{[]Account{{Name: "cx", Kind: "codex"}}, "cx", ""},
+		// allowance is codex-only, so a Claude login can't be routed at it;
+		// and codex pairing is per pane, so it can never be the global route.
+		{[]Account{{Name: "cx", Kind: "codex"}}, "cx", "never global"},
 		{[]Account{{Name: "cx", Kind: "codex", BaseURL: "https://chatgpt.com/backend-api"}}, "", ""},
 		{[]Account{{Name: "cx", Kind: "codex", APIKey: "k"}}, "", "no key"},
 		{[]Account{{Name: "a", Kind: "anthropic", BaseURL: "https://chatgpt.com/backend-api"}}, "", "forwarded"},
@@ -346,11 +347,14 @@ func TestCodexAccountPassesBearerThrough(t *testing.T) {
 	defer up.Close()
 	s := New(fakeStore{})
 	accs := []Account{{Name: "cx", Kind: "codex", BaseURL: up.URL}}
-	route := "cx"
-	if msg := s.Reject(&accs, &route); msg != "" {
+	if msg := s.Reject(&accs, nil); msg != "" {
 		t.Fatalf("reject: %s", msg)
 	}
-	_ = s.Apply(&accs, &route)
+	_ = s.Apply(&accs, nil)
+	// Per pane, the way codex pairing really routes (global codex is refused).
+	if err := s.SetPaneRoute("p1", "cx"); err != nil {
+		t.Fatal(err)
+	}
 	p := mount(s)
 	defer p.Close()
 

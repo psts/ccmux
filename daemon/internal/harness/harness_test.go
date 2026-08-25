@@ -168,3 +168,36 @@ func TestDetectedCodexCommand(t *testing.T) {
 		t.Fatal("codex must not arm autoconfirm — its first-run prompts include login choices")
 	}
 }
+
+// AccountKinds resolves like Source: an entry that says nothing inherits its
+// name's default, so overriding the codex command never drops its pairing.
+func TestAccountKindsStamping(t *testing.T) {
+	s := testService(fakeStore{})
+	s.lookPath = func(name string) (string, error) {
+		if name == "codex" {
+			return "/usr/local/bin/codex", nil
+		}
+		return "", errors.New("not installed")
+	}
+	c, err := s.Resolve("claude")
+	if err != nil || len(c.AccountKinds) != 2 || c.AccountKinds[0] != "anthropic" || c.AccountKinds[1] != "claude" {
+		t.Fatalf("claude kinds = %+v, %v", c.AccountKinds, err)
+	}
+	// A user override of codex (new command, field left empty) keeps codex's
+	// pairing; an explicit field wins over the default.
+	_ = s.Apply([]Harness{
+		{Name: "codex", Command: "codex --profile x"},
+		{Name: "mycustom", Command: "mycustom", AccountKinds: []string{"openai"}},
+	})
+	cx, _ := s.Resolve("codex")
+	if len(cx.AccountKinds) != 1 || cx.AccountKinds[0] != "codex" {
+		t.Fatalf("overridden codex kinds = %+v, want inherited default", cx.AccountKinds)
+	}
+	my, _ := s.Resolve("mycustom")
+	if len(my.AccountKinds) != 1 || my.AccountKinds[0] != "openai" {
+		t.Fatalf("custom kinds = %+v, want the explicit value", my.AccountKinds)
+	}
+	if msg := s.Reject([]Harness{{Name: "x", Command: "x", AccountKinds: []string{"weird"}}}); !strings.Contains(msg, "unknown account kind") {
+		t.Fatalf("reject = %q, want unknown-kind refusal", msg)
+	}
+}
