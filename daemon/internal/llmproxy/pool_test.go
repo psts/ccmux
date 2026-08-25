@@ -139,9 +139,10 @@ func TestClaudeFailoverAllLimited(t *testing.T) {
 // Usage headers on any response populate the account's status row.
 func TestStatusesCaptureUtilization(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Live header shapes: fraction utilization, unix-seconds reset.
 		w.Header().Set("anthropic-ratelimit-unified-5h-utilization", "0.58")
-		w.Header().Set("anthropic-ratelimit-unified-7d-utilization", "12")
-		w.Header().Set("anthropic-ratelimit-unified-5h-reset", "2026-08-25T12:00:00Z")
+		w.Header().Set("anthropic-ratelimit-unified-7d-utilization", "0.12")
+		w.Header().Set("anthropic-ratelimit-unified-5h-reset", "1787652000")
 		w.WriteHeader(200)
 	}))
 	defer up.Close()
@@ -158,8 +159,11 @@ func TestStatusesCaptureUtilization(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := sts[0]
-	if st.State != "ok" || st.SessionPct != 58 || st.WeeklyPct != 12 || st.SessionReset != "2026-08-25T12:00:00Z" {
-		t.Fatalf("status = %+v, want captured utilization (fraction and percent forms)", st)
+	if st.State != "ok" || st.SessionPct != 58 || st.WeeklyPct != 12 {
+		t.Fatalf("status = %+v, want fraction utilization as percent", st)
+	}
+	if st.SessionReset != "2026-08-25T10:00:00Z" {
+		t.Fatalf("sessionReset = %q, want unix seconds normalized to RFC3339", st.SessionReset)
 	}
 }
 
@@ -186,7 +190,7 @@ func TestClaudeKindValidation(t *testing.T) {
 }
 
 func TestParsePct(t *testing.T) {
-	cases := map[string]float64{"0.58": 58, "1": 100, "12": 12, "87.5": 87.5, "58%": 58, "junk": -1}
+	cases := map[string]float64{"0.58": 58, "0.134": 13.4, "1": 100, "0.0": 0, "junk": -1}
 	for in, want := range cases {
 		if got := parsePct(in); got != want {
 			t.Errorf("parsePct(%q) = %v, want %v", in, got, want)

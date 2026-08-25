@@ -132,6 +132,9 @@ func limitResetTime(hdr http.Header, now time.Time) time.Time {
 	return now.Add(5 * time.Minute)
 }
 
+// Header formats verified against live subscription traffic (2026-08-25):
+// utilization is a fraction ("0.13" = 13%), resets are unix seconds
+// ("1787652000"), status is "allowed"/"rejected…".
 func captureUtilization(a *acctHealth, hdr http.Header) {
 	if v := hdr.Get("anthropic-ratelimit-unified-5h-utilization"); v != "" {
 		a.sessionPct = parsePct(v)
@@ -140,25 +143,30 @@ func captureUtilization(a *acctHealth, hdr http.Header) {
 		a.weeklyPct = parsePct(v)
 	}
 	if v := hdr.Get("anthropic-ratelimit-unified-5h-reset"); v != "" {
-		a.sessionReset = v
+		a.sessionReset = resetToRFC3339(v)
 	}
 	if v := hdr.Get("anthropic-ratelimit-unified-7d-reset"); v != "" {
-		a.weeklyReset = v
+		a.weeklyReset = resetToRFC3339(v)
 	}
 }
 
-// parsePct normalizes an undocumented utilization value to 0–100: a value at
-// or under 1.5 is read as a fraction (0.58 → 58%), anything larger as a
-// percent already. -1 = unparseable.
+// parsePct turns a fraction utilization ("0.13") into 0–100 with one
+// decimal. -1 = unparseable.
 func parsePct(v string) float64 {
-	f, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(v), "%"), 64)
+	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 	if err != nil {
 		return -1
 	}
-	if f <= 1.5 {
-		f *= 100
+	return math.Round(f*1000) / 10
+}
+
+// resetToRFC3339 normalizes a reset header for display: unix seconds become
+// RFC3339, anything else passes through as-is.
+func resetToRFC3339(v string) string {
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return time.Unix(secs, 0).UTC().Format(time.RFC3339)
 	}
-	return math.Round(f*10) / 10
+	return v
 }
 
 // resolvePool answers who should serve a pane's request, in order: the
