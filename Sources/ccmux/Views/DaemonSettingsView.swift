@@ -77,7 +77,9 @@ struct DaemonSettingsView: View {
                 if supportsHarnesses { harnessesTab.tabItem { Text("Harnesses") } }
                 devTab.tabItem { Text("Dev Hostnames") }
             }
-            .frame(minHeight: 400)
+            // FIXED height: a window that resizes per tab makes its own tab
+            // bar jump under the pointer; each tab scrolls inside instead.
+            .frame(height: 440)
             saveBar
         }
         .padding(18)

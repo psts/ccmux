@@ -356,12 +356,13 @@ body {
   padding: 16px 18px 18px; box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
 }
 .sheet header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-/* Settings: wider than the base sheet, tabbed, with its own scroll region so
-   long lists never stretch the modal past the viewport. */
+/* Settings: wider than the base sheet, tabbed, with its own scroll region.
+   FIXED height on purpose: a dialog that resizes per tab makes its own tab
+   bar jump under the pointer. The body scrolls inside instead. */
 .sheet.settings-sheet {
   max-width: min(680px, 94vw);
   display: flex; flex-direction: column;
-  max-height: min(86vh, 780px);
+  height: min(560px, 86vh);
 }
 .settings-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
 .settings-tab {
@@ -370,7 +371,7 @@ body {
 }
 .settings-tab:hover { color: var(--fg); }
 .settings-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
-.settings-body { overflow-y: auto; overflow-x: hidden; min-height: 220px; }
+.settings-body { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
 .settings-page { display: flex; flex-direction: column; }
 .sheet header span { font-weight: 600; }
 #settings-close, #project-close {
