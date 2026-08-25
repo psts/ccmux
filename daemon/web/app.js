@@ -1294,6 +1294,8 @@ function wireLLMSettings() {
     row.className = "entry-card";
     const keyHint = a.apiKeySet ? "set — empty keeps it" : (a.kind === "claude" ? "paste `claude setup-token` output" : "empty = your own login");
     const aliases = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
+    // What the picker shows as its current choice: the claude-* rule's target.
+    const claudeTarget = ((a.modelAliases || []).find((x) => x.from === "claude-*") || {}).to || "";
     const status = statusLine(st);
     row.innerHTML =
       `<div class="entry-line">` +
@@ -1311,7 +1313,9 @@ function wireLLMSettings() {
       `<input class="setting-input llm-key grow" type="password" autocomplete="off" placeholder="token / api key: ${esc(keyHint)}">` +
       `<input class="setting-input llm-aliases grow" type="text" spellcheck="false" placeholder="aliases: claude-haiku-*=qwen3-4b-32k" value="${esc(aliases)}">` +
       `<select class="setting-input llm-model-pick" title="List the upstream's models; picking one maps every claude-* request to it">` +
-      `<option value="">map claude → …</option></select>` +
+      `<option value="">map claude → …</option>` +
+      (claudeTarget ? `<option value="${esc(claudeTarget)}" selected>${esc(claudeTarget)}</option>` : "") +
+      `</select>` +
       `</div>` +
       (status ? `<div class="entry-line llm-acct-status">${esc(status)}</div>` : "");
     for (const el of row.querySelectorAll("input, select:not(.llm-model-pick)")) {
@@ -1319,7 +1323,7 @@ function wireLLMSettings() {
       el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
     }
     // Picking a model rewrites the alias field (claude-* rules replaced,
-    // custom rules kept) and saves; the picker snaps back to its label.
+    // custom rules kept) and saves; the picker keeps showing the choice.
     row.querySelector(".llm-model-pick").addEventListener("change", (e) => {
       const model = e.target.value;
       if (!model) return;
@@ -1327,7 +1331,6 @@ function wireLLMSettings() {
       const kept = parseAliases(field.value).filter((x) => !x.from.startsWith("claude-"));
       field.value = kept.concat([{ from: "claude-*", to: model }])
         .map((x) => `${x.from}=${x.to}`).join(", ");
-      e.target.value = "";
       saveAccounts();
     });
     row.querySelector(".rule-del").onclick = () => { row.remove(); saveAccounts(); };
@@ -1345,7 +1348,9 @@ function wireLLMSettings() {
       try {
         const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(name)}/models`);
         if (!r.ok) continue;
+        const have = new Set([...sel.options].map((o) => o.value));
         for (const m of (await r.json()).models || []) {
+          if (have.has(m)) continue; // the current mapping is already an option
           const o = document.createElement("option");
           o.value = m;
           o.textContent = m;
