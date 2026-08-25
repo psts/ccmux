@@ -398,6 +398,19 @@ func (m *Manager) StartHarnessInPane(paneID string, h harness.Harness, routeAcco
 	return nil
 }
 
+// HarnessForPane returns the harness recorded on a pane ("" for a plain
+// shell or an unknown pane) — what the llm-route API checks a route change
+// against, so a dialect mismatch is refused at click time, not discovered as
+// 404s in the pane.
+func (m *Manager) HarnessForPane(paneID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, p := m.findPaneLocked(paneID); p != nil {
+		return p.Harness
+	}
+	return ""
+}
+
 // GuessHarness maps a raw startup command to the harness it starts ("" for a
 // plain shell or anything unrecognized) — exported for the settings surface's
 // picker preselection.

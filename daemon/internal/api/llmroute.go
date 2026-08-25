@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"ccmux.dev/ccmuxd/internal/llmproxy"
@@ -27,6 +28,10 @@ func (s *Server) putPaneLLMRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown pane")
 		return
 	}
+	if msg := s.rejectRouteDialect(paneID, req.Route); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if err := s.llm.SetPaneRoute(paneID, req.Route); err != nil {
 		code := http.StatusInternalServerError
 		if errors.Is(err, llmproxy.ErrUnknownAccount) {
@@ -36,6 +41,29 @@ func (s *Server) putPaneLLMRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.respondPaneLLMRoute(w, paneID)
+}
+
+// rejectRouteDialect refuses a route whose account speaks the wrong protocol
+// for what the pane runs: codex talks OpenAI's Responses dialect, which only
+// a codex account's upstream serves, and a codex account serves nothing
+// else. A plain shell pane ("" harness) may route anywhere — the proxy's own
+// request-time guard still protects tokens. Returns the refusal, "" to allow.
+func (s *Server) rejectRouteDialect(paneID, route string) string {
+	if route == "" {
+		return ""
+	}
+	kind, err := s.llm.KindOf(route)
+	if err != nil {
+		return "" // unreadable accounts: SetPaneRoute will refuse loudly
+	}
+	h := s.mgr.HarnessForPane(paneID)
+	if h == "codex" && kind != "codex" {
+		return fmt.Sprintf("this pane runs codex, which speaks the OpenAI dialect — account %q (%s) cannot serve it; only a codex account can", route, kind)
+	}
+	if h != "" && h != "codex" && kind == "codex" {
+		return fmt.Sprintf("account %q is a codex account, which only serves codex panes — this pane runs %s", route, h)
+	}
+	return ""
 }
 
 // respondPaneLLMRoute is the shared answer shape: the explicit override (""

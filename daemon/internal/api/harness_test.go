@@ -268,6 +268,25 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 		t.Fatalf("codex pane route = %q, want cx", got)
 	}
 
+	// Dialect guard: a codex pane refuses a non-codex account, and a named
+	// non-codex harness refuses a codex account — at route-set time, with a
+	// message, instead of as 404s in the pane.
+	putSettings(`{"llmAccounts":[{"name":"cx","kind":"codex"},{"name":"local","kind":"anthropic","baseURL":"http://localhost:11434"}]}`)
+	setRoute := func(paneID, route string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest("PUT", base+"/v1/panes/"+paneID+"/llm-route",
+			strings.NewReader(`{"route":"`+route+`"}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	if r := setRoute(pane.ID, "local"); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("codex pane routed to anthropic account = %d, want 400", r.StatusCode)
+	}
+
 	// A shell pane routed at the codex account must lose that override when a
 	// NON-codex harness starts there — Anthropic-dialect traffic into the
 	// ChatGPT backend fails on every request.
@@ -294,5 +313,10 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 	}
 	if got := routeOf(shell); got != "" {
 		t.Fatalf("shell pane route after noop start = %q, want cleared", got)
+	}
+	// …and the reverse guard: the pane now runs noop, so a codex account is
+	// refused for it.
+	if r := setRoute(shell, "cx"); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("noop pane routed to codex account = %d, want 400", r.StatusCode)
 	}
 }
