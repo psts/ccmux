@@ -88,10 +88,12 @@ var ErrUnknownAccount = errors.New("names no llm account")
 // byte-for-byte what the pane would have done with no proxy at all.
 const DefaultUpstream = "https://api.anthropic.com"
 
-// CodexUpstream is where a codex account's traffic goes: the ChatGPT backend
-// the codex CLI itself defaults to (its chatgpt_base_url). The proxied paths
-// land under it — /models, /responses, never the Anthropic dialect.
-const CodexUpstream = "https://chatgpt.com/backend-api"
+// CodexUpstream is where a codex account's traffic goes. The /codex segment
+// is load-bearing: the CLI's provider requests are relative to this base
+// (/models, /responses), and /responses only exists under
+// /backend-api/codex/ — the bare /backend-api answered it 404 (verified live
+// against a real ChatGPT login, 2026-08-25).
+const CodexUpstream = "https://chatgpt.com/backend-api/codex"
 
 type Service struct {
 	store Store
