@@ -60,7 +60,23 @@ var known = []Harness{
 	{Name: "pi", Icon: "π", Command: "pi"},
 	{Name: "opencode", Icon: "⌬", Command: "opencode"},
 	{Name: "aider", Icon: "✎", Command: "aider"},
+	{Name: "codex", Icon: "◎", Command: codexCommand},
 }
+
+// codexCommand starts codex with its model calls pointed at the pane's llm
+// proxy URL, like every other harness's. Codex has no base-URL env var; the
+// -c overrides define a provider that keeps ChatGPT subscription auth
+// (requires_openai_auth — the proxy passes the bearer through untouched, see
+// llmproxy's "codex" account kind) but streams over HTTP instead of codex's
+// default websocket, which connects straight to chatgpt.com and would bypass
+// the proxy. Login state stays codex's own (~/.codex/auth.json, rotating
+// refresh tokens — there is nothing durable the daemon could hold instead).
+const codexCommand = `codex -c model_provider=ccmux` +
+	` -c model_providers.ccmux.name=ccmux` +
+	` -c "model_providers.ccmux.base_url=$ANTHROPIC_BASE_URL"` +
+	` -c model_providers.ccmux.wire_api=responses` +
+	` -c model_providers.ccmux.requires_openai_auth=true` +
+	` -c model_providers.ccmux.supports_websockets=false`
 
 type Service struct {
 	store Store

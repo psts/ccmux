@@ -169,8 +169,12 @@ func runDaemon() {
 	apiSrv.SetProjectsRoot(*projectsRoot)
 	// LLM routing proxy: every pane's ANTHROPIC_BASE_URL points at
 	// /llm/pane/<id> on this daemon (stamped in paneEnv); accounts and the
-	// route live in the settings table, resolved per request.
-	apiSrv.SetLLMProxy(llmproxy.New(st))
+	// route live in the settings table, resolved per request. The manager
+	// holds the route setter too: harness starts that require a specific
+	// account kind (codex) point their pane at it before the command types.
+	llmSvc := llmproxy.New(st)
+	apiSrv.SetLLMProxy(llmSvc)
+	mgr.PaneLLMRoute = llmSvc.SetPaneRoute
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)

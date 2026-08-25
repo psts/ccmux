@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/harness"
+	"ccmux.dev/ccmuxd/internal/llmproxy"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
@@ -40,7 +41,13 @@ func harnessStack(t *testing.T) (*manager.Manager, string) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("manager start: %v", err)
 	}
-	hs := httptest.NewServer(NewServer(mgr).Handler())
+	srv := NewServer(mgr)
+	// Wired the way main wires it: the llm proxy serves the settings surface
+	// AND the manager's harness-pairing route setter.
+	llm := llmproxy.New(st)
+	srv.SetLLMProxy(llm)
+	mgr.PaneLLMRoute = llm.SetPaneRoute
+	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	return mgr, hs.URL
 }
@@ -195,5 +202,97 @@ func TestStartHarnessInPane(t *testing.T) {
 	_ = json.NewDecoder(resp2.Body).Decode(&cfg)
 	if cfg.ResolvedHarness != "claude" {
 		t.Fatalf("resolvedHarness = %q, want claude", cfg.ResolvedHarness)
+	}
+}
+
+// The codex harness can only talk to a ChatGPT-backed account: without one
+// the spawn refuses, with one the new pane's llm route points at it, and a
+// non-codex harness starting in a codex-routed pane clears the override.
+func TestCodexHarnessPairsPaneRoute(t *testing.T) {
+	mgr, base := harnessStack(t)
+	ws := createWS(t, base)
+
+	putSettings := func(body string) {
+		t.Helper()
+		req, _ := http.NewRequest("PUT", base+"/v1/settings", strings.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("put settings %s: %v %d", body, err, resp.StatusCode)
+		}
+	}
+	// A user entry named codex: pairing keys on the NAME, so an override
+	// (here: a harmless command) must keep it.
+	putSettings(`{"harnesses":[{"name":"codex","command":": codex"},{"name":"noop","command":": noop"}]}`)
+
+	spawn := func() *http.Response {
+		r, err := http.Post(base+"/v1/workspaces/"+ws.ID+"/panes", "application/json",
+			strings.NewReader(`{"harness":"codex","createdBy":"tester"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	// No codex-kind account configured → refused, pane never created.
+	r := spawn()
+	r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("spawn without codex account = %d, want 409", r.StatusCode)
+	}
+
+	putSettings(`{"llmAccounts":[{"name":"cx","kind":"codex"}]}`)
+	r = spawn()
+	defer r.Body.Close()
+	if r.StatusCode != 201 {
+		t.Fatalf("spawn with codex account = %d, want 201", r.StatusCode)
+	}
+	var pane struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&pane); err != nil {
+		t.Fatal(err)
+	}
+	routeOf := func(paneID string) string {
+		t.Helper()
+		resp, err := http.Get(base + "/v1/panes/" + paneID + "/llm-route")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var got struct {
+			Route string `json:"route"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&got)
+		return got.Route
+	}
+	if got := routeOf(pane.ID); got != "cx" {
+		t.Fatalf("codex pane route = %q, want cx", got)
+	}
+
+	// A shell pane routed at the codex account must lose that override when a
+	// NON-codex harness starts there — Anthropic-dialect traffic into the
+	// ChatGPT backend fails on every request.
+	shell := ws.Panes[0].ID
+	deadline := time.Now().Add(5 * time.Second)
+	for !mgr.PaneAtShell(shell) {
+		if time.Now().After(deadline) {
+			t.Fatal("pane never reported a bare shell")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	req, _ := http.NewRequest("PUT", base+"/v1/panes/"+shell+"/llm-route", strings.NewReader(`{"route":"cx"}`))
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("route shell pane: %v %d", err, resp.StatusCode)
+	}
+	resp, err := http.Post(base+"/v1/panes/"+shell+"/harness", "application/json",
+		strings.NewReader(`{"harness":"noop"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("start noop = %d, want 200", resp.StatusCode)
+	}
+	if got := routeOf(shell); got != "" {
+		t.Fatalf("shell pane route after noop start = %q, want cleared", got)
 	}
 }

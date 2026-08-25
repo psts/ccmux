@@ -36,7 +36,11 @@ type Store interface {
 // the credential to use there. Kind picks the auth header the key rides in —
 // "anthropic" (x-api-key) or "openai" (Authorization: Bearer). An account
 // with no key is a pass-through: the client's own auth (e.g. the Claude Max
-// OAuth token) travels to the upstream untouched.
+// OAuth token) travels to the upstream untouched. Kind "codex" is always a
+// pass-through: the codex harness sends its own ChatGPT bearer (rotating
+// tokens in ~/.codex/auth.json that only codex can refresh), so there is no
+// key the proxy could hold — the account exists to name the ChatGPT upstream
+// and let harness starts route their pane to it.
 type Account struct {
 	Name    string `json:"name"`
 	Kind    string `json:"kind"`
@@ -83,6 +87,11 @@ var ErrUnknownAccount = errors.New("names no llm account")
 // DefaultUpstream answers when no route is configured: straight to Anthropic,
 // byte-for-byte what the pane would have done with no proxy at all.
 const DefaultUpstream = "https://api.anthropic.com"
+
+// CodexUpstream is where a codex account's traffic goes: the ChatGPT backend
+// the codex CLI itself defaults to (its chatgpt_base_url). The proxied paths
+// land under it — /models, /responses, never the Anthropic dialect.
+const CodexUpstream = "https://chatgpt.com/backend-api"
 
 type Service struct {
 	store Store
@@ -238,15 +247,21 @@ func validateAccounts(accs []Account) string {
 			return fmt.Sprintf("duplicate llm account %q", a.Name)
 		}
 		seen[a.Name] = true
-		if a.Kind != "anthropic" && a.Kind != "openai" {
-			return fmt.Sprintf("llm account %q: unknown kind %q (anthropic or openai)", a.Name, a.Kind)
+		switch a.Kind {
+		case "anthropic", "openai":
+		case "codex":
+			if a.APIKey != "" {
+				return fmt.Sprintf("llm account %q: codex accounts pass the harness's own ChatGPT login through and hold no key — delete the account and re-add it as codex", a.Name)
+			}
+		default:
+			return fmt.Sprintf("llm account %q: unknown kind %q (anthropic, openai, or codex)", a.Name, a.Kind)
 		}
 		u, err := url.Parse(a.BaseURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Sprintf("llm account %q: baseURL must be an http(s) URL", a.Name)
 		}
-		if a.APIKey == "" && !passthroughHostAllowed(u.Hostname()) {
-			return fmt.Sprintf("llm account %q has no api key, so each pane's own Claude login would be forwarded to it — that is only allowed to api.anthropic.com, localhost, or a private-network IP", a.Name)
+		if a.APIKey == "" && !passthroughHostAllowed(a, u.Hostname()) {
+			return fmt.Sprintf("llm account %q has no api key, so each pane's own login token would be forwarded to it — that is only allowed to api.anthropic.com, chatgpt.com (codex accounts), localhost, or a private-network IP", a.Name)
 		}
 		for _, al := range a.ModelAliases {
 			if strings.TrimSpace(al.From) == "" || strings.TrimSpace(al.To) == "" {
@@ -263,9 +278,16 @@ var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
 // passthroughHostAllowed limits where a keyless account may forward the
 // pane's own credentials: Anthropic itself, or hosts the user plausibly owns.
-// Hostnames other than localhost are refused outright rather than resolved —
-// DNS at validation time proves nothing about DNS at request time.
-func passthroughHostAllowed(hostname string) bool {
+// A codex account may additionally point at chatgpt.com — the only place its
+// bearer means anything (a misrouted CLAUDE pane is kept off it separately:
+// the handler refuses Anthropic-dialect requests on codex accounts, so a
+// Claude login never rides this allowance). Hostnames other than localhost
+// are refused outright rather than resolved — DNS at validation time proves
+// nothing about DNS at request time.
+func passthroughHostAllowed(a Account, hostname string) bool {
+	if a.Kind == "codex" && hostname == "chatgpt.com" {
+		return true
+	}
 	if hostname == "api.anthropic.com" || hostname == "localhost" {
 		return true
 	}
@@ -352,6 +374,11 @@ func merged(old, incoming []Account) []Account {
 		if a.Kind == "" {
 			a.Kind = "anthropic"
 		}
+		// A codex account has exactly one sensible upstream; an empty baseURL
+		// means it, so creating one is just a name and a kind.
+		if a.Kind == "codex" && a.BaseURL == "" {
+			a.BaseURL = CodexUpstream
+		}
 		if a.APIKey == "" {
 			if prev := findAccount(old, a.Name); prev != nil {
 				a.APIKey = prev.APIKey
@@ -360,6 +387,35 @@ func merged(old, incoming []Account) []Account {
 		next = append(next, a)
 	}
 	return next
+}
+
+// AccountNameForKind returns the first configured account of the given kind —
+// the pairing lookup for a harness that can only talk to one kind of upstream
+// (codex → a ChatGPT-backed account). One account per kind is the intended
+// setup; with several, first wins and a pane route override picks others.
+func (s *Service) AccountNameForKind(kind string) (string, error) {
+	accs, err := s.Accounts()
+	if err != nil {
+		return "", err
+	}
+	for _, a := range accs {
+		if a.Kind == kind {
+			return a.Name, nil
+		}
+	}
+	return "", fmt.Errorf("no %s llm account is configured — add one under settings, Models", kind)
+}
+
+// KindOf reports the kind of a named account ("" when the name matches none).
+func (s *Service) KindOf(name string) (string, error) {
+	accs, err := s.Accounts()
+	if err != nil {
+		return "", err
+	}
+	if a := findAccount(accs, name); a != nil {
+		return a.Kind, nil
+	}
+	return "", nil
 }
 
 func findAccount(accs []Account, name string) *Account {

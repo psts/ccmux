@@ -177,6 +177,14 @@ func TestRejectValidation(t *testing.T) {
 		{[]Account{{Name: "a", BaseURL: "http://localhost:11434"}}, "", ""},
 		{[]Account{{Name: "a", BaseURL: "http://100.99.1.2"}}, "", ""}, // tailnet
 		{[]Account{{Name: "a", Kind: "openai", BaseURL: "https://openrouter.ai/api", APIKey: "k"}}, "", ""},
+		// Codex: keyless to chatgpt.com is THE configuration (empty baseURL
+		// defaults there); a key is meaningless and refused; the chatgpt.com
+		// allowance is codex-only, so a Claude login can't be routed at it.
+		{[]Account{{Name: "cx", Kind: "codex"}}, "cx", ""},
+		{[]Account{{Name: "cx", Kind: "codex", BaseURL: "https://chatgpt.com/backend-api"}}, "", ""},
+		{[]Account{{Name: "cx", Kind: "codex", APIKey: "k"}}, "", "no key"},
+		{[]Account{{Name: "a", Kind: "anthropic", BaseURL: "https://chatgpt.com/backend-api"}}, "", "forwarded"},
+		{[]Account{{Name: "cx", Kind: "codex", BaseURL: "https://attacker.example"}}, "", "forwarded"},
 	}
 	for i, c := range cases {
 		msg := s.Reject(&c.accs, &c.route)
@@ -327,5 +335,98 @@ func TestApplyKeepsKeyOnEmptyResubmit(t *testing.T) {
 	}
 	if !red[0].APIKeySet {
 		t.Fatal("redacted view should report the key as set")
+	}
+}
+
+// A codex account is a pass-through: the harness's own ChatGPT bearer travels
+// untouched, and an empty baseURL persists as the ChatGPT backend.
+func TestCodexAccountPassesBearerThrough(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := New(fakeStore{})
+	accs := []Account{{Name: "cx", Kind: "codex", BaseURL: up.URL}}
+	route := "cx"
+	if msg := s.Reject(&accs, &route); msg != "" {
+		t.Fatalf("reject: %s", msg)
+	}
+	_ = s.Apply(&accs, &route)
+	p := mount(s)
+	defer p.Close()
+
+	resp := call(t, p.URL, "/llm/pane/p1/responses", "chatgpt-bearer")
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got.path != "/responses" || got.auth != "Bearer chatgpt-bearer" {
+		t.Fatalf("upstream saw %q/%q, want the codex path and bearer untouched", got.path, got.auth)
+	}
+}
+
+// An Anthropic-dialect request on a codex-routed pane is refused BEFORE the
+// upstream: forwarding it would hand a Claude login to the ChatGPT backend.
+func TestCodexAccountRefusesAnthropicDialect(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := New(fakeStore{})
+	accs := []Account{{Name: "cx", Kind: "codex", BaseURL: up.URL}}
+	route := "cx"
+	_ = s.Apply(&accs, &route)
+	p := mount(s)
+	defer p.Close()
+
+	resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "claude-oauth")
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 refusal", resp.StatusCode)
+	}
+	if got.path != "" {
+		t.Fatalf("upstream saw %q, want the request never forwarded", got.path)
+	}
+}
+
+// Empty baseURL on a codex account persists as the ChatGPT backend — creating
+// one is just a name and a kind.
+func TestCodexAccountDefaultsBaseURL(t *testing.T) {
+	s := New(fakeStore{})
+	accs := []Account{{Name: "cx", Kind: "codex"}}
+	_ = s.Apply(&accs, nil)
+	stored, err := s.Accounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored[0].BaseURL != CodexUpstream {
+		t.Fatalf("baseURL = %q, want %q", stored[0].BaseURL, CodexUpstream)
+	}
+}
+
+// AccountNameForKind is the harness-pairing lookup; KindOf answers what a
+// route override points at. Both error on an unreadable store rather than
+// answering from a phantom empty list.
+func TestKindLookups(t *testing.T) {
+	s := New(fakeStore{})
+	accs := []Account{
+		{Name: "max", Kind: "anthropic", BaseURL: "https://api.anthropic.com"},
+		{Name: "cx", Kind: "codex"},
+	}
+	_ = s.Apply(&accs, nil)
+	if name, err := s.AccountNameForKind("codex"); err != nil || name != "cx" {
+		t.Fatalf("AccountNameForKind = %q, %v", name, err)
+	}
+	if _, err := s.AccountNameForKind("openai"); err == nil || !strings.Contains(err.Error(), "no openai llm account") {
+		t.Fatalf("missing kind must name what to configure, got %v", err)
+	}
+	if k, err := s.KindOf("cx"); err != nil || k != "codex" {
+		t.Fatalf("KindOf(cx) = %q, %v", k, err)
+	}
+	if k, err := s.KindOf("nobody"); err != nil || k != "" {
+		t.Fatalf("KindOf(unknown) = %q, %v", k, err)
+	}
+	broken := New(brokenStore{})
+	if _, err := broken.AccountNameForKind("codex"); err == nil {
+		t.Fatal("AccountNameForKind on broken store returned no error")
+	}
+	if _, err := broken.KindOf("cx"); err == nil {
+		t.Fatal("KindOf on broken store returned no error")
 	}
 }

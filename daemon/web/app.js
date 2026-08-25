@@ -1282,8 +1282,9 @@ function wireLLMSettings() {
       `<div class="entry-line">` +
       `<input class="setting-input llm-name grow" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
       `<select class="setting-input llm-kind">` +
-      `<option value="anthropic"${a.kind !== "openai" ? " selected" : ""}>anthropic</option>` +
-      `<option value="openai"${a.kind === "openai" ? " selected" : ""}>openai</option></select>` +
+      ["anthropic", "openai", "codex"].map((k) =>
+        `<option value="${k}"${(a.kind || "anthropic") === k ? " selected" : ""}>${k}</option>`).join("") +
+      `</select>` +
       `<button class="rule-del" type="button" title="Remove account">&times;</button>` +
       `</div>` +
       `<div class="entry-line">` +

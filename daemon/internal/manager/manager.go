@@ -74,6 +74,13 @@ type Manager struct {
 	// created. Nil = no extras.
 	ExtraPaneEnv func(paneID string) map[string]string
 
+	// PaneLLMRoute, when set, points a pane's llm route at a named account
+	// (wired to llmproxy.SetPaneRoute in main). Harness starts use it for
+	// harnesses that can only talk to one kind of upstream — the route must
+	// hold BEFORE the startup command types, or the harness's first request
+	// races the routing decision.
+	PaneLLMRoute func(paneID, account string) error
+
 	// Harnesses resolves named harnesses for spawn and revive (see
 	// internal/harness). Set once at startup; nil disables harness spawns and
 	// makes revive treat every pane as legacy (autoconfirm armed).
@@ -322,15 +329,31 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy, gr
 
 // SpawnPane adds a pane (tmux window) to a live workspace.
 func (m *Manager) SpawnPane(wsID, cwd, startupCmd, createdBy string) (*model.Pane, error) {
-	return m.spawnPane(wsID, cwd, startupCmd, startupCmd, createdBy, "", true)
+	return m.spawnPane(wsID, cwd, startupCmd, startupCmd, createdBy, "", true, "")
 }
 
 // SpawnHarnessPane adds a pane that runs a named harness: the harness's
 // command is typed into the new shell and its NAME is recorded on the pane,
 // so revive and the lenses know what this pane is without guessing from
-// command text.
-func (m *Manager) SpawnHarnessPane(wsID, cwd, createdBy string, h harness.Harness) (*model.Pane, error) {
-	return m.spawnPane(wsID, cwd, h.Command, h.Command, createdBy, h.Name, h.Autoconfirm)
+// command text. A non-empty routeAccount points the new pane's llm route at
+// that account before the command types (the api layer resolves it — codex
+// panes must reach the ChatGPT upstream, not the default Anthropic one).
+func (m *Manager) SpawnHarnessPane(wsID, cwd, createdBy string, h harness.Harness, routeAccount string) (*model.Pane, error) {
+	return m.spawnPane(wsID, cwd, h.Command, h.Command, createdBy, h.Name, h.Autoconfirm, routeAccount)
+}
+
+// routeLLM applies a harness's llm account pairing to a pane. Empty account
+// is "leave routing alone"; a pairing with no wired hook is a loud error —
+// starting a harness whose traffic would silently go to the wrong upstream
+// is worse than refusing.
+func (m *Manager) routeLLM(paneID, account string) error {
+	if account == "" {
+		return nil
+	}
+	if m.PaneLLMRoute == nil {
+		return fmt.Errorf("pane needs llm route %q but llm routing is not available on this daemon", account)
+	}
+	return m.PaneLLMRoute(paneID, account)
 }
 
 // ErrPaneBusy refuses a harness start into a pane whose foreground is not a
@@ -340,8 +363,9 @@ var ErrPaneBusy = errors.New("pane is busy")
 // StartHarnessInPane types a harness's command into an EXISTING pane's shell
 // and records the pane as that harness — the picker's "start it here", as
 // opposed to SpawnHarnessPane's new tab. The harness command also becomes the
-// pane's startup command, so a revive brings the harness back.
-func (m *Manager) StartHarnessInPane(paneID string, h harness.Harness) error {
+// pane's startup command, so a revive brings the harness back. routeAccount
+// as in SpawnHarnessPane, applied before the command types.
+func (m *Manager) StartHarnessInPane(paneID string, h harness.Harness, routeAccount string) error {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil {
@@ -356,9 +380,17 @@ func (m *Manager) StartHarnessInPane(paneID string, h harness.Harness) error {
 		m.mu.Unlock()
 		return fmt.Errorf("%w (%s is running)", ErrPaneBusy, strings.TrimSpace(p.RawCommand))
 	}
+	ctrl, wsID := e.ctrl, e.ws.ID
+	m.mu.Unlock()
+	// Route before recording anything: a pane must not claim a harness whose
+	// start was refused.
+	if err := m.routeLLM(paneID, routeAccount); err != nil {
+		return err
+	}
+	m.mu.Lock()
 	p.Harness = h.Name
 	p.StartupCommand = h.Command
-	ctrl, wsID, saved := e.ctrl, e.ws.ID, *p
+	saved := *p
 	m.mu.Unlock()
 	_ = m.store.SavePane(&saved)
 	m.deliverStartup(ctrl, paneID, h.Command, h.Autoconfirm)
@@ -427,7 +459,7 @@ func (m *Manager) KillPane(wsID, paneID string) error {
 // never persisted: a revive brings the pane back as a plain shell. This is the
 // peers-bus teammate spawn — the birth prompt must fire exactly once.
 func (m *Manager) SpawnEphemeralPane(wsID, cwd, oneShotCmd, createdBy string) error {
-	_, err := m.spawnPane(wsID, cwd, "", oneShotCmd, createdBy, "", true)
+	_, err := m.spawnPane(wsID, cwd, "", oneShotCmd, createdBy, "", true, "")
 	return err
 }
 
@@ -435,7 +467,7 @@ func (m *Manager) SpawnEphemeralPane(wsID, cwd, oneShotCmd, createdBy string) er
 // actually types into the new shell — equal for normal panes, split for
 // ephemeral ones. harnessName overrides the startup-command guess when the
 // caller knows what this pane is for; confirm gates the autoconfirm watcher.
-func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnessName string, confirm bool) (*model.Pane, error) {
+func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnessName string, confirm bool, routeAccount string) (*model.Pane, error) {
 	e := m.entry(wsID)
 	if e == nil || e.ctrl == nil {
 		return nil, fmt.Errorf("workspace %s not live", wsID)
@@ -446,6 +478,11 @@ func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnes
 	p := m.newPane(wsID, cwd, persistCmd, createdBy)
 	if harnessName != "" {
 		p.Harness = harnessName
+	}
+	// Route before the window exists: no pane to clean up on refusal, and the
+	// startup command below must already see the right upstream.
+	if err := m.routeLLM(p.ID, routeAccount); err != nil {
+		return nil, err
 	}
 	if err := e.ctrl.SpawnWindow(p.ID, cwd, m.paneEnv(p.ID)); err != nil {
 		return nil, err

@@ -137,3 +137,34 @@ func TestBrokenStoreErrors(t *testing.T) {
 		t.Fatal("Resolve on broken store returned no error")
 	}
 }
+
+// An installed codex is detected like any known harness, and its command
+// routes model calls through the pane's llm proxy URL — provider overrides,
+// ChatGPT auth kept, websocket off so the reverse proxy can carry the stream.
+func TestDetectedCodexCommand(t *testing.T) {
+	s := testService(fakeStore{})
+	s.lookPath = func(name string) (string, error) {
+		if name == "codex" {
+			return "/usr/local/bin/codex", nil
+		}
+		return "", errors.New("not installed")
+	}
+	h, err := s.Resolve("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"$ANTHROPIC_BASE_URL",
+		"requires_openai_auth=true",
+		"supports_websockets=false",
+		"wire_api=responses",
+		"model_provider=ccmux",
+	} {
+		if !strings.Contains(h.Command, want) {
+			t.Errorf("codex command misses %q: %s", want, h.Command)
+		}
+	}
+	if h.Autoconfirm {
+		t.Fatal("codex must not arm autoconfirm — its first-run prompts include login choices")
+	}
+}

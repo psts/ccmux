@@ -39,6 +39,14 @@ func (s *Service) Handler() http.Handler {
 			http.Error(w, "ccmux llm proxy: "+err.Error(), http.StatusBadGateway)
 			return
 		}
+		// A codex account is a pass-through to chatgpt.com, so an
+		// Anthropic-dialect client misrouted onto it would hand its Claude
+		// bearer to OpenAI. Refusing here fails the misroute loudly on the
+		// first request instead of leaking a token per call.
+		if account.Kind == "codex" && strings.Contains(r.URL.Path, "/v1/messages") {
+			http.Error(w, "ccmux llm proxy: pane is routed to codex account "+account.Name+", which cannot serve Anthropic API requests — clear the pane's llm route", http.StatusBadGateway)
+			return
+		}
 		info := reqInfo{account: account, pane: r.PathValue("pane"), rest: r.PathValue("rest")}
 		rewriteRequest(r, account)
 		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), infoKey{}, info)))

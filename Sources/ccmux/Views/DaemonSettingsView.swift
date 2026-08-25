@@ -242,6 +242,7 @@ struct DaemonSettingsView: View {
                 Picker("", selection: account.kind) {
                     Text("anthropic").tag("anthropic")
                     Text("openai").tag("openai")
+                    Text("codex").tag("codex")
                 }
                 .labelsHidden()
                 .frame(width: 110)
