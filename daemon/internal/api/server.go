@@ -513,10 +513,10 @@ func (s *Server) devCertStatus() string {
 // settingsRequest is the PUT body. Every field is a pointer so an absent key
 // means "leave this alone" rather than "set it to the zero value".
 type settingsRequest struct {
-	DevDomain        *string                `json:"devDomain"`
-	LensHostname     *string                `json:"lensHostname"`
-	CloudflareToken  *string                `json:"cloudflareToken"`
-	TailscaleAuthKey *string                `json:"tailscaleAuthKey"`
+	DevDomain        *string `json:"devDomain"`
+	LensHostname     *string `json:"lensHostname"`
+	CloudflareToken  *string `json:"cloudflareToken"`
+	TailscaleAuthKey *string `json:"tailscaleAuthKey"`
 	// Replaces the whole alias map rather than merging: an alias you couldn't
 	// remove by sending the map without it would be a trap.
 	IdentityAliases *map[string]string `json:"identityAliases"`

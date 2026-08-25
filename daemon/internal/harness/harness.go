@@ -246,6 +246,13 @@ func (s *Service) Apply(hs []Harness) error {
 				kinds = append(kinds, k)
 			}
 		}
+		// List stamps resolved defaults into GET, so editors round-trip them
+		// as if user-chosen. A set equal to the name's default means INHERIT:
+		// storing the copy would pin today's pairing on this entry and a
+		// future change to defaultAccountKinds would never reach it.
+		if sameKindSet(kinds, defaultAccountKinds[h.Name]) {
+			kinds = nil
+		}
 		h.AccountKinds = kinds
 		next = append(next, h)
 	}
@@ -254,6 +261,24 @@ func (s *Service) Apply(hs []Harness) error {
 		return err
 	}
 	return s.store.SetSetting(settingHarnesses, string(b))
+}
+
+// sameKindSet reports whether two kind lists name the same set, order-blind —
+// editors emit checkbox order, the defaults declare their own.
+func sameKindSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]bool, len(a))
+	for _, k := range a {
+		seen[k] = true
+	}
+	for _, k := range b {
+		if !seen[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) userHarnesses() ([]Harness, error) {

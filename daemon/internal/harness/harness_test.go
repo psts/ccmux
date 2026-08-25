@@ -126,6 +126,39 @@ func TestRejectValidation(t *testing.T) {
 	}
 }
 
+// A kind set equal to the name's default is stored as INHERIT (empty), not as
+// an explicit copy: List stamps resolved defaults into GET, editors round-trip
+// them, and persisting the copy would pin today's pairing so a future change
+// to defaultAccountKinds never reaches the entry. A set that differs is the
+// user's explicit choice and persists verbatim.
+func TestApplyNormalizesDefaultEqualKinds(t *testing.T) {
+	st := fakeStore{}
+	s := testService(st)
+	// Checkbox order from the editors differs from the default's declaration
+	// order — equality must be order-blind.
+	if err := s.Apply([]Harness{{Name: "claude", Command: "claude --continue", AccountKinds: []string{"openai", "claude", "anthropic"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(st[settingHarnesses], "accountKinds") {
+		t.Fatalf("default-equal kinds stored explicitly: %s", st[settingHarnesses])
+	}
+	c, err := s.Resolve("claude")
+	if err != nil || len(c.AccountKinds) != 3 {
+		t.Fatalf("resolved claude kinds = %+v, %v — want the stamped default", c.AccountKinds, err)
+	}
+	// A genuine restriction survives.
+	if err := s.Apply([]Harness{{Name: "claude", Command: "claude --continue", AccountKinds: []string{"claude"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st[settingHarnesses], "accountKinds") {
+		t.Fatal("explicit non-default kinds were not stored")
+	}
+	c, _ = s.Resolve("claude")
+	if len(c.AccountKinds) != 1 || c.AccountKinds[0] != "claude" {
+		t.Fatalf("restricted kinds = %+v", c.AccountKinds)
+	}
+}
+
 // Unreadable is not empty: a failing store errors instead of quietly
 // shrinking the list to just the built-in.
 func TestBrokenStoreErrors(t *testing.T) {

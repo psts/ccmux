@@ -74,6 +74,16 @@ func (s *Service) migrateRules(guess func(string) string) error {
 	if raw == "" {
 		return nil
 	}
+	// Rules already configured in the new model win outright: this branch is
+	// only reachable when an earlier boot's migration failed halfway, and by
+	// now the user may have built rules through the new editors — converting
+	// again would overwrite them with the stale legacy set.
+	if existing, err := s.Rules(); err != nil {
+		return err
+	} else if len(existing) > 0 {
+		log.Printf("harness: discarding legacy startup rules — harness rules already configured")
+		return s.store.SetSetting(legacySettingStartupRules, "")
+	}
 	var legacy []struct{ PathPrefix, Command string }
 	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
 		log.Printf("harness: legacy startup rules corrupt, discarding: %v", err)

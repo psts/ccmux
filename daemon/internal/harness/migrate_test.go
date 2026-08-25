@@ -87,6 +87,58 @@ func TestMigrateKeepsExistingClaudeOverride(t *testing.T) {
 	}
 }
 
+// failingKeyStore wraps fakeStore, failing every write to one key — the
+// crash-between-writes shape the migration's clear-only-after-save contract
+// exists for.
+type failingKeyStore struct {
+	fakeStore
+	failKey string
+}
+
+func (f failingKeyStore) SetSetting(key, value string) error {
+	if key == f.failKey {
+		return errors.New("disk full")
+	}
+	return f.fakeStore.SetSetting(key, value)
+}
+
+// A failed save must leave the legacy key in place so the next boot retries —
+// clearing first would lose the user's configured command forever.
+func TestMigrateFailedSaveLeavesLegacyKey(t *testing.T) {
+	st := fakeStore{legacySettingStartupCommand: "claude --continue"}
+	s := testService(failingKeyStore{fakeStore: st, failKey: settingHarnesses})
+	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err == nil {
+		t.Fatal("migration reported success despite the failed save")
+	}
+	if st[legacySettingStartupCommand] != "claude --continue" {
+		t.Fatalf("legacy key = %q, want it untouched for the next boot's retry", st[legacySettingStartupCommand])
+	}
+}
+
+// Rules already configured in the new model are never overwritten by a
+// late-arriving legacy conversion (a failed earlier boot left the legacy key;
+// the user built rules through the new editors since).
+func TestMigrateKeepsConfiguredRules(t *testing.T) {
+	st := fakeStore{legacySettingStartupRules: `[{"pathPrefix":"/w/old","command":"claude"}]`}
+	s := testService(st)
+	if err := s.SetRules([]Rule{{PathPrefix: "/w/new", Harness: "pi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := s.Rules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].PathPrefix != "/w/new" {
+		t.Fatalf("rules = %+v, want the user's new-model rules untouched", rules)
+	}
+	if st[legacySettingStartupRules] != "" {
+		t.Fatal("legacy rules key not cleared")
+	}
+}
+
 // A legacy default equal to the fallback preserves nothing — no override is
 // seeded, the builtin stays live.
 func TestMigrateSkipsFallbackEqualDefault(t *testing.T) {

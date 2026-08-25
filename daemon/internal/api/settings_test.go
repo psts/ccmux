@@ -82,6 +82,36 @@ func TestSettings_HarnessRulesResolution(t *testing.T) {
 	}
 }
 
+// An omitted harnessRules key means "leave the rules alone" — without this, a
+// save of any unrelated setting from an editor would wipe every folder rule
+// (the same contract the alias map pins for itself).
+func TestSettings_OmittedHarnessRulesFieldLeavesRulesAlone(t *testing.T) {
+	s := settingsServer(t)
+
+	put := func(body string) int {
+		rec := httptest.NewRecorder()
+		s.putSettings(rec, httptest.NewRequest("PUT", "/v1/settings", strings.NewReader(body)))
+		return rec.Code
+	}
+	if code := put(`{"harnessRules":[{"pathPrefix":"/w/CL","harness":"pi"}]}`); code != 200 {
+		t.Fatalf("seed put = %d", code)
+	}
+	if code := put(`{"owner":"keep@example.com"}`); code != 200 {
+		t.Fatalf("unrelated put = %d", code)
+	}
+	rec := httptest.NewRecorder()
+	s.getSettings(rec, httptest.NewRequest("GET", "/v1/settings", nil))
+	var got struct {
+		HarnessRules []harness.Rule `json:"harnessRules"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.HarnessRules) != 1 || got.HarnessRules[0].PathPrefix != "/w/CL" {
+		t.Fatalf("rules = %+v, want untouched by the unrelated write", got.HarnessRules)
+	}
+}
+
 // The retired startupCommand/startupRules keys must stay silent no-ops: an old
 // lens PUTs them on every settings save, and a 400 there would break its whole
 // save. This pins decodeJSON's ignore-unknown-keys behavior — a future

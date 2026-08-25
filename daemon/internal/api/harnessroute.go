@@ -124,4 +124,3 @@ func (s *Server) clearForeignPaneRoute(paneID string, h harness.Harness) {
 		}
 	}
 }
-
