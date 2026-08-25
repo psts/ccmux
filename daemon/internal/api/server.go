@@ -455,6 +455,14 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		resp["llmAccounts"] = accs
 		resp["llmRoute"] = route
+		// Live health per account — limits, usage percentages, last seen —
+		// for the Accounts tab. Same read-failure rule as the list itself.
+		sts, err := s.llm.Statuses()
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		resp["llmAccountStatus"] = sts
 	}
 	if s.mgr.Harnesses != nil {
 		// Resolved list, built-in claude included — what a picker renders.

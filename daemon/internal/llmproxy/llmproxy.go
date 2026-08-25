@@ -100,10 +100,13 @@ type Service struct {
 	// defaultUpstream is DefaultUpstream in production; tests point it at a
 	// local httptest server.
 	defaultUpstream string
+	// health is what responses have taught the proxy about each account —
+	// limits, usage, last seen. In-memory; see acctHealth.
+	health *healthState
 }
 
 func New(store Store) *Service {
-	return &Service{store: store, defaultUpstream: DefaultUpstream}
+	return &Service{store: store, defaultUpstream: DefaultUpstream, health: newHealthState()}
 }
 
 // Accounts returns the configured accounts. A read or decode failure is an
@@ -255,12 +258,22 @@ func validateAccounts(accs []Account) string {
 			if a.APIKey != "" {
 				return fmt.Sprintf("llm account %q: codex accounts pass the harness's own ChatGPT login through and hold no key — delete the account and re-add it as codex", a.Name)
 			}
+		case "claude":
+			if a.APIKey == "" {
+				return fmt.Sprintf("llm account %q: a claude account needs a subscription token — run `claude setup-token` for that subscription and paste the result", a.Name)
+			}
 		default:
-			return fmt.Sprintf("llm account %q: unknown kind %q (anthropic, openai, or codex)", a.Name, a.Kind)
+			return fmt.Sprintf("llm account %q: unknown kind %q (anthropic, openai, claude, or codex)", a.Name, a.Kind)
 		}
 		u, err := url.Parse(a.BaseURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Sprintf("llm account %q: baseURL must be an http(s) URL", a.Name)
+		}
+		// A claude account's token is a full subscription login. Unlike an api
+		// key it must never leave Anthropic, even though the account is
+		// "keyed" — the same pin the keyless pass-through gets.
+		if a.Kind == "claude" && !passthroughHostAllowed(Account{Kind: "claude"}, u.Hostname()) {
+			return fmt.Sprintf("llm account %q holds a subscription token, which may only be sent to api.anthropic.com, localhost, or a private-network IP", a.Name)
 		}
 		if a.APIKey == "" && !passthroughHostAllowed(a, u.Hostname()) {
 			return fmt.Sprintf("llm account %q has no api key, so each pane's own login token would be forwarded to it — that is only allowed to api.anthropic.com, chatgpt.com (codex accounts), localhost, or a private-network IP", a.Name)
@@ -376,10 +389,13 @@ func merged(old, incoming []Account) []Account {
 		if a.Kind == "" {
 			a.Kind = "anthropic"
 		}
-		// A codex account has exactly one sensible upstream; an empty baseURL
-		// means it, so creating one is just a name and a kind.
+		// A codex or claude account has exactly one sensible upstream; an
+		// empty baseURL means it, so creating one needs no URL typing.
 		if a.Kind == "codex" && a.BaseURL == "" {
 			a.BaseURL = CodexUpstream
+		}
+		if a.Kind == "claude" && a.BaseURL == "" {
+			a.BaseURL = DefaultUpstream
 		}
 		if a.APIKey == "" {
 			if prev := findAccount(old, a.Name); prev != nil {

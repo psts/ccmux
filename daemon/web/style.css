@@ -103,6 +103,8 @@ body {
   background: var(--bg);
 }
 .entry-line { display: flex; gap: 6px; align-items: center; }
+/* live per-account health under the editor fields — read-only, muted */
+.llm-acct-status { font-size: 11px; opacity: 0.75; }
 /* Inside a flex line the flex factors size the fields, not the base 100%. */
 .entry-line .setting-input { width: auto; min-width: 0; }
 .entry-line .grow { flex: 1; }

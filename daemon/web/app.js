@@ -1271,18 +1271,35 @@ wireStartupCommandSetting();
 function wireLLMSettings() {
   const routeSel = $("llm-route"), box = $("llm-accounts");
   const addBtn = $("llm-account-add"), statusEl = $("llm-state");
+  const routeStateEl = $("llm-route-state") || statusEl;
   if (!routeSel) return;
 
-  function accountRow(a) {
+  // One line of live health under an account: reachable, limited (and until
+  // when), token rejected — plus usage percentages where the upstream sends
+  // them (Anthropic subscriptions: session = 5h window, week = 7 days).
+  function statusLine(st) {
+    if (!st) return "";
+    const when = (iso) => iso ? new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+    let s = { ok: "● active", limited: "◐ limited", unauthorized: "✕ credential rejected", untried: "○ no traffic yet" }[st.state] || st.state;
+    if (st.state === "limited" && st.limitedUntil) s += " until " + when(st.limitedUntil);
+    const usage = [];
+    if (st.sessionPct >= 0) usage.push(`session ${st.sessionPct}%${st.sessionReset ? " (resets " + when(st.sessionReset) + ")" : ""}`);
+    if (st.weeklyPct >= 0) usage.push(`week ${st.weeklyPct}%`);
+    if (usage.length) s += " · " + usage.join(" · ");
+    return s;
+  }
+
+  function accountRow(a, st) {
     const row = document.createElement("div");
     row.className = "entry-card";
-    const keyHint = a.apiKeySet ? "key set — empty keeps it" : "empty = your own login";
+    const keyHint = a.apiKeySet ? "set — empty keeps it" : (a.kind === "claude" ? "paste `claude setup-token` output" : "empty = your own login");
     const aliases = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
+    const status = statusLine(st);
     row.innerHTML =
       `<div class="entry-line">` +
       `<input class="setting-input llm-name grow" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
       `<select class="setting-input llm-kind">` +
-      ["anthropic", "openai", "codex"].map((k) =>
+      ["anthropic", "openai", "claude", "codex"].map((k) =>
         `<option value="${k}"${(a.kind || "anthropic") === k ? " selected" : ""}>${k}</option>`).join("") +
       `</select>` +
       `<button class="rule-del" type="button" title="Remove account">&times;</button>` +
@@ -1291,9 +1308,10 @@ function wireLLMSettings() {
       `<input class="setting-input llm-url grow" type="text" spellcheck="false" placeholder="base URL, e.g. http://localhost:11434" value="${esc(a.baseURL || "")}">` +
       `</div>` +
       `<div class="entry-line">` +
-      `<input class="setting-input llm-key grow" type="password" autocomplete="off" placeholder="api key: ${esc(keyHint)}">` +
+      `<input class="setting-input llm-key grow" type="password" autocomplete="off" placeholder="token / api key: ${esc(keyHint)}">` +
       `<input class="setting-input llm-aliases grow" type="text" spellcheck="false" placeholder="aliases: claude-haiku-*=qwen3-4b-32k" value="${esc(aliases)}">` +
-      `</div>`;
+      `</div>` +
+      (status ? `<div class="entry-line llm-acct-status">${esc(status)}</div>` : "");
     for (const el of row.querySelectorAll("input, select")) {
       el.addEventListener("change", saveAccounts);
       el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
@@ -1348,8 +1366,10 @@ function wireLLMSettings() {
   async function load() {
     try {
       const cfg = await (await fetch("/v1/settings")).json();
+      const stByName = {};
+      for (const st of cfg.llmAccountStatus || []) stByName[st.name] = st;
       box.innerHTML = "";
-      for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a));
+      for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a, stByName[a.name]));
       renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
       statusEl.textContent = "Applies to every pane's next request — no restarts.";
     } catch (_) {
@@ -1371,10 +1391,10 @@ function wireLLMSettings() {
   routeSel.addEventListener("change", async () => {
     try {
       await put({ llmRoute: routeSel.value });
-      statusEl.textContent = routeSel.value
+      routeStateEl.textContent = routeSel.value
         ? `Routing all panes to ${routeSel.value}.` : "Routing direct to Anthropic.";
     } catch (e) {
-      statusEl.textContent = "Not saved: " + e.message;
+      routeStateEl.textContent = "Not saved: " + e.message;
       load(); // the picker now lies — reload truth
     }
   });

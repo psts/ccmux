@@ -92,6 +92,9 @@ struct DaemonSettings: Codable {
     /// (redacted — key presence only). Absent on daemons without the proxy.
     var llmRoute: String
     var llmAccounts: [DaemonLLMAccount]
+    /// Live per-account health from the proxy (limits, usage percentages);
+    /// absent on older daemons.
+    var llmAccountStatus: [DaemonLLMAccountStatus]
     /// The daemon-resolved harness list (builtin + detected + user entries).
     var harnesses: [DaemonHarness]
     /// Whether this daemon's settings carried the llm/harness keys at all — an
@@ -113,7 +116,34 @@ struct DaemonSettings: Codable {
         devCertStatus = try c.decodeIfPresent(String.self, forKey: .devCertStatus) ?? "unset"
         llmRoute = try c.decodeIfPresent(String.self, forKey: .llmRoute) ?? ""
         llmAccounts = try c.decodeIfPresent([DaemonLLMAccount].self, forKey: .llmAccounts) ?? []
+        llmAccountStatus = try c.decodeIfPresent([DaemonLLMAccountStatus].self, forKey: .llmAccountStatus) ?? []
         harnesses = try c.decodeIfPresent([DaemonHarness].self, forKey: .harnesses) ?? []
+    }
+}
+
+/// Live health for one LLM account, as the proxy learned it from responses:
+/// state is "ok" | "limited" | "unauthorized" | "untried"; percentages are
+/// -1 until an upstream that reports usage (Anthropic subscriptions) has
+/// answered through the proxy.
+struct DaemonLLMAccountStatus: Codable, Identifiable {
+    let name: String
+    var state: String
+    var limitedUntil: String?
+    var sessionPct: Double
+    var weeklyPct: Double
+    var sessionReset: String?
+    var weeklyReset: String?
+    var id: String { name }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "untried"
+        limitedUntil = try c.decodeIfPresent(String.self, forKey: .limitedUntil)
+        sessionPct = try c.decodeIfPresent(Double.self, forKey: .sessionPct) ?? -1
+        weeklyPct = try c.decodeIfPresent(Double.self, forKey: .weeklyPct) ?? -1
+        sessionReset = try c.decodeIfPresent(String.self, forKey: .sessionReset)
+        weeklyReset = try c.decodeIfPresent(String.self, forKey: .weeklyReset)
     }
 }
 

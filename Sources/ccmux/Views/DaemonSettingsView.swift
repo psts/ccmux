@@ -24,6 +24,8 @@ struct DaemonSettingsView: View {
     @State private var devCertStatus = "unset"
     @State private var llmRoute = ""
     @State private var accounts: [EditableAccount] = []
+    /// Live per-account health by name, from GET /v1/settings.
+    @State private var accountStatus: [String: DaemonLLMAccountStatus] = [:]
     @State private var harnesses: [EditableHarness] = []
     @State private var supportsLLM = false
     @State private var supportsHarnesses = false
@@ -73,6 +75,7 @@ struct DaemonSettingsView: View {
             // web lens's settings tabs.
             TabView {
                 generalTab.tabItem { Text("General") }
+                if supportsLLM { accountsTab.tabItem { Text("Accounts") } }
                 if supportsLLM { modelsTab.tabItem { Text("Models") } }
                 if supportsHarnesses { harnessesTab.tabItem { Text("Harnesses") } }
                 devTab.tabItem { Text("Dev Hostnames") }
@@ -215,22 +218,49 @@ struct DaemonSettingsView: View {
                     }
                     .labelsHidden()
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Accounts")
-                        .font(.headline)
-                    ForEach($accounts) { $account in
-                        accountCard($account)
-                    }
-                    Button("Add account") {
-                        accounts.append(EditableAccount(
-                            name: "", kind: "anthropic", baseURL: "", apiKey: "", apiKeySet: false, aliases: ""))
-                    }
-                    .controlSize(.small)
-                }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var accountsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Accounts")
+                    .font(.headline)
+                Text("Claude accounts hold a token from `claude setup-token` and form a failover pool: when one hits its limit, the proxy switches to the next. Usage updates from live traffic.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach($accounts) { $account in
+                    accountCard($account)
+                }
+                Button("Add account") {
+                    accounts.append(EditableAccount(
+                        name: "", kind: "anthropic", baseURL: "", apiKey: "", apiKeySet: false, aliases: ""))
+                }
+                .controlSize(.small)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The health footer of one account card, from the daemon's live status.
+    private func accountStatusText(_ name: String) -> String? {
+        guard let st = accountStatus[name] else { return nil }
+        var parts: [String] = []
+        switch st.state {
+        case "ok": parts.append("● active")
+        case "limited": parts.append("◐ limited" + (st.limitedUntil.map { " until \($0)" } ?? ""))
+        case "unauthorized": parts.append("✕ credential rejected")
+        case "untried": parts.append("○ no traffic yet")
+        default: parts.append(st.state)
+        }
+        if st.sessionPct >= 0 { parts.append("session \(Int(st.sessionPct))%") }
+        if st.weeklyPct >= 0 { parts.append("week \(Int(st.weeklyPct))%") }
+        return parts.joined(separator: " · ")
     }
 
     private func accountCard(_ account: Binding<EditableAccount>) -> some View {
@@ -242,6 +272,7 @@ struct DaemonSettingsView: View {
                 Picker("", selection: account.kind) {
                     Text("anthropic").tag("anthropic")
                     Text("openai").tag("openai")
+                    Text("claude").tag("claude")
                     Text("codex").tag("codex")
                 }
                 .labelsHidden()
@@ -261,13 +292,20 @@ struct DaemonSettingsView: View {
                 .font(.system(size: 12, design: .monospaced))
             HStack(spacing: 6) {
                 SecureField(
-                    account.wrappedValue.apiKeySet ? "key set — empty keeps it" : "api key (empty = your own login)",
+                    account.wrappedValue.apiKeySet ? "key set — empty keeps it"
+                        : account.wrappedValue.kind == "claude" ? "paste `claude setup-token` output"
+                        : "api key (empty = your own login)",
                     text: account.apiKey)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                 TextField("aliases: claude-haiku-*=qwen3-4b-32k", text: account.aliases)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
+            }
+            if let status = accountStatusText(account.wrappedValue.name) {
+                Text(status)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
             }
         }
         .padding(8)
@@ -485,6 +523,7 @@ struct DaemonSettingsView: View {
         supportsLLM = settings.supportsLLM
         supportsHarnesses = settings.supportsHarnesses
         llmRoute = settings.llmRoute
+        accountStatus = Dictionary(uniqueKeysWithValues: settings.llmAccountStatus.map { ($0.name, $0) })
         accounts = settings.llmAccounts.map {
             EditableAccount(
                 name: $0.name, kind: $0.kind, baseURL: $0.baseURL,
