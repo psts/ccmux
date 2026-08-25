@@ -5,7 +5,6 @@ package manager
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -179,104 +178,6 @@ func (m *Manager) adopt(ws *model.Workspace, isLive bool) {
 	m.byID[ws.ID] = &entry{ws: ws, ctrl: ctrl}
 	m.mu.Unlock()
 	go m.watch(ws.ID, ctrl)
-}
-
-// FallbackStartupCommand is what a new hosted workspace's first pane runs when
-// no default has been configured: a peers-enabled claude, so ccmux-created
-// sessions get live channel push out of the box (plain `claude` would load the
-// peer tools but silently drop pushed messages).
-//
-// `env -u TMUX` is a cleanup on the clipboard path, NOT what makes copies reach
-// the lens. Measured against Claude Code 2.1.224: it writes OSC 52 on every
-// copy regardless of $TMUX, and `tmux load-buffer` / pbcopy / xclip are extra
-// writes rather than alternatives to it. tmux forwards a pane's OSC 52 to its
-// client inside %output either way, so copies already reach the lens with $TMUX
-// set — verified end to end against a real hosted pane and an attached lens.
-//
-// What unsetting it buys: with $TMUX set, claude emits the sequence twice (once
-// plain, once wrapped in a tmux DCS passthrough) and awaits `tmux load-buffer`
-// for up to 4s before emitting at all. Unsetting drops both.
-//
-// What it costs: claude's own subprocesses no longer see $TMUX, so a `tmux`
-// command one of them runs does not find the ccmux server. TMUX_PANE survives,
-// so anything keyed on the pane id is unaffected. In a ccmux pane the daemon
-// owns tmux, so that is a deliberate trade.
-const FallbackStartupCommand = "env -u TMUX claude --dangerously-load-development-channels server:claude-peers"
-
-const settingStartupCommand = "default_startup_command"
-
-// DefaultStartupCommand returns the configured new-workspace startup command
-// (a daemon-wide setting shared by every lens), or the fallback when unset.
-func (m *Manager) DefaultStartupCommand() string {
-	if v, err := m.store.GetSetting(settingStartupCommand); err == nil && v != "" {
-		return v
-	}
-	return FallbackStartupCommand
-}
-
-// SetDefaultStartupCommand persists the setting; empty resets to the fallback.
-func (m *Manager) SetDefaultStartupCommand(cmd string) error {
-	return m.store.SetSetting(settingStartupCommand, cmd)
-}
-
-const settingStartupRules = "startup_rules"
-
-// StartupRule maps a folder subtree to its own new-workspace startup command:
-// a rule for ~/Work/Coding/ChartLabs covers every repo under it. Rules beat
-// the global default; the longest matching prefix wins among rules.
-type StartupRule struct {
-	PathPrefix string `json:"pathPrefix"`
-	Command    string `json:"command"`
-}
-
-// StartupRules returns the configured per-folder rules (empty when unset).
-func (m *Manager) StartupRules() []StartupRule {
-	raw, err := m.store.GetSetting(settingStartupRules)
-	if err != nil || raw == "" {
-		return []StartupRule{}
-	}
-	var rules []StartupRule
-	if json.Unmarshal([]byte(raw), &rules) != nil {
-		return []StartupRule{}
-	}
-	return rules
-}
-
-// SetStartupRules persists the rules, dropping rows with an empty prefix or
-// command (half-filled editor rows, not meaningful rules).
-func (m *Manager) SetStartupRules(rules []StartupRule) error {
-	kept := make([]StartupRule, 0, len(rules))
-	for _, r := range rules {
-		r.PathPrefix = strings.TrimRight(strings.TrimSpace(r.PathPrefix), "/")
-		r.Command = strings.TrimSpace(r.Command)
-		if r.PathPrefix != "" && r.Command != "" {
-			kept = append(kept, r)
-		}
-	}
-	b, err := json.Marshal(kept)
-	if err != nil {
-		return err
-	}
-	return m.store.SetSetting(settingStartupRules, string(b))
-}
-
-// StartupCommandFor resolves the startup command for a new workspace at
-// repoPath: longest matching folder rule → global default → built-in fallback.
-func (m *Manager) StartupCommandFor(repoPath string) string {
-	repoPath = strings.TrimRight(repoPath, "/")
-	best, bestLen := "", -1
-	for _, r := range m.StartupRules() {
-		if len(r.PathPrefix) <= bestLen {
-			continue
-		}
-		if repoPath == r.PathPrefix || strings.HasPrefix(repoPath, r.PathPrefix+"/") {
-			best, bestLen = r.Command, len(r.PathPrefix)
-		}
-	}
-	if bestLen >= 0 {
-		return best
-	}
-	return m.DefaultStartupCommand()
 }
 
 // CreateWorkspace creates a new hosted workspace with an initial pane. group

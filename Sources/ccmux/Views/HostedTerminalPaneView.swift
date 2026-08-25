@@ -13,6 +13,8 @@ struct HostedTerminalPaneView: View {
     let paneId: String
     let workingDirectory: String
     @ObservedObject private var service = RemoteSessionService.shared
+    /// Transient, like the web lens's bar dismiss: a rebuilt view offers again.
+    @State private var harnessBarDismissed = false
 
     var body: some View {
         ZStack {
@@ -35,6 +37,73 @@ struct HostedTerminalPaneView: View {
                 .padding(8)
             }
         }
+        // The harness bar: a live shell pane (fresh or dormant, never the dev
+        // server) offers what to start in place — the Mac analog of the web
+        // lens's bar. Sized to its pill, so terminal clicks elsewhere pass.
+        .overlay(alignment: .bottom) {
+            if !harnessBarDismissed,
+               service.hostedConnectionState(paneId: paneId) == .connected,
+               let offer = service.harnessOffer(forPane: paneId) {
+                HarnessBar(
+                    harnesses: offer.harnesses, suggested: offer.suggested, restart: offer.restart,
+                    onStart: { name in
+                        Task { _ = await service.startHarness(paneId: paneId, name: name) }
+                    },
+                    onDismiss: { harnessBarDismissed = true })
+                .padding(.bottom, 8)
+            }
+        }
+    }
+}
+
+/// "Start here:" pill over a bare-shell pane: one button per harness, the
+/// suggested one (folder rule, or the dormant pane's own harness) highlighted.
+private struct HarnessBar: View {
+    let harnesses: [DaemonHarness]
+    let suggested: String
+    let restart: Bool
+    let onStart: (String) -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(restart ? "Restart:" : "Start here:")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.75))
+            ForEach(harnesses) { h in
+                harnessButton(h)
+            }
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .help("Keep the shell")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.black.opacity(0.65))
+        .clipShape(Capsule())
+    }
+
+    private func harnessButton(_ h: DaemonHarness) -> some View {
+        let isSuggested = h.name == suggested
+        return Button {
+            onStart(h.name)
+        } label: {
+            Text("\([h.icon ?? "", h.name].filter { !$0.isEmpty }.joined(separator: " "))")
+                .font(.system(size: 11, weight: isSuggested ? .semibold : .regular))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.white.opacity(isSuggested ? 0.22 : 0.10))
+                .foregroundColor(.white)
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(
+                    isSuggested ? Color.accentColor : .clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(h.command ?? "")
     }
 }
 

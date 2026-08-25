@@ -98,7 +98,7 @@ func TestSettings_OmittedAliasFieldLeavesTheMapAlone(t *testing.T) {
 	get, put := aliasSettings(t, s)
 	put(`{"identityAliases":{"keep":"keep@example.com"}}`)
 
-	if code := put(`{"startupCommand":"claude --continue"}`); code != 200 {
+	if code := put(`{"owner":"keep-tester@example.com"}`); code != 200 {
 		t.Fatalf("put = %d", code)
 	}
 	if got := get(); len(got) != 1 || got[0] != "keep" {

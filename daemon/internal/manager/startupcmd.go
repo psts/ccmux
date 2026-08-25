@@ -11,8 +11,9 @@ import (
 //
 // It exists because two callers ask the same question ("is this a claude
 // pane?") and used to answer it differently — one matched fields[0] == "claude",
-// the other skipped only `VAR=value`. Neither survived FallbackStartupCommand
-// gaining its `env -u TMUX` prefix: panes came up titled "Terminal".
+// the other skipped only `VAR=value`. Neither survived the claude command
+// (harness.FallbackClaudeCommand) gaining its `env -u TMUX` prefix: panes came
+// up titled "Terminal".
 //
 // Returns "" when there is no program (empty command, or `env` with nothing
 // after its flags).

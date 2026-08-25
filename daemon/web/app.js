@@ -1096,10 +1096,6 @@ function newWorkspace() {
   $("project-cmd").value = "";
   state.createHost = "";
   populateHostPicker();
-  // Show what a workspace would run by default, as the override placeholder.
-  fetch("/v1/settings").then((r) => r.json()).then((cfg) => {
-    $("project-cmd").placeholder = `startup command — empty = default (${cfg.startupCommand || "shell"})`;
-  }).catch(() => {});
   // Offer the existing window groups; free text makes a new one. Empty = auto
   // (the first Mac window adopts it).
   $("project-group").value = "";
@@ -1180,88 +1176,6 @@ async function createWorkspace(p) {
   await fetchWorkspaces();
   attach(ws.id, null);
 }
-
-// --- settings: the daemon-wide startup command + per-folder rules for new
-// hosted workspaces. Loaded when the settings sheet opens; saved on change.
-// addEventListener (not onclick) so push.js's own open handler coexists. ---
-function wireStartupCommandSetting() {
-  const input = $("startup-cmd"), state = $("startup-cmd-state");
-  const rulesBox = $("startup-rules"), addBtn = $("startup-rule-add");
-  if (!input) return;
-
-  function ruleRow(rule) {
-    const row = document.createElement("div");
-    row.className = "rule-row";
-    row.innerHTML =
-      `<input class="setting-input rule-prefix" type="text" spellcheck="false" placeholder="/path/to/folder" value="${esc(rule.pathPrefix || "")}">` +
-      `<input class="setting-input rule-cmd" type="text" spellcheck="false" placeholder="command" value="${esc(rule.command || "")}">` +
-      `<button class="rule-del" type="button" title="Remove rule">&times;</button>`;
-    for (const el of row.querySelectorAll("input")) {
-      el.addEventListener("change", saveRules);
-      el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
-    }
-    row.querySelector(".rule-del").onclick = () => { row.remove(); saveRules(); };
-    return row;
-  }
-
-  function collectRules() {
-    return [...rulesBox.querySelectorAll(".rule-row")].map((row) => ({
-      pathPrefix: row.querySelector(".rule-prefix").value.trim(),
-      command: row.querySelector(".rule-cmd").value.trim(),
-    }));
-  }
-
-  async function load() {
-    try {
-      const r = await fetch("/v1/settings");
-      const cfg = await r.json();
-      input.value = cfg.startupCommand || "";
-      rulesBox.innerHTML = "";
-      for (const rule of cfg.startupRules || []) rulesBox.appendChild(ruleRow(rule));
-      state.textContent = "Typed into every new hosted workspace's terminal (all lenses).";
-    } catch (_) {
-      state.textContent = "Couldn't load the current settings.";
-    }
-  }
-
-  async function put(body) {
-    const r = await fetch("/v1/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return r.json();
-  }
-
-  async function saveCommand() {
-    try {
-      const cfg = await put({ startupCommand: input.value });
-      input.value = cfg.startupCommand || ""; // empty resets to built-in — show it
-      state.textContent = "Saved.";
-    } catch (_) {
-      state.textContent = "Couldn't save — is the daemon reachable?";
-    }
-  }
-
-  async function saveRules() {
-    try {
-      await put({ startupRules: collectRules() });
-      // Don't re-render: half-filled rows stay editable (the daemon drops them).
-      state.textContent = "Saved.";
-    } catch (_) {
-      state.textContent = "Couldn't save — is the daemon reachable?";
-    }
-  }
-
-  $("open-settings").addEventListener("click", load);
-  input.addEventListener("change", saveCommand);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
-  addBtn.addEventListener("click", () => {
-    rulesBox.appendChild(ruleRow({ pathPrefix: "", command: "" }));
-    rulesBox.lastChild.querySelector(".rule-prefix").focus();
-  });
-}
-wireStartupCommandSetting();
 
 // --- settings: LLM routing. Accounts are places pane LLM traffic can go
 // (Ollama, OpenRouter, a keyed Anthropic org); the route picks which one
@@ -1453,17 +1367,21 @@ function wireLLMSettings() {
 }
 wireLLMSettings();
 
-// --- settings: harnesses. The daemon lists claude (builtin) and every known
-// program it finds installed (detected) with zero config; editing one of
-// those rows saves a user OVERRIDE by name, and only overrides and new
-// entries are persisted — an untouched builtin/detected row stays live-
-// resolved (claude keeps following the startup-command setting, a detected
-// harness disappears when uninstalled). Deleting an override restores the
-// default. The command field is where per-harness flags live, e.g. claude's
-// --dangerously-load-development-channels. ---
+// --- settings: harnesses — the single source of what a pane runs. The daemon
+// lists claude (builtin) and every known program it finds installed
+// (detected) with zero config; editing one of those rows saves a user
+// OVERRIDE by name, and only overrides and new entries are persisted — an
+// untouched builtin/detected row stays live-resolved (a detected harness
+// disappears when uninstalled). Deleting an override restores the default.
+// The command field is where per-harness flags live, e.g. claude's
+// --dangerously-load-development-channels. Below the list live the
+// per-folder rules: which harness a new workspace there PRESELECTS on its
+// harness bar — a suggestion, nothing auto-starts. ---
 function wireHarnessSettings() {
   const box = $("harness-list"), addBtn = $("harness-add"), statusEl = $("harness-state");
+  const rulesBox = $("harness-rules"), ruleAddBtn = $("harness-rule-add");
   if (!box) return;
+  let harnessNames = [];
 
   function harnessRow(h) {
     const row = document.createElement("div");
@@ -1523,25 +1441,78 @@ function wireHarnessSettings() {
     return out;
   }
 
+  // A rule names a harness, so its select is built from the loaded list; a
+  // rule whose harness no longer exists keeps a disabled option so the row
+  // stays visible and deletable instead of silently jumping to another name.
+  function ruleRow(rule) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+    const options = harnessNames.map((n) =>
+      `<option value="${esc(n)}"${n === rule.harness ? " selected" : ""}>${esc(n)}</option>`);
+    if (rule.harness && !harnessNames.includes(rule.harness)) {
+      options.push(`<option value="${esc(rule.harness)}" selected disabled>${esc(rule.harness)} (gone)</option>`);
+    }
+    row.innerHTML =
+      `<input class="setting-input rule-prefix" type="text" spellcheck="false" placeholder="/path/to/folder" value="${esc(rule.pathPrefix || "")}">` +
+      `<select class="setting-input rule-cmd">${options.join("")}</select>` +
+      `<button class="rule-del" type="button" title="Remove rule">&times;</button>`;
+    const prefix = row.querySelector(".rule-prefix");
+    prefix.addEventListener("change", saveRules);
+    prefix.addEventListener("keydown", (e) => { if (e.key === "Enter") prefix.blur(); });
+    row.querySelector(".rule-cmd").addEventListener("change", saveRules);
+    row.querySelector(".rule-del").onclick = () => { row.remove(); saveRules(); };
+    return row;
+  }
+
+  function collectRules() {
+    return [...rulesBox.querySelectorAll(".rule-row")].map((row) => ({
+      pathPrefix: row.querySelector(".rule-prefix").value.trim(),
+      harness: row.querySelector(".rule-cmd").value,
+    }));
+  }
+
   async function load() {
     try {
       const cfg = await (await fetch("/v1/settings")).json();
       box.innerHTML = "";
       for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h));
+      harnessNames = (cfg.harnesses || []).map((h) => h.name);
+      rulesBox.innerHTML = "";
+      for (const rule of cfg.harnessRules || []) rulesBox.appendChild(ruleRow(rule));
       statusEl.textContent = "Installed harnesses appear on their own; edit a row to override it.";
     } catch (_) {
       statusEl.textContent = "Couldn't load harnesses.";
     }
   }
 
+  async function put(body) {
+    const r = await fetch("/v1/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
   async function save() {
     try {
-      const r = await fetch("/v1/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ harnesses: collect() }),
-      });
-      if (!r.ok) throw new Error(await r.text());
+      const cfg = await put({ harnesses: collect() });
+      // Renames/deletes change what a rule can point at — rebuild the selects.
+      harnessNames = (cfg.harnesses || []).map((h) => h.name);
+      const rules = collectRules();
+      rulesBox.innerHTML = "";
+      for (const rule of rules) rulesBox.appendChild(ruleRow(rule));
+      statusEl.textContent = "Saved.";
+    } catch (e) {
+      statusEl.textContent = "Not saved: " + e.message;
+    }
+  }
+
+  async function saveRules() {
+    try {
+      await put({ harnessRules: collectRules() });
+      // Don't re-render: half-filled rows stay editable (the daemon drops them).
       statusEl.textContent = "Saved.";
     } catch (e) {
       statusEl.textContent = "Not saved: " + e.message;
@@ -1552,6 +1523,10 @@ function wireHarnessSettings() {
   addBtn.addEventListener("click", () => {
     box.appendChild(harnessRow({}));
     box.lastChild.querySelector(".hx-name").focus();
+  });
+  ruleAddBtn.addEventListener("click", () => {
+    rulesBox.appendChild(ruleRow({ pathPrefix: "", harness: harnessNames[0] || "claude" }));
+    rulesBox.lastChild.querySelector(".rule-prefix").focus();
   });
 }
 wireHarnessSettings();

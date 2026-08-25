@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
@@ -23,81 +24,34 @@ func settingsServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { st.Close() })
 	mgr := manager.New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	mgr.Harnesses = harness.New(st)
 	return &Server{mgr: mgr}
 }
 
-func TestSettings_StartupCommandRoundtrip(t *testing.T) {
-	s := settingsServer(t)
-
-	get := func() string {
-		rec := httptest.NewRecorder()
-		s.getSettings(rec, httptest.NewRequest("GET", "/v1/settings", nil))
-		var got struct {
-			StartupCommand string `json:"startupCommand"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return got.StartupCommand
-	}
-	put := func(body string) string {
-		rec := httptest.NewRecorder()
-		s.putSettings(rec, httptest.NewRequest("PUT", "/v1/settings", strings.NewReader(body)))
-		if rec.Code != 200 {
-			t.Fatalf("put = %d (%s)", rec.Code, rec.Body)
-		}
-		var got struct {
-			StartupCommand string `json:"startupCommand"`
-		}
-		_ = json.Unmarshal(rec.Body.Bytes(), &got)
-		return got.StartupCommand
-	}
-
-	// Unset → the peers-enabled fallback, resolved.
-	if got := get(); got != manager.FallbackStartupCommand {
-		t.Fatalf("default = %q, want fallback", got)
-	}
-	// Set a custom command → persisted and echoed.
-	if got := put(`{"startupCommand":"claude --continue"}`); got != "claude --continue" {
-		t.Fatalf("after put = %q", got)
-	}
-	if got := get(); got != "claude --continue" {
-		t.Fatalf("get after put = %q", got)
-	}
-	// Empty (whitespace) resets to the fallback.
-	if got := put(`{"startupCommand":"   "}`); got != manager.FallbackStartupCommand {
-		t.Fatalf("after reset = %q, want fallback", got)
-	}
-	// PUT without the field changes nothing.
-	put(`{"startupCommand":"claude --continue"}`)
-	if got := put(`{}`); got != "claude --continue" {
-		t.Fatalf("field-less put changed setting to %q", got)
-	}
-}
-
-func TestSettings_StartupRulesResolution(t *testing.T) {
+func TestSettings_HarnessRulesResolution(t *testing.T) {
 	s := settingsServer(t)
 
 	rec := httptest.NewRecorder()
 	s.putSettings(rec, httptest.NewRequest("PUT", "/v1/settings", strings.NewReader(`{
-		"startupCommand": "claude",
-		"startupRules": [
-			{"pathPrefix": "/w/Coding/ChartLabs/", "command": "claude --chartlabs"},
-			{"pathPrefix": "/w/Coding/ChartLabs/backend", "command": "claude --backend"},
-			{"pathPrefix": "", "command": "dropped"},
-			{"pathPrefix": "/w/half-filled", "command": "  "}
+		"harnesses": [{"name": "pi", "command": "pi"}, {"name": "opencode", "command": "opencode"}],
+		"harnessRules": [
+			{"pathPrefix": "/w/Coding/ChartLabs/", "harness": "pi"},
+			{"pathPrefix": "/w/Coding/ChartLabs/backend", "harness": "opencode"},
+			{"pathPrefix": "/w/gone", "harness": "deleted-harness"},
+			{"pathPrefix": "", "harness": "dropped"},
+			{"pathPrefix": "/w/half-filled", "harness": "  "}
 		]}`)))
 	if rec.Code != 200 {
 		t.Fatalf("put rules = %d (%s)", rec.Code, rec.Body)
 	}
 	var saved struct {
-		StartupRules []manager.StartupRule `json:"startupRules"`
+		HarnessRules []harness.Rule `json:"harnessRules"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
 		t.Fatal(err)
 	}
-	if len(saved.StartupRules) != 2 {
-		t.Fatalf("rules = %+v, want empty rows dropped", saved.StartupRules)
+	if len(saved.HarnessRules) != 3 {
+		t.Fatalf("rules = %+v, want empty rows dropped", saved.HarnessRules)
 	}
 
 	resolve := func(repo string) string {
@@ -105,20 +59,53 @@ func TestSettings_StartupRulesResolution(t *testing.T) {
 		s.getSettings(rec, httptest.NewRequest("GET", "/v1/settings?repoPath="+repo, nil))
 		var got map[string]any
 		_ = json.Unmarshal(rec.Body.Bytes(), &got)
-		v, _ := got["resolvedStartupCommand"].(string)
+		v, _ := got["resolvedHarness"].(string)
 		return v
 	}
-	// Longest matching prefix wins; boundary-aware (ChartLabsFoo ≠ ChartLabs/…).
-	if got := resolve("/w/Coding/ChartLabs/admin"); got != "claude --chartlabs" {
+	// Longest matching prefix wins; boundary-aware (ChartLabsFoo ≠ ChartLabs/…);
+	// every miss — including a rule whose harness no longer exists — suggests
+	// the builtin.
+	if got := resolve("/w/Coding/ChartLabs/admin"); got != "pi" {
 		t.Fatalf("admin resolved %q", got)
 	}
-	if got := resolve("/w/Coding/ChartLabs/backend"); got != "claude --backend" {
+	if got := resolve("/w/Coding/ChartLabs/backend"); got != "opencode" {
 		t.Fatalf("backend resolved %q", got)
 	}
 	if got := resolve("/w/Coding/ChartLabsFoo"); got != "claude" {
-		t.Fatalf("sibling with shared name prefix resolved %q, want global", got)
+		t.Fatalf("sibling with shared name prefix resolved %q, want claude", got)
 	}
 	if got := resolve("/w/Elsewhere/thing"); got != "claude" {
-		t.Fatalf("unmatched resolved %q, want global", got)
+		t.Fatalf("unmatched resolved %q, want claude", got)
+	}
+	if got := resolve("/w/gone/repo"); got != "claude" {
+		t.Fatalf("dangling rule resolved %q, want claude", got)
+	}
+}
+
+// The retired startupCommand/startupRules keys must stay silent no-ops: an old
+// lens PUTs them on every settings save, and a 400 there would break its whole
+// save. This pins decodeJSON's ignore-unknown-keys behavior — a future
+// DisallowUnknownFields refactor trips here first.
+func TestSettings_LegacyStartupKeysIgnored(t *testing.T) {
+	s := settingsServer(t)
+
+	rec := httptest.NewRecorder()
+	s.putSettings(rec, httptest.NewRequest("PUT", "/v1/settings", strings.NewReader(
+		`{"startupCommand": "claude --old", "startupRules": [{"pathPrefix": "/a", "command": "b"}]}`)))
+	if rec.Code != 200 {
+		t.Fatalf("legacy-keys put = %d (%s)", rec.Code, rec.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["startupCommand"]; ok {
+		t.Fatal("GET still reports the retired startupCommand key")
+	}
+	if _, ok := got["startupRules"]; ok {
+		t.Fatal("GET still reports the retired startupRules key")
+	}
+	if rules, ok := got["harnessRules"].([]any); !ok || len(rules) != 0 {
+		t.Fatalf("harnessRules = %v, want present and untouched", got["harnessRules"])
 	}
 }

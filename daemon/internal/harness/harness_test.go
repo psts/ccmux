@@ -17,7 +17,7 @@ func (brokenStore) GetSetting(string) (string, error) { return "", errors.New("d
 func (brokenStore) SetSetting(string, string) error   { return nil }
 
 func testService(st Store) *Service {
-	s := New(st, func() string { return "env -u TMUX claude --dangerously-load-development-channels server:claude-peers" })
+	s := New(st)
 	// Tests must not depend on what the build host has installed.
 	s.lookPath = func(string) (string, error) { return "", errors.New("not installed") }
 	return s
@@ -51,8 +51,8 @@ func TestDetectedHarnesses(t *testing.T) {
 	}
 }
 
-// An unconfigured daemon still has the claude harness, wired to the
-// configured startup command, with autoconfirm armed.
+// An unconfigured daemon still has the claude harness, running the fallback
+// command, with autoconfirm armed.
 func TestBuiltinClaudeAlwaysPresent(t *testing.T) {
 	s := testService(fakeStore{})
 	hs, err := s.List()
@@ -62,7 +62,7 @@ func TestBuiltinClaudeAlwaysPresent(t *testing.T) {
 	if len(hs) != 1 || hs[0].Name != "claude" || !hs[0].Autoconfirm {
 		t.Fatalf("list = %+v, want the built-in claude", hs)
 	}
-	if !strings.Contains(hs[0].Command, "claude") {
+	if hs[0].Command != FallbackClaudeCommand {
 		t.Fatalf("builtin command = %q", hs[0].Command)
 	}
 	h, err := s.Resolve("claude")

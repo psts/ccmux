@@ -1,6 +1,10 @@
 package manager
 
-import "testing"
+import (
+	"testing"
+
+	"ccmux.dev/ccmuxd/internal/harness"
+)
 
 // TestStartupProgram covers the wrappers a startup command can put in front of
 // the program. The `env -u TMUX` rows are the ones that regressed: both callers
@@ -32,15 +36,15 @@ func TestStartupProgram(t *testing.T) {
 	}
 }
 
-// TestInitialPaneTitle_FallbackCommand pins the actual shipped default, so a
-// future change to FallbackStartupCommand that hides the program again fails
-// here rather than showing up as a mislabelled tab.
+// TestInitialPaneTitle_FallbackCommand pins the actual shipped claude
+// command, so a future change to harness.FallbackClaudeCommand that hides the
+// program again fails here rather than showing up as a mislabelled tab.
 func TestInitialPaneTitle_FallbackCommand(t *testing.T) {
-	if got := initialPaneTitle(FallbackStartupCommand); got != "Claude" {
-		t.Errorf("initialPaneTitle(FallbackStartupCommand) = %q, want Claude", got)
+	if got := initialPaneTitle(harness.FallbackClaudeCommand); got != "Claude" {
+		t.Errorf("initialPaneTitle(FallbackClaudeCommand) = %q, want Claude", got)
 	}
-	if !startsClaude(FallbackStartupCommand) {
-		t.Error("startsClaude(FallbackStartupCommand) = false, want true")
+	if !startsClaude(harness.FallbackClaudeCommand) {
+		t.Error("startsClaude(FallbackClaudeCommand) = false, want true")
 	}
 }
 

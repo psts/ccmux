@@ -5,11 +5,12 @@
 // what icon to show on the picker button, and whether the startup-prompt
 // autoconfirm watcher should be armed for it.
 //
-// The list lives in the settings table so every lens reads the same one. The
-// "claude" harness is built in — its command is the daemon's configured
-// startup command, so the existing default_startup_command setting and
-// per-folder rules keep meaning what they always did — and a user entry named
-// "claude" overrides the built-in wholesale.
+// The list lives in the settings table so every lens reads the same one, and
+// it is the single source of truth for what a harness runs: the "claude"
+// harness is built in with FallbackClaudeCommand, and a user entry named
+// "claude" overrides the built-in wholesale. Per-folder rules (rules.go) name
+// a harness to preselect; migrate.go converts the retired raw-command
+// settings that predate this model.
 package harness
 
 import (
@@ -70,6 +71,28 @@ var defaultAccountKinds = map[string][]string{
 // Builtin is the harness every daemon has without configuration.
 const Builtin = "claude"
 
+// FallbackClaudeCommand is what the built-in claude harness runs when no user
+// entry named "claude" overrides it: a peers-enabled claude, so ccmux-created
+// sessions get live channel push out of the box (plain `claude` would load the
+// peer tools but silently drop pushed messages).
+//
+// `env -u TMUX` is a cleanup on the clipboard path, NOT what makes copies reach
+// the lens. Measured against Claude Code 2.1.224: it writes OSC 52 on every
+// copy regardless of $TMUX, and `tmux load-buffer` / pbcopy / xclip are extra
+// writes rather than alternatives to it. tmux forwards a pane's OSC 52 to its
+// client inside %output either way, so copies already reach the lens with $TMUX
+// set — verified end to end against a real hosted pane and an attached lens.
+//
+// What unsetting it buys: with $TMUX set, claude emits the sequence twice (once
+// plain, once wrapped in a tmux DCS passthrough) and awaits `tmux load-buffer`
+// for up to 4s before emitting at all. Unsetting drops both.
+//
+// What it costs: claude's own subprocesses no longer see $TMUX, so a `tmux`
+// command one of them runs does not find the ccmux server. TMUX_PANE survives,
+// so anything keyed on the pane id is unaffected. In a ccmux pane the daemon
+// owns tmux, so that is a deliberate trade.
+const FallbackClaudeCommand = "env -u TMUX claude --dangerously-load-development-channels server:claude-peers"
+
 // known are the harnesses the daemon recognizes on sight: if the program is
 // installed on this host, the harness exists — settings and pickers included,
 // zero configuration. A user entry with the same name overrides the detected
@@ -98,16 +121,13 @@ const codexCommand = `codex -c model_provider=ccmux` +
 
 type Service struct {
 	store Store
-	// claudeCommand resolves the built-in claude harness's command — wired to
-	// the manager's DefaultStartupCommand so the existing setting keeps working.
-	claudeCommand func() string
 	// lookPath answers "is this program installed here" (exec.LookPath in
 	// production; tests inject).
 	lookPath func(string) (string, error)
 }
 
-func New(store Store, claudeCommand func() string) *Service {
-	return &Service{store: store, claudeCommand: claudeCommand, lookPath: lookPathUserBins}
+func New(store Store) *Service {
+	return &Service{store: store, lookPath: lookPathUserBins}
 }
 
 // lookPathUserBins is exec.LookPath widened with ~/.local/bin. Panes run
@@ -144,7 +164,7 @@ func (s *Service) List() ([]Harness, error) {
 		named[h.Name] = true
 	}
 	if !named[Builtin] {
-		out = append(out, Harness{Name: Builtin, Icon: "✳", Command: s.claudeCommand(), Autoconfirm: true, Source: "builtin"})
+		out = append(out, Harness{Name: Builtin, Icon: "✳", Command: FallbackClaudeCommand, Autoconfirm: true, Source: "builtin"})
 	}
 	out = append(out, user...)
 	for _, k := range known {

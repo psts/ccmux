@@ -60,13 +60,10 @@ type wsResult struct {
 
 // createWS POSTs a workspace at /tmp and returns its decoded id + panes.
 //
-// startupCommand is explicitly "" — a BARE SHELL. Omitting it takes the daemon's
-// configured default, which falls back to launching a real Claude session, and
-// these tests then type their flood command into Claude's prompt instead of a
-// shell: nothing floods, the subscriber never lags, and the reseed path under
-// test is never reached. An empty string is the documented way to ask for no
-// startup command, and it keeps the test hermetic — no dependency on whether
-// claude is installed or how it renders.
+// startupCommand is explicitly "" — a BARE SHELL, so these tests type their
+// flood commands into a shell prompt with no dependency on what else is
+// installed. (Omitting the field means the same thing now; the explicit ""
+// simply says so at the call site.)
 func createWS(t *testing.T, base string) wsResult {
 	t.Helper()
 	body := `{"name":"flood","repoPath":"/tmp","createdBy":"tester","startupCommand":""}`

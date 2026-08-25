@@ -112,9 +112,14 @@ func runDaemon() {
 	mgr.LocalURL = loopbackURL(*addr)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
 	// Harness registry: named ways of working (claude built in, more via
-	// settings). The built-in claude command stays the manager's configured
-	// startup command, so the existing setting and folder rules keep working.
-	mgr.Harnesses = harness.New(st, mgr.DefaultStartupCommand)
+	// settings). It is the single source of what a pane runs; the migration
+	// folds the retired default-startup-command and raw-command folder rules
+	// into it. Loud-not-fatal: a failed conversion leaves the legacy keys, so
+	// the next start retries.
+	mgr.Harnesses = harness.New(st)
+	if err := mgr.Harnesses.MigrateLegacyStartupSettings(mgr.GuessHarness); err != nil {
+		log.Printf("harness: migrating legacy startup settings failed (will retry next start): %v", err)
+	}
 
 	// Built-in peers bus: pane env gets the bearer token (must be wired before
 	// any pane is created), pane-less sessions discover url+token via the info

@@ -9,10 +9,10 @@ import SwiftUI
 /// can nest below the root — the back button walks up, and **Add** creates the
 /// hosted session from the selected folder.
 struct HostedProjectPickerView: View {
-    /// Second argument: a one-off startup-command override (nil = the daemon
-    /// resolves it from per-folder rules / the Settings default). Third: the host
-    /// label to create on ("" = the hub / single-host default).
-    let onPick: (DaemonProject, String?, String) -> Void
+    /// Second argument: a one-off raw startup command ("" = a bare shell; the
+    /// pane's harness bar then offers what to start). Third: the host label to
+    /// create on ("" = the hub / single-host default).
+    let onPick: (DaemonProject, String, String) -> Void
     let onCancel: () -> Void
 
     @State private var phase: Phase = .loading
@@ -22,7 +22,6 @@ struct HostedProjectPickerView: View {
     @State private var filter = ""
     @State private var selection: DaemonProject.ID?
     @State private var commandOverride = ""
-    @State private var defaultCommand = ""
     @State private var selectedHost = ""              // "" until hosts load (federation)
     private let hosts = RemoteSessionService.shared.hostList
 
@@ -53,7 +52,6 @@ struct HostedProjectPickerView: View {
         .task {
             selectedHost = RemoteSessionService.shared.defaultCreateHost
             await load(path: "")
-            defaultCommand = (try? await RemoteSessionService.shared.fetchSettings())?.startupCommand ?? ""
         }
     }
 
@@ -163,15 +161,14 @@ struct HostedProjectPickerView: View {
             TextField(overridePlaceholder, text: $commandOverride)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11, design: .monospaced))
-                .help("One-off startup command for this workspace; empty uses the daemon's default (per-folder rules apply).")
+                .help("One-off raw startup command for this workspace; empty opens a shell and the pane's harness bar offers what to start.")
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
                 Button("Add") {
                     if let project = selectedProject {
-                        let trimmed = commandOverride.trimmingCharacters(in: .whitespaces)
-                        onPick(project, trimmed.isEmpty ? nil : trimmed, selectedHost)
+                        onPick(project, commandOverride.trimmingCharacters(in: .whitespaces), selectedHost)
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -181,9 +178,7 @@ struct HostedProjectPickerView: View {
     }
 
     private var overridePlaceholder: String {
-        defaultCommand.isEmpty
-            ? "startup command — empty = default"
-            : "startup command — empty = default (\(defaultCommand))"
+        "startup command — empty = shell (pick a harness in the workspace)"
     }
 
     private func centered<V: View>(@ViewBuilder _ inner: () -> V) -> some View {

@@ -54,7 +54,7 @@
       <p id="project-status" class="status hidden"></p>
       <ul id="project-list" class="project-list"></ul>
       <input id="project-cmd" class="setting-input project-cmd" type="text" spellcheck="false"
-             autocomplete="off" placeholder="startup command — empty = default">
+             autocomplete="off" placeholder="startup command — empty = shell (pick a harness in the workspace)">
       <input id="project-group" class="setting-input project-cmd" type="text" spellcheck="false"
              autocomplete="off" list="project-group-options"
              placeholder="window group — empty = auto">
@@ -101,22 +101,12 @@
         <button id="settings-close" title="Close">&times;</button>
       </header>
       <nav id="settings-tabs" class="settings-tabs">
-        <button class="settings-tab active" data-page="general" type="button">General</button>
-        <button class="settings-tab" data-page="accounts" type="button">Accounts</button>
+        <button class="settings-tab active" data-page="accounts" type="button">Accounts</button>
         <button class="settings-tab" data-page="harnesses" type="button">Harnesses</button>
         <button class="settings-tab" data-page="notifications" type="button">Notifications</button>
       </nav>
       <div class="settings-body">
-        <section class="settings-page" data-page="general">
-          <label class="setting-label" for="startup-cmd">New workspace startup command</label>
-          <input id="startup-cmd" class="setting-input" type="text" spellcheck="false"
-                 placeholder="claude …" autocomplete="off">
-          <label class="setting-label">Per-folder overrides (longest match wins)</label>
-          <div id="startup-rules" class="rules-list"></div>
-          <button id="startup-rule-add" class="rule-add" type="button">+ Add folder rule</button>
-          <p id="startup-cmd-state" class="hint setting-hint"></p>
-        </section>
-        <section class="settings-page hidden" data-page="accounts">
+        <section class="settings-page" data-page="accounts">
           <label class="setting-label" for="llm-route">Default account (all panes)</label>
           <select id="llm-route" class="setting-input"></select>
           <p id="llm-route-state" class="hint setting-hint"></p>
@@ -128,6 +118,9 @@
         <section class="settings-page hidden" data-page="harnesses">
           <div id="harness-list" class="rules-list"></div>
           <button id="harness-add" class="rule-add" type="button">+ Add harness</button>
+          <label class="setting-label">Per-folder default harness (longest match wins)</label>
+          <div id="harness-rules" class="rules-list"></div>
+          <button id="harness-rule-add" class="rule-add" type="button">+ Add folder rule</button>
           <p id="harness-state" class="hint setting-hint"></p>
         </section>
         <section class="settings-page hidden" data-page="notifications">

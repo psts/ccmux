@@ -421,15 +421,12 @@ func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.stampShared(s.mgr.List()))
 }
 
-// getSettings/putSettings expose the daemon-wide lens settings: the global
-// new-workspace startup command plus per-folder rules. Setting the command to
-// "" resets to the built-in default, which GET always reports resolved. An
-// optional ?repoPath= adds resolvedStartupCommand — what a workspace created
-// there would actually run — for creation-time previews in the pickers.
+// getSettings/putSettings expose the daemon-wide lens settings. What a pane
+// runs is entirely the harness registry's business: the resolved harness list,
+// the per-folder preselect rules, and — with an optional ?repoPath= — the
+// resolvedHarness a picker should preselect for a workspace created there.
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
-		"startupCommand": s.mgr.DefaultStartupCommand(),
-		"startupRules":   s.mgr.StartupRules(),
 		// The host owner's login. Not write-only like the alias logins: the whole
 		// point of the owner is to be shown — it labels this host's sessions in
 		// every lens (see docs/multitenant-plan.md).
@@ -483,14 +480,18 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp["harnesses"] = hs
-	}
-	if repo := r.URL.Query().Get("repoPath"); repo != "" {
-		cmd := s.mgr.StartupCommandFor(repo)
-		resp["resolvedStartupCommand"] = cmd
-		if s.mgr.Harnesses != nil {
+		// Per-folder preselect rules. Same read-failure rule as the list: a
+		// blank rules editor that then saves would wipe the rules.
+		rules, err := s.mgr.Harnesses.Rules()
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		resp["harnessRules"] = rules
+		if repo := r.URL.Query().Get("repoPath"); repo != "" {
 			// What a picker preselects for a workspace created there. The rule
 			// SUGGESTS; nothing auto-starts (see docs: empty-with-preselect).
-			resp["resolvedHarness"] = s.resolvedHarnessFor(cmd)
+			resp["resolvedHarness"] = s.mgr.Harnesses.PreselectFor(repo)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -512,8 +513,6 @@ func (s *Server) devCertStatus() string {
 // settingsRequest is the PUT body. Every field is a pointer so an absent key
 // means "leave this alone" rather than "set it to the zero value".
 type settingsRequest struct {
-	StartupCommand   *string                `json:"startupCommand"`
-	StartupRules     *[]manager.StartupRule `json:"startupRules"`
 	DevDomain        *string                `json:"devDomain"`
 	LensHostname     *string                `json:"lensHostname"`
 	CloudflareToken  *string                `json:"cloudflareToken"`
@@ -532,6 +531,10 @@ type settingsRequest struct {
 	// GET reports the resolved list with the built-in claude included; an
 	// entry named "claude" here overrides that built-in.
 	Harnesses *[]harness.Harness `json:"harnesses"`
+	// Per-folder preselect rules; the list replaces wholly. The retired
+	// startupCommand/startupRules keys decode into nothing here and are
+	// silently ignored — the compat contract an old lens's saves rely on.
+	HarnessRules *[]harness.Rule `json:"harnessRules"`
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -590,10 +593,10 @@ func (s *Server) rejectSettings(req settingsRequest) (string, bool) {
 			return msg, false
 		}
 	}
+	if (req.Harnesses != nil || req.HarnessRules != nil) && s.mgr.Harnesses == nil {
+		return "harnesses are not available on this daemon", false
+	}
 	if req.Harnesses != nil {
-		if s.mgr.Harnesses == nil {
-			return "harnesses are not available on this daemon", false
-		}
 		if msg := s.mgr.Harnesses.Reject(*req.Harnesses); msg != "" {
 			return msg, false
 		}
@@ -621,7 +624,6 @@ func (s *Server) applySettings(req settingsRequest) error {
 		{req.LensHostname, s.mgr.SetLensHostname},
 		{req.CloudflareToken, s.mgr.SetCloudflareToken},
 		{req.TailscaleAuthKey, s.mgr.SetTailscaleAuthKey},
-		{req.StartupCommand, func(v string) error { return s.mgr.SetDefaultStartupCommand(strings.TrimSpace(v)) }},
 		{req.Owner, s.mgr.SetOwner},
 	}
 	for _, f := range strs {
@@ -647,8 +649,8 @@ func (s *Server) applySettings(req settingsRequest) error {
 			return err
 		}
 	}
-	if req.StartupRules != nil {
-		return s.mgr.SetStartupRules(*req.StartupRules)
+	if req.HarnessRules != nil {
+		return s.mgr.Harnesses.SetRules(*req.HarnessRules)
 	}
 	return nil
 }
@@ -742,10 +744,11 @@ type createWorkspaceReq struct {
 	Name     string `json:"name"`
 	RepoPath string `json:"repoPath"`
 	CWD      string `json:"cwd"`
-	// StartupCommand is a pointer so lenses can OMIT it to get the daemon's
-	// configured default; an explicit "" still means "no command, bare shell".
-	StartupCommand *string `json:"startupCommand"`
-	CreatedBy      string  `json:"createdBy"`
+	// StartupCommand is what the first pane runs; omitted or "" means a bare
+	// shell — the lens preselects a harness via resolvedHarness instead of
+	// the daemon typing anything (empty-with-preselect).
+	StartupCommand string `json:"startupCommand"`
+	CreatedBy      string `json:"createdBy"`
 	// Group is the shared sidebar group ("window") the workspace starts in;
 	// "" lets the first Mac window adopt it.
 	Group string `json:"group"`
@@ -760,11 +763,7 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "repoPath required")
 		return
 	}
-	startupCmd := s.mgr.StartupCommandFor(req.RepoPath)
-	if req.StartupCommand != nil {
-		startupCmd = *req.StartupCommand
-	}
-	ws, err := s.mgr.CreateWorkspace(req.Name, req.RepoPath, req.CWD, startupCmd, req.CreatedBy, req.Group)
+	ws, err := s.mgr.CreateWorkspace(req.Name, req.RepoPath, req.CWD, req.StartupCommand, req.CreatedBy, req.Group)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

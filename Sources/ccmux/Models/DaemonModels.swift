@@ -70,14 +70,12 @@ struct DaemonHost: Decodable, Identifiable {
     }
 }
 
-/// A daemon workspace = one tmux session, N panes. GET /v1/workspaces returns these.
-/// Daemon-wide lens settings (GET/PUT /v1/settings): the startup command typed
-/// into a new hosted workspace's first pane, per-folder overrides (longest
-/// matching pathPrefix wins), and the dev-hostname serving config. Secrets are
-/// write-only on the daemon: GET carries only the `…Set` presence flags.
+/// Daemon-wide lens settings (GET/PUT /v1/settings): the dev-hostname serving
+/// config, llm accounts, and the harness registry — the single source of what
+/// a pane runs — with its per-folder preselect rules (longest matching
+/// pathPrefix wins). Secrets are write-only on the daemon: GET carries only
+/// the `…Set` presence flags.
 struct DaemonSettings: Codable {
-    var startupCommand: String
-    var startupRules: [DaemonStartupRule]
     /// Custom dev domain (e.g. "dev.sanlabs.io"); "" = ts.net fallback mode.
     var devDomain: String
     /// Reserved label serving the ccmux web lens under the dev domain
@@ -95,20 +93,23 @@ struct DaemonSettings: Codable {
     /// Live per-account health from the proxy (limits, usage percentages);
     /// absent on older daemons.
     var llmAccountStatus: [DaemonLLMAccountStatus]
-    /// The daemon-resolved harness list (builtin + detected + user entries).
+    /// The daemon-resolved harness list (builtin + detected + user entries)
+    /// and the per-folder preselect rules.
     var harnesses: [DaemonHarness]
-    /// Whether this daemon's settings carried the llm/harness keys at all — an
-    /// older daemon omits them AND would 400 a write that includes them, so
-    /// the editors must not send what the daemon never offered.
+    var harnessRules: [DaemonHarnessRule]
+    /// Whether this daemon's settings carried the llm/harness keys at all —
+    /// an older daemon omits them and silently DROPS a write that includes
+    /// them (unknown JSON keys are ignored, not 400d), so the editors must
+    /// not send what the daemon never offered: the save would fake success.
     var supportsLLM: Bool
     var supportsHarnesses: Bool
+    var supportsHarnessRules: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         supportsLLM = c.contains(.llmRoute) || c.contains(.llmAccounts)
         supportsHarnesses = c.contains(.harnesses)
-        startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand) ?? ""
-        startupRules = try c.decodeIfPresent([DaemonStartupRule].self, forKey: .startupRules) ?? []
+        supportsHarnessRules = c.contains(.harnessRules)
         devDomain = try c.decodeIfPresent(String.self, forKey: .devDomain) ?? ""
         lensHostname = try c.decodeIfPresent(String.self, forKey: .lensHostname) ?? ""
         cloudflareTokenSet = try c.decodeIfPresent(Bool.self, forKey: .cloudflareTokenSet) ?? false
@@ -118,6 +119,7 @@ struct DaemonSettings: Codable {
         llmAccounts = try c.decodeIfPresent([DaemonLLMAccount].self, forKey: .llmAccounts) ?? []
         llmAccountStatus = try c.decodeIfPresent([DaemonLLMAccountStatus].self, forKey: .llmAccountStatus) ?? []
         harnesses = try c.decodeIfPresent([DaemonHarness].self, forKey: .harnesses) ?? []
+        harnessRules = try c.decodeIfPresent([DaemonHarnessRule].self, forKey: .harnessRules) ?? []
     }
 }
 
@@ -218,9 +220,11 @@ struct DaemonHostname: Codable, Identifiable, Equatable {
     }
 }
 
-struct DaemonStartupRule: Codable {
+/// One per-folder preselect rule: workspaces created under pathPrefix suggest
+/// this harness on their harness bar. A suggestion only — nothing auto-starts.
+struct DaemonHarnessRule: Codable {
     var pathPrefix: String
-    var command: String
+    var harness: String
 }
 
 /// One SHARED window from GET /v1/windows: the same arrangement for everyone;
@@ -416,6 +420,11 @@ struct DaemonPane: Codable, Identifiable {
     /// exactly why it needs saying: nothing else tells it apart from a working
     /// session, so a dead teammate reads as a live one until you click into it.
     var dormant: Bool
+    /// The harness this pane runs ("" for a plain shell) and whether its
+    /// foreground is a bare shell right now — together they drive the harness
+    /// bar: a shell pane with no harness gets offered "start here".
+    var harness: String
+    var atShell: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -428,6 +437,8 @@ struct DaemonPane: Codable, Identifiable {
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
         devServer = try c.decodeIfPresent(Bool.self, forKey: .devServer) ?? false
         dormant = try c.decodeIfPresent(Bool.self, forKey: .dormant) ?? false
+        harness = try c.decodeIfPresent(String.self, forKey: .harness) ?? ""
+        atShell = try c.decodeIfPresent(Bool.self, forKey: .atShell) ?? false
     }
 }
 

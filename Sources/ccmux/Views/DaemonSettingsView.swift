@@ -1,15 +1,15 @@
 import SwiftUI
 
-/// The app's Settings window content: edits the DAEMON-wide new-workspace
-/// startup command and its per-folder overrides. The daemon is the single
-/// source of truth (the web lens edits the same values), so this view is a
-/// thin editor over GET/PUT /v1/settings — nothing is stored app-side.
+/// The app's Settings window content: edits the DAEMON-wide settings —
+/// identity, llm accounts, the harness registry with its per-folder preselect
+/// rules, dev hostnames. The daemon is the single source of truth (the web
+/// lens edits the same values), so this view is a thin editor over GET/PUT
+/// /v1/settings — nothing is stored app-side.
 struct DaemonSettingsView: View {
     /// Called after a fully successful save (cert ready when a domain is set);
     /// the owner closes the window.
     var onDone: (() -> Void)?
 
-    @State private var command = ""
     @State private var identity = ""
     @State private var rules: [EditableRule] = []
     @State private var status = ""
@@ -29,6 +29,7 @@ struct DaemonSettingsView: View {
     @State private var harnesses: [EditableHarness] = []
     @State private var supportsLLM = false
     @State private var supportsHarnesses = false
+    @State private var supportsHarnessRules = false
 
     /// Stands in for a stored secret the daemon never echoes back: renders as
     /// dots so the field doesn't look mysteriously wiped after save. Untouched
@@ -38,7 +39,7 @@ struct DaemonSettingsView: View {
     struct EditableRule: Identifiable {
         let id = UUID()
         var pathPrefix: String
-        var command: String
+        var harness: String
     }
 
     struct EditableAccount: Identifiable {
@@ -93,8 +94,6 @@ struct DaemonSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 identitySection
-                startupSection
-                rulesSection
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -123,24 +122,15 @@ struct DaemonSettingsView: View {
         }
     }
 
-    private var startupSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("New workspace startup command")
-                .font(.headline)
-            Text("Typed into every new hosted workspace's terminal, in every lens. Clear it to reset to the built-in default.")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-            TextField("claude …", text: $command)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-        }
-    }
-
+    /// Which harness a new workspace under a folder PRESELECTS on its harness
+    /// bar. A rule may name a harness deleted in this session — the picker
+    /// keeps the name visible so the row stays editable; the daemon falls back
+    /// to claude when resolving it.
     private var rulesSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Per-folder overrides")
+            Text("Per-folder default harness")
                 .font(.headline)
-            Text("Repos under a folder use its command instead; the longest matching folder wins.")
+            Text("New workspaces under a folder preselect this harness (nothing auto-starts); the longest matching folder wins.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
             ForEach($rules) { $rule in
@@ -149,9 +139,13 @@ struct DaemonSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11, design: .monospaced))
                         .frame(minWidth: 220)
-                    TextField("command", text: $rule.command)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11, design: .monospaced))
+                    Picker("", selection: $rule.harness) {
+                        ForEach(ruleHarnessNames(current: rule.harness), id: \.self) { name in
+                            Text(name).tag(name)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(minWidth: 120)
                     Button {
                         rules.removeAll { $0.id == rule.id }
                     } label: {
@@ -163,10 +157,19 @@ struct DaemonSettingsView: View {
                 }
             }
             Button("Add folder rule") {
-                rules.append(EditableRule(pathPrefix: "", command: ""))
+                rules.append(EditableRule(pathPrefix: "", harness: harnesses.first?.name ?? "claude"))
             }
             .controlSize(.small)
         }
+    }
+
+    /// The current harness names, plus the rule's own name when it points at
+    /// one that no longer exists (a Picker with a selection outside its
+    /// options renders empty and silently rewrites on first touch).
+    private func ruleHarnessNames(current: String) -> [String] {
+        var names = harnesses.map(\.name).filter { !$0.isEmpty }
+        if !current.isEmpty && !names.contains(current) { names.append(current) }
+        return names
     }
 
     private var devHostnamesSection: some View {
@@ -316,6 +319,10 @@ struct DaemonSettingsView: View {
                         icon: "", name: "", command: "", autoconfirm: false, source: "", orig: []))
                 }
                 .controlSize(.small)
+                if supportsHarnessRules {
+                    rulesSection
+                        .padding(.top, 8)
+                }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -428,22 +435,23 @@ struct DaemonSettingsView: View {
         if !llmRoute.isEmpty && !accounts.contains(where: { $0.name == llmRoute }) {
             llmRoute = ""
         }
-        let outgoing = rules.map { DaemonStartupRule(pathPrefix: $0.pathPrefix, command: $0.command) }
+        let outgoing = rules.map { DaemonHarnessRule(pathPrefix: $0.pathPrefix, harness: $0.harness) }
         let result = await RemoteSessionService.shared.updateSettings(
-            startupCommand: command, startupRules: outgoing,
             devDomain: devDomain, lensHostname: lensHostname,
             cloudflareToken: outgoingSecret(cloudflareToken, wasSet: cloudflareTokenSet),
             tailscaleAuthKey: outgoingSecret(tailscaleAuthKey, wasSet: tailscaleAuthKeySet),
-            // Only what the daemon offered: an older daemon 400s unknown llm
-            // and harness fields, and this Mac may front several hosts.
+            // Only what the daemon offered: an older daemon silently DROPS
+            // unknown llm/harness fields (never a 400), so sending them would
+            // fake a save — and this Mac may front several hosts.
             llmRoute: supportsLLM ? llmRoute : nil,
             llmAccounts: supportsLLM ? outgoingAccounts() : nil,
-            harnesses: supportsHarnesses ? outgoingHarnesses() : nil)
+            harnesses: supportsHarnesses ? outgoingHarnesses() : nil,
+            harnessRules: supportsHarnessRules ? outgoing : nil)
         guard let saved = result.settings else {
             status = "✗ \(result.error ?? "Couldn't save — is the daemon running?")"
             return
         }
-        apply(saved) // show the resolved command + the rules that survived validation
+        apply(saved) // show the rules that survived validation
         if !saved.devDomain.isEmpty && !isCertVerdict(saved.devCertStatus) {
             status = "Issuing wildcard cert — usually well under a minute…"
             devCertStatus = await pollCertStatus()
@@ -507,10 +515,10 @@ struct DaemonSettingsView: View {
     }
 
     private func apply(_ settings: DaemonSettings) {
-        command = settings.startupCommand
-        rules = settings.startupRules.map { EditableRule(pathPrefix: $0.pathPrefix, command: $0.command) }
+        rules = settings.harnessRules.map { EditableRule(pathPrefix: $0.pathPrefix, harness: $0.harness) }
         supportsLLM = settings.supportsLLM
         supportsHarnesses = settings.supportsHarnesses
+        supportsHarnessRules = settings.supportsHarnessRules
         llmRoute = settings.llmRoute
         accountStatus = Dictionary(uniqueKeysWithValues: settings.llmAccountStatus.map { ($0.name, $0) })
         accounts = settings.llmAccounts.map {

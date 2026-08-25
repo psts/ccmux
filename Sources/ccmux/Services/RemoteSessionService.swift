@@ -56,6 +56,22 @@ final class RemoteSessionService: ObservableObject {
     @Published private(set) var devRunning: [UUID: Bool] = [:]
     /// Stored dev-command override per workspace ("" = daemon detects).
     private(set) var devCommands: [UUID: String] = [:]
+    /// Per-pane shell state for the harness bar (pane id → state), fed each
+    /// reconcile — the 4s poll plus the `workspace-status` firehose event the
+    /// daemon publishes on exactly these flips.
+    @Published private(set) var paneShell: [String: PaneShellState] = [:]
+    /// Which app workspace a hosted pane belongs to (harness-bar lookups).
+    private var paneWorkspace: [String: UUID] = [:]
+    /// The harness a folder rule preselects for each workspace ("claude" when
+    /// no rule matches) — the bar's suggested button for fresh shells.
+    private(set) var resolvedHarnessByWorkspace: [UUID: String] = [:]
+
+    struct PaneShellState {
+        var harness: String
+        var atShell: Bool
+        var dormant: Bool
+        var devServer: Bool
+    }
 
     private var attachments: [UUID: WorkspaceAttachment] = [:]
     private var paneSignatures: [UUID: [String]] = [:]
@@ -415,8 +431,8 @@ final class RemoteSessionService: ObservableObject {
         return try JSONDecoder().decode(DaemonProjectList.self, from: data)
     }
 
-    /// Fetch the daemon-wide lens settings (new-workspace startup command +
-    /// per-folder rules).
+    /// Fetch the daemon-wide lens settings (identity, dev hostnames, llm
+    /// accounts, harnesses + per-folder preselect rules).
     func fetchSettings() async throws -> DaemonSettings {
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else {
             throw URLError(.badURL)
@@ -431,16 +447,14 @@ final class RemoteSessionService: ObservableObject {
     /// tailscaleAuthKey) are write-only: pass a value to replace, "" to clear.
     @discardableResult
     func updateSettings(
-        startupCommand: String? = nil, startupRules: [DaemonStartupRule]? = nil,
         devDomain: String? = nil, lensHostname: String? = nil,
         cloudflareToken: String? = nil, tailscaleAuthKey: String? = nil,
         llmRoute: String? = nil, llmAccounts: [[String: Any]]? = nil,
-        harnesses: [[String: Any]]? = nil
+        harnesses: [[String: Any]]? = nil, harnessRules: [DaemonHarnessRule]? = nil
     ) async -> (settings: DaemonSettings?, error: String?) {
         var body: [String: Any] = [:]
-        if let startupCommand { body["startupCommand"] = startupCommand }
-        if let startupRules {
-            body["startupRules"] = startupRules.map { ["pathPrefix": $0.pathPrefix, "command": $0.command] }
+        if let harnessRules {
+            body["harnessRules"] = harnessRules.map { ["pathPrefix": $0.pathPrefix, "harness": $0.harness] }
         }
         if let devDomain { body["devDomain"] = devDomain }
         if let lensHostname { body["lensHostname"] = lensHostname }
@@ -478,16 +492,17 @@ final class RemoteSessionService: ObservableObject {
 
     /// Create a hosted workspace and return its app-side id (nil on failure), so
     /// the creating window can claim it into its sidebar group.
-    /// startupCommand nil = OMIT the field, so the daemon applies its configured
-    /// default (the Settings-editable command); "" explicitly means a bare shell.
+    /// startupCommand "" (the default) means a bare shell — the pane's harness
+    /// bar then offers what to start (empty-with-preselect, like the web lens).
+    /// Sent explicitly so old daemons don't type their retired default either.
     @discardableResult
-    func createWorkspace(host: String = "", name: String, repoPath: String, cwd: String? = nil, startupCommand: String? = nil) async -> UUID? {
-        var body: [String: Any] = [
+    func createWorkspace(host: String = "", name: String, repoPath: String, cwd: String? = nil, startupCommand: String = "") async -> UUID? {
+        let body: [String: Any] = [
             "name": name, "repoPath": repoPath,
             "cwd": cwd ?? repoPath,
             "createdBy": DaemonConfig.selfUser,
+            "startupCommand": startupCommand,
         ]
-        if let startupCommand { body["startupCommand"] = startupCommand }
         // Federation: create on the chosen host (self runs local at the hub).
         let base = host.isEmpty ? "/v1/workspaces" : "/v1/hosts/\(host)/workspaces"
         guard let url = URL(string: "\(DaemonConfig.baseURL)\(base)") else { return nil }
@@ -568,18 +583,25 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// The settings slice the tab bar needs: the harness list for the picker,
-    /// plus the llm accounts and routes for the per-pane route menu.
+    /// the folder-rule preselect for the harness bar, plus the llm accounts
+    /// and routes for the per-pane route menu.
     struct TabBarSettings: Codable {
         var harnesses: [DaemonHarness]?
+        var resolvedHarness: String?
         var llmAccounts: [DaemonLLMAccount]?
         var llmRoute: String?
         var llmPaneRoutes: [String: String]?
     }
 
     /// nil on any failure — the pickers simply stay empty rather than
-    /// offering stale names.
-    private func fetchTabBarSettings() async -> TabBarSettings? {
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
+    /// offering stale names. repoPath makes the daemon include the folder
+    /// rules' resolvedHarness for a workspace there.
+    private func fetchTabBarSettings(repoPath: String = "") async -> TabBarSettings? {
+        var comps = URLComponents(string: "\(DaemonConfig.baseURL)/v1/settings")
+        if !repoPath.isEmpty {
+            comps?.queryItems = [URLQueryItem(name: "repoPath", value: repoPath)]
+        }
+        guard let url = comps?.url else { return nil }
         do {
             let (data, resp) = try await session.data(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
@@ -587,6 +609,31 @@ final class RemoteSessionService: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    /// What the harness bar over a pane should offer, or nil for no bar: only
+    /// a live shell (fresh or dormant) that isn't the dev-server pane gets
+    /// one. `suggested` is the pane's own harness (a dormant pane restarts
+    /// what it ran) or the folder rule's preselect for fresh shells.
+    func harnessOffer(forPane paneId: String) -> (harnesses: [DaemonHarness], suggested: String, restart: Bool)? {
+        guard let shell = paneShell[paneId], !shell.devServer, shell.atShell || shell.dormant,
+              let appId = paneWorkspace[paneId],
+              let list = controllers[appId]?.harnesses, !list.isEmpty
+        else { return nil }
+        let suggested = shell.harness.isEmpty
+            ? (resolvedHarnessByWorkspace[appId] ?? "claude") : shell.harness
+        return (list, suggested, !shell.harness.isEmpty)
+    }
+
+    /// Start a harness IN an existing pane (the harness bar's click) — the
+    /// daemon types that harness's command into the pane's live shell and
+    /// re-records the pane's kind. Returns the daemon's error text, nil on
+    /// success.
+    func startHarness(paneId: String, name: String) async -> String? {
+        let error = await sendReportingError(
+            "POST", path: "/v1/panes/\(paneId)/harness", body: ["harness": name], expect: 200)
+        if error == nil { await refresh() }
+        return error
     }
 
     /// Kill a hosted pane on the daemon (a hosted tab's ✕ — the tab is already
@@ -790,6 +837,22 @@ final class RemoteSessionService: ObservableObject {
                 return m
             }()
             claude.apply(isRunning: dw.panes.contains { $0.attention == .running })
+            applyPaneShell(dw, appId: appId)
+        }
+    }
+
+    /// Fold this workspace's pane list into the harness-bar state, dropping
+    /// entries for panes that no longer exist there.
+    private func applyPaneShell(_ dw: DaemonWorkspace, appId: UUID) {
+        let liveIds = Set(dw.panes.map(\.id))
+        for (paneId, ws) in paneWorkspace where ws == appId && !liveIds.contains(paneId) {
+            paneShell.removeValue(forKey: paneId)
+            paneWorkspace.removeValue(forKey: paneId)
+        }
+        for p in dw.panes {
+            paneWorkspace[p.id] = appId
+            paneShell[p.id] = PaneShellState(
+                harness: p.harness, atShell: p.atShell, dormant: p.dormant, devServer: p.devServer)
         }
     }
 
@@ -841,15 +904,16 @@ final class RemoteSessionService: ObservableObject {
         controller.onHostedHarnessRequest = { [weak self] leafId, name in
             Task { await self?.placeSpawnedTerminal(appId: appId, leafId: leafId, direction: nil, harness: name) }
         }
-        // Feed the harness picker and the per-pane route menu; a fetch
-        // failure just leaves both menus empty.
+        // Feed the harness picker/bar and the per-pane route menu; a fetch
+        // failure just leaves the menus empty and the bar hidden.
         Task { [weak self, weak controller] in
-            if let s = await self?.fetchTabBarSettings(), let controller {
+            if let s = await self?.fetchTabBarSettings(repoPath: dw.repoPath), let controller {
                 await MainActor.run {
                     controller.harnesses = s.harnesses ?? []
                     controller.llmAccounts = (s.llmAccounts ?? []).map(\.name)
                     controller.llmGlobalRoute = s.llmRoute ?? ""
                     controller.llmPaneRoutes = s.llmPaneRoutes ?? [:]
+                    self?.resolvedHarnessByWorkspace[appId] = s.resolvedHarness ?? "claude"
                 }
             }
         }
@@ -915,6 +979,11 @@ final class RemoteSessionService: ObservableObject {
         hostnames.removeValue(forKey: appId)
         devRunning.removeValue(forKey: appId)
         devCommands.removeValue(forKey: appId)
+        resolvedHarnessByWorkspace.removeValue(forKey: appId)
+        for (paneId, ws) in paneWorkspace where ws == appId {
+            paneShell.removeValue(forKey: paneId)
+            paneWorkspace.removeValue(forKey: paneId)
+        }
         workspaces.removeAll { $0.id == appId }
     }
 

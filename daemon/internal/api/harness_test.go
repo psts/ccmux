@@ -37,7 +37,7 @@ func harnessStack(t *testing.T) (*manager.Manager, string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	mgr := manager.New(ctx, tsrv, st)
-	mgr.Harnesses = harness.New(st, mgr.DefaultStartupCommand)
+	mgr.Harnesses = harness.New(st)
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("manager start: %v", err)
 	}

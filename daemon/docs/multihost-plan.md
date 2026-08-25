@@ -198,8 +198,8 @@ pane thin-clients connect to the *local* daemon's `/v1/peers/ws`). Federated:
   |---|---|
   | `dev_domain` | global, singular |
   | `cloudflare_token` | hub-only |
-  | `startup_command` | global default + host override |
-  | `startup_rules` | host-local (keyed by host repo paths) |
+  | `harnesses` | global default + host override |
+  | `harness_rules` | host-local (keyed by host repo paths) |
   | `tailscale_authkey` | host-local |
   | `-projects-root` (launch flag) | host-local |
 
