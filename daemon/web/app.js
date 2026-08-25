@@ -1310,14 +1310,49 @@ function wireLLMSettings() {
       `<div class="entry-line">` +
       `<input class="setting-input llm-key grow" type="password" autocomplete="off" placeholder="token / api key: ${esc(keyHint)}">` +
       `<input class="setting-input llm-aliases grow" type="text" spellcheck="false" placeholder="aliases: claude-haiku-*=qwen3-4b-32k" value="${esc(aliases)}">` +
+      `<select class="setting-input llm-model-pick" title="List the upstream's models; picking one maps every claude-* request to it">` +
+      `<option value="">map claude → …</option></select>` +
       `</div>` +
       (status ? `<div class="entry-line llm-acct-status">${esc(status)}</div>` : "");
-    for (const el of row.querySelectorAll("input, select")) {
+    for (const el of row.querySelectorAll("input, select:not(.llm-model-pick)")) {
       el.addEventListener("change", saveAccounts);
       el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
     }
+    // Picking a model rewrites the alias field (claude-* rules replaced,
+    // custom rules kept) and saves; the picker snaps back to its label.
+    row.querySelector(".llm-model-pick").addEventListener("change", (e) => {
+      const model = e.target.value;
+      if (!model) return;
+      const field = row.querySelector(".llm-aliases");
+      const kept = parseAliases(field.value).filter((x) => !x.from.startsWith("claude-"));
+      field.value = kept.concat([{ from: "claude-*", to: model }])
+        .map((x) => `${x.from}=${x.to}`).join(", ");
+      e.target.value = "";
+      saveAccounts();
+    });
     row.querySelector(".rule-del").onclick = () => { row.remove(); saveAccounts(); };
     return row;
+  }
+
+  // Fill each SAVED account's model picker from its upstream's /v1/models
+  // (Ollama's list of pulled models, OpenRouter's catalog, …). An upstream
+  // that doesn't answer just leaves that picker with its placeholder.
+  async function populateModelPicks() {
+    for (const row of box.querySelectorAll(".entry-card")) {
+      const name = row.querySelector(".llm-name").value.trim();
+      const sel = row.querySelector(".llm-model-pick");
+      if (!name || !sel) continue;
+      try {
+        const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(name)}/models`);
+        if (!r.ok) continue;
+        for (const m of (await r.json()).models || []) {
+          const o = document.createElement("option");
+          o.value = m;
+          o.textContent = m;
+          sel.appendChild(o);
+        }
+      } catch (_) { /* placeholder stays */ }
+    }
   }
 
   // "from=to, from2=to2" — rows without an '=' are dropped as half-typed.
@@ -1371,6 +1406,7 @@ function wireLLMSettings() {
       box.innerHTML = "";
       for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a, stByName[a.name]));
       renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
+      populateModelPicks(); // fire-and-forget: pickers fill as upstreams answer
       statusEl.textContent = "Applies to every pane's next request — no restarts.";
     } catch (_) {
       statusEl.textContent = "Couldn't load LLM settings.";

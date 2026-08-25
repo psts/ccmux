@@ -43,6 +43,22 @@ func (s *Server) putPaneLLMRoute(w http.ResponseWriter, r *http.Request) {
 	s.respondPaneLLMRoute(w, paneID)
 }
 
+// llmAccountModels lists the models a named account's upstream serves — the
+// data behind the settings tab's alias-target picker. Upstream trouble is a
+// 502 with the reason; an unknown account a 404.
+func (s *Server) llmAccountModels(w http.ResponseWriter, r *http.Request) {
+	models, err := s.llm.UpstreamModels(r.PathValue("name"))
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, llmproxy.ErrUnknownAccount) {
+			code = http.StatusNotFound
+		}
+		writeError(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
 // rejectRouteDialect refuses a route whose account speaks the wrong protocol
 // for what the pane runs: codex talks OpenAI's Responses dialect, which only
 // a codex account's upstream serves, and a codex account serves nothing

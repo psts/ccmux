@@ -306,6 +306,9 @@ func (s *Server) Handler() http.Handler {
 		// host whose proxy actually resolves that pane.
 		mux.HandleFunc("GET /v1/panes/{id}/llm-route", s.scoped(s.getPaneLLMRoute))
 		mux.HandleFunc("PUT /v1/panes/{id}/llm-route", s.scoped(s.putPaneLLMRoute))
+		// What an account's upstream serves — the settings model picker asks
+		// this instead of making the user type model names blind.
+		mux.HandleFunc("GET /v1/llm/accounts/{name}/models", s.llmAccountModels)
 	}
 	if s.hubBus != nil {
 		// Registered only on a member host with hub discovery armed, so a hub or

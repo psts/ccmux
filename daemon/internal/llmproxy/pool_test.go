@@ -197,3 +197,35 @@ func TestParsePct(t *testing.T) {
 		}
 	}
 }
+
+// UpstreamModels asks an account's upstream for its /v1/models catalog with
+// the account's own credential attached.
+func TestUpstreamModels(t *testing.T) {
+	var gotAuth string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(404)
+			return
+		}
+		gotAuth = r.Header.Get("x-api-key")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3-4b-32k"},{"id":"gemma3"}]}`))
+	}))
+	defer up.Close()
+	s := New(fakeStore{})
+	accs := []Account{{Name: "local", Kind: "anthropic", BaseURL: up.URL, APIKey: "k"}}
+	_ = s.Apply(&accs, nil)
+
+	models, err := s.UpstreamModels("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || models[0] != "gemma3" || models[1] != "qwen3-4b-32k" {
+		t.Fatalf("models = %v, want sorted ids", models)
+	}
+	if gotAuth != "k" {
+		t.Fatalf("auth = %q, want the account key applied", gotAuth)
+	}
+	if _, err := s.UpstreamModels("ghost"); err == nil {
+		t.Fatal("unknown account must error")
+	}
+}
