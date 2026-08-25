@@ -70,24 +70,34 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
     private var lastSentCols = -1
     private var lastSentRows = -1
 
-    /// The daemon's authoritative width for this pane (0 until known). When it
-    /// diverges from what this view shows 1:1, another lens drove the shared pane
-    /// and `isStale` becomes true — the hosting view surfaces a "take over" control.
+    /// The daemon's authoritative size for this pane (0 until known). When either
+    /// dimension diverges from what this view shows 1:1, another lens drove the
+    /// shared pane and `isStale` becomes true — the hosting view surfaces a
+    /// "take over" control. Rows count as much as cols: a rows-only divergence
+    /// (same width, different height — a lens with a banner or tab bar) has no
+    /// wrapped text to give it away, just every cursor address landing on the
+    /// wrong line.
     private var paneCols = 0
+    private var paneRows = 0
     private(set) var isStale = false
     /// Fired (main thread) when isStale flips, so the service can publish it.
     var onStaleChanged: ((Bool) -> Void)?
 
-    /// Record the daemon's authoritative pane width (from a hello or pane-size frame)
+    /// Record the daemon's authoritative pane size (from a hello or pane-size frame)
     /// and re-evaluate staleness against this view's current grid.
     func setAuthoritativeSize(cols: Int, rows: Int) {
         paneCols = cols
+        paneRows = rows
         recomputeStale()
     }
 
     private func recomputeStale() {
-        let gridCols = terminalView.getTerminal().cols
-        let next = paneCols > 0 && gridCols > 0 && paneCols != gridCols
+        let t = terminalView.getTerminal()
+        // Each dimension only counts when both sides know it — an older daemon
+        // omits rows (0), and a zero must read as "unknown", never as "differs".
+        let colsDiffer = paneCols > 0 && t.cols > 0 && paneCols != t.cols
+        let rowsDiffer = paneRows > 0 && t.rows > 0 && paneRows != t.rows
+        let next = colsDiffer || rowsDiffer
         if next != isStale {
             isStale = next
             onStaleChanged?(next)
@@ -218,6 +228,7 @@ final class RemoteTermController: NSObject, TerminalViewDelegate {
         // We are driving the pane to our grid — reflect it immediately (the daemon's
         // pane-size broadcast confirms) so "take over" clears without a round-trip.
         paneCols = cols
+        paneRows = rows
         recomputeStale()
         attach?.send(.resize(pane: paneId, cols: cols, rows: rows))
     }
