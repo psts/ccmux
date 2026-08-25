@@ -180,7 +180,10 @@ func TestAccountKindsStamping(t *testing.T) {
 		return "", errors.New("not installed")
 	}
 	c, err := s.Resolve("claude")
-	if err != nil || len(c.AccountKinds) != 2 || c.AccountKinds[0] != "anthropic" || c.AccountKinds[1] != "claude" {
+	// Everything Anthropic-dialect serves claude: keyed org (anthropic),
+	// bearer gateways (openai), subscription tokens (claude). Only codex is
+	// a real dialect restriction.
+	if err != nil || len(c.AccountKinds) != 3 || c.AccountKinds[1] != "openai" {
 		t.Fatalf("claude kinds = %+v, %v", c.AccountKinds, err)
 	}
 	// A user override of codex (new command, field left empty) keeps codex's

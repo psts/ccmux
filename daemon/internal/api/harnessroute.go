@@ -3,8 +3,8 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
-	"slices"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -71,7 +71,7 @@ func (s *Server) llmRouteForHarness(h harness.Harness) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if slices.Contains(h.AccountKinds, globalKind) {
+	if kindAllowed(h.AccountKinds, globalKind) {
 		return "", nil
 	}
 	for _, k := range h.AccountKinds {
@@ -117,7 +117,11 @@ func (s *Server) clearForeignPaneRoute(paneID string, h harness.Harness) {
 		return
 	}
 	if !kindAllowed(h.AccountKinds, kind) {
-		_ = s.llm.SetPaneRoute(paneID, "")
+		if err := s.llm.SetPaneRoute(paneID, ""); err != nil {
+			// The decision was made and the write failed: without this line,
+			// the pane's every llm request fails on a cause nothing recorded.
+			log.Printf("llm: pane %s: could not clear stale %s route for %s start: %v", paneID, kind, h.Name, err)
+		}
 	}
 }
 

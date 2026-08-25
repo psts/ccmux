@@ -11,15 +11,15 @@ type AccountStatus struct {
 	Kind string `json:"kind"`
 	// State: "ok" (usable), "limited" (out of quota until LimitedUntil),
 	// "unauthorized" (credential rejected), "untried" (no traffic seen yet).
-	State        string  `json:"state"`
-	LimitedUntil string  `json:"limitedUntil,omitempty"`
-	SessionPct   float64 `json:"sessionPct"`
-	WeeklyPct    float64 `json:"weeklyPct"`
-	SessionReset string  `json:"sessionReset,omitempty"`
-	WeeklyReset  string  `json:"weeklyReset,omitempty"`
-	LastSeen     string  `json:"lastSeen,omitempty"`
-	LastStatus   int     `json:"lastStatus,omitempty"`
-	CredentialSet bool   `json:"credentialSet"`
+	State         string  `json:"state"`
+	LimitedUntil  string  `json:"limitedUntil,omitempty"`
+	SessionPct    float64 `json:"sessionPct"`
+	WeeklyPct     float64 `json:"weeklyPct"`
+	SessionReset  string  `json:"sessionReset,omitempty"`
+	WeeklyReset   string  `json:"weeklyReset,omitempty"`
+	LastSeen      string  `json:"lastSeen,omitempty"`
+	LastStatus    int     `json:"lastStatus,omitempty"`
+	CredentialSet bool    `json:"credentialSet"`
 }
 
 // Statuses reports every configured account's live health, in settings

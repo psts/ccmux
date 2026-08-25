@@ -1347,7 +1347,14 @@ function wireLLMSettings() {
       if (!name || !sel) continue;
       try {
         const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(name)}/models`);
-        if (!r.ok) continue;
+        if (!r.ok) {
+          // The backend reports WHY (upstream down, bad key, wrong URL) —
+          // an empty picker that hides the reason reads as a broken feature.
+          const msg = (await r.json().catch(() => ({}))).error || `HTTP ${r.status}`;
+          sel.title = "couldn't list models: " + msg;
+          sel.options[0].textContent = "models unavailable";
+          continue;
+        }
         const have = new Set([...sel.options].map((o) => o.value));
         for (const m of (await r.json()).models || []) {
           if (have.has(m)) continue; // the current mapping is already an option

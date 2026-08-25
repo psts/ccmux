@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func limitedUpstream(t *testing.T, hits *int, resetIn time.Duration) *httptest.S
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*hits++
 		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
-		w.Header().Set("anthropic-ratelimit-unified-reset", time.Now().Add(resetIn).UTC().Format(time.RFC3339))
+		w.Header().Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(time.Now().Add(resetIn).Unix(), 10))
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error"}}`))
 	}))
@@ -227,5 +228,71 @@ func TestUpstreamModels(t *testing.T) {
 	}
 	if _, err := s.UpstreamModels("ghost"); err == nil {
 		t.Fatal("unknown account must error")
+	}
+}
+
+// limitResetTime accepts every shape a limit response can name — the live
+// unix-seconds form first (that is what Anthropic sends), then RFC3339,
+// Retry-After, and a conservative default.
+func TestLimitResetTime(t *testing.T) {
+	now := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	hdr := func(k, v string) http.Header { h := http.Header{}; h.Set(k, v); return h }
+	cases := []struct {
+		h    http.Header
+		want time.Time
+	}{
+		{hdr("anthropic-ratelimit-unified-reset", "1787652000"), time.Unix(1787652000, 0)},
+		{hdr("anthropic-ratelimit-unified-reset", "2026-08-25T12:00:00Z"), time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)},
+		{hdr("Retry-After", "60"), now.Add(60 * time.Second)},
+		{http.Header{}, now.Add(5 * time.Minute)},
+	}
+	for i, c := range cases {
+		if got := limitResetTime(c.h, now); !got.Equal(c.want) {
+			t.Errorf("case %d = %v, want %v", i, got, c.want)
+		}
+	}
+}
+
+// The 401 lifecycle: a rejected credential passes through to the client,
+// demotes the account for the next request, and a later success through it
+// clears the flag.
+func TestUnauthorizedAccountLifecycle(t *testing.T) {
+	statusA := 401
+	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(statusA)
+	}))
+	defer upA.Close()
+	statusB := 200
+	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(statusB)
+	}))
+	defer upB.Close()
+	s := claudePoolService(t, upA.URL, upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	// 401 is not a limit: it surfaces to the client (claude must show the
+	// auth error), but the account is marked.
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want the 401 surfaced", resp.StatusCode)
+	}
+	sts, _ := s.Statuses()
+	if sts[0].State != "unauthorized" {
+		t.Fatalf("status a = %+v, want unauthorized", sts[0])
+	}
+	// Next request prefers the healthy account.
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want served by the healthy account", resp.StatusCode)
+	}
+	// B hits its limit, A's token was fixed out of band: the last-resort
+	// retry through A succeeds and clears the flag.
+	statusB = 429
+	statusA = 200
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want the last-resort account to answer", resp.StatusCode)
+	}
+	sts, _ = s.Statuses()
+	if sts[0].State != "ok" {
+		t.Fatalf("status a after success = %+v, want ok again", sts[0])
 	}
 }

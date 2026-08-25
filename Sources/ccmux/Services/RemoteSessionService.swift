@@ -568,9 +568,7 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// The settings slice the tab bar needs: the harness list for the picker,
-    /// plus the llm accounts and routes for the per-pane route menu. nil on
-    /// any failure — the pickers simply stay empty rather than offering
-    /// stale names.
+    /// plus the llm accounts and routes for the per-pane route menu.
     struct TabBarSettings: Codable {
         var harnesses: [DaemonHarness]?
         var llmAccounts: [DaemonLLMAccount]?
@@ -578,6 +576,8 @@ final class RemoteSessionService: ObservableObject {
         var llmPaneRoutes: [String: String]?
     }
 
+    /// nil on any failure — the pickers simply stay empty rather than
+    /// offering stale names.
     private func fetchTabBarSettings() async -> TabBarSettings? {
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
         do {

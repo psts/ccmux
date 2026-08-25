@@ -430,7 +430,7 @@ func (s *Service) AccountNameForKind(kind string) (string, error) {
 			return a.Name, nil
 		}
 	}
-	return "", fmt.Errorf("no %s llm account is configured — add one under settings, Models", kind)
+	return "", fmt.Errorf("no %s llm account is configured — add one under settings, Accounts", kind)
 }
 
 // KindOf reports the kind of a named account ("" when the name matches none).

@@ -380,12 +380,16 @@ func TestCodexAccountRefusesAnthropicDialect(t *testing.T) {
 	p := mount(s)
 	defer p.Close()
 
-	resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "claude-oauth")
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 refusal", resp.StatusCode)
+	// The refusal is an ALLOWLIST: every non-codex path is refused, not just
+	// /v1/messages — any of these would carry a foreign bearer to OpenAI.
+	for _, path := range []string{"/v1/messages", "/v1/models", "/api/hello", "/v1/complete"} {
+		resp := call(t, p.URL, "/llm/pane/p1"+path, "claude-oauth")
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("%s status = %d, want 502 refusal", path, resp.StatusCode)
+		}
 	}
 	if got.path != "" {
-		t.Fatalf("upstream saw %q, want the request never forwarded", got.path)
+		t.Fatalf("upstream saw %q, want the requests never forwarded", got.path)
 	}
 }
 

@@ -10,6 +10,7 @@ package llmproxy
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -30,8 +31,8 @@ type acctHealth struct {
 	unauthorized bool
 	lastSeen     time.Time
 	lastStatus   int
-	// Utilization headers are stored raw alongside the parsed value — the
-	// format (fraction vs percent) is undocumented, so the UI gets both.
+	// Stored parsed and normalized — pct 0–100, resets as RFC3339; see
+	// captureUtilization.
 	sessionPct   float64 // -1 = never seen
 	weeklyPct    float64
 	sessionReset string
@@ -222,22 +223,29 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp.Body.Close()
 		log.Printf("llm: pane %s account %s is at its limit, retrying on %s", info.pane, acct.Name, info.pool[i+1].Name)
 	}
-	// Unreachable: the loop always returns on the last pool entry.
-	return http.DefaultTransport.RoundTrip(req)
+	// Unreachable: the loop always returns on the last pool entry. An error
+	// beats a fallthrough that would send a second live request.
+	return nil, fmt.Errorf("llm pool for pane %s resolved empty", info.pane)
 }
 
 // replayRequest re-aims the original outbound request at another account:
 // same method and path, that account's upstream and credential, the buffered
 // body.
 func replayRequest(req *http.Request, acct Account, info *reqInfo) *http.Request {
-	out := req.Clone(req.Context())
-	if target, err := url.Parse(acct.BaseURL); err == nil {
-		u := *out.URL
-		u.Scheme, u.Host = target.Scheme, target.Host
-		u.Path = strings.TrimRight(target.Path, "/") + "/" + info.rest
-		out.URL = &u
-		out.Host = target.Host
+	target, err := url.Parse(acct.BaseURL)
+	if err != nil {
+		// Unreachable past validation. Refusing the re-aim keeps the PREVIOUS
+		// account's URL and auth — a consistent failure — instead of silently
+		// carrying acct's credential to a host it was never configured for.
+		log.Printf("llm: pane %s: replay on %s skipped — bad baseURL: %v", info.pane, acct.Name, err)
+		return req
 	}
+	out := req.Clone(req.Context())
+	u := *out.URL
+	u.Scheme, u.Host = target.Scheme, target.Host
+	u.Path = strings.TrimRight(target.Path, "/") + "/" + info.rest
+	out.URL = &u
+	out.Host = target.Host
 	if info.body != nil {
 		out.Body = io.NopCloser(bytes.NewReader(info.body))
 		out.ContentLength = int64(len(info.body))

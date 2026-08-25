@@ -48,12 +48,14 @@ func (s *Service) Handler() http.Handler {
 			return
 		}
 		account := pool[0]
-		// A codex account is a pass-through to chatgpt.com, so an
-		// Anthropic-dialect client misrouted onto it would hand its Claude
-		// bearer to OpenAI. Refusing here fails the misroute loudly on the
-		// first request instead of leaking a token per call.
-		if account.Kind == "codex" && strings.Contains(r.URL.Path, "/v1/messages") {
-			http.Error(w, "ccmux llm proxy: pane is routed to codex account "+account.Name+", which cannot serve Anthropic API requests — clear the pane's llm route", http.StatusBadGateway)
+		// A codex account is a pass-through to chatgpt.com, so ANY other
+		// client misrouted onto it would hand its own bearer to OpenAI (a
+		// hand-started claude in a pane whose codex route outlived the codex
+		// process, say). Allowlist the codex provider's own surface instead
+		// of denying known-foreign paths: refusing here fails the misroute
+		// loudly on the first request instead of leaking a token per call.
+		if account.Kind == "codex" && !codexServablePath(r.PathValue("rest")) {
+			http.Error(w, "ccmux llm proxy: pane is routed to codex account "+account.Name+", which serves only codex traffic — clear the pane's llm route", http.StatusBadGateway)
 			return
 		}
 		info := &reqInfo{account: account, pool: pool, pane: r.PathValue("pane"), rest: r.PathValue("rest")}
@@ -63,6 +65,14 @@ func (s *Service) Handler() http.Handler {
 		}
 		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), infoKey{}, info)))
 	})
+}
+
+// codexServablePath is the codex CLI provider's own surface — the only
+// paths a codex account forwards (probed against codex-cli 0.149.1: /models
+// and /responses, relative to the provider base URL).
+func codexServablePath(rest string) bool {
+	return rest == "models" || rest == "responses" ||
+		strings.HasPrefix(rest, "models/") || strings.HasPrefix(rest, "responses/")
 }
 
 // rewrite points the outbound request at the account's upstream: the pane

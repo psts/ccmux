@@ -43,8 +43,9 @@ type Harness struct {
 	// account names (those rot as accounts come and go). Empty inherits the
 	// registry default for this NAME (see defaultAccountKinds), so a user
 	// override of e.g. the codex command keeps codex's pairing; a name with
-	// no default means any kind. The spawn pairing, the route guard, and the
-	// pane route picker all read this one declaration.
+	// no default means any kind except codex (see api.kindAllowed). The
+	// spawn pairing, the route guard, and the pane route picker all read
+	// this one declaration.
 	AccountKinds []string `json:"accountKinds,omitempty"`
 	// Source labels where a listed entry came from — "builtin", "detected"
 	// (binary found on this host), or "" for a user-configured entry. Stamped
@@ -55,12 +56,14 @@ type Harness struct {
 const settingHarnesses = "harnesses"
 
 // defaultAccountKinds is what AccountKinds resolves to when an entry leaves
-// it empty, keyed by harness name: claude speaks the Anthropic dialect
-// (a keyed org account or an injected subscription token both serve it);
-// codex speaks OpenAI's Responses dialect, which only a codex account's
-// upstream answers. Absent names (pi, opencode, custom entries) mean any.
+// it empty, keyed by harness name: claude speaks the Anthropic dialect,
+// which a keyed org account, an injected subscription token, or a
+// bearer-auth Anthropic-compatible gateway (openai kind — OpenRouter, a
+// local server) all serve; codex speaks OpenAI's Responses dialect, which
+// only a codex account's upstream answers. Absent names (pi, opencode,
+// custom entries) mean any kind except codex (see api.kindAllowed).
 var defaultAccountKinds = map[string][]string{
-	Builtin: {"anthropic", "claude"},
+	Builtin: {"anthropic", "openai", "claude"},
 	"codex": {"codex"},
 }
 
