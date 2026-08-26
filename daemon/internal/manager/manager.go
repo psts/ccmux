@@ -312,11 +312,6 @@ func (m *Manager) HarnessForPane(paneID string) string {
 	return ""
 }
 
-// GuessHarness maps a raw startup command to the harness it starts ("" for a
-// plain shell or anything unrecognized) — exported for the settings surface's
-// picker preselection.
-func (m *Manager) GuessHarness(cmd string) string { return guessHarness(cmd) }
-
 // KillPane kills one pane (SIGTERM through tmux) and drops it from the
 // workspace — the generic close-a-pane path behind a hosted tab's ✕ in any
 // lens. Idempotent: a pane the workspace doesn't hold is a no-op.

@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"log"
+	"slices"
 	"strings"
 )
 
@@ -17,20 +18,17 @@ const (
 // MigrateLegacyStartupSettings converts the retired raw-command settings into
 // this package's model, then clears them — each key only after its converted
 // form saved, so a failed save leaves the key in place and the next boot
-// retries. Cleared keys make reruns no-ops. guess maps a raw command to a
-// harness name ("" for no idea) — injected because that heuristic lives in
-// the manager, which imports this package.
-func (s *Service) MigrateLegacyStartupSettings(guess func(string) string) error {
+// retries. Cleared keys make reruns no-ops.
+func (s *Service) MigrateLegacyStartupSettings() error {
 	if err := s.migrateDefaultCommand(); err != nil {
 		return err
 	}
-	return s.migrateRules(guess)
+	return s.migrateRules()
 }
 
 // migrateDefaultCommand turns a configured default startup command into a
 // user "claude" harness override, preserving what claude spawns run. A value
-// equal to the fallback preserves nothing; an existing claude override
-// already won wholesale — both just clear the key.
+// equal to the fallback preserves nothing — it just clears the key.
 func (s *Service) migrateDefaultCommand() error {
 	raw, err := s.store.GetSetting(legacySettingStartupCommand)
 	if err != nil {
@@ -41,22 +39,25 @@ func (s *Service) migrateDefaultCommand() error {
 	}
 	cmd := strings.TrimSpace(raw)
 	if cmd != "" && cmd != FallbackClaudeCommand {
-		user, err := s.userHarnesses()
-		if err != nil {
+		if err := s.seedClaudeOverride(cmd); err != nil {
 			return err
-		}
-		hasClaude := false
-		for _, h := range user {
-			hasClaude = hasClaude || h.Name == Builtin
-		}
-		if !hasClaude {
-			user = append(user, Harness{Name: Builtin, Icon: "✳", Command: cmd, Autoconfirm: true})
-			if err := s.Apply(user); err != nil {
-				return err
-			}
 		}
 	}
 	return s.store.SetSetting(legacySettingStartupCommand, "")
+}
+
+// seedClaudeOverride preserves the retired default command as a user claude
+// entry — unless one already exists, in which case it already won wholesale
+// and there is nothing left to preserve.
+func (s *Service) seedClaudeOverride(cmd string) error {
+	user, err := s.userHarnesses()
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(user, func(h Harness) bool { return h.Name == Builtin }) {
+		return nil
+	}
+	return s.Apply(append(user, Harness{Name: Builtin, Icon: "✳", Command: cmd, Autoconfirm: true}))
 }
 
 // migrateRules converts raw-command folder rules to harness-name rules: an
@@ -64,9 +65,9 @@ func (s *Service) migrateDefaultCommand() error {
 // migrateDefaultCommand, so a rule repeating the old default maps to the new
 // claude override), else a harness running the same PROGRAM (StartupProgram
 // sees through env/VAR= wrappers and flags, so `env FOO=1 pi --fast` maps to
-// the detected pi), else the injected guess, else the rule is dropped with a
-// log line — a raw command no harness runs has no place in the new model.
-func (s *Service) migrateRules(guess func(string) string) error {
+// the detected pi), else the rule is dropped with a log line — a raw command
+// no harness runs has no place in the new model.
+func (s *Service) migrateRules() error {
 	raw, err := s.store.GetSetting(legacySettingStartupRules)
 	if err != nil {
 		return err
@@ -95,7 +96,7 @@ func (s *Service) migrateRules(guess func(string) string) error {
 	}
 	converted := make([]Rule, 0, len(legacy))
 	for _, lr := range legacy {
-		name := ruleHarnessName(list, lr.Command, guess)
+		name := ruleHarnessName(list, lr.Command)
 		if name == "" {
 			log.Printf("harness: dropping startup rule for %q — no harness runs %q", lr.PathPrefix, lr.Command)
 			continue
@@ -109,9 +110,10 @@ func (s *Service) migrateRules(guess func(string) string) error {
 }
 
 // ruleHarnessName maps one legacy raw command to a harness name, strongest
-// signal first: exact command match, same program, the injected guess. ""
-// means no harness runs it.
-func ruleHarnessName(list []Harness, cmd string, guess func(string) string) string {
+// signal first: exact command match, same program, then claude for any
+// claude-shaped command (covering a claude override whose command runs a
+// different program). "" means no harness runs it.
+func ruleHarnessName(list []Harness, cmd string) string {
 	for _, h := range list {
 		if h.Command == cmd {
 			return h.Name
@@ -124,5 +126,8 @@ func ruleHarnessName(list []Harness, cmd string, guess func(string) string) stri
 			}
 		}
 	}
-	return guess(cmd)
+	if StartupProgram(cmd) == Builtin {
+		return Builtin
+	}
+	return ""
 }

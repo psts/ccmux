@@ -60,17 +60,47 @@ final class RemoteSessionService: ObservableObject {
     /// reconcile — the 4s poll plus the `workspace-status` firehose event the
     /// daemon publishes on exactly these flips.
     @Published private(set) var paneShell: [String: PaneShellState] = [:]
-    /// Which app workspace a hosted pane belongs to (harness-bar lookups).
-    private var paneWorkspace: [String: UUID] = [:]
     /// The harness a folder rule preselects for each workspace ("claude" when
     /// no rule matches) — the bar's suggested button for fresh shells.
     private(set) var resolvedHarnessByWorkspace: [UUID: String] = [:]
 
-    struct PaneShellState {
+    /// One hosted pane's shell state, workspace included — a single record so
+    /// eviction and lookup can never desync across parallel maps. The two
+    /// pure functions carry the harness-bar decision logic, testable without
+    /// a daemon.
+    struct PaneShellState: Equatable {
+        var workspace: UUID
         var harness: String
         var atShell: Bool
         var dormant: Bool
         var devServer: Bool
+
+        /// What a harness bar over this pane should offer, or nil for no bar:
+        /// only a live shell (fresh or dormant) that isn't the dev-server
+        /// pane gets one. `suggested` is the pane's own harness (a dormant
+        /// pane restarts what it ran) or the folder rule's preselect.
+        func offer(harnesses: [DaemonHarness], resolvedHarness: String?)
+            -> (harnesses: [DaemonHarness], suggested: String, restart: Bool)? {
+            guard !devServer, atShell || dormant, !harnesses.isEmpty else { return nil }
+            let suggested = harness.isEmpty ? (resolvedHarness ?? "claude") : harness
+            return (harnesses, suggested, !harness.isEmpty)
+        }
+
+        /// Folds one workspace's live pane list into the map: its panes that
+        /// vanished drop out, everything it still has is refreshed, and other
+        /// workspaces' entries pass through untouched.
+        static func merging(
+            _ current: [String: PaneShellState], panes: [DaemonPane], workspace: UUID
+        ) -> [String: PaneShellState] {
+            let liveIds = Set(panes.map(\.id))
+            var next = current.filter { $0.value.workspace != workspace || liveIds.contains($0.key) }
+            for p in panes {
+                next[p.id] = PaneShellState(
+                    workspace: workspace, harness: p.harness, atShell: p.atShell,
+                    dormant: p.dormant, devServer: p.devServer)
+            }
+            return next
+        }
     }
 
     private var attachments: [UUID: WorkspaceAttachment] = [:]
@@ -611,18 +641,14 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
-    /// What the harness bar over a pane should offer, or nil for no bar: only
-    /// a live shell (fresh or dormant) that isn't the dev-server pane gets
-    /// one. `suggested` is the pane's own harness (a dormant pane restarts
-    /// what it ran) or the folder rule's preselect for fresh shells.
+    /// What the harness bar over a pane should offer, or nil for no bar —
+    /// the decision itself lives on PaneShellState.offer; this only feeds it
+    /// the workspace's harness list and folder-rule preselect.
     func harnessOffer(forPane paneId: String) -> (harnesses: [DaemonHarness], suggested: String, restart: Bool)? {
-        guard let shell = paneShell[paneId], !shell.devServer, shell.atShell || shell.dormant,
-              let appId = paneWorkspace[paneId],
-              let list = controllers[appId]?.harnesses, !list.isEmpty
-        else { return nil }
-        let suggested = shell.harness.isEmpty
-            ? (resolvedHarnessByWorkspace[appId] ?? "claude") : shell.harness
-        return (list, suggested, !shell.harness.isEmpty)
+        guard let shell = paneShell[paneId] else { return nil }
+        return shell.offer(
+            harnesses: controllers[shell.workspace]?.harnesses ?? [],
+            resolvedHarness: resolvedHarnessByWorkspace[shell.workspace])
     }
 
     /// Start a harness IN an existing pane (the harness bar's click) — the
@@ -837,22 +863,10 @@ final class RemoteSessionService: ObservableObject {
                 return m
             }()
             claude.apply(isRunning: dw.panes.contains { $0.attention == .running })
-            applyPaneShell(dw, appId: appId)
-        }
-    }
-
-    /// Fold this workspace's pane list into the harness-bar state, dropping
-    /// entries for panes that no longer exist there.
-    private func applyPaneShell(_ dw: DaemonWorkspace, appId: UUID) {
-        let liveIds = Set(dw.panes.map(\.id))
-        for (paneId, ws) in paneWorkspace where ws == appId && !liveIds.contains(paneId) {
-            paneShell.removeValue(forKey: paneId)
-            paneWorkspace.removeValue(forKey: paneId)
-        }
-        for p in dw.panes {
-            paneWorkspace[p.id] = appId
-            paneShell[p.id] = PaneShellState(
-                harness: p.harness, atShell: p.atShell, dormant: p.dormant, devServer: p.devServer)
+            // Equality-guarded so the 4s poll doesn't publish an unchanged map
+            // into every observing pane view.
+            let merged = PaneShellState.merging(paneShell, panes: dw.panes, workspace: appId)
+            if merged != paneShell { paneShell = merged }
         }
     }
 
@@ -980,10 +994,7 @@ final class RemoteSessionService: ObservableObject {
         devRunning.removeValue(forKey: appId)
         devCommands.removeValue(forKey: appId)
         resolvedHarnessByWorkspace.removeValue(forKey: appId)
-        for (paneId, ws) in paneWorkspace where ws == appId {
-            paneShell.removeValue(forKey: paneId)
-            paneWorkspace.removeValue(forKey: paneId)
-        }
+        paneShell = paneShell.filter { $0.value.workspace != appId }
         workspaces.removeAll { $0.id == appId }
     }
 

@@ -55,7 +55,7 @@ struct DaemonSettingsView: View {
     }
 
     /// The account-kind checkboxes, in the same order the web editor renders
-    /// them — the order also keeps the dirty-check snapshot stable.
+    /// them (also the order the save payload serializes).
     static let accountKindOptions = ["anthropic", "openai", "claude", "codex"]
 
     struct EditableHarness: Identifiable {
@@ -67,16 +67,26 @@ struct DaemonSettingsView: View {
         /// Which llm account kinds this harness may use; empty = its default.
         var kinds: Set<String>
         let source: String
-        /// The daemon-resolved defaults this row started as: an untouched
+        /// The daemon-resolved values this row started as: an untouched
         /// builtin/detected row is NOT persisted, so it stays live-resolved.
-        let orig: [String]
+        /// A struct, not a positional list, so adding a field to the row
+        /// extends the dirty check by construction. nil for added rows.
+        let orig: Snapshot?
 
-        var kindsText: String {
-            DaemonSettingsView.accountKindOptions.filter(kinds.contains).joined(separator: ", ")
+        struct Snapshot: Equatable {
+            var icon: String
+            var name: String
+            var command: String
+            var autoconfirm: Bool
+            var kinds: Set<String>
+        }
+
+        var snapshot: Snapshot {
+            Snapshot(icon: icon, name: name, command: command, autoconfirm: autoconfirm, kinds: kinds)
         }
 
         var untouchedDefault: Bool {
-            !source.isEmpty && orig == [icon, name, command, autoconfirm ? "1" : "0", kindsText]
+            !source.isEmpty && snapshot == orig
         }
     }
 
@@ -326,7 +336,7 @@ struct DaemonSettingsView: View {
                 }
                 Button("Add harness") {
                     harnesses.append(EditableHarness(
-                        icon: "", name: "", command: "", autoconfirm: false, kinds: [], source: "", orig: []))
+                        icon: "", name: "", command: "", autoconfirm: false, kinds: [], source: "", orig: nil))
                 }
                 .controlSize(.small)
                 if supportsHarnessRules {
@@ -567,13 +577,13 @@ struct DaemonSettingsView: View {
                 apiKey: "", apiKeySet: $0.apiKeySet,
                 aliases: $0.modelAliases.map { "\($0.from)=\($0.to)" }.joined(separator: ", "))
         }
-        harnesses = settings.harnesses.map {
-            let kindsText = Self.accountKindOptions
-                .filter(Set($0.accountKinds).contains).joined(separator: ", ")
+        harnesses = settings.harnesses.map { h in
+            let snap = EditableHarness.Snapshot(
+                icon: h.icon ?? "", name: h.name, command: h.command ?? "",
+                autoconfirm: h.autoconfirm, kinds: Set(h.accountKinds))
             return EditableHarness(
-                icon: $0.icon ?? "", name: $0.name, command: $0.command ?? "",
-                autoconfirm: $0.autoconfirm, kinds: Set($0.accountKinds), source: $0.source,
-                orig: [$0.icon ?? "", $0.name, $0.command ?? "", $0.autoconfirm ? "1" : "0", kindsText])
+                icon: snap.icon, name: snap.name, command: snap.command,
+                autoconfirm: snap.autoconfirm, kinds: snap.kinds, source: h.source, orig: snap)
         }
         devDomain = settings.devDomain
         lensHostname = settings.lensHostname

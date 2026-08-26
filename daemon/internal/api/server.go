@@ -490,7 +490,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		resp["harnessRules"] = rules
 		if repo := r.URL.Query().Get("repoPath"); repo != "" {
 			// What a picker preselects for a workspace created there. The rule
-			// SUGGESTS; nothing auto-starts (see docs: empty-with-preselect).
+			// SUGGESTS; nothing auto-starts — the empty-with-preselect
+			// contract createWorkspaceReq.StartupCommand documents.
 			resp["resolvedHarness"] = s.mgr.Harnesses.PreselectFor(repo)
 		}
 	}

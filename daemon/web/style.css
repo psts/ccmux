@@ -95,7 +95,7 @@ body {
 .rules-list { display: flex; flex-direction: column; gap: 6px; }
 .rule-row { display: flex; gap: 6px; align-items: center; }
 .rule-row .rule-prefix { flex: 3; min-width: 0; }
-.rule-row .rule-cmd { flex: 2; min-width: 0; }
+.rule-row .rule-harness { flex: 2; min-width: 0; }
 /* One account/harness = one card: labeled lines instead of a crushed strip. */
 .entry-card {
   display: flex; flex-direction: column; gap: 6px;

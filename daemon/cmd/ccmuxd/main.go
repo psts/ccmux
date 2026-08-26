@@ -117,7 +117,7 @@ func runDaemon() {
 	// into it. Loud-not-fatal: a failed conversion leaves the legacy keys, so
 	// the next start retries.
 	mgr.Harnesses = harness.New(st)
-	if err := mgr.Harnesses.MigrateLegacyStartupSettings(mgr.GuessHarness); err != nil {
+	if err := mgr.Harnesses.MigrateLegacyStartupSettings(); err != nil {
 		log.Printf("harness: migrating legacy startup settings failed (will retry next start): %v", err)
 	}
 

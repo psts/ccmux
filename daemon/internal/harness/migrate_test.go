@@ -5,16 +5,6 @@ import (
 	"testing"
 )
 
-// guessLikeManager mirrors the manager's real GuessHarness EXACTLY: it only
-// ever answers "claude" (for claude-shaped commands) or "". A more capable
-// fake here would pin a migration path production does not have.
-func guessLikeManager(cmd string) string {
-	if StartupProgram(cmd) == "claude" {
-		return "claude"
-	}
-	return ""
-}
-
 // The full conversion: a custom default becomes the claude override, rules
 // map by exact command match, then by program (an INSTALLED pi answers for
 // `env FOO=1 pi --fast`), and the unmappable — including a program no
@@ -35,7 +25,7 @@ func TestMigrateLegacyStartupSettings(t *testing.T) {
 		}
 		return "", errors.New("not installed")
 	}
-	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err != nil {
+	if err := s.MigrateLegacyStartupSettings(); err != nil {
 		t.Fatal(err)
 	}
 	c, err := s.Resolve("claude")
@@ -59,7 +49,7 @@ func TestMigrateLegacyStartupSettings(t *testing.T) {
 		t.Fatalf("legacy keys not cleared: %q / %q", st[legacySettingStartupCommand], st[legacySettingStartupRules])
 	}
 	before := st[settingHarnesses] + "|" + st[settingHarnessRules]
-	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err != nil {
+	if err := s.MigrateLegacyStartupSettings(); err != nil {
 		t.Fatal(err)
 	}
 	if after := st[settingHarnesses] + "|" + st[settingHarnessRules]; after != before {
@@ -75,7 +65,7 @@ func TestMigrateKeepsExistingClaudeOverride(t *testing.T) {
 	if err := s.Apply([]Harness{{Name: "claude", Command: "claude --continue"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err != nil {
+	if err := s.MigrateLegacyStartupSettings(); err != nil {
 		t.Fatal(err)
 	}
 	c, _ := s.Resolve("claude")
@@ -107,7 +97,7 @@ func (f failingKeyStore) SetSetting(key, value string) error {
 func TestMigrateFailedSaveLeavesLegacyKey(t *testing.T) {
 	st := fakeStore{legacySettingStartupCommand: "claude --continue"}
 	s := testService(failingKeyStore{fakeStore: st, failKey: settingHarnesses})
-	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err == nil {
+	if err := s.MigrateLegacyStartupSettings(); err == nil {
 		t.Fatal("migration reported success despite the failed save")
 	}
 	if st[legacySettingStartupCommand] != "claude --continue" {
@@ -124,7 +114,7 @@ func TestMigrateKeepsConfiguredRules(t *testing.T) {
 	if err := s.SetRules([]Rule{{PathPrefix: "/w/new", Harness: "pi"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err != nil {
+	if err := s.MigrateLegacyStartupSettings(); err != nil {
 		t.Fatal(err)
 	}
 	rules, err := s.Rules()
@@ -144,7 +134,7 @@ func TestMigrateKeepsConfiguredRules(t *testing.T) {
 func TestMigrateSkipsFallbackEqualDefault(t *testing.T) {
 	st := fakeStore{legacySettingStartupCommand: FallbackClaudeCommand}
 	s := testService(st)
-	if err := s.MigrateLegacyStartupSettings(guessLikeManager); err != nil {
+	if err := s.MigrateLegacyStartupSettings(); err != nil {
 		t.Fatal(err)
 	}
 	hs, err := s.List()
