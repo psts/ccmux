@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -190,5 +191,95 @@ func TestListProjects_Unconfigured(t *testing.T) {
 func TestListProjects_MissingRoot(t *testing.T) {
 	if rec := callProjects(t, filepath.Join(t.TempDir(), "nope")); rec.Code != 500 {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// callCreateProject hits createProject directly with a JSON body.
+func callCreateProject(t *testing.T, root, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	s := &Server{projectsRoot: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/projects", strings.NewReader(body))
+	s.createProject(rec, req)
+	return rec
+}
+
+func TestCreateProject_Plain(t *testing.T) {
+	root := t.TempDir()
+	rec := callCreateProject(t, root, `{"path":"chartlabs"}`)
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
+	}
+	fi, err := os.Stat(filepath.Join(root, "chartlabs"))
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("folder not created: %v", err)
+	}
+	var got struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+		Git  bool   `json:"git"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Name != "chartlabs" || got.Path != filepath.Join(root, "chartlabs") || got.Git {
+		t.Errorf("entry = %+v, want chartlabs, abs path, git=false", got)
+	}
+}
+
+func TestCreateProject_GitInit(t *testing.T) {
+	root := t.TempDir()
+	rec := callCreateProject(t, root, `{"path":"backend","git":true}`)
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(filepath.Join(root, "backend", ".git")); err != nil {
+		t.Fatalf(".git missing after git:true: %v", err)
+	}
+	// The list must now show it as a git folder.
+	got := decodeProjects(t, callProjects(t, root))
+	if len(got.Projects) != 1 || !got.Projects[0].Git {
+		t.Errorf("projects = %+v, want one git entry", got.Projects)
+	}
+}
+
+func TestCreateProject_Nested(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "chartlabs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if rec := callCreateProject(t, root, `{"path":"chartlabs/backend"}`); rec.Code != 201 {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
+	}
+	// Missing parent: Mkdir refuses rather than building the tree.
+	if rec := callCreateProject(t, root, `{"path":"nope/deep"}`); rec.Code != 500 {
+		t.Errorf("missing parent: status = %d, want 500", rec.Code)
+	}
+}
+
+func TestCreateProject_Rejections(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "taken"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for body, want := range map[string]int{
+		`{"path":"taken"}`:    409, // already exists
+		`{"path":""}`:         400, // no name
+		`{"path":"../out"}`:   400, // escapes the root
+		`{"path":"/etc/x"}`:   400, // absolute
+		`{"path":"a/.."}`:     400, // cleans to the root itself
+		`{"path":".hidden"}`:  400, // listProjects would never show it
+		`{"path":"sub/.git"}`: 400, // dot-name nested
+		`not json`:            400,
+	} {
+		if rec := callCreateProject(t, root, body); rec.Code != want {
+			t.Errorf("%s: status = %d, want %d (body %s)", body, rec.Code, want, rec.Body)
+		}
+	}
+}
+
+func TestCreateProject_Unconfigured(t *testing.T) {
+	if rec := callCreateProject(t, "", `{"path":"x"}`); rec.Code != 503 {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }

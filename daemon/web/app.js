@@ -8,6 +8,7 @@ const state = {
   windows: [],       // shared windows from GET /v1/windows: {id, name, open, openBy, workspaceIds}
   hosts: {},         // federation: host label -> {id, addr, ...} from GET /v1/hosts
   createHost: "",    // host chosen in the New-workspace picker ("" = hub/self)
+  projectPath: "",   // folder the New-workspace picker is browsing (rel to root)
   wsId: null,
   paneId: null,      // currently rendered pane
   wantPane: null,    // pane to select after the next attach (for tab switches)
@@ -1063,10 +1064,12 @@ function createHostId() {
 
 // Create endpoints route through the hub to the chosen host when federated
 // (self runs local), and hit the bare routes in single-host mode.
-function projectsURL(relPath) {
+function projectsBase() {
   const host = createHostId();
-  const base = host ? `/v1/hosts/${encodeURIComponent(host)}/projects` : "/v1/projects";
-  return base + "?path=" + encodeURIComponent(relPath);
+  return host ? `/v1/hosts/${encodeURIComponent(host)}/projects` : "/v1/projects";
+}
+function projectsURL(relPath) {
+  return projectsBase() + "?path=" + encodeURIComponent(relPath);
 }
 function createWorkspaceURL() {
   const host = createHostId();
@@ -1111,6 +1114,7 @@ function newWorkspace() {
 
 async function browseProjects(relPath) {
   const status = $("project-status"), list = $("project-list"), crumb = $("project-path");
+  state.projectPath = relPath; // where "new folder" creates
   $("project-modal").classList.remove("hidden");
   list.innerHTML = "";
   crumb.textContent = "/" + relPath;
@@ -1155,6 +1159,23 @@ async function browseProjects(relPath) {
 }
 
 function closeProjectModal() { $("project-modal").classList.add("hidden"); }
+
+// "Create" in the picker: a new folder in the currently browsed location —
+// plain for a folder that will hold more folders, git-inited for a repo-to-be.
+async function createProjectFolder() {
+  const name = ($("project-folder").value || "").trim();
+  if (!name) return;
+  const rel = state.projectPath ? state.projectPath + "/" + name : name;
+  const r = await fetch(projectsBase(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: rel, git: $("project-folder-git").checked }),
+  });
+  if (!r.ok) { alert("create folder: " + (await r.text())); return; }
+  $("project-folder").value = "";
+  $("project-folder-git").checked = false;
+  browseProjects(state.projectPath); // re-list; the new folder appears in place
+}
 
 async function createWorkspace(p) {
   // New workspaces open EMPTY (explicit "" overrides the daemon's resolve):
@@ -1572,6 +1593,10 @@ function bootDeepLink() {
 window.ccmux = { attach, getUser }; // push.js deep-links + shares the presence name
 $("new-ws").onclick = newWorkspace;
 $("project-close").onclick = closeProjectModal;
+$("project-folder-mk").onclick = createProjectFolder;
+$("project-folder").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") createProjectFolder();
+});
 $("project-modal").onclick = (e) => { if (e.target.id === "project-modal") closeProjectModal(); };
 $("hostnames-close").onclick = () => $("hostnames-modal").classList.add("hidden");
 $("hostnames-modal").onclick = (e) => { if (e.target.id === "hostnames-modal") $("hostnames-modal").classList.add("hidden"); };

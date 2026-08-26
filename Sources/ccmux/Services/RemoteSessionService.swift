@@ -56,53 +56,6 @@ final class RemoteSessionService: ObservableObject {
     @Published private(set) var devRunning: [UUID: Bool] = [:]
     /// Stored dev-command override per workspace ("" = daemon detects).
     private(set) var devCommands: [UUID: String] = [:]
-    /// Per-pane shell state for the harness bar (pane id → state), fed each
-    /// reconcile — the 4s poll plus the `workspace-status` firehose event the
-    /// daemon publishes on exactly these flips.
-    @Published private(set) var paneShell: [String: PaneShellState] = [:]
-    /// The harness a folder rule preselects for each workspace ("claude" when
-    /// no rule matches) — the bar's suggested button for fresh shells.
-    private(set) var resolvedHarnessByWorkspace: [UUID: String] = [:]
-
-    /// One hosted pane's shell state, workspace included — a single record so
-    /// eviction and lookup can never desync across parallel maps. The two
-    /// pure functions carry the harness-bar decision logic, testable without
-    /// a daemon.
-    struct PaneShellState: Equatable {
-        var workspace: UUID
-        var harness: String
-        var atShell: Bool
-        var dormant: Bool
-        var devServer: Bool
-
-        /// What a harness bar over this pane should offer, or nil for no bar:
-        /// only a live shell (fresh or dormant) that isn't the dev-server
-        /// pane gets one. `suggested` is the pane's own harness (a dormant
-        /// pane restarts what it ran) or the folder rule's preselect.
-        func offer(harnesses: [DaemonHarness], resolvedHarness: String?)
-            -> (harnesses: [DaemonHarness], suggested: String, restart: Bool)? {
-            guard !devServer, atShell || dormant, !harnesses.isEmpty else { return nil }
-            let suggested = harness.isEmpty ? (resolvedHarness ?? "claude") : harness
-            return (harnesses, suggested, !harness.isEmpty)
-        }
-
-        /// Folds one workspace's live pane list into the map: its panes that
-        /// vanished drop out, everything it still has is refreshed, and other
-        /// workspaces' entries pass through untouched.
-        static func merging(
-            _ current: [String: PaneShellState], panes: [DaemonPane], workspace: UUID
-        ) -> [String: PaneShellState] {
-            let liveIds = Set(panes.map(\.id))
-            var next = current.filter { $0.value.workspace != workspace || liveIds.contains($0.key) }
-            for p in panes {
-                next[p.id] = PaneShellState(
-                    workspace: workspace, harness: p.harness, atShell: p.atShell,
-                    dormant: p.dormant, devServer: p.devServer)
-            }
-            return next
-        }
-    }
-
     private var attachments: [UUID: WorkspaceAttachment] = [:]
     private var paneSignatures: [UUID: [String]] = [:]
     private var daemonIds: [UUID: String] = [:]
@@ -461,6 +414,16 @@ final class RemoteSessionService: ObservableObject {
         return try JSONDecoder().decode(DaemonProjectList.self, from: data)
     }
 
+    /// Create one new folder under the projects root of `host` — `path` is the
+    /// folder relative to that root, its parent must already exist, and `git`
+    /// also runs `git init` in it. Returns the daemon's error text, nil on
+    /// success; the picker re-lists to show the folder in place.
+    func createProjectFolder(host: String = "", path: String, git: Bool) async -> String? {
+        let base = host.isEmpty ? "/v1/projects" : "/v1/hosts/\(host)/projects"
+        return await sendReportingError(
+            "POST", path: base, body: ["path": path, "git": git], expect: 201)
+    }
+
     /// Fetch the daemon-wide lens settings (identity, dev hostnames, llm
     /// accounts, harnesses + per-folder preselect rules).
     func fetchSettings() async throws -> DaemonSettings {
@@ -613,25 +576,18 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// The settings slice the tab bar needs: the harness list for the picker,
-    /// the folder-rule preselect for the harness bar, plus the llm accounts
-    /// and routes for the per-pane route menu.
+    /// plus the llm accounts and routes for the per-pane route menu.
     struct TabBarSettings: Codable {
         var harnesses: [DaemonHarness]?
-        var resolvedHarness: String?
         var llmAccounts: [DaemonLLMAccount]?
         var llmRoute: String?
         var llmPaneRoutes: [String: String]?
     }
 
     /// nil on any failure — the pickers simply stay empty rather than
-    /// offering stale names. repoPath makes the daemon include the folder
-    /// rules' resolvedHarness for a workspace there.
-    private func fetchTabBarSettings(repoPath: String = "") async -> TabBarSettings? {
-        var comps = URLComponents(string: "\(DaemonConfig.baseURL)/v1/settings")
-        if !repoPath.isEmpty {
-            comps?.queryItems = [URLQueryItem(name: "repoPath", value: repoPath)]
-        }
-        guard let url = comps?.url else { return nil }
+    /// offering stale names.
+    private func fetchTabBarSettings() async -> TabBarSettings? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else { return nil }
         do {
             let (data, resp) = try await session.data(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
@@ -639,27 +595,6 @@ final class RemoteSessionService: ObservableObject {
         } catch {
             return nil
         }
-    }
-
-    /// What the harness bar over a pane should offer, or nil for no bar —
-    /// the decision itself lives on PaneShellState.offer; this only feeds it
-    /// the workspace's harness list and folder-rule preselect.
-    func harnessOffer(forPane paneId: String) -> (harnesses: [DaemonHarness], suggested: String, restart: Bool)? {
-        guard let shell = paneShell[paneId] else { return nil }
-        return shell.offer(
-            harnesses: controllers[shell.workspace]?.harnesses ?? [],
-            resolvedHarness: resolvedHarnessByWorkspace[shell.workspace])
-    }
-
-    /// Start a harness IN an existing pane (the harness bar's click) — the
-    /// daemon types that harness's command into the pane's live shell and
-    /// re-records the pane's kind. Returns the daemon's error text, nil on
-    /// success.
-    func startHarness(paneId: String, name: String) async -> String? {
-        let error = await sendReportingError(
-            "POST", path: "/v1/panes/\(paneId)/harness", body: ["harness": name], expect: 200)
-        if error == nil { await refresh() }
-        return error
     }
 
     /// Kill a hosted pane on the daemon (a hosted tab's ✕ — the tab is already
@@ -863,10 +798,6 @@ final class RemoteSessionService: ObservableObject {
                 return m
             }()
             claude.apply(isRunning: dw.panes.contains { $0.attention == .running })
-            // Equality-guarded so the 4s poll doesn't publish an unchanged map
-            // into every observing pane view.
-            let merged = PaneShellState.merging(paneShell, panes: dw.panes, workspace: appId)
-            if merged != paneShell { paneShell = merged }
         }
     }
 
@@ -918,16 +849,15 @@ final class RemoteSessionService: ObservableObject {
         controller.onHostedHarnessRequest = { [weak self] leafId, name in
             Task { await self?.placeSpawnedTerminal(appId: appId, leafId: leafId, direction: nil, harness: name) }
         }
-        // Feed the harness picker/bar and the per-pane route menu; a fetch
-        // failure just leaves the menus empty and the bar hidden.
+        // Feed the harness picker and the per-pane route menu; a fetch
+        // failure just leaves the menus empty.
         Task { [weak self, weak controller] in
-            if let s = await self?.fetchTabBarSettings(repoPath: dw.repoPath), let controller {
+            if let s = await self?.fetchTabBarSettings(), let controller {
                 await MainActor.run {
                     controller.harnesses = s.harnesses ?? []
                     controller.llmAccounts = (s.llmAccounts ?? []).map(\.name)
                     controller.llmGlobalRoute = s.llmRoute ?? ""
                     controller.llmPaneRoutes = s.llmPaneRoutes ?? [:]
-                    self?.resolvedHarnessByWorkspace[appId] = s.resolvedHarness ?? "claude"
                 }
             }
         }
@@ -993,8 +923,6 @@ final class RemoteSessionService: ObservableObject {
         hostnames.removeValue(forKey: appId)
         devRunning.removeValue(forKey: appId)
         devCommands.removeValue(forKey: appId)
-        resolvedHarnessByWorkspace.removeValue(forKey: appId)
-        paneShell = paneShell.filter { $0.value.workspace != appId }
         workspaces.removeAll { $0.id == appId }
     }
 

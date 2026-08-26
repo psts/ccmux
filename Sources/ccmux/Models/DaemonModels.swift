@@ -424,11 +424,6 @@ struct DaemonPane: Codable, Identifiable {
     /// exactly why it needs saying: nothing else tells it apart from a working
     /// session, so a dead teammate reads as a live one until you click into it.
     var dormant: Bool
-    /// The harness this pane runs ("" for a plain shell) and whether its
-    /// foreground is a bare shell right now — together they drive the harness
-    /// bar: a shell pane with no harness gets offered "start here".
-    var harness: String
-    var atShell: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -441,8 +436,6 @@ struct DaemonPane: Codable, Identifiable {
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
         devServer = try c.decodeIfPresent(Bool.self, forKey: .devServer) ?? false
         dormant = try c.decodeIfPresent(Bool.self, forKey: .dormant) ?? false
-        harness = try c.decodeIfPresent(String.self, forKey: .harness) ?? ""
-        atShell = try c.decodeIfPresent(Bool.self, forKey: .atShell) ?? false
     }
 }
 

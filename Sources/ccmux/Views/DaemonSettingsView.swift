@@ -142,8 +142,9 @@ struct DaemonSettingsView: View {
         }
     }
 
-    /// Which harness a new workspace under a folder PRESELECTS on its harness
-    /// bar. A rule may name a harness deleted in this session — the picker
+    /// Which harness a new workspace under a folder PRESELECTS (the web
+    /// lens's harness bar highlights it; nothing ever auto-starts).
+    /// A rule may name a harness deleted in this session — the picker
     /// keeps the name visible so the row stays editable; the daemon falls back
     /// to claude when resolving it.
     private var rulesSection: some View {

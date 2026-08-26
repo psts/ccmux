@@ -10,7 +10,7 @@ import SwiftUI
 /// hosted session from the selected folder.
 struct HostedProjectPickerView: View {
     /// Second argument: a one-off raw startup command ("" = a bare shell; the
-    /// pane's harness bar then offers what to start). Third: the host label to
+    /// tab strip's + menu offers harness tabs). Third: the host label to
     /// create on ("" = the hub / single-host default).
     let onPick: (DaemonProject, String, String) -> Void
     let onCancel: () -> Void
@@ -22,6 +22,9 @@ struct HostedProjectPickerView: View {
     @State private var filter = ""
     @State private var selection: DaemonProject.ID?
     @State private var commandOverride = ""
+    @State private var newFolderName = ""
+    @State private var newFolderGit = false
+    @State private var createError: String?
     @State private var selectedHost = ""              // "" until hosts load (federation)
     private let hosts = RemoteSessionService.shared.hostList
 
@@ -48,7 +51,7 @@ struct HostedProjectPickerView: View {
             footer
         }
         .padding(16)
-        .frame(width: 440, height: 440)
+        .frame(width: 440, height: 480)
         .task {
             selectedHost = RemoteSessionService.shared.defaultCreateHost
             await load(path: "")
@@ -156,12 +159,55 @@ struct HostedProjectPickerView: View {
         .onTapGesture { selection = project.id }
     }
 
+    /// New folder in the listed location: plain (a group of projects) or
+    /// git-inited (a repo-to-be). Creation happens on the daemon's filesystem,
+    /// same as every listing.
+    private var newFolderRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let createError {
+                Text(createError)
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+                    .lineLimit(2)
+            }
+            HStack(spacing: 8) {
+                TextField("new folder here", text: $newFolderName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await createFolder() } }
+                Toggle("git init", isOn: $newFolderGit)
+                    .toggleStyle(.checkbox)
+                    .help("Also run git init — for a folder that will hold a repo, not more folders")
+                Button("Create") {
+                    Task { await createFolder() }
+                }
+                .disabled(newFolderName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    private func createFolder() async {
+        let name = newFolderName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        createError = nil
+        let rel = path.isEmpty ? name : "\(path)/\(name)"
+        if let error = await RemoteSessionService.shared.createProjectFolder(
+            host: selectedHost, path: rel, git: newFolderGit) {
+            createError = error
+            return
+        }
+        newFolderName = ""
+        newFolderGit = false
+        await load(path: path) // re-list; the new folder appears in place
+        selection = filtered.first { $0.name == name }?.id
+    }
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            newFolderRow
             TextField(overridePlaceholder, text: $commandOverride)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11, design: .monospaced))
-                .help("One-off raw startup command for this workspace; empty opens a shell and the pane's harness bar offers what to start.")
+                .help("One-off raw startup command for this workspace; empty opens a shell — the tab strip's + menu adds harness tabs.")
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
@@ -178,7 +224,7 @@ struct HostedProjectPickerView: View {
     }
 
     private var overridePlaceholder: String {
-        "startup command — empty = shell (pick a harness in the workspace)"
+        "startup command — empty = shell"
     }
 
     private func centered<V: View>(@ViewBuilder _ inner: () -> V) -> some View {

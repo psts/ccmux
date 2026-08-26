@@ -53,6 +53,14 @@
       <p id="project-path" class="crumb"></p>
       <p id="project-status" class="status hidden"></p>
       <ul id="project-list" class="project-list"></ul>
+      <!-- New folder in the currently listed location: plain (a group of
+           projects) or git-inited (a repo-to-be). -->
+      <div class="new-folder">
+        <input id="project-folder" class="setting-input" type="text" spellcheck="false"
+               autocomplete="off" placeholder="new folder here">
+        <label><input id="project-folder-git" type="checkbox"> git init</label>
+        <button id="project-folder-mk">Create</button>
+      </div>
       <input id="project-cmd" class="setting-input project-cmd" type="text" spellcheck="false"
              autocomplete="off" placeholder="startup command — empty = shell (pick a harness in the workspace)">
       <input id="project-group" class="setting-input project-cmd" type="text" spellcheck="false"

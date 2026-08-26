@@ -206,6 +206,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/hub", s.hubInfo)
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
+	mux.HandleFunc("POST /v1/projects", s.createProject)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.
@@ -214,6 +215,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /v1/hosts", s.hub.listHosts)
 		mux.HandleFunc("GET /v1/workspaces", s.hubListWorkspaces)
 		mux.HandleFunc("GET /v1/hosts/{host}/projects", s.hub.hostScoped(s.listProjects, "/v1/projects"))
+		mux.HandleFunc("POST /v1/hosts/{host}/projects", s.hub.hostScoped(s.createProject, "/v1/projects"))
 		mux.HandleFunc("POST /v1/hosts/{host}/workspaces", s.hostCreateRoute())
 		// Per-host settings: the lens configures any member host's startup command,
 		// dev domain, tokens, etc. through the hub (self runs local).
