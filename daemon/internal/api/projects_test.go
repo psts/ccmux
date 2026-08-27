@@ -243,6 +243,25 @@ func TestCreateProject_GitInit(t *testing.T) {
 	}
 }
 
+// A failing git init must name its own cause and leave nothing behind. The
+// no-output failures are the likely ones on a fresh host, so an empty PATH
+// stands in for "git is not installed here".
+func TestCreateProject_GitInitFailure(t *testing.T) {
+	t.Setenv("PATH", "")
+	root := t.TempDir()
+	rec := callCreateProject(t, root, `{"path":"backend","git":true}`)
+	if rec.Code != 500 {
+		t.Fatalf("status = %d, want 500 (body %s)", rec.Code, rec.Body)
+	}
+	if msg := rec.Body.String(); !strings.Contains(msg, "git") || strings.Contains(msg, `"git init: "`) {
+		t.Errorf("error body = %s, want the underlying cause, not a bare prefix", msg)
+	}
+	// Rolled back: the name must be free for a retry, not 409 forever.
+	if _, err := os.Stat(filepath.Join(root, "backend")); !os.IsNotExist(err) {
+		t.Errorf("folder still present after a failed git init (stat err = %v)", err)
+	}
+}
+
 func TestCreateProject_Nested(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "chartlabs"), 0o755); err != nil {

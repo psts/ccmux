@@ -1166,12 +1166,19 @@ async function createProjectFolder() {
   const name = ($("project-folder").value || "").trim();
   if (!name) return;
   const rel = state.projectPath ? state.projectPath + "/" + name : name;
-  const r = await fetch(projectsBase(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: rel, git: $("project-folder-git").checked }),
-  });
-  if (!r.ok) { alert("create folder: " + (await r.text())); return; }
+  try {
+    const r = await fetch(projectsBase(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: rel, git: $("project-folder-git").checked }),
+    });
+    if (!r.ok) { alert("create folder: " + (await r.text())); return; }
+  } catch (e) {
+    // An unreachable daemon rejects the fetch, and an async click handler
+    // swallows that: no alert, no status, the button just looks dead.
+    alert("create folder failed: " + e.message);
+    return;
+  }
   $("project-folder").value = "";
   $("project-folder-git").checked = false;
   browseProjects(state.projectPath); // re-list; the new folder appears in place

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -116,15 +117,40 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if req.Git {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		if out, err := exec.CommandContext(ctx, "git", "init", dir).CombinedOutput(); err != nil {
-			// The folder was empty a moment ago; removing it keeps the
-			// request atomic instead of leaving a half-made project.
-			_ = os.RemoveAll(dir)
-			writeError(w, http.StatusInternalServerError, "git init: "+strings.TrimSpace(string(out)))
+		if msg := gitInit(ctx, dir); msg != "" {
+			writeError(w, http.StatusInternalServerError, msg)
 			return
 		}
 	}
 	writeJSON(w, http.StatusCreated, projectEntry{Name: filepath.Base(rel), Path: dir, Git: req.Git})
+}
+
+// gitInit runs "git init" in a folder createProject just made, and returns ""
+// on success or the message to hand back to the lens. That message is the only
+// channel the user has here: both lenses render it verbatim and neither can
+// reach the daemon's log.
+func gitInit(ctx context.Context, dir string) string {
+	out, err := exec.CommandContext(ctx, "git", "init", dir).CombinedOutput()
+	if err == nil {
+		return ""
+	}
+	// err, not just out: the failures that carry no output at all are exactly
+	// the likely ones — git missing from this host's PATH, or the timeout
+	// killing the process. Reporting out alone hands the user "git init: ".
+	trimmed := strings.TrimSpace(string(out))
+	log.Printf("projects: git init %s: %v (%s)", dir, err, trimmed)
+	msg := "git init: " + err.Error()
+	if trimmed != "" {
+		msg += ": " + trimmed
+	}
+	// The folder was empty a moment ago; removing it keeps the request atomic
+	// instead of leaving a half-made project. If that fails, say so — a folder
+	// the user was told does not exist would 409 every retry of the same name.
+	if rmErr := os.RemoveAll(dir); rmErr != nil {
+		log.Printf("projects: rolling back %s after a failed git init: %v (folder left behind)", dir, rmErr)
+		msg += " (the folder could not be removed: " + rmErr.Error() + ")"
+	}
+	return msg
 }
 
 // cleanProjectsPath normalizes a ?path= value to a relative subpath that cannot
