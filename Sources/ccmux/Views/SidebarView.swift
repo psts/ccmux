@@ -980,6 +980,16 @@ private struct WorkspaceRow: View {
                     ConnectionDot(state: hostedConnection)
                 }
             }
+            // The label owns its own click. Without this the gap after the name
+            // is dead space: a bare HStack hit-tests only its glyphs, and the
+            // empty pixels fall through to the List row, where reaching the
+            // AttentionRowBackground's tap is up to the AppKit List. That made
+            // "click the row to switch" work on one Mac and not another on the
+            // same build. Selecting here does not fight the disclosure triangle,
+            // which DisclosureGroup draws outside this label.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { onSelect?() }
         }
     }
 
