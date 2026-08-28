@@ -22,6 +22,10 @@ struct HostnamesSheetView: View {
         let id = UUID()
         var name: String
         var port: String
+        /// The repo-detected port the app binds on its own (compose published
+        /// port, package.json port). Invisible here but round-tripped: the
+        /// daemon replaces the whole list on save, so dropping it erases it.
+        var targetPort: Int = 0
         var url: String?
         /// Which file a prefilled row came from ("docker-compose.yml") —
         /// shown as a caption so a detected guess is distinguishable.
@@ -36,7 +40,8 @@ struct HostnamesSheetView: View {
         self.onCancel = onCancel
         self.fetchSuggestions = fetchSuggestions
         _rows = State(initialValue: current.map {
-            EditableHostname(name: $0.name, port: String($0.port), url: $0.url)
+            EditableHostname(name: $0.name, port: $0.port == 0 ? "" : String($0.port),
+                             targetPort: $0.targetPort, url: $0.url)
         })
         _devCommand = State(initialValue: devCommand)
     }
@@ -56,10 +61,11 @@ struct HostnamesSheetView: View {
                         TextField(suggestedName, text: $row.name)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 12, design: .monospaced))
-                        TextField("3000", text: $row.port)
+                        TextField("auto", text: $row.port)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 12, design: .monospaced))
                             .frame(width: 70)
+                            .help("Port — leave blank and ccmux assigns one from its reserved range")
                         Button {
                             rows.removeAll { $0.id == row.id }
                         } label: {
@@ -127,8 +133,10 @@ struct HostnamesSheetView: View {
     private func prefill() async {
         guard let fetchSuggestions, let detected = await fetchSuggestions() else { return }
         if rows.isEmpty {
+            // The detected port becomes the row's targetPort; the routing port
+            // stays blank so the daemon allocates one on save.
             rows = (detected.suggestions ?? []).map {
-                EditableHostname(name: $0.name, port: String($0.port), source: $0.source)
+                EditableHostname(name: $0.name, port: "", targetPort: $0.port, source: $0.source)
             }
         }
         if let source = detected.devCommandSource, !source.isEmpty, devCommand.isEmpty,
@@ -149,14 +157,19 @@ struct HostnamesSheetView: View {
         var outgoing: [DaemonHostname] = []
         for row in rows {
             let name = row.name.trimmingCharacters(in: .whitespaces)
-            if name.isEmpty && row.port.trimmingCharacters(in: .whitespaces).isEmpty {
+            let portText = row.port.trimmingCharacters(in: .whitespaces)
+            if name.isEmpty && portText.isEmpty {
                 continue // half-empty editor row, not a mapping
             }
-            guard let port = Int(row.port), (1...65535).contains(port) else {
-                status = "\(name.isEmpty ? "row" : name): port must be 1–65535"
-                return
+            var port = 0 // blank = the daemon allocates one
+            if !portText.isEmpty {
+                guard let typed = Int(portText), (1...65535).contains(typed) else {
+                    status = "\(name.isEmpty ? "row" : name): port must be 1–65535, or blank for auto"
+                    return
+                }
+                port = typed
             }
-            outgoing.append(DaemonHostname(name: name, port: port))
+            outgoing.append(DaemonHostname(name: name, port: port, targetPort: row.targetPort))
         }
         saving = true
         defer { saving = false }

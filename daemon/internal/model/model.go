@@ -111,15 +111,23 @@ type Workspace struct {
 // Hostname is one dev-hostname mapping: https://<Name>.<suffix> over the
 // tailnet reverse-proxies to 127.0.0.1:Port on the daemon host. Name is the
 // bare DNS label ("chartlabs-app"); the daemon's serving mode picks the suffix
-// (the configured dev domain, else per-hostname tsnet nodes on ts.net). Name
-// and Port are persisted; URL and Listening are runtime-only, stamped by the
-// devhost server (the resolved https URL, and whether the port currently
-// accepts connections).
+// (the configured dev domain, else per-hostname tsnet nodes on ts.net). Name,
+// Port and TargetPort are persisted; URL and Listening are runtime-only,
+// stamped by the devhost server (the resolved https URL, and whether the port
+// currently accepts connections).
+//
+// Port is the routing target and is normally ALLOCATED by the daemon from its
+// reserved range (saved as 0 = "assign one"); a hand-typed port outside the
+// range still routes, for mapping to servers the user runs themselves.
+// TargetPort remembers what the repo's config would bind on its own (the
+// compose published port, the package.json port) — it is how the compose
+// override knows which published port to move onto Port. 0 = none detected.
 type Hostname struct {
-	Name      string `json:"name"`
-	Port      int    `json:"port"`
-	URL       string `json:"url,omitempty"`
-	Listening bool   `json:"listening,omitempty"`
+	Name       string `json:"name"`
+	Port       int    `json:"port"`
+	TargetPort int    `json:"targetPort,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Listening  bool   `json:"listening,omitempty"`
 }
 
 // MarshalHostnames serializes mappings for the registry, keeping only the
@@ -131,12 +139,13 @@ func MarshalHostnames(hs []Hostname) string {
 		return ""
 	}
 	type persisted struct {
-		Name string `json:"name"`
-		Port int    `json:"port"`
+		Name       string `json:"name"`
+		Port       int    `json:"port"`
+		TargetPort int    `json:"targetPort,omitempty"`
 	}
 	out := make([]persisted, len(hs))
 	for i, h := range hs {
-		out[i] = persisted{Name: h.Name, Port: h.Port}
+		out[i] = persisted{Name: h.Name, Port: h.Port, TargetPort: h.TargetPort}
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

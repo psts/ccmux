@@ -357,8 +357,12 @@ async function setDevServer(id, start) {
 }
 
 // --- hostnames editor: {name, port} rows + the ▶ dev command. An empty sheet
-// prefills from the daemon's repo-config detection, like the Mac sheet. Save
-// PUTs and closes only on success; daemon validation errors stay inline. ---
+// prefills from the daemon's repo-config detection, like the Mac sheet. The
+// port field is blank = "auto": the daemon allocates one from its reserved
+// range on save. A suggestion's detected port becomes the row's targetPort
+// (kept on the row's dataset and round-tripped — dropping it would erase it
+// server-side on every save). Save PUTs and closes only on success; daemon
+// validation errors stay inline. ---
 let hostnamesWsId = null;
 
 async function openHostnamesModal(ws) {
@@ -367,23 +371,24 @@ async function openHostnamesModal(ws) {
   $("hostnames-error").classList.add("hidden");
   const rows = $("hostnames-rows");
   rows.innerHTML = "";
-  let mappings = (ws.hostnames || []).map((h) => ({ name: h.name, port: h.port }));
+  let mappings = (ws.hostnames || []).map((h) => ({ name: h.name, port: h.port, targetPort: h.targetPort }));
   let cmd = ws.devCommand || "";
   if (!mappings.length || !cmd) {
     try {
       const s = await (await fetch(`/v1/workspaces/${ws.id}/port-suggestions`)).json();
-      if (!mappings.length) mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: x.port }));
+      if (!mappings.length) mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: "", targetPort: x.port }));
       if (!cmd && s.devCommand) $("hostnames-cmd").placeholder = `dev command — detected: ${s.devCommand}`;
     } catch (_) { /* suggestions are best-effort */ }
   }
   if (!mappings.length) mappings = [{ name: "", port: "" }];
-  for (const m of mappings) rows.appendChild(hostnameRow(m.name, m.port));
+  for (const m of mappings) rows.appendChild(hostnameRow(m.name, m.port, m.targetPort));
   $("hostnames-cmd").value = cmd;
   $("hostnames-modal").classList.remove("hidden");
 }
 
-function hostnameRow(name, port) {
+function hostnameRow(name, port, targetPort) {
   const li = document.createElement("li");
+  li.dataset.targetPort = targetPort || "";
   const n = document.createElement("input");
   n.className = "setting-input hn-name";
   n.placeholder = "name";
@@ -391,7 +396,8 @@ function hostnameRow(name, port) {
   n.value = name || "";
   const p = document.createElement("input");
   p.className = "setting-input hn-port";
-  p.placeholder = "port";
+  p.placeholder = "auto";
+  p.title = "Port — leave blank and ccmux assigns one";
   p.inputMode = "numeric";
   p.value = port || "";
   const del = document.createElement("button");
@@ -408,6 +414,7 @@ async function saveHostnames() {
     .map((li) => ({
       name: li.querySelector(".hn-name").value.trim(),
       port: parseInt(li.querySelector(".hn-port").value, 10) || 0,
+      targetPort: parseInt(li.dataset.targetPort, 10) || 0,
     }))
     .filter((h) => h.name || h.port);
   const body = { hostnames, devCommand: $("hostnames-cmd").value.trim() };

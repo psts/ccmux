@@ -195,18 +195,23 @@ struct DaemonSuggestionsResponse: Decodable {
 
 /// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on
 /// the tailnet → localhost:<port> on the daemon host. `url`/`listening` are
-/// runtime-only, stamped by the daemon's devhost server.
+/// runtime-only, stamped by the daemon's devhost server. `port` 0 on save
+/// means "the daemon allocates one from its reserved range"; `targetPort` is
+/// the repo-detected port the app would bind on its own and MUST round-trip
+/// on save — the daemon replaces the whole list.
 struct DaemonHostname: Codable, Identifiable, Equatable {
     var name: String
     var port: Int
+    var targetPort: Int
     var url: String?
     var listening: Bool
 
     var id: String { name }
 
-    init(name: String, port: Int, url: String? = nil, listening: Bool = false) {
+    init(name: String, port: Int, targetPort: Int = 0, url: String? = nil, listening: Bool = false) {
         self.name = name
         self.port = port
+        self.targetPort = targetPort
         self.url = url
         self.listening = listening
     }
@@ -215,6 +220,7 @@ struct DaemonHostname: Codable, Identifiable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        targetPort = try c.decodeIfPresent(Int.self, forKey: .targetPort) ?? 0
         url = try c.decodeIfPresent(String.self, forKey: .url)
         listening = try c.decodeIfPresent(Bool.self, forKey: .listening) ?? false
     }

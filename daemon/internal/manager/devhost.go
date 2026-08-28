@@ -3,6 +3,7 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,6 +27,12 @@ const (
 // ErrUnknownWorkspace marks lookups of a workspace id the registry doesn't
 // hold, so the API can answer 404 rather than 400.
 var ErrUnknownWorkspace = errors.New("unknown workspace")
+
+// devPortBase..devPortMax is the daemon's reserved dev-port range. Hostnames
+// saved with port 0 get the first free port here, and the daemon is the only
+// allocator in the range, so mapped ports cannot collide with each other —
+// only with a squatter process, which the bind probe in allocateDevPort skips.
+const devPortBase, devPortMax = 21000, 21999
 
 // hostnameLabel is one valid lowercase DNS label (RFC 1123, 63 chars max).
 var hostnameLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -111,7 +118,9 @@ func (m *Manager) notifyDevhost() {
 // SetHostnames replaces a workspace's dev-hostname mappings. Names are
 // normalized to lowercase labels and validated; a name in use by another
 // workspace is rejected — hostnames are one flat tailnet-wide namespace.
-// Persisted, broadcast as workspace-status, and the devhost server is poked.
+// A row saved with port 0 gets a port allocated from the daemon's reserved
+// range. Persisted, broadcast as workspace-status, and the devhost server is
+// poked.
 func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspace, error) {
 	for i := range hs {
 		hs[i].Name = strings.ToLower(strings.TrimSpace(hs[i].Name))
@@ -122,8 +131,11 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 		if lens := m.LensHostname(); lens != "" && hs[i].Name == lens {
 			return nil, fmt.Errorf("hostname %q is reserved for the ccmux web lens", lens)
 		}
-		if hs[i].Port < 1 || hs[i].Port > 65535 {
+		if hs[i].Port < 0 || hs[i].Port > 65535 { // 0 = allocate below
 			return nil, fmt.Errorf("invalid port %d for %q", hs[i].Port, hs[i].Name)
+		}
+		if hs[i].TargetPort < 0 || hs[i].TargetPort > 65535 {
+			return nil, fmt.Errorf("invalid target port %d for %q", hs[i].TargetPort, hs[i].Name)
 		}
 		for _, prev := range hs[:i] {
 			if prev.Name == hs[i].Name {
@@ -139,12 +151,13 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
 	}
 	seen := map[string]string{} // name → owning workspace name, for the error
+	usedPort := map[int]bool{}  // every port any workspace holds or this request names
 	for _, other := range m.byID {
-		if other.ws.ID == wsID {
-			continue
-		}
 		for _, h := range other.ws.Hostnames {
-			seen[h.Name] = other.ws.Name
+			if other.ws.ID != wsID {
+				seen[h.Name] = other.ws.Name
+			}
+			usedPort[h.Port] = true
 		}
 	}
 	for _, h := range hs {
@@ -152,6 +165,20 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 			m.mu.Unlock()
 			return nil, fmt.Errorf("hostname %q already used by workspace %q", h.Name, owner)
 		}
+		if h.Port != 0 {
+			usedPort[h.Port] = true
+		}
+	}
+	for i := range hs {
+		if hs[i].Port != 0 {
+			continue
+		}
+		port, err := allocateDevPort(usedPort)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		hs[i].Port, usedPort[port] = port, true
 	}
 	e.ws.Hostnames = hs
 	ws := e.ws
@@ -163,6 +190,25 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	m.notifyDevhost()
 	return ws, nil
+}
+
+// allocateDevPort picks the first port in the reserved range that no mapping
+// holds and nothing on this host currently listens on (the bind probe skips
+// squatters — a stray process from before the range was reserved). Called with
+// m.mu held; the probe is a local bind+close, microseconds.
+func allocateDevPort(used map[int]bool) (int, error) {
+	for p := devPortBase; p <= devPortMax; p++ {
+		if used[p] {
+			continue
+		}
+		l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
+		if err != nil {
+			continue
+		}
+		l.Close()
+		return p, nil
+	}
+	return 0, fmt.Errorf("no free dev port left in %d-%d", devPortBase, devPortMax)
 }
 
 // AllHostnames snapshots every mapping (name → port) across workspaces — the
@@ -194,9 +240,14 @@ func (m *Manager) PortSuggestions(wsID string) ([]portdetect.Suggestion, error) 
 	for name := range m.AllHostnames() {
 		usedName[name] = true
 	}
+	// A detected port is "already mapped" when a row targets it (TargetPort,
+	// the allocated-port model) or routes to it directly (legacy manual rows).
 	usedPort := map[int]bool{}
 	for _, h := range ws.Hostnames {
 		usedPort[h.Port] = true
+		if h.TargetPort != 0 {
+			usedPort[h.TargetPort] = true
+		}
 	}
 
 	slug := model.Slug(ws.RepoPath)

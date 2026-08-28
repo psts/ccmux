@@ -73,6 +73,50 @@ func TestSetHostnames_RoundtripAndUniqueness(t *testing.T) {
 	}
 }
 
+// TestSetHostnames_AllocatesPortZero pins the allocated-port model: a row saved
+// with port 0 gets a port from the daemon's reserved range, its targetPort
+// survives the store round-trip, and a second allocation skips the first port
+// even from another workspace.
+func TestSetHostnames_AllocatesPortZero(t *testing.T) {
+	m, st := devhostManager(t)
+
+	ws, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 0, TargetPort: 3000}})
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got := ws.Hostnames[0]
+	if got.Port < devPortBase || got.Port > devPortMax {
+		t.Fatalf("allocated port %d outside %d-%d", got.Port, devPortBase, devPortMax)
+	}
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, l := range loaded {
+		if l.ID == "w1" && (len(l.Hostnames) != 1 || l.Hostnames[0].Port != got.Port || l.Hostnames[0].TargetPort != 3000) {
+			t.Fatalf("persisted = %+v", l.Hostnames)
+		}
+	}
+
+	// A second auto row, in another workspace, must not reuse w1's port.
+	ws2, err := m.SetHostnames("w2", []model.Hostname{{Name: "api", Port: 0}})
+	if err != nil {
+		t.Fatalf("set w2: %v", err)
+	}
+	if ws2.Hostnames[0].Port == got.Port {
+		t.Fatalf("both workspaces allocated %d", got.Port)
+	}
+
+	// Round-trip: re-saving the assigned port keeps it (no reallocation).
+	again, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: got.Port, TargetPort: 3000}})
+	if err != nil {
+		t.Fatalf("resave: %v", err)
+	}
+	if again.Hostnames[0].Port != got.Port {
+		t.Fatalf("resave moved the port: %d → %d", got.Port, again.Hostnames[0].Port)
+	}
+}
+
 // givePanes attaches panes to a fixture workspace in both memory and the store.
 func givePanes(t *testing.T, m *Manager, st *store.SQLite, wsID string, ids ...string) {
 	t.Helper()

@@ -1046,7 +1046,7 @@ final class RemoteSessionService: ObservableObject {
     func setHostnames(_ appId: UUID, hostnames: [DaemonHostname], devCommand: String? = nil) async -> String? {
         guard let daemonId = daemonIds[appId] else { return "workspace is not hosted" }
         var body: [String: Any] = [
-            "hostnames": hostnames.map { ["name": $0.name, "port": $0.port] }
+            "hostnames": hostnames.map { ["name": $0.name, "port": $0.port, "targetPort": $0.targetPort] }
         ]
         if let devCommand { body["devCommand"] = devCommand }
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/hostnames") else {
