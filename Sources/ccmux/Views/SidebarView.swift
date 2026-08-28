@@ -538,8 +538,17 @@ struct SidebarView: View {
             onWorkspaceHostnames?(workspace.id)
         }
         if !(remoteService.hostnames[workspace.id] ?? []).isEmpty {
-            Button(remoteService.devRunning[workspace.id] == true ? "Stop Dev Server" : "Start Dev Server") {
-                toggleDevServer(workspace.id)
+            // "Running" is a mapped port answering, not the pane existing: a
+            // crashed server leaves its pane at a shell, and Start then re-types
+            // the command into that pane (daemon-side). Both entries show in
+            // that dead-pane state.
+            let paneRunning = remoteService.devRunning[workspace.id] == true
+            let listening = (remoteService.hostnames[workspace.id] ?? []).contains { $0.listening }
+            if !listening {
+                Button("Start Dev Server") { setDevServer(workspace.id, start: true) }
+            }
+            if paneRunning {
+                Button("Stop Dev Server") { setDevServer(workspace.id, start: false) }
             }
         }
         ForEach(remoteService.hostnames[workspace.id] ?? []) { hostname in
@@ -672,15 +681,23 @@ struct SidebarView: View {
         if alert.runModal() == .alertFirstButtonReturn { perform() }
     }
 
-    /// Flip the workspace's dev server: the daemon spawns/kills its dev pane.
-    private func toggleDevServer(_ id: UUID) {
-        let running = remoteService.devRunning[id] ?? false
+    /// Drive the workspace's dev server. Start with a present-but-dead pane
+    /// re-types the command into that pane daemon-side, keeping its scrollback.
+    private func setDevServer(_ id: UUID, start: Bool) {
         Task {
-            guard let error = await remoteService.setDevServer(id, running: !running) else { return }
+            guard let error = await remoteService.setDevServer(id, running: start) else { return }
             await MainActor.run {
-                reportFailure(action: running ? "Stop dev server" : "Start dev server", error: error)
+                reportFailure(action: start ? "Start dev server" : "Stop dev server", error: error)
             }
         }
+    }
+
+    /// The ▶/■ toggle's intent: ■ (stop) only while the pane exists AND a
+    /// mapped port answers; anything else — no pane, or a crashed pane — is ▶.
+    private func toggleDevServer(_ id: UUID) {
+        let paneRunning = remoteService.devRunning[id] ?? false
+        let listening = (remoteService.hostnames[id] ?? []).contains { $0.listening }
+        setDevServer(id, start: !(paneRunning && listening))
     }
 
     /// One mapped hostname's menu entry: open / copy, with the dev server's
@@ -836,9 +853,18 @@ private struct WorkspaceRow: View {
     /// Dev-hostname mappings (hosted only): each renders as a clickable https
     /// URL in the expanded dashboard, with a listening dot from the daemon's probe.
     var hostnames: [DaemonHostname] = []
-    /// Dev-server pane state + toggle (hosted only): ▶/■ on the first hostname row.
+    /// Dev-server PANE presence + toggle (hosted only): ▶/■ on the first
+    /// hostname row. Whether the server actually runs is judged from the
+    /// hostnames' listening probe, not from this flag — see devShowsStop.
     var devRunning: Bool = false
     var onToggleDevServer: (() -> Void)?
+
+    /// ■ only while the pane exists AND a mapped port answers. A crashed
+    /// server's leftover pane shows ▶ again; pressing it re-types the command
+    /// into that same pane (daemon-side) instead of doing nothing.
+    private var devShowsStop: Bool {
+        devRunning && hostnames.contains { $0.listening }
+    }
 
     private var status: GitStatusInfo {
         monitor.status
@@ -881,12 +907,14 @@ private struct WorkspaceRow: View {
                             if index == 0, let onToggleDevServer {
                                 Spacer(minLength: 4)
                                 Button(action: onToggleDevServer) {
-                                    Image(systemName: devRunning ? "stop.fill" : "play.fill")
+                                    Image(systemName: devShowsStop ? "stop.fill" : "play.fill")
                                         .font(.system(size: 8))
-                                        .foregroundColor(devRunning ? .orange : .secondary)
+                                        .foregroundColor(devShowsStop ? .orange : .secondary)
                                 }
                                 .buttonStyle(.borderless)
-                                .help(devRunning ? "Stop the dev server (kills its pane)" : "Start the dev server (spawns a pane)")
+                                .help(devShowsStop ? "Stop the dev server (kills its pane)"
+                                      : devRunning ? "Restart the dev server in its pane (it isn't answering)"
+                                      : "Start the dev server (spawns a pane)")
                             }
                         }
                         .padding(.leading, 4)

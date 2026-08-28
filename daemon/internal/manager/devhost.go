@@ -391,7 +391,7 @@ func (m *Manager) ResolveDevCommand(wsID string) (command, source string, err er
 // every lens, tmux keeps it across daemon restarts, and revive replays it.
 func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 	if pane := m.devPane(wsID); pane != nil {
-		return m.Workspace(wsID), nil // already running — idempotent
+		return m.restartDevServer(wsID, pane)
 	}
 	command, _, err := m.ResolveDevCommand(wsID)
 	if err != nil {
@@ -400,18 +400,7 @@ func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 	if command == "" {
 		return nil, fmt.Errorf("no dev command: none stored and none detected in the repo")
 	}
-	// Frameworks that ignore the pane's PORT env (vite) get it as a flag. Only
-	// when PORT is actually set — one mapped hostname, same rule as devEnv.
-	m.mu.RLock()
-	var repo string
-	var singleHostname bool
-	if e := m.byID[wsID]; e != nil {
-		repo, singleHostname = e.ws.RepoPath, len(e.ws.Hostnames) == 1
-	}
-	m.mu.RUnlock()
-	if singleHostname {
-		command += portdetect.PortFlagSuffix(repo, command)
-	}
+	command = m.finalDevCommand(wsID, command)
 	pane, err := m.SpawnPane(wsID, "", command, "devhost")
 	if err != nil {
 		return nil, err
@@ -421,6 +410,65 @@ func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 	pane.Title = "dev ▸ " + command
 	m.mu.Unlock()
 	_ = m.store.SavePane(pane)
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return m.Workspace(wsID), nil
+}
+
+// finalDevCommand appends the port flag frameworks that ignore the PORT env
+// need (vite). Only when PORT is actually in the pane env — one mapped
+// hostname, same rule as devEnv.
+func (m *Manager) finalDevCommand(wsID, command string) string {
+	m.mu.RLock()
+	var repo string
+	var singleHostname bool
+	if e := m.byID[wsID]; e != nil {
+		repo, singleHostname = e.ws.RepoPath, len(e.ws.Hostnames) == 1
+	}
+	m.mu.RUnlock()
+	if !singleHostname {
+		return command
+	}
+	return command + portdetect.PortFlagSuffix(repo, command)
+}
+
+// restartDevServer handles ▶ with a dev pane already present. A server that
+// answers on a mapped port → idempotent no-op, as before. A DEAD server whose
+// pane sits back at a bare shell — the crash case where ▶ used to silently do
+// nothing while the pane kept claiming "running" — gets the command typed
+// again into the same pane, keeping its scrollback as the crash log. A busy
+// non-listening pane is a server still starting (or compiling): left alone.
+func (m *Manager) restartDevServer(wsID string, pane *model.Pane) (*model.Workspace, error) {
+	m.mu.RLock()
+	e := m.byID[wsID]
+	if e == nil {
+		m.mu.RUnlock()
+		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+	}
+	ctrl := e.ctrl
+	listening := false
+	for _, h := range e.ws.Hostnames {
+		listening = listening || h.Listening
+	}
+	idle := atBareShell(pane)
+	m.mu.RUnlock()
+	if listening || !idle || ctrl == nil {
+		return m.Workspace(wsID), nil
+	}
+	command, _, err := m.ResolveDevCommand(wsID)
+	if err != nil {
+		return nil, err
+	}
+	if command == "" {
+		return nil, fmt.Errorf("no dev command: none stored and none detected in the repo")
+	}
+	command = m.finalDevCommand(wsID, command)
+	m.mu.Lock()
+	pane.StartupCommand = command
+	pane.Title = "dev ▸ " + command
+	saved := *pane
+	m.mu.Unlock()
+	_ = m.store.SavePane(&saved)
+	m.deliverStartup(ctrl, pane.ID, command, false)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return m.Workspace(wsID), nil
 }

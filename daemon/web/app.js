@@ -326,8 +326,13 @@ function openWsMenu(ws, x, y) {
     add("Hostnames…", () => openHostnamesModal(ws));
     const hostnames = ws.hostnames || [];
     if (hostnames.length) {
-      const running = (ws.panes || []).some((p) => p.devServer);
-      add(running ? "Stop Dev Server" : "Start Dev Server", () => setDevServer(ws.id, !running));
+      // "Running" is the port answering, not the pane existing: a crashed
+      // server's pane survives at a shell, and Start then re-types the command
+      // into it (daemon-side). Both entries show for that dead-pane state.
+      const paneRunning = (ws.panes || []).some((p) => p.devServer);
+      const listening = hostnames.some((h) => h.listening);
+      if (!listening) add("Start Dev Server", () => setDevServer(ws.id, true));
+      if (paneRunning) add("Stop Dev Server", () => setDevServer(ws.id, false));
     }
     for (const h of hostnames.filter((h) => h.url)) {
       add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}`, () => window.open(h.url, "_blank"));

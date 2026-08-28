@@ -449,6 +449,45 @@ func TestDevCommand(t *testing.T) {
 	}
 }
 
+// TestStartDevServer_ExistingPaneDecisions pins restartDevServer's no-op
+// branches on a cold fixture (no controller): a listening server or a busy
+// pane must not be touched, and a dead-idle pane without a controller must
+// no-op rather than crash — in every case the recorded startup command stays.
+func TestStartDevServer_ExistingPaneDecisions(t *testing.T) {
+	m, st := devhostManager(t)
+	givePanes(t, m, st, "w1", "dev-pane")
+	m.mu.Lock()
+	p := m.byID["w1"].ws.Panes[0]
+	p.DevServer = true
+	p.StartupCommand = "npm run dev"
+	m.mu.Unlock()
+
+	set := func(raw string, listening bool) {
+		m.mu.Lock()
+		p.RawCommand = raw
+		m.byID["w1"].ws.Hostnames = []model.Hostname{{Name: "app", Port: 21000, Listening: listening}}
+		m.mu.Unlock()
+	}
+	for _, tc := range []struct {
+		name      string
+		raw       string
+		listening bool
+	}{
+		{"listening server", "node", true},
+		{"busy pane still starting", "node", false},
+		{"dead idle pane, no controller", "zsh", false},
+	} {
+		set(tc.raw, tc.listening)
+		ws, err := m.StartDevServer("w1")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(ws.Panes) != 1 || ws.Panes[0].StartupCommand != "npm run dev" {
+			t.Fatalf("%s: pane mutated: %+v", tc.name, ws.Panes)
+		}
+	}
+}
+
 // TestStopDevServerRefusesWhenItIsTheOnlyPane guards the seam between "stop the
 // dev server" and KillPane's last-pane archive: without the refusal, ■ would kill
 // the tmux session and still answer 200, so every layer would report success while
