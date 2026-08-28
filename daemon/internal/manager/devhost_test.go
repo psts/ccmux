@@ -211,6 +211,60 @@ func TestPortSuggestions_TargetPortDedupes(t *testing.T) {
 	}
 }
 
+// TestAutoPortWorks pins when the sheet may offer "auto": compose-run repos
+// always (the override steers per service); otherwise only single-app repos.
+// Shaped on the admin outage: a pnpm monorepo whose two apps bind their own
+// ports got auto offered, and both hostnames routed to ports nothing used.
+func TestAutoPortWorks(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+
+	fixture := func(id string, files map[string]string) {
+		repo := t.TempDir()
+		for name, content := range files {
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ws := &model.Workspace{ID: id, Name: id, RepoPath: repo}
+		if err := st.SaveWorkspace(ws); err != nil {
+			t.Fatal(err)
+		}
+		m.adopt(ws, false)
+	}
+	twoServices := "services:\n  web:\n    ports: [\"3001:3001\"]\n  api:\n    ports: [\"8001:8001\"]\n"
+
+	// Compose-run, two services: the override steers both — auto works.
+	fixture("compose", map[string]string{"docker-compose.yml": twoServices})
+	// pnpm-run monorepo, same two ports detected: nothing steers — no auto.
+	fixture("monorepo", map[string]string{
+		"docker-compose.yml": twoServices,
+		"package.json":       `{"scripts": {"dev": "turbo dev"}}`,
+	})
+	// Single app: PORT env steers — auto works.
+	fixture("single", map[string]string{"package.json": `{"scripts": {"dev": "next dev"}}`})
+
+	for id, want := range map[string]bool{"compose": true, "monorepo": false, "single": true} {
+		if got := m.AutoPortWorks(id); got != want {
+			t.Fatalf("AutoPortWorks(%s) = %v, want %v", id, got, want)
+		}
+	}
+
+	// The same multi-app guard holds for env injection: one mapped hostname
+	// on the monorepo must NOT set PORT (both apps would read it).
+	ws, err := m.SetHostnames("monorepo", []model.Hostname{{Name: "mono-app", Port: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.devEnv(ws)["PORT"]; ok {
+		t.Fatal("PORT injected for a multi-app repo")
+	}
+}
+
 // TestDevEnv_PortAndComposeFile pins the injection contract: exactly one
 // mapped hostname puts PORT/CCMUX_DEV_PORT in pane env; a compose repo gets
 // COMPOSE_FILE listing the repo's compose file plus the generated override;

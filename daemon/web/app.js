@@ -382,7 +382,12 @@ async function openHostnamesModal(ws) {
   $("hostnames-cmd-hint").classList.add("hidden");
   try {
     const s = await (await fetch(`/v1/workspaces/${ws.id}/port-suggestions`)).json();
-    if (!mappings.length) mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: "", targetPort: x.port }));
+    // autoPort=false: a multi-app repo ccmux cannot steer (e.g. a pnpm
+    // monorepo starting two servers) — the detected port must BE the
+    // routing port, so prefill it instead of "auto".
+    if (!mappings.length) {
+      mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: s.autoPort ? "" : x.port, targetPort: x.port }));
+    }
     if (!cmd && s.devCommand) $("hostnames-cmd").placeholder = `dev command — detected: ${s.devCommand}`;
     // A stored override whose repo-detected counterpart moved on gets a
     // one-click way back to detection ("" on the daemon = auto-detect).

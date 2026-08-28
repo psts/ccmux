@@ -744,6 +744,10 @@ func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
 		"devCommand":       command,
 		"devCommandSource": source,
 		"detectedCommand":  detected,
+		// autoPort tells the sheet whether prefilled rows may leave the port
+		// blank ("auto"): false = multi-app repo whose servers ccmux cannot
+		// steer, so the detected port must BE the routing port.
+		"autoPort": s.mgr.AutoPortWorks(r.PathValue("id")),
 	})
 }
 

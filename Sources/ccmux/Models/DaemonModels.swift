@@ -194,6 +194,9 @@ struct DaemonSuggestionsResponse: Decodable {
     let devCommand: String?
     let devCommandSource: String?
     let detectedCommand: String?
+    /// False = multi-app repo ccmux cannot steer onto allocated ports; the
+    /// sheet prefill must keep the detected port as the routing port.
+    let autoPort: Bool?
 }
 
 /// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on

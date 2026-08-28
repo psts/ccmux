@@ -160,12 +160,13 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 }
 
 // devEnv contributes a pane's dev-port env (nil ws = none). With exactly one
-// hostname mapped, PORT and CCMUX_DEV_PORT carry its allocated port — so a
-// dev server started by anything in the workspace binds where the hostname
-// routes. Exactly one on purpose: a monorepo starting two apps that both read
-// PORT would land them on the same port. A compose repo additionally gets
-// COMPOSE_FILE pointing at the generated override, which remaps published
-// ports per-service and so handles the multi-hostname case itself.
+// hostname mapped AND at most one detected dev app, PORT and CCMUX_DEV_PORT
+// carry the allocated port — so a dev server started by anything in the
+// workspace binds where the hostname routes. Both conditions on purpose: a
+// monorepo runner starting two apps that both read PORT would land them on
+// the same port, whether one hostname is mapped or two. A compose repo
+// additionally gets COMPOSE_FILE pointing at the generated override, which
+// remaps published ports per-service and so handles multi-app itself.
 func (m *Manager) devEnv(ws *model.Workspace) map[string]string {
 	if ws == nil {
 		return nil
@@ -175,7 +176,7 @@ func (m *Manager) devEnv(ws *model.Workspace) map[string]string {
 	repo, wsID := ws.RepoPath, ws.ID
 	m.mu.RUnlock()
 	env := map[string]string{}
-	if len(hs) == 1 && hs[0].Port > 0 {
+	if len(hs) == 1 && hs[0].Port > 0 && singleDevApp(repo) {
 		p := strconv.Itoa(hs[0].Port)
 		env["PORT"], env["CCMUX_DEV_PORT"] = p, p
 	}
@@ -439,6 +440,36 @@ func suggestionLabel(slug, service string) string {
 	return slug + "-" + service
 }
 
+// AutoPortWorks reports whether "blank = auto" can actually steer this
+// workspace's dev servers onto allocated ports. Compose-run repos always can
+// (the generated override remaps per service); anything else only when
+// detection finds at most one dev port — several apps under one runner
+// ("pnpm dev" in a monorepo) bind their own configured ports and ignore
+// everything ccmux allocates, so offering auto there breaks the routing.
+func (m *Manager) AutoPortWorks(wsID string) bool {
+	ws := m.Workspace(wsID)
+	if ws == nil {
+		return false
+	}
+	command, _, _ := m.ResolveDevCommand(wsID)
+	if isComposeCommand(command) {
+		return true
+	}
+	return singleDevApp(ws.RepoPath)
+}
+
+// isComposeCommand matches the dev commands the compose override can steer.
+func isComposeCommand(c string) bool {
+	return strings.HasPrefix(c, "docker compose") || strings.HasPrefix(c, "docker-compose")
+}
+
+// singleDevApp reports whether detection finds at most one dev port in the
+// repo — the condition for PORT-env steering to be safe. Two detected apps
+// under one runner would both read the same PORT and collide.
+func singleDevApp(repo string) bool {
+	return len(portdetect.Detect(repo)) <= 1
+}
+
 // SetDevCommand persists the workspace's dev-server command override ("" =
 // back to detection) and broadcasts so lenses refresh.
 func (m *Manager) SetDevCommand(wsID, cmd string) error {
@@ -540,7 +571,7 @@ func (m *Manager) finalDevCommand(wsID, command string) string {
 		repo, singleHostname = e.ws.RepoPath, len(e.ws.Hostnames) == 1
 	}
 	m.mu.RUnlock()
-	if !singleHostname {
+	if !singleHostname || !singleDevApp(repo) {
 		return command
 	}
 	return command + portdetect.PortFlagSuffix(repo, command)
@@ -564,21 +595,26 @@ func (m *Manager) restartDevServer(wsID string, pane *model.Pane) (*model.Worksp
 	for _, h := range e.ws.Hostnames {
 		listening = listening || h.Listening
 	}
+	singlePort := 0
+	if len(e.ws.Hostnames) == 1 {
+		singlePort = e.ws.Hostnames[0].Port
+	}
+	repo := e.ws.RepoPath
+	idle := atBareShell(pane)
+	m.mu.RUnlock()
+	if listening || !idle || ctrl == nil {
+		return m.Workspace(wsID), nil
+	}
 	// The pane's env froze at its creation, but the mapping may have changed
 	// since (port reallocated, hostname count now 1). Pinning PORT= onto the
 	// delivered line makes the restarted server bind where the hostname
 	// routes TODAY, whatever the pane was born with. Delivery-only: the
 	// persisted startup command stays clean, and a revive recreates the pane
-	// with fresh env anyway.
+	// with fresh env anyway. Same guard as devEnv: never for multi-app repos.
 	envPrefix := ""
-	if len(e.ws.Hostnames) == 1 && e.ws.Hostnames[0].Port > 0 {
-		p := strconv.Itoa(e.ws.Hostnames[0].Port)
+	if singlePort > 0 && singleDevApp(repo) {
+		p := strconv.Itoa(singlePort)
 		envPrefix = "PORT=" + p + " CCMUX_DEV_PORT=" + p + " "
-	}
-	idle := atBareShell(pane)
-	m.mu.RUnlock()
-	if listening || !idle || ctrl == nil {
-		return m.Workspace(wsID), nil
 	}
 	command, err := m.devCommandToRun(wsID)
 	if err != nil {

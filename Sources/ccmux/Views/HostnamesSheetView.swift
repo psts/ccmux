@@ -152,10 +152,14 @@ struct HostnamesSheetView: View {
     private func prefill() async {
         guard let fetchSuggestions, let detected = await fetchSuggestions() else { return }
         if rows.isEmpty {
-            // The detected port becomes the row's targetPort; the routing port
-            // stays blank so the daemon allocates one on save.
+            // The detected port becomes the row's targetPort. The routing port
+            // stays blank ("auto", allocated on save) only when the daemon says
+            // auto can steer this repo — a multi-app repo it cannot steer gets
+            // the detected port AS the routing port, or nothing would answer.
+            let auto = detected.autoPort == true
             rows = (detected.suggestions ?? []).map {
-                EditableHostname(name: $0.name, port: "", targetPort: $0.port, source: $0.source)
+                EditableHostname(name: $0.name, port: auto ? "" : String($0.port),
+                                 targetPort: $0.port, source: $0.source)
             }
         }
         if let source = detected.devCommandSource, !source.isEmpty, devCommand.isEmpty,
