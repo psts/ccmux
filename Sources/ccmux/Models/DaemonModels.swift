@@ -186,11 +186,15 @@ struct DaemonPortSuggestion: Decodable {
 }
 
 /// The full port-suggestions payload: prefill rows plus the resolved dev-server
-/// command (stored override or detection) with its provenance.
+/// command (stored override or detection) with its provenance. detectedCommand
+/// is detection alone, override ignored — the sheet flags a stored command
+/// whose repo-detected counterpart has since changed.
 struct DaemonSuggestionsResponse: Decodable {
     let suggestions: [DaemonPortSuggestion]?
     let devCommand: String?
     let devCommandSource: String?
+    let detectedCommand: String?
+    let detectedSource: String?
 }
 
 /// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on

@@ -736,10 +736,15 @@ func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	command, source, _ := s.mgr.ResolveDevCommand(r.PathValue("id"))
+	// detectedCommand is detection alone, override ignored — the sheet flags a
+	// stored command whose repo-detected counterpart has since changed.
+	detected, detectedSource, _ := s.mgr.DetectedDevCommand(r.PathValue("id"))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"suggestions":      suggestions,
 		"devCommand":       command,
 		"devCommandSource": source,
+		"detectedCommand":  detected,
+		"detectedSource":   detectedSource,
 	})
 }
 

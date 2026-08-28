@@ -386,6 +386,18 @@ func (m *Manager) ResolveDevCommand(wsID string) (command, source string, err er
 	return command, source, nil
 }
 
+// DetectedDevCommand returns what detection alone finds in the repo's config
+// files, ignoring any stored override. The sheet compares it against the
+// override to flag "the repo's dev command changed under your saved one".
+func (m *Manager) DetectedDevCommand(wsID string) (command, source string, err error) {
+	ws := m.Workspace(wsID)
+	if ws == nil {
+		return "", "", fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+	}
+	command, source = portdetect.DetectCommand(ws.RepoPath)
+	return command, source, nil
+}
+
 // StartDevServer spawns the workspace's dev-server pane running the resolved
 // command. The pane IS the log surface: stdout/colors/interactivity render in
 // every lens, tmux keeps it across daemon restarts, and revive replays it.

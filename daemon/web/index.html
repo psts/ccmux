@@ -85,6 +85,11 @@
       <button id="hostnames-add" class="hn-add">+ add mapping</button>
       <input id="hostnames-cmd" class="setting-input" type="text" spellcheck="false"
              autocomplete="off" placeholder="dev command — what ▶ runs">
+      <!-- Shown when a stored command's repo-detected counterpart changed. -->
+      <p id="hostnames-cmd-hint" class="crumb hidden">
+        <span id="hostnames-cmd-detected"></span>
+        <button id="hostnames-cmd-use" class="hn-add" type="button">use detected</button>
+      </p>
       <p id="hostnames-error" class="status hidden"></p>
       <div class="sheet-actions"><button id="hostnames-save">Save</button></div>
     </div>

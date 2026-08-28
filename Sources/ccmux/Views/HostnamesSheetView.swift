@@ -15,6 +15,9 @@ struct HostnamesSheetView: View {
     @State private var rows: [EditableHostname]
     @State private var devCommand: String
     @State private var devCommandCaption = ""
+    /// Non-empty when the stored command's repo-detected counterpart differs —
+    /// shows the "use detected" badge under the command field.
+    @State private var detectedChanged = ""
     @State private var status = ""
     @State private var saving = false
 
@@ -104,6 +107,22 @@ struct HostnamesSheetView: View {
                         .foregroundColor(.secondary)
                         .padding(.leading, 2)
                 }
+                if !detectedChanged.isEmpty {
+                    HStack(spacing: 6) {
+                        Text("repo now detects: \(detectedChanged)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.orange)
+                        Button("Use detected") {
+                            // "" = back to auto-detection, so it keeps following
+                            // the repo instead of freezing today's detection.
+                            devCommand = ""
+                            devCommandCaption = "detected: \(detectedChanged)"
+                            detectedChanged = ""
+                        }
+                        .controlSize(.mini)
+                    }
+                    .padding(.leading, 2)
+                }
             }
 
             HStack {
@@ -142,6 +161,10 @@ struct HostnamesSheetView: View {
         if let source = detected.devCommandSource, !source.isEmpty, devCommand.isEmpty,
            let command = detected.devCommand, !command.isEmpty, source != "workspace setting" {
             devCommandCaption = "detected: \(command)  (from \(source))"
+        }
+        if let fresh = detected.detectedCommand, !fresh.isEmpty,
+           !devCommand.isEmpty, fresh != devCommand {
+            detectedChanged = fresh
         }
     }
 

@@ -378,13 +378,23 @@ async function openHostnamesModal(ws) {
   rows.innerHTML = "";
   let mappings = (ws.hostnames || []).map((h) => ({ name: h.name, port: h.port, targetPort: h.targetPort }));
   let cmd = ws.devCommand || "";
-  if (!mappings.length || !cmd) {
-    try {
-      const s = await (await fetch(`/v1/workspaces/${ws.id}/port-suggestions`)).json();
-      if (!mappings.length) mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: "", targetPort: x.port }));
-      if (!cmd && s.devCommand) $("hostnames-cmd").placeholder = `dev command — detected: ${s.devCommand}`;
-    } catch (_) { /* suggestions are best-effort */ }
-  }
+  $("hostnames-cmd-hint").classList.add("hidden");
+  try {
+    const s = await (await fetch(`/v1/workspaces/${ws.id}/port-suggestions`)).json();
+    if (!mappings.length) mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: "", targetPort: x.port }));
+    if (!cmd && s.devCommand) $("hostnames-cmd").placeholder = `dev command — detected: ${s.devCommand}`;
+    // A stored override whose repo-detected counterpart moved on gets a
+    // one-click way back to detection ("" on the daemon = auto-detect).
+    if (cmd && s.detectedCommand && s.detectedCommand !== cmd) {
+      $("hostnames-cmd-detected").textContent = `repo now detects: ${s.detectedCommand}`;
+      $("hostnames-cmd-use").onclick = () => {
+        $("hostnames-cmd").value = "";
+        $("hostnames-cmd").placeholder = `dev command — detected: ${s.detectedCommand}`;
+        $("hostnames-cmd-hint").classList.add("hidden");
+      };
+      $("hostnames-cmd-hint").classList.remove("hidden");
+    }
+  } catch (_) { /* suggestions are best-effort */ }
   if (!mappings.length) mappings = [{ name: "", port: "" }];
   for (const m of mappings) rows.appendChild(hostnameRow(m.name, m.port, m.targetPort));
   $("hostnames-cmd").value = cmd;
