@@ -3,7 +3,10 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -187,9 +190,70 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 	if err := m.store.SetWorkspaceHostnames(wsID, model.MarshalHostnames(hs)); err != nil {
 		return nil, err
 	}
+	// Refresh the compose port override now, not just at pane creation: live
+	// panes carry a COMPOSE_FILE that points at this path, and their next
+	// `docker compose up` must see the mapping that was just saved.
+	m.refreshComposeOverride(wsID, ws.RepoPath, hs)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	m.notifyDevhost()
 	return ws, nil
+}
+
+// devEnv contributes a pane's dev-port env (nil ws = none). With exactly one
+// hostname mapped, PORT and CCMUX_DEV_PORT carry its allocated port — so a
+// dev server started by anything in the workspace binds where the hostname
+// routes. Exactly one on purpose: a monorepo starting two apps that both read
+// PORT would land them on the same port. A compose repo additionally gets
+// COMPOSE_FILE pointing at the generated override, which remaps published
+// ports per-service and so handles the multi-hostname case itself.
+func (m *Manager) devEnv(ws *model.Workspace) map[string]string {
+	if ws == nil {
+		return nil
+	}
+	m.mu.RLock()
+	hs := append([]model.Hostname(nil), ws.Hostnames...)
+	repo, wsID := ws.RepoPath, ws.ID
+	m.mu.RUnlock()
+	env := map[string]string{}
+	if len(hs) == 1 && hs[0].Port > 0 {
+		p := strconv.Itoa(hs[0].Port)
+		env["PORT"], env["CCMUX_DEV_PORT"] = p, p
+	}
+	if cf := m.refreshComposeOverride(wsID, repo, hs); cf != "" {
+		env["COMPOSE_FILE"] = cf
+	}
+	return env
+}
+
+// refreshComposeOverride (re)writes the workspace's compose port-override file
+// and returns the COMPOSE_FILE value panes should carry ("" = no compose
+// remapping applies, and any stale override file is removed). Best-effort:
+// a write failure costs the remap, not the pane.
+func (m *Manager) refreshComposeOverride(wsID, repo string, hs []model.Hostname) string {
+	if m.DevhostDir == "" || repo == "" {
+		return ""
+	}
+	path := filepath.Join(m.DevhostDir, "compose", wsID+".yml")
+	remap := map[int]int{}
+	for _, h := range hs {
+		if h.TargetPort > 0 && h.Port > 0 && h.TargetPort != h.Port {
+			remap[h.TargetPort] = h.Port
+		}
+	}
+	files, content, ok := portdetect.ComposeOverride(repo, remap)
+	if !ok {
+		os.Remove(path)
+		return ""
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Printf("workspace %s: compose override dir: %v", wsID, err)
+		return ""
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		log.Printf("workspace %s: compose override write: %v", wsID, err)
+		return ""
+	}
+	return strings.Join(append(files, path), ":")
 }
 
 // allocateDevPort picks the first port in the reserved range that no mapping
@@ -335,6 +399,18 @@ func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 	}
 	if command == "" {
 		return nil, fmt.Errorf("no dev command: none stored and none detected in the repo")
+	}
+	// Frameworks that ignore the pane's PORT env (vite) get it as a flag. Only
+	// when PORT is actually set — one mapped hostname, same rule as devEnv.
+	m.mu.RLock()
+	var repo string
+	var singleHostname bool
+	if e := m.byID[wsID]; e != nil {
+		repo, singleHostname = e.ws.RepoPath, len(e.ws.Hostnames) == 1
+	}
+	m.mu.RUnlock()
+	if singleHostname {
+		command += portdetect.PortFlagSuffix(repo, command)
 	}
 	pane, err := m.SpawnPane(wsID, "", command, "devhost")
 	if err != nil {

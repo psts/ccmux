@@ -90,6 +90,11 @@ type Manager struct {
 	// Set once at startup. Nil = no dev serving.
 	OnDevhostChange func()
 
+	// DevhostDir is where dev-serving state lives (same dir the devhost server
+	// uses); the compose port-override files go under it. Set once at startup.
+	// Empty = no compose overrides are written.
+	DevhostDir string
+
 	// paneTitleDefaults holds the #{pane_title} values that mean "no program set
 	// a title" (the tmux host's name) — see panetitle.go.
 	paneTitleDefaults map[string]bool
@@ -191,7 +196,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy, gr
 	}
 	pane0 := m.newPane(wsID, cwd, startupCmd, createdBy)
 
-	if err := m.server.NewSession(sessionName, cwd, defaultCols, defaultRows, m.paneEnv(pane0.ID)); err != nil {
+	if err := m.server.NewSession(sessionName, cwd, defaultCols, defaultRows, m.paneEnv(nil, pane0.ID)); err != nil {
 		return nil, err
 	}
 	ctrl, err := session.Open(m.ctx, m.server, sessionName, wsID)
@@ -393,7 +398,7 @@ func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnes
 	if err := m.routeLLM(p.ID, routeAccount); err != nil {
 		return nil, err
 	}
-	if err := e.ctrl.SpawnWindow(p.ID, cwd, m.paneEnv(p.ID)); err != nil {
+	if err := e.ctrl.SpawnWindow(p.ID, cwd, m.paneEnv(e.ws, p.ID)); err != nil {
 		return nil, err
 	}
 	_ = e.ctrl.Resize(p.ID, defaultCols, defaultRows)
@@ -425,7 +430,7 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 	pane0 := ws.Panes[0]
 	want := m.wantedSizes(ws)
 	first := sizeFor(want, pane0.ID)
-	if err := m.server.NewSession(ws.TmuxSession, pane0.CWD, first.cols, first.rows, m.paneEnv(pane0.ID)); err != nil {
+	if err := m.server.NewSession(ws.TmuxSession, pane0.CWD, first.cols, first.rows, m.paneEnv(ws, pane0.ID)); err != nil {
 		return nil, err
 	}
 	ctrl, err := session.Open(m.ctx, m.server, ws.TmuxSession, wsID)
@@ -524,7 +529,7 @@ func (m *Manager) revivePanes(ctrl *session.Controller, ws *model.Workspace, wan
 		applied[pane0.ID] = d
 	}
 	for _, p := range ws.Panes[1:] {
-		if err := ctrl.SpawnWindow(p.ID, p.CWD, m.paneEnv(p.ID)); err != nil {
+		if err := ctrl.SpawnWindow(p.ID, p.CWD, m.paneEnv(ws, p.ID)); err != nil {
 			return nil, err
 		}
 		if d := sizeFor(want, p.ID); m.sizeAndStart(ctrl, p, d) {
@@ -959,7 +964,14 @@ func (m *Manager) BroadcastClipboard(tmuxPane string, text []byte) error {
 	return fmt.Errorf("unknown tmux pane %s", tmuxPane)
 }
 
-func (m *Manager) paneEnv(paneID string) map[string]string {
+// paneEnv builds the env a new pane's shell starts with. ws is the owning
+// workspace (nil at first-pane creation, when it cannot have hostnames yet);
+// it contributes the dev-port vars so a dev server started by ANYTHING in the
+// workspace — the ▶ button, claude, the user by hand — binds the port the
+// hostnames actually route to. Env freezes at pane creation (tmux semantics,
+// same trade as ANTHROPIC_BASE_URL below): panes opened before a hostname was
+// mapped don't carry it until a respawn or revive.
+func (m *Manager) paneEnv(ws *model.Workspace, paneID string) map[string]string {
 	if err := shellint.WriteZdotdir(shellint.ZdotdirPath(paneID)); err != nil {
 		// Costs this pane its command capture, so it is worth a line; the error
 		// used to be dropped entirely.
@@ -988,6 +1000,9 @@ func (m *Manager) paneEnv(paneID string) map[string]string {
 		for k, v := range m.ExtraPaneEnv(paneID) {
 			env[k] = v
 		}
+	}
+	for k, v := range m.devEnv(ws) {
+		env[k] = v
 	}
 	return env
 }

@@ -111,6 +111,7 @@ func runDaemon() {
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
+	mgr.DevhostDir = filepath.Join(configDir(), "devhost")
 	// Harness registry: named ways of working (claude built in, more via
 	// settings). It is the single source of what a pane runs; the migration
 	// folds the retired default-startup-command and raw-command folder rules

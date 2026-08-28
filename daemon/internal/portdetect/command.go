@@ -56,6 +56,45 @@ func scriptCommand(dir string) string {
 	return ""
 }
 
+// PortFlagSuffix returns what to append to a dev command so the server binds
+// the allocated $PORT. Most frameworks (next, react-scripts, node servers)
+// honor the PORT env var the pane already carries; vite does not — it needs
+// an explicit --port. Only the runner form scriptCommand would produce is
+// touched: anything else ("docker compose up", a hand-rolled script) must not
+// grow flags it never asked for. "" = append nothing.
+func PortFlagSuffix(dir, command string) string {
+	if strings.Contains(command, "--port") || strings.Contains(command, "$PORT") {
+		return "" // the command already pins its port
+	}
+	if command == "" || command != scriptCommand(dir) {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if json.Unmarshal(raw, &pkg) != nil {
+		return ""
+	}
+	fields := strings.Fields(pkg.Scripts["dev"])
+	if len(fields) == 0 || fields[0] != "vite" {
+		return ""
+	}
+	for _, f := range fields {
+		if f == "--port" || f == "-p" {
+			return ""
+		}
+	}
+	// npm forwards script args only after --; pnpm/yarn/bun pass them through.
+	if strings.HasPrefix(command, "npm ") {
+		return ` -- --port "$PORT"`
+	}
+	return ` --port "$PORT"`
+}
+
 // packageRunner picks the package manager from the lockfile present.
 func packageRunner(dir string) string {
 	for lock, runner := range map[string]string{

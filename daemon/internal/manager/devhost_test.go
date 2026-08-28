@@ -3,9 +3,11 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/model"
@@ -114,6 +116,69 @@ func TestSetHostnames_AllocatesPortZero(t *testing.T) {
 	}
 	if again.Hostnames[0].Port != got.Port {
 		t.Fatalf("resave moved the port: %d → %d", got.Port, again.Hostnames[0].Port)
+	}
+}
+
+// TestDevEnv_PortAndComposeFile pins the injection contract: exactly one
+// mapped hostname puts PORT/CCMUX_DEV_PORT in pane env; a compose repo gets
+// COMPOSE_FILE listing the repo's compose file plus the generated override;
+// a second hostname drops PORT (two apps reading one PORT would collide).
+func TestDevEnv_PortAndComposeFile(t *testing.T) {
+	m, _ := devhostManager(t)
+	repo := t.TempDir()
+	compose := filepath.Join(repo, "docker-compose.yml")
+	if err := os.WriteFile(compose, []byte("services:\n  web:\n    ports:\n      - \"3000:3000\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.DevhostDir = t.TempDir()
+	m.mu.Lock()
+	m.byID["w1"].ws.RepoPath = repo
+	m.mu.Unlock()
+
+	ws, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 0, TargetPort: 3000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ws.Hostnames[0].Port
+	env := m.devEnv(ws)
+	if env["PORT"] == "" || env["PORT"] != env["CCMUX_DEV_PORT"] {
+		t.Fatalf("PORT env = %q / %q", env["PORT"], env["CCMUX_DEV_PORT"])
+	}
+	cf := env["COMPOSE_FILE"]
+	if !strings.HasPrefix(cf, compose+":") || !strings.Contains(cf, "w1.yml") {
+		t.Fatalf("COMPOSE_FILE = %q", cf)
+	}
+	overridePath := filepath.Join(m.DevhostDir, "compose", "w1.yml")
+	raw, err := os.ReadFile(overridePath)
+	if err != nil {
+		t.Fatalf("override not written: %v", err)
+	}
+	if want := fmt.Sprintf("%d:3000", port); !strings.Contains(string(raw), want) {
+		t.Fatalf("override lacks %q:\n%s", want, raw)
+	}
+
+	// Two hostnames: PORT is ambiguous and must go; compose remapping stays.
+	ws, err = m.SetHostnames("w1", []model.Hostname{
+		{Name: "app", Port: port, TargetPort: 3000},
+		{Name: "api", Port: 0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = m.devEnv(ws)
+	if _, ok := env["PORT"]; ok {
+		t.Fatalf("PORT should be dropped with two hostnames, env = %v", env)
+	}
+	if env["COMPOSE_FILE"] == "" {
+		t.Fatal("COMPOSE_FILE should survive with two hostnames")
+	}
+
+	// Clearing the mappings removes the stale override file.
+	if _, err := m.SetHostnames("w1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(overridePath); !os.IsNotExist(err) {
+		t.Fatalf("stale override survived: %v", err)
 	}
 }
 

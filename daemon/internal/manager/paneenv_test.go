@@ -16,13 +16,13 @@ func TestManager_PaneEnv_InjectsHooksSocket(t *testing.T) {
 
 	// Not configured → omitted.
 	m := &Manager{}
-	if _, ok := m.paneEnv(paneID)["CCMUX_HOOKS_SOCK"]; ok {
+	if _, ok := m.paneEnv(nil, paneID)["CCMUX_HOOKS_SOCK"]; ok {
 		t.Fatal("CCMUX_HOOKS_SOCK should be omitted when HooksSocket is empty")
 	}
 
 	// Configured → injected verbatim.
 	m.HooksSocket = "/tmp/ccmuxd-hooks.sock"
-	env := m.paneEnv(paneID)
+	env := m.paneEnv(nil, paneID)
 	if env["CCMUX_HOOKS_SOCK"] != "/tmp/ccmuxd-hooks.sock" {
 		t.Fatalf("CCMUX_HOOKS_SOCK = %q, want /tmp/ccmuxd-hooks.sock", env["CCMUX_HOOKS_SOCK"])
 	}
