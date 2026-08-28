@@ -241,7 +241,28 @@ func (m *Manager) validateHostnames(hs []model.Hostname) error {
 // claimHostnamesLocked enforces tailnet-wide name uniqueness against every
 // other workspace and fills port-0 rows from the reserved range. Mutates hs
 // in place. Called with m.mu held.
+//
+// Migration backfill: blanking the port of a pre-allocation row is the whole
+// upgrade step. Such a row's old port WAS the detected app port (the old
+// model saved exactly that), so it moves into TargetPort — without it a
+// compose override would not know which published port to remap and the
+// hostname would route to the new port while compose kept the old one. An
+// old port already inside the reserved range is a ccmux allocation, not a
+// natural app port, and is not carried over.
 func (m *Manager) claimHostnamesLocked(wsID string, hs []model.Hostname) error {
+	if e := m.byID[wsID]; e != nil {
+		oldPort := map[string]int{}
+		for _, h := range e.ws.Hostnames {
+			oldPort[h.Name] = h.Port
+		}
+		for i := range hs {
+			old := oldPort[hs[i].Name]
+			if hs[i].Port == 0 && hs[i].TargetPort == 0 && old > 0 &&
+				(old < devPortBase || old > devPortMax) {
+				hs[i].TargetPort = old
+			}
+		}
+	}
 	seen := map[string]string{} // name → owning workspace name, for the error
 	usedPort := map[int]bool{}  // every port any workspace holds or this request names
 	for _, other := range m.byID {

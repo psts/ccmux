@@ -119,6 +119,40 @@ func TestSetHostnames_AllocatesPortZero(t *testing.T) {
 	}
 }
 
+// TestSetHostnames_BlankPortBackfillsTargetPort pins the migration path for
+// pre-allocation rows: blanking the port moves the old port (which was the
+// detected app port) into targetPort, so the compose override keeps working.
+// An old port inside the reserved range is a ccmux allocation and must NOT be
+// carried over.
+func TestSetHostnames_BlankPortBackfillsTargetPort(t *testing.T) {
+	m, _ := devhostManager(t)
+
+	// A pre-allocation row: port 3000, no targetPort.
+	if _, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 3000}}); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ws.Hostnames[0]
+	if got.TargetPort != 3000 {
+		t.Fatalf("targetPort = %d, want the old port 3000", got.TargetPort)
+	}
+	if got.Port < devPortBase || got.Port > devPortMax {
+		t.Fatalf("port %d not allocated from the reserved range", got.Port)
+	}
+
+	// Blanking an already-allocated row must not backfill its 21xxx port.
+	ws, err = m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Hostnames[0].TargetPort != 0 {
+		t.Fatalf("targetPort = %d, want 0 (allocated ports are not app ports)", ws.Hostnames[0].TargetPort)
+	}
+}
+
 // TestDevEnv_PortAndComposeFile pins the injection contract: exactly one
 // mapped hostname puts PORT/CCMUX_DEV_PORT in pane env; a compose repo gets
 // COMPOSE_FILE listing the repo's compose file plus the generated override;
