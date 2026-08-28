@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -150,6 +151,63 @@ func TestSetHostnames_BlankPortBackfillsTargetPort(t *testing.T) {
 	}
 	if ws.Hostnames[0].TargetPort != 0 {
 		t.Fatalf("targetPort = %d, want 0 (allocated ports are not app ports)", ws.Hostnames[0].TargetPort)
+	}
+}
+
+// TestAllocateDevPort_SkipsSquatters pins the bind probe: a port in the
+// reserved range that some process already listens on must be skipped, or the
+// hostname routes to a stranger's server with a green dot.
+func TestAllocateDevPort_SkipsSquatters(t *testing.T) {
+	m, _ := devhostManager(t)
+	// Squat the first port of the range. If Listen fails, something else
+	// already holds it — squatted either way, the assertion below stands.
+	if l, err := net.Listen("tcp", "127.0.0.1:21000"); err == nil {
+		defer l.Close()
+	}
+	ws, err := m.SetHostnames("w1", []model.Hostname{{Name: "app", Port: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Hostnames[0].Port == 21000 {
+		t.Fatal("allocated the squatted port 21000")
+	}
+}
+
+// TestPortSuggestions_TargetPortDedupes pins the allocated-port model's dedup:
+// a saved row covers its detected port via TargetPort (its routing Port is
+// 21xxx), and the sheet must not re-suggest that service forever.
+func TestPortSuggestions_TargetPortDedupes(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	repo := t.TempDir()
+	compose := "services:\n  web:\n    ports: [\"3001:3001\"]\n  api:\n    ports: [\"8001:8001\"]\n"
+	if err := os.WriteFile(filepath.Join(repo, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws := &model.Workspace{ID: "w1", Name: "admin", RepoPath: repo}
+	if err := st.SaveWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	m.adopt(ws, false)
+
+	if _, err := m.SetHostnames("w1", []model.Hostname{{Name: "admin-api", Port: 0, TargetPort: 8001}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.PortSuggestions("w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range got {
+		if s.Port == 8001 {
+			t.Fatalf("already-mapped target port re-suggested: %+v", got)
+		}
+	}
+	if len(got) != 1 || got[0].Port != 3001 {
+		t.Fatalf("the unmapped service should still be suggested: %+v", got)
 	}
 }
 

@@ -134,7 +134,12 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
 	}
-	if err := m.claimHostnamesLocked(wsID, hs); err != nil {
+	backfillTargetPorts(e.ws.Hostnames, hs)
+	if err := m.rejectNameCollisionsLocked(wsID, hs); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	if err := m.assignPortsLocked(wsID, hs); err != nil {
 		m.mu.Unlock()
 		return nil, err
 	}
@@ -181,9 +186,11 @@ func (m *Manager) devEnv(ws *model.Workspace) map[string]string {
 }
 
 // refreshComposeOverride (re)writes the workspace's compose port-override file
-// and returns the COMPOSE_FILE value panes should carry ("" = no compose
-// remapping applies, and any stale override file is removed). Best-effort:
-// a write failure costs the remap, not the pane.
+// and returns the COMPOSE_FILE value panes should carry. "" = no compose
+// remapping applies — and the override file is removed, because live panes'
+// COMPOSE_FILE may still point at the path and a leftover file would keep
+// remapping to retired ports. On any failure (parse, dir, write) the same
+// holds: no override at all beats a wrong or truncated one.
 func (m *Manager) refreshComposeOverride(wsID, repo string, hs []model.Hostname) string {
 	if m.DevhostDir == "" || repo == "" {
 		return ""
@@ -195,20 +202,51 @@ func (m *Manager) refreshComposeOverride(wsID, repo string, hs []model.Hostname)
 			remap[h.TargetPort] = h.Port
 		}
 	}
-	files, content, ok := portdetect.ComposeOverride(repo, remap)
-	if !ok {
-		os.Remove(path)
+	files, content, err := portdetect.ComposeOverride(repo, remap)
+	if err != nil {
+		log.Printf("workspace %s: %v — dev hostnames will not remap compose ports", wsID, err)
+	}
+	if err != nil || len(files) == 0 {
+		removeComposeOverride(wsID, path)
 		return ""
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		log.Printf("workspace %s: compose override dir: %v", wsID, err)
-		return ""
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		log.Printf("workspace %s: compose override write: %v", wsID, err)
+	if !writeComposeOverride(wsID, path, content) {
+		removeComposeOverride(wsID, path)
 		return ""
 	}
 	return strings.Join(append(files, path), ":")
+}
+
+// writeComposeOverride lands content at path atomically (write-then-rename —
+// a `docker compose up` reading mid-write must never see truncated YAML;
+// refresh runs concurrently from SetHostnames and every pane spawn) and skips
+// the write entirely when the file already holds content.
+func writeComposeOverride(wsID, path, content string) bool {
+	if cur, err := os.ReadFile(path); err == nil && string(cur) == content {
+		return true
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Printf("workspace %s: compose override dir: %v", wsID, err)
+		return false
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		log.Printf("workspace %s: compose override write: %v", wsID, err)
+		return false
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		log.Printf("workspace %s: compose override rename: %v", wsID, err)
+		return false
+	}
+	return true
+}
+
+// removeComposeOverride drops a stale override, loudly on real failure — live
+// panes may still load the path, so a survivor keeps remapping silently.
+func removeComposeOverride(wsID, path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("workspace %s: stale compose override not removed (%v) — panes with COMPOSE_FILE may keep old port mappings", wsID, err)
+	}
 }
 
 // validateHostnames normalizes and validates the rows of one save: DNS-label
@@ -238,45 +276,60 @@ func (m *Manager) validateHostnames(hs []model.Hostname) error {
 	return nil
 }
 
-// claimHostnamesLocked enforces tailnet-wide name uniqueness against every
-// other workspace and fills port-0 rows from the reserved range. Mutates hs
-// in place. Called with m.mu held.
-//
-// Migration backfill: blanking the port of a pre-allocation row is the whole
-// upgrade step. Such a row's old port WAS the detected app port (the old
-// model saved exactly that), so it moves into TargetPort — without it a
-// compose override would not know which published port to remap and the
-// hostname would route to the new port while compose kept the old one. An
-// old port already inside the reserved range is a ccmux allocation, not a
-// natural app port, and is not carried over.
-func (m *Manager) claimHostnamesLocked(wsID string, hs []model.Hostname) error {
-	if e := m.byID[wsID]; e != nil {
-		oldPort := map[string]int{}
-		for _, h := range e.ws.Hostnames {
-			oldPort[h.Name] = h.Port
+// backfillTargetPorts is the migration step for pre-allocation rows, and is
+// deletable once none remain: blanking the port of such a row is the whole
+// upgrade. The row's old port WAS the detected app port (the old model saved
+// exactly that), so it moves into TargetPort — without it a compose override
+// would not know which published port to remap and the hostname would route
+// to the new port while compose kept the old one. An old port already inside
+// the reserved range is a ccmux allocation, not a natural app port, and is
+// not carried over. Mutates hs in place.
+func backfillTargetPorts(old, hs []model.Hostname) {
+	oldPort := map[string]int{}
+	for _, h := range old {
+		oldPort[h.Name] = h.Port
+	}
+	for i := range hs {
+		if hs[i].Port != 0 || hs[i].TargetPort != 0 {
+			continue
 		}
-		for i := range hs {
-			old := oldPort[hs[i].Name]
-			if hs[i].Port == 0 && hs[i].TargetPort == 0 && old > 0 &&
-				(old < devPortBase || old > devPortMax) {
-				hs[i].TargetPort = old
-			}
+		if p := oldPort[hs[i].Name]; p > 0 && (p < devPortBase || p > devPortMax) {
+			hs[i].TargetPort = p
 		}
 	}
+}
+
+// rejectNameCollisionsLocked enforces tailnet-wide name uniqueness against
+// every other workspace. Called with m.mu held.
+func (m *Manager) rejectNameCollisionsLocked(wsID string, hs []model.Hostname) error {
 	seen := map[string]string{} // name → owning workspace name, for the error
-	usedPort := map[int]bool{}  // every port any workspace holds or this request names
 	for _, other := range m.byID {
+		if other.ws.ID == wsID {
+			continue
+		}
 		for _, h := range other.ws.Hostnames {
-			if other.ws.ID != wsID {
-				seen[h.Name] = other.ws.Name
-			}
-			usedPort[h.Port] = true
+			seen[h.Name] = other.ws.Name
 		}
 	}
 	for _, h := range hs {
 		if owner, taken := seen[h.Name]; taken {
 			return fmt.Errorf("hostname %q already used by workspace %q", h.Name, owner)
 		}
+	}
+	return nil
+}
+
+// assignPortsLocked fills port-0 rows from the reserved range, avoiding every
+// port any workspace holds or this request names. Mutates hs in place.
+// Called with m.mu held.
+func (m *Manager) assignPortsLocked(wsID string, hs []model.Hostname) error {
+	usedPort := map[int]bool{}
+	for _, other := range m.byID {
+		for _, h := range other.ws.Hostnames {
+			usedPort[h.Port] = true
+		}
+	}
+	for _, h := range hs {
 		if h.Port != 0 {
 			usedPort[h.Port] = true
 		}
@@ -427,13 +480,27 @@ func (m *Manager) ResolveDevCommand(wsID string) (command, source string, err er
 // DetectedDevCommand returns what detection alone finds in the repo's config
 // files, ignoring any stored override. The sheet compares it against the
 // override to flag "the repo's dev command changed under your saved one".
-func (m *Manager) DetectedDevCommand(wsID string) (command, source string, err error) {
+func (m *Manager) DetectedDevCommand(wsID string) (string, error) {
 	ws := m.Workspace(wsID)
 	if ws == nil {
-		return "", "", fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
+		return "", fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
 	}
-	command, source = portdetect.DetectCommand(ws.RepoPath)
-	return command, source, nil
+	command, _ := portdetect.DetectCommand(ws.RepoPath)
+	return command, nil
+}
+
+// devCommandToRun resolves what ▶ actually types: the stored override or
+// detection, refused when neither yields anything, with the port flag added
+// for frameworks that need it. The single source for start and restart.
+func (m *Manager) devCommandToRun(wsID string) (string, error) {
+	command, _, err := m.ResolveDevCommand(wsID)
+	if err != nil {
+		return "", err
+	}
+	if command == "" {
+		return "", fmt.Errorf("no dev command: none stored and none detected in the repo")
+	}
+	return m.finalDevCommand(wsID, command), nil
 }
 
 // StartDevServer spawns the workspace's dev-server pane running the resolved
@@ -443,14 +510,10 @@ func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 	if pane := m.devPane(wsID); pane != nil {
 		return m.restartDevServer(wsID, pane)
 	}
-	command, _, err := m.ResolveDevCommand(wsID)
+	command, err := m.devCommandToRun(wsID)
 	if err != nil {
 		return nil, err
 	}
-	if command == "" {
-		return nil, fmt.Errorf("no dev command: none stored and none detected in the repo")
-	}
-	command = m.finalDevCommand(wsID, command)
 	pane, err := m.SpawnPane(wsID, "", command, "devhost")
 	if err != nil {
 		return nil, err
@@ -465,8 +528,10 @@ func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 }
 
 // finalDevCommand appends the port flag frameworks that ignore the PORT env
-// need (vite). Only when PORT is actually in the pane env — one mapped
-// hostname, same rule as devEnv.
+// need (vite). Only with one mapped hostname — the same condition under which
+// devEnv injects PORT at pane creation. A pane older than the current mapping
+// may not carry PORT (env freezes at creation); the restart path compensates
+// by prefixing the delivery with an explicit PORT= — see restartDevServer.
 func (m *Manager) finalDevCommand(wsID, command string) string {
 	m.mu.RLock()
 	var repo string
@@ -499,26 +564,33 @@ func (m *Manager) restartDevServer(wsID string, pane *model.Pane) (*model.Worksp
 	for _, h := range e.ws.Hostnames {
 		listening = listening || h.Listening
 	}
+	// The pane's env froze at its creation, but the mapping may have changed
+	// since (port reallocated, hostname count now 1). Pinning PORT= onto the
+	// delivered line makes the restarted server bind where the hostname
+	// routes TODAY, whatever the pane was born with. Delivery-only: the
+	// persisted startup command stays clean, and a revive recreates the pane
+	// with fresh env anyway.
+	envPrefix := ""
+	if len(e.ws.Hostnames) == 1 && e.ws.Hostnames[0].Port > 0 {
+		p := strconv.Itoa(e.ws.Hostnames[0].Port)
+		envPrefix = "PORT=" + p + " CCMUX_DEV_PORT=" + p + " "
+	}
 	idle := atBareShell(pane)
 	m.mu.RUnlock()
 	if listening || !idle || ctrl == nil {
 		return m.Workspace(wsID), nil
 	}
-	command, _, err := m.ResolveDevCommand(wsID)
+	command, err := m.devCommandToRun(wsID)
 	if err != nil {
 		return nil, err
 	}
-	if command == "" {
-		return nil, fmt.Errorf("no dev command: none stored and none detected in the repo")
-	}
-	command = m.finalDevCommand(wsID, command)
 	m.mu.Lock()
 	pane.StartupCommand = command
 	pane.Title = "dev ▸ " + command
 	saved := *pane
 	m.mu.Unlock()
 	_ = m.store.SavePane(&saved)
-	m.deliverStartup(ctrl, pane.ID, command, false)
+	m.deliverStartup(ctrl, pane.ID, envPrefix+command, false)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return m.Workspace(wsID), nil
 }

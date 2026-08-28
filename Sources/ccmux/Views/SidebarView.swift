@@ -538,17 +538,13 @@ struct SidebarView: View {
             onWorkspaceHostnames?(workspace.id)
         }
         if !(remoteService.hostnames[workspace.id] ?? []).isEmpty {
-            // "Running" is the pane existing AND a mapped port answering — the
-            // same rule as devShowsStop and toggleDevServer, so the menu and
-            // the ▶/■ never disagree. A crashed server leaves its pane at a
-            // shell: both entries show there (Start re-types the command into
-            // that pane, daemon-side). A hand-started server keeps Start too.
-            let paneRunning = remoteService.devRunning[workspace.id] == true
-            let listening = (remoteService.hostnames[workspace.id] ?? []).contains { $0.listening }
-            if !(paneRunning && listening) {
+            // A crashed server leaves its pane at a shell: both entries show
+            // there (Start re-types the command into that pane, daemon-side).
+            // A hand-started server keeps Start too.
+            if !devIsAnswering(workspace.id) {
                 Button("Start Dev Server") { setDevServer(workspace.id, start: true) }
             }
-            if paneRunning {
+            if remoteService.devRunning[workspace.id] == true {
                 Button("Stop Dev Server") { setDevServer(workspace.id, start: false) }
             }
         }
@@ -693,12 +689,19 @@ struct SidebarView: View {
         }
     }
 
-    /// The ▶/■ toggle's intent: ■ (stop) only while the pane exists AND a
-    /// mapped port answers; anything else — no pane, or a crashed pane — is ▶.
+    /// The one "dev server is running" rule for this view: the pane exists
+    /// AND a mapped port answers. The context menu and the ▶/■ toggle both
+    /// read it here so they can never disagree; WorkspaceRow.devShowsStop is
+    /// the same rule over its own passed-in data.
+    private func devIsAnswering(_ id: UUID) -> Bool {
+        remoteService.devRunning[id] == true
+            && (remoteService.hostnames[id] ?? []).contains { $0.listening }
+    }
+
+    /// The ▶/■ toggle's intent: ■ (stop) only while devIsAnswering; anything
+    /// else — no pane, or a crashed pane — is ▶.
     private func toggleDevServer(_ id: UUID) {
-        let paneRunning = remoteService.devRunning[id] ?? false
-        let listening = (remoteService.hostnames[id] ?? []).contains { $0.listening }
-        setDevServer(id, start: !(paneRunning && listening))
+        setDevServer(id, start: !devIsAnswering(id))
     }
 
     /// One mapped hostname's menu entry: open / copy, with the dev server's
@@ -867,6 +870,14 @@ private struct WorkspaceRow: View {
         devRunning && hostnames.contains { $0.listening }
     }
 
+    /// Tooltip for the ▶/■ button's three states, kept beside the rule that
+    /// picks the glyph.
+    private var devHelp: String {
+        if devShowsStop { return "Stop the dev server (kills its pane)" }
+        if devRunning { return "Restart the dev server in its pane (it isn't answering)" }
+        return "Start the dev server (spawns a pane)"
+    }
+
     private var status: GitStatusInfo {
         monitor.status
     }
@@ -913,9 +924,7 @@ private struct WorkspaceRow: View {
                                         .foregroundColor(devShowsStop ? .orange : .secondary)
                                 }
                                 .buttonStyle(.borderless)
-                                .help(devShowsStop ? "Stop the dev server (kills its pane)"
-                                      : devRunning ? "Restart the dev server in its pane (it isn't answering)"
-                                      : "Start the dev server (spawns a pane)")
+                                .help(devHelp)
                             }
                         }
                         .padding(.leading, 4)

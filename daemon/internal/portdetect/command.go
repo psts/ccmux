@@ -29,28 +29,37 @@ func DetectCommand(dir string) (command, source string) {
 	return "", ""
 }
 
-// scriptCommand maps a package.json to its runner invocation: a "dev" script
-// via the lockfile-detected package manager, or "start" when it's the CRA-style
-// dev server. "" when the manifest has no dev entrypoint.
-func scriptCommand(dir string) string {
+// packageScripts reads a package.json's scripts map; nil on any failure.
+func packageScripts(dir string) map[string]string {
 	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
-		return ""
+		return nil
 	}
 	var pkg struct {
 		Scripts map[string]string `json:"scripts"`
 	}
 	if json.Unmarshal(raw, &pkg) != nil {
+		return nil
+	}
+	return pkg.Scripts
+}
+
+// scriptCommand maps a package.json to its runner invocation: a "dev" script
+// via the lockfile-detected package manager, or "start" when it's the CRA-style
+// dev server. "" when the manifest has no dev entrypoint.
+func scriptCommand(dir string) string {
+	scripts := packageScripts(dir)
+	if scripts == nil {
 		return ""
 	}
 	runner := packageRunner(dir)
-	if pkg.Scripts["dev"] != "" {
+	if scripts["dev"] != "" {
 		if runner == "npm" {
 			return "npm run dev"
 		}
 		return runner + " dev"
 	}
-	if strings.Contains(pkg.Scripts["start"], "react-scripts start") {
+	if strings.Contains(scripts["start"], "react-scripts start") {
 		return runner + " start"
 	}
 	return ""
@@ -69,17 +78,7 @@ func PortFlagSuffix(dir, command string) string {
 	if command == "" || command != scriptCommand(dir) {
 		return ""
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
-	if err != nil {
-		return ""
-	}
-	var pkg struct {
-		Scripts map[string]string `json:"scripts"`
-	}
-	if json.Unmarshal(raw, &pkg) != nil {
-		return ""
-	}
-	fields := strings.Fields(pkg.Scripts["dev"])
+	fields := strings.Fields(packageScripts(dir)["dev"])
 	if len(fields) == 0 || fields[0] != "vite" {
 		return ""
 	}

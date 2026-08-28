@@ -426,13 +426,25 @@ function hostnameRow(name, port, targetPort) {
 }
 
 async function saveHostnames() {
-  const hostnames = [...$("hostnames-rows").children]
-    .map((li) => ({
-      name: li.querySelector(".hn-name").value.trim(),
-      port: parseInt(li.querySelector(".hn-port").value, 10) || 0,
-      targetPort: parseInt(li.dataset.targetPort, 10) || 0,
-    }))
-    .filter((h) => h.name || h.port);
+  const err = $("hostnames-error");
+  const hostnames = [];
+  for (const li of $("hostnames-rows").children) {
+    const name = li.querySelector(".hn-name").value.trim();
+    const portText = li.querySelector(".hn-port").value.trim();
+    if (!name && !portText) continue; // half-empty editor row, not a mapping
+    // Same rule as the Mac sheet: a typo must not silently become "auto"
+    // (port 0 now means "the daemon allocates one").
+    let port = 0;
+    if (portText) {
+      port = /^\d+$/.test(portText) ? parseInt(portText, 10) : 0;
+      if (port < 1 || port > 65535) {
+        err.textContent = `${name || "row"}: port must be 1–65535, or blank for auto`;
+        err.classList.remove("hidden");
+        return;
+      }
+    }
+    hostnames.push({ name, port, targetPort: parseInt(li.dataset.targetPort, 10) || 0 });
+  }
   const body = { hostnames, devCommand: $("hostnames-cmd").value.trim() };
   const r = await fetch(`/v1/workspaces/${hostnamesWsId}/hostnames`, {
     method: "PUT",
@@ -442,7 +454,6 @@ async function saveHostnames() {
   if (!r.ok) {
     let msg = "HTTP " + r.status;
     try { msg = (await r.json()).error || msg; } catch (_) {}
-    const err = $("hostnames-error");
     err.textContent = msg;
     err.classList.remove("hidden");
     return;

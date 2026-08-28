@@ -111,7 +111,7 @@ func runDaemon() {
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
-	mgr.DevhostDir = filepath.Join(configDir(), "devhost")
+	mgr.DevhostDir = devhostDir()
 	// Harness registry: named ways of working (claude built in, more via
 	// settings). It is the single source of what a pane runs; the migration
 	// folds the retired default-startup-command and raw-command folder rules
@@ -325,7 +325,7 @@ func dnsOwnership(ctx context.Context, lc *local.Client, hubRole bool) func() bo
 // dispatch.
 func serveTailnetHTTPS(ctx context.Context, ts *tsnet.Server, lc *local.Client, mgr *manager.Manager, apiSrv *api.Server, handler http.Handler, hostname string, ownsDNS func() bool) (*devhost.Server, error) {
 	ip4, _ := ts.TailscaleIPs()
-	dh := devhost.NewServer(ctx, mgr, filepath.Join(configDir(), "devhost"), tsSuffix(ts, hostname), ip4, ownsDNS)
+	dh := devhost.NewServer(ctx, mgr, devhostDir(), tsSuffix(ts, hostname), ip4, ownsDNS)
 	mgr.OnDevhostChange = dh.Refresh
 	apiSrv.SetDevhostStatus(dh.CertStatus)
 	dh.Refresh()
@@ -641,6 +641,10 @@ func defaultVAPIDPath() string { return filepath.Join(configDir(), "vapid.json")
 
 // defaultTsnetDir returns the tsnet node's state directory beside the registry.
 func defaultTsnetDir() string { return filepath.Join(configDir(), "tsnet") }
+
+// devhostDir is the one devhost state dir, shared by the manager (compose
+// overrides) and the devhost server — a drift here would split their state.
+func devhostDir() string { return filepath.Join(configDir(), "devhost") }
 
 // runtimeDir is the per-user home of the daemon's runtime artifacts (tmux
 // config, hooks socket). Fixed names in the shared /tmp made the daemon

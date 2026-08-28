@@ -194,7 +194,6 @@ struct DaemonSuggestionsResponse: Decodable {
     let devCommand: String?
     let devCommandSource: String?
     let detectedCommand: String?
-    let detectedSource: String?
 }
 
 /// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on
