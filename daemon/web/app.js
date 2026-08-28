@@ -326,12 +326,13 @@ function openWsMenu(ws, x, y) {
     add("Hostnames…", () => openHostnamesModal(ws));
     const hostnames = ws.hostnames || [];
     if (hostnames.length) {
-      // "Running" is the port answering, not the pane existing: a crashed
-      // server's pane survives at a shell, and Start then re-types the command
-      // into it (daemon-side). Both entries show for that dead-pane state.
+      // "Running" is the pane existing AND the port answering — same rule as
+      // the Mac lens's ▶/■. A crashed server's pane survives at a shell, so
+      // both entries show there (Start re-types the command into that pane,
+      // daemon-side). A server started by hand keeps Start visible too.
       const paneRunning = (ws.panes || []).some((p) => p.devServer);
       const listening = hostnames.some((h) => h.listening);
-      if (!listening) add("Start Dev Server", () => setDevServer(ws.id, true));
+      if (!(paneRunning && listening)) add("Start Dev Server", () => setDevServer(ws.id, true));
       if (paneRunning) add("Stop Dev Server", () => setDevServer(ws.id, false));
     }
     for (const h of hostnames.filter((h) => h.url)) {

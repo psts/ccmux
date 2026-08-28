@@ -538,13 +538,14 @@ struct SidebarView: View {
             onWorkspaceHostnames?(workspace.id)
         }
         if !(remoteService.hostnames[workspace.id] ?? []).isEmpty {
-            // "Running" is a mapped port answering, not the pane existing: a
-            // crashed server leaves its pane at a shell, and Start then re-types
-            // the command into that pane (daemon-side). Both entries show in
-            // that dead-pane state.
+            // "Running" is the pane existing AND a mapped port answering — the
+            // same rule as devShowsStop and toggleDevServer, so the menu and
+            // the ▶/■ never disagree. A crashed server leaves its pane at a
+            // shell: both entries show there (Start re-types the command into
+            // that pane, daemon-side). A hand-started server keeps Start too.
             let paneRunning = remoteService.devRunning[workspace.id] == true
             let listening = (remoteService.hostnames[workspace.id] ?? []).contains { $0.listening }
-            if !listening {
+            if !(paneRunning && listening) {
                 Button("Start Dev Server") { setDevServer(workspace.id, start: true) }
             }
             if paneRunning {

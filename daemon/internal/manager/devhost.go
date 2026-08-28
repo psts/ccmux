@@ -125,63 +125,18 @@ func (m *Manager) notifyDevhost() {
 // range. Persisted, broadcast as workspace-status, and the devhost server is
 // poked.
 func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspace, error) {
-	for i := range hs {
-		hs[i].Name = strings.ToLower(strings.TrimSpace(hs[i].Name))
-		hs[i].URL, hs[i].Listening = "", false
-		if !hostnameLabel.MatchString(hs[i].Name) {
-			return nil, fmt.Errorf("invalid hostname %q: must be a DNS label (a-z, 0-9, inner hyphens)", hs[i].Name)
-		}
-		if lens := m.LensHostname(); lens != "" && hs[i].Name == lens {
-			return nil, fmt.Errorf("hostname %q is reserved for the ccmux web lens", lens)
-		}
-		if hs[i].Port < 0 || hs[i].Port > 65535 { // 0 = allocate below
-			return nil, fmt.Errorf("invalid port %d for %q", hs[i].Port, hs[i].Name)
-		}
-		if hs[i].TargetPort < 0 || hs[i].TargetPort > 65535 {
-			return nil, fmt.Errorf("invalid target port %d for %q", hs[i].TargetPort, hs[i].Name)
-		}
-		for _, prev := range hs[:i] {
-			if prev.Name == hs[i].Name {
-				return nil, fmt.Errorf("hostname %q listed twice", hs[i].Name)
-			}
-		}
+	if err := m.validateHostnames(hs); err != nil {
+		return nil, err
 	}
-
 	m.mu.Lock()
 	e := m.byID[wsID]
 	if e == nil {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
 	}
-	seen := map[string]string{} // name → owning workspace name, for the error
-	usedPort := map[int]bool{}  // every port any workspace holds or this request names
-	for _, other := range m.byID {
-		for _, h := range other.ws.Hostnames {
-			if other.ws.ID != wsID {
-				seen[h.Name] = other.ws.Name
-			}
-			usedPort[h.Port] = true
-		}
-	}
-	for _, h := range hs {
-		if owner, taken := seen[h.Name]; taken {
-			m.mu.Unlock()
-			return nil, fmt.Errorf("hostname %q already used by workspace %q", h.Name, owner)
-		}
-		if h.Port != 0 {
-			usedPort[h.Port] = true
-		}
-	}
-	for i := range hs {
-		if hs[i].Port != 0 {
-			continue
-		}
-		port, err := allocateDevPort(usedPort)
-		if err != nil {
-			m.mu.Unlock()
-			return nil, err
-		}
-		hs[i].Port, usedPort[port] = port, true
+	if err := m.claimHostnamesLocked(wsID, hs); err != nil {
+		m.mu.Unlock()
+		return nil, err
 	}
 	e.ws.Hostnames = hs
 	ws := e.ws
@@ -254,6 +209,68 @@ func (m *Manager) refreshComposeOverride(wsID, repo string, hs []model.Hostname)
 		return ""
 	}
 	return strings.Join(append(files, path), ":")
+}
+
+// validateHostnames normalizes and validates the rows of one save: DNS-label
+// names, port ranges (0 = allocate), the reserved lens label, in-request dups.
+func (m *Manager) validateHostnames(hs []model.Hostname) error {
+	for i := range hs {
+		hs[i].Name = strings.ToLower(strings.TrimSpace(hs[i].Name))
+		hs[i].URL, hs[i].Listening = "", false
+		if !hostnameLabel.MatchString(hs[i].Name) {
+			return fmt.Errorf("invalid hostname %q: must be a DNS label (a-z, 0-9, inner hyphens)", hs[i].Name)
+		}
+		if lens := m.LensHostname(); lens != "" && hs[i].Name == lens {
+			return fmt.Errorf("hostname %q is reserved for the ccmux web lens", lens)
+		}
+		if hs[i].Port < 0 || hs[i].Port > 65535 { // 0 = allocate on save
+			return fmt.Errorf("invalid port %d for %q", hs[i].Port, hs[i].Name)
+		}
+		if hs[i].TargetPort < 0 || hs[i].TargetPort > 65535 {
+			return fmt.Errorf("invalid target port %d for %q", hs[i].TargetPort, hs[i].Name)
+		}
+		for _, prev := range hs[:i] {
+			if prev.Name == hs[i].Name {
+				return fmt.Errorf("hostname %q listed twice", hs[i].Name)
+			}
+		}
+	}
+	return nil
+}
+
+// claimHostnamesLocked enforces tailnet-wide name uniqueness against every
+// other workspace and fills port-0 rows from the reserved range. Mutates hs
+// in place. Called with m.mu held.
+func (m *Manager) claimHostnamesLocked(wsID string, hs []model.Hostname) error {
+	seen := map[string]string{} // name → owning workspace name, for the error
+	usedPort := map[int]bool{}  // every port any workspace holds or this request names
+	for _, other := range m.byID {
+		for _, h := range other.ws.Hostnames {
+			if other.ws.ID != wsID {
+				seen[h.Name] = other.ws.Name
+			}
+			usedPort[h.Port] = true
+		}
+	}
+	for _, h := range hs {
+		if owner, taken := seen[h.Name]; taken {
+			return fmt.Errorf("hostname %q already used by workspace %q", h.Name, owner)
+		}
+		if h.Port != 0 {
+			usedPort[h.Port] = true
+		}
+	}
+	for i := range hs {
+		if hs[i].Port != 0 {
+			continue
+		}
+		port, err := allocateDevPort(usedPort)
+		if err != nil {
+			return err
+		}
+		hs[i].Port, usedPort[port] = port, true
+	}
+	return nil
 }
 
 // allocateDevPort picks the first port in the reserved range that no mapping

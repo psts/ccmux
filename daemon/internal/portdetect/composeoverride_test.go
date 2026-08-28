@@ -31,10 +31,15 @@ services:
     ports:
       - "3000:3000"
       - "127.0.0.1:5900:5900"
+      - "${WEB_PORT:-8080}:8080"
+      - "5353:5353/udp"
   api:
     ports:
       - target: 4000
         published: "4000"
+      - target: 53
+        published: "53"
+        protocol: udp
   db:
     ports:
       - "5432:5432"
@@ -49,9 +54,17 @@ services:
 	}
 	for _, wantLine := range []string{
 		`ports: !override`,
-		`- "21000:3000"`,          // remapped short syntax
-		`- "127.0.0.1:5900:5900"`, // untouched entry kept — !override replaces the list
-		`- "21001:4000"`,          // remapped long syntax
+		`"21000:3000"`, // remapped short syntax
+		// Untouched entries ride along VERBATIM — !override replaces the whole
+		// list, so interpolation and /udp suffixes must survive untouched.
+		`"127.0.0.1:5900:5900"`,
+		`"${WEB_PORT:-8080}:8080"`,
+		`"5353:5353/udp"`,
+		// Remapped long syntax keeps the mapping form (published swapped).
+		`published: "21001"`,
+		`target: 4000`,
+		// The udp long-syntax neighbour keeps its protocol.
+		`protocol: udp`,
 	} {
 		if !strings.Contains(content, wantLine) {
 			t.Fatalf("override missing %q:\n%s", wantLine, content)

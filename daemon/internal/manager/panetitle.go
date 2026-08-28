@@ -90,7 +90,7 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 			break
 		}
 	}
-	if p == nil || p.DevServer {
+	if p == nil {
 		m.mu.Unlock()
 		return
 	}
@@ -98,6 +98,14 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 		p.RawTitle = value
 	} else {
 		p.RawCommand = value
+	}
+	if p.DevServer {
+		// The dev pane records the raw COMMAND signal — the ▶ restart path
+		// reads atBareShell(p) to tell a crashed server from a running one —
+		// but keeps its purposeful "dev ▸ …" title, and skips the session
+		// bookkeeping below: a dev pane never hosts a Claude session.
+		m.mu.Unlock()
+		return
 	}
 	// The same command signal that renames a pane also reveals a Claude that
 	// exited, so dormancy is recomputed here rather than polled for.

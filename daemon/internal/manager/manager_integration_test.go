@@ -239,6 +239,100 @@ func TestManager_KillLastPaneArchivesLiveSession(t *testing.T) {
 	}
 }
 
+// TestStartDevServer_RestartsIntoDeadPane pins the restart path against real
+// tmux: a dev command that exits immediately leaves its pane at a shell with
+// nothing listening, and a second ▶ re-types the re-resolved command into that
+// SAME pane — no new pane, startup command and title updated, output visible.
+func TestStartDevServer_RestartsIntoDeadPane(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-devrestart-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := mgr.SetDevCommand(ws.ID, "printf DEV_ONE_MARK"); err != nil {
+		t.Fatalf("set command: %v", err)
+	}
+	if _, err := mgr.StartDevServer(ws.ID); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	pane := mgr.devPane(ws.ID)
+	if pane == nil {
+		t.Fatal("no dev pane after start")
+	}
+
+	// The command exits at once; wait for tmux's pane-command notice to settle
+	// the pane back at a bare shell — the state the restart path requires.
+	idle := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.RLock()
+		idle = atBareShell(pane)
+		mgr.mu.RUnlock()
+		if idle {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !idle {
+		t.Fatalf("dev pane never settled at a shell (RawCommand=%q)", pane.RawCommand)
+	}
+
+	// Second ▶ with a changed stored command: same pane, fresh delivery.
+	if err := mgr.SetDevCommand(ws.ID, "printf DEV_TWO_MARK"); err != nil {
+		t.Fatalf("set second command: %v", err)
+	}
+	after, err := mgr.StartDevServer(ws.ID)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if len(after.Panes) != 2 {
+		t.Fatalf("pane count = %d, want 2 (pane0 + the SAME dev pane)", len(after.Panes))
+	}
+	got := mgr.devPane(ws.ID)
+	if got == nil || got.ID != pane.ID {
+		t.Fatalf("restart landed in a different pane: %+v", got)
+	}
+	mgr.mu.RLock()
+	startup, title := pane.StartupCommand, pane.Title
+	mgr.mu.RUnlock()
+	if startup != "printf DEV_TWO_MARK" || title != "dev ▸ printf DEV_TWO_MARK" {
+		t.Fatalf("pane not rewritten: startup=%q title=%q", startup, title)
+	}
+	ctrl := mgr.Controller(ws.ID)
+	if ctrl == nil {
+		t.Fatal("no controller")
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		b, _ := ctrl.Capture(pane.ID, 0)
+		if strings.Contains(string(b), "DEV_TWO_MARK") {
+			return // success — the restart really typed into the pane
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("restarted command's output never appeared in the dev pane")
+}
+
 func waitStatus(mgr *Manager, wsID string, want model.Status, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
