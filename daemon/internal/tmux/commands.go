@@ -29,12 +29,72 @@ func formatCommand(args []string) (string, error) {
 	return strings.Join(parts, " "), nil
 }
 
+// maxKeysPerCommand caps how many bytes one `send-keys -H` carries.
+//
+// HexKeys renders ONE ARGUMENT PER BYTE, and tmux parses a command line with a
+// yacc grammar whose stack is 10000 deep. Past ~9990 arguments the command dies
+// with "parse error: yacc stack overflow" and NOTHING reaches the pane — not a
+// truncated paste, an empty one. Measured against a live tmux 3.4 server: 9990
+// arguments parse, 9995 do not. That is what silently ate a 19 kB paste, since
+// api.applyInput logs the send error and drops the input.
+//
+// 1024 is not just "safely under" that limit, it is near the fast end of a
+// sharply non-linear curve. Per-chunk cost grows roughly QUADRATICALLY with
+// chunk size, so fewer, larger commands are much slower. Measured on tmux 3.4,
+// 1 MB through this path:
+//
+//	chunk  256 -> 2.2s    chunk 2048 -> 5.4s
+//	chunk  512 -> 2.5s    chunk 4096 -> 15.4s
+//	chunk 1024 -> 3.0s    chunk 8192 -> 26.9s
+//
+// 256..1024 is the flat region; 1024 sits in it while issuing a quarter of the
+// commands 256 would. Raising this is a pessimization, not an optimization.
+const maxKeysPerCommand = 1024
+
+// sendKeysCommands splits data into the ordered `send-keys -H` commands that
+// carry it. Pure, so the chunk boundaries are testable without a tmux server.
+//
+// Splitting mid-escape-sequence is safe: the pane is a byte stream and the
+// program on the far side reassembles, exactly as it does for a paste that
+// arrives in two reads.
+//
+// Empty data yields no commands. `send-keys -H` with no keys is a no-op that
+// would still cost a round trip.
+func sendKeysCommands(pane string, data []byte) [][]string {
+	var cmds [][]string
+	for len(data) > 0 {
+		n := min(len(data), maxKeysPerCommand)
+		cmds = append(cmds, append([]string{"send-keys", "-H", "-t", pane}, HexKeys(data[:n])...))
+		data = data[n:]
+	}
+	return cmds
+}
+
 // SendKeys injects raw bytes into a pane via `send-keys -H` (hex), the in-band,
-// echo-safe input path.
+// echo-safe input path. Oversized input is split (see maxKeysPerCommand).
+//
+// The split runs under that pane's lock so a paste stays contiguous: panes are
+// shared between lenses, so without it another lens's keystroke could land
+// between two chunks and appear in the middle of the pasted text. The lock is
+// per pane, not per connection, because a big send is slow enough (seconds)
+// that a shared one would freeze typing everywhere else in the workspace.
+//
+// Splitting trades the old failure for a smaller one. A mid-send error now
+// leaves the earlier chunks in the pane, where an over-limit send used to
+// deliver nothing at all. The caller learns only that it failed, not where, and
+// api.applyInput just logs it — so a connection that dies mid-paste shows up as
+// a truncated paste with no message. That is worse to diagnose than the old
+// all-or-nothing, and better than a 19 kB paste never working.
 func (c *Client) SendKeys(pane string, data []byte) error {
-	args := append([]string{"send-keys", "-H", "-t", pane}, HexKeys(data)...)
-	_, err := c.Command(args...)
-	return err
+	lock := c.paneSend(pane)
+	lock.Lock()
+	defer lock.Unlock()
+	for _, args := range sendKeysCommands(pane, data) {
+		if _, err := c.Command(args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ResizeWindow sets a window's size. Requires window-size manual on the session

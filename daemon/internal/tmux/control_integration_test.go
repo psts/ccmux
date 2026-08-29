@@ -1,9 +1,12 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -174,4 +177,63 @@ func tailStr(b []byte, n int) string {
 func tmuxRun(t *testing.T, socket string, args ...string) {
 	t.Helper()
 	_ = exec.Command("tmux", append([]string{"-L", socket}, args...)...).Run()
+}
+
+// TestControlClient_LargePaste is the regression for the bug this chunking
+// exists for: before sendKeysCommands split it, a 19 kB paste became a single
+// `send-keys -H` with 19000 arguments, tmux answered "parse error: yacc stack
+// overflow", and NOT ONE byte reached the pane. Only a live server proves the
+// fix, since the limit lives in tmux's parser.
+//
+// The pane runs cat in raw mode: cooked mode holds a line until a newline and
+// caps it at 4096, which would measure the tty rather than the transport.
+func TestControlClient_LargePaste(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-paste-itest"
+	sink := filepath.Join(t.TempDir(), "sink")
+	tmuxRun(t, socket, "kill-server") // ignore error
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
+		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+
+	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	// 19 kB, the reported size. A period-26 pattern catches a dropped,
+	// duplicated or reordered chunk, not just a wrong total.
+	want := make([]byte, 19*1024)
+	for i := range want {
+		want[i] = byte('a' + i%26)
+	}
+	if err := c.SendKeys("it", want); err != nil {
+		t.Fatalf("SendKeys(%d bytes): %v", len(want), err)
+	}
+
+	var got []byte
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, _ = os.ReadFile(sink); len(got) >= len(want) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("pane received %d bytes, want %d", len(got), len(want))
+	}
+	if !bytes.Equal(got, want) {
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("byte %d differs: got %q want %q", i, got[i], want[i])
+			}
+		}
+	}
 }

@@ -40,6 +40,42 @@ type Client struct {
 	pending []chan reply // FIFO: control mode answers commands in send order
 	closed  bool
 	done    chan struct{}
+
+	// wmu makes "queue the reply channel" and "write the command" one step.
+	// pending is a FIFO matched to send order, so two callers that append in
+	// one order and reach the write in the other hand each other's reply back
+	// — a resize answering a capture-pane. Chunked SendKeys made that window
+	// wider, but the race predates it.
+	//
+	// Deliberately NOT mu: holding mu across the write would block the reader
+	// goroutine in deliver, tmux's stdout pipe would fill, its single event
+	// loop would stop reading our stdin, and the write would never finish.
+	wmu sync.Mutex
+
+	// sendLocks keeps one SendKeys' chunks contiguous, PER PANE (see
+	// commands.go). Per pane and not one global lock because a chunked send is
+	// not quick: measured against tmux 3.4, a 1 MB paste is ~3s of wall clock
+	// no matter how it is split. A global lock would freeze typing in every
+	// other pane for that whole time, and panes here are shared between lenses.
+	//
+	// Entries are never removed. One pointer per pane id the session has ever
+	// used is a few hundred bytes over a daemon's life, and reference counting
+	// them would need a lock held across the send anyway.
+	sendmu    sync.Mutex // guards sendLocks only, never held across a send
+	sendLocks map[string]*sync.Mutex
+}
+
+// paneSend returns the lock serializing sends to one pane, creating it on first
+// use.
+func (c *Client) paneSend(pane string) *sync.Mutex {
+	c.sendmu.Lock()
+	defer c.sendmu.Unlock()
+	m := c.sendLocks[pane]
+	if m == nil {
+		m = &sync.Mutex{}
+		c.sendLocks[pane] = m
+	}
+	return m
 }
 
 type reply struct {
@@ -63,7 +99,8 @@ func Dial(ctx context.Context, socket, session string, h Handler) (*Client, erro
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	c := &Client{socket: socket, cmd: cmd, stdin: stdin, handler: h, done: make(chan struct{})}
+	c := &Client{socket: socket, cmd: cmd, stdin: stdin, handler: h, done: make(chan struct{}),
+		sendLocks: map[string]*sync.Mutex{}}
 	// tmux answers the implicit `attach` command with an initial %begin/%end
 	// block that we never issued. Pre-queue a discard slot (before the reader
 	// starts) so the FIFO stays aligned with caller-issued commands.
@@ -150,16 +187,20 @@ func (c *Client) Command(args ...string) ([]string, error) {
 		return nil, err
 	}
 	ch := make(chan reply, 1)
+	c.wmu.Lock()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
+		c.wmu.Unlock()
 		return nil, ErrClosed
 	}
 	c.pending = append(c.pending, ch)
 	c.mu.Unlock()
 
-	if _, err := io.WriteString(c.stdin, line+"\n"); err != nil {
-		return nil, err
+	_, werr := io.WriteString(c.stdin, line+"\n")
+	c.wmu.Unlock()
+	if werr != nil {
+		return nil, werr
 	}
 	select {
 	case r := <-ch:
