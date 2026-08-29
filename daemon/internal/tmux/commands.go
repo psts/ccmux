@@ -51,6 +51,12 @@ func formatCommand(args []string) (string, error) {
 // commands 256 would. Raising this is a pessimization, not an optimization.
 const maxKeysPerCommand = 1024
 
+// sendKeysPrefixArgs is how many args precede the hex bytes in each command
+// ("send-keys", "-H", "-t", pane), so a chunk's byte count is len(args) minus
+// this. Named rather than a literal 4 because SendKeys's progress accounting
+// silently goes wrong if the prefix ever changes.
+const sendKeysPrefixArgs = 4
+
 // sendKeysCommands splits data into the ordered `send-keys -H` commands that
 // carry it. Pure, so the chunk boundaries are testable without a tmux server.
 //
@@ -89,10 +95,16 @@ func (c *Client) SendKeys(pane string, data []byte) error {
 	lock := c.paneSend(pane)
 	lock.Lock()
 	defer lock.Unlock()
+	sent := 0
 	for _, args := range sendKeysCommands(pane, data) {
 		if _, err := c.Command(args...); err != nil {
-			return err
+			// Say how much landed. api.applyInput only logs this, so without
+			// the offset the log records that a paste failed but not that the
+			// pane is now holding a truncated prefix of it.
+			return fmt.Errorf("send-keys to %s: %d of %d bytes delivered: %w",
+				pane, sent, len(data), err)
 		}
+		sent += len(args) - sendKeysPrefixArgs
 	}
 	return nil
 }

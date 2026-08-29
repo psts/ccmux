@@ -3,7 +3,6 @@ package tmux
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -182,9 +181,10 @@ func tmuxRun(t *testing.T, socket string, args ...string) {
 
 // TestControlClient_LargePaste is the regression for the bug this chunking
 // exists for: before sendKeysCommands split it, a 19 kB paste became a single
-// `send-keys -H` with 19000 arguments, tmux answered "parse error: yacc stack
-// overflow", and NOT ONE byte reached the pane. Only a live server proves the
-// fix, since the limit lives in tmux's parser.
+// `send-keys -H` with 19456 arguments (HexKeys emits one per byte), tmux
+// answered "parse error: yacc stack overflow", and NOT ONE byte reached the
+// pane. Only a live server proves the fix, since the limit lives in tmux's
+// parser.
 //
 // The pane runs cat in raw mode: cooked mode holds a line until a newline and
 // caps it at 4096, which would measure the tty rather than the transport.
@@ -240,14 +240,14 @@ func TestControlClient_LargePaste(t *testing.T) {
 }
 
 // TestControlClient_ReapsItselfWhenTmuxDies is the regression for the zombie
-// leak. Wait() used to live only in Close(), and the manager's markCold drops a
-// controller without closing it, so every workspace that died on its own left a
-// defunct `tmux -C attach` behind for the daemon's whole life. Observed on a
-// live daemon: 12 workspaces attached at start, 12 zombies once their sessions
-// died, none reclaimed 20 hours later.
+// leak. Wait() used to live only in Close(), and markCold USED TO drop a
+// controller without closing it, so every workspace that died on its own left
+// a defunct `tmux -C attach` behind for the daemon's whole life. (Both halves
+// are fixed now; the incident is recorded in internal/childproc's package doc.)
 //
 // Nothing here calls Close before the assertion — that is the whole point. The
-// client must reap itself off the death path alone.
+// client must reap itself off the death path alone, so that restoring the old
+// markCold would not quietly re-open the leak.
 func TestControlClient_ReapsItselfWhenTmuxDies(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
@@ -306,7 +306,126 @@ func TestControlClient_ReapsItselfWhenTmuxDies(t *testing.T) {
 	// teardown paths that DO call it (archiveIf, KillWorkspace) keep working
 	// and do not start logging "Wait was already called".
 	first := c.Close()
-	if second := c.Close(); !errors.Is(second, first) && fmt.Sprint(second) != fmt.Sprint(first) {
+	if second := c.Close(); second != first {
 		t.Errorf("Close is not idempotent: first=%v second=%v", first, second)
+	}
+}
+
+// TestCommand_RepliesMatchTheirCallers pins the reply FIFO. pending is matched
+// to send order, so queueing the channel and writing the command have to be
+// one atomic step (wmu). Without it two callers append in one order and write
+// in the other, and each gets the OTHER's answer — in this codebase that is a
+// capture-pane returning a resize's reply, so a lens renders the wrong pane's
+// contents. There is no data race for -race to find: pending stays guarded
+// throughout. Only an assertion like this one catches it.
+func TestCommand_RepliesMatchTheirCallers(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-fifo-itest"
+	tmuxRun(t, socket, "kill-server")
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	const workers, each = 8, 40
+	errs := make(chan error, workers*each)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				want := fmt.Sprintf("tag-%d-%d", w, i)
+				lines, err := c.Command("display-message", "-p", want)
+				if err != nil {
+					errs <- fmt.Errorf("%s: %w", want, err)
+					return
+				}
+				if len(lines) != 1 || lines[0] != want {
+					errs <- fmt.Errorf("reply mismatch: asked %q, got %v", want, lines)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+// TestSendKeys_ConcurrentPastesStayContiguous pins the per-pane lock, which is
+// the whole reason chunking is safe. sendKeysCommands is well covered as a
+// pure function, but nothing else asserts that one paste's chunks stay
+// together: delete lock.Lock(), or make paneSend hand back a fresh mutex each
+// call, and every other test still passes including the large-paste one, which
+// has a single sender. The user-visible failure is another lens's paste
+// landing in the middle of this one, i.e. corrupted input to the shell.
+func TestSendKeys_ConcurrentPastesStayContiguous(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-contig-itest"
+	sink := filepath.Join(t.TempDir(), "sink")
+	tmuxRun(t, socket, "kill-server")
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
+		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	// Two payloads of one repeated byte each, both far over one chunk, so an
+	// interleave shows up as extra A->B transitions rather than a wrong total.
+	const size = 19 * 1024
+	a := bytes.Repeat([]byte{'A'}, size)
+	b := bytes.Repeat([]byte{'B'}, size)
+	var wg sync.WaitGroup
+	for _, payload := range [][]byte{a, b} {
+		wg.Add(1)
+		go func(p []byte) {
+			defer wg.Done()
+			if err := c.SendKeys("it", p); err != nil {
+				t.Errorf("SendKeys: %v", err)
+			}
+		}(payload)
+	}
+	wg.Wait()
+
+	var got []byte
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, _ = os.ReadFile(sink); len(got) >= 2*size {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(got) != 2*size {
+		t.Fatalf("pane received %d bytes, want %d", len(got), 2*size)
+	}
+	// Contiguous means exactly one run of each byte: one transition total.
+	transitions := 0
+	for i := 1; i < len(got); i++ {
+		if got[i] != got[i-1] {
+			transitions++
+		}
+	}
+	if transitions != 1 {
+		t.Errorf("payloads interleaved: %d transitions, want 1 (each paste must "+
+			"arrive as one contiguous run)", transitions)
 	}
 }

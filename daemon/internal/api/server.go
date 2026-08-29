@@ -409,10 +409,13 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		// sessions to their human on every probe. Additive: an old hub
 		// ignores it, an old host just reports nothing.
 		"owner": s.mgr.Owner(),
-		// This daemon's own child processes. defunct > 0 means something
-		// started a process and never collected it, which is invisible
-		// everywhere else until someone runs ps by hand — it went unnoticed
-		// for 20 hours once. Additive: an old lens ignores the field.
+		// This daemon's own child processes. A sustained defunct > 0 means
+		// something started a process and never collected it, which is
+		// invisible everywhere else until someone runs ps by hand (see the
+		// package doc of internal/childproc). A brief non-zero reading right
+		// after a child exits is normal — the async reap paths have that
+		// window — which is why the lenses poll rather than alarm on one
+		// sample. Additive: an old lens ignores the field.
 		"children": childproc.Count(),
 	})
 }

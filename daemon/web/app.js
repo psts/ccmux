@@ -1657,26 +1657,33 @@ fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-li
 connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes
 
-// --- daemon health: the numbers with no other home. A child process the
-// daemon started and never reaped is invisible everywhere but ps, which is how
-// ccmuxd once ran 20 hours holding 12 defunct tmux clients with nothing saying
-// so. Shown only when non-zero — a permanently visible "0 zombies" is furniture.
+// --- daemon health: a child the daemon started and never reaped is invisible
+// everywhere but ps. Shown only when non-zero — a permanent "0 zombies" line is
+// furniture the eye learns to skip.
+//
+// Every no-answer path hides the strip, and the Mac lens applies the identical
+// rule (Sources/ccmux/Services/DaemonHealthService.swift). That symmetry is the
+// point: keeping the last reading on a failed poll meant the strip kept saying
+// "restart the daemon" to someone who just had, for as long as it stayed down.
 async function fetchDaemonHealth() {
   const el = $("daemon-warning");
-  if (!el) return;
-  let h;
+  const hide = () => el.classList.add("hidden");
+  let c;
   try {
-    h = await (await fetch("/v1/health")).json();
-  } catch (_) {
-    return; // daemon unreachable is already visible everywhere else
+    const r = await fetch("/v1/health");
+    if (!r.ok) return hide(); // a 500 with a JSON body is not a clean bill
+    const h = await r.json();
+    c = h && h.children;
+  } catch (e) {
+    // Transport OR a body this lens cannot read. The second is worth a line:
+    // if the field names ever move, this warning goes dark permanently and
+    // nothing else would say so.
+    console.warn("ccmux: /v1/health unreadable — defunct-child warning is off:", e);
+    return hide();
   }
-  const c = h && h.children;
   // known:false means the daemon could not inspect itself. Say nothing rather
   // than imply a clean bill of health.
-  if (!c || !c.known || !c.defunct) {
-    el.classList.add("hidden");
-    return;
-  }
+  if (!c || !c.known || !c.defunct) return hide();
   const n = c.defunct;
   el.textContent = `ccmuxd is holding ${n} defunct child process${n === 1 ? "" : "es"}. ` +
     `Restarting the daemon clears them.`;

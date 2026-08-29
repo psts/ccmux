@@ -5,9 +5,11 @@ import "testing"
 // TestParseStat_CommWithSpacesAndParen pins the field-splitting rule. A naive
 // strings.Fields on the whole line reads the comm as fields 1..n and lands on
 // the wrong column — and the process this package exists to count is literally
-// named "tmux: client", which contains both a space and, in some tmux builds, a
-// ')' in the argv-derived name. Getting this wrong does not error, it silently
-// reports zero zombies forever.
+// named "tmux: client", which contains a space (verified: a live control client
+// reads as `(tmux: client)`). comm cannot itself contain a ')' — Linux takes it
+// from prctl and caps it at 15 bytes — so the last-')' rule is defensive
+// against arbitrary processes rather than against tmux specifically. Getting
+// this wrong does not error, it silently reports zero zombies forever.
 func TestParseStat_CommWithSpacesAndParen(t *testing.T) {
 	cases := []struct {
 		name      string

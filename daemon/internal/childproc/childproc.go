@@ -37,7 +37,7 @@ var (
 func Count() Counts {
 	mu.Lock()
 	defer mu.Unlock()
-	if !takenAt.IsZero() && time.Since(takenAt) < cacheFor {
+	if time.Since(takenAt) < cacheFor { // zero takenAt is ~2000 years ago, never fresh
 		return cached
 	}
 	cached, takenAt = count(os.Getpid()), time.Now()

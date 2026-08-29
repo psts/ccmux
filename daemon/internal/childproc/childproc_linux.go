@@ -3,6 +3,7 @@
 package childproc
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -13,15 +14,26 @@ import (
 func count(pid int) Counts {
 	ents, err := os.ReadDir("/proc")
 	if err != nil {
+		// Known:false already tells the lenses to say nothing, so this line is
+		// the only way anyone learns the census is off rather than clean.
+		log.Printf("childproc: cannot read /proc (%v) — the defunct-child warning is off", err)
 		return Counts{}
 	}
-	out := Counts{Known: true}
+	var out Counts
 	for _, e := range ents {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue // not a pid directory
 		}
 		state, ppid, ok := procStat(e.Name())
-		if !ok || ppid != pid {
+		if !ok {
+			continue
+		}
+		// Known is earned, not assumed: setting it before the loop meant a
+		// /proc that listed but never resolved reported a confident 0/0 — the
+		// false all-clear this package exists to prevent. One readable stat is
+		// enough, since it proves /proc answers.
+		out.Known = true
+		if ppid != pid {
 			continue
 		}
 		if state == "Z" {

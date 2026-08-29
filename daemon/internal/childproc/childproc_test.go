@@ -49,14 +49,33 @@ func TestCount_SeesAnUnreapedChild(t *testing.T) {
 	t.Errorf("defunct count stayed up after the child was reaped: %d", count(self).Defunct)
 }
 
-// TestCount_Caches keeps a hub that polls /v1/health from walking /proc on
-// every request.
+// TestCount_Caches pins BOTH halves of the cache contract. Only proving it
+// caches would pass just as well if it never expired — and a census frozen at
+// its first reading makes a leak invisible again, which is the failure the
+// package exists to end.
 func TestCount_Caches(t *testing.T) {
+	// Poisoning package state is fair here (the cache IS the contract), but it
+	// must be put back or the next test in the file inherits it.
+	t.Cleanup(func() {
+		mu.Lock()
+		cached, takenAt = Counts{}, time.Time{}
+		mu.Unlock()
+	})
+
 	first := Count()
 	mu.Lock()
-	cached = Counts{Live: 4242, Defunct: 4242, Known: true} // poison the cache
+	cached = Counts{Live: 4242, Defunct: 4242, Known: true} // poison
 	mu.Unlock()
 	if again := Count(); again.Live != 4242 {
 		t.Errorf("Count recomputed instead of using the cache: %+v (first %+v)", again, first)
+	}
+
+	// Age the reading past the window; the poison must be discarded.
+	mu.Lock()
+	takenAt = time.Now().Add(-2 * cacheFor)
+	mu.Unlock()
+	if expired := Count(); expired.Live == 4242 {
+		t.Error("Count served a stale reading past cacheFor — a census that never " +
+			"expires shows the first number for the daemon's life")
 	}
 }

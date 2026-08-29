@@ -10,6 +10,7 @@ package peers
 
 import (
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -118,7 +119,17 @@ func (s *Service) openSpawnURL(repo, prompt, requesterID string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			// Start only proves the binary was executable. Every real failure
+			// — no handler registered for ccmux://, the app not installed,
+			// a launch failure — shows up here and nowhere else. Without this
+			// the requester waits out the full spawnTimedOut window to be
+			// told to "check that ccmux is installed", which is a guess the
+			// exit status already answered.
+			log.Printf("peers: spawn opener %s exited: %v", s.OpenCmd, err)
+		}
+	}()
 	return nil
 }
 

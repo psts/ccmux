@@ -1000,9 +1000,9 @@ func (m *Manager) paneEnv(ws *model.Workspace, paneID string) map[string]string 
 		// check (verified in the 2.1.251 binary, where the three "first party"
 		// reasons are this var, a first-party host, and an unset base URL).
 		//
-		// Unconditional, and it has to be: pane env freezes here, while the
-		// upstream is resolved per request from settings, so there is no route
-		// to condition on that stays true. It is honest for the default,
+		// Set whenever the proxy URL is, and blind to which upstream answers:
+		// pane env freezes here, while the upstream is resolved per request
+		// from settings, so there is no route to condition on that stays true. It is honest for the default,
 		// keyless pass-through to Anthropic, which is what nearly every pane
 		// is. Route a pane to a non-Anthropic upstream and the claim goes
 		// stale: the CLI sends first-party-only betas and asks for a catalog
@@ -1152,12 +1152,18 @@ func (m *Manager) markCold(wsID string) {
 	if e == nil {
 		return // already removed (e.g. a concurrent delete) — nothing to cool down
 	}
-	// Close what we just dropped. e.ctrl was the only reference to it, so
-	// nilling it without closing stranded the control connection — that is how
-	// every workspace that died on its own left a defunct tmux client behind.
-	// Closing detaches; it does not kill the session, so Reconcile can still
-	// re-attach a cooled workspace whose tmux is alive. Outside m.mu on
-	// purpose: Close waits for the reader goroutine to stop.
+	// Close what we just dropped. e.ctrl was the only LONG-LIVED reference —
+	// callers copy the pointer out under the lock and use it after unlocking,
+	// and the watch goroutine holds one — so an in-flight caller gets
+	// ErrClosed rather than a hang, which is the right outcome for a
+	// workspace that just went cold.
+	//
+	// This is NOT what reaps the zombie: shutdown() does that, before it even
+	// emits the exit notice that got us here. What this buys is releasing the
+	// controller, and ending a client that is still alive on a spurious
+	// %exit. Closing detaches; it does not kill the session, so Reconcile can
+	// still re-attach a cooled workspace whose tmux is alive. Outside m.mu on
+	// purpose: Close waits for the reader goroutine to finish.
 	if dropped != nil {
 		_ = dropped.Close()
 	}

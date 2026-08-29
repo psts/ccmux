@@ -54,9 +54,16 @@ type Client struct {
 
 	// sendLocks keeps one SendKeys' chunks contiguous, PER PANE (see
 	// commands.go). Per pane and not one global lock because a chunked send is
-	// not quick: measured against tmux 3.4, a 1 MB paste is ~3s of wall clock
-	// no matter how it is split. A global lock would freeze typing in every
-	// other pane for that whole time, and panes here are shared between lenses.
+	// not quick: measured against tmux 3.4, a 1 MB paste is ~3s at the current
+	// chunk size. Not a constant — the cost is quadratic in chunk size, from
+	// 2.2s to 26.9s across the range; commands.go has the table and is the
+	// authority. A global lock would freeze typing in every other pane for
+	// that whole time, and panes here are shared between lenses.
+	//
+	// This isolates panes ACROSS connections. It does not make a big send
+	// cheap for the connection that issued it: api.applyInput calls SendKeys
+	// inline on the attach read goroutine, so that lens still blocks on its
+	// own paste. Fixing that needs a sender queue, not a lock.
 	//
 	// Entries are never removed. One pointer per pane id the session has ever
 	// used is a few hundred bytes over a daemon's life, and reference counting
@@ -64,41 +71,30 @@ type Client struct {
 	sendmu    sync.Mutex // guards sendLocks only, never held across a send
 	sendLocks map[string]*sync.Mutex
 
-	// reapOnce collects the tmux child's exit status exactly once, from
-	// whichever path gets there first. Wait() used to live only in Close(),
-	// so a client whose tmux died on its own — the session was killed, the
-	// last pane exited, the server crashed — was never reaped: the manager's
-	// markCold drops the controller without closing it, and the dead process
-	// stayed a zombie for the daemon's whole life. Measured on a live daemon:
-	// 12 workspaces attached at start, all 12 zombies after their sessions
-	// died, none reclaimed in the 20 hours since.
+	// reapErr is the child's exit status, written by shutdown() and readable
+	// only after reaped closes.
 	//
-	// The fix belongs here and not in markCold because shutdown() is the one
-	// funnel EVERY death already flows through, so no future caller can
-	// forget it. reapErr is read only after reapOnce.Do returns, which
-	// happens-after the write inside it.
-	reapOnce sync.Once
-	reapErr  error
+	// History, because it explains the shape: Wait() used to live only in
+	// Close(), so a client whose tmux died on its own — session killed, last
+	// pane exited, server crashed — was never reaped at all. markCold used to
+	// drop the controller without closing it, so nothing reached Close, and
+	// the dead process stayed a zombie for the daemon's whole life. See the
+	// package doc of internal/childproc for the incident.
+	//
+	// shutdown() is the one funnel EVERY death already flows through, so the
+	// reap lives there and there only — a single call site is the only place
+	// its precondition ("readLoop has stopped, so no read from the stdout
+	// pipe Wait is about to close is still in flight") can be proven.
+	// markCold closes too, but that is NOT what fixes the zombie; it releases
+	// the controller and ends a client that is still alive on a spurious
+	// %exit. Deleting either one does not restore the leak on its own.
+	reapErr error
 	// reaped closes once Wait has returned. done cannot serve this purpose:
-	// it is closed BEFORE the reap so that Command callers blocked on a dead
-	// connection get ErrClosed immediately, without waiting on a Wait that a
-	// process which closed stdout but has not exited could stall forever.
+	// it is closed FIRST so that Command callers blocked on a dead connection
+	// get ErrClosed immediately, without waiting on a Wait that a process
+	// which closed stdout but has not exited could stall forever.
 	// So done means "the connection ended", reaped means "the child is gone".
 	reaped chan struct{}
-}
-
-// reap collects the child's exit status, blocking until it has one. Safe to
-// call from any goroutine and any number of times; every call returns the same
-// result. Callers must be sure all reads from the stdout pipe have finished —
-// Wait closes it — which is why only shutdown() (after readLoop stops) and
-// Close() (which waits for done) may call this.
-func (c *Client) reap() error {
-	c.reapOnce.Do(func() {
-		c.reapErr = c.cmd.Wait()
-		close(c.reaped)
-	})
-	<-c.reaped // also the happens-before that makes reading cmd.ProcessState safe
-	return c.reapErr
 }
 
 // paneSend returns the lock serializing sends to one pane, creating it on first
@@ -236,6 +232,23 @@ func (c *Client) Command(args ...string) ([]string, error) {
 	_, werr := io.WriteString(c.stdin, line+"\n")
 	c.wmu.Unlock()
 	if werr != nil {
+		// Take the slot back. pending is a strict FIFO matched to send order,
+		// so an orphan left here makes the NEXT command's reply pop into this
+		// dead channel and every caller after it one reply behind — the exact
+		// desync wmu exists to prevent. In practice a write error means the
+		// pipe is gone and shutdown drains pending anyway, but Command has no
+		// timeout: if that ever does not hold, every command on this
+		// connection blocks with no error and no log.
+		// Match on identity, not position — deliver may already have consumed
+		// earlier entries.
+		c.mu.Lock()
+		for i, p := range c.pending {
+			if p == ch {
+				c.pending = append(c.pending[:i], c.pending[i+1:]...)
+				break
+			}
+		}
+		c.mu.Unlock()
 		return nil, werr
 	}
 	select {
@@ -258,17 +271,23 @@ func (c *Client) shutdown() {
 	c.mu.Unlock()
 
 	close(c.done)
-	// Reap before announcing the death. done is already closed, so blocked
-	// Command callers return ErrClosed without waiting on this, and the
-	// process is collected before the manager reacts to "exit" — which is
-	// exactly the path that used to drop the client without reaping it.
-	// Safe here and nowhere else in this goroutine: readLoop has stopped, so
-	// every read from the stdout pipe Wait is about to close has completed.
-	_ = c.reap()
 	for _, ch := range pending {
 		ch <- reply{err: ErrClosed}
 	}
 	c.handler.OnNotification("exit", "")
+
+	// Reap LAST. Wait can stall on a process that closed stdout without
+	// exiting — that hazard is why done closes first — and nothing above this
+	// line may sit behind it. The exit notice is what drives markCold, so
+	// reaping ahead of it would leave a workspace reading live in both lenses
+	// with a dead connection under it: stale state with nothing saying so,
+	// the same invisibility this whole change set out to end.
+	//
+	// Safe here and only here: readLoop has stopped, so every read from the
+	// stdout pipe that Wait is about to close has completed. shutdown's
+	// closed-guard means this body runs exactly once, so Wait does too.
+	c.reapErr = c.cmd.Wait()
+	close(c.reaped)
 }
 
 // Close ends the control connection and its tmux client (the session survives
@@ -279,10 +298,11 @@ func (c *Client) Close() error {
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
-	// Wait for readLoop to stop before reaping. Wait closes the stdout pipe,
-	// so calling it while the reader is still in ReadBytes races it into a
-	// spurious "file already closed" — which the old Close did on every
-	// archive and kill. The Kill above guarantees the EOF that gets us here.
-	<-c.done
-	return c.reap()
+	// Wait for shutdown() to finish, reap included. Close does NOT call Wait
+	// itself: that would be a second site where the "no reads still in
+	// flight" precondition has to hold, and the exported one, where callers
+	// cannot know the rule. The Kill above guarantees the EOF that ends
+	// readLoop and gets shutdown here.
+	<-c.reaped
+	return c.reapErr
 }
