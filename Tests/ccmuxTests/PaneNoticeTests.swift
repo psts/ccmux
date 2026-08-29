@@ -12,6 +12,13 @@ import XCTest
 /// These drive postPaneNotice/expirePaneNotice directly rather than waiting on
 /// the 10s timer: the rule worth pinning is which notice wins and which expiry
 /// is allowed to clear it, and neither needs wall-clock time to check.
+///
+/// Be aware of what this file currently buys, so nobody trusts it further than
+/// it goes: NOTHING runs `swift test` today. The release job's macos step runs
+/// `swift build` (build-app.sh), and .claude/qa-gates skips both Swift lines on
+/// the Linux host where development happens — its own last line says "`swift
+/// test` is not run by either". So this pins the rules for a human running the
+/// suite on a Mac, and does not yet stop a regression reaching a release.
 @MainActor
 final class PaneNoticeTests: XCTestCase {
     private let service = RemoteSessionService.shared

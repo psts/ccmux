@@ -41,16 +41,8 @@ func formatCommand(args []string) (string, error) {
 		if strings.ContainsAny(a, "\n\r") {
 			return "", fmt.Errorf("tmux: arg %q contains a newline (would inject a second command)", a)
 		}
-		// #( is tmux's run-shell format: whatever follows is handed to /bin/sh
-		// when a command EXPANDS the argument, which new-window does to its -c.
-		// Verified on tmux 3.4 — a cwd of "<dir>/#(id>/tmp/x)" created the
-		// window normally AND wrote the file, single-quoted, with no error and
-		// nothing in any pane. Quoting cannot help: expansion happens after
-		// parsing. Refused rather than escaped because nothing has an escape
-		// here, and because no legitimate cwd, env value or option value
-		// contains it. The #{...} formats the daemon relies on are untouched.
-		if strings.Contains(a, "#(") {
-			return "", fmt.Errorf("tmux: arg %q contains #( (would run a shell command on expansion)", a)
+		if err := rejectShellFormat(a); err != nil {
+			return "", err
 		}
 		if a == "" || strings.ContainsAny(a, " \t\"\\$#;{}") {
 			parts[i] = "'" + a + "'"
@@ -142,6 +134,32 @@ func (c *Client) SendKeysAsync(pane string, data []byte, done func(error)) {
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	c.paneSender(pane).submit(sendJob{data: cp, done: done})
+}
+
+// rejectShellFormat refuses an argument tmux would execute a shell command
+// from. It guards BOTH transports, because this hazard belongs to tmux itself
+// rather than to how the argument reaches it.
+//
+// #( is tmux's run-shell format: whatever follows is handed to /bin/sh when a
+// command EXPANDS the argument, which new-session and new-window both do to
+// their -c. Verified on tmux 3.4 through each path — a cwd of
+// "<dir>/#(id>/tmp/x)" created the session or window normally AND wrote the
+// file, with no error and nothing in any pane. Quoting cannot help: expansion
+// happens after parsing, and the CLI path has no quoting at all since it
+// passes argv directly.
+//
+// An earlier version of this check lived only in formatCommand, which covers
+// control mode alone. Server.NewSession goes out through exec.Command instead,
+// so every workspace create and every revive stayed exploitable.
+//
+// Refused rather than escaped because there is nothing to escape it to, and
+// because no legitimate cwd, env value or option value contains it. The #{...}
+// formats the daemon relies on are untouched.
+func rejectShellFormat(a string) error {
+	if strings.Contains(a, "#(") {
+		return fmt.Errorf("tmux: arg %q contains #( (would run a shell command on expansion)", a)
+	}
+	return nil
 }
 
 // PartialSendError reports a send that failed partway, naming how much reached

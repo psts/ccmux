@@ -164,7 +164,6 @@ func TestPaneWriter_DeliversQueuedNotice(t *testing.T) {
 	q := newNoticeQueue()
 	q.post("%4", "Paste was cut short: 8 of 64 bytes reached this pane.")
 
-	got := make(chan wsMsg, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
 		if err != nil {
@@ -195,7 +194,6 @@ func TestPaneWriter_DeliversQueuedNotice(t *testing.T) {
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("no frame reached the socket — the writer's notice arm is not wired: %v", err)
 	}
-	got <- msg
 	if msg.T != "notice" || msg.Pane != "%4" || !strings.Contains(msg.Notice, "cut short") {
 		t.Errorf("frame = %+v, want a notice for %%4", msg)
 	}

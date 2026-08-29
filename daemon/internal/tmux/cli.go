@@ -19,6 +19,16 @@ type Server struct {
 }
 
 func (s *Server) run(args ...string) (string, error) {
+	// Same shell-format refusal the control-mode path makes. This transport
+	// passes argv directly, so it needs no quoting and newlines are harmless
+	// here — but #( is expanded by tmux itself, so it is dangerous however the
+	// argument arrives. NewSession puts a caller-supplied cwd straight into
+	// -c, and new-session expands it exactly as new-window does.
+	for _, a := range args {
+		if err := rejectShellFormat(a); err != nil {
+			return "", err
+		}
+	}
 	full := append([]string{"-L", s.Socket}, args...)
 	cmd := exec.Command("tmux", full...)
 	var out, errb bytes.Buffer
