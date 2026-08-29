@@ -14,11 +14,24 @@ import (
 // tmux single-quote syntax cannot represent an embedded single quote, so we
 // reject that case rather than emit something that would mis-parse. Callers that
 // need arbitrary bytes in a pane use SendKeys (hex), not command args.
+//
+// Newlines are rejected for a sharper reason: control mode is LINE-based, so a
+// newline inside an argument ends the command and everything after it runs as
+// the NEXT command — quoting does not help, because the framing happens before
+// tmux parses quotes. Verified against tmux 3.4: an arg of
+// "a\nrename-session -t it PWNED" renamed the session, single quotes and all.
+// It is reachable — SpawnWindow puts cwd and env values straight into args
+// (session/controller.go), a Linux directory name may legally contain a
+// newline, and dev_command is user-set. There is nothing to escape it to, so
+// the only correct answer is to refuse and let the caller fail loudly.
 func formatCommand(args []string) (string, error) {
 	parts := make([]string, len(args))
 	for i, a := range args {
 		if strings.ContainsRune(a, '\'') {
 			return "", fmt.Errorf("tmux: arg %q contains a single quote (unsupported)", a)
+		}
+		if strings.ContainsAny(a, "\n\r") {
+			return "", fmt.Errorf("tmux: arg %q contains a newline (would inject a second command)", a)
 		}
 		if a == "" || strings.ContainsAny(a, " \t\"\\$#;{}") {
 			parts[i] = "'" + a + "'"

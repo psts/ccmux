@@ -76,3 +76,43 @@ func TestSendKeysCommands_EmptyDataSendsNothing(t *testing.T) {
 		t.Fatalf("empty data should cost no round trip, got %v", cmds)
 	}
 }
+
+// TestFormatCommand_RefusesNewlineInjection pins the fix for a real, verified
+// injection. Control mode is line-based, so a newline inside an argument ends
+// the command and the remainder runs as the next one. Quoting does not help:
+// the framing happens before tmux parses quotes.
+//
+// Demonstrated against tmux 3.4 before the fix — a set-option whose value was
+// "a\nrename-session -t it PWNED" renamed the session, single quotes and all.
+// Reachable because SpawnWindow puts cwd and env values straight into args, a
+// Linux directory name may legally contain a newline, and dev_command is
+// user-set.
+func TestFormatCommand_RefusesNewlineInjection(t *testing.T) {
+	payload := "a\nrename-session -t it PWNED"
+	line, err := formatCommand([]string{"set-option", "-t", "it", "@x", payload})
+	if err == nil {
+		t.Fatalf("formatCommand accepted a newline and produced %q — that is a "+
+			"second tmux command, not an argument", line)
+	}
+	if line != "" {
+		t.Errorf("a rejected command must render nothing, got %q", line)
+	}
+
+	// A carriage return frames the same way and must be refused too.
+	if _, err := formatCommand([]string{"set-option", "@x", "a\rkill-server"}); err == nil {
+		t.Error("formatCommand accepted a carriage return")
+	}
+
+	// The refusal must not spread to arguments that merely need quoting —
+	// paths with spaces and format strings are the everyday case.
+	for _, ok := range [][]string{
+		{"new-window", "-c", "/home/me/My Projects/app"},
+		{"list-windows", "-F", "#{window_id}|#{pane_id}"},
+		{"set-option", "-t", "it", "@ccmux_workspace_id", "83deb76b-9d03"},
+		{"new-window", "-e", "PATH=/usr/bin:/bin"},
+	} {
+		if _, err := formatCommand(ok); err != nil {
+			t.Errorf("formatCommand(%q) refused a legitimate command: %v", ok, err)
+		}
+	}
+}
