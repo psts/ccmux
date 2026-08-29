@@ -992,6 +992,24 @@ func (m *Manager) paneEnv(ws *model.Workspace, paneID string) map[string]string 
 		// switch is the shell itself — an `export ANTHROPIC_BASE_URL=…` in the
 		// user's rc runs after tmux stamps this and wins.
 		env["ANTHROPIC_BASE_URL"] = m.LocalURL + "/llm/pane/" + paneID
+		// Claude Code gates its model catalog and the 1M-context beta on the
+		// base URL being api.anthropic.com. Pointing it at our loopback proxy
+		// silently downgraded every hosted pane: a static built-in model list
+		// instead of the account's real one, and a 200k window instead of 1M.
+		// This flag is the CLI's own escape hatch — it short-circuits that host
+		// check (verified in the 2.1.251 binary, where the three "first party"
+		// reasons are this var, a first-party host, and an unset base URL).
+		//
+		// Unconditional, and it has to be: pane env freezes here, while the
+		// upstream is resolved per request from settings, so there is no route
+		// to condition on that stays true. It is honest for the default,
+		// keyless pass-through to Anthropic, which is what nearly every pane
+		// is. Route a pane to a non-Anthropic upstream and the claim goes
+		// stale: the CLI sends first-party-only betas and asks for a catalog
+		// that upstream has never heard of. Both degrade (headers ignored,
+		// catalog falls back to the static list) rather than break, which is
+		// the better trade than downgrading every pane all the time.
+		env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"] = "1"
 	}
 	if m.HooksSocket != "" {
 		env["CCMUX_HOOKS_SOCK"] = m.HooksSocket
