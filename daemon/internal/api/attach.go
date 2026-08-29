@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
+	"ccmux.dev/ccmuxd/internal/tmux"
 )
 
 // wsMsg is the single JSON envelope for all attach traffic (v1: JSON+base64; a
@@ -32,6 +35,11 @@ type wsMsg struct {
 	// lens too old to report presence must keep the pre-presence behaviour rather
 	// than be counted as nobody-is-there. See client.atAScreen.
 	Present *bool `json:"present,omitempty"`
+	// Notice is a short line meant for a human, on a t:"notice" frame — today
+	// only "your paste was cut short". Plain text, not base64 like Data: it is
+	// prose for the user, never pane bytes. Additive; a lens that predates it
+	// ignores the frame (both switch on t and drop what they do not know).
+	Notice string `json:"notice,omitempty"`
 }
 
 type paneInfo struct {
@@ -101,11 +109,12 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	// per-connection rather than a broadcast event.
 	rs := newResnapper()
 	defer rs.stop()
+	nq := newNoticeQueue()
 	go func() {
 		defer s.presence.Leave(wsID, connID)
-		s.readLoop(cancel, conn, ctrl, wsID, connID, readonly, rs)
+		s.readLoop(cancel, conn, ctrl, wsID, connID, readonly, rs, nq)
 	}()
-	(&paneWriter{conn: conn, ctrl: ctrl, ws: ws, sub: sub, ka: s.ka, rs: rs}).run(ctx)
+	(&paneWriter{conn: conn, ctrl: ctrl, ws: ws, sub: sub, ka: s.ka, rs: rs, nq: nq}).run(ctx)
 }
 
 func orDefault(s, def string) string {
@@ -190,6 +199,7 @@ func (w *paneWriter) reseed(ev session.Event) error {
 // that writes to `conn`. Bundling what it needs keeps `step` a dispatcher over
 // the four things that can wake it, with each arm's work behind a named method.
 type paneWriter struct {
+	nq   *noticeQueue
 	conn *websocket.Conn
 	ctrl *session.Controller
 	ws   *model.Workspace
@@ -231,6 +241,10 @@ func (w *paneWriter) step(ctx context.Context, ping <-chan time.Time) (done bool
 		if err := w.rs.flush(w.conn, w.ctrl); err != nil {
 			return true
 		}
+	case <-w.nq.wakeups():
+		if err := w.nq.flush(w.conn); err != nil {
+			return true
+		}
 	case ev, ok := <-w.sub.C:
 		if !ok {
 			return true
@@ -260,7 +274,7 @@ func (w *paneWriter) forward(ev session.Event) error {
 //
 // Presence is recorded only after the send succeeds; marking "this user typed"
 // for input that never reached tmux is a claim about a screen nobody made.
-func (s *Server) applyInput(ctrl *session.Controller, msg wsMsg, wsID, connID string) {
+func (s *Server) applyInput(ctrl *session.Controller, msg wsMsg, wsID, connID string, nq *noticeQueue) {
 	data, err := base64.StdEncoding.DecodeString(msg.Data)
 	if err != nil {
 		log.Printf("attach %s: undecodable input frame for pane %s (%d chars): %v",
@@ -289,12 +303,31 @@ func (s *Server) applyInput(ctrl *session.Controller, msg wsMsg, wsID, connID st
 	if err := ctrl.SendInputAsync(msg.Pane, data, func(err error) {
 		if err != nil {
 			log.Printf("attach %s: send input to pane %s (%d bytes): %v", wsID, msg.Pane, len(data), err)
+			if notice := inputFailureNotice(err); notice != "" {
+				nq.post(msg.Pane, notice)
+			}
 			return
 		}
 		s.presence.Input(wsID, connID)
 	}); err != nil {
 		log.Printf("attach %s: input for pane %s: %v", wsID, msg.Pane, err)
 	}
+}
+
+// inputFailureNotice turns a send error into a line for the person who pasted,
+// or "" when there is nothing worth interrupting them about.
+//
+// Only a PARTIAL send earns a notice. A send that delivered nothing failed
+// visibly — the user sees no text appear — but a truncated one looks like it
+// worked, and the pane is left holding a prefix of a command that the next
+// Enter will run. That is the case worth a banner.
+func inputFailureNotice(err error) string {
+	var partial *tmux.PartialSendError
+	if !errors.As(err, &partial) || partial.Sent == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Paste was cut short: %d of %d bytes reached this pane. "+
+		"Check the line before running it.", partial.Sent, partial.Total)
 }
 
 // applyResize drives the pane to the size this lens is showing.
@@ -322,7 +355,7 @@ func (s *Server) applyResize(msg wsMsg, wsID string, rs *resnapper) {
 // readLoop applies client input/resize/repaint/focus until the connection
 // closes. Read-only observers may only focus (server-enforced — an observer
 // must never crunch a driver's pane size nor drive capture-pane at will).
-func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool, rs *resnapper) {
+func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl *session.Controller, wsID, connID string, readonly bool, rs *resnapper, nq *noticeQueue) {
 	defer cancel()
 	// This goroutine owns the read deadline (see keepalive.go). Without it a lens
 	// whose network vanished holds its presence entry open forever, which also
@@ -345,7 +378,7 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 		}
 		switch msg.T {
 		case "input":
-			s.applyInput(ctrl, msg, wsID, connID)
+			s.applyInput(ctrl, msg, wsID, connID, nq)
 		case "resize":
 			s.applyResize(msg, wsID, rs)
 		case "repaint":

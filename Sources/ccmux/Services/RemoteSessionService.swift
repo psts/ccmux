@@ -25,6 +25,11 @@ final class RemoteSessionService: ObservableObject {
     /// Daemon pane ids whose shared tmux pane was driven to a size this app can't
     /// show 1:1 (another lens took over). Drives the hosted "Take over" control.
     @Published private(set) var stalePanes: Set<String> = []
+    /// Transient per-pane notices, keyed by daemon pane id. Short prose about
+    /// something the user just did (today: a paste that was cut short), NOT
+    /// daemon-wide health — that is DaemonHealthService. Different lifetimes,
+    /// so deliberately not the same surface.
+    @Published private(set) var paneNotices: [String: String] = [:]
     /// True once a `/v1/workspaces` fetch has succeeded (daemon reachable).
     @Published private(set) var reachable = false
     @Published private(set) var lastError: String?
@@ -317,6 +322,41 @@ final class RemoteSessionService: ObservableObject {
     /// Whether another lens drove `paneId`'s shared pane to a size this app can't
     /// show 1:1 — drives the hosted "Take over" control.
     func hostedIsStale(paneId: String) -> Bool { stalePanes.contains(paneId) }
+
+    /// The pane's current notice, or nil. Read by HostedTerminalPaneView.
+    func hostedNotice(paneId: String) -> String? { paneNotices[paneId] }
+
+    /// Shows a notice on a pane and expires it. Main-actor: it publishes.
+    ///
+    /// The banner clears itself because it describes a past event — a paste
+    /// that has already been truncated. Left up, it would go on accusing a
+    /// pane whose problem the user has long since dealt with. noticeLifetime
+    /// matches the web lens's 10s timeout so the two behave the same.
+    @MainActor
+    func postPaneNotice(paneId: String, text: String) {
+        paneNotices[paneId] = text
+        let token = text
+        noticeExpiries[paneId]?.invalidate()
+        noticeExpiries[paneId] = Timer.scheduledTimer(
+            withTimeInterval: Self.noticeLifetime, repeats: false
+        ) { _ in
+            Task { @MainActor in
+                // Only clear what this timer posted: a newer notice arriving in
+                // the window must not be cut short by the older one's expiry.
+                RemoteSessionService.shared.expirePaneNotice(paneId: paneId, ifStill: token)
+            }
+        }
+    }
+
+    @MainActor
+    func expirePaneNotice(paneId: String, ifStill token: String) {
+        guard paneNotices[paneId] == token else { return }
+        paneNotices.removeValue(forKey: paneId)
+        noticeExpiries.removeValue(forKey: paneId)?.invalidate()
+    }
+
+    private static let noticeLifetime: TimeInterval = 10
+    private var noticeExpiries: [String: Timer] = [:]
 
     /// Connection state of the workspace owning `paneId`, for the reconnect overlay.
     func hostedConnectionState(paneId: String) -> DaemonConnectionState {

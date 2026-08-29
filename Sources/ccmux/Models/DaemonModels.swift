@@ -526,6 +526,8 @@ struct DaemonWSFrame: Decodable {
     let rows: Int?
     let panes: [DaemonPaneInfo]?
     let clients: [DaemonClient]?
+    /// Plain prose for the user on a `notice` frame — not base64 like `data`.
+    let notice: String?
 }
 
 /// Pane summary carried in the `hello` frame.
@@ -566,6 +568,10 @@ enum DaemonEvent {
     /// tmux copy-mode copied text in this pane (selection = copy); the lens
     /// writes it to the OS clipboard.
     case clipboard(pane: String, bytes: [UInt8])
+    /// Something the user should know about what they just did in this pane —
+    /// today only a paste that was cut short. Transient: the lens shows it and
+    /// lets it expire. Mirrored in the web lens (showPaneNotice in app.js).
+    case notice(pane: String, text: String)
     case unknown(String)
 
     /// Pure mapping from a wire frame to a typed event (the testable codec seam).
@@ -589,6 +595,8 @@ enum DaemonEvent {
             self = .paneSize(pane: frame.pane ?? "", cols: frame.cols ?? 0, rows: frame.rows ?? 0)
         case "clipboard":
             self = .clipboard(pane: frame.pane ?? "", bytes: Self.decodeBytes(frame.data))
+        case "notice":
+            self = .notice(pane: frame.pane ?? "", text: frame.notice ?? "")
         default:
             self = .unknown(frame.t)
         }

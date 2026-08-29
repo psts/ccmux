@@ -37,7 +37,7 @@ func TestApplyInput_DoesNotBlockItsGoroutine(t *testing.T) {
 	}
 
 	start := time.Now()
-	s.applyInput(ctrl, msg, ws.ID, "conn-under-test")
+	s.applyInput(ctrl, msg, ws.ID, "conn-under-test", newNoticeQueue())
 	took := time.Since(start)
 
 	// Loose on purpose. The claim is "returns without waiting for tmux", not a

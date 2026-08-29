@@ -22,6 +22,22 @@ struct HostedTerminalPaneView: View {
                 ReconnectOverlay(state: state)
             }
         }
+        // Transient notice about what just happened in THIS pane — today only
+        // a paste that was cut short. Top-aligned and non-blocking like the
+        // reconnect banner, and it expires on its own (see postPaneNotice).
+        // Same rule and same words as the web lens's #pane-notice strip.
+        .overlay(alignment: .top) {
+            if let notice = service.hostedNotice(paneId: paneId) {
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange)
+                    .transition(.opacity)
+            }
+        }
         // "Take over" when another lens drove the shared pane to a size this window
         // can't show 1:1. Sized to the button (top-trailing), so terminal clicks
         // elsewhere pass through. Tapping re-asserts this window's size.

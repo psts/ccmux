@@ -112,6 +112,26 @@ func (c *Client) SendKeysAsync(pane string, data []byte, done func(error)) {
 	c.paneSender(pane).submit(sendJob{data: cp, done: done})
 }
 
+// PartialSendError reports a send that failed partway, naming how much reached
+// the pane. Typed rather than a formatted string because the lens tells the
+// user "your paste was cut short after N of M bytes", and recovering those
+// numbers by parsing an error message is the kind of thing that silently stops
+// working when someone rewords it.
+//
+// Sent may be 0: the first chunk can fail, in which case nothing landed.
+type PartialSendError struct {
+	Pane        string
+	Sent, Total int
+	Err         error
+}
+
+func (e *PartialSendError) Error() string {
+	return fmt.Sprintf("send-keys to %s: %d of %d bytes delivered: %v",
+		e.Pane, e.Sent, e.Total, e.Err)
+}
+
+func (e *PartialSendError) Unwrap() error { return e.Err }
+
 // sendKeysNow performs one send: split into `send-keys -H` (hex) commands, the
 // in-band echo-safe input path, and issue them in order. Called only from a
 // pane's sender goroutine, which is what serializes it — one job is processed
@@ -131,8 +151,7 @@ func (c *Client) sendKeysNow(pane string, data []byte) error {
 			// Say how much landed. api.applyInput only logs this, so without
 			// the offset the log records that a paste failed but not that the
 			// pane is now holding a truncated prefix of it.
-			return fmt.Errorf("send-keys to %s: %d of %d bytes delivered: %w",
-				pane, sent, len(data), err)
+			return &PartialSendError{Pane: pane, Sent: sent, Total: len(data), Err: err}
 		}
 		sent += len(args) - sendKeysPrefixArgs
 	}

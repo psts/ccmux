@@ -185,6 +185,17 @@ final class WorkspaceAttachment {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             }
+        case .notice(let pane, let text):
+            // Hand it to the service, which owns per-pane view state; the
+            // banner expires on its own there. Empty text would be a banner
+            // saying nothing, so it is dropped rather than shown blank.
+            guard !text.isEmpty else { break }
+            // Task { @MainActor }, not DispatchQueue.main.async: postPaneNotice
+            // is MainActor-isolated, and a plain dispatch closure is not a
+            // MainActor context to the compiler.
+            Task { @MainActor in
+                RemoteSessionService.shared.postPaneNotice(paneId: pane, text: text)
+            }
         // Attention now rides the global firehose; the attach still carries the
         // per-workspace `attention` frame but it is authoritative on /v1/events.
         case .attention, .presence, .paneAdded, .paneClosed, .unknown:

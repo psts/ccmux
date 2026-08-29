@@ -808,6 +808,10 @@ function onMessage(ev) {
       state.paneId = state.wantPane || (state.panes[0] && state.panes[0].id) || null;
       state.wantPane = null;
       state.paneCols = paneColsOf(state.paneId);
+      // After paneId is settled, not before: a notice belongs to its pane and
+      // keeps its own expiry, so switching away and back inside the window
+      // still shows it — the same rule as the Mac lens's per-pane overlay.
+      renderPaneNotice();
       renderTabs();
       updateHarnessBar();
       scheduleFit();
@@ -837,6 +841,13 @@ function onMessage(ev) {
     case "pane-added":
     case "pane-closed":
       attach(state.wsId, state.paneId); // simplest correct refresh
+      break;
+    case "notice":
+      // Something the user should know about the action they just took —
+      // today only a paste that was cut short. Transient by design: it
+      // describes a past event, so it clears itself rather than becoming
+      // furniture. Mirrored in the Mac lens (HostedTerminalPaneView).
+      showPaneNotice(m.pane, m.notice);
       break;
     case "clipboard":
       // tmux copy-mode copied in this workspace (selection = copy): mirror it
@@ -1656,6 +1667,44 @@ $("takeover").onclick = takeOver;
 fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-link attach dials direct
 connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes
+
+// --- pane notices: short, self-clearing lines about what just happened in a
+// pane. Kept apart from the daemon-warning strip because the two have opposite
+// lifetimes — that one persists until someone acts, this one is history the
+// moment it is read.
+//
+// Held PER PANE with its own expiry, not as one global banner, so this lens
+// applies the identical rule to the Mac app's per-pane overlay: a notice
+// belongs to the pane it happened in and lives ~10s, whether or not you are
+// looking at that pane meanwhile. One strip is only how this lens draws it.
+const NOTICE_LIFETIME_MS = 10000; // matches RemoteSessionService.noticeLifetime
+const paneNotices = new Map(); // pane id -> {text, timer}
+
+function showPaneNotice(pane, text) {
+  if (!text || !pane) return;
+  const existing = paneNotices.get(pane);
+  if (existing) clearTimeout(existing.timer);
+  paneNotices.set(pane, {
+    text,
+    timer: setTimeout(() => {
+      paneNotices.delete(pane);
+      renderPaneNotice();
+    }, NOTICE_LIFETIME_MS),
+  });
+  renderPaneNotice();
+}
+
+// renderPaneNotice shows whatever the CURRENT pane has, or nothing.
+function renderPaneNotice() {
+  const el = $("pane-notice");
+  const entry = paneNotices.get(state.paneId);
+  if (!entry) {
+    el.classList.add("hidden");
+    return;
+  }
+  el.textContent = entry.text;
+  el.classList.remove("hidden");
+}
 
 // --- daemon health: a child the daemon started and never reaped is invisible
 // everywhere but ps. Shown only when non-zero — a permanent "0 zombies" line is

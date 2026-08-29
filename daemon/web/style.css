@@ -426,6 +426,14 @@ body {
   color: var(--needs); background: var(--bg2); border-bottom: 1px solid var(--line);
 }
 
+/* Transient per-pane notice. Distinct from .daemon-warning above it: that one
+   is daemon-wide and stays until fixed, this one is about the thing you just
+   did and clears itself. Different lifetimes, so different colours. */
+.pane-notice {
+  margin: 0; padding: 6px 12px; font-size: 12px; line-height: 1.4;
+  color: var(--bg); background: var(--needs); border-bottom: 1px solid var(--line);
+}
+
 .sheet .status { color: var(--fg); margin: 0 0 12px; }
 .sheet .hint {
   color: var(--muted); margin: 0 0 12px; font-size: 12px; line-height: 1.5;

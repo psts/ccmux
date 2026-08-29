@@ -157,6 +157,30 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertEqual(String(bytes: bytes, encoding: .utf8), "copied text")
     }
 
+    func testNoticeFrameDecodes() {
+        // A truncated paste must arrive as its OWN case. Falling into .unknown
+        // would silently drop the only signal the user gets that half their
+        // paste is sitting in the pane — the whole reason the frame exists.
+        // `notice` is plain prose, NOT base64 like `data`.
+        let text = #"{"t":"notice","pane":"%3","notice":"Paste was cut short: 10 of 99 bytes reached this pane."}"#
+        guard case .notice(let pane, let body)? = DaemonEvent.decode(text: text) else {
+            return XCTFail("expected notice")
+        }
+        XCTAssertEqual(pane, "%3")
+        XCTAssertTrue(body.contains("cut short"), "notice text lost: \(body)")
+        XCTAssertTrue(body.contains("10"), "notice lost its byte counts: \(body)")
+    }
+
+    func testUnknownFrameStaysUnknown() {
+        // Tolerating unknown frames is what makes every new frame kind additive
+        // for an older lens. If this ever throws or crashes instead, shipping a
+        // new frame becomes a breaking change for everyone not yet updated.
+        guard case .unknown(let kind)? = DaemonEvent.decode(text: #"{"t":"not-a-real-frame"}"#) else {
+            return XCTFail("expected unknown")
+        }
+        XCTAssertEqual(kind, "not-a-real-frame")
+    }
+
     func testSnapshotFrameDecodes() {
         let b64 = Data("screen".utf8).base64EncodedString()
         let text = #"{"t":"snapshot","pane":"p2","data":"\#(b64)"}"#
