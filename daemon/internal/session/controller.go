@@ -204,6 +204,22 @@ func (c *Controller) SendInput(paneID string, data []byte) error {
 	return c.client.SendKeys(ref.pane, data)
 }
 
+// SendInputAsync queues input and returns without waiting for tmux. done, if
+// set, receives the delivery result later, on the sender's goroutine.
+//
+// The pane lookup stays synchronous and its error stays a return value: an
+// unknown pane is the caller's mistake and it should hear about it at the call
+// site, not in a log line from a background worker. Only the delivery half is
+// deferred.
+func (c *Controller) SendInputAsync(paneID string, data []byte, done func(error)) error {
+	ref := c.ref(paneID)
+	if ref == nil {
+		return fmt.Errorf("unknown pane %s", paneID)
+	}
+	c.client.SendKeysAsync(ref.pane, data, done)
+	return nil
+}
+
 // Resize sets a pane's window size.
 func (c *Controller) Resize(paneID string, cols, rows int) error {
 	ref := c.ref(paneID)

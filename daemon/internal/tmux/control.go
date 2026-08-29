@@ -52,24 +52,20 @@ type Client struct {
 	// loop would stop reading our stdin, and the write would never finish.
 	wmu sync.Mutex
 
-	// sendLocks keeps one SendKeys' chunks contiguous, PER PANE (see
-	// commands.go). Per pane and not one global lock because a chunked send is
-	// not quick: measured against tmux 3.4, a 1 MB paste is ~3s at the current
-	// chunk size. Not a constant — the cost is quadratic in chunk size, from
-	// 2.2s to 26.9s across the range; commands.go has the table and is the
-	// authority. A global lock would freeze typing in every other pane for
-	// that whole time, and panes here are shared between lenses.
-	//
-	// This isolates panes ACROSS connections. It does not make a big send
-	// cheap for the connection that issued it: api.applyInput calls SendKeys
-	// inline on the attach read goroutine, so that lens still blocks on its
-	// own paste. Fixing that needs a sender queue, not a lock.
+	// senders is one FIFO queue per pane (see sender.go). Per pane and not one
+	// global queue because a chunked send is not quick: measured against tmux
+	// 3.4, a 1 MB paste is ~3s at the current chunk size. Not a constant — the
+	// cost is quadratic in chunk size, from 2.2s to 26.9s across the range;
+	// commands.go has the table and is the authority. One shared queue would
+	// stall typing in every other pane for that whole time, and panes here are
+	// shared between lenses.
 	//
 	// Entries are never removed. One pointer per pane id the session has ever
 	// used is a few hundred bytes over a daemon's life, and reference counting
-	// them would need a lock held across the send anyway.
-	sendmu    sync.Mutex // guards sendLocks only, never held across a send
-	sendLocks map[string]*sync.Mutex
+	// them would need a lock held across the send anyway. The worker goroutine
+	// is not permanent — it exits when its queue drains.
+	sendmu  sync.Mutex // guards senders only, never held across a send
+	senders map[string]*paneSender
 
 	// reapErr is the child's exit status, written by shutdown() and readable
 	// only after reaped closes.
@@ -97,17 +93,19 @@ type Client struct {
 	reaped chan struct{}
 }
 
-// paneSend returns the lock serializing sends to one pane, creating it on first
-// use.
-func (c *Client) paneSend(pane string) *sync.Mutex {
+// paneSender returns the queue serializing sends to one pane, creating it on
+// first use.
+func (c *Client) paneSender(pane string) *paneSender {
 	c.sendmu.Lock()
 	defer c.sendmu.Unlock()
-	m := c.sendLocks[pane]
-	if m == nil {
-		m = &sync.Mutex{}
-		c.sendLocks[pane] = m
+	s := c.senders[pane]
+	if s == nil {
+		s = newPaneSender(maxQueuedBytesPerPane, func(data []byte) error {
+			return c.sendKeysNow(pane, data)
+		})
+		c.senders[pane] = s
 	}
-	return m
+	return s
 }
 
 type reply struct {
@@ -132,7 +130,7 @@ func Dial(ctx context.Context, socket, session string, h Handler) (*Client, erro
 		return nil, err
 	}
 	c := &Client{socket: socket, cmd: cmd, stdin: stdin, handler: h, done: make(chan struct{}),
-		reaped: make(chan struct{}), sendLocks: map[string]*sync.Mutex{}}
+		reaped: make(chan struct{}), senders: map[string]*paneSender{}}
 	// tmux answers the implicit `attach` command with an initial %begin/%end
 	// block that we never issued. Pre-queue a discard slot (before the reader
 	// starts) so the FIFO stays aligned with caller-issued commands.

@@ -429,3 +429,116 @@ func TestSendKeys_ConcurrentPastesStayContiguous(t *testing.T) {
 			"arrive as one contiguous run)", transitions)
 	}
 }
+
+// TestSendKeysAsync_ReturnsBeforeDelivery is the regression for the head-of-line
+// block this queue exists to remove. api.applyInput runs on the attach read
+// goroutine, which also dispatches resize, repaint and focus and owns the
+// websocket read deadline; a synchronous send froze all of that for the whole
+// paste (~3s for 1 MB). The submit must return in a small fraction of the time
+// delivery takes, and every byte must still arrive.
+func TestSendKeysAsync_ReturnsBeforeDelivery(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-async-itest"
+	sink := filepath.Join(t.TempDir(), "sink")
+	tmuxRun(t, socket, "kill-server")
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
+		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	want := make([]byte, 19*1024)
+	for i := range want {
+		want[i] = byte('a' + i%26)
+	}
+
+	delivered := make(chan error, 1)
+	start := time.Now()
+	c.SendKeysAsync("it", want, func(err error) { delivered <- err })
+	submitTook := time.Since(start)
+
+	var deliverTook time.Duration
+	select {
+	case err := <-delivered:
+		if err != nil {
+			t.Fatalf("delivery: %v", err)
+		}
+		deliverTook = time.Since(start)
+	case <-time.After(30 * time.Second):
+		t.Fatal("send never completed")
+	}
+
+	// The margin is deliberately loose: the claim is "returns without waiting
+	// for tmux", not a latency budget that would flake on a busy host.
+	if submitTook > deliverTook/4 {
+		t.Errorf("submit took %v of the %v delivery — the caller is still "+
+			"waiting on tmux", submitTook, deliverTook)
+	}
+
+	got, err := os.ReadFile(sink)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("pane received %d bytes (err %v), want %d byte-identical",
+			len(got), err, len(want))
+	}
+}
+
+// TestSendKeysAsync_KeepsSubmissionOrder is the same FIFO guarantee as the unit
+// test, but end to end through a real tmux, because that is where losing it
+// would show up as scrambled keystrokes. Submitted from ONE goroutine, exactly
+// as api.readLoop dispatches frames.
+func TestSendKeysAsync_KeepsSubmissionOrder(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-asyncorder-itest"
+	sink := filepath.Join(t.TempDir(), "sink")
+	tmuxRun(t, socket, "kill-server")
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
+		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	// A big first payload then small ones: if anything let a later submission
+	// overtake, the small ones would land before the big one finishes.
+	var want []byte
+	var wg sync.WaitGroup
+	wg.Add(1)
+	big := bytes.Repeat([]byte{'#'}, 8*1024)
+	c.SendKeysAsync("it", big, func(error) { wg.Done() })
+	want = append(want, big...)
+	for i := 0; i < 26; i++ {
+		p := []byte{byte('a' + i)}
+		wg.Add(1)
+		c.SendKeysAsync("it", p, func(error) { wg.Done() })
+		want = append(want, p...)
+	}
+	wg.Wait()
+
+	var got []byte
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, _ = os.ReadFile(sink); len(got) >= len(want) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("pane received %d bytes, want %d in submission order (first "+
+			"difference decides: keystrokes must arrive as typed)", len(got), len(want))
+	}
+}

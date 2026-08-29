@@ -76,25 +76,54 @@ func sendKeysCommands(pane string, data []byte) [][]string {
 	return cmds
 }
 
-// SendKeys injects raw bytes into a pane via `send-keys -H` (hex), the in-band,
-// echo-safe input path. Oversized input is split (see maxKeysPerCommand).
+// SendKeys injects raw bytes into a pane and blocks until they are in tmux,
+// returning the delivery error. Unchanged contract: every caller that needs
+// "the bytes are there now" — startup commands, autoconfirm, the harness —
+// keeps using this.
 //
-// The split runs under that pane's lock so a paste stays contiguous: panes are
-// shared between lenses, so without it another lens's keystroke could land
-// between two chunks and appear in the middle of the pasted text. The lock is
-// per pane, not per connection, because a big send is slow enough (seconds)
-// that a shared one would freeze typing everywhere else in the workspace.
-//
-// Splitting trades the old failure for a smaller one. A mid-send error now
-// leaves the earlier chunks in the pane, where an over-limit send used to
-// deliver nothing at all. The caller learns only that it failed, not where, and
-// api.applyInput just logs it — so a connection that dies mid-paste shows up as
-// a truncated paste with no message. That is worse to diagnose than the old
-// all-or-nothing, and better than a 19 kB paste never working.
+// It goes through the pane's queue rather than around it. A second path
+// straight to the wire would race the queued one, and then neither ordering
+// would hold.
 func (c *Client) SendKeys(pane string, data []byte) error {
-	lock := c.paneSend(pane)
-	lock.Lock()
-	defer lock.Unlock()
+	errc := make(chan error, 1)
+	c.paneSender(pane).submit(sendJob{
+		data: data,
+		done: func(err error) { errc <- err },
+	})
+	return <-errc
+}
+
+// SendKeysAsync queues bytes and returns immediately; done, if set, is called
+// with the delivery result on the sender's goroutine.
+//
+// This exists for api.applyInput, which runs on the attach read goroutine —
+// the one that also dispatches resize, repaint and focus, and that owns the
+// websocket read deadline. Blocking it for the ~3s of a 1 MB paste froze every
+// other pane on that lens. Ordering is not lost by returning early: the queue
+// is FIFO per pane, which is a stronger guarantee than the mutex this replaced.
+//
+// data is copied. The queue outlives the caller's stack, and every caller
+// today happens to pass a fresh slice — "happens to" is not something a
+// background worker should depend on.
+func (c *Client) SendKeysAsync(pane string, data []byte, done func(error)) {
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	c.paneSender(pane).submit(sendJob{data: cp, done: done})
+}
+
+// sendKeysNow performs one send: split into `send-keys -H` (hex) commands, the
+// in-band echo-safe input path, and issue them in order. Called only from a
+// pane's sender goroutine, which is what serializes it — one job is processed
+// whole, so another lens's keystroke lands before or after a paste, never
+// inside it.
+//
+// Splitting trades the old failure for a smaller one. A mid-send error leaves
+// the earlier chunks in the pane, where an over-limit send used to deliver
+// nothing at all. The caller learns how much landed but not that the pane is
+// now holding a truncated prefix; api.applyInput only logs it. That is worse
+// to diagnose than the old all-or-nothing, and better than a 19 kB paste never
+// working.
+func (c *Client) sendKeysNow(pane string, data []byte) error {
 	sent := 0
 	for _, args := range sendKeysCommands(pane, data) {
 		if _, err := c.Command(args...); err != nil {

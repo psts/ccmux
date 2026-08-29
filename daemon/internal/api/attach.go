@@ -267,11 +267,25 @@ func (s *Server) applyInput(ctrl *session.Controller, msg wsMsg, wsID, connID st
 			wsID, msg.Pane, len(msg.Data), err)
 		return
 	}
-	if err := ctrl.SendInput(msg.Pane, data); err != nil {
-		log.Printf("attach %s: send input to pane %s (%d bytes): %v", wsID, msg.Pane, len(data), err)
-		return
+	// Queue and return. This goroutine also dispatches resize, repaint and
+	// focus and owns the websocket read deadline, so blocking it for the ~3s a
+	// 1 MB paste takes froze every other pane on this lens. Ordering is not
+	// lost: the pane's queue is FIFO, which is what the blocking used to
+	// supply (a mutex never did — see internal/tmux/sender.go).
+	//
+	// Presence still means "this user typed", not "this user queued", so it
+	// moves into the completion callback with the error. presenceHub.Input is
+	// mutex-guarded and no-ops on a connID that has since left, so arriving
+	// late or after teardown is safe.
+	if err := ctrl.SendInputAsync(msg.Pane, data, func(err error) {
+		if err != nil {
+			log.Printf("attach %s: send input to pane %s (%d bytes): %v", wsID, msg.Pane, len(data), err)
+			return
+		}
+		s.presence.Input(wsID, connID)
+	}); err != nil {
+		log.Printf("attach %s: input for pane %s: %v", wsID, msg.Pane, err)
 	}
-	s.presence.Input(wsID, connID)
 }
 
 // applyResize drives the pane to the size this lens is showing.
