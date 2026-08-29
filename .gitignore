@@ -12,5 +12,11 @@ dist/
 # qa-receipt.sh finds no test command here (go.mod is under daemon/, and it does
 # not recognise Package.swift) and refuses to sign anything.
 !.claude/qa-gates
+# The gate scripts qa-gates invokes, and their frozen baselines. These must be
+# tracked or the gate only works on the machine that wrote it — .claude/* hides
+# the directory, and git will not descend into an ignored directory, so the
+# DIRECTORY has to be un-ignored, not just the files.
+!.claude/gates/
+!.claude/gates/*
 SwiftTerm/.build/
 SwiftTerm/.swiftpm/

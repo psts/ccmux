@@ -1,0 +1,32 @@
+# Frozen complexity debt: functions over the cap of 10 when the gate landed
+# (2026-08-29). Format: complexity<TAB>package<TAB>function<TAB>file.
+# The gate fails on anything NOT listed here, and on a listed function whose
+# complexity has grown. Prune an entry once it drops under 10.
+11	api	(*notifier).onAttention	internal/api/notifier.go
+12	api	(*paneWriter).step	internal/api/attach.go
+12	api	(*Server).applySettings	internal/api/server.go
+11	api	(*Server).events	internal/api/events.go
+12	api	(*Server).hubEvents	internal/api/hubevents.go
+11	api	(*Server).listProjects	internal/api/projects.go
+13	api	(*Server).mergedNotifierEvents	internal/api/hubpush.go
+23	api	(*Server).rejectSettings	internal/api/server.go
+12	gitstatus	Parse	internal/gitstatus/gitstatus.go
+13	llmproxy	rewriteRequest	internal/llmproxy/compat.go
+20	llmproxy	validateAccounts	internal/llmproxy/llmproxy.go
+13	main	cmdInstall	cmd/ccmuxd/install.go
+11	main	fillInteractive	cmd/ccmuxd/install.go
+12	main	parseVer	cmd/ccmuxd/install.go
+23	main	runDaemon	cmd/ccmuxd/main.go
+15	manager	(*Manager).applyPaneTitleSignal	internal/manager/panetitle.go
+11	manager	(*Manager).KillPane	internal/manager/manager.go
+12	manager	(*Manager).MigrateViewsToWindows	internal/manager/windows.go
+11	manager	(*Manager).refreshComposeOverride	internal/manager/devhost.go
+11	manager	(*Manager).restartDevServer	internal/manager/devhost.go
+11	manager	(*Manager).validateHostnames	internal/manager/devhost.go
+11	peers	(*Service).assignIDLocked	internal/peers/registry.go
+11	peers	(*Service).List	internal/peers/registry.go
+12	peers	(*Service).RegisterFrom	internal/peers/registry.go
+13	peers	(*Service).resolveTargetLocked	internal/peers/messages.go
+12	peers	(*Service).writePeer	internal/peers/conn.go
+13	portdetect	ComposeOverride	internal/portdetect/composeoverride.go
+11	portdetect	PortFlagSuffix	internal/portdetect/command.go

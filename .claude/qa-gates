@@ -14,6 +14,13 @@
 # gate that cannot run, and it took the whole receipt down with it — no Go gating
 # either, and no green recordable from Linux at all.
 #
+# Added 2026-08-29 (hq workflow audit): gofmt, a Go complexity ratchet, and a
+# syntax check for the web lens. The audit traced this repo's habit of landing
+# review-fix commits before a release to having only `go vet` + `go test` here —
+# everything the three lines below catch was arriving fresh at /ship's AI review
+# instead. They are ordered before the Go gates because they fail in
+# milliseconds.
+#
 # Read the skip as permanent: development is Linux-only and goes straight to CI,
 # so nobody runs these two lines. What that leaves is worth knowing but has not
 # been a problem in practice — release.yml's macos-15 job builds the app on every
@@ -21,6 +28,27 @@
 # a defect: a green from this file covers the Go daemon, and Swift is covered by
 # the tag build. `swift test` is not run by either.
 
+# --- static checks first: they are the cheapest and fail fastest ---
+
+# Formatting. `gofmt -l` prints unformatted files and exits 0 either way, so the
+# emptiness of its output IS the result and has to be turned into an exit code.
+cd daemon && test -z "$(gofmt -l .)" || { echo "qa-gates: gofmt — not formatted:"; gofmt -l .; exit 1; }
+
+# Web lens syntax. daemon/web/ is ~1750 lines of plain JS with no build step, no
+# bundler and no test harness, so until this line it was gated by NOTHING and
+# every mistake in it reached a release. `node --check` is only a parse — it
+# catches typos and unbalanced braces, not logic — but that is the floor and it
+# costs milliseconds. A lint pass with complexity/length caps is the obvious next
+# step and deliberately NOT bundled here: it needs an eslint config and a
+# node_modules this repo does not have, which is a bigger decision than a gate.
+command -v node >/dev/null 2>&1 || { echo "qa-gates: node not installed — cannot syntax-check daemon/web"; exit 1; }
+for f in daemon/web/*.js; do node --check "$f" || exit 1; done
+
+# Go complexity, capped at 10, as a ratchet over frozen pre-existing debt.
+# See .claude/gates/gocyclo.sh for why it is a ratchet and not a wall.
+bash .claude/gates/gocyclo.sh
+
+# --- then the real work ---
 cd daemon && go vet ./...
 cd daemon && go test ./...
 # Written as if/else, NOT `command -v swift && swift build || echo ...`. That shorter
