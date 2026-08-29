@@ -1695,15 +1695,26 @@ function showPaneNotice(pane, text) {
 }
 
 // renderPaneNotice shows whatever the CURRENT pane has, or nothing.
+//
+// The strip is a block element inside the flex column that #terminal flexes
+// into, so showing or hiding it changes the terminal's height by a row. There
+// is no ResizeObserver anywhere in this lens — the only refit triggers are
+// window resize, visibility changes, and explicit scheduleFit() calls — so
+// without the call below the grid stays wrong until the user resizes the
+// window. That is not cosmetic: doFit also drives the shared pane size to the
+// daemon, so a stale row count would reach every other lens on the pane. Same
+// reason setHarnessBar calls it.
 function renderPaneNotice() {
   const el = $("pane-notice");
   const entry = paneNotices.get(state.paneId);
+  const wasHidden = el.classList.contains("hidden");
   if (!entry) {
     el.classList.add("hidden");
-    return;
+  } else {
+    el.textContent = entry.text;
+    el.classList.remove("hidden");
   }
-  el.textContent = entry.text;
-  el.classList.remove("hidden");
+  if (wasHidden !== el.classList.contains("hidden")) scheduleFit();
 }
 
 // --- daemon health: a child the daemon started and never reaped is invisible

@@ -15,9 +15,12 @@ import (
 // a background goroutine posts, the writer drains.
 //
 // Pending is a MAP keyed by pane, so a pane's newest message replaces its older
-// one. A connection dying mid-paste fails every queued job on that pane, and
-// fifty copies of "your paste was cut short" is not fifty times the
-// information. Different panes never crowd each other out.
+// one, and no pane can crowd out another's. A dying control connection fails
+// every queued job on a pane, and each one now produces a notice — total
+// failures stopped being silent once it turned out they are invisible at a
+// password prompt — so without the map a single death would post one line per
+// queued job. Fifty copies of the same sentence is not fifty times the
+// information.
 //
 // Threading: post is called from sender goroutines; wakeups/drain/flush belong
 // to the write goroutine. pending is shared, so it is behind mu.

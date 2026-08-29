@@ -314,17 +314,33 @@ func (s *Server) applyInput(ctrl *session.Controller, msg wsMsg, wsID, connID st
 	}
 }
 
-// inputFailureNotice turns a send error into a line for the person who pasted,
-// or "" when there is nothing worth interrupting them about.
+// inputFailureNotice turns a send error into a line for the person who typed
+// or pasted, or "" when there is nothing to say.
 //
-// Only a PARTIAL send earns a notice. A send that delivered nothing failed
-// visibly — the user sees no text appear — but a truncated one looks like it
-// worked, and the pane is left holding a prefix of a command that the next
-// Enter will run. That is the case worth a banner.
+// An earlier version notified only on a PARTIAL send, arguing that delivering
+// nothing "failed visibly — the user sees no text appear". That premise only
+// holds where the pane echoes. At a password prompt, an ssh passphrase, sudo,
+// `read -s`, a token pasted into a login flow, nothing appears on SUCCESS
+// either, so a total failure is indistinguishable from it: the user presses
+// Enter, is rejected, and blames the credential. Worse, Sent == 0 means the
+// FIRST chunk failed, and whatever killed it — ErrClosed, a dead control pipe,
+// a tmux %error — kills every later send to that pane too, so it is usually
+// the first sign of persistent total input loss.
+//
+// The two states get different words because they need different actions: a
+// truncated paste means "look at the line before you run it", a total failure
+// means "it never arrived, and the next one probably will not either".
 func inputFailureNotice(err error) string {
-	var partial *tmux.PartialSendError
-	if !errors.As(err, &partial) || partial.Sent == 0 {
+	if err == nil {
 		return ""
+	}
+	var partial *tmux.PartialSendError
+	if !errors.As(err, &partial) {
+		return "Input did not reach this pane. See the daemon log for why."
+	}
+	if partial.Sent == 0 {
+		return "Nothing you just sent reached this pane — it was not entered. " +
+			"Further input to this pane will probably fail too."
 	}
 	return fmt.Sprintf("Paste was cut short: %d of %d bytes reached this pane. "+
 		"Check the line before running it.", partial.Sent, partial.Total)

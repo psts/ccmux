@@ -23,9 +23,15 @@ struct HostedTerminalPaneView: View {
             }
         }
         // Transient notice about what just happened in THIS pane — today only
-        // a paste that was cut short. Top-aligned and non-blocking like the
-        // reconnect banner, and it expires on its own (see postPaneNotice).
+        // a paste that was cut short. Expires on its own (see postPaneNotice).
         // Same rule and same words as the web lens's #pane-notice strip.
+        //
+        // allowsHitTesting(false) is load-bearing, not decoration: this spans
+        // the full width and sits over live terminal rows, so without it every
+        // click on the top strip of the pane would be swallowed for ten
+        // seconds. ReconnectOverlay does the same thing for the same reason.
+        // (The web lens has no equivalent problem — there the strip is a block
+        // element ABOVE the terminal, in flow, never over it.)
         .overlay(alignment: .top) {
             if let notice = service.hostedNotice(paneId: paneId) {
                 Text(notice)
@@ -34,8 +40,9 @@ struct HostedTerminalPaneView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.orange)
+                    .background(Color.orange.opacity(0.92))
                     .transition(.opacity)
+                    .allowsHitTesting(false)
             }
         }
         // "Take over" when another lens drove the shared pane to a size this window

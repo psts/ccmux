@@ -339,11 +339,15 @@ final class RemoteSessionService: ObservableObject {
         noticeExpiries[paneId]?.invalidate()
         noticeExpiries[paneId] = Timer.scheduledTimer(
             withTimeInterval: Self.noticeLifetime, repeats: false
-        ) { _ in
+        ) { [weak self] _ in
             Task { @MainActor in
+                // self, not .shared: reaching for the singleton would have this
+                // timer mutate an instance it was never posted on, which is both
+                // a lie about what it owns and untestable.
+                //
                 // Only clear what this timer posted: a newer notice arriving in
                 // the window must not be cut short by the older one's expiry.
-                RemoteSessionService.shared.expirePaneNotice(paneId: paneId, ifStill: token)
+                self?.expirePaneNotice(paneId: paneId, ifStill: token)
             }
         }
     }

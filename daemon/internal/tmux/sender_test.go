@@ -62,30 +62,41 @@ func TestPaneSender_PreservesSubmissionOrder(t *testing.T) {
 // bound a lens that submits faster than tmux drains grows daemon memory with
 // nothing to stop it or surface it; the chosen trade is that the submitter
 // waits rather than that input is dropped.
+//
+// It asserts on ELAPSED TIME, not on a sampled queue depth. An earlier version
+// checked s.bytes after every submit returned, by which point the queue has
+// drained — and submit's own wait loop makes bytes > limit unreachable anyway,
+// so that assertion could not fail. Time is what the bound actually costs, so
+// time is what to measure: six jobs that cannot be queued at once must wait
+// for sends to finish, and without the wait loop the loop returns immediately.
 func TestPaneSender_BoundBlocksInsteadOfGrowing(t *testing.T) {
-	r := &recorder{delay: 30 * time.Millisecond}
+	const sendDelay = 30 * time.Millisecond
+	r := &recorder{delay: sendDelay}
 	s := newPaneSender(10, r.send) // tiny bound so the test does not need 8 MB
 
-	done := make(chan struct{})
+	done := make(chan time.Duration, 1)
 	go func() {
-		defer close(done)
+		start := time.Now()
 		for i := 0; i < 6; i++ {
 			s.submit(sendJob{data: make([]byte, 4)}) // 24 bytes total, bound 10
 		}
+		done <- time.Since(start)
 	}()
 
+	var elapsed time.Duration
 	select {
-	case <-done:
-		// Six 4-byte jobs past a 10-byte bound cannot all be queued at once;
-		// finishing instantly would mean the bound is not enforced.
-		s.mu.Lock()
-		queued := s.bytes
-		s.mu.Unlock()
-		if queued > s.limit {
-			t.Fatalf("queued %d bytes past a %d-byte bound", queued, s.limit)
-		}
+	case elapsed = <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("submitter never made progress — the bound deadlocked")
+	}
+
+	// Only two 4-byte jobs fit under a 10-byte bound, so at least three of the
+	// six submits must wait for a send to complete. Three delays is the floor;
+	// asserting two keeps margin on a loaded host while still being far above
+	// the ~0 an unbounded queue would take.
+	if min := 2 * sendDelay; elapsed < min {
+		t.Errorf("six jobs past a %d-byte bound took %v, want at least %v — "+
+			"returning that fast means the bound is not enforced", s.limit, elapsed, min)
 	}
 
 	deadline := time.Now().Add(5 * time.Second)

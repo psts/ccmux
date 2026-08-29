@@ -171,16 +171,6 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertTrue(body.contains("10"), "notice lost its byte counts: \(body)")
     }
 
-    func testUnknownFrameStaysUnknown() {
-        // Tolerating unknown frames is what makes every new frame kind additive
-        // for an older lens. If this ever throws or crashes instead, shipping a
-        // new frame becomes a breaking change for everyone not yet updated.
-        guard case .unknown(let kind)? = DaemonEvent.decode(text: #"{"t":"not-a-real-frame"}"#) else {
-            return XCTFail("expected unknown")
-        }
-        XCTAssertEqual(kind, "not-a-real-frame")
-    }
-
     func testSnapshotFrameDecodes() {
         let b64 = Data("screen".utf8).base64EncodedString()
         let text = #"{"t":"snapshot","pane":"p2","data":"\#(b64)"}"#
@@ -246,6 +236,10 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertEqual(p2[0].cols, 0)
     }
 
+    // Tolerating unknown frames is what makes every new frame kind additive for
+    // an older lens — `notice` was added this way. If this ever throws or
+    // crashes instead, shipping a new frame becomes a breaking change for
+    // everyone not yet updated.
     func testUnknownFrameTypeIsCaptured() {
         guard case .unknown(let t)? = DaemonEvent.decode(text: #"{"t":"future-frame"}"#) else {
             return XCTFail("expected unknown")

@@ -86,3 +86,39 @@ func TestPresence_DriverClearsWhenDriverLeaves(t *testing.T) {
 		t.Fatal("driver should clear when the driving client leaves")
 	}
 }
+
+// TestPresence_InputAfterLeaveIsSafe pins a guard the async input path now
+// depends on every day. Delivery completes on the pane's sender goroutine,
+// which outlives the connection, so "paste a megabyte, close the tab, the
+// callback fires seconds later" is ordinary. Before input went async this
+// sequence was impossible: the send blocked the read goroutine and Leave ran
+// after it.
+//
+// Weaken the nil check in Input and this dereferences a nil client on a
+// background goroutine, where paneSender.drain has no recover — so it takes
+// the daemon down, not the paste.
+func TestPresence_InputAfterLeaveIsSafe(t *testing.T) {
+	h := newTestHub()
+	const ws = "ws-1"
+	// TWO clients, and only one leaves. With a single client, Leave removes the
+	// whole workspace entry, so Input short-circuits on `wp == nil` and never
+	// reaches the per-client nil check — which is the guard the async callback
+	// actually relies on. (Verified: with one client, weakening that check
+	// still passed.) A second attached lens is also the realistic case here,
+	// since panes are shared.
+	gone := h.Join(ws, ClientInfo{User: "Alice"}, "alice", "alice@example.com")
+	staying := h.Join(ws, ClientInfo{User: "Bob"}, "bob", "bob@example.com")
+	h.Leave(ws, gone)
+
+	h.Input(ws, gone)            // must not panic: the workspace still exists
+	h.Input(ws, "never-existed") // nor for a connID that never joined
+	h.Focus(ws, gone, "%1")      // the other late callbacks too
+	h.Input("no-such-workspace", gone)
+
+	// And the surviving lens is untouched by its neighbour's late callbacks.
+	h.Input(ws, staying)
+	if d, ok := h.Driver(ws); !ok || d.User != "Bob" {
+		t.Errorf("driver = %+v (ok=%v), want Bob — a departed client's late "+
+			"callback must not steal or clear it", d, ok)
+	}
+}

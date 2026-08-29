@@ -1,6 +1,9 @@
 package tmux
 
-import "sync"
+import (
+	"log"
+	"sync"
+)
 
 // maxQueuedBytesPerPane bounds how much unsent input one pane may hold. Past
 // it, submitting blocks until the worker drains enough — real backpressure
@@ -31,9 +34,11 @@ type sendJob struct {
 //
 // What it guarantees is ENQUEUE order, which equals submission order for any
 // ONE submitting goroutine — the case that matters, since a lens has exactly
-// one read goroutine. It is not a total order across submitters: two callers
-// parked on `room` are woken by one Broadcast and then race for the mutex, and
-// neither Cond wakeup nor Mutex acquisition is FIFO. Order between two
+// one read goroutine. It is not a total order across submitters: Broadcast
+// readies every waiter on `room`, and they then race to reacquire the mutex,
+// which Go does not grant in FIFO order. (sync.Cond promises no wakeup order
+// either. Today's runtime happens to wake the longest waiter first — an
+// implementation detail, not something to lean on.) Order between two
 // different sources to one pane was never defined and still is not.
 //
 // The worker exits when the queue drains and is restarted on the next submit,
@@ -99,6 +104,16 @@ func (s *paneSender) drain() {
 		s.mu.Unlock()
 
 		err := s.send(j.data)
+		if err != nil && j.done == nil {
+			// The floor. done is optional by contract, and there is no other
+			// log on this path, so a caller that passes nil would lose a
+			// failed send with no record anywhere — while the call that
+			// queued it returned nil to say it went fine. The old synchronous
+			// SendKeys made ignoring an error require writing `_ =`, which
+			// greps and reads as a decision; passing nil here does not.
+			log.Printf("tmux: async send of %d bytes failed with no callback to "+
+				"report it: %v", len(j.data), err)
+		}
 		if j.done != nil {
 			j.done(err)
 		}

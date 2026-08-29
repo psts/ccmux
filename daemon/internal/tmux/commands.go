@@ -8,8 +8,14 @@ import (
 
 // formatCommand renders command args into a single control-mode command line.
 // tmux parses this line with shell-like quoting. We single-quote any arg that
-// needs it (single quotes are fully literal in tmux — no #{} format expansion,
-// unlike double quotes), which is exactly what we want for paths and data.
+// needs it, which is what we want for paths and data.
+//
+// Single quotes stop the PARSER expanding formats. They do NOT stop tmux
+// expanding a format later, when a command runs: new-window passes its -c
+// value through format_single_from_target, so a #(...) in it is executed by
+// /bin/sh at that point, quotes or no quotes. An earlier version of this
+// comment claimed single-quoting was protection against #{} generally; it is
+// not, and that is why #( is refused below rather than quoted.
 //
 // tmux single-quote syntax cannot represent an embedded single quote, so we
 // reject that case rather than emit something that would mis-parse. Callers that
@@ -20,10 +26,12 @@ import (
 // the NEXT command — quoting does not help, because the framing happens before
 // tmux parses quotes. Verified against tmux 3.4: an arg of
 // "a\nrename-session -t it PWNED" renamed the session, single quotes and all.
-// It is reachable — SpawnWindow puts cwd and env values straight into args
-// (session/controller.go), a Linux directory name may legally contain a
-// newline, and dev_command is user-set. There is nothing to escape it to, so
-// the only correct answer is to refuse and let the caller fail loudly.
+// It is reachable — SpawnWindow puts cwd and each env value straight into args
+// (session/controller.go), and cwd is a user-chosen repo path that arrives
+// over HTTP. (A dev command does NOT reach here: it is delivered as
+// keystrokes through SendKeys/HexKeys, one hex arg per byte, where a newline
+// is just "0a" and frames nothing.) There is nothing to escape it to, so the
+// only correct answer is to refuse and let the caller fail loudly.
 func formatCommand(args []string) (string, error) {
 	parts := make([]string, len(args))
 	for i, a := range args {
@@ -32,6 +40,17 @@ func formatCommand(args []string) (string, error) {
 		}
 		if strings.ContainsAny(a, "\n\r") {
 			return "", fmt.Errorf("tmux: arg %q contains a newline (would inject a second command)", a)
+		}
+		// #( is tmux's run-shell format: whatever follows is handed to /bin/sh
+		// when a command EXPANDS the argument, which new-window does to its -c.
+		// Verified on tmux 3.4 — a cwd of "<dir>/#(id>/tmp/x)" created the
+		// window normally AND wrote the file, single-quoted, with no error and
+		// nothing in any pane. Quoting cannot help: expansion happens after
+		// parsing. Refused rather than escaped because nothing has an escape
+		// here, and because no legitimate cwd, env value or option value
+		// contains it. The #{...} formats the daemon relies on are untouched.
+		if strings.Contains(a, "#(") {
+			return "", fmt.Errorf("tmux: arg %q contains #( (would run a shell command on expansion)", a)
 		}
 		if a == "" || strings.ContainsAny(a, " \t\"\\$#;{}") {
 			parts[i] = "'" + a + "'"
@@ -151,19 +170,34 @@ func (e *PartialSendError) Unwrap() error { return e.Err }
 // whole, so another lens's keystroke lands before or after a paste, never
 // inside it.
 //
-// Splitting trades the old failure for a smaller one. A mid-send error leaves
-// the earlier chunks in the pane, where an over-limit send used to deliver
-// nothing at all. The caller learns how much landed but not that the pane is
-// now holding a truncated prefix; api.applyInput only logs it. That is worse
-// to diagnose than the old all-or-nothing, and better than a 19 kB paste never
-// working.
+// Splitting trades one failure for a smaller one. A mid-send error leaves the
+// earlier chunks in the pane, where an over-limit send used to deliver nothing
+// at all — so the pane can be left holding a truncated prefix of a command
+// that the next Enter would run. That is why the failure is reported as a
+// typed PartialSendError carrying how much landed: api.applyInput turns it
+// into a banner in both lenses rather than only a log line.
 func (c *Client) sendKeysNow(pane string, data []byte) error {
+	return sendChunks(pane, data, func(args []string) error {
+		_, err := c.Command(args...)
+		return err
+	})
+}
+
+// sendChunks issues one send's chunks in order through issue, stopping at the
+// first failure and reporting how much landed.
+//
+// Split out from sendKeysNow purely so this is testable: with the Command call
+// inlined, the only way to produce a real PartialSendError was a live tmux
+// failing mid-paste, so nothing exercised it and the type could have been
+// reverted to a formatted string with the whole suite still green — while
+// errors.As stopped matching and the user-facing banner quietly died.
+func sendChunks(pane string, data []byte, issue func([]string) error) error {
 	sent := 0
 	for _, args := range sendKeysCommands(pane, data) {
-		if _, err := c.Command(args...); err != nil {
-			// Say how much landed. api.applyInput only logs this, so without
-			// the offset the log records that a paste failed but not that the
-			// pane is now holding a truncated prefix of it.
+		if err := issue(args); err != nil {
+			// Say how much landed. api.applyInput quotes these numbers back
+			// to the user, so without the offset neither the log nor the
+			// banner could say the pane is holding a truncated prefix.
 			return &PartialSendError{Pane: pane, Sent: sent, Total: len(data), Err: err}
 		}
 		sent += len(args) - sendKeysPrefixArgs

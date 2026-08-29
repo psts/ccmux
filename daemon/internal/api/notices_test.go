@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -8,41 +9,58 @@ import (
 	"testing"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/session"
 	"ccmux.dev/ccmuxd/internal/tmux"
 
 	"github.com/gorilla/websocket"
 )
 
-// TestInputFailureNotice_OnlyForTruncation pins which failures are worth
-// interrupting someone over. A send that delivered nothing already failed
-// visibly — no text appeared — but a truncated one looks like it worked and
-// leaves the pane holding a prefix that the next Enter runs.
-func TestInputFailureNotice_OnlyForTruncation(t *testing.T) {
-	partial := &tmux.PartialSendError{Pane: "%3", Sent: 4096, Total: 262144, Err: errors.New("closed")}
-	got := inputFailureNotice(partial)
-	if got == "" {
-		t.Fatal("a truncated paste must produce a notice")
-	}
-	// The numbers are the content; a message without them says nothing useful.
-	if !strings.Contains(got, "4096") || !strings.Contains(got, "262144") {
-		t.Errorf("notice lost the byte counts: %q", got)
+// TestInputFailureNotice_DistinguishesTruncatedFromTotal pins the three-way
+// split, and specifically that a TOTAL failure is not silent.
+//
+// It was silent once, on the argument that delivering nothing "fails visibly
+// because no text appears". That is false wherever the pane does not echo — a
+// password prompt, an ssh passphrase, sudo, `read -s` — where nothing appears
+// on success either, so the user cannot tell the two apart and blames the
+// credential. Sent == 0 also means the first chunk failed, which usually means
+// every later send to that pane will fail too.
+func TestInputFailureNotice_DistinguishesTruncatedFromTotal(t *testing.T) {
+	truncated := inputFailureNotice(&tmux.PartialSendError{
+		Pane: "%3", Sent: 4096, Total: 262144, Err: errors.New("closed"),
+	})
+	if !strings.Contains(truncated, "4096") || !strings.Contains(truncated, "262144") {
+		t.Errorf("a truncated paste must quote its byte counts: %q", truncated)
 	}
 
-	for name, err := range map[string]error{
-		"nothing delivered": &tmux.PartialSendError{Pane: "%3", Sent: 0, Total: 100, Err: errors.New("x")},
-		"untyped error":     errors.New("some other failure"),
-		"no error":          nil,
-	} {
-		if n := inputFailureNotice(err); n != "" {
-			t.Errorf("%s should not notify the user, got %q", name, n)
-		}
+	total := inputFailureNotice(&tmux.PartialSendError{
+		Pane: "%3", Sent: 0, Total: 100, Err: errors.New("closed"),
+	})
+	if total == "" {
+		t.Fatal("a send that delivered NOTHING must still notify — at a password " +
+			"prompt it is indistinguishable from success")
+	}
+	if total == truncated {
+		t.Error("total and partial failure need different words: they call for " +
+			"different actions from the user")
+	}
+
+	// An error of another kind still deserves a line rather than silence.
+	if generic := inputFailureNotice(errors.New("some other failure")); generic == "" {
+		t.Error("an untyped send failure must not be silent")
+	}
+
+	// Success is the only silent case.
+	if n := inputFailureNotice(nil); n != "" {
+		t.Errorf("a successful send must say nothing, got %q", n)
 	}
 
 	// Wrapped errors must still be recognised — the error crosses two layers
 	// before it reaches here.
-	wrapped := errors.Join(errors.New("context"), partial)
-	if inputFailureNotice(wrapped) == "" {
-		t.Error("a wrapped PartialSendError must still produce a notice")
+	wrapped := errors.Join(errors.New("context"), &tmux.PartialSendError{
+		Pane: "%3", Sent: 7, Total: 9, Err: errors.New("x"),
+	})
+	if !strings.Contains(inputFailureNotice(wrapped), "7") {
+		t.Error("a wrapped PartialSendError must still yield its byte counts")
 	}
 }
 
@@ -134,5 +152,51 @@ func TestNoticeQueue_FlushWritesAndClears(t *testing.T) {
 	q.mu.Unlock()
 	if n != 0 {
 		t.Errorf("pending still holds %d after flush", n)
+	}
+}
+
+// TestPaneWriter_DeliversQueuedNotice wires the last link: post -> writer arm ->
+// socket. flush is tested directly above, but nothing exercised it THROUGH
+// paneWriter.step, so deleting `case <-w.nq.wakeups():` from the select — or
+// dropping nq from the paneWriter literal in the attach handler — left notices
+// piling up in a map nobody drains, with every test still green.
+func TestPaneWriter_DeliversQueuedNotice(t *testing.T) {
+	q := newNoticeQueue()
+	q.post("%4", "Paste was cut short: 8 of 64 bytes reached this pane.")
+
+	got := make(chan wsMsg, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// A real Sub is not needed: step selects, and only the notice arm is
+		// ready. rs must be non-nil because its channels are read in the same
+		// select, but it is parked and never fires here.
+		pw := &paneWriter{conn: conn, nq: q, rs: newResnapper(), sub: &session.Sub{}}
+		defer pw.rs.stop()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if done := pw.step(ctx, nil); done {
+			t.Error("step reported done on a notice wake-up")
+		}
+	}))
+	defer srv.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	var msg wsMsg
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("no frame reached the socket — the writer's notice arm is not wired: %v", err)
+	}
+	got <- msg
+	if msg.T != "notice" || msg.Pane != "%4" || !strings.Contains(msg.Notice, "cut short") {
+		t.Errorf("frame = %+v, want a notice for %%4", msg)
 	}
 }
