@@ -1656,3 +1656,31 @@ $("takeover").onclick = takeOver;
 fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-link attach dials direct
 connectFirehose();
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes
+
+// --- daemon health: the numbers with no other home. A child process the
+// daemon started and never reaped is invisible everywhere but ps, which is how
+// ccmuxd once ran 20 hours holding 12 defunct tmux clients with nothing saying
+// so. Shown only when non-zero — a permanently visible "0 zombies" is furniture.
+async function fetchDaemonHealth() {
+  const el = $("daemon-warning");
+  if (!el) return;
+  let h;
+  try {
+    h = await (await fetch("/v1/health")).json();
+  } catch (_) {
+    return; // daemon unreachable is already visible everywhere else
+  }
+  const c = h && h.children;
+  // known:false means the daemon could not inspect itself. Say nothing rather
+  // than imply a clean bill of health.
+  if (!c || !c.known || !c.defunct) {
+    el.classList.add("hidden");
+    return;
+  }
+  const n = c.defunct;
+  el.textContent = `ccmuxd is holding ${n} defunct child process${n === 1 ? "" : "es"}. ` +
+    `Restarting the daemon clears them.`;
+  el.classList.remove("hidden");
+}
+fetchDaemonHealth();
+setInterval(fetchDaemonHealth, 30000);

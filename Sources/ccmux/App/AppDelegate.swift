@@ -106,6 +106,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 // hub URL lands would ask the local daemon for /v1/hosts,
                 // which only exists on the hub.
                 UpdaterService.shared.syncLocalDaemon()
+                // Daemon child-process census, feeding the sidebar's warning
+                // strip. In here because start() is MainActor-isolated and the
+                // enclosing DispatchQueue.main.async closure is not one to the
+                // compiler. Independent of adoptHub: this reads localURL, not
+                // the hub's baseURL.
+                DaemonHealthService.shared.start()
             }
 
             // Quiet update checks (launch + every 4h) — prompts only when a

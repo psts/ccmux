@@ -23,6 +23,9 @@ struct SidebarView: View {
     /// Open a shared window this login has closed (v2): the same window
     /// everyone else sees, brought on screen here and woken if asleep.
     var onOpenSharedWindow: ((DaemonWindow) -> Void)?
+    /// Daemon-wide health. Defaulted to the shared instance so no call site has
+    /// to thread it through.
+    @ObservedObject var health: DaemonHealthService = .shared
 
     /// Workspaces belonging to this window — local and hosted alike; a hosted
     /// workspace lives in whatever window group the user put it in, marked only
@@ -104,6 +107,18 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 12)
             .padding(.top, 6)
+
+            // Daemon-level warning. Rendered only when there is something to
+            // say, so it never becomes furniture the eye learns to skip. Same
+            // rule and same words as the web lens's #daemon-warning strip.
+            if health.shouldWarn {
+                Text(health.warningText)
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+            }
 
             List {
                 // This window's workspaces. The section renders even when

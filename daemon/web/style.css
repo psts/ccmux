@@ -419,6 +419,13 @@ body {
   font-family: Menlo, Monaco, monospace;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Daemon-level warning strip. Only rendered when something is actually wrong,
+   so it never becomes furniture the eye learns to skip. */
+.daemon-warning {
+  margin: 0; padding: 6px 12px; font-size: 12px; line-height: 1.4;
+  color: var(--needs); background: var(--bg2); border-bottom: 1px solid var(--line);
+}
+
 .sheet .status { color: var(--fg); margin: 0 0 12px; }
 .sheet .hint {
   color: var(--muted); margin: 0 0 12px; font-size: 12px; line-height: 1.5;

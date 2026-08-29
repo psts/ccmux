@@ -1142,13 +1142,24 @@ func (m *Manager) dropPane(wsID, paneID string) {
 func (m *Manager) markCold(wsID string) {
 	m.mu.Lock()
 	e := m.byID[wsID]
+	var dropped *session.Controller
 	if e != nil {
+		dropped = e.ctrl
 		e.ws.Status = model.StatusCold
 		e.ctrl = nil
 	}
 	m.mu.Unlock()
 	if e == nil {
 		return // already removed (e.g. a concurrent delete) — nothing to cool down
+	}
+	// Close what we just dropped. e.ctrl was the only reference to it, so
+	// nilling it without closing stranded the control connection — that is how
+	// every workspace that died on its own left a defunct tmux client behind.
+	// Closing detaches; it does not kill the session, so Reconcile can still
+	// re-attach a cooled workspace whose tmux is alive. Outside m.mu on
+	// purpose: Close waits for the reader goroutine to stop.
+	if dropped != nil {
+		_ = dropped.Close()
 	}
 	_ = m.store.SetWorkspaceStatus(wsID, model.StatusCold)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})

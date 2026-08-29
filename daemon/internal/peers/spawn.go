@@ -111,7 +111,15 @@ func (s *Service) openSpawnURL(repo, prompt, requesterID string) error {
 	q.Set("repo", repo)
 	q.Set("prompt", prompt)
 	q.Set("requester", requesterID)
-	return exec.Command(s.OpenCmd, "ccmux://spawn?"+q.Encode()).Start()
+	// Fire-and-forget: we never read the opener's output, but a Start with no
+	// Wait leaves a defunct child for the daemon's life, one per spawn. Reap it
+	// in the background rather than blocking the caller on a GUI handoff.
+	cmd := exec.Command(s.OpenCmd, "ccmux://spawn?"+q.Encode())
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // fulfillPendingSpawnLocked delivers the queued request(s) the moment the

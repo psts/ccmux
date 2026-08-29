@@ -3,6 +3,7 @@ package tmux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -235,5 +236,77 @@ func TestControlClient_LargePaste(t *testing.T) {
 				t.Fatalf("byte %d differs: got %q want %q", i, got[i], want[i])
 			}
 		}
+	}
+}
+
+// TestControlClient_ReapsItselfWhenTmuxDies is the regression for the zombie
+// leak. Wait() used to live only in Close(), and the manager's markCold drops a
+// controller without closing it, so every workspace that died on its own left a
+// defunct `tmux -C attach` behind for the daemon's whole life. Observed on a
+// live daemon: 12 workspaces attached at start, 12 zombies once their sessions
+// died, none reclaimed 20 hours later.
+//
+// Nothing here calls Close before the assertion — that is the whole point. The
+// client must reap itself off the death path alone.
+func TestControlClient_ReapsItselfWhenTmuxDies(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-reap-itest"
+	tmuxRun(t, socket, "kill-server") // ignore error
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+
+	h := newCollectHandler()
+	c, err := Dial(t.Context(), socket, "it", h)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// Precondition via the channel, never by reading ProcessState: Wait writes
+	// that field from the reader goroutine, so an unsynchronized read here is
+	// a data race even when the value looks right.
+	select {
+	case <-c.reaped:
+		t.Fatal("precondition: client should still be running")
+	default:
+	}
+
+	// Kill the session out of band. tmux ends the control connection itself,
+	// which is the path where no caller ever calls Close.
+	tmuxRun(t, socket, "kill-session", "-t", "it")
+
+	select {
+	case <-c.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("control connection did not end after its session was killed")
+	}
+	// Wait on reaped, not on Done. Done is closed first, on purpose, so a
+	// reap that has not finished yet is not a failure — asserting off Done
+	// alone is a race that passes or fails on scheduling luck. It also gives
+	// the happens-before for reading ProcessState below.
+	select {
+	case <-c.reaped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("tmux client was not reaped on the death path — it is a zombie " +
+			"until the daemon exits")
+	}
+
+	// ProcessState is non-nil exactly when Wait has returned, so this is the
+	// definition of reaped, not a proxy for it.
+	if c.cmd.ProcessState == nil {
+		t.Fatal("tmux client was not reaped on the death path — it is a zombie " +
+			"until the daemon exits")
+	}
+
+	// Close after the fact must stay safe and report the same exit, so the
+	// teardown paths that DO call it (archiveIf, KillWorkspace) keep working
+	// and do not start logging "Wait was already called".
+	first := c.Close()
+	if second := c.Close(); !errors.Is(second, first) && fmt.Sprint(second) != fmt.Sprint(first) {
+		t.Errorf("Close is not idempotent: first=%v second=%v", first, second)
 	}
 }

@@ -63,6 +63,42 @@ type Client struct {
 	// them would need a lock held across the send anyway.
 	sendmu    sync.Mutex // guards sendLocks only, never held across a send
 	sendLocks map[string]*sync.Mutex
+
+	// reapOnce collects the tmux child's exit status exactly once, from
+	// whichever path gets there first. Wait() used to live only in Close(),
+	// so a client whose tmux died on its own — the session was killed, the
+	// last pane exited, the server crashed — was never reaped: the manager's
+	// markCold drops the controller without closing it, and the dead process
+	// stayed a zombie for the daemon's whole life. Measured on a live daemon:
+	// 12 workspaces attached at start, all 12 zombies after their sessions
+	// died, none reclaimed in the 20 hours since.
+	//
+	// The fix belongs here and not in markCold because shutdown() is the one
+	// funnel EVERY death already flows through, so no future caller can
+	// forget it. reapErr is read only after reapOnce.Do returns, which
+	// happens-after the write inside it.
+	reapOnce sync.Once
+	reapErr  error
+	// reaped closes once Wait has returned. done cannot serve this purpose:
+	// it is closed BEFORE the reap so that Command callers blocked on a dead
+	// connection get ErrClosed immediately, without waiting on a Wait that a
+	// process which closed stdout but has not exited could stall forever.
+	// So done means "the connection ended", reaped means "the child is gone".
+	reaped chan struct{}
+}
+
+// reap collects the child's exit status, blocking until it has one. Safe to
+// call from any goroutine and any number of times; every call returns the same
+// result. Callers must be sure all reads from the stdout pipe have finished —
+// Wait closes it — which is why only shutdown() (after readLoop stops) and
+// Close() (which waits for done) may call this.
+func (c *Client) reap() error {
+	c.reapOnce.Do(func() {
+		c.reapErr = c.cmd.Wait()
+		close(c.reaped)
+	})
+	<-c.reaped // also the happens-before that makes reading cmd.ProcessState safe
+	return c.reapErr
 }
 
 // paneSend returns the lock serializing sends to one pane, creating it on first
@@ -100,7 +136,7 @@ func Dial(ctx context.Context, socket, session string, h Handler) (*Client, erro
 		return nil, err
 	}
 	c := &Client{socket: socket, cmd: cmd, stdin: stdin, handler: h, done: make(chan struct{}),
-		sendLocks: map[string]*sync.Mutex{}}
+		reaped: make(chan struct{}), sendLocks: map[string]*sync.Mutex{}}
 	// tmux answers the implicit `attach` command with an initial %begin/%end
 	// block that we never issued. Pre-queue a discard slot (before the reader
 	// starts) so the FIFO stays aligned with caller-issued commands.
@@ -222,6 +258,13 @@ func (c *Client) shutdown() {
 	c.mu.Unlock()
 
 	close(c.done)
+	// Reap before announcing the death. done is already closed, so blocked
+	// Command callers return ErrClosed without waiting on this, and the
+	// process is collected before the manager reacts to "exit" — which is
+	// exactly the path that used to drop the client without reaping it.
+	// Safe here and nowhere else in this goroutine: readLoop has stopped, so
+	// every read from the stdout pipe Wait is about to close has completed.
+	_ = c.reap()
 	for _, ch := range pending {
 		ch <- reply{err: ErrClosed}
 	}
@@ -229,11 +272,17 @@ func (c *Client) shutdown() {
 }
 
 // Close ends the control connection and its tmux client (the session survives
-// on the server — this is detach, not kill).
+// on the server — this is detach, not kill). Idempotent, and safe to call on a
+// client that already died on its own: it returns that same exit status.
 func (c *Client) Close() error {
 	_ = c.stdin.Close()
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
-	return c.cmd.Wait()
+	// Wait for readLoop to stop before reaping. Wait closes the stdout pipe,
+	// so calling it while the reader is still in ReadBytes races it into a
+	// spurious "file already closed" — which the old Close did on every
+	// archive and kill. The Kill above guarantees the EOF that gets us here.
+	<-c.done
+	return c.reap()
 }
