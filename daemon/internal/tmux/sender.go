@@ -29,6 +29,13 @@ type sendJob struct {
 // only thing supplying the order — hence a real queue, and hence both the
 // synchronous and asynchronous entry points going through this one.
 //
+// What it guarantees is ENQUEUE order, which equals submission order for any
+// ONE submitting goroutine — the case that matters, since a lens has exactly
+// one read goroutine. It is not a total order across submitters: two callers
+// parked on `room` are woken by one Broadcast and then race for the mutex, and
+// neither Cond wakeup nor Mutex acquisition is FIFO. Order between two
+// different sources to one pane was never defined and still is not.
+//
 // The worker exits when the queue drains and is restarted on the next submit,
 // so an idle pane costs no goroutine. Client has no pane-close signal, so a
 // worker that lived until the connection died would be a goroutine per pane

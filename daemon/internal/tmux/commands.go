@@ -99,8 +99,9 @@ func (c *Client) SendKeys(pane string, data []byte) error {
 // This exists for api.applyInput, which runs on the attach read goroutine —
 // the one that also dispatches resize, repaint and focus, and that owns the
 // websocket read deadline. Blocking it for the ~3s of a 1 MB paste froze every
-// other pane on that lens. Ordering is not lost by returning early: the queue
-// is FIFO per pane, which is a stronger guarantee than the mutex this replaced.
+// other pane on that lens. Input order survives returning early: the queue is
+// FIFO per pane for a given submitting goroutine, which is what the blocking
+// used to supply and what the mutex it replaced never did.
 //
 // data is copied. The queue outlives the caller's stack, and every caller
 // today happens to pass a fresh slice — "happens to" is not something a

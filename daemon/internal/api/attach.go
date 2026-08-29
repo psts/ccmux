@@ -269,9 +269,18 @@ func (s *Server) applyInput(ctrl *session.Controller, msg wsMsg, wsID, connID st
 	}
 	// Queue and return. This goroutine also dispatches resize, repaint and
 	// focus and owns the websocket read deadline, so blocking it for the ~3s a
-	// 1 MB paste takes froze every other pane on this lens. Ordering is not
-	// lost: the pane's queue is FIFO, which is what the blocking used to
-	// supply (a mutex never did — see internal/tmux/sender.go).
+	// 1 MB paste takes froze every other pane on this lens.
+	//
+	// Two honest limits on "and return":
+	//   - Past 8 MB of unsent input for one pane this blocks for room. The
+	//     bound has to push back somewhere, and here is where. It takes a
+	//     second frame arriving behind a multi-megabyte first one.
+	//   - Input order per pane survives (the queue is FIFO — a mutex never
+	//     was; see internal/tmux/sender.go), but input-vs-RESIZE order on this
+	//     connection does not. applyResize goes straight to tmux, bypassing
+	//     the queue, so a resize sent right after a big paste now overtakes
+	//     it. Self-correcting — the program reflows — but it is a real
+	//     ordering the blocking used to provide and this does not.
 	//
 	// Presence still means "this user typed", not "this user queued", so it
 	// moves into the completion callback with the error. presenceHub.Input is

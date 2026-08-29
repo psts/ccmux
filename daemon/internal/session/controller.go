@@ -204,8 +204,10 @@ func (c *Controller) SendInput(paneID string, data []byte) error {
 	return c.client.SendKeys(ref.pane, data)
 }
 
-// SendInputAsync queues input and returns without waiting for tmux. done, if
-// set, receives the delivery result later, on the sender's goroutine.
+// SendInputAsync queues input and returns without waiting for tmux — except
+// when the pane is over its queued-byte bound, where it blocks for room (see
+// tmux.SendKeysAsync). done, if set, receives the delivery result later, on
+// the sender's goroutine.
 //
 // The pane lookup stays synchronous and its error stays a return value: an
 // unknown pane is the caller's mistake and it should hear about it at the call
