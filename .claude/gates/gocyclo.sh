@@ -13,6 +13,10 @@
 # entry below its frozen number always passes; prune it from the list when it
 # drops under the cap.
 #
+# The list is DELETE-ONLY. It is a record of what was already there, not a
+# hatch for new debt — a list you may append to is just a slower way of having
+# no cap at all.
+#
 # Test files are excluded, matching /qa:check's complexity gate: table-driven
 # tests and long integration setups trip the metric for organisational reasons,
 # not real branching. 71 of the 99 violations here were tests.
@@ -58,8 +62,9 @@ done <<< "$current"
 
 if [ "$fail" -ne 0 ]; then
   echo
-  echo "Complexity cap is 10. Split the function, or if you deliberately accept it,"
-  echo "add it to .claude/gates/gocyclo-frozen.txt with a reason in the commit."
+  echo "Complexity cap is 10. Split the function, or land it under the cap."
+  echo "The frozen list is DELETE-ONLY: adding a line to keep this gate quiet is"
+  echo "how the list stops meaning anything. Prune entries as they drop under 10."
   exit 1
 fi
 
