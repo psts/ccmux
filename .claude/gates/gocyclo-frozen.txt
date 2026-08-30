@@ -1,7 +1,8 @@
 # Frozen complexity debt: functions over the cap of 10 when the gate landed
 # (2026-08-29). Format: complexity<TAB>package<TAB>function<TAB>file.
-# The gate fails on anything NOT listed here, and on a listed function whose
-# complexity has grown. Prune an entry once it drops under 10.
+# The gate fails on any function OVER THE CAP that is not listed here, and on a
+# listed function whose complexity has grown. Prune an entry once it drops
+# under 10.
 11	api	(*notifier).onAttention	internal/api/notifier.go
 12	api	(*paneWriter).step	internal/api/attach.go
 12	api	(*Server).applySettings	internal/api/server.go

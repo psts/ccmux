@@ -13,10 +13,11 @@ dist/
 # not recognise Package.swift) and refuses to sign anything.
 !.claude/qa-gates
 # The gate scripts qa-gates invokes, and their frozen baselines. These must be
-# tracked or the gate only works on the machine that wrote it — .claude/* hides
-# the directory, and git will not descend into an ignored directory, so the
-# DIRECTORY has to be un-ignored, not just the files.
+# tracked or the gate only works on the machine that wrote it. Un-ignoring the
+# DIRECTORY is what does it: git will not descend into an ignored directory, so
+# a `!.claude/gates/*` file pattern on its own leaves them all invisible. The
+# reverse is not needed — `.claude/*` matches one path segment only, so nothing
+# inside re-ignores itself once the directory is back.
 !.claude/gates/
-!.claude/gates/*
 SwiftTerm/.build/
 SwiftTerm/.swiftpm/

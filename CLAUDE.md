@@ -13,17 +13,18 @@ approximation.
 When you touch one lens, grep the other for the same feature and update it.
 Note: the Swift side cannot be built or tested on this Linux host, so say so
 when reporting — but that never excuses skipping the change. The release tag
-job BUILDS it on macOS; nothing anywhere runs `swift test`, so the ~39 files in
-`Tests/ccmuxTests/` execute only on a developer's Mac. Known hole, needs a Mac
-to close.
+job BUILDS it on macOS. No CI runs `swift test`: the `qa-gates` line for it
+fires only where a Swift toolchain exists, so `Tests/ccmuxTests/` executes on a
+developer's Mac and nowhere else. Known hole, needs a Mac to close.
 
 ## What a signed receipt covers
 
-Since 71f0189 the gates in `.claude/qa-gates` are, fastest first: `gofmt` over
-`daemon`, `node --check` over `daemon/web/*.js`, a gocyclo complexity ratchet,
-`go vet`, `go test`. The two Swift lines skip here for want of a toolchain, so
-a green signed on this host means the Go daemon and the web lens's syntax — not
-the Mac app.
+`.claude/qa-gates` is the list; read it there rather than trusting a copy here.
+What it does not say: the two Swift lines skip on this host for want of a
+toolchain, so a green signed here means the Go daemon and the web lens's
+syntax, not the Mac app. Gates that need a tool this host lacks FAIL rather
+than skip, so a fresh clone needs `go install
+github.com/fzipp/gocyclo/cmd/gocyclo@latest` before it can sign anything.
 
 `daemon/web` has no build step, bundler or lint. `node --check` is a parse, not
 a lint: it catches a typo, never a logic error.

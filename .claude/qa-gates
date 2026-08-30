@@ -14,12 +14,12 @@
 # gate that cannot run, and it took the whole receipt down with it — no Go gating
 # either, and no green recordable from Linux at all.
 #
-# Added 2026-08-29 (hq workflow audit): gofmt, a Go complexity ratchet, and a
-# syntax check for the web lens. The audit traced this repo's habit of landing
-# review-fix commits before a release to having only `go vet` + `go test` here —
-# everything the three lines below catch was arriving fresh at /ship's AI review
-# instead. They are ordered before the Go gates because they fail in
-# milliseconds.
+# Added 2026-08-29: gofmt, a Go complexity ratchet, and a syntax check for the
+# web lens. Before them this file held only `go vet` + `go test`, so formatting
+# reached /ship's AI review instead of a gate (61789a5 repaired gofmt in two api
+# files). The other two are cheap floors under things nothing checked at all
+# rather than fixes for a measured miss. All three are ordered before the Go
+# gates because they fail in milliseconds.
 #
 # Read the skip as permanent: development is Linux-only and goes straight to CI,
 # so nobody runs these two lines. What that leaves is worth knowing but has not
@@ -30,13 +30,17 @@
 
 # --- static checks first: they are the cheapest and fail fastest ---
 
-# Formatting. `gofmt -l` prints unformatted files and exits 0 either way, so the
-# emptiness of its output IS the result and has to be turned into an exit code.
-cd daemon && test -z "$(gofmt -l .)" || { echo "qa-gates: gofmt — not formatted:"; gofmt -l .; exit 1; }
+# Formatting. See .claude/gates/gofmt.sh for why this is a script and not the
+# one-liner it replaced: `gofmt -l` exits 2 with EMPTY stdout on a file that does
+# not parse, so judging it by the emptiness of its output alone passed on
+# unparseable Go.
+bash .claude/gates/gofmt.sh
 
-# Web lens syntax. daemon/web/ is ~1750 lines of plain JS with no build step, no
-# bundler and no test harness, so until this line it was gated by NOTHING and
-# every mistake in it reached a release. `node --check` is only a parse — it
+# Web lens syntax. daemon/web/ is four hand-written JS files with no build step,
+# no bundler and no test harness, so until this line the only thing standing
+# between a mistake in it and a release was review — which does catch things
+# (1b06e8f, a stale row count fed to every lens, caught pre-v0.1.45) but is not
+# a gate and does not run on every commit. `node --check` is only a parse — it
 # catches typos and unbalanced braces, not logic — but that is the floor and it
 # costs milliseconds. A lint pass with complexity/length caps is the obvious next
 # step and deliberately NOT bundled here: it needs an eslint config and a
