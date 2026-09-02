@@ -34,7 +34,12 @@ when it landed (`.claude/gates/gocyclo-frozen.txt`, 28 non-test functions).
 Anything new over the cap fails, and so does a frozen function that gets worse.
 **The frozen list is delete-only.** Split the function, or land it under the
 cap; adding a line to keep a gate quiet is how the list stops meaning anything.
-Prune an entry once it drops under 10.
+
+Pruning is not left to memory: the gate walks the list itself and prints
+`PRUNE` for an entry that is gone or under the cap and `IMPROVED n -> m` for one
+that got better while holding its old number. Those REPORT, they do not fail —
+a refactor that improved something should not turn the gate red — so the list
+still only shrinks when a human acts on that output.
 
 ## Shipping
 

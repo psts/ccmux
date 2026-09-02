@@ -10,8 +10,18 @@
 #   - a listed function whose complexity has GROWN since it was frozen.
 #
 # Existing debt therefore ships, and cannot quietly get worse. Refactoring an
-# entry below its frozen number always passes; prune it from the list when it
-# drops under the cap.
+# entry below its frozen number always passes.
+#
+# It also ratchets the other way, which is the half that is easy to leave out.
+# The failure loop reads the CURRENT over-cap functions and looks each one up in
+# the list; nothing in it ever walks the list itself, so an entry that improved
+# was never seen again. A function frozen at 14 and refactored to 9 leaves the
+# -over 10 output entirely, keeps its 14-line entitlement, and may regrow to 13
+# with the gate still green; a deleted or renamed one sits there forever. The
+# second pass below walks the list and names both cases. It REPORTS, it does not
+# fail: a refactor that made something better should not turn the gate red. That
+# does leave pruning to a human who reads the output — flip $stale into the exit
+# status if that stops happening.
 #
 # The list is DELETE-ONLY. It is a record of what was already there, not a
 # hatch for new debt — a list you may append to is just a slower way of having
@@ -128,6 +138,31 @@ while IFS=$'\t' read -r cx pkg fn file; do
   fi
 done <<< "$current"
 
+# Second pass: walk the LIST and find entries the first loop can never see.
+# Absent from $current means the function dropped under the cap, or was deleted
+# or renamed — indistinguishable from here, and the remedy is the same line.
+stale=0
+while IFS=$'\t' read -r fcx fpkg ffn ffile; do
+  [ -z "${fcx:-}" ] && continue
+  cur=$(printf '%s\n' "$current" | awk -F'\t' -v p="$fpkg" -v f="$ffn" -v s="$ffile" \
+    '$2==p && $3==f && $4==s { print $1 }' | head -1)
+  if [ -z "$cur" ]; then
+    echo "PRUNE (now under the cap, or gone): $fpkg $ffn  $ffile"
+    stale=1
+  elif [ "$cur" -lt "$fcx" ]; then
+    echo "IMPROVED $fcx -> $cur, lower its entry: $fpkg $ffn  $ffile"
+    stale=1
+  fi
+done <<< "$(grep -v '^[[:space:]]*#' "$FROZEN" | grep '[^[:space:]]')"
+
+if [ "$stale" -ne 0 ]; then
+  echo
+  echo "The lines above are debt that got BETTER and is still holding its old"
+  echo "entitlement. Edit $FROZEN: delete the PRUNE lines, lower the IMPROVED"
+  echo "ones. Not a failure — but an unpruned list slowly stops meaning anything."
+  echo
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo
   echo "Complexity cap is 10. Split the function, or land it under the cap."
@@ -137,5 +172,10 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 # Counts $current, so say what $current is: functions over the cap right now. It
-# is not the size of the frozen list, which stays 28 until an entry is pruned.
-echo "qa-gates: gocyclo ok ($(printf '%s\n' "$current" | wc -l) over-cap functions, all frozen, none new or worse)"
+# is not the size of the frozen list, which stays 28 until an entry is pruned —
+# and when the two disagree the second pass has already printed why.
+if [ "$stale" -ne 0 ]; then
+  echo "qa-gates: gocyclo ok ($(printf '%s\n' "$current" | wc -l) over-cap functions, none new or worse) — but see the prune list above"
+else
+  echo "qa-gates: gocyclo ok ($(printf '%s\n' "$current" | wc -l) over-cap functions, all frozen, none new or worse, list has no stale entries)"
+fi
