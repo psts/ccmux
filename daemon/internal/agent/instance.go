@@ -16,6 +16,9 @@ func InstanceDir(repo, name string) string {
 // there yet. Every file is a starter written ONCE; the daemon never writes
 // here again — humans and the agent own it from then on.
 func Bootstrap(repo string, d Definition) (dir string, created bool, err error) {
+	if !ValidName(d.Name) {
+		return "", false, fmt.Errorf("agent name %q invalid", d.Name)
+	}
 	dir = InstanceDir(repo, d.Name)
 	if _, err := os.Stat(filepath.Join(dir, fileAgents)); err == nil {
 		return dir, false, nil

@@ -188,8 +188,16 @@ func (s *Store) List() ([]Definition, error) {
 	return out, nil
 }
 
+// ValidName reports whether name may be used as a folder segment. Every
+// entry that turns a name into a path checks it: a name is user input from
+// a URL or a bus message, and "../x" must never reach the filesystem.
+func ValidName(name string) bool { return namePattern.MatchString(name) }
+
 // Get reads one base: agent.json, the manifest version and AGENTS.md.
 func (s *Store) Get(name string) (Definition, error) {
+	if !ValidName(name) {
+		return Definition{}, ErrNotFound
+	}
 	raw, err := os.ReadFile(filepath.Join(s.Dir(name), "agent.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return Definition{}, ErrNotFound

@@ -1,11 +1,15 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 
 	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/peers"
 )
 
 // SetAgents wires the base-agent folder store. Without it the /v1/agents
@@ -27,7 +31,13 @@ func (s *Server) wirePeersAgents() {
 	}
 	s.peersSvc.IsAgent = s.isAgent
 	s.peersSvc.StartAgent = s.startAgentForPeer
-	s.peersSvc.PushToPane = s.mgr.PushToAgentPane
+	s.peersSvc.PushToPane = func(paneID, text string) error {
+		err := s.mgr.PushToAgentPane(paneID, text)
+		if errors.Is(err, manager.ErrNotAgentPane) {
+			return peers.ErrNoPanePush
+		}
+		return err
+	}
 }
 
 // wakeAgent is the lifecycle loop's restart path for a keep-alive instance
@@ -76,11 +86,25 @@ func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "agents are not available on this daemon")
 		return
 	}
-	var d agent.Definition
-	if !decodeJSON(w, r, &d) {
+	name := r.PathValue("name")
+	if !agent.ValidName(name) {
+		writeError(w, http.StatusBadRequest, "agent name: use 3 to 24 chars of a-z, 0-9 and -")
 		return
 	}
-	d.Name = r.PathValue("name")
+	// Merge, not replace: the request carries the fields a lens edits, and
+	// json.Unmarshal into the STORED definition leaves every other field as it
+	// was — a hand-tuned permission or a pinned model survives a blur-save.
+	d, err := s.agents.Get(name)
+	if err != nil && !errors.Is(err, agent.ErrNotFound) {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil || json.Unmarshal(body, &d) != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	d.Name = name
 	if msg := agent.Reject(d); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return

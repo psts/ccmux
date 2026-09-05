@@ -1164,13 +1164,27 @@ final class RemoteSessionService: ObservableObject {
 
     // MARK: - Agents (daemon/docs/agent-spec.md)
 
-    /// Every base agent; nil when this daemon predates agents (503).
-    func fetchAgents() async -> [DaemonAgent]? {
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/agents") else { return nil }
-        guard let (data, resp) = try? await session.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        struct Body: Decodable { let agents: [DaemonAgent] }
-        return (try? JSONDecoder().decode(Body.self, from: data))?.agents
+    /// Every base agent. `supported` is false only on a 503 (this daemon
+    /// predates agents); any other failure keeps the tab and reports `error`,
+    /// so a network blip does not read as a missing feature.
+    func fetchAgents() async -> (list: [DaemonAgent], supported: Bool, error: String?) {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/agents") else { return ([], true, "bad daemon URL") }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 503 { return ([], false, nil) }
+            guard code == 200 else { return ([], true, "HTTP \(code)") }
+            struct Body: Decodable { let agents: [DaemonAgent] }
+            return (try JSONDecoder().decode(Body.self, from: data).agents, true, nil)
+        } catch {
+            return ([], true, error.localizedDescription)
+        }
+    }
+
+    /// Percent-encode an agent name for a path segment; the daemon refuses
+    /// anything outside [a-z0-9-] anyway, this just keeps its message readable.
+    private func agentPath(_ name: String) -> String {
+        name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
     }
 
     /// Create or update one base (per-name upsert). Returns the daemon's error text or nil.
@@ -1180,12 +1194,24 @@ final class RemoteSessionService: ObservableObject {
             "keepAlive": a.keepAlive, "idleExitMinutes": a.idleExitMinutes,
         ]
         if !a.instructions.isEmpty { body["instructions"] = a.instructions }
-        return await sendReportingError("PUT", path: "/v1/agents/\(a.name)", body: body, expect: 200)
+        return await sendReportingError("PUT", path: "/v1/agents/\(agentPath(a.name))", body: body, expect: 200)
     }
 
-    /// Delete a base and its folder. The caller confirms first.
+    /// Delete a base and its folder. The caller confirms first. An already
+    /// removed base (404) counts as done, as in the web lens.
     func deleteAgent(_ name: String) async -> String? {
-        await sendReportingError("DELETE", path: "/v1/agents/\(name)", body: nil, expect: 204)
+        let error = await sendReportingError("DELETE", path: "/v1/agents/\(agentPath(name))", body: nil, expect: 204)
+        if error == "HTTP 404" { return nil }
+        return error
+    }
+
+    /// Stop an agent instance in a workspace: closes its pane, keeps the folder.
+    func stopAgent(_ id: UUID, name: String) async -> String? {
+        guard let daemonId = daemonIds[id] else { return "workspace is not hosted" }
+        let error = await sendReportingError(
+            "DELETE", path: "/v1/workspaces/\(daemonId)/agents/\(agentPath(name))", body: nil, expect: 204)
+        await refreshWorkspaceAgents(id)
+        return error
     }
 
     /// Refresh the agent list for one hosted workspace.
@@ -1205,7 +1231,7 @@ final class RemoteSessionService: ObservableObject {
     /// expected code would flag one of the two successes as a failure.
     func startAgent(_ id: UUID, name: String, prompt: String) async -> String? {
         guard let daemonId = daemonIds[id] else { return "workspace is not hosted" }
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/agents/\(name)"),
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/agents/\(agentPath(name))"),
               let payload = try? JSONSerialization.data(withJSONObject: ["prompt": prompt, "createdBy": "mac"])
         else { return "bad request for agent \(name)" }
         var req = URLRequest(url: url)

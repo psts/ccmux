@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/session"
 )
 
 // agentActivity is the daemon's view of whether an agent pane is busy, from
@@ -165,10 +166,10 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 	}
 	if act, ok := m.activity.get(p.ID); ok {
 		v.idle, v.idleSince = !act.busy, act.since
-	} else if p.Attention == model.AttentionIdle || p.Attention == model.AttentionDone {
+	} else if p.Attention != "" && !claudeBusy(p.Attention) {
 		// No harness signal yet (a Claude pane before its first hook, or a
 		// plugin-less harness): fall back to the pane's attention, counting
-		// from the moment we first saw it idle.
+		// from the moment we first saw it not working.
 		m.activity.note(p.ID, false, now)
 		v.idle, v.idleSince = true, now
 	}
@@ -187,16 +188,28 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 	}
 }
 
+// claudeBusy reads a Claude Code pane's attention as the lifecycle's
+// busy/idle. The hooks encode attention for the LENS, not for us, and the
+// mapping is easy to invert: user_prompt_submit → "idle" (the flash clears
+// because the human is there), which for an agent is the moment work STARTS;
+// stop → "done" and permission/ask → "needs_input" are the moments it stops.
+// So "idle" is busy and everything else is not. Verified against
+// hooks.go's attentionFor before trusting it (2026-09-05 review).
+func claudeBusy(att model.Attention) bool { return att == model.AttentionIdle }
+
 // exitAgent ends the harness session with an end-of-input: Claude Code and
 // opencode both quit on ctrl-d at their prompt, which is where an idle
 // agent sits. The pane drops to its shell and stays (history intact).
 func (m *Manager) exitAgent(paneID, wsID string) {
 	m.mu.RLock()
-	e, _ := m.findPaneLocked(paneID)
-	var ctrl = e.ctrl
+	e, p := m.findPaneLocked(paneID)
+	var ctrl *session.Controller
+	if e != nil && p != nil {
+		ctrl = e.ctrl
+	}
 	m.mu.RUnlock()
 	if ctrl == nil {
-		return
+		return // pane gone between the tick's snapshot and now
 	}
 	log.Printf("agent pane %s: idle past its cap, ending the session", paneID)
 	if err := ctrl.SendInput(paneID, []byte{0x04}); err != nil {

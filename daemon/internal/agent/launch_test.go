@@ -41,6 +41,17 @@ func TestLaunchCommandClaude(t *testing.T) {
 	if !strings.HasSuffix(l.Deliver, " -- 'write it'") {
 		t.Errorf("claude prompt must be positional after --: %s", l.Deliver)
 	}
+	// Default permissions: read/edit allow, bash/webfetch ask → only an allow list.
+	def := LaunchCommand(withDefaults(d), h, "/b", "/repo", "", 0).Persist
+	if !strings.Contains(def, "--allowedTools 'Edit,Glob,Grep,Read,Write'") || strings.Contains(def, "--disallowedTools") {
+		t.Errorf("default permission flags: %s", def)
+	}
+	locked := d
+	locked.Permissions = Permissions{Read: "allow", Edit: "deny", Bash: "ask", Webfetch: "deny", BashAllow: []string{"git log *"}}
+	got := LaunchCommand(locked, h, "/b", "/repo", "", 0).Persist
+	if !strings.Contains(got, "--disallowedTools 'Edit,WebFetch,WebSearch,Write'") || !strings.Contains(got, "--allowedTools 'Bash(git log *),Glob,Grep,Read'") {
+		t.Errorf("permission flags: %s", got)
+	}
 }
 
 func TestLaunchCommandOtherHarness(t *testing.T) {

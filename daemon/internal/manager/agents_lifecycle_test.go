@@ -1,8 +1,14 @@
 package manager
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/tmux"
 )
 
 func TestDecideAgent(t *testing.T) {
@@ -45,5 +51,30 @@ func TestAgentActivityKeepsFirstSince(t *testing.T) {
 	a.forget("p")
 	if _, ok := a.get("p"); ok {
 		t.Fatal("forget did not remove")
+	}
+}
+
+// The hooks encode attention for the lens: user_prompt_submit → idle is the
+// moment an agent STARTS working; stop → done and permission → needs_input
+// are when it stops. Getting this backwards ends sessions mid-task.
+func TestClaudeBusyReadsHookAttentionCorrectly(t *testing.T) {
+	if !claudeBusy(model.AttentionIdle) {
+		t.Error("user_prompt_submit (attention idle) means the agent is working")
+	}
+	if claudeBusy(model.AttentionDone) || claudeBusy(model.AttentionNeedsInput) {
+		t.Error("stop and permission prompts mean the agent is not working")
+	}
+}
+
+func TestExitAgentSurvivesAVanishedPane(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	m.exitAgent("no-such-pane", "no-such-ws") // must not panic
+	if err := m.PushToAgentPane("no-such-pane", "x"); err != ErrNotAgentPane {
+		t.Fatalf("push to unknown pane = %v, want ErrNotAgentPane", err)
 	}
 }

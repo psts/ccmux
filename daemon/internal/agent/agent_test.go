@@ -174,3 +174,19 @@ func TestBootstrapOnce(t *testing.T) {
 		t.Fatal("bootstrap overwrote a human-owned file")
 	}
 }
+
+func TestNamesThatAreNotFolderSegmentsNeverReachTheFilesystem(t *testing.T) {
+	s := testStore(t)
+	s.Save(Definition{Name: "real", Description: "d"})
+	for _, bad := range []string{"../real", "../../etc", "a/b", ".hidden", "UPPER"} {
+		if _, err := s.Get(bad); err != ErrNotFound {
+			t.Errorf("Get(%q) = %v, want ErrNotFound", bad, err)
+		}
+		if _, _, err := Bootstrap(t.TempDir(), Definition{Name: bad, Description: "d"}); err == nil {
+			t.Errorf("Bootstrap(%q) accepted", bad)
+		}
+		if err := s.WriteInstanceConfig(Definition{Name: bad}, t.TempDir()); err == nil {
+			t.Errorf("WriteInstanceConfig(%q) accepted", bad)
+		}
+	}
+}

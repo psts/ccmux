@@ -177,7 +177,7 @@ func appendFile(path, line string) error {
 // Delete removes a base folder entirely — knowledge and skills included.
 // Callers confirm with the human first; this is the one destructive call.
 func (s *Store) Delete(name string) error {
-	if !namePattern.MatchString(name) {
+	if !ValidName(name) {
 		return fmt.Errorf("agent name %q invalid", name)
 	}
 	if _, err := os.Stat(filepath.Join(s.Dir(name), fileAgent)); err != nil {

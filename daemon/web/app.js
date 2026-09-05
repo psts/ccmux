@@ -341,9 +341,15 @@ function openWsMenu(ws, x, y) {
     for (const h of hostnames.filter((h) => h.url)) {
       add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}`, () => window.open(h.url, "_blank"));
     }
+    // Agent rows fill in below once fetched; the slot keeps them above the
+    // destructive rows and bound to THIS menu's workspace.
+    const slot = document.createElement("div");
+    slot.className = "agent-slot";
+    menu.appendChild(slot);
+    menu.dataset.ws = ws.id;
+    appendAgentEntries(menu, slot, ws);
     sep();
     add("Close Session", () => closeSession(ws.id));
-    appendAgentEntries(menu, ws, add, sep);
   }
   add("Remove Session…", () => removeSession(ws), "danger");
 
@@ -355,20 +361,45 @@ function openWsMenu(ws, x, y) {
 }
 
 // appendAgentEntries adds one row per base agent to an open workspace menu:
-// running → jump to its pane; asleep or not yet added → start it here.
-async function appendAgentEntries(menu, ws, add, sep) {
+// running → jump to its pane or stop it; asleep or not yet added → start it
+// here with an optional first message. Rows go into the slot the menu
+// reserved, and only if the menu still belongs to the same workspace.
+async function appendAgentEntries(menu, slot, ws) {
   const list = await fetchWorkspaceAgents(ws.id);
-  if (!list.length || menu.classList.contains("hidden")) return;
-  sep();
+  if (!list.length || menu.dataset.ws !== ws.id || !slot.isConnected) return;
+  const add = (label, fn, cls) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = () => { closeWsMenu(); fn(); };
+    slot.appendChild(b);
+  };
+  slot.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
   for (const a of list) {
-    const mark = { running: "●", asleep: "○", absent: "+" }[a.state] || "·";
-    const verb = a.state === "running" ? "open" : a.state === "asleep" ? "wake" : "add";
-    add(`${mark} ${a.icon || "⚙"} ${a.name} — ${verb}`, async () => {
-      if (a.state === "running" && a.pane) { attach(ws.id, a.pane); return; }
-      const p = await wakeAgent(ws.id, a.name, "");
+    const icon = a.icon || "⚙";
+    if (a.state === "running") {
+      add(`● ${icon} ${a.name} — open`, () => { if (a.pane) attach(ws.id, a.pane); });
+      add(`■ ${icon} ${a.name} — stop`, () => stopAgent(ws.id, a.name));
+      continue;
+    }
+    const verb = a.state === "asleep" ? "wake…" : "add…";
+    add(`${a.state === "asleep" ? "○" : "+"} ${icon} ${a.name} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
+      const text = prompt(`Message ${a.name} (empty = just start it):`, "");
+      if (text === null) return;
+      const p = await wakeAgent(ws.id, a.name, text.trim());
       if (p && p.id) attach(ws.id, p.id);
     });
   }
+}
+
+async function stopAgent(wsId, name) {
+  try {
+    const r = await fetch(`/v1/workspaces/${wsId}/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok) alert(`stop ${name}: ` + (await r.text()));
+  } catch (e) {
+    alert(`stop ${name}: ` + e.message);
+  }
+  agentCatalog.at = 0;
 }
 
 function closeWsMenu() { $("ctx-menu").classList.add("hidden"); }
@@ -1049,6 +1080,10 @@ async function updateAgentComposer(p) {
   const list = await fetchWorkspaceAgents(state.wsId);
   if (state.paneId !== paneId) return;
   const inst = list.find((a) => a.name === p.agent) || {};
+  // Already showing for this pane: a registry refresh must not wipe an unsent
+  // message or pull focus off whatever the user is doing.
+  if (box.dataset.pane === paneId && !box.classList.contains("hidden")) return;
+  box.dataset.pane = paneId;
   box.innerHTML = "";
   const label = document.createElement("span");
   label.className = "agent-label";
@@ -1076,24 +1111,28 @@ async function updateAgentComposer(p) {
 }
 
 function setAgentComposer(show) {
-  $("agent-composer").classList.toggle("hidden", !show);
+  const box = $("agent-composer");
+  if (!show) delete box.dataset.pane;
+  box.classList.toggle("hidden", !show);
   scheduleFit();
 }
 
 async function wakeAgent(wsId, name, prompt) {
   setAgentComposer(false);
-  const r = await fetch(`/v1/workspaces/${wsId}/agents/${encodeURIComponent(name)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, createdBy: "web" }),
-  });
-  if (!r.ok) {
-    alert(`agent ${name}: ` + (await r.text()));
-    updateHarnessBar();
+  try {
+    const r = await fetch(`/v1/workspaces/${wsId}/agents/${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, createdBy: "web" }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    agentCatalog.at = 0; // state changed
+    return await r.json();
+  } catch (e) {
+    alert(`agent ${name}: ` + e.message);
+    updateHarnessBar(); // the pane may still deserve the composer
     return null;
   }
-  agentCatalog.at = 0; // state changed
-  return r.json();
 }
 
 // --- "+" in the tab strip: a new pane running a harness, or a plain shell. ---
@@ -1823,6 +1862,7 @@ function wireAgentSettings() {
       harnessNames = (cfg.harnesses || []).map((h) => h.name);
       box.innerHTML = "";
       if (r.status === 503) { statusEl.textContent = "This daemon has no agents support."; addBtn.disabled = true; return; }
+      addBtn.disabled = false;
       for (const a of (await r.json()).agents || []) box.appendChild(agentRow(a));
       statusEl.textContent = "Rows save on change. Skills, MCP servers and knowledge files live in the agent's folder.";
     } catch (_) {

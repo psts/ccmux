@@ -2,6 +2,7 @@
 package peers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -214,11 +215,15 @@ func (s *Service) pushToPaneLocked(ev *model.PeerEvent) {
 	}
 	paneID, text := target.PaneID, pushText(ev)
 	go func() {
-		if err := s.PushToPane(paneID, text); err != nil {
+		if err := s.PushToPane(paneID, text); err != nil && !errors.Is(err, ErrNoPanePush) {
 			log.Printf("peers: pane push to %s skipped: %v", paneID, err)
 		}
 	}()
 }
+
+// ErrNoPanePush is what a PushToPane hook returns for a pane that takes no
+// TUI push — normal peer traffic — so the bus does not log every message.
+var ErrNoPanePush = errors.New("pane takes no push")
 
 // pushText renders a bus message the way a channel tag would, so an agent
 // reading it as a user turn still knows who wrote it and how to answer.

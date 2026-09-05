@@ -3,6 +3,7 @@ package agent
 import (
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -73,7 +74,42 @@ func claudeFlags(d Definition, cmd, baseDir, repo string) string {
 	if d.Model != "" {
 		parts = append(parts, "--model", shellQuote(d.Model))
 	}
+	parts = append(parts, claudePermissionFlags(d.Permissions)...)
 	return strings.Join(parts, " ")
+}
+
+// claudeTools maps the neutral permission gates onto Claude Code tool names.
+var claudeTools = map[string][]string{
+	"read": {"Read", "Glob", "Grep"}, "edit": {"Edit", "Write"}, "bash": {"Bash"}, "webfetch": {"WebFetch", "WebSearch"},
+}
+
+// claudePermissionFlags translates Permissions for the claude harness: deny →
+// --disallowedTools, allow → --allowedTools, ask → nothing (the default
+// prompt), and each BashAllow pattern → an allowed Bash(pattern). opencode
+// gets the same gates through its config (opencodePermission).
+func claudePermissionFlags(p Permissions) []string {
+	var allow, deny []string
+	for gate, v := range map[string]string{"read": p.Read, "edit": p.Edit, "bash": p.Bash, "webfetch": p.Webfetch} {
+		switch v {
+		case "allow":
+			allow = append(allow, claudeTools[gate]...)
+		case "deny":
+			deny = append(deny, claudeTools[gate]...)
+		}
+	}
+	for _, pat := range p.BashAllow {
+		allow = append(allow, "Bash("+pat+")")
+	}
+	sort.Strings(allow)
+	sort.Strings(deny)
+	var out []string
+	if len(allow) > 0 {
+		out = append(out, "--allowedTools", shellQuote(strings.Join(allow, ",")))
+	}
+	if len(deny) > 0 {
+		out = append(out, "--disallowedTools", shellQuote(strings.Join(deny, ",")))
+	}
+	return out
 }
 
 // bareWord is what may go on a shell line unquoted, so the recorded startup

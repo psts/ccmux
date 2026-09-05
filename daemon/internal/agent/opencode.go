@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -117,6 +118,9 @@ var DefaultModel = "anthropic/claude-sonnet-5"
 
 // WriteInstanceConfig regenerates the instance's opencode.jsonc from base d.
 func (s *Store) WriteInstanceConfig(d Definition, instanceDir string) error {
+	if !ValidName(d.Name) {
+		return fmt.Errorf("agent name %q invalid", d.Name)
+	}
 	mcp, err := ReadMCP(s.Dir(d.Name))
 	if err != nil {
 		return err

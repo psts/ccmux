@@ -69,8 +69,12 @@ account.
 ## 6. Permissions
 
 Write the permission block for the harness in `agent.json.permissions`, in the
-neutral vocabulary `read | edit | bash | webfetch | external_directory` →
-`allow | ask | deny`, plus a list of bash patterns. The adapter translates it.
+neutral vocabulary `read | edit | bash | webfetch` → `allow | ask | deny`,
+plus a list of bash patterns. The adapter translates it: opencode gets it as
+its `permission` block in `opencode.jsonc`; Claude Code gets `--allowedTools`
+for allow (and each bash pattern as `Bash(pattern)`) and `--disallowedTools`
+for deny, with ask left to its default prompt. `memory` and `start` are
+recorded for the UI and not yet acted on.
 
 Defaults: `read: allow`, `edit: allow` inside the instance folder and
 `--add-dir` folders, `bash: ask`, `webfetch: ask`. An agent that posts to the
@@ -135,7 +139,9 @@ Code instances get them as channel messages.
 ## 10. Cost and safety caps
 
 - `maxTurnsPerTask` (default 40) and `maxTokensPerTask` (default 400k) in
-  `agent.json`. The daemon ends the session and reports when hit.
+  `agent.json`. Recorded and shown; NOT enforced yet — the daemon has no
+  per-session token meter. Enforcement is a follow-up; until then the idle
+  cap and the concurrency cap are the only hard limits.
 - External side effects (posting, sending, deleting) are listed in
   `agent.json.sideEffects` so the UI can show a warning badge.
 - Anything that spends money or reaches the public needs a dry-run mode
@@ -235,7 +241,9 @@ wakes it, + not yet added adds it), a sleeping agent pane shows a composer
 over its history (Enter wakes it with the text as first message, with a ↻
 note when the base has moved), and agent panes carry a ⚙ tab mark.
 
-Mac: the same Agents tab and project-menu rows; the composer is a prompt box
-opened from the menu row (the Mac has no bar over the pane), which is the
-one deliberate difference between the lenses. Unbuilt on the Linux host; the
+Mac: the same Agents tab and project-menu rows (stop for running, wake or
+add with a first-message prompt box for the rest); the prompt box stands in
+for the composer (the Mac has no bar over the pane). Known gaps on the Mac,
+to close when it can be built: no ⚙ mark on agent pane tabs, and "open" for
+a running agent (the web jumps to its pane). Unbuilt on the Linux host; the
 release tag job builds it.

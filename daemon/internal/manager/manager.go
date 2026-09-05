@@ -813,9 +813,9 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
 	wsID := e.ws.ID
 	saved := *p
 	m.mu.Unlock()
-	if p.Agent != "" {
-		// A Claude Code agent's hooks are its busy/idle signal.
-		m.activity.note(paneID, att == model.AttentionNeedsInput || att == "", time.Now())
+	if saved.Agent != "" {
+		// A Claude Code agent's hooks are its busy/idle signal (claudeBusy).
+		m.activity.note(paneID, claudeBusy(att), time.Now())
 	}
 
 	if ctrl != nil {

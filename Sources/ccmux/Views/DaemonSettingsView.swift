@@ -358,7 +358,9 @@ struct DaemonSettingsView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                ForEach(Array((agents ?? []).enumerated()), id: \.element.id) { idx, _ in
+                // Keyed by position, not name: the name is what a new row is
+                // typing, and a per-keystroke identity change drops focus.
+                ForEach(Array((agents ?? []).enumerated()), id: \.offset) { idx, _ in
                     agentCard(idx)
                 }
                 Button("New agent") {
@@ -422,7 +424,7 @@ struct DaemonSettingsView: View {
             agentStatus = "✗ \(a.name): \(error)"
             return
         }
-        agents = await RemoteSessionService.shared.fetchAgents() ?? agents
+        agents = await RemoteSessionService.shared.fetchAgents().list
         agentStatus = "✓ Saved \(a.name)."
     }
 
@@ -441,7 +443,7 @@ struct DaemonSettingsView: View {
                 agentStatus = "✗ \(a.name): \(error)"
                 return
             }
-            agents = await RemoteSessionService.shared.fetchAgents() ?? agents
+            agents = await RemoteSessionService.shared.fetchAgents().list
             agentStatus = "Deleted \(a.name)."
         }
     }
@@ -558,7 +560,9 @@ struct DaemonSettingsView: View {
         identity = DaemonConfig.identity
         do {
             apply(try await RemoteSessionService.shared.fetchSettings())
-            agents = await RemoteSessionService.shared.fetchAgents()
+            let fetched = await RemoteSessionService.shared.fetchAgents()
+            agents = fetched.supported ? fetched.list : nil
+            if fetched.supported && fetched.error != nil { agentStatus = "✗ Couldn't load agents: \(fetched.error!)" }
             status = ""
             loaded = true
         } catch {

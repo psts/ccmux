@@ -686,33 +686,39 @@ struct SidebarView: View {
     /// session and erases the recipe (layout, hostnames, dev command), unlike
     /// Close Session, which keeps everything for a later revive.
     /// One row per base agent, same rule as the web lens's workspace menu:
-    /// running shows its state, asleep or not-yet-added starts it here with a
+    /// running offers stop, asleep or not-yet-added starts it here with a
     /// message typed into a prompt box (the Mac has no bar over the pane).
     @ViewBuilder
     private func agentMenuEntries(for workspace: Workspace) -> some View {
         let list = remoteService.workspaceAgents[workspace.id] ?? []
         if !list.isEmpty {
             Divider()
+                .onAppear { Task { await remoteService.refreshWorkspaceAgents(workspace.id) } }
             ForEach(list) { a in
-                let mark = a.state == "running" ? "●" : a.state == "asleep" ? "○" : "+"
-                let verb = a.state == "running" ? "running" : a.state == "asleep" ? "wake…" : "add…"
-                Button("\(mark) \(a.icon.isEmpty ? "⚙" : a.icon) \(a.name) — \(verb)" + (a.drift ? " ↻" : "")) {
-                    if a.state != "running" { promptAndStartAgent(workspace, a) }
+                let icon = a.icon.isEmpty ? "⚙" : a.icon
+                if a.state == "running" {
+                    Button("■ \(icon) \(a.name) — stop") { stopAgent(workspace, a) }
+                } else {
+                    let mark = a.state == "asleep" ? "○" : "+"
+                    let verb = a.state == "asleep" ? "wake…" : "add…"
+                    Button("\(mark) \(icon) \(a.name) — \(verb)" + (a.drift ? " ↻" : "")) {
+                        promptAndStartAgent(workspace, a)
+                    }
                 }
-                .disabled(a.state == "running")
             }
         }
     }
 
-    /// The Mac's composer: a sheet-less prompt for the first message, then the
-    /// same daemon call a peer's contact makes. Empty text just starts it.
+    /// The Mac's composer: a prompt for the first message, then the same
+    /// daemon call a peer's contact makes. Empty text just starts it.
     private func promptAndStartAgent(_ workspace: Workspace, _ a: DaemonAgentInstance) {
         let alert = NSAlert()
         alert.messageText = "Message \(a.name)"
         alert.informativeText = a.description
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-        field.placeholderString = "What should it do? (Enter starts it)"
+        field.placeholderString = "What should it do? (empty = just start it)"
         alert.accessoryView = field
+        alert.window.initialFirstResponder = field
         alert.addButton(withTitle: a.state == "asleep" ? "Wake" : "Add")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -720,6 +726,14 @@ struct SidebarView: View {
         Task {
             guard let error = await remoteService.startAgent(workspace.id, name: a.name, prompt: prompt) else { return }
             await MainActor.run { reportFailure(action: "Start agent \(a.name)", error: error) }
+        }
+    }
+
+    /// Stop a running instance: its pane closes, the project folder stays.
+    private func stopAgent(_ workspace: Workspace, _ a: DaemonAgentInstance) {
+        Task {
+            guard let error = await remoteService.stopAgent(workspace.id, name: a.name) else { return }
+            await MainActor.run { reportFailure(action: "Stop agent \(a.name)", error: error) }
         }
     }
 

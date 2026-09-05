@@ -527,6 +527,11 @@ struct DaemonPane: Codable, Identifiable {
     /// exactly why it needs saying: nothing else tells it apart from a working
     /// session, so a dead teammate reads as a live one until you click into it.
     var dormant: Bool
+    /// Base agent this pane is an instance of ("" = not an agent pane) and the
+    /// base version it last started with — groundwork for the ⚙ tab mark the
+    /// web lens shows; decoded so the fields are not dropped on the floor.
+    var agent: String
+    var agentVersion: String
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -539,6 +544,8 @@ struct DaemonPane: Codable, Identifiable {
         workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
         devServer = try c.decodeIfPresent(Bool.self, forKey: .devServer) ?? false
         dormant = try c.decodeIfPresent(Bool.self, forKey: .dormant) ?? false
+        agent = try c.decodeIfPresent(String.self, forKey: .agent) ?? ""
+        agentVersion = try c.decodeIfPresent(String.self, forKey: .agentVersion) ?? ""
     }
 }
 
