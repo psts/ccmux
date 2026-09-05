@@ -59,6 +59,10 @@ final class RemoteSessionService: ObservableObject {
     @Published private(set) var hostnames: [UUID: [DaemonHostname]] = [:]
     /// Whether the workspace's dev-server pane is running (▶/■ state).
     @Published private(set) var devRunning: [UUID: Bool] = [:]
+    /// Base agents as seen from each hosted workspace (state, drift), refreshed
+    /// when a sidebar row appears and after an agent start. Same daemon call the
+    /// web lens's workspace menu makes.
+    @Published private(set) var workspaceAgents: [UUID: [DaemonAgentInstance]] = [:]
     /// Stored dev-command override per workspace ("" = daemon detects).
     private(set) var devCommands: [UUID: String] = [:]
     private var attachments: [UUID: WorkspaceAttachment] = [:]
@@ -1153,6 +1157,68 @@ final class RemoteSessionService: ObservableObject {
             let message = (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
             await MainActor.run { self.lastError = message }
             return message
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    // MARK: - Agents (daemon/docs/agent-spec.md)
+
+    /// Every base agent; nil when this daemon predates agents (503).
+    func fetchAgents() async -> [DaemonAgent]? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/agents") else { return nil }
+        guard let (data, resp) = try? await session.data(from: url),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        struct Body: Decodable { let agents: [DaemonAgent] }
+        return (try? JSONDecoder().decode(Body.self, from: data))?.agents
+    }
+
+    /// Create or update one base (per-name upsert). Returns the daemon's error text or nil.
+    func putAgent(_ a: DaemonAgent) async -> String? {
+        var body: [String: Any] = [
+            "icon": a.icon, "description": a.description, "harness": a.harness,
+            "keepAlive": a.keepAlive, "idleExitMinutes": a.idleExitMinutes,
+        ]
+        if !a.instructions.isEmpty { body["instructions"] = a.instructions }
+        return await sendReportingError("PUT", path: "/v1/agents/\(a.name)", body: body, expect: 200)
+    }
+
+    /// Delete a base and its folder. The caller confirms first.
+    func deleteAgent(_ name: String) async -> String? {
+        await sendReportingError("DELETE", path: "/v1/agents/\(name)", body: nil, expect: 204)
+    }
+
+    /// Refresh the agent list for one hosted workspace.
+    func refreshWorkspaceAgents(_ id: UUID) async {
+        guard let daemonId = daemonIds[id],
+              let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/agents"),
+              let (data, resp) = try? await session.data(from: url),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+        struct Body: Decodable { let agents: [DaemonAgentInstance] }
+        guard let list = (try? JSONDecoder().decode(Body.self, from: data))?.agents else { return }
+        await MainActor.run { self.workspaceAgents[id] = list }
+    }
+
+    /// Add or wake an agent in a workspace with the text as its first message
+    /// (empty = just start it). 201 = added, 200 = woken; anything else is the
+    /// daemon's error text. Not routed through sendReportingError, whose single
+    /// expected code would flag one of the two successes as a failure.
+    func startAgent(_ id: UUID, name: String, prompt: String) async -> String? {
+        guard let daemonId = daemonIds[id] else { return "workspace is not hosted" }
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/agents/\(name)"),
+              let payload = try? JSONSerialization.data(withJSONObject: ["prompt": prompt, "createdBy": "mac"])
+        else { return "bad request for agent \(name)" }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.httpBody = payload
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        defer { Task { await refreshWorkspaceAgents(id) } }
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
+            if code == 200 || code == 201 { return nil }
+            struct APIError: Decodable { let error: String }
+            return (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
         } catch {
             return error.localizedDescription
         }

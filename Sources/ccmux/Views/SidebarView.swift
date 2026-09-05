@@ -436,6 +436,7 @@ struct SidebarView: View {
                 onTap: { onSelectWorkspace(workspace.id) }
             )
         )
+        .onAppear { Task { await remoteService.refreshWorkspaceAgents(workspace.id) } }
         .contextMenu {
             hostedContextMenu(for: workspace)
         }
@@ -566,6 +567,7 @@ struct SidebarView: View {
         ForEach(remoteService.hostnames[workspace.id] ?? []) { hostname in
             hostnameMenu(hostname)
         }
+        agentMenuEntries(for: workspace)
         Divider()
         Button("Close Session") {
             Task { await remoteService.archiveWorkspace(workspace.id) }
@@ -683,6 +685,44 @@ struct SidebarView: View {
     /// Guard the permanent purge behind an explicit confirmation — it kills the
     /// session and erases the recipe (layout, hostnames, dev command), unlike
     /// Close Session, which keeps everything for a later revive.
+    /// One row per base agent, same rule as the web lens's workspace menu:
+    /// running shows its state, asleep or not-yet-added starts it here with a
+    /// message typed into a prompt box (the Mac has no bar over the pane).
+    @ViewBuilder
+    private func agentMenuEntries(for workspace: Workspace) -> some View {
+        let list = remoteService.workspaceAgents[workspace.id] ?? []
+        if !list.isEmpty {
+            Divider()
+            ForEach(list) { a in
+                let mark = a.state == "running" ? "●" : a.state == "asleep" ? "○" : "+"
+                let verb = a.state == "running" ? "running" : a.state == "asleep" ? "wake…" : "add…"
+                Button("\(mark) \(a.icon.isEmpty ? "⚙" : a.icon) \(a.name) — \(verb)" + (a.drift ? " ↻" : "")) {
+                    if a.state != "running" { promptAndStartAgent(workspace, a) }
+                }
+                .disabled(a.state == "running")
+            }
+        }
+    }
+
+    /// The Mac's composer: a sheet-less prompt for the first message, then the
+    /// same daemon call a peer's contact makes. Empty text just starts it.
+    private func promptAndStartAgent(_ workspace: Workspace, _ a: DaemonAgentInstance) {
+        let alert = NSAlert()
+        alert.messageText = "Message \(a.name)"
+        alert.informativeText = a.description
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.placeholderString = "What should it do? (Enter starts it)"
+        alert.accessoryView = field
+        alert.addButton(withTitle: a.state == "asleep" ? "Wake" : "Add")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let prompt = field.stringValue
+        Task {
+            guard let error = await remoteService.startAgent(workspace.id, name: a.name, prompt: prompt) else { return }
+            await MainActor.run { reportFailure(action: "Start agent \(a.name)", error: error) }
+        }
+    }
+
     private func confirmRemoveSession(name: String, perform: @escaping () -> Void) {
         let alert = NSAlert()
         alert.messageText = "Remove “\(name)”?"

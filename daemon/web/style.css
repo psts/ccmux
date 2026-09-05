@@ -469,3 +469,18 @@ body {
 @media (prefers-reduced-motion: reduce) {
   #sidebar, #drawer-backdrop { transition: none; }
 }
+
+/* Agent composer: sits over a sleeping agent pane, history below it. Enter
+   wakes the agent with the text as its first message (docs/agent-spec.md). */
+.agent-composer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--line);
+  background: #1b1f26; font-size: 12px;
+}
+.agent-composer.hidden { display: none; }
+.agent-composer .agent-label { opacity: 0.75; white-space: nowrap; }
+.agent-composer .agent-drift { color: #e5c07b; white-space: nowrap; }
+.agent-composer input { flex: 1; }
+.agent-card textarea.setting-input { width: 100%; min-height: 72px; resize: vertical; font-family: inherit; font-size: 12px; }
+.agent-card .agent-version { opacity: 0.6; font-size: 11px; white-space: nowrap; }
+.agent-card .agent-num { width: 64px; }

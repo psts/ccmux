@@ -127,6 +127,74 @@ struct DaemonSettings: Codable {
     }
 }
 
+/// One base agent as GET /v1/agents reports it (daemon/docs/agent-spec.md).
+/// Only the fields the Mac editor shows; the folder holds the rest.
+struct DaemonAgent: Codable, Identifiable {
+    var name: String
+    var icon: String
+    var description: String
+    var harness: String
+    var keepAlive: Bool
+    var idleExitMinutes: Int
+    var version: String
+    var instructions: String
+    var id: String { name }
+
+    init(name: String, icon: String = "", description: String = "", harness: String = "",
+         keepAlive: Bool = false, idleExitMinutes: Int = 10, version: String = "", instructions: String = "") {
+        self.name = name; self.icon = icon; self.description = description; self.harness = harness
+        self.keepAlive = keepAlive; self.idleExitMinutes = idleExitMinutes; self.version = version
+        self.instructions = instructions
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? ""
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        harness = try c.decodeIfPresent(String.self, forKey: .harness) ?? ""
+        keepAlive = try c.decodeIfPresent(Bool.self, forKey: .keepAlive) ?? false
+        idleExitMinutes = try c.decodeIfPresent(Int.self, forKey: .idleExitMinutes) ?? 10
+        version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
+        instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, icon, description, harness, keepAlive, idleExitMinutes, version, instructions
+    }
+}
+
+/// A base agent as seen from one workspace (GET /v1/workspaces/{id}/agents):
+/// state is "absent" | "asleep" | "running"; drift = the base moved since the
+/// instance last started.
+struct DaemonAgentInstance: Codable, Identifiable {
+    var name: String
+    var icon: String
+    var description: String
+    var version: String
+    var state: String
+    var pane: String
+    var paneVersion: String
+    var drift: Bool
+    var id: String { name }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? ""
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "absent"
+        pane = try c.decodeIfPresent(String.self, forKey: .pane) ?? ""
+        paneVersion = try c.decodeIfPresent(String.self, forKey: .paneVersion) ?? ""
+        drift = try c.decodeIfPresent(Bool.self, forKey: .drift) ?? false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, icon, description, version, state, pane, paneVersion, drift
+    }
+}
+
 /// One supervised Meridian sidecar, as GET /v1/settings reports it under
 /// llmSidecars (keyed by the meridian account's name).
 struct DaemonSidecarStatus: Codable {

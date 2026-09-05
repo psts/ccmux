@@ -37,6 +37,7 @@
         <div id="presence"></div>
       </div>
       <div id="harness-bar" class="harness-bar hidden"></div>
+      <div id="agent-composer" class="agent-composer hidden"></div>
       <p id="daemon-warning" class="daemon-warning hidden"></p>
       <p id="pane-notice" class="pane-notice hidden"></p>
       <div id="terminal"></div>
@@ -118,6 +119,7 @@
       <nav id="settings-tabs" class="settings-tabs">
         <button class="settings-tab active" data-page="accounts" type="button">Accounts</button>
         <button class="settings-tab" data-page="harnesses" type="button">Harnesses</button>
+        <button class="settings-tab" data-page="agents" type="button">Agents</button>
         <button class="settings-tab" data-page="notifications" type="button">Notifications</button>
       </nav>
       <div class="settings-body">
@@ -138,6 +140,12 @@
           <div id="harness-rules" class="rules-list"></div>
           <button id="harness-rule-add" class="rule-add" type="button">+ Add folder rule</button>
           <p id="harness-rules-state" class="hint setting-hint"></p>
+        </section>
+        <section class="settings-page hidden" data-page="agents">
+          <p class="hint setting-hint">Role agents live as folders under <code>~/.ccmux/agents</code>. Add one to a project from the project's menu; message it by name on the bus.</p>
+          <div id="agent-list" class="rules-list"></div>
+          <button id="agent-add" class="rule-add" type="button">+ New agent</button>
+          <p id="agent-state" class="hint setting-hint"></p>
         </section>
         <section class="settings-page hidden" data-page="notifications">
           <p id="notif-status" class="status"></p>

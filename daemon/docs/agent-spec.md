@@ -225,3 +225,17 @@ when agent.json or AGENTS.md changed, appends CHANGELOG.md, never touches
 skills/knowledge/mcp.json), `Delete`, `Bootstrap` (instance folder, once),
 `WriteInstanceConfig`. API: `GET /v1/agents`, `PUT /v1/agents/{name}`
 (per-name upsert, not list replace), `DELETE /v1/agents/{name}`.
+
+
+## Lenses (2026-09-05)
+
+Web: Settings → Agents (rows save on change, delete confirmed), the project
+menu lists every base with its state here (● running opens it, ○ asleep
+wakes it, + not yet added adds it), a sleeping agent pane shows a composer
+over its history (Enter wakes it with the text as first message, with a ↻
+note when the base has moved), and agent panes carry a ⚙ tab mark.
+
+Mac: the same Agents tab and project-menu rows; the composer is a prompt box
+opened from the menu row (the Mac has no bar over the pane), which is the
+one deliberate difference between the lenses. Unbuilt on the Linux host; the
+release tag job builds it.

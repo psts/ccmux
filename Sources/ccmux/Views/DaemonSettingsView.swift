@@ -28,6 +28,9 @@ struct DaemonSettingsView: View {
     @State private var accountStatus: [String: DaemonLLMAccountStatus] = [:]
     @State private var sidecars: [String: DaemonSidecarStatus] = [:]
     @State private var harnesses: [EditableHarness] = []
+    /// Base agents from GET /v1/agents; nil = this daemon has no agents support.
+    @State private var agents: [DaemonAgent]? = nil
+    @State private var agentStatus = ""
     @State private var supportsLLM = false
     @State private var supportsHarnesses = false
     @State private var supportsHarnessRules = false
@@ -99,6 +102,7 @@ struct DaemonSettingsView: View {
                 generalTab.tabItem { Text("General") }
                 if supportsLLM { accountsTab.tabItem { Text("Accounts") } }
                 if supportsHarnesses { harnessesTab.tabItem { Text("Harnesses") } }
+                if agents != nil { agentsTab.tabItem { Text("Agents") } }
                 devTab.tabItem { Text("Dev Hostnames") }
             }
             // FIXED height: a window that resizes per tab makes its own tab
@@ -344,6 +348,104 @@ struct DaemonSettingsView: View {
         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
     }
 
+    /// Base agents: folders the daemon owns, one card each. Rows save on their
+    /// own button (per-name upsert, not part of the settings Save); delete is
+    /// confirmed because the folder holds skills and knowledge a human wrote.
+    private var agentsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Role agents live as folders under ~/.ccmux/agents. Add one to a project from the project's menu; message it by name on the bus. Skills, MCP servers and knowledge files live in the folder.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(Array((agents ?? []).enumerated()), id: \.element.id) { idx, _ in
+                    agentCard(idx)
+                }
+                Button("New agent") {
+                    agents?.append(DaemonAgent(name: ""))
+                }
+                .controlSize(.small)
+                Text(agentStatus)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func agentCard(_ idx: Int) -> some View {
+        let binding = Binding(
+            get: { agents?[idx] ?? DaemonAgent(name: "") },
+            set: { if agents != nil, idx < agents!.count { agents![idx] = $0 } })
+        let isNew = binding.wrappedValue.version.isEmpty
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("⚙", text: binding.icon).frame(width: 36)
+                TextField("name (a-z, 0-9, -)", text: binding.name).disabled(!isNew)
+                if !isNew { Text("v\(binding.wrappedValue.version)").font(.system(size: 11)).foregroundColor(.secondary) }
+                Picker("", selection: binding.harness) {
+                    Text("default harness").tag("")
+                    ForEach(harnesses.map(\.name), id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden().frame(width: 130)
+                Toggle("keep alive", isOn: binding.keepAlive).toggleStyle(.checkbox)
+                Text("idle").font(.system(size: 11))
+                TextField("10", value: binding.idleExitMinutes, format: .number).frame(width: 44)
+                Text("m").font(.system(size: 11))
+            }
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12))
+            TextField("one sentence: what it does and when to call it", text: binding.description)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+            TextEditor(text: binding.instructions)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(minHeight: 72)
+                .border(Color.white.opacity(0.12))
+            HStack {
+                Button("Save agent") { Task { await saveAgent(idx) } }
+                    .controlSize(.small)
+                    .disabled(binding.wrappedValue.name.isEmpty || binding.wrappedValue.description.isEmpty)
+                Spacer()
+                Button("Delete…", role: .destructive) { deleteAgent(idx) }
+                    .controlSize(.small)
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+    }
+
+    private func saveAgent(_ idx: Int) async {
+        guard let a = agents?[idx] else { return }
+        if let error = await RemoteSessionService.shared.putAgent(a) {
+            agentStatus = "✗ \(a.name): \(error)"
+            return
+        }
+        agents = await RemoteSessionService.shared.fetchAgents() ?? agents
+        agentStatus = "✓ Saved \(a.name)."
+    }
+
+    private func deleteAgent(_ idx: Int) {
+        guard let a = agents?[idx] else { return }
+        if a.version.isEmpty { agents?.remove(at: idx); return }
+        let alert = NSAlert()
+        alert.messageText = "Delete agent “\(a.name)”?"
+        alert.informativeText = "Removes its folder, skills and knowledge included. Project instance folders stay."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            if let error = await RemoteSessionService.shared.deleteAgent(a.name) {
+                agentStatus = "✗ \(a.name): \(error)"
+                return
+            }
+            agents = await RemoteSessionService.shared.fetchAgents() ?? agents
+            agentStatus = "Deleted \(a.name)."
+        }
+    }
+
     private var harnessesTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
@@ -456,6 +558,7 @@ struct DaemonSettingsView: View {
         identity = DaemonConfig.identity
         do {
             apply(try await RemoteSessionService.shared.fetchSettings())
+            agents = await RemoteSessionService.shared.fetchAgents()
             status = ""
             loaded = true
         } catch {

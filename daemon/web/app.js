@@ -108,11 +108,14 @@ function syncPaneTitles() {
     // tmux's first command signal), so the harness bar re-derives from every
     // registry refresh — the firehose fires one for exactly this change.
     if (!!q.atShell !== !!p.atShell || !!q.dormant !== !!p.dormant ||
-        !!q.devServer !== !!p.devServer || (q.harness || "") !== (p.harness || "")) {
+        !!q.devServer !== !!p.devServer || (q.harness || "") !== (p.harness || "") ||
+        (q.agent || "") !== (p.agent || "") || (q.agentVersion || "") !== (p.agentVersion || "")) {
       p.atShell = q.atShell;
       p.dormant = q.dormant;
       p.devServer = q.devServer;
       p.harness = q.harness;
+      p.agent = q.agent;
+      p.agentVersion = q.agentVersion;
       shellChanged = true;
     }
   }
@@ -340,6 +343,7 @@ function openWsMenu(ws, x, y) {
     }
     sep();
     add("Close Session", () => closeSession(ws.id));
+    appendAgentEntries(menu, ws, add, sep);
   }
   add("Remove Session…", () => removeSession(ws), "danger");
 
@@ -348,6 +352,23 @@ function openWsMenu(ws, x, y) {
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
   menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+}
+
+// appendAgentEntries adds one row per base agent to an open workspace menu:
+// running → jump to its pane; asleep or not yet added → start it here.
+async function appendAgentEntries(menu, ws, add, sep) {
+  const list = await fetchWorkspaceAgents(ws.id);
+  if (!list.length || menu.classList.contains("hidden")) return;
+  sep();
+  for (const a of list) {
+    const mark = { running: "●", asleep: "○", absent: "+" }[a.state] || "·";
+    const verb = a.state === "running" ? "open" : a.state === "asleep" ? "wake" : "add";
+    add(`${mark} ${a.icon || "⚙"} ${a.name} — ${verb}`, async () => {
+      if (a.state === "running" && a.pane) { attach(ws.id, a.pane); return; }
+      const p = await wakeAgent(ws.id, a.name, "");
+      if (p && p.id) attach(ws.id, p.id);
+    });
+  }
 }
 
 function closeWsMenu() { $("ctx-menu").classList.add("hidden"); }
@@ -885,8 +906,9 @@ function renderTabs() {
     b.className = "tab" + (p.id === state.paneId ? " active" : "") +
       " att-" + (p.attention || "idle") + (p.dormant ? " dormant" : "");
     b.dataset.pane = p.id;
-    b.title = p.dormant ? "Claude exited — shell only" : "";
-    b.textContent = p.title || `pane ${i + 1}`;
+    b.title = p.agent ? `agent ${p.agent}` + (p.atShell || p.dormant ? " — asleep" : "")
+      : p.dormant ? "Claude exited — shell only" : "";
+    b.textContent = (p.agent ? "⚙ " : "") + (p.title || `pane ${i + 1}`);
     b.onclick = () => attach(state.wsId, p.id);
     b.oncontextmenu = (e) => { e.preventDefault(); openPaneLLMMenu(p.id, e.clientX, e.clientY); };
     tabs.appendChild(b);
@@ -951,6 +973,8 @@ async function updateHarnessBar() {
   const p = state.panes.find((x) => x.id === paneId);
   // A pane at a bare shell gets the bar: no harness yet = "Start here:",
   // harness recorded but exited (its shell is back) = "Restart:".
+  if (p && p.agent) { setHarnessBar(false); updateAgentComposer(p); return; }
+  setAgentComposer(false);
   if (!p || p.devServer || !(p.atShell || p.dormant)) { setHarnessBar(false); return; }
   const ws = state.workspaces.find((w) => w.id === state.wsId);
   let cfg;
@@ -999,6 +1023,77 @@ async function startHarness(paneId, name) {
     alert(`start ${name}: ` + (await r.text()));
     updateHarnessBar(); // the pane may still deserve the offer
   }
+}
+
+// --- Agent composer: an asleep agent's pane keeps its history and gets a
+// message box on top. Enter wakes the agent with the text as its first
+// message — the same daemon call a peer's contact makes. ---
+const agentCatalog = { wsId: "", list: [], at: 0 };
+
+async function fetchWorkspaceAgents(wsId) {
+  if (agentCatalog.wsId === wsId && Date.now() - agentCatalog.at < 5000) return agentCatalog.list;
+  try {
+    const r = await fetch(`/v1/workspaces/${wsId}/agents`);
+    if (!r.ok) return [];
+    const list = (await r.json()).agents || [];
+    Object.assign(agentCatalog, { wsId, list, at: Date.now() });
+    return list;
+  } catch (_) { return []; }
+}
+
+async function updateAgentComposer(p) {
+  const box = $("agent-composer");
+  const asleep = p.atShell || p.dormant;
+  if (!asleep) { setAgentComposer(false); return; }
+  const paneId = p.id;
+  const list = await fetchWorkspaceAgents(state.wsId);
+  if (state.paneId !== paneId) return;
+  const inst = list.find((a) => a.name === p.agent) || {};
+  box.innerHTML = "";
+  const label = document.createElement("span");
+  label.className = "agent-label";
+  label.textContent = `${inst.icon || "⚙"} ${p.agent} asleep`;
+  box.appendChild(label);
+  const input = document.createElement("input");
+  input.className = "setting-input";
+  input.type = "text";
+  input.placeholder = `Message ${p.agent}… Enter starts it`;
+  input.onkeydown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    wakeAgent(state.wsId, p.agent, input.value.trim());
+  };
+  box.appendChild(input);
+  if (inst.drift) {
+    const d = document.createElement("span");
+    d.className = "agent-drift";
+    d.title = `ran ${inst.paneVersion || "?"}, base is ${inst.version}`;
+    d.textContent = `↻ base ${inst.version} — next start picks it up`;
+    box.appendChild(d);
+  }
+  setAgentComposer(true);
+  input.focus();
+}
+
+function setAgentComposer(show) {
+  $("agent-composer").classList.toggle("hidden", !show);
+  scheduleFit();
+}
+
+async function wakeAgent(wsId, name, prompt) {
+  setAgentComposer(false);
+  const r = await fetch(`/v1/workspaces/${wsId}/agents/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, createdBy: "web" }),
+  });
+  if (!r.ok) {
+    alert(`agent ${name}: ` + (await r.text()));
+    updateHarnessBar();
+    return null;
+  }
+  agentCatalog.at = 0; // state changed
+  return r.json();
 }
 
 // --- "+" in the tab strip: a new pane running a harness, or a plain shell. ---
@@ -1642,6 +1737,106 @@ function wireHarnessSettings() {
   });
 }
 wireHarnessSettings();
+
+// --- Agents tab: base agents are folders the daemon owns; each row saves on
+// change to PUT /v1/agents/{name}. Delete is explicit and confirmed: the
+// folder holds skills and knowledge a human wrote. ---
+function wireAgentSettings() {
+  const box = $("agent-list"), addBtn = $("agent-add"), statusEl = $("agent-state");
+  if (!box) return;
+  let harnessNames = [];
+
+  function agentRow(a) {
+    const row = document.createElement("div");
+    row.className = "entry-card agent-card";
+    row.dataset.name = a.name || "";
+    const isNew = !a.name;
+    const opts = [""].concat(harnessNames).map((h) =>
+      `<option value="${esc(h)}"${(a.harness || "") === h ? " selected" : ""}>${h ? esc(h) : "default harness"}</option>`).join("");
+    row.innerHTML =
+      `<div class="entry-line">` +
+      `<input class="setting-input ag-icon" type="text" spellcheck="false" placeholder="⚙" value="${esc(a.icon || "")}">` +
+      `<input class="setting-input ag-name grow" type="text" spellcheck="false" placeholder="name (a-z, 0-9, -)" value="${esc(a.name || "")}"${isNew ? "" : " readonly"}>` +
+      (a.version ? `<span class="agent-version">v${esc(a.version)}</span>` : "") +
+      `<select class="setting-input ag-harness">${opts}</select>` +
+      `<label class="hx-confirm" title="Restart it when it exits; otherwise it starts on contact"><input class="ag-keep" type="checkbox"${a.keepAlive ? " checked" : ""}>keep alive</label>` +
+      `<label class="hx-confirm" title="Minutes idle before it goes to sleep">idle <input class="setting-input agent-num ag-idle" type="number" min="0" value="${a.idleExitMinutes || 10}">m</label>` +
+      `<button class="rule-del" type="button" title="Delete agent and its folder">&times;</button>` +
+      `</div>` +
+      `<div class="entry-line">` +
+      `<input class="setting-input ag-desc grow" type="text" spellcheck="false" placeholder="one sentence: what it does and when to call it" value="${esc(a.description || "")}">` +
+      `</div>` +
+      `<div class="entry-line">` +
+      `<textarea class="setting-input ag-instr" spellcheck="false" placeholder="# Role&#10;&#10;What it does, inputs, outputs, how it works, quality bar…">${esc(a.instructions || "")}</textarea>` +
+      `</div>`;
+    for (const el of row.querySelectorAll("input, select, textarea")) {
+      el.addEventListener("change", () => saveRow(row));
+      if (el.tagName !== "TEXTAREA") el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
+    }
+    row.querySelector(".rule-del").onclick = () => deleteRow(row);
+    return row;
+  }
+
+  function rowValue(row) {
+    return {
+      icon: row.querySelector(".ag-icon").value.trim(),
+      description: row.querySelector(".ag-desc").value.trim(),
+      harness: row.querySelector(".ag-harness").value,
+      keepAlive: row.querySelector(".ag-keep").checked,
+      idleExitMinutes: Number(row.querySelector(".ag-idle").value) || 0,
+      instructions: row.querySelector(".ag-instr").value,
+    };
+  }
+
+  async function saveRow(row) {
+    const name = row.querySelector(".ag-name").value.trim();
+    const v = rowValue(row);
+    if (!name || !v.description) { statusEl.textContent = "An agent needs a name and a one-sentence description."; return; }
+    try {
+      const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(v),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const saved = await r.json();
+      row.replaceWith(agentRow(saved));
+      statusEl.textContent = `Saved ${saved.name} v${saved.version}.`;
+      agentCatalog.at = 0;
+    } catch (e) {
+      statusEl.textContent = "Not saved: " + e.message;
+    }
+  }
+
+  async function deleteRow(row) {
+    const name = row.dataset.name;
+    if (!name) { row.remove(); return; }
+    if (!confirm(`Delete agent "${name}" and its folder (skills, knowledge included)? Project instance folders stay.`)) return;
+    const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok && r.status !== 404) { statusEl.textContent = "Not deleted: " + (await r.text()); return; }
+    row.remove();
+    statusEl.textContent = `Deleted ${name}.`;
+    agentCatalog.at = 0;
+  }
+
+  async function load() {
+    try {
+      const [cfg, r] = await Promise.all([(await fetch("/v1/settings")).json(), fetch("/v1/agents")]);
+      harnessNames = (cfg.harnesses || []).map((h) => h.name);
+      box.innerHTML = "";
+      if (r.status === 503) { statusEl.textContent = "This daemon has no agents support."; addBtn.disabled = true; return; }
+      for (const a of (await r.json()).agents || []) box.appendChild(agentRow(a));
+      statusEl.textContent = "Rows save on change. Skills, MCP servers and knowledge files live in the agent's folder.";
+    } catch (_) {
+      statusEl.textContent = "Couldn't load agents.";
+    }
+  }
+
+  $("open-settings").addEventListener("click", load);
+  addBtn.addEventListener("click", () => {
+    box.appendChild(agentRow({}));
+    box.lastChild.querySelector(".ag-name").focus();
+  });
+}
+wireAgentSettings();
 
 // --- settings tabs: one page at a time instead of one long scroll. ---
 function wireSettingsTabs() {
