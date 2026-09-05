@@ -75,6 +75,7 @@ func runDaemon() {
 	tsnetDir := flag.String("tsnet-dir", defaultTsnetDir(), "tsnet node state directory")
 	projectsRoot := flag.String("projects-root", defaultProjectsRoot(), "folder whose subdirectories are offered as hosted-workspace locations (GET /v1/projects)")
 	agentsDir := flag.String("agents-dir", defaultAgentsDir(), "folder holding base agent definitions, one subfolder per agent (GET /v1/agents)")
+	agentsMax := flag.Int("agents-max", 6, "how many agent instances may run at once on this daemon (0 = no cap); asleep instances do not count")
 	hubEnabled := flag.Bool("hub", false, "run hub-role services: aggregate every tag:ccmux host into one lens surface, own the peers bus + dev registrar + push (requires -tsnet)")
 	flag.Parse()
 
@@ -184,7 +185,7 @@ func runDaemon() {
 	apiSrv.SetLLMProxy(llmSvc)
 	mgr.PaneLLMRoute = llmSvc.SetPaneRoute
 	wireSidecars(ctx, llmSvc, apiSrv, mgr)
-	apiSrv.SetAgents(agent.NewStore(*agentsDir))
+	apiSrv.SetAgents(agent.NewStore(*agentsDir), *agentsMax)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)

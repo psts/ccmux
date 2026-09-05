@@ -224,11 +224,16 @@ type Pane struct {
 	// "pi", …; "" = plain shell). Recorded at spawn — the durable answer to the
 	// question startupProgram() used to guess from command text — and what a
 	// revive or restart uses to bring the right thing back.
-	Harness   string    `json:"harness,omitempty"`
-	CreatedBy string    `json:"createdBy"`
-	CreatedAt int64     `json:"createdAt"`
-	Status    Status    `json:"status"`
-	Attention Attention `json:"attention"`
+	Harness string `json:"harness,omitempty"`
+	// Agent names the base agent this pane is an instance of ("" = not an
+	// agent pane), and AgentVersion the base version it last started with,
+	// so a lens can show drift against the current base (internal/agent).
+	Agent        string    `json:"agent,omitempty"`
+	AgentVersion string    `json:"agentVersion,omitempty"`
+	CreatedBy    string    `json:"createdBy"`
+	CreatedAt    int64     `json:"createdAt"`
+	Status       Status    `json:"status"`
+	Attention    Attention `json:"attention"`
 	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
 	// ■). Its presence is the "running" signal lenses render.
 	DevServer bool `json:"devServer,omitempty"`

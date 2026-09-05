@@ -276,6 +276,13 @@ var ErrPaneBusy = errors.New("pane is busy")
 // pane's startup command, so a revive brings the harness back. routeAccount
 // as in SpawnHarnessPane, applied before the command types.
 func (m *Manager) StartHarnessInPane(paneID string, h harness.Harness, routeAccount string) error {
+	return m.startInPane(paneID, h, h.Command, h.Command, routeAccount)
+}
+
+// startInPane is StartHarnessInPane with the persisted and delivered
+// commands split: an agent start records the plain launch line but types
+// it with a one-shot first prompt appended (internal/agent.Launch).
+func (m *Manager) startInPane(paneID string, h harness.Harness, persist, deliver, routeAccount string) error {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil {
@@ -299,11 +306,11 @@ func (m *Manager) StartHarnessInPane(paneID string, h harness.Harness, routeAcco
 	}
 	m.mu.Lock()
 	p.Harness = h.Name
-	p.StartupCommand = h.Command
+	p.StartupCommand = persist
 	saved := *p
 	m.mu.Unlock()
 	_ = m.store.SavePane(&saved)
-	m.deliverStartup(ctrl, paneID, h.Command, h.Autoconfirm)
+	m.deliverStartup(ctrl, paneID, deliver, h.Autoconfirm)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return nil
 }

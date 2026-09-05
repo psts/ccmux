@@ -4,16 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
 )
 
 func agentsServer(t *testing.T) *Server {
 	s := settingsServer(t)
-	s.SetAgents(agent.NewStore(filepath.Join(t.TempDir(), "agents")))
+	s.SetAgents(agent.NewStore(filepath.Join(t.TempDir(), "agents")), 6)
 	return s
 }
 
@@ -65,5 +67,102 @@ func TestAgents_UnavailableWithoutStore(t *testing.T) {
 		if rec := do(t, s, c.m, c.p, `{"description":"d"}`); rec.Code != 503 {
 			t.Errorf("%s %s = %d, want 503", c.m, c.p, rec.Code)
 		}
+	}
+}
+
+// TestWorkspaceAgents_AddWakeStop drives an instance through its life with a
+// harmless harness: added with a prompt (pane spawned, folder bootstrapped),
+// asleep once the command exits, woken by a second start, closed by DELETE.
+func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
+	_, base := harnessStack(t)
+	ws := createWS(t, base)
+	put := func(path, body string) *http.Response {
+		req, _ := http.NewRequest("PUT", base+path, strings.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	if resp := put("/v1/settings", `{"harnesses":[{"name":"noop","icon":"·","command":": noop-harness"}]}`); resp.StatusCode != 200 {
+		t.Fatalf("put harnesses: %d", resp.StatusCode)
+	}
+	if resp := put("/v1/agents/x-poster", `{"description":"Posts X threads.","harness":"noop","instructions":"# Role\n"}`); resp.StatusCode != 200 {
+		t.Fatalf("put agent: %d", resp.StatusCode)
+	}
+
+	// Absent before it is added.
+	var list struct {
+		Agents []agentInstance `json:"agents"`
+	}
+	getList := func() []agentInstance {
+		resp, err := http.Get(base + "/v1/workspaces/" + ws.ID + "/agents")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		json.NewDecoder(resp.Body).Decode(&list)
+		return list.Agents
+	}
+	if l := getList(); len(l) != 1 || l[0].State != "absent" || l[0].Version != "1.0.0" {
+		t.Fatalf("before add: %+v", l)
+	}
+
+	// Add with a prompt: 201, pane stamped, folder bootstrapped, prompt not persisted.
+	resp, err := http.Post(base+"/v1/workspaces/"+ws.ID+"/agents/x-poster", "application/json",
+		strings.NewReader(`{"prompt":"hello there","createdBy":"tester"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pane struct {
+		ID, CWD, StartupCommand, Agent, AgentVersion string
+	}
+	json.NewDecoder(resp.Body).Decode(&pane)
+	resp.Body.Close()
+	if resp.StatusCode != 201 || pane.Agent != "x-poster" || pane.AgentVersion != "1.0.0" {
+		t.Fatalf("add = %d %+v", resp.StatusCode, pane)
+	}
+	if !strings.HasSuffix(pane.CWD, "/.ccmux/agents/x-poster") || strings.Contains(pane.StartupCommand, "hello there") || !strings.HasPrefix(pane.StartupCommand, "CLAUDE_PEERS_NAME=x-poster ") {
+		t.Fatalf("pane cwd/command: %+v", pane)
+	}
+	for _, f := range []string{"AGENTS.md", "opencode.jsonc", "memory/MEMORY.md", "log.md"} {
+		if _, err := os.Stat(pane.CWD + "/" + f); err != nil {
+			t.Errorf("instance folder missing %s", f)
+		}
+	}
+
+	// The noop command exits at once, so the instance is asleep; wake it.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		if l := getList(); l[0].State == "asleep" && l[0].Pane == pane.ID {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never went asleep: %+v", getList())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	resp, _ = http.Post(base+"/v1/workspaces/"+ws.ID+"/agents/x-poster", "application/json", strings.NewReader(`{"prompt":"again"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("wake = %d", resp.StatusCode)
+	}
+
+	// Stop closes the pane; the instance is absent again but its folder stays.
+	req, _ := http.NewRequest("DELETE", base+"/v1/workspaces/"+ws.ID+"/agents/x-poster", nil)
+	resp, _ = http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("stop = %d", resp.StatusCode)
+	}
+	if l := getList(); l[0].State != "absent" {
+		t.Fatalf("after stop: %+v", l)
+	}
+	if _, err := os.Stat(pane.CWD + "/AGENTS.md"); err != nil {
+		t.Error("instance folder must survive a stop")
+	}
+	// Unknown agent → 404.
+	resp, _ = http.Post(base+"/v1/workspaces/"+ws.ID+"/agents/nobody", "application/json", strings.NewReader(`{}`))
+	if resp.StatusCode != 404 {
+		t.Fatalf("unknown agent = %d", resp.StatusCode)
 	}
 }

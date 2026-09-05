@@ -70,6 +70,8 @@ type Server struct {
 	// agents is the base-agent folder store, wired by SetAgents; nil means
 	// the /v1/agents routes answer 503.
 	agents *agent.Store
+	// agentsMax caps agent panes running at once across the daemon; 0 = no cap.
+	agentsMax int
 
 	// spawnUpgrade launches the detached self-upgrade child (POST /v1/upgrade);
 	// the real spawner by default, a fake in tests.
@@ -251,6 +253,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents", s.listAgents)
 	mux.HandleFunc("PUT /v1/agents/{name}", s.putAgent)
 	mux.HandleFunc("DELETE /v1/agents/{name}", s.deleteAgent)
+	// Instances: a base agent added to one workspace, started with a prompt.
+	mux.HandleFunc("GET /v1/workspaces/{id}/agents", s.scoped(s.listWorkspaceAgents))
+	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}", s.scoped(s.startWorkspaceAgent))
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}", s.scoped(s.stopWorkspaceAgent))
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.
 	// The hub also exposes the registry and explicit per-host create/projects.

@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS panes (
   startup_command TEXT, created_by TEXT, created_at INTEGER,
   status TEXT, attention TEXT, is_dev INTEGER DEFAULT 0,
   dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0,
-  cols INTEGER DEFAULT 0, rows INTEGER DEFAULT 0, harness TEXT DEFAULT ''
+  cols INTEGER DEFAULT 0, rows INTEGER DEFAULT 0, harness TEXT DEFAULT '',
+  agent TEXT DEFAULT '', agent_version TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -217,6 +218,15 @@ func Open(path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate panes.harness: %w", err)
 	}
+	// agent / agent_version mark a pane as an instance of a base agent and the
+	// base version it last started with (internal/agent). Strict like harness:
+	// the widened SELECT below needs both.
+	for _, col := range []string{"agent", "agent_version"} {
+		if _, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col + ` TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrate panes.%s: %w", col, err)
+		}
+	}
 	// Pre-mailbox registries have cursors with no record of what they hang off,
 	// so nothing could ever garbage-collect them. The columns default empty;
 	// every registration backfills its own row (see TouchPeerMailbox).
@@ -254,13 +264,13 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
 // ever re-persists it. Size updates go through UpdatePaneSize instead.
 func (s *SQLite) SavePane(p *model.Pane) error {
 	_, err := s.db.Exec(`
-INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
   startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention,
   is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude,
-  harness=excluded.harness`,
-		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows, p.Harness)
+  harness=excluded.harness, agent=excluded.agent, agent_version=excluded.agent_version`,
+		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows, p.Harness, p.Agent, p.AgentVersion)
 	return err
 }
 
@@ -563,14 +573,14 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 }
 
 func (s *SQLite) attachPanes(byID map[string]*model.Workspace) error {
-	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness FROM panes ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version FROM panes ORDER BY created_at`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		p := &model.Pane{}
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows, &p.Harness); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows, &p.Harness, &p.Agent, &p.AgentVersion); err != nil {
 			return err
 		}
 		if w := byID[p.WorkspaceID]; w != nil {

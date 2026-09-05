@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
 	"ccmux.dev/ccmuxd/internal/manager"
@@ -47,6 +48,7 @@ func harnessStack(t *testing.T) (*manager.Manager, string) {
 	llm := llmproxy.New(st)
 	srv.SetLLMProxy(llm)
 	mgr.PaneLLMRoute = llm.SetPaneRoute
+	srv.SetAgents(agent.NewStore(t.TempDir()+"/agents"), 6)
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	return mgr, hs.URL

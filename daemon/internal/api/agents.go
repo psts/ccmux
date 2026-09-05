@@ -10,7 +10,7 @@ import (
 
 // SetAgents wires the base-agent folder store. Without it the /v1/agents
 // routes answer 503, which is how a lens learns the daemon predates agents.
-func (s *Server) SetAgents(st *agent.Store) { s.agents = st }
+func (s *Server) SetAgents(st *agent.Store, maxRunning int) { s.agents, s.agentsMax = st, maxRunning }
 
 // listAgents: GET /v1/agents → every base definition, instructions included.
 // An unreadable base is a 503 with its name, never a silently shorter list.
