@@ -29,6 +29,7 @@ import (
 	"tailscale.com/tsnet"
 
 	"ccmux.dev/ccmuxd/config"
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/devhost"
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -73,6 +74,7 @@ func runDaemon() {
 	tsnetHostname := flag.String("tsnet-hostname", "ccmuxd", "tailnet node name (→ <name>.<tailnet>.ts.net)")
 	tsnetDir := flag.String("tsnet-dir", defaultTsnetDir(), "tsnet node state directory")
 	projectsRoot := flag.String("projects-root", defaultProjectsRoot(), "folder whose subdirectories are offered as hosted-workspace locations (GET /v1/projects)")
+	agentsDir := flag.String("agents-dir", defaultAgentsDir(), "folder holding base agent definitions, one subfolder per agent (GET /v1/agents)")
 	hubEnabled := flag.Bool("hub", false, "run hub-role services: aggregate every tag:ccmux host into one lens surface, own the peers bus + dev registrar + push (requires -tsnet)")
 	flag.Parse()
 
@@ -182,6 +184,7 @@ func runDaemon() {
 	apiSrv.SetLLMProxy(llmSvc)
 	mgr.PaneLLMRoute = llmSvc.SetPaneRoute
 	wireSidecars(ctx, llmSvc, apiSrv, mgr)
+	apiSrv.SetAgents(agent.NewStore(*agentsDir))
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)
@@ -669,6 +672,16 @@ func defaultProjectsRoot() string {
 		return ""
 	}
 	return home
+}
+
+// defaultAgentsDir is ~/.ccmux/agents: user content like projects, not
+// daemon state like configDir — a base agent is files a human edits.
+func defaultAgentsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "ccmux-agents")
+	}
+	return filepath.Join(home, ".ccmux", "agents")
 }
 
 func configDir() string {

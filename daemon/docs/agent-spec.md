@@ -193,5 +193,15 @@ accept that project details will leak between them.
 ├── CLAUDE.md          @AGENTS.md
 ├── .claude/skills/
 ├── memory/MEMORY.md
-└── log.md
+├── log.md
+└── opencode.jsonc     GENERATED at every start from the base: instructions
+                       path, permissions, MCP servers + peers bus, snapshot off.
+                       The one daemon-owned file here; do not edit.
 ```
+
+Implemented in `daemon/internal/agent` (2026-09-05): `Store` over
+`~/.ccmux/agents` (`-agents-dir`), `Reject`, `Save` (bumps the patch version
+when agent.json or AGENTS.md changed, appends CHANGELOG.md, never touches
+skills/knowledge/mcp.json), `Delete`, `Bootstrap` (instance folder, once),
+`WriteInstanceConfig`. API: `GET /v1/agents`, `PUT /v1/agents/{name}`
+(per-name upsert, not list replace), `DELETE /v1/agents/{name}`.

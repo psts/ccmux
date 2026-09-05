@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/childproc"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
@@ -65,6 +66,10 @@ type Server struct {
 	// sidecars supervises the Meridian processes meridian-kind accounts call
 	// for, wired by SetSidecars; nil means no sidecars (settings omit the key).
 	sidecars sidecarSupervisor
+
+	// agents is the base-agent folder store, wired by SetAgents; nil means
+	// the /v1/agents routes answer 503.
+	agents *agent.Store
 
 	// spawnUpgrade launches the detached self-upgrade child (POST /v1/upgrade);
 	// the real spawner by default, a fake in tests.
@@ -241,6 +246,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("POST /v1/projects", s.createProject)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
+	// Base agents: folder-backed role definitions (internal/agent). Per-name
+	// upsert and explicit delete, not a list replace — see putAgent.
+	mux.HandleFunc("GET /v1/agents", s.listAgents)
+	mux.HandleFunc("PUT /v1/agents/{name}", s.putAgent)
+	mux.HandleFunc("DELETE /v1/agents/{name}", s.deleteAgent)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.
 	// The hub also exposes the registry and explicit per-host create/projects.
