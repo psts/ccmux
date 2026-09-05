@@ -253,6 +253,16 @@ func (s *Service) failTasksInLocked(pending *pendingSpawn, why string) {
 // (the inverse of taskHeader).
 var taskHeaderRe = regexp.MustCompile(`^\[claude-peers delegation task (tsk_[a-z0-9]+)\]`)
 
+// OpenTaskCountForPane is the lifecycle loop's "does this agent still owe
+// anyone work" check, keyed by pane: a pane's peer id is derived from it.
+func (s *Service) OpenTaskCountForPane(paneID string) int {
+	tasks, err := s.st.OpenPeerTasksFor(derivedID(paneID), 20)
+	if err != nil {
+		return 0
+	}
+	return len(tasks)
+}
+
 // OpenTasks lists the peer's non-terminal delegations, both directions —
 // the check_messages enrichment that survives a delegator's own restart.
 func (s *Service) OpenTasks(peerID string) ([]store.PeerTask, error) {

@@ -102,6 +102,17 @@ accept that project details will leak between them.
 | Concurrency | daemon cap shared by all agents | pin `maxConcurrent: 1` for agents with a rate-limited upstream |
 | Autostart | off | on only with keep alive |
 
+Implemented (2026-09-05): the daemon's lifecycle loop ticks every 30 s.
+Busy/idle comes from the harness: Claude Code panes through their hooks,
+opencode panes through the embedded ccmux plugin (`agents/.ccmux/
+ccmux-opencode.ts`, listed in every instance's `opencode.jsonc`), which posts
+to `POST /v1/panes/{id}/agent-signal` on loopback. An instance idle past
+`idleExitMinutes` with no open peer delegation gets ctrl-d and drops to its
+shell ("asleep"); a keep-alive instance found asleep is started again from
+the current base, and a keep-alive instance whose base version moved exits
+when idle so that restart picks the new base up. `-agents-max` (default 6)
+caps running instances; asleep ones do not count.
+
 ## 9. Bus contract
 
 - Discovery text = description. Other agents see: name, description, status.

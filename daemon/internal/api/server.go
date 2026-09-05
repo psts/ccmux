@@ -257,6 +257,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/workspaces/{id}/agents", s.scoped(s.listWorkspaceAgents))
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}", s.scoped(s.startWorkspaceAgent))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}", s.scoped(s.stopWorkspaceAgent))
+	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.
 	// The hub also exposes the registry and explicit per-host create/projects.

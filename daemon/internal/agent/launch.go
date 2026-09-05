@@ -2,6 +2,8 @@ package agent
 
 import (
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -26,10 +28,10 @@ type Launch struct {
 //     after "--" (the channels flag is variadic and would swallow it);
 //   - opencode: the instance's opencode.jsonc (WriteInstanceConfig) already
 //     carries instructions, permissions and MCP, so only --agent and the
-//     prompt remain;
+//     server --port remain; the prompt travels over that port afterwards;
 //   - anything else: the harness command as configured, prompt appended
 //     positionally, which is what pi and codex accept.
-func LaunchCommand(d Definition, h harness.Harness, baseDir, repo, prompt string) Launch {
+func LaunchCommand(d Definition, h harness.Harness, baseDir, repo, prompt string, port int) Launch {
 	prefix := "CLAUDE_PEERS_NAME=" + shellQuote(d.Name) + " "
 	var persist, deliver string
 	switch h.Name {
@@ -40,14 +42,14 @@ func LaunchCommand(d Definition, h harness.Harness, baseDir, repo, prompt string
 			deliver += " -- " + shellQuote(prompt)
 		}
 	case "opencode":
-		persist = prefix + h.Command + " --agent " + shellQuote(d.Name)
+		// The prompt is NOT on this line: --prompt only prefills the TUI. The
+		// caller pushes it through the server on --port (PushPrompt), which
+		// is why the port is persisted: a wake reads it back (OpencodePort).
+		persist = prefix + h.Command + " --agent " + shellQuote(d.Name) + " --port " + strconv.Itoa(port)
 		if d.Model != "" {
 			persist += " --model " + shellQuote(d.Model)
 		}
 		deliver = persist
-		if prompt != "" {
-			deliver += " --prompt " + shellQuote(prompt)
-		}
 	default:
 		persist = prefix + h.Command
 		deliver = persist
@@ -74,12 +76,13 @@ func claudeFlags(d Definition, cmd, baseDir, repo string) string {
 	return strings.Join(parts, " ")
 }
 
-// shellQuote single-quotes s for a POSIX shell; a plain word stays bare so
-// the recorded startup command reads like something a human typed.
+// bareWord is what may go on a shell line unquoted, so the recorded startup
+// command reads like something a human typed.
+var bareWord = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
+
+// shellQuote single-quotes s for a POSIX shell unless it is a bare word.
 func shellQuote(s string) string {
-	if s != "" && strings.IndexFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' || r == '/')
-	}) < 0 {
+	if bareWord.MatchString(s) {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

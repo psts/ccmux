@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -121,8 +124,47 @@ func (s *Server) resolveAgentLaunch(ws *model.Workspace, name, prompt string) (m
 	if err := s.agents.WriteInstanceConfig(d, dir); err != nil {
 		return manager.AgentLaunch{}, http.StatusInternalServerError, "instance config: " + err.Error()
 	}
-	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), ws.RepoPath, prompt)
-	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route}, 0, ""
+	port, status, msg := s.agentPort(ws.ID, d.Name, h)
+	if msg != "" {
+		return manager.AgentLaunch{}, status, msg
+	}
+	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), ws.RepoPath, prompt, port)
+	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route, Prompt: prompt, Port: port}, 0, ""
+}
+
+// agentPort is the opencode server port for an instance: the one its pane
+// was started with before (read back from the persisted command, so a wake
+// keeps the address), else a fresh free port. 0 for other harnesses.
+func (s *Server) agentPort(wsID, name string, h harness.Harness) (int, int, string) {
+	if h.Name != "opencode" {
+		return 0, 0, ""
+	}
+	if p := s.mgr.AgentPane(wsID, name); p != nil {
+		if port := agent.OpencodePort(p.StartupCommand); port != 0 {
+			return port, 0, ""
+		}
+	}
+	port, err := agent.FreePort()
+	if err != nil {
+		return 0, http.StatusInternalServerError, "no free port for the opencode server: " + err.Error()
+	}
+	return port, 0, ""
+}
+
+// pushPromptLater delivers an opencode instance's first message through its
+// server once it is up. Runs off the request: the pane is already live and
+// the human sees the TUI come up; a push failure is logged, not a 5xx.
+func (s *Server) pushPromptLater(l manager.AgentLaunch) {
+	if l.Port == 0 || l.Prompt == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		if err := agent.PushPrompt(ctx, l.Port, l.Prompt); err != nil {
+			log.Printf("agent %s: first prompt not delivered: %v", l.Name, err)
+		}
+	}()
 }
 
 // agentRoute picks the instance's llm account: the base's pin when it names
@@ -163,6 +205,7 @@ func (s *Server) startOrWake(w http.ResponseWriter, ws *model.Workspace, created
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
+		s.pushPromptLater(l)
 		writeJSON(w, http.StatusOK, s.mgr.AgentPane(ws.ID, l.Name))
 		return
 	}
@@ -175,6 +218,7 @@ func (s *Server) startOrWake(w http.ResponseWriter, ws *model.Workspace, created
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.pushPromptLater(l)
 	writeJSON(w, http.StatusCreated, p)
 }
 

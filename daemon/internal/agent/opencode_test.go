@@ -28,7 +28,7 @@ func TestOpencodeInstanceConfig(t *testing.T) {
 		Permissions: Permissions{Bash: "ask", BashAllow: []string{"git log *"}}})
 	body, err := OpencodeInstanceConfig(d, "/base/x-poster", map[string]mcpEntry{
 		"x": {Command: "x-mcp", Args: []string{"--live"}, Env: map[string]string{"X_TOKEN": "${X_TOKEN}"}},
-	})
+	}, []string{"/root/.ccmux/ccmux-opencode.ts"}, "anthropic/claude-sonnet-5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,9 +42,19 @@ func TestOpencodeInstanceConfig(t *testing.T) {
 	if cfg["snapshot"] != false {
 		t.Error("snapshot must be false")
 	}
+	if cfg["model"] != "anthropic/claude-sonnet-5" {
+		t.Errorf("default model must be set so traffic rides the proxy, got %v", cfg["model"])
+	}
+	pinned, _ := OpencodeInstanceConfig(withDefaults(Definition{Name: "p-q", Description: "d", Model: "anthropic/claude-opus-5"}), "/b", nil, nil, "anthropic/claude-sonnet-5")
+	if c := parseJSONC(t, pinned); c["model"] != "anthropic/claude-opus-5" || c["agent"].(map[string]any)["p-q"].(map[string]any)["model"] != "anthropic/claude-opus-5" {
+		t.Errorf("base pin must win: %v", c["model"])
+	}
 	mcp := cfg["mcp"].(map[string]any)
 	if _, ok := mcp["claude-peers"]; !ok {
 		t.Error("peers bus server missing")
+	}
+	if pl := cfg["plugin"].([]any); len(pl) != 1 || pl[0] != "/root/.ccmux/ccmux-opencode.ts" {
+		t.Errorf("plugin list %v", pl)
 	}
 	x := mcp["x"].(map[string]any)
 	if cmd := x["command"].([]any); len(cmd) != 2 || cmd[0] != "x-mcp" || cmd[1] != "--live" {
@@ -79,6 +89,16 @@ func TestWriteInstanceConfigRegeneratesFromBase(t *testing.T) {
 	cfg := parseJSONC(t, body)
 	if _, ok := cfg["mcp"].(map[string]any)["kb"]; !ok {
 		t.Error("base mcp.json server not included")
+	}
+	pl := cfg["plugin"].([]any)
+	if len(pl) != 1 || !strings.HasSuffix(pl[0].(string), PluginFile) {
+		t.Errorf("instance config must list the ccmux plugin, got %v", pl)
+	}
+	if b, err := os.ReadFile(pl[0].(string)); err != nil || !strings.Contains(string(b), "agent-signal") {
+		t.Errorf("plugin file not written: %v", err)
+	}
+	if l, _ := s.List(); len(l) != 1 {
+		t.Errorf("the .ccmux plugin folder must not list as an agent: %+v", l)
 	}
 	os.WriteFile(filepath.Join(s.Dir("kb-writer"), "mcp.json"), []byte(`{bad`), 0o644)
 	if err := s.WriteInstanceConfig(d, inst); err == nil {

@@ -10,7 +10,33 @@ import (
 
 // SetAgents wires the base-agent folder store. Without it the /v1/agents
 // routes answer 503, which is how a lens learns the daemon predates agents.
-func (s *Server) SetAgents(st *agent.Store, maxRunning int) { s.agents, s.agentsMax = st, maxRunning }
+func (s *Server) SetAgents(st *agent.Store, maxRunning int) {
+	s.agents, s.agentsMax = st, maxRunning
+	s.mgr.Agents = st
+	s.mgr.WakeAgent = s.wakeAgent
+}
+
+// wakeAgent is the lifecycle loop's restart path for a keep-alive instance
+// found asleep: resolve the launch from the CURRENT base (so a drifted
+// instance comes back on the new version) and type it into its pane.
+func (s *Server) wakeAgent(wsID, name string) error {
+	ws := s.mgr.Workspace(wsID)
+	if ws == nil {
+		return errors.New("unknown workspace")
+	}
+	p := s.mgr.AgentPane(wsID, name)
+	if p == nil {
+		return errors.New("agent not added to this workspace")
+	}
+	if msg := s.agentCapMessage(); msg != "" {
+		return errors.New(msg)
+	}
+	l, _, msg := s.resolveAgentLaunch(ws, name, "")
+	if msg != "" {
+		return errors.New(msg)
+	}
+	return s.mgr.StartAgentInPane(p.ID, l)
+}
 
 // listAgents: GET /v1/agents → every base definition, instructions included.
 // An unreadable base is a 503 with its name, never a silently shorter list.

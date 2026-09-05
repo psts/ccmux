@@ -28,7 +28,7 @@ type mcpEntry struct {
 // instructions, the agent's permissions as an opencode primary agent, the
 // base's MCP servers plus the peers bus, and snapshots off once more in case
 // a project config turned them on.
-func OpencodeInstanceConfig(d Definition, baseDir string, mcp map[string]mcpEntry) ([]byte, error) {
+func OpencodeInstanceConfig(d Definition, baseDir string, mcp map[string]mcpEntry, plugins []string, defaultModel string) ([]byte, error) {
 	servers := map[string]any{
 		"claude-peers": map[string]any{"type": "local", "command": []string{"ccmux-peers"}, "enabled": true},
 	}
@@ -44,6 +44,7 @@ func OpencodeInstanceConfig(d Definition, baseDir string, mcp map[string]mcpEntr
 		"instructions": []string{filepath.Join(baseDir, fileAgents)},
 		"snapshot":     false,
 		"mcp":          servers,
+		"plugin":       plugins,
 		"agent": map[string]any{
 			d.Name: map[string]any{
 				"mode":        "primary",
@@ -51,6 +52,14 @@ func OpencodeInstanceConfig(d Definition, baseDir string, mcp map[string]mcpEntr
 				"permission":  opencodePermission(d.Permissions),
 			},
 		},
+	}
+	// Without a model opencode falls back to whatever provider the user last
+	// logged into (a ChatGPT login, seen live 2026-09-05), bypassing the
+	// pane's routed account entirely. The base's pin wins; else the daemon
+	// default, which names the anthropic provider so traffic rides the proxy.
+	if model := firstNonEmpty(d.Model, defaultModel); model != "" {
+		cfg["model"] = model
+		cfg["agent"].(map[string]any)[d.Name].(map[string]any)["model"] = model
 	}
 	body, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -75,6 +84,15 @@ func opencodePermission(p Permissions) map[string]any {
 	}
 }
 
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // ReadMCP loads a base's mcp.json in the neutral shape; a missing file is an
 // empty set, a malformed one is an error the start must surface.
 func ReadMCP(baseDir string) (map[string]mcpEntry, error) {
@@ -92,13 +110,22 @@ func ReadMCP(baseDir string) (map[string]mcpEntry, error) {
 	return out, nil
 }
 
+// DefaultModel is what an instance runs on when its base pins none — in
+// opencode's provider/model form, on the anthropic provider so the request
+// goes through the pane proxy to the routed account. Set from -agents-model.
+var DefaultModel = "anthropic/claude-sonnet-5"
+
 // WriteInstanceConfig regenerates the instance's opencode.jsonc from base d.
 func (s *Store) WriteInstanceConfig(d Definition, instanceDir string) error {
 	mcp, err := ReadMCP(s.Dir(d.Name))
 	if err != nil {
 		return err
 	}
-	body, err := OpencodeInstanceConfig(d, s.Dir(d.Name), mcp)
+	plugin, err := s.EnsurePlugin()
+	if err != nil {
+		return err
+	}
+	body, err := OpencodeInstanceConfig(d, s.Dir(d.Name), mcp, []string{plugin}, DefaultModel)
 	if err != nil {
 		return err
 	}

@@ -9,22 +9,22 @@ import (
 
 func TestLaunchCommandOpencode(t *testing.T) {
 	d := Definition{Name: "x-poster", Model: "anthropic/claude-sonnet-5"}
-	l := LaunchCommand(d, harness.Harness{Name: "opencode", Command: "opencode"}, "/b", "/repo", "post about it's release")
-	if l.Persist != "CLAUDE_PEERS_NAME=x-poster opencode --agent x-poster --model anthropic/claude-sonnet-5" {
+	l := LaunchCommand(d, harness.Harness{Name: "opencode", Command: "opencode"}, "/b", "/repo", "post about it's release", 41234)
+	if l.Persist != "CLAUDE_PEERS_NAME=x-poster opencode --agent x-poster --port 41234 --model anthropic/claude-sonnet-5" {
 		t.Errorf("persist %q", l.Persist)
 	}
-	if !strings.HasSuffix(l.Deliver, ` --prompt 'post about it'\''s release'`) || !strings.HasPrefix(l.Deliver, l.Persist) {
-		t.Errorf("deliver %q", l.Deliver)
+	if l.Deliver != l.Persist || strings.Contains(l.Deliver, "post about") {
+		t.Errorf("opencode prompt must travel over the port, not the command line: %q", l.Deliver)
 	}
-	if LaunchCommand(d, harness.Harness{Name: "opencode", Command: "opencode"}, "/b", "/repo", "").Deliver != l.Persist {
-		t.Error("no prompt: deliver must equal persist")
+	if OpencodePort(l.Persist) != 41234 {
+		t.Error("port must be readable back from the persisted line")
 	}
 }
 
 func TestLaunchCommandClaude(t *testing.T) {
 	d := Definition{Name: "kb-writer", AddDirs: []string{"/srv/kb"}}
 	h := harness.Harness{Name: harness.Builtin, Command: harness.FallbackClaudeCommand}
-	l := LaunchCommand(d, h, "/home/u/.ccmux/agents/kb-writer", "/repo", "write it")
+	l := LaunchCommand(d, h, "/home/u/.ccmux/agents/kb-writer", "/repo", "write it", 0)
 	for _, want := range []string{
 		"CLAUDE_PEERS_NAME=kb-writer env -u TMUX claude --dangerously-load-development-channels server:claude-peers",
 		"--name kb-writer", "--plugin-dir /home/u/.ccmux/agents/kb-writer",
@@ -44,7 +44,7 @@ func TestLaunchCommandClaude(t *testing.T) {
 }
 
 func TestLaunchCommandOtherHarness(t *testing.T) {
-	l := LaunchCommand(Definition{Name: "a-b"}, harness.Harness{Name: "pi", Command: "pi"}, "/b", "/r", "hi there")
+	l := LaunchCommand(Definition{Name: "a-b"}, harness.Harness{Name: "pi", Command: "pi"}, "/b", "/r", "hi there", 0)
 	if l.Persist != "CLAUDE_PEERS_NAME=a-b pi" || l.Deliver != "CLAUDE_PEERS_NAME=a-b pi 'hi there'" {
 		t.Errorf("%+v", l)
 	}

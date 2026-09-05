@@ -16,6 +16,11 @@ type AgentLaunch struct {
 	Persist, Deliver string
 	CWD              string
 	RouteAccount     string
+	// Prompt is the first message; Port the opencode server port it is pushed
+	// through after the launch (0 for harnesses that take it positionally,
+	// where Deliver already carries it).
+	Prompt string
+	Port   int
 }
 
 // SpawnAgentPane adds a new pane running an agent instance. The persisted

@@ -218,14 +218,9 @@ func Open(path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate panes.harness: %w", err)
 	}
-	// agent / agent_version mark a pane as an instance of a base agent and the
-	// base version it last started with (internal/agent). Strict like harness:
-	// the widened SELECT below needs both.
-	for _, col := range []string{"agent", "agent_version"} {
-		if _, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col + ` TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			db.Close()
-			return nil, fmt.Errorf("migrate panes.%s: %w", col, err)
-		}
+	if err := migrateAgentColumns(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 	// Pre-mailbox registries have cursors with no record of what they hang off,
 	// so nothing could ever garbage-collect them. The columns default empty;
@@ -241,6 +236,20 @@ func Open(path string) (*SQLite, error) {
 	_ = os.Chmod(path+"-wal", 0o600)
 	_ = os.Chmod(path+"-shm", 0o600)
 	return &SQLite{db: db}, nil
+}
+
+// migrateAgentColumns adds panes.agent / panes.agent_version: a pane that is
+// an instance of a base agent, and the base version it last started with
+// (internal/agent). Strict like harness — the widened SELECT needs both —
+// and idempotent on a registry that already has them.
+func migrateAgentColumns(db *sql.DB) error {
+	for _, col := range []string{"agent", "agent_version"} {
+		_, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col + ` TEXT DEFAULT ''`)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate panes.%s: %w", col, err)
+		}
+	}
+	return nil
 }
 
 func (s *SQLite) SaveWorkspace(w *model.Workspace) error {

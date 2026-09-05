@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/autoconfirm"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -76,6 +77,16 @@ type Manager struct {
 	// Meridian is installed, else "" (main wires meridian.PluginPath). Stamped
 	// into every pane's OPENCODE_CONFIG_CONTENT at creation; see opencode.go.
 	OpencodePlugin func() string
+	// Agents is the base-agent store the lifecycle loop reads policy from
+	// (idle exit, keep-alive, version); nil disables the loop.
+	Agents *agent.Store
+	// WakeAgent restarts an asleep instance; wired by the api layer, which
+	// owns launch resolution (harness, route, instance config).
+	WakeAgent func(wsID, name string) error
+	// OpenTasksForPane reports a pane's open peer delegations; an agent with
+	// open work is never put to sleep. Wired from the peers bus; nil = 0.
+	OpenTasksForPane func(paneID string) int
+	activity         agentActivity
 
 	// PaneLLMRoute, when set, points a pane's llm route at a named account
 	// (wired to llmproxy.SetPaneRoute in main). Harness starts use it for
@@ -802,6 +813,10 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
 	wsID := e.ws.ID
 	saved := *p
 	m.mu.Unlock()
+	if p.Agent != "" {
+		// A Claude Code agent's hooks are its busy/idle signal.
+		m.activity.note(paneID, att == model.AttentionNeedsInput || att == "", time.Now())
+	}
 
 	if ctrl != nil {
 		ctrl.Broadcast(session.Event{Kind: "attention", PaneID: paneID, Attention: att})
