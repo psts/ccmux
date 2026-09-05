@@ -319,6 +319,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/peers/bus", s.peersBus)
 	mux.HandleFunc("POST /v1/peers/send", s.peersSend)
 	mux.HandleFunc("POST /v1/peers/list", s.peersList)
+	mux.HandleFunc("POST /v1/peers/agents", s.peersAgents)
 	mux.HandleFunc("POST /v1/peers/summary", s.peersSummary)
 	mux.HandleFunc("POST /v1/peers/unregister", s.peersUnregister)
 	mux.HandleFunc("POST /v1/peers/poll", s.peersPoll)

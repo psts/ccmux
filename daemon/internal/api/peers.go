@@ -17,7 +17,10 @@ import (
 )
 
 // EnablePeers wires the bus; without it every /v1/peers endpoint answers 503.
-func (s *Server) EnablePeers(svc *peers.Service) { s.peersSvc = svc }
+func (s *Server) EnablePeers(svc *peers.Service) {
+	s.peersSvc = svc
+	s.wirePeersAgents()
+}
 
 func (s *Server) peersEnabled(w http.ResponseWriter) bool {
 	if s.peersSvc == nil {

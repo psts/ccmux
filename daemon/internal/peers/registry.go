@@ -50,6 +50,18 @@ type RegisterResp struct {
 // the host it came from.
 func (s *Service) Register(req RegisterReq) RegisterResp { return s.RegisterFrom(req, "") }
 
+// WorkspaceOfPeer is the workspace of a pane peer ("" for pane-less or
+// unknown) — where the agents catalog is evaluated from.
+func (s *Service) WorkspaceOfPeer(peerID string) string {
+	s.mu.Lock()
+	p := s.peers[peerID]
+	s.mu.Unlock()
+	if p == nil || p.PaneID == "" {
+		return ""
+	}
+	return s.mgr.WorkspaceForPane(p.PaneID)
+}
+
 // RegisterFrom is Register plus the connection's origin IP, which the hub turns
 // into the peer's owning-host label when there is no pane to look one up by.
 // The IP comes from the socket, never from the request body: a self-asserted

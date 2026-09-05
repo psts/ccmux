@@ -49,6 +49,37 @@ func birthPrompt(name, requesterName string) string {
 		fmt.Sprintf("If nothing arrives within a minute, call check_messages once as a fallback, then run list_peers and check in with %q directly.", requesterName)
 }
 
+// tryStartAgentLocked is the agent branch of spawn_if_missing: a name that
+// is a base agent gets started (or woken) in the SENDER's workspace, so
+// "message x-poster" from a project adds x-poster to that project. The
+// pending entry is the same as a native spawn's — the agent registers under
+// its own name in the sender's group (CLAUDE_PEERS_NAME) and the queued
+// request is delivered then. ok=false means "not an agent, carry on".
+func (s *Service) tryStartAgentLocked(sender *Peer, key, group, name, text, prompt string) (SendResp, bool) {
+	if s.IsAgent == nil || s.StartAgent == nil || !s.IsAgent(name) {
+		return SendResp{}, false
+	}
+	if sender.PaneID == "" {
+		return SendResp{Error: fmt.Sprintf("%q is an agent; only a session inside a ccmux workspace can add it (it joins the caller's project)", name)}, true
+	}
+	wsID := s.mgr.WorkspaceForPane(sender.PaneID)
+	if wsID == "" {
+		return SendResp{Error: fmt.Sprintf("cannot place agent %q: the caller's pane has no workspace", name)}, true
+	}
+	pending := &pendingSpawn{
+		name: name, group: group,
+		requests: []queuedRequest{{fromID: sender.ID, text: text}},
+	}
+	pending.timer = time.AfterFunc(s.SpawnTimeout, func() { s.spawnTimedOut(key) })
+	s.spawns[key] = pending
+	go func() {
+		if err := s.StartAgent(wsID, name, prompt); err != nil {
+			s.abortSpawn(key, fmt.Sprintf("Agent %q could not be started: %v", name, err))
+		}
+	}()
+	return SendResp{OK: true, Spawning: true}, true
+}
+
 func spawnKey(group, name string) string { return group + "\x00" + name }
 
 // trySpawnLocked starts (or joins an in-flight start of) a missing teammate
@@ -63,6 +94,9 @@ func (s *Service) trySpawnLocked(sender *Peer, group, name, text, toRepo string)
 	}
 
 	prompt := birthPrompt(name, sender.Name)
+	if resp, ok := s.tryStartAgentLocked(sender, key, group, name, text, prompt); ok {
+		return resp
+	}
 	wsID, repoPath, native := s.mgr.LiveWorkspaceForRepo(group, name)
 	if !native {
 		// Classic repo guess: the requester's parent dir + name. For pane-less

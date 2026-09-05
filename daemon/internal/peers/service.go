@@ -32,6 +32,9 @@ type Hook interface {
 	PaneAtShell(paneID string) bool
 	LiveWorkspaceForRepo(group, name string) (wsID, repoPath string, ok bool)
 	SpawnEphemeralPane(wsID, cwd, oneShotCmd, createdBy string) error
+	// WorkspaceForPane is the workspace a pane belongs to ("" if unknown) —
+	// where an agent contacted from that pane gets added.
+	WorkspaceForPane(paneID string) string
 }
 
 // Store is the slice of the registry store the bus needs (see store.Store).
@@ -156,6 +159,16 @@ type Service struct {
 	st     Store
 	mgr    Hook
 	secret []byte
+
+	// Agents: contacting a base agent by name starts (or wakes) it in the
+	// sender's workspace instead of guessing a repo folder. IsAgent says
+	// whether a name is a base agent; StartAgent does the start; PushToPane
+	// hands a delivered message to a pane whose harness cannot receive channel
+	// pushes (opencode instances take it through their TUI server). All three
+	// are wired by the api layer; nil disables that piece.
+	IsAgent    func(name string) bool
+	StartAgent func(wsID, name, prompt string) error
+	PushToPane func(paneID, text string) error
 
 	// SpawnTimeout is how long a spawned teammate has to register before its
 	// requester gets an "unreachable" notice. Exported for tests.

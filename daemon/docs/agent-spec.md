@@ -123,6 +123,15 @@ caps running instances; asleep ones do not count.
   closes the loop on task updates.
 - Permission relay: the agent answers `yes|no <id>` only for work it asked for.
 
+Implemented (2026-09-05): `POST /v1/peers/agents` gives a session the bases
+with their state in its own workspace; the shim appends an AGENTS ON THIS BUS
+paragraph to the instructions and an Agents footer to `list_peers`.
+`send_message(to_name=<agent>, spawn_if_missing=true)` from a pane starts or
+wakes the agent in the SENDER's workspace and delivers the message once it
+registers. opencode instances receive bus messages typed into their TUI
+through the instance's server (channel pushes do not reach opencode); Claude
+Code instances get them as channel messages.
+
 ## 10. Cost and safety caps
 
 - `maxTurnsPerTask` (default 40) and `maxTokensPerTask` (default 400k) in

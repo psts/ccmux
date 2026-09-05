@@ -14,6 +14,20 @@ func (s *Server) SetAgents(st *agent.Store, maxRunning int) {
 	s.agents, s.agentsMax = st, maxRunning
 	s.mgr.Agents = st
 	s.mgr.WakeAgent = s.wakeAgent
+	s.wirePeersAgents()
+}
+
+// wirePeersAgents gives the bus its agent hooks once BOTH the store and the
+// peers service are present. Called from SetAgents and EnablePeers so main's
+// wiring order does not matter (it bit once: agents were wired first and the
+// hooks landed on a nil service, so contact fell through to the repo guess).
+func (s *Server) wirePeersAgents() {
+	if s.peersSvc == nil || s.agents == nil {
+		return
+	}
+	s.peersSvc.IsAgent = s.isAgent
+	s.peersSvc.StartAgent = s.startAgentForPeer
+	s.peersSvc.PushToPane = s.mgr.PushToAgentPane
 }
 
 // wakeAgent is the lifecycle loop's restart path for a keep-alive instance

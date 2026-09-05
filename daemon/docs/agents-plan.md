@@ -1031,7 +1031,7 @@ Order chosen so each step is useful on its own and de-risks the next.
 
 | # | Step | Why first | Est. |
 |---|---|---|---|
-| ✓ | Step 0 shipped 2026-09-05 (`ffd0946`); step 1 the same day (`0a38558`, `internal/agent`, `/v1/agents`); step 2 the same day (`59d7b5b` instances + the lifecycle loop: idle exit, keep-alive, drift restart, opencode idle plugin). | | |
+| ✓ | Step 0 shipped 2026-09-05 (`ffd0946`); step 1 the same day (`0a38558`, `internal/agent`, `/v1/agents`); step 2 the same day (`59d7b5b`, `8b8bcf7` instances + the lifecycle loop); step 3 the same day (bus: agents catalog in list_peers and the instructions, spawn-by-agent into the sender's workspace, TUI push of bus messages into opencode instances). Verified end to end from a live session: contact by name → started → answered over the bus. | | |
 | 0 | **opencode as a real harness on the Claude subscription.** Account kind `meridian`, pairing rule, Meridian supervised by the daemon, `snapshot: false` and the Meridian plugin written into a per-pane opencode config, telemetry read for the Accounts tab, both lenses' kind lists. | Independently valuable today; exercises every adapter piece the agents need; no agent code involved. | 60 |
 | 1 | **Agent base package** (`internal/agent`): folder layout from `agent-spec.md`, `agents` settings key, validation, version bump, per-instance config writer for the opencode adapter. Tests. | Pure daemon, file-based. Agents can be created by editing files before any UI exists. | 45 |
 | 2 | **Instances and lifecycle**: pane columns, start-with-prompt, idle exit, concurrency cap, keepAlive, version stamps, rolling restart. | Makes an agent runnable from a curl. | 60 |

@@ -3,6 +3,7 @@ package peers
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 
@@ -194,7 +195,36 @@ func (s *Service) deliverLocked(ev *model.PeerEvent) error {
 		c.enqueue(ev)
 	}
 	s.fanToListenersLocked(ev)
+	s.pushToPaneLocked(ev)
 	return nil
+}
+
+// pushToPaneLocked hands a message to the target's pane when the api wired a
+// pane push: an opencode agent instance cannot take channel notifications
+// (its shim's push goes to a client that ignores them), so the daemon types
+// the message into its TUI through the instance's server. Off the lock and
+// best-effort: the mailbox still holds the message for check_messages.
+func (s *Service) pushToPaneLocked(ev *model.PeerEvent) {
+	if s.PushToPane == nil || ev.Kind != model.PeerEventMessage {
+		return
+	}
+	target := s.peers[ev.ToID]
+	if target == nil || target.PaneID == "" {
+		return
+	}
+	paneID, text := target.PaneID, pushText(ev)
+	go func() {
+		if err := s.PushToPane(paneID, text); err != nil {
+			log.Printf("peers: pane push to %s skipped: %v", paneID, err)
+		}
+	}()
+}
+
+// pushText renders a bus message the way a channel tag would, so an agent
+// reading it as a user turn still knows who wrote it and how to answer.
+func pushText(ev *model.PeerEvent) string {
+	return fmt.Sprintf("[claude-peers message from %s (id %s)]\n%s\n\nReply with send_message to_id=%s.",
+		ev.FromName, ev.FromID, ev.Text, ev.FromID)
 }
 
 // Poll returns a peer's events past its cursor and advances the cursor — the

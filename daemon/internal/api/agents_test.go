@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/peers"
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 func agentsServer(t *testing.T) *Server {
@@ -164,5 +166,28 @@ func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
 	resp, _ = http.Post(base+"/v1/workspaces/"+ws.ID+"/agents/nobody", "application/json", strings.NewReader(`{}`))
 	if resp.StatusCode != 404 {
 		t.Fatalf("unknown agent = %d", resp.StatusCode)
+	}
+}
+
+func TestAgents_PeersHooksWiredInEitherOrder(t *testing.T) {
+	for _, agentsFirst := range []bool{true, false} {
+		s := settingsServer(t)
+		st := agent.NewStore(filepath.Join(t.TempDir(), "agents"))
+		pst, err := store.Open(filepath.Join(t.TempDir(), "peers.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pst.Close() })
+		svc := peers.NewService(pst, nullHook{}, testSecret)
+		if agentsFirst {
+			s.SetAgents(st, 6)
+			s.EnablePeers(svc)
+		} else {
+			s.EnablePeers(svc)
+			s.SetAgents(st, 6)
+		}
+		if svc.IsAgent == nil || svc.StartAgent == nil || svc.PushToPane == nil {
+			t.Fatalf("agentsFirst=%v: bus hooks not wired", agentsFirst)
+		}
 	}
 }

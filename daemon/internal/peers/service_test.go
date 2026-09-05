@@ -52,6 +52,15 @@ func (f *fakeHook) LiveWorkspaceForRepo(group, name string) (string, string, boo
 	return parts[0], parts[1], true
 }
 
+func (f *fakeHook) WorkspaceForPane(paneID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.groups[paneID] == "" {
+		return ""
+	}
+	return "ws-of-" + paneID
+}
+
 func (f *fakeHook) SpawnEphemeralPane(wsID, cwd, cmd, createdBy string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -507,4 +516,55 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("condition not met within 2s")
+}
+
+func TestSpawn_AgentStartsInSendersWorkspace(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.groups["pane-a"] = "PROJ"
+	a := registerPane(svc, "pane-a", "/w/ccmux").PeerID
+
+	var started []string
+	var mu sync.Mutex
+	svc.IsAgent = func(name string) bool { return name == "x-poster" }
+	svc.StartAgent = func(wsID, name, prompt string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		started = append(started, wsID+"|"+name+"|"+prompt)
+		return nil
+	}
+
+	resp := svc.Send(SendReq{FromID: a, ToName: "x-poster", Text: "post about v1", SpawnIfMissing: true})
+	if !resp.OK || !resp.Spawning {
+		t.Fatalf("agent send = %+v, want spawning", resp)
+	}
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(started) == 1 })
+	mu.Lock()
+	got := started[0]
+	mu.Unlock()
+	if !strings.HasPrefix(got, "ws-of-pane-a|x-poster|") || !strings.Contains(got, "teammate") {
+		t.Fatalf("start call = %q, want the sender's workspace and a birth prompt", got)
+	}
+	if hook.spawnCount() != 0 {
+		t.Fatal("agent start must not fall through to the repo-guess spawn")
+	}
+
+	// The agent's pane registers under the agent's name in the same group →
+	// the queued message reaches it.
+	hook.setGroup("pane-x", "PROJ")
+	x := registerPane(svc, "pane-x", "/repo/.ccmux/agents/x-poster").PeerID
+	evs, _ := svc.Poll(x)
+	if len(evs) != 1 || evs[0].Text != "post about v1" || evs[0].FromID != a {
+		t.Fatalf("agent inbox = %+v", evs)
+	}
+}
+
+func TestSpawn_AgentRefusedForPanelessSender(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.IsAgent = func(string) bool { return true }
+	svc.StartAgent = func(string, string, string) error { t.Fatal("must not start"); return nil }
+	resp := registerPaneless(svc, "/w/x")
+	got := svc.Send(SendReq{FromID: resp.PeerID, ToName: "x-poster", Text: "hi", SpawnIfMissing: true})
+	if got.Error == "" || !strings.Contains(got.Error, "agent") {
+		t.Fatalf("pane-less caller should be told why, got %+v", got)
+	}
 }
