@@ -72,6 +72,10 @@ type Manager struct {
 	// bus injects its bearer token here). Set once at startup, before any pane is
 	// created. Nil = no extras.
 	ExtraPaneEnv func(paneID string) map[string]string
+	// OpencodePlugin returns the path of the Meridian opencode plugin when
+	// Meridian is installed, else "" (main wires meridian.PluginPath). Stamped
+	// into every pane's OPENCODE_CONFIG_CONTENT at creation; see opencode.go.
+	OpencodePlugin func() string
 
 	// PaneLLMRoute, when set, points a pane's llm route at a named account
 	// (wired to llmproxy.SetPaneRoute in main). Harness starts use it for
@@ -1010,6 +1014,10 @@ func (m *Manager) paneEnv(ws *model.Workspace, paneID string) map[string]string 
 		// catalog falls back to the static list) rather than break, which is
 		// the better trade than downgrading every pane all the time.
 		env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"] = "1"
+		// opencode reads its provider setup from config, not from
+		// ANTHROPIC_BASE_URL alone; this inline layer points its anthropic
+		// provider at the same pane proxy (see opencode.go).
+		env["OPENCODE_CONFIG_CONTENT"] = opencodeConfigContent(env["ANTHROPIC_BASE_URL"], m.opencodePlugin())
 	}
 	if m.HooksSocket != "" {
 		env["CCMUX_HOOKS_SOCK"] = m.HooksSocket

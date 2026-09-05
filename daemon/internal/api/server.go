@@ -22,6 +22,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/meridian"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/tailnet"
@@ -60,6 +61,10 @@ type Server struct {
 	// devStatus reports the dev-hostname wildcard-cert lifecycle for the
 	// settings UI, wired by SetDevhostStatus; nil when dev serving is off.
 	devStatus func() string
+
+	// sidecars supervises the Meridian processes meridian-kind accounts call
+	// for, wired by SetSidecars; nil means no sidecars (settings omit the key).
+	sidecars sidecarSupervisor
 
 	// spawnUpgrade launches the detached self-upgrade child (POST /v1/upgrade);
 	// the real spawner by default, a fake in tests.
@@ -199,6 +204,33 @@ func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore
 		defer s.mgr.UnsubscribeEvents(id)
 		n.run(ctx, ch)
 	}()
+}
+
+// sidecarSupervisor is the slice of *meridian.Supervisor the API drives.
+type sidecarSupervisor interface {
+	Reconcile([]meridian.Spec)
+	Status() map[string]meridian.Status
+}
+
+// SetSidecars wires the Meridian supervisor. Settings applies then keep the
+// running sidecars matching the meridian-kind accounts, and GET /v1/settings
+// reports their state as llmSidecars (account name → status).
+func (s *Server) SetSidecars(sv sidecarSupervisor) { s.sidecars = sv }
+
+// reconcileSidecars re-derives the sidecar set from the stored accounts. A
+// read failure is logged, not returned: the accounts themselves were just
+// persisted, and refusing the settings write now would leave the UI showing
+// a save that did happen.
+func (s *Server) reconcileSidecars() {
+	if s.sidecars == nil || s.llm == nil {
+		return
+	}
+	accs, err := s.llm.Accounts()
+	if err != nil {
+		log.Printf("meridian: accounts unreadable after settings apply, sidecars left as they were: %v", err)
+		return
+	}
+	s.sidecars.Reconcile(meridian.SpecsFrom(accs))
 }
 
 // Handler builds the routed HTTP handler (Go 1.22+ method+wildcard patterns).
@@ -482,6 +514,9 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp["llmPaneRoutes"] = routes
+		if s.sidecars != nil {
+			resp["llmSidecars"] = s.sidecars.Status()
+		}
 	}
 	if s.mgr.Harnesses != nil {
 		// Resolved list, built-in claude included — what a picker renders.
@@ -655,6 +690,7 @@ func (s *Server) applySettings(req settingsRequest) error {
 		if err := s.llm.Apply(req.LLMAccounts, req.LLMRoute); err != nil {
 			return err
 		}
+		s.reconcileSidecars()
 	}
 	if req.Harnesses != nil {
 		if err := s.mgr.Harnesses.Apply(*req.Harnesses); err != nil {

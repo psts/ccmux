@@ -1281,25 +1281,45 @@ function wireLLMSettings() {
     return s;
   }
 
-  function accountRow(a, st) {
+  // The sidecar footer of a meridian account: the daemon runs one Meridian
+  // process per such account (its key is the Claude setup token that process
+  // authenticates with), so "is it running" is the status that matters.
+  function sidecarLine(a, sc) {
+    if (a.kind !== "meridian") return "";
+    if (!sc) return "⚙ sidecar not supervised by this daemon";
+    if (sc.running) return `⚙ sidecar running (pid ${sc.pid}${sc.restarts ? `, ${sc.restarts} restarts` : ""})`;
+    return "⚙ sidecar stopped" + (sc.lastError ? ": " + sc.lastError : "");
+  }
+
+  const accountKinds = ["anthropic", "openai", "claude", "codex", "meridian"];
+
+  function keyHintFor(a) {
+    if (a.apiKeySet) return "set — empty keeps it";
+    if (a.kind === "claude") return "paste `claude setup-token` output";
+    if (a.kind === "meridian") return "paste `claude setup-token` output (starts the sidecar)";
+    return "empty = your own login";
+  }
+
+  function accountRow(a, st, sc) {
     const row = document.createElement("div");
     row.className = "entry-card";
-    const keyHint = a.apiKeySet ? "set — empty keeps it" : (a.kind === "claude" ? "paste `claude setup-token` output" : "empty = your own login");
+    const keyHint = keyHintFor(a);
     const aliases = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
     // What the picker shows as its current choice: the claude-* rule's target.
     const claudeTarget = ((a.modelAliases || []).find((x) => x.from === "claude-*") || {}).to || "";
-    const status = statusLine(st);
+    const status = [statusLine(st), sidecarLine(a, sc)].filter(Boolean).join(" · ");
+    const urlHint = a.kind === "meridian" ? "base URL (empty = http://127.0.0.1:3456)" : "base URL, e.g. http://localhost:11434";
     row.innerHTML =
       `<div class="entry-line">` +
       `<input class="setting-input llm-name grow" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
       `<select class="setting-input llm-kind">` +
-      ["anthropic", "openai", "claude", "codex"].map((k) =>
+      accountKinds.map((k) =>
         `<option value="${k}"${(a.kind || "anthropic") === k ? " selected" : ""}>${k}</option>`).join("") +
       `</select>` +
       `<button class="rule-del" type="button" title="Remove account">&times;</button>` +
       `</div>` +
       `<div class="entry-line">` +
-      `<input class="setting-input llm-url grow" type="text" spellcheck="false" placeholder="base URL, e.g. http://localhost:11434" value="${esc(a.baseURL || "")}">` +
+      `<input class="setting-input llm-url grow" type="text" spellcheck="false" placeholder="${esc(urlHint)}" value="${esc(a.baseURL || "")}">` +
       `</div>` +
       `<div class="entry-line">` +
       `<input class="setting-input llm-key grow" type="password" autocomplete="off" placeholder="token / api key: ${esc(keyHint)}">` +
@@ -1408,7 +1428,8 @@ function wireLLMSettings() {
       const stByName = {};
       for (const st of cfg.llmAccountStatus || []) stByName[st.name] = st;
       box.innerHTML = "";
-      for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a, stByName[a.name]));
+      const sidecars = cfg.llmSidecars || {};
+      for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a, stByName[a.name], sidecars[a.name]));
       renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
       populateModelPicks(); // fire-and-forget: pickers fill as upstreams answer
       statusEl.textContent = "Applies to every pane's next request — no restarts.";
@@ -1541,7 +1562,7 @@ function wireHarnessSettings() {
       `</div>` +
       `<div class="entry-line hx-kinds" title="Which llm account kinds this harness can use; none checked = its default">` +
       `<span class="hx-kinds-label">accounts:</span>` +
-      ["anthropic", "openai", "claude", "codex"].map((k) =>
+      ["anthropic", "openai", "claude", "codex", "meridian"].map((k) =>
         `<label class="hx-confirm"><input type="checkbox" data-kind="${k}"${(h.accountKinds || []).includes(k) ? " checked" : ""}>${k}</label>`).join("") +
       `</div>`;
     for (const el of row.querySelectorAll("input")) {

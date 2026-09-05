@@ -103,6 +103,14 @@ func applyAuth(out *http.Request, a Account) {
 	if a.APIKey == "" {
 		return
 	}
+	// A meridian account's key is the token that STARTED its sidecar; the
+	// sidecar authenticates upstream itself. Strip whatever the pane sent and
+	// hand over a placeholder so nothing that looks like a credential crosses.
+	if a.Kind == KindMeridian {
+		out.Header.Del("Authorization")
+		out.Header.Set("x-api-key", "ccmux")
+		return
+	}
 	out.Header.Del("Authorization")
 	out.Header.Del("x-api-key")
 	if a.Kind == "openai" || a.Kind == "claude" {

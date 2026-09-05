@@ -181,6 +181,7 @@ func runDaemon() {
 	llmSvc := llmproxy.New(st)
 	apiSrv.SetLLMProxy(llmSvc)
 	mgr.PaneLLMRoute = llmSvc.SetPaneRoute
+	wireSidecars(ctx, llmSvc, apiSrv, mgr)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)

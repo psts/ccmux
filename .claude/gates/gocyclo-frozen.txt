@@ -13,7 +13,6 @@
 23	api	(*Server).rejectSettings	internal/api/server.go
 12	gitstatus	Parse	internal/gitstatus/gitstatus.go
 13	llmproxy	rewriteRequest	internal/llmproxy/compat.go
-20	llmproxy	validateAccounts	internal/llmproxy/llmproxy.go
 13	main	cmdInstall	cmd/ccmuxd/install.go
 11	main	fillInteractive	cmd/ccmuxd/install.go
 12	main	parseVer	cmd/ccmuxd/install.go

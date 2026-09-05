@@ -26,6 +26,7 @@ struct DaemonSettingsView: View {
     @State private var accounts: [EditableAccount] = []
     /// Live per-account health by name, from GET /v1/settings.
     @State private var accountStatus: [String: DaemonLLMAccountStatus] = [:]
+    @State private var sidecars: [String: DaemonSidecarStatus] = [:]
     @State private var harnesses: [EditableHarness] = []
     @State private var supportsLLM = false
     @State private var supportsHarnesses = false
@@ -56,7 +57,7 @@ struct DaemonSettingsView: View {
 
     /// The account-kind checkboxes, in the same order the web editor renders
     /// them (also the order the save payload serializes).
-    static let accountKindOptions = ["anthropic", "openai", "claude", "codex"]
+    static let accountKindOptions = ["anthropic", "openai", "claude", "codex", "meridian"]
 
     struct EditableHarness: Identifiable {
         let id = UUID()
@@ -260,6 +261,17 @@ struct DaemonSettingsView: View {
         }
     }
 
+    /// The sidecar footer of a meridian account: the daemon runs one Meridian
+    /// process per such account, so "is it running" is the status that matters.
+    private func sidecarText(_ account: EditableAccount) -> String? {
+        guard account.kind == "meridian" else { return nil }
+        guard let sc = sidecars[account.name] else { return "⚙ sidecar not supervised by this daemon" }
+        if sc.running {
+            return "⚙ sidecar running (pid \(sc.pid)" + (sc.restarts > 0 ? ", \(sc.restarts) restarts)" : ")")
+        }
+        return "⚙ sidecar stopped" + (sc.lastError.isEmpty ? "" : ": \(sc.lastError)")
+    }
+
     /// The health footer of one account card, from the daemon's live status.
     private func accountStatusText(_ name: String) -> String? {
         guard let st = accountStatus[name] else { return nil }
@@ -287,6 +299,7 @@ struct DaemonSettingsView: View {
                     Text("openai").tag("openai")
                     Text("claude").tag("claude")
                     Text("codex").tag("codex")
+                    Text("meridian").tag("meridian")
                 }
                 .labelsHidden()
                 .frame(width: 110)
@@ -300,13 +313,14 @@ struct DaemonSettingsView: View {
                 .buttonStyle(.borderless)
                 .help("Remove account")
             }
-            TextField("base URL, e.g. http://localhost:11434", text: account.baseURL)
+            TextField(account.wrappedValue.kind == "meridian" ? "base URL (empty = http://127.0.0.1:3456)" : "base URL, e.g. http://localhost:11434", text: account.baseURL)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
             HStack(spacing: 6) {
                 SecureField(
                     account.wrappedValue.apiKeySet ? "key set — empty keeps it"
                         : account.wrappedValue.kind == "claude" ? "paste `claude setup-token` output"
+                        : account.wrappedValue.kind == "meridian" ? "paste `claude setup-token` output (starts the sidecar)"
                         : "api key (empty = your own login)",
                     text: account.apiKey)
                     .textFieldStyle(.roundedBorder)
@@ -317,6 +331,11 @@ struct DaemonSettingsView: View {
             }
             if let status = accountStatusText(account.wrappedValue.name) {
                 Text(status)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            if let sidecar = sidecarText(account.wrappedValue) {
+                Text(sidecar)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -572,6 +591,7 @@ struct DaemonSettingsView: View {
         supportsHarnessRules = settings.supportsHarnessRules
         llmRoute = settings.llmRoute
         accountStatus = Dictionary(uniqueKeysWithValues: settings.llmAccountStatus.map { ($0.name, $0) })
+        sidecars = settings.llmSidecars
         accounts = settings.llmAccounts.map {
             EditableAccount(
                 name: $0.name, kind: $0.kind, baseURL: $0.baseURL,

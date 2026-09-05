@@ -93,6 +93,9 @@ struct DaemonSettings: Codable {
     /// Live per-account health from the proxy (limits, usage percentages);
     /// absent on older daemons.
     var llmAccountStatus: [DaemonLLMAccountStatus]
+    /// Meridian sidecar state per meridian-kind account name (the daemon runs
+    /// one Meridian process per such account); absent on older daemons.
+    var llmSidecars: [String: DaemonSidecarStatus]
     /// The daemon-resolved harness list (builtin + detected + user entries)
     /// and the per-folder preselect rules.
     var harnesses: [DaemonHarness]
@@ -118,9 +121,29 @@ struct DaemonSettings: Codable {
         llmRoute = try c.decodeIfPresent(String.self, forKey: .llmRoute) ?? ""
         llmAccounts = try c.decodeIfPresent([DaemonLLMAccount].self, forKey: .llmAccounts) ?? []
         llmAccountStatus = try c.decodeIfPresent([DaemonLLMAccountStatus].self, forKey: .llmAccountStatus) ?? []
+        llmSidecars = try c.decodeIfPresent([String: DaemonSidecarStatus].self, forKey: .llmSidecars) ?? [:]
         harnesses = try c.decodeIfPresent([DaemonHarness].self, forKey: .harnesses) ?? []
         harnessRules = try c.decodeIfPresent([DaemonHarnessRule].self, forKey: .harnessRules) ?? []
     }
+}
+
+/// One supervised Meridian sidecar, as GET /v1/settings reports it under
+/// llmSidecars (keyed by the meridian account's name).
+struct DaemonSidecarStatus: Codable {
+    var running: Bool
+    var pid: Int
+    var restarts: Int
+    var lastError: String
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        pid = try c.decodeIfPresent(Int.self, forKey: .pid) ?? 0
+        restarts = try c.decodeIfPresent(Int.self, forKey: .restarts) ?? 0
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError) ?? ""
+    }
+
+    private enum CodingKeys: String, CodingKey { case running, pid, restarts, lastError }
 }
 
 /// Live health for one LLM account, as the proxy learned it from responses:

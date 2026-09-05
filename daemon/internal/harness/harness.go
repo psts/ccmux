@@ -61,11 +61,20 @@ const settingHarnesses = "harnesses"
 // which a keyed org account, an injected subscription token, or a
 // bearer-auth Anthropic-compatible gateway (openai kind — OpenRouter, a
 // local server) all serve; codex speaks OpenAI's Responses dialect, which
-// only a codex account's upstream answers. Absent names (pi, opencode,
-// custom entries) mean any kind except codex (see api.kindAllowed).
+// only a codex account's upstream answers; opencode speaks the Anthropic
+// dialect too but is a third party to Anthropic, so it never gets the raw
+// subscription token (claude kind) — Anthropic refuses it server-side — and
+// spends a subscription only through a meridian sidecar — listed first, so
+// that pairing wins over a local model when both exist; pi is the same
+// shape. Absent names (custom entries) mean any kind except codex and
+// meridian (see api.kindAllowed): a harness that has not said it can ride a
+// sidecar must not, since a hand-started claude there would run a second
+// agent loop under the first.
 var defaultAccountKinds = map[string][]string{
-	Builtin: {"anthropic", "openai", "claude"},
-	"codex": {"codex"},
+	Builtin:    {"anthropic", "openai", "claude"},
+	"codex":    {"codex"},
+	"opencode": {"meridian", "anthropic", "openai"},
+	"pi":       {"meridian", "anthropic", "openai"},
 }
 
 // Builtin is the harness every daemon has without configuration.
@@ -129,6 +138,10 @@ type Service struct {
 func New(store Store) *Service {
 	return &Service{store: store, lookPath: lookPathUserBins}
 }
+
+// LookPath is lookPathUserBins for other packages that must find a binary
+// the way harness detection does (the meridian sidecar, the opencode plugin).
+func LookPath(name string) (string, error) { return lookPathUserBins(name) }
 
 // lookPathUserBins is exec.LookPath widened with ~/.local/bin. Panes run
 // LOGIN shells whose profile puts user bins on PATH, but the daemon runs
@@ -222,9 +235,9 @@ func (s *Service) Reject(hs []Harness) string {
 			// An unknown kind is a rule that matches nothing — the harness
 			// would refuse every account and nothing would say why.
 			switch strings.TrimSpace(k) {
-			case "anthropic", "openai", "claude", "codex":
+			case "anthropic", "openai", "claude", "codex", "meridian":
 			default:
-				return fmt.Sprintf("harness %q: unknown account kind %q (anthropic, openai, claude, or codex)", name, k)
+				return fmt.Sprintf("harness %q: unknown account kind %q (anthropic, openai, claude, codex, or meridian)", name, k)
 			}
 		}
 	}

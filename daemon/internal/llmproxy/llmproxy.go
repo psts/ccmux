@@ -26,6 +26,15 @@ import (
 	"strings"
 )
 
+// KindMeridian is an account served by a Meridian sidecar (internal/meridian):
+// a loopback proxy that forwards through the Claude Agent SDK so a non-Claude
+// harness (opencode, pi) can spend a Claude subscription. Its key is the
+// subscription setup token that STARTS the sidecar; it never rides a request.
+const KindMeridian = "meridian"
+
+// MeridianUpstream is where a meridian account points when no URL is given.
+const MeridianUpstream = "http://127.0.0.1:3456"
+
 // Store is the slice of the registry the proxy needs (satisfied by *store.SQLite).
 type Store interface {
 	GetSetting(key string) (string, error)
@@ -247,6 +256,12 @@ func (s *Service) Reject(accs *[]Account, route *string) string {
 		if a.Kind == "codex" {
 			return fmt.Sprintf("llmRoute %q is a codex account, which serves only codex panes — codex pairing is per pane, never global", effRoute)
 		}
+		// Same shape for meridian: Claude Code panes must never ride it (a
+		// second agent loop under the first), so it pairs per pane at
+		// opencode/pi starts and is refused as the default for everyone.
+		if a.Kind == KindMeridian {
+			return fmt.Sprintf("llmRoute %q is a meridian account, which serves opencode and pi panes — meridian pairing is per pane, never global", effRoute)
+		}
 	}
 	return ""
 }
@@ -261,31 +276,11 @@ func validateAccounts(accs []Account) string {
 			return fmt.Sprintf("duplicate llm account %q", a.Name)
 		}
 		seen[a.Name] = true
-		switch a.Kind {
-		case "anthropic", "openai":
-		case "codex":
-			if a.APIKey != "" {
-				return fmt.Sprintf("llm account %q: codex accounts pass the harness's own ChatGPT login through and hold no key — delete the account and re-add it as codex", a.Name)
-			}
-		case "claude":
-			if a.APIKey == "" {
-				return fmt.Sprintf("llm account %q: a claude account needs a subscription token — run `claude setup-token` for that subscription and paste the result", a.Name)
-			}
-		default:
-			return fmt.Sprintf("llm account %q: unknown kind %q (anthropic, openai, claude, or codex)", a.Name, a.Kind)
+		if msg := validateKind(a); msg != "" {
+			return msg
 		}
-		u, err := url.Parse(a.BaseURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Sprintf("llm account %q: baseURL must be an http(s) URL", a.Name)
-		}
-		// A claude account's token is a full subscription login. Unlike an api
-		// key it must never leave Anthropic, even though the account is
-		// "keyed" — the same pin the keyless pass-through gets.
-		if a.Kind == "claude" && !passthroughHostAllowed(Account{Kind: "claude"}, u.Hostname()) {
-			return fmt.Sprintf("llm account %q holds a subscription token, which may only be sent to api.anthropic.com, localhost, or a private-network IP", a.Name)
-		}
-		if a.APIKey == "" && !passthroughHostAllowed(a, u.Hostname()) {
-			return fmt.Sprintf("llm account %q has no api key, so each pane's own login token would be forwarded to it — that is only allowed to api.anthropic.com, chatgpt.com (codex accounts), localhost, or a private-network IP", a.Name)
+		if msg := validateUpstream(a); msg != "" {
+			return msg
 		}
 		for _, al := range a.ModelAliases {
 			if strings.TrimSpace(al.From) == "" || strings.TrimSpace(al.To) == "" {
@@ -293,7 +288,88 @@ func validateAccounts(accs []Account) string {
 			}
 		}
 	}
+	return meridianPortClash(accs)
+}
+
+// meridianPortClash refuses two meridian accounts on one listen address. Each
+// runs its own sidecar with its own token; two on one port means one binds,
+// the other crash-loops, and requests for either name reach whichever won —
+// spending the wrong subscription with nothing to say so.
+func meridianPortClash(accs []Account) string {
+	owner := map[string]string{}
+	for _, a := range accs {
+		if a.Kind != KindMeridian {
+			continue
+		}
+		u, err := url.Parse(a.BaseURL)
+		if err != nil {
+			continue // shape errors were reported by validateUpstream
+		}
+		if first, dup := owner[u.Host]; dup {
+			return fmt.Sprintf("llm accounts %q and %q are both meridian on %s — each sidecar needs its own port", first, a.Name, u.Host)
+		}
+		owner[u.Host] = a.Name
+	}
 	return ""
+}
+
+// validateKind holds the per-kind credential rules; "" accepts.
+func validateKind(a Account) string {
+	switch a.Kind {
+	case "anthropic", "openai":
+	case "codex":
+		if a.APIKey != "" {
+			return fmt.Sprintf("llm account %q: codex accounts pass the harness's own ChatGPT login through and hold no key — delete the account and re-add it as codex", a.Name)
+		}
+	case "claude":
+		if a.APIKey == "" {
+			return fmt.Sprintf("llm account %q: a claude account needs a subscription token — run `claude setup-token` for that subscription and paste the result", a.Name)
+		}
+	case KindMeridian:
+		if a.APIKey == "" {
+			return fmt.Sprintf("llm account %q: a meridian account needs the Claude setup token that starts its sidecar — run `claude setup-token` and paste the result", a.Name)
+		}
+	default:
+		return fmt.Sprintf("llm account %q: unknown kind %q (anthropic, openai, claude, codex, or meridian)", a.Name, a.Kind)
+	}
+	return ""
+}
+
+// validateUpstream holds the URL rules: shape, then the per-kind pins.
+func validateUpstream(a Account) string {
+	u, err := url.Parse(a.BaseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Sprintf("llm account %q: baseURL must be an http(s) URL", a.Name)
+	}
+	return hostPinViolation(a, u)
+}
+
+// hostPinViolation says where an account's credential may travel; "" accepts.
+func hostPinViolation(a Account, u *url.URL) string {
+	host := u.Hostname()
+	// A claude account's token is a full subscription login. Unlike an api
+	// key it must never leave Anthropic, even though the account is
+	// "keyed" — the same pin the keyless pass-through gets.
+	if a.Kind == "claude" && !passthroughHostAllowed(Account{Kind: "claude"}, host) {
+		return fmt.Sprintf("llm account %q holds a subscription token, which may only be sent to api.anthropic.com, localhost, or a private-network IP", a.Name)
+	}
+	// A meridian sidecar holds that same token in its process environment,
+	// so it may only ever listen on this machine.
+	if a.Kind == KindMeridian && (u.Scheme != "http" || !loopbackHost(host) || u.Port() == "") {
+		return fmt.Sprintf("llm account %q: a meridian account must point at http://127.0.0.1:<port> on this host, port included", a.Name)
+	}
+	if a.APIKey == "" && !passthroughHostAllowed(a, host) {
+		return fmt.Sprintf("llm account %q has no api key, so each pane's own login token would be forwarded to it — that is only allowed to api.anthropic.com, chatgpt.com (codex accounts), localhost, or a private-network IP", a.Name)
+	}
+	return ""
+}
+
+func loopbackHost(hostname string) bool {
+	if hostname == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(hostname)
+	return err == nil && ip.IsLoopback()
 }
 
 // cgnat is the tailnet address range (100.64.0.0/10) — machines on the user's
@@ -398,13 +474,8 @@ func merged(old, incoming []Account) []Account {
 		if a.Kind == "" {
 			a.Kind = "anthropic"
 		}
-		// A codex or claude account has exactly one sensible upstream; an
-		// empty baseURL means it, so creating one needs no URL typing.
-		if a.Kind == "codex" && a.BaseURL == "" {
-			a.BaseURL = CodexUpstream
-		}
-		if a.Kind == "claude" && a.BaseURL == "" {
-			a.BaseURL = DefaultUpstream
+		if a.BaseURL == "" {
+			a.BaseURL = defaultUpstreamFor(a.Kind)
 		}
 		if a.APIKey == "" {
 			if prev := findAccount(old, a.Name); prev != nil {
@@ -414,6 +485,22 @@ func merged(old, incoming []Account) []Account {
 		next = append(next, a)
 	}
 	return next
+}
+
+// defaultUpstreamFor is the one sensible upstream of a kind that has one —
+// codex, claude and meridian — so creating such an account needs no URL
+// typing. Other kinds have none: an empty URL stays empty and validation
+// refuses it.
+func defaultUpstreamFor(kind string) string {
+	switch kind {
+	case "codex":
+		return CodexUpstream
+	case "claude":
+		return DefaultUpstream
+	case KindMeridian:
+		return MeridianUpstream
+	}
+	return ""
 }
 
 // AccountNameForKind returns the first configured account of the given kind —

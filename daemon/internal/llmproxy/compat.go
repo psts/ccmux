@@ -21,8 +21,10 @@ const maxCompatBody = 16 << 20
 // them literally and strict chat templates then refuse a system message that
 // is not first (verified against Ollama 0.32.15 + Qwen). Only the real
 // Anthropic host keeps them intact.
+// A meridian sidecar is Anthropic behind a loopback address: it forwards
+// through the Claude Agent SDK, which handles system turns itself.
 func needsSystemTurnCompat(a Account) bool {
-	return !strings.Contains(a.BaseURL, "api.anthropic.com")
+	return a.Kind != KindMeridian && !strings.Contains(a.BaseURL, "api.anthropic.com")
 }
 
 // rewriteRequest applies the account's request transforms — system-turn

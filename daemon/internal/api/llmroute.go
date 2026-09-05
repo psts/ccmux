@@ -67,7 +67,12 @@ func (s *Server) llmAccountModels(w http.ResponseWriter, r *http.Request) {
 // didn't declare it.
 func kindAllowed(kinds []string, kind string) bool {
 	if len(kinds) == 0 {
-		return kind != "codex"
+		// No declaration means "anything a Claude-dialect harness can use",
+		// which excludes the two per-pane kinds: codex speaks another dialect,
+		// and meridian is a Claude Code loop — a shell pane's hand-started
+		// claude must not ride one (llmproxy.Reject bans it globally for the
+		// same reason). Harnesses that can use meridian say so (harness.go).
+		return kind != "codex" && kind != llmproxy.KindMeridian
 	}
 	return slices.Contains(kinds, kind)
 }
