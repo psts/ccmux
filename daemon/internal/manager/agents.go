@@ -72,7 +72,8 @@ func (m *Manager) StartAgentInPane(paneID string, l AgentLaunch) error {
 	// A wake typed moments ago has not yet changed tmux's foreground command,
 	// so "at a shell" would still read true: the marker is what says "in
 	// progress" until tmux reports the harness (or the window lapses).
-	if m.starting.inProgress(paneID, time.Now()) {
+	wsID := m.WorkspaceForPane(paneID)
+	if m.starting.inProgress(paneID, time.Now()) || m.starting.inProgress(spawnKey(wsID, l.Name), time.Now()) {
 		return ErrAgentRunning
 	}
 	if m.overAgentCap() {
@@ -103,7 +104,10 @@ type startMarks struct {
 	at map[string]time.Time
 }
 
-const startWindow = 20 * time.Second
+// startWindow only has to outlast tmux's foreground report for the typed
+// launch (hundreds of ms); confirm clears the mark the moment that arrives,
+// so the window is a safety net, not the normal path.
+const startWindow = 5 * time.Second
 
 func (s *startMarks) inProgress(key string, now time.Time) bool {
 	s.mu.Lock()
@@ -119,6 +123,15 @@ func (s *startMarks) mark(key string, now time.Time) {
 		s.at = map[string]time.Time{}
 	}
 	s.at[key] = now
+}
+
+// confirm clears the marks for a pane once tmux reported its foreground
+// command: from here on the ordinary liveness checks tell the truth.
+func (s *startMarks) confirm(wsID string, p *model.Pane) {
+	s.forget(p.ID)
+	if p.Agent != "" {
+		s.forget(spawnKey(wsID, p.Agent))
+	}
 }
 
 func (s *startMarks) forget(key string) {

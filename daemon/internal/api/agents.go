@@ -81,10 +81,7 @@ func (s *Server) wakePane(paneID, text string) error {
 	}
 	for _, p := range ws.Panes {
 		if p.ID == paneID && p.Agent != "" {
-			if out := s.startAgent(wsID, p.Agent, text, "claude-peers"); out.msg != "" {
-				return errors.New(out.msg)
-			}
-			return nil
+			return peerStartError(s.startAgent(wsID, p.Agent, text, "claude-peers"))
 		}
 	}
 	return errors.New("not an agent pane")

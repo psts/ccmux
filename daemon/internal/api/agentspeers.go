@@ -47,9 +47,14 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 // message. An instance already running is not an error: the bus delivers to
 // it directly.
 func (s *Server) startAgentForPeer(wsID, name, prompt string) error {
-	out := s.startAgent(wsID, name, prompt, "claude-peers")
-	// "Already running" (a live pane, or a start in flight) is fine for the
-	// bus, which delivers to it directly; the cap and the rest are failures.
+	return peerStartError(s.startAgent(wsID, name, prompt, "claude-peers"))
+}
+
+// peerStartError is the bus's reading of a start: "already running" (a live
+// pane, or a start in flight) is not an error — the bus delivers to it
+// directly, and a message that arrived during the start reaches it once
+// tmux confirms the harness; the cap and the rest are failures.
+func peerStartError(out startOutcome) error {
 	if out.msg == "" || errors.Is(out.err, manager.ErrAgentRunning) {
 		return nil
 	}

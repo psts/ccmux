@@ -113,8 +113,8 @@ func TestStartMarksHoldForTheWindowThenLapse(t *testing.T) {
 		t.Fatal("nothing marked yet")
 	}
 	sm.mark("p", t0)
-	if !sm.inProgress("p", t0.Add(5*time.Second)) {
-		t.Fatal("a start 5s ago is in progress")
+	if !sm.inProgress("p", t0.Add(2*time.Second)) {
+		t.Fatal("a start 2s ago is in progress")
 	}
 	if sm.inProgress("p", t0.Add(startWindow)) {
 		t.Fatal("the window has lapsed")
@@ -123,5 +123,53 @@ func TestStartMarksHoldForTheWindowThenLapse(t *testing.T) {
 	sm.forget("p")
 	if sm.inProgress("p", t0) {
 		t.Fatal("forget clears the mark")
+	}
+}
+
+func TestWakeWithBackoff_InFlightStartIsNotAFailure(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	t0 := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	p := model.Pane{ID: "p1", Agent: "x-poster"}
+	m.WakeAgent = func(string, string) error { return ErrAgentRunning }
+	m.wakeWithBackoff("w", p, t0)
+	if !m.wakeBackoff.due("p1", t0) {
+		t.Fatal("an in-flight start must not ratchet the backoff")
+	}
+	m.WakeAgent = func(string, string) error { return ErrAgentCap }
+	m.wakeWithBackoff("w", p, t0)
+	if m.wakeBackoff.due("p1", t0.Add(time.Second)) {
+		t.Fatal("a real failure schedules a later retry")
+	}
+}
+
+func TestStartMarks_PrunedOnDropAndConfirmedByTmux(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	ws := &model.Workspace{ID: "w", Panes: []*model.Pane{{ID: "p0"}, {ID: "p1", Agent: "x-poster"}}}
+	m.byID["w"] = &entry{ws: ws}
+	now := time.Now()
+	m.starting.mark(spawnKey("w", "x-poster"), now)
+	m.starting.mark("p1", now)
+	m.dropPane("w", "p1")
+	if m.starting.inProgress(spawnKey("w", "x-poster"), now) || m.starting.inProgress("p1", now) {
+		t.Fatal("dropping the agent's pane must prune both marks, so stop-then-add is not refused")
+	}
+	// tmux reporting the pane's foreground confirms a typed start.
+	again := &model.Pane{ID: "p1", Agent: "x-poster"}
+	ws.Panes = append(ws.Panes, again)
+	m.starting.mark(spawnKey("w", "x-poster"), now)
+	m.starting.mark("p1", now)
+	m.starting.confirm("w", again)
+	if m.starting.inProgress(spawnKey("w", "x-poster"), now) || m.starting.inProgress("p1", now) {
+		t.Fatal("confirm must clear both marks")
 	}
 }

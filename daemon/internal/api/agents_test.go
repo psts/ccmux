@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -214,5 +215,20 @@ func TestAgents_PutMergesOverStoredDefinition(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &d)
 	if d.IdleExitMinutes != 0 {
 		t.Fatalf("idle 0 (never) must survive a save, got %d", d.IdleExitMinutes)
+	}
+}
+
+func TestPeerStartError_InFlightIsNotAFailure(t *testing.T) {
+	if err := peerStartError(startOutcome{status: 201}); err != nil {
+		t.Fatalf("started: %v", err)
+	}
+	if err := peerStartError(startOutcome{status: 409, msg: "agent x is already running", err: manager.ErrAgentRunning}); err != nil {
+		t.Fatalf("in flight or running must be fine for the bus: %v", err)
+	}
+	if err := peerStartError(startOutcome{status: 409, msg: "cap reached", err: manager.ErrAgentCap}); err == nil {
+		t.Fatal("the cap is a failure")
+	}
+	if err := peerStartError(startOutcome{status: 404, msg: "no such agent"}); err == nil || err.Error() != "no such agent" {
+		t.Fatalf("other refusals carry their message: %v", err)
 	}
 }
