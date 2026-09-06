@@ -127,14 +127,17 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	switch {
 	case shell:
 		m.ApplySession(paneID, "", model.SessionNone)
-	case kind == "pane-command" && runsClaude(&saved):
+	case kind == "pane-command" && retractsShellVerdict(&saved):
 		// The retraction the backstop above needs to be safe. That assertion is
 		// made on every signal, restarts included, so a pane caught at its shell
 		// for one moment is recorded as holding no session — and without hooks
 		// installed nothing else ever speaks for it, leaving a live Claude
 		// hidden from every listing for the life of the pane. Seeing Claude in
 		// the foreground is the same class of evidence and must be allowed to
-		// withdraw it.
+		// withdraw it. So is a harness pane's OWN program coming back: an
+		// opencode agent that slept (shell verdict recorded) and was woken has
+		// no hooks to speak for it either, and stayed hidden from the bus for
+		// the life of the pane (found 2026-09-06 on the first agent wake).
 		//
 		// Gated on the COMMAND signal: only that one carries a foreground
 		// change. A running Claude repaints its title constantly, and firing

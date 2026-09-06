@@ -9,6 +9,7 @@
 package manager
 
 import (
+	"path/filepath"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -52,6 +53,23 @@ func atBareShell(p *model.Pane) bool {
 // on that host stayed hidden from the peers bus: nothing recognized it as Claude,
 // so nothing ever retracted the pane's stale "at a shell" verdict.
 func runsClaude(p *model.Pane) bool { return isClaudeCommand(p.RawCommand) }
+
+// retractsShellVerdict is the foreground evidence that may withdraw a "this
+// pane is at a shell" verdict: Claude, or a harness pane's own program.
+func retractsShellVerdict(p *model.Pane) bool { return runsClaude(p) || runsOwnHarness(p) }
+
+// runsOwnHarness reports that a harness pane's foreground IS the program it
+// was started with (opencode for an opencode instance) — the same class of
+// evidence as Claude in the foreground of a Claude pane. A harness pane whose
+// foreground is something else (an editor, a dev server) has been given to
+// other work and does not count.
+func runsOwnHarness(p *model.Pane) bool {
+	if p.Harness == "" {
+		return false
+	}
+	prog := harness.StartupProgram(p.StartupCommand)
+	return prog != "" && prog == filepath.Base(strings.TrimSpace(p.RawCommand))
+}
 
 // isClaudeCommand is the one place that decides whether a tmux
 // #{pane_current_command} names Claude, shared with title derivation so the two

@@ -100,3 +100,36 @@ func TestApplyPaneTitleSignal_OtherCommandsDoNotRetract(t *testing.T) {
 		}
 	}
 }
+
+// A harness pane's own program coming back is the same evidence as Claude
+// coming back: an opencode agent that slept (shell verdict) and was woken
+// must be able to withdraw it, or it stays hidden from the bus for the life
+// of the pane. A harness pane whose foreground is other work still cannot.
+func TestApplyPaneTitleSignal_OwnHarnessRetractsTheShellVerdict(t *testing.T) {
+	m, _ := devhostManager(t)
+	rec := &sessionSignals{}
+	m.SessionSink = rec.sink
+	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1", Harness: "opencode", Agent: "scout",
+		StartupCommand: "CLAUDE_PEERS_NAME=scout opencode --agent scout --port 46675"}
+	m.mu.Lock()
+	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
+	m.mu.Unlock()
+
+	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "bash")
+	if got := rec.last(); got != model.SessionNone {
+		t.Fatalf("a bare shell reported %q, want %q", got, model.SessionNone)
+	}
+	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "opencode")
+	if got := rec.last(); got != model.SessionUnknown {
+		t.Fatalf("own harness in the foreground reported %q, want %q — the shell verdict stands", got, model.SessionUnknown)
+	}
+
+	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "bash")
+	before := len(rec.sigs)
+	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "node")
+	for _, sig := range rec.sigs[before:] {
+		if sig == model.SessionUnknown {
+			t.Fatal("other work in a harness pane retracted the shell verdict")
+		}
+	}
+}
