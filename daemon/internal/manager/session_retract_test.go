@@ -22,6 +22,19 @@ func (s *sessionSignals) last() model.SessionSignal {
 	return s.sigs[len(s.sigs)-1]
 }
 
+// retractFixture is a manager with the bus's session sink recorded and one
+// pane p in workspace w1 — what every retraction test starts from.
+func retractFixture(t *testing.T, p *model.Pane) (*Manager, *sessionSignals) {
+	t.Helper()
+	m, _ := devhostManager(t)
+	rec := &sessionSignals{}
+	m.SessionSink = rec.sink
+	m.mu.Lock()
+	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
+	m.mu.Unlock()
+	return m, rec
+}
+
 // The shell backstop tells the bus a pane holds no session, and it fires on
 // every command signal — restarts included, because tmux replays each pane's
 // current command on subscribe. Nothing retracted it, so on a host with no
@@ -29,13 +42,7 @@ func (s *sessionSignals) last() model.SessionSignal {
 // life of the pane. Claude in the foreground is the same class of evidence and
 // has to be able to withdraw it.
 func TestApplyPaneTitleSignal_ClaudeRetractsTheShellVerdict(t *testing.T) {
-	m, _ := devhostManager(t)
-	rec := &sessionSignals{}
-	m.SessionSink = rec.sink
-	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1"}
-	m.mu.Lock()
-	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
-	m.mu.Unlock()
+	m, rec := retractFixture(t, &model.Pane{ID: "pane-1", WorkspaceID: "w1"})
 
 	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "zsh")
 	if got := rec.last(); got != model.SessionNone {
@@ -58,13 +65,7 @@ func TestApplyPaneTitleSignal_ClaudeRetractsTheShellVerdict(t *testing.T) {
 // A running Claude repaints its title constantly. The retraction carries no new
 // evidence there, and firing on it re-asserted the withdrawal on every repaint.
 func TestApplyPaneTitleSignal_TitleRepaintDoesNotRetract(t *testing.T) {
-	m, _ := devhostManager(t)
-	rec := &sessionSignals{}
-	m.SessionSink = rec.sink
-	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1"}
-	m.mu.Lock()
-	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
-	m.mu.Unlock()
+	m, rec := retractFixture(t, &model.Pane{ID: "pane-1", WorkspaceID: "w1"})
 
 	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "claude")
 	before := len(rec.sigs)
@@ -82,13 +83,7 @@ func TestApplyPaneTitleSignal_TitleRepaintDoesNotRetract(t *testing.T) {
 // clearing the record for it would resurrect a pane the backstop correctly
 // retired.
 func TestApplyPaneTitleSignal_OtherCommandsDoNotRetract(t *testing.T) {
-	m, _ := devhostManager(t)
-	rec := &sessionSignals{}
-	m.SessionSink = rec.sink
-	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1"}
-	m.mu.Lock()
-	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
-	m.mu.Unlock()
+	m, rec := retractFixture(t, &model.Pane{ID: "pane-1", WorkspaceID: "w1"})
 
 	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "zsh")
 	before := len(rec.sigs)
@@ -106,14 +101,8 @@ func TestApplyPaneTitleSignal_OtherCommandsDoNotRetract(t *testing.T) {
 // must be able to withdraw it, or it stays hidden from the bus for the life
 // of the pane. A harness pane whose foreground is other work still cannot.
 func TestApplyPaneTitleSignal_OwnHarnessRetractsTheShellVerdict(t *testing.T) {
-	m, _ := devhostManager(t)
-	rec := &sessionSignals{}
-	m.SessionSink = rec.sink
-	p := &model.Pane{ID: "pane-1", WorkspaceID: "w1", Harness: "opencode", Agent: "scout",
-		StartupCommand: "CLAUDE_PEERS_NAME=scout opencode --agent scout --port 46675"}
-	m.mu.Lock()
-	m.byID["w1"].ws.Panes = append(m.byID["w1"].ws.Panes, p)
-	m.mu.Unlock()
+	m, rec := retractFixture(t, &model.Pane{ID: "pane-1", WorkspaceID: "w1", Harness: "opencode", Agent: "scout",
+		StartupCommand: "CLAUDE_PEERS_NAME=scout opencode --agent scout --port 46675"})
 
 	m.applyPaneTitleSignal("w1", "pane-1", "pane-command", "bash")
 	if got := rec.last(); got != model.SessionNone {

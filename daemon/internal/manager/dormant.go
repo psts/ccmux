@@ -9,7 +9,6 @@
 package manager
 
 import (
-	"path/filepath"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -55,20 +54,23 @@ func atBareShell(p *model.Pane) bool {
 func runsClaude(p *model.Pane) bool { return isClaudeCommand(p.RawCommand) }
 
 // retractsShellVerdict is the foreground evidence that may withdraw a "this
-// pane is at a shell" verdict: Claude, or a harness pane's own program.
-func retractsShellVerdict(p *model.Pane) bool { return runsClaude(p) || runsOwnHarness(p) }
-
-// runsOwnHarness reports that a harness pane's foreground IS the program it
-// was started with (opencode for an opencode instance) — the same class of
-// evidence as Claude in the foreground of a Claude pane. A harness pane whose
-// foreground is something else (an editor, a dev server) has been given to
-// other work and does not count.
-func runsOwnHarness(p *model.Pane) bool {
+// pane is at a shell" verdict: Claude, or a harness pane's OWN program (the
+// one its startup command names — opencode for an opencode instance). The
+// two are the same class of evidence: a session that will read the bus is
+// back in the foreground, and without Claude's hooks nothing else ever
+// speaks for a harness pane. A harness pane whose foreground is something
+// else (an editor, a dev server) has been given to other work and does not
+// count. Compared through StartupProgram on both sides, so a wrapper in the
+// configured command ("npx opencode") is a known miss, logged by the caller.
+func retractsShellVerdict(p *model.Pane) bool {
+	if runsClaude(p) {
+		return true
+	}
 	if p.Harness == "" {
 		return false
 	}
 	prog := harness.StartupProgram(p.StartupCommand)
-	return prog != "" && prog == filepath.Base(strings.TrimSpace(p.RawCommand))
+	return prog != "" && prog == harness.StartupProgram(p.RawCommand)
 }
 
 // isClaudeCommand is the one place that decides whether a tmux
