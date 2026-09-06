@@ -69,7 +69,10 @@ func claudeFlags(d Definition, cmd, baseDir string, dirs []string) string {
 		"--plugin-dir", shellQuote(baseDir),
 		"--append-system-prompt-file", shellQuote(filepath.Join(baseDir, fileAgents)),
 	}
-	for _, dir := range append(append([]string{}, dirs...), d.AddDirs...) {
+	for _, dir := range dirs {
+		parts = append(parts, "--add-dir", shellQuote(dir))
+	}
+	for _, dir := range d.AddDirs {
 		parts = append(parts, "--add-dir", shellQuote(dir))
 	}
 	if d.Model != "" {

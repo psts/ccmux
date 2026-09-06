@@ -357,7 +357,12 @@ function openWsMenu(ws, x, y) {
   }
   add("Remove Session…", () => removeSession(ws), "danger");
 
-  // Show first so it has a size, then clamp into the viewport.
+  showMenuAt(menu, x, y);
+}
+
+// showMenuAt shows a context menu first so it has a size, then clamps it
+// into the viewport.
+function showMenuAt(menu, x, y) {
   menu.classList.remove("hidden");
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
@@ -380,10 +385,7 @@ function openWindowMenu(win, x, y) {
   menu.appendChild(slot);
   menu.dataset.win = win.id;
   appendWindowAgentEntries(menu, slot, win);
-  menu.classList.remove("hidden");
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
-  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+  showMenuAt(menu, x, y);
 }
 
 async function appendWindowAgentEntries(menu, slot, win) {
@@ -1004,10 +1006,7 @@ async function openPaneLLMMenu(paneId, x, y) {
   add("Global default", "", cur.route === "");
   for (const name of cur.accounts || []) add(name, name, cur.route === name);
 
-  menu.classList.remove("hidden");
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
-  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+  showMenuAt(menu, x, y);
 }
 
 // settingsURLFor targets the settings of the host that owns ws (the hub

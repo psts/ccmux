@@ -77,7 +77,9 @@ func (m *Manager) CreateAgentWorkspace(name, createdBy, group string, l AgentLau
 		// The harness is already up; a session no lens lists and no cap
 		// counts must not keep running.
 		ctrl.Close()
-		_ = m.server.KillSession(sessionName)
+		if kerr := m.server.KillSession(sessionName); kerr != nil {
+			log.Printf("agent %s: tmux session %s left running after a failed register: %v", l.Name, sessionName, kerr)
+		}
 		return nil, err
 	}
 	m.starting.mark(spawnKey("window:"+group, l.Name), now)
@@ -121,14 +123,16 @@ func (m *Manager) ReviveAgentWorkspace(wsID string, l AgentLaunch) (*model.Pane,
 	return m.AgentPane(wsID, l.Name), nil
 }
 
-// forgetAgentStarts clears the start marks of a session being archived: a
-// wake typed moments before the archive is not in flight any more, and a
-// revive right after must not read it as one.
-func (m *Manager) forgetAgentStarts(wsID string, panes []*model.Pane) {
+// forgetAgentStarts clears the start marks of a session being archived or
+// deleted: a wake typed moments before is not in flight any more, and a
+// revive or a fresh add right after must not read it as one. group is the
+// session's window, whose own add mark goes too.
+func (m *Manager) forgetAgentStarts(wsID, group string, panes []*model.Pane) {
 	for _, p := range panes {
 		m.starting.forget(p.ID)
 		if p.Agent != "" {
 			m.starting.forget(spawnKey(wsID, p.Agent))
+			m.starting.forget(spawnKey("window:"+group, p.Agent))
 		}
 	}
 }
@@ -136,25 +140,21 @@ func (m *Manager) forgetAgentStarts(wsID string, panes []*model.Pane) {
 // SleepAgent ends a running instance's harness session the way idle exit
 // does (ctrl-d at its prompt): the pane drops to its shell with history
 // intact, and the next message wakes it. Refuses a non-agent pane; an
-// instance already asleep is left alone.
+// instance already asleep is left alone; a keystroke that did not go in is
+// an error, never a silent 204.
 func (m *Manager) SleepAgent(paneID string) error {
 	m.mu.RLock()
 	e, p := m.findPaneLocked(paneID)
-	var wsID string
-	if e != nil {
-		wsID = e.ws.ID
-	}
-	asleep := p != nil && atBareShell(p)
-	isAgent := p != nil && p.Agent != ""
-	m.mu.RUnlock()
-	if !isAgent {
+	if p == nil || p.Agent == "" {
+		m.mu.RUnlock()
 		return ErrNotAgent
 	}
+	wsID, asleep := e.ws.ID, atBareShell(p)
+	m.mu.RUnlock()
 	if asleep {
 		return nil
 	}
-	m.exitAgent(paneID, wsID, "asked to sleep")
-	return nil
+	return m.exitAgent(paneID, wsID, "asked to sleep")
 }
 
 // StartAgentInPane restarts an instance whose pane sits at a bare shell — the

@@ -12,10 +12,23 @@ const maxSlugLen = 24
 // basename: lowercased, non-alphanumeric runs collapsed to single dashes,
 // trimmed, length-capped. Empty/degenerate input yields "repo".
 func Slug(repoPath string) string {
-	base := filepath.Base(strings.TrimRight(repoPath, "/"))
+	s := SlugText(filepath.Base(strings.TrimRight(repoPath, "/")))
+	if len(s) > maxSlugLen {
+		s = strings.Trim(s[:maxSlugLen], "-")
+	}
+	if s == "" {
+		return "repo"
+	}
+	return s
+}
+
+// SlugText is the one slug rule: ASCII letters and digits kept (lowercased),
+// every other run becomes one dash, dashes at either end dropped. No length
+// cap and no fallback; Slug adds those for session names.
+func SlugText(text string) string {
 	var b strings.Builder
 	prevDash := false
-	for _, r := range strings.ToLower(base) {
+	for _, r := range strings.ToLower(text) {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			prevDash = false
@@ -24,14 +37,7 @@ func Slug(repoPath string) string {
 			prevDash = true
 		}
 	}
-	s := strings.Trim(b.String(), "-")
-	if len(s) > maxSlugLen {
-		s = strings.Trim(s[:maxSlugLen], "-")
-	}
-	if s == "" {
-		return "repo"
-	}
-	return s
+	return strings.Trim(b.String(), "-")
 }
 
 // SessionName builds the tmux session name `ccmux-<slug>-<uuid8>`. The slug is

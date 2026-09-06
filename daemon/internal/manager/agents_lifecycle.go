@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -166,7 +167,7 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 	}
 	switch decideAgent(m.agentViewFor(p, d, now), now) {
 	case actExit:
-		m.exitAgent(p.ID, wsID, "idle past its cap")
+		_ = m.exitAgent(p.ID, wsID, "idle past its cap") // logged inside; the next tick retries
 	case actWake:
 		m.wakeWithBackoff(wsID, p, now)
 	}
@@ -270,10 +271,16 @@ func (b *wakeBackoff) forget(paneID string) {
 // mapping this reads.
 func claudeBusy(att model.Attention) bool { return att == model.AttentionIdle }
 
+// ErrPaneGone says the pane (or its session) vanished before an action
+// reached it — the tick's snapshot was stale.
+var ErrPaneGone = errors.New("pane is gone")
+
 // exitAgent ends the harness session with an end-of-input: Claude Code and
 // opencode both quit on ctrl-d at their prompt, which is where an idle
-// agent sits. The pane drops to its shell and stays (history intact).
-func (m *Manager) exitAgent(paneID, wsID, why string) {
+// agent sits. The pane drops to its shell and stays (history intact). The
+// error says whether the keystroke went in; the lifecycle loop only logs it,
+// a human's sleep request answers with it.
+func (m *Manager) exitAgent(paneID, wsID, why string) error {
 	m.mu.RLock()
 	e, p := m.findPaneLocked(paneID)
 	var ctrl *session.Controller
@@ -282,13 +289,14 @@ func (m *Manager) exitAgent(paneID, wsID, why string) {
 	}
 	m.mu.RUnlock()
 	if ctrl == nil {
-		return // pane gone between the tick's snapshot and now
+		return ErrPaneGone
 	}
 	log.Printf("agent pane %s: %s, ending the session", paneID, why)
 	if err := ctrl.SendInput(paneID, []byte{0x04}); err != nil {
 		log.Printf("agent pane %s: exit keystroke failed: %v", paneID, err)
-		return
+		return fmt.Errorf("exit keystroke: %w", err)
 	}
 	m.activity.forget(paneID)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return nil
 }

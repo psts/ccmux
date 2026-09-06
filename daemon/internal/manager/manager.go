@@ -674,7 +674,7 @@ func (m *Manager) archiveIf(wsID string, stillTrue func(*entry) bool) (*model.Wo
 	if ctrl == nil {
 		return e.ws, nil // already cold
 	}
-	m.forgetAgentStarts(wsID, panes) // nothing is "starting" in a dead session
+	m.forgetAgentStarts(wsID, e.ws.Group, panes) // nothing is "starting" in a dead session
 	ctrl.Close()
 	_ = m.server.KillSession(session)
 	_ = m.store.SetWorkspaceStatus(wsID, model.StatusCold)
@@ -696,12 +696,14 @@ func (m *Manager) KillWorkspace(wsID string) error {
 	ctrl := e.ctrl
 	session := e.ws.TmuxSession
 	delete(m.byID, wsID)
+	panes, group := append([]*model.Pane(nil), e.ws.Panes...), e.ws.Group
 	m.mu.Unlock()
 
 	if ctrl != nil {
 		ctrl.Close()
 	}
 	_ = m.server.KillSession(session)
+	m.forgetAgentStarts(wsID, group, panes)
 	m.events.publish(Event{Kind: "workspace-removed", WorkspaceID: wsID})
 	// The workspace's window membership goes with it — GET /v1/windows serves
 	// workspaceIds straight from the table, so a leftover row is a ghost

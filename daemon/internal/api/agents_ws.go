@@ -73,6 +73,7 @@ func (s *Server) windowInstances(win manager.WindowInfo) ([]agentInstance, error
 func (s *Server) windowByID(id string) (manager.WindowInfo, int, string) {
 	windows, err := s.mgr.WindowsListStrict()
 	if err != nil {
+		log.Printf("windows: listing failed: %v", err)
 		return manager.WindowInfo{}, http.StatusServiceUnavailable, "window state unreadable — retry"
 	}
 	for _, win := range windows {
@@ -104,7 +105,8 @@ func (s *Server) agentWorkspace(win manager.WindowInfo, name string) *model.Work
 }
 
 // windowRepos lists the project folders of win's ordinary sessions on this
-// host — what the agent gets read access to (--add-dir).
+// host — what the agent can reach through --add-dir (its base's permissions
+// say whether it may edit there).
 func (s *Server) windowRepos(win manager.WindowInfo) []string {
 	var dirs []string
 	for _, id := range win.WorkspaceIDs {
@@ -170,19 +172,16 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 		return startOutcome{status: http.StatusServiceUnavailable, msg: agentsUnavailable}
 	}
 	if ws := s.agentWorkspace(win, name); ws != nil {
-		return s.startAgent(ws.ID, name, prompt, createdBy)
+		return s.startAgent(ws.ID, name, prompt)
 	}
-	d, err := s.agents.Get(name)
-	if errors.Is(err, agent.ErrNotFound) {
-		return startOutcome{status: http.StatusNotFound, msg: "no such agent"}
-	}
-	if err != nil {
-		return startOutcome{status: http.StatusServiceUnavailable, msg: err.Error()}
+	d, status, msg := s.agentDefinition(name)
+	if msg != "" {
+		return startOutcome{status: status, msg: msg}
 	}
 	if msg := s.agentCapMessage(); msg != "" {
 		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
 	}
-	l, status, msg := s.resolveAgentLaunch(s.agents.InstanceDir(win.ID, win.Name, name), s.windowRepos(win), "", name, prompt)
+	l, status, msg := s.resolveAgentLaunch(d, s.agents.InstanceDir(win.ID, win.Name, name), s.windowRepos(win), "", prompt)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
@@ -211,21 +210,29 @@ func agentSessionName(d agent.Definition) string {
 	return d.Icon + " " + d.Name
 }
 
-// resolveAgentLaunch turns a base name into a ready AgentLaunch for the
-// instance folder dir (written here) with dirs as the project folders, or an
-// HTTP status and message explaining why not. wsID is the instance's
-// existing session when it has one (its opencode port is reused), "" for a
-// fresh add.
-func (s *Server) resolveAgentLaunch(dir string, dirs []string, wsID, name, prompt string) (manager.AgentLaunch, int, string) {
-	if s.agents == nil || s.mgr.Harnesses == nil {
-		return manager.AgentLaunch{}, http.StatusServiceUnavailable, agentsUnavailable
+// agentDefinition reads base name: 404 for a name with no base, 503 when
+// the base exists but cannot be read (or agents are off on this daemon).
+func (s *Server) agentDefinition(name string) (agent.Definition, int, string) {
+	if s.agents == nil {
+		return agent.Definition{}, http.StatusServiceUnavailable, agentsUnavailable
 	}
 	d, err := s.agents.Get(name)
 	if errors.Is(err, agent.ErrNotFound) {
-		return manager.AgentLaunch{}, http.StatusNotFound, "no such agent"
+		return agent.Definition{}, http.StatusNotFound, "no such agent"
 	}
 	if err != nil {
-		return manager.AgentLaunch{}, http.StatusServiceUnavailable, err.Error()
+		return agent.Definition{}, http.StatusServiceUnavailable, err.Error()
+	}
+	return d, 0, ""
+}
+
+// resolveAgentLaunch turns base d into a ready AgentLaunch for the instance
+// folder dir (written here) with dirs as the project folders, or an HTTP
+// status and message explaining why not. wsID is the instance's existing
+// session when it has one (its opencode port is reused), "" for a fresh add.
+func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []string, wsID, prompt string) (manager.AgentLaunch, int, string) {
+	if s.mgr.Harnesses == nil {
+		return manager.AgentLaunch{}, http.StatusServiceUnavailable, agentsUnavailable
 	}
 	h, err := s.mgr.Harnesses.Resolve(d.Harness)
 	if err != nil {
@@ -314,26 +321,24 @@ func (s *Server) agentRoute(d agent.Definition, h harness.Harness) (string, int,
 // and "already running" first (before any side effect), then launch
 // resolution (which refreshes the instance folder's generated config), then
 // the start into its pane, then the first prompt. An archived session is
-// revived instead, which replays its persisted launch. Returns the pane, the
-// HTTP status a transport would answer with (200 woken) and the refusal
-// message, "" when it went through. The window route, the bus and the
-// lifecycle loop are all adapters over this.
-func (s *Server) startAgent(wsID, name, prompt, createdBy string) startOutcome {
-	ws := s.mgr.Workspace(wsID)
-	if ws == nil || ws.Agent != name {
-		return startOutcome{status: http.StatusNotFound, msg: "no session for agent " + name + " here"}
+// revived instead, with this launch and its prompt typed in place of the
+// persisted line. Returns the pane, the HTTP status a transport would answer
+// with (200 woken) and the refusal message, "" when it went through. The
+// window route, the bus and the lifecycle loop are all adapters over this.
+func (s *Server) startAgent(wsID, name, prompt string) startOutcome {
+	ws, existing, refusal := s.agentSessionReady(wsID, name)
+	if refusal.msg != "" {
+		return refusal
 	}
-	existing := s.mgr.AgentPane(wsID, name)
-	if existing == nil {
-		return startOutcome{status: http.StatusConflict, msg: "agent " + name + "'s session lost its agent pane — remove the session and add the agent again"}
+	d, status, msg := s.agentDefinition(name)
+	if msg != "" {
+		return startOutcome{status: status, msg: msg}
 	}
-	if ws.Status == model.StatusLive && !s.mgr.PaneAtShell(existing.ID) {
-		return startOutcome{pane: existing, status: http.StatusConflict, msg: "agent " + name + " is running in this window — type into its pane", err: manager.ErrAgentRunning}
+	dirs, status, msg := s.windowReposOfPane(existing.ID)
+	if msg != "" {
+		return startOutcome{status: status, msg: msg}
 	}
-	if msg := s.agentCapMessage(); msg != "" {
-		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
-	}
-	l, status, msg := s.resolveAgentLaunch(ws.RepoPath, s.windowReposOfPane(existing.ID), wsID, name, prompt)
+	l, status, msg := s.resolveAgentLaunch(d, ws.RepoPath, dirs, wsID, prompt)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
@@ -342,6 +347,27 @@ func (s *Server) startAgent(wsID, name, prompt, createdBy string) startOutcome {
 	}
 	s.pushPromptLater(existing.ID, l)
 	return startOutcome{pane: s.mgr.AgentPane(wsID, name), status: http.StatusOK}
+}
+
+// agentSessionReady is startAgent's pre-flight: the session must be base
+// name's, still have its agent pane, not be running, and the cap must have
+// room. The refusal's msg is "" when every check passed.
+func (s *Server) agentSessionReady(wsID, name string) (*model.Workspace, *model.Pane, startOutcome) {
+	ws := s.mgr.Workspace(wsID)
+	if ws == nil || ws.Agent != name {
+		return nil, nil, startOutcome{status: http.StatusNotFound, msg: "no session for agent " + name + " here"}
+	}
+	existing := s.mgr.AgentPane(wsID, name)
+	if existing == nil {
+		return nil, nil, startOutcome{status: http.StatusConflict, msg: "agent " + name + "'s session lost its agent pane — remove the session and add the agent again"}
+	}
+	if ws.Status == model.StatusLive && !s.mgr.PaneAtShell(existing.ID) {
+		return nil, nil, startOutcome{pane: existing, status: http.StatusConflict, msg: "agent " + name + " is running in this window — type into its pane", err: manager.ErrAgentRunning}
+	}
+	if msg := s.agentCapMessage(); msg != "" {
+		return nil, nil, startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
+	}
+	return ws, existing, startOutcome{}
 }
 
 // launchIntoAgentSession types the launch into a live agent session's pane,
@@ -361,17 +387,25 @@ func (s *Server) launchIntoAgentSession(ws *model.Workspace, paneID string, l ma
 }
 
 // windowReposOfPane is windowRepos for the window the pane's session sits in
-// (its RESOLVED window, not the legacy column); nil when it has none.
-func (s *Server) windowReposOfPane(paneID string) []string {
+// (its RESOLVED window, not the legacy column). A session outside any
+// window launches with no project folders, said once in the log; an
+// unreadable window table is a refusal (status, message), because a launch
+// with no folders would be persisted as the agent's recipe.
+func (s *Server) windowReposOfPane(paneID string) ([]string, int, string) {
 	group, ok := s.mgr.GroupForPane(paneID)
 	if !ok || group == "" {
-		return nil
+		log.Printf("agent pane %s: its session is in no shared window; launching without project folders", paneID)
+		return nil, 0, ""
 	}
-	win, _, msg := s.windowByName(group)
+	win, status, msg := s.windowByName(group)
+	if status == http.StatusNotFound {
+		log.Printf("agent pane %s: group %q is not a shared window; launching without project folders", paneID, group)
+		return nil, 0, ""
+	}
 	if msg != "" {
-		return nil
+		return nil, status, msg
 	}
-	return s.windowRepos(win)
+	return s.windowRepos(win), 0, ""
 }
 
 // startOutcome is what startAgent hands its adapters: the pane, the HTTP

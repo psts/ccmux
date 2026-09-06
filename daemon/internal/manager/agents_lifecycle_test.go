@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -75,7 +76,9 @@ func TestExitAgentSurvivesAVanishedPane(t *testing.T) {
 	}
 	defer st.Close()
 	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
-	m.exitAgent("no-such-pane", "no-such-ws", "test") // must not panic
+	if err := m.exitAgent("no-such-pane", "no-such-ws", "test"); !errors.Is(err, ErrPaneGone) { // must not panic
+		t.Fatalf("vanished pane = %v, want ErrPaneGone", err)
+	}
 	if err := m.PushToAgentPane("no-such-pane", "x"); err != ErrNotAgentPane {
 		t.Fatalf("push to unknown pane = %v, want ErrNotAgentPane", err)
 	}

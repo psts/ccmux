@@ -1218,8 +1218,8 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// The shared window answering to a sidebar window name, matched the way
-    /// membership is (case-insensitive, trimmed) — the Mac's own window ids
-    /// are local; the daemon's are what the agent routes take.
+    /// membership is (case-insensitive) — the Mac's own window ids are
+    /// local; the daemon's are what the agent routes take.
     func sharedWindow(named name: String) -> DaemonWindow? {
         sharedWindows.first { WindowManager.sameWindowName($0.name, name) }
     }
@@ -1234,26 +1234,31 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// Refresh the agent list for one shared window. `force` skips the TTL
-    /// (after a start or sleep the state just changed).
+    /// (after a start or sleep the state just changed). Main-actor: every
+    /// dictionary here is written on the main thread, like the rest of this
+    /// service (the poll and a click's forced refresh run concurrently).
+    /// Failures land in `windowAgentErrors` the way the web lens shows them,
+    /// never as a stale list that still reads as fresh.
+    @MainActor
     func refreshWindowAgents(_ windowId: String, force: Bool = false) async {
         if !force, let at = windowAgentsFetchedAt[windowId], Date().timeIntervalSince(at) < 5 { return }
         windowAgentsFetchedAt[windowId] = Date()
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(windowId)/agents"),
-              let (data, resp) = try? await session.data(from: url) else { return }
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-            // Same rule as the web lens: a broken base is shown by name, not
-            // hidden behind an empty menu that reads as "no agents".
-            struct APIError: Decodable { let error: String }
-            let text = (try? JSONDecoder().decode(APIError.self, from: data))?.error
-                ?? "HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)"
-            await MainActor.run { self.windowAgentErrors[windowId] = text }
-            return
-        }
-        struct Body: Decodable { let agents: [DaemonAgentInstance] }
-        guard let list = (try? JSONDecoder().decode(Body.self, from: data))?.agents else { return }
-        await MainActor.run {
-            self.windowAgents[windowId] = list
-            self.windowAgentErrors[windowId] = ""
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(windowId)/agents") else { return }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                // Same rule as the web lens: a broken base is shown by name, not
+                // hidden behind an empty menu that reads as "no agents".
+                struct APIError: Decodable { let error: String }
+                windowAgentErrors[windowId] = (try? JSONDecoder().decode(APIError.self, from: data))?.error
+                    ?? "HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)"
+                return
+            }
+            struct Body: Decodable { let agents: [DaemonAgentInstance] }
+            windowAgents[windowId] = try JSONDecoder().decode(Body.self, from: data).agents
+            windowAgentErrors[windowId] = ""
+        } catch {
+            windowAgentErrors[windowId] = error.localizedDescription
         }
     }
 

@@ -9,9 +9,12 @@ the agent is. The instance says what it is for here.
 
 A project is a **shared window**, not a repo (changed 2026-09-06). An instance
 is its own session inside the window, named after the agent, and every
-session in that window reaches it on the bus by name. It gets read access to
-the window's repos on its host, and its folder lives beside the bases, not
-inside any repo.
+session in that window reaches it on the bus by name. It can reach the
+window's repos on its host through the harness's extra-directory flag (its
+base's permissions say whether it may edit there, and the defaults allow
+edits), and its folder lives beside the bases, not inside any repo. The
+folder name is the window's slug plus the first eight characters of its id,
+so two windows whose names slug alike stay apart.
 
 ## 1. Identity
 
@@ -224,7 +227,7 @@ Code instances get them as channel messages.
 ### Instance folder
 
 ```
-~/.ccmux/windows/<window-slug>/agents/x-poster/
+~/.ccmux/windows/<window-slug>-<id prefix>/agents/x-poster/
 ├── AGENTS.md          starter header + project instructions
 ├── CLAUDE.md          @AGENTS.md
 ├── .claude/skills/

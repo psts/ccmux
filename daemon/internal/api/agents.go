@@ -61,7 +61,7 @@ func (s *Server) wirePeersAgents() {
 // wakeAgent is the lifecycle loop's restart path for a keep-alive instance
 // found asleep: the one start flow, from the CURRENT base, with no prompt.
 func (s *Server) wakeAgent(wsID, name string) error {
-	out := s.startAgent(wsID, name, "", "lifecycle")
+	out := s.startAgent(wsID, name, "")
 	switch {
 	case out.msg == "":
 		return nil
@@ -81,7 +81,7 @@ func (s *Server) wakePane(paneID, text string) error {
 	}
 	for _, p := range ws.Panes {
 		if p.ID == paneID && p.Agent != "" {
-			out := s.startAgent(wsID, p.Agent, text, "claude-peers")
+			out := s.startAgent(wsID, p.Agent, text)
 			if errors.Is(out.err, manager.ErrAgentRunning) {
 				// Another start is in flight with ITS prompt; this message is
 				// not in it. The bus retries the TUI push once the harness is up.

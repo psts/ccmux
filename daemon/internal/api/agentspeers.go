@@ -35,8 +35,13 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A group that is not a window (the directory fallback) has no members,
-	// so instanceOf reads every base as absent.
-	win, _, _ := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
+	// so instanceOf reads every base as absent. An unreadable window table
+	// is NOT that: it answers 503, never "nothing is added".
+	win, status, msg := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
+	if msg != "" && status != http.StatusNotFound {
+		writeError(w, status, msg)
+		return
+	}
 	for _, d := range defs {
 		out = append(out, s.instanceOf(win, d))
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -255,9 +256,13 @@ func migrateAgentColumns(db *sql.DB) error {
 	// woken through now, so it becomes a plain pane: the lifecycle stops
 	// trying to wake it and the bus treats it as any other. Its folder in
 	// the repo stays on disk. Idempotent: agent sessions keep their pane.
-	if _, err := db.Exec(`UPDATE panes SET agent='', agent_version='' WHERE agent != ''
-		AND workspace_id IN (SELECT id FROM workspaces WHERE agent = '')`); err != nil {
+	res, err := db.Exec(`UPDATE panes SET agent='', agent_version='' WHERE agent != ''
+		AND workspace_id IN (SELECT id FROM workspaces WHERE agent = '')`)
+	if err != nil {
 		return fmt.Errorf("migrate legacy agent panes: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("store: %d agent pane(s) from the per-repo model became plain panes; add the agent to its window to get it back", n)
 	}
 	return nil
 }

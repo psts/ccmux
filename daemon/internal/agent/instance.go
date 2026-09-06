@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"ccmux.dev/ccmuxd/internal/model"
 )
 
 // InstanceDir is where a base lives inside one shared window (a project):
@@ -19,25 +20,15 @@ func (s *Store) InstanceDir(windowID, windowName, name string) string {
 	return filepath.Join(filepath.Dir(s.Root), "windows", windowFolder(windowID, windowName), "agents", name)
 }
 
-// windowFolder is "<slug>-<first 8 of the id>"; the slug lowercases the
-// whole name and collapses every non-alphanumeric run to one dash.
+// windowFolder is "<slug>-<first 8 of the id>" (model.SlugText: ASCII
+// letters and digits, one dash per other run, none at the ends); just the
+// id prefix when the name has no ASCII letters or digits.
 func windowFolder(id, name string) string {
-	var b strings.Builder
-	dash := true
-	for _, r := range strings.ToLower(name) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			dash = false
-		} else if !dash {
-			b.WriteByte('-')
-			dash = true
-		}
-	}
-	slug := strings.TrimRight(b.String(), "-")
 	prefix := id
 	if len(prefix) > 8 {
 		prefix = prefix[:8]
 	}
+	slug := model.SlugText(name)
 	if slug == "" {
 		return prefix
 	}
