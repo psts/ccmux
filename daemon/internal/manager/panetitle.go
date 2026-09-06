@@ -6,6 +6,7 @@
 package manager
 
 import (
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -76,6 +77,21 @@ func defaultPaneTitles() map[string]bool {
 // "pane-command") into the pane and re-derives its title; a real change
 // persists and broadcasts so lenses refresh. The dev-server pane keeps its
 // purposeful "dev ▸ …" title.
+// repurposedPane handles a foreground that is not a shell, not the pane's
+// session program, and has no session behind it: the pane has been given to
+// other work. Whatever Claude used to live here is history, and history is
+// not what dormancy reports. For a harness pane this is also the one place
+// a mismatch between the configured command and what tmux reports shows up
+// (a wrapper like "npx opencode"), and a woken agent that hits it stays off
+// the bus — so it is said in the log rather than swallowed.
+func (m *Manager) repurposedPane(paneID string, p *model.Pane) {
+	if p.Harness != "" {
+		log.Printf("pane %s: harness %q foreground is %q but its startup program is %q; treated as other work, the shell verdict stands",
+			paneID, p.Harness, strings.TrimSpace(p.RawCommand), harness.StartupProgram(p.StartupCommand))
+	}
+	m.clearHostedClaude(paneID)
+}
+
 func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	m.mu.Lock()
 	e := m.byID[wsID]
@@ -131,23 +147,17 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 		// The retraction the backstop above needs to be safe. That assertion is
 		// made on every signal, restarts included, so a pane caught at its shell
 		// for one moment is recorded as holding no session — and without hooks
-		// installed nothing else ever speaks for it, leaving a live Claude
-		// hidden from every listing for the life of the pane. Seeing Claude in
-		// the foreground is the same class of evidence and must be allowed to
-		// withdraw it. So is a harness pane's OWN program coming back: an
-		// opencode agent that slept (shell verdict recorded) and was woken has
-		// no hooks to speak for it either, and stayed hidden from the bus for
-		// the life of the pane (found 2026-09-06 on the first agent wake).
+		// installed nothing else ever speaks for it, leaving a live session
+		// hidden from every listing for the life of the pane. The session's own
+		// program back in the foreground (retractsShellVerdict says which) is
+		// the same class of evidence and must be allowed to withdraw it.
 		//
 		// Gated on the COMMAND signal: only that one carries a foreground
 		// change. A running Claude repaints its title constantly, and firing
 		// there would re-assert this on every repaint for no new evidence.
 		m.ApplySession(paneID, "", model.SessionUnknown)
 	case kind == "pane-command" && !m.paneHasLiveSession(paneID):
-		// Not a shell, not Claude, and no session behind it: the pane has been
-		// given to other work. Whatever Claude used to live here is history, and
-		// history is not what dormancy reports.
-		m.clearHostedClaude(paneID)
+		m.repurposedPane(paneID, &saved)
 	}
 	if !changed {
 		return
