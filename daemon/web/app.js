@@ -142,7 +142,8 @@ function renderList() {
       h.className = "group-hdr";
       h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
         (win ? `<button class="grp-close" title="Close window">–</button>` : "") +
-        `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>`;
+        `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>` +
+        (win ? `<button class="grp-agents" title="Agents in ${esc(group)}">⚙</button>` : "");
       h.querySelector(".grp-msgs").onclick = (e) => {
         e.stopPropagation();
         window.ccmuxPeers.open(group);
@@ -151,6 +152,16 @@ function renderList() {
         h.querySelector(".grp-close").onclick = (e) => {
           e.stopPropagation();
           closeWindow(win);
+        };
+        // Agents belong to the window (the project), not to one session:
+        // the header is where they are added, woken and put to sleep.
+        h.querySelector(".grp-agents").onclick = (e) => {
+          e.stopPropagation();
+          openWindowMenu(win, e.clientX, e.clientY);
+        };
+        h.oncontextmenu = (e) => {
+          e.preventDefault();
+          openWindowMenu(win, e.clientX, e.clientY);
         };
       }
       ul.appendChild(h);
@@ -341,13 +352,6 @@ function openWsMenu(ws, x, y) {
     for (const h of hostnames.filter((h) => h.url)) {
       add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}`, () => window.open(h.url, "_blank"));
     }
-    // Agent rows fill in below once fetched; the slot keeps them above the
-    // destructive rows and bound to THIS menu's workspace.
-    const slot = document.createElement("div");
-    slot.className = "agent-slot";
-    menu.appendChild(slot);
-    menu.dataset.ws = ws.id;
-    appendAgentEntries(menu, slot, ws);
     sep();
     add("Close Session", () => closeSession(ws.id));
   }
@@ -360,50 +364,63 @@ function openWsMenu(ws, x, y) {
   menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
 }
 
-// appendAgentEntries adds one row per base agent to an open workspace menu:
-// running → jump to its pane or stop it; asleep or not yet added → start it
-// here with an optional first message. Rows go into the slot the menu
-// reserved, and only if the menu still belongs to the same workspace.
-async function appendAgentEntries(menu, slot, ws) {
-  const list = await fetchWorkspaceAgents(ws.id);
-  if (menu.dataset.ws !== ws.id || !slot.isConnected) return;
-  if (agentCatalog.error) {
-    slot.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
-    slot.appendChild(Object.assign(document.createElement("div"), { className: "host-line", textContent: "agents: " + agentCatalog.error }));
-    return;
-  }
-  if (!list.length) return;
-  const add = (label, fn, cls) => {
+// openWindowMenu is the window header's menu: one row per base agent —
+// running → open its session or put it to sleep; asleep or not yet added →
+// start it here with an optional first message. Rows fill in once fetched,
+// bound to THIS menu's window.
+function openWindowMenu(win, x, y) {
+  const menu = $("ctx-menu");
+  menu.innerHTML = "";
+  const line = document.createElement("div");
+  line.className = "host-line";
+  line.textContent = "⚙ agents in " + win.name;
+  menu.appendChild(line);
+  const slot = document.createElement("div");
+  slot.className = "agent-slot";
+  menu.appendChild(slot);
+  menu.dataset.win = win.id;
+  appendWindowAgentEntries(menu, slot, win);
+  menu.classList.remove("hidden");
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+}
+
+async function appendWindowAgentEntries(menu, slot, win) {
+  const list = await fetchWindowAgents(win.id);
+  if (menu.dataset.win !== win.id || !slot.isConnected) return;
+  const note = (text) => slot.appendChild(Object.assign(document.createElement("div"), { className: "host-line", textContent: text }));
+  if (agentCatalog.error) { note("agents: " + agentCatalog.error); return; }
+  if (!list.length) { note("no agents defined — Settings › Agents"); return; }
+  const add = (label, fn) => {
     const b = document.createElement("button");
     b.textContent = label;
-    if (cls) b.className = cls;
     b.onclick = () => { closeWsMenu(); fn(); };
     slot.appendChild(b);
   };
-  slot.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
   for (const a of list) {
     const icon = a.icon || "⚙";
     if (a.state === "running") {
-      add(`● ${icon} ${a.name} — open`, () => { if (a.pane) attach(ws.id, a.pane); });
-      add(`■ ${icon} ${a.name} — stop`, () => stopAgent(ws.id, a.name));
+      add(`● ${icon} ${a.name} — open`, () => attach(a.workspace, a.pane));
+      add(`■ ${icon} ${a.name} — sleep`, () => sleepAgent(win.id, a.name));
       continue;
     }
     const verb = a.state === "asleep" ? "wake…" : "add…";
     add(`${a.state === "asleep" ? "○" : "+"} ${icon} ${a.name} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
       const text = prompt(`Message ${a.name} (empty = just start it):`, "");
       if (text === null) return;
-      const p = await wakeAgent(ws.id, a.name, text.trim());
-      if (p && p.id) attach(ws.id, p.id);
+      const p = await wakeAgent(win.id, a.name, text.trim());
+      if (p && p.id) attach(p.workspaceId, p.id);
     });
   }
 }
 
-async function stopAgent(wsId, name) {
+async function sleepAgent(winId, name) {
   try {
-    const r = await fetch(`/v1/workspaces/${wsId}/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
-    if (!r.ok) alert(`stop ${name}: ` + (await r.text()));
+    const r = await fetch(`/v1/windows/${winId}/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok) alert(`sleep ${name}: ` + (await r.text()));
   } catch (e) {
-    alert(`stop ${name}: ` + e.message);
+    alert(`sleep ${name}: ` + e.message);
   }
   agentCatalog.at = 0;
 }
@@ -1065,12 +1082,20 @@ async function startHarness(paneId, name) {
 // --- Agent composer: an asleep agent's pane keeps its history and gets a
 // message box on top. Enter wakes the agent with the text as its first
 // message — the same daemon call a peer's contact makes. ---
-const agentCatalog = { wsId: "", list: [], at: 0 };
+const agentCatalog = { winId: "", list: [], at: 0 };
 
-async function fetchWorkspaceAgents(wsId) {
-  if (agentCatalog.wsId === wsId && Date.now() - agentCatalog.at < 5000) return agentCatalog.list;
+// windowOf is the shared window a workspace sits in (by its group name), or
+// null for an ungrouped one — agents live on windows, so an ungrouped agent
+// session has nothing to be woken through.
+function windowOf(ws) {
+  const g = ((ws && ws.group) || "").toLowerCase();
+  return g ? state.windows.find((w) => w.name.toLowerCase() === g) || null : null;
+}
+
+async function fetchWindowAgents(winId) {
+  if (agentCatalog.winId === winId && Date.now() - agentCatalog.at < 5000) return agentCatalog.list;
   try {
-    const r = await fetch(`/v1/workspaces/${wsId}/agents`);
+    const r = await fetch(`/v1/windows/${winId}/agents`);
     if (!r.ok) {
       const body = await r.text();
       let msg = body;
@@ -1078,13 +1103,13 @@ async function fetchWorkspaceAgents(wsId) {
       throw new Error(msg);
     }
     const list = (await r.json()).agents || [];
-    Object.assign(agentCatalog, { wsId, list, at: Date.now(), error: "" });
+    Object.assign(agentCatalog, { winId, list, at: Date.now(), error: "" });
     return list;
   } catch (e) {
     // The daemon fails the whole list on one broken base and names it; keep
     // that visible instead of an empty menu that looks like "no agents".
     console.warn("agents:", e.message);
-    Object.assign(agentCatalog, { wsId, list: [], at: Date.now(), error: e.message });
+    Object.assign(agentCatalog, { winId, list: [], at: Date.now(), error: e.message });
     return [];
   }
 }
@@ -1094,7 +1119,8 @@ async function updateAgentComposer(p) {
   const asleep = p.atShell || p.dormant;
   if (!asleep) { setAgentComposer(false); return; }
   const paneId = p.id;
-  const list = await fetchWorkspaceAgents(state.wsId);
+  const win = windowOf(state.workspaces.find((w) => w.id === state.wsId));
+  const list = win ? await fetchWindowAgents(win.id) : [];
   if (state.paneId !== paneId) return;
   const inst = list.find((a) => a.name === p.agent) || {};
   // Already showing for this pane: a registry refresh must not wipe an unsent
@@ -1109,11 +1135,12 @@ async function updateAgentComposer(p) {
   const input = document.createElement("input");
   input.className = "setting-input";
   input.type = "text";
-  input.placeholder = `Message ${p.agent}… Enter starts it`;
+  input.placeholder = win ? `Message ${p.agent}… Enter starts it` : `${p.agent} has no window — add its session to one first`;
+  input.disabled = !win;
   input.onkeydown = (e) => {
-    if (e.key !== "Enter") return;
+    if (e.key !== "Enter" || !win) return;
     e.preventDefault();
-    wakeAgent(state.wsId, p.agent, input.value.trim());
+    wakeAgent(win.id, p.agent, input.value.trim());
   };
   box.appendChild(input);
   if (inst.drift) {
@@ -1134,10 +1161,10 @@ function setAgentComposer(show) {
   scheduleFit();
 }
 
-async function wakeAgent(wsId, name, prompt) {
+async function wakeAgent(winId, name, prompt) {
   setAgentComposer(false);
   try {
-    const r = await fetch(`/v1/workspaces/${wsId}/agents/${encodeURIComponent(name)}`, {
+    const r = await fetch(`/v1/windows/${winId}/agents/${encodeURIComponent(name)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt, createdBy: "web" }),

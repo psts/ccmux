@@ -106,6 +106,12 @@ type Workspace struct {
 	// Empty = resolve by detection (portdetect.DetectCommand) at start time;
 	// set = the user's explicit override from the Hostnames sheet.
 	DevCommand string `json:"devCommand,omitempty"`
+	// Agent names the base agent this workspace IS an instance of ("" for an
+	// ordinary project session). An agent session belongs to a shared window,
+	// not a repo: its RepoPath is the instance folder under
+	// ~/.ccmux/windows/<window>/agents/<name>, and its first pane is the
+	// agent pane. See docs/agent-spec.md §12.
+	Agent string `json:"agent,omitempty"`
 }
 
 // Hostname is one dev-hostname mapping: https://<Name>.<suffix> over the

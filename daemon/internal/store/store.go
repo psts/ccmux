@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, name TEXT, repo_path TEXT, created_by TEXT,
   created_at INTEGER, tmux_session TEXT, status TEXT,
   layout_json TEXT, layout_version INTEGER, ws_group TEXT DEFAULT '',
-  hostnames_json TEXT DEFAULT '', dev_command TEXT DEFAULT ''
+  hostnames_json TEXT DEFAULT '', dev_command TEXT DEFAULT '', agent TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS panes (
   id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, cwd TEXT,
@@ -238,15 +238,16 @@ func Open(path string) (*SQLite, error) {
 	return &SQLite{db: db}, nil
 }
 
-// migrateAgentColumns adds panes.agent / panes.agent_version: a pane that is
-// an instance of a base agent, and the base version it last started with
-// (internal/agent). Strict like harness — the widened SELECT needs both —
-// and idempotent on a registry that already has them.
+// migrateAgentColumns adds panes.agent / panes.agent_version (a pane that is
+// an instance of a base agent, and the base version it last started with)
+// and workspaces.agent (a session that IS an agent instance, internal/agent).
+// Strict like harness — the widened SELECTs need them — and idempotent on a
+// registry that already has them.
 func migrateAgentColumns(db *sql.DB) error {
-	for _, col := range []string{"agent", "agent_version"} {
-		_, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col + ` TEXT DEFAULT ''`)
+	for _, tc := range []struct{ table, col string }{{"panes", "agent"}, {"panes", "agent_version"}, {"workspaces", "agent"}} {
+		_, err := db.Exec(`ALTER TABLE ` + tc.table + ` ADD COLUMN ` + tc.col + ` TEXT DEFAULT ''`)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return fmt.Errorf("migrate panes.%s: %w", col, err)
+			return fmt.Errorf("migrate %s.%s: %w", tc.table, tc.col, err)
 		}
 	}
 	return nil
@@ -254,14 +255,14 @@ func migrateAgentColumns(db *sql.DB) error {
 
 func (s *SQLite) SaveWorkspace(w *model.Workspace) error {
 	_, err := s.db.Exec(`
-INSERT INTO workspaces (id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json,dev_command)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO workspaces (id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json,dev_command,agent)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
   tmux_session=excluded.tmux_session, status=excluded.status,
   layout_json=excluded.layout_json, layout_version=excluded.layout_version,
   ws_group=excluded.ws_group, hostnames_json=excluded.hostnames_json,
-  dev_command=excluded.dev_command`,
-		w.ID, w.Name, w.RepoPath, w.CreatedBy, w.CreatedAt, w.TmuxSession, w.Status, w.LayoutJSON, w.LayoutVersion, w.Group, model.MarshalHostnames(w.Hostnames), w.DevCommand)
+  dev_command=excluded.dev_command, agent=excluded.agent`,
+		w.ID, w.Name, w.RepoPath, w.CreatedBy, w.CreatedAt, w.TmuxSession, w.Status, w.LayoutJSON, w.LayoutVersion, w.Group, model.MarshalHostnames(w.Hostnames), w.DevCommand, w.Agent)
 	return err
 }
 
@@ -557,7 +558,7 @@ func (s *SQLite) SetWorkspaceDevCommand(id, cmd string) error {
 
 // Load returns all workspaces with their panes attached.
 func (s *SQLite) Load() ([]*model.Workspace, error) {
-	rows, err := s.db.Query(`SELECT id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json,dev_command FROM workspaces`)
+	rows, err := s.db.Query(`SELECT id,name,repo_path,created_by,created_at,tmux_session,status,layout_json,layout_version,ws_group,hostnames_json,dev_command,agent FROM workspaces`)
 	if err != nil {
 		return nil, err
 	}
@@ -566,7 +567,7 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 	for rows.Next() {
 		w := &model.Workspace{}
 		var hostnamesJSON string
-		if err := rows.Scan(&w.ID, &w.Name, &w.RepoPath, &w.CreatedBy, &w.CreatedAt, &w.TmuxSession, &w.Status, &w.LayoutJSON, &w.LayoutVersion, &w.Group, &hostnamesJSON, &w.DevCommand); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.RepoPath, &w.CreatedBy, &w.CreatedAt, &w.TmuxSession, &w.Status, &w.LayoutJSON, &w.LayoutVersion, &w.Group, &hostnamesJSON, &w.DevCommand, &w.Agent); err != nil {
 			rows.Close()
 			return nil, err
 		}

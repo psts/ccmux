@@ -156,6 +156,7 @@ struct SidebarView: View {
                                     onRenameWindow?(windowId, thisWindowName)
                                 }
                             }
+                            windowAgentEntries(named: thisWindowName)
                         }
                         .modifier(dropTarget(currentWindowId))
                 }
@@ -185,6 +186,7 @@ struct SidebarView: View {
                                 Button("Rename Window...") {
                                     onRenameWindow?(group.id, group.name)
                                 }
+                                windowAgentEntries(named: group.name)
                             }
                             .modifier(dropTarget(group.id))
                     }
@@ -436,7 +438,6 @@ struct SidebarView: View {
                 onTap: { onSelectWorkspace(workspace.id) }
             )
         )
-        .onAppear { Task { await remoteService.refreshWorkspaceAgents(workspace.id) } }
         .contextMenu {
             hostedContextMenu(for: workspace)
         }
@@ -567,7 +568,6 @@ struct SidebarView: View {
         ForEach(remoteService.hostnames[workspace.id] ?? []) { hostname in
             hostnameMenu(hostname)
         }
-        agentMenuEntries(for: workspace)
         Divider()
         Button("Close Session") {
             Task { await remoteService.archiveWorkspace(workspace.id) }
@@ -682,23 +682,33 @@ struct SidebarView: View {
         alert.runModal()
     }
 
-    /// One row per base agent, same rule as the web lens's workspace menu:
-    /// running offers stop, asleep or not-yet-added starts it here with a
-    /// message typed into a prompt box (the Mac has no bar over the pane).
+    /// One row per base agent on the window header, same rule as the web
+    /// lens's window menu: running offers open and sleep, asleep or not yet
+    /// added starts it here with a message typed into a prompt box (the Mac
+    /// has no bar over the pane). Agents belong to the window (the project),
+    /// not to one session: adding one makes it a session of its own here.
     @ViewBuilder
-    private func agentMenuEntries(for workspace: Workspace) -> some View {
-        let list = remoteService.workspaceAgents[workspace.id] ?? []
-        if !list.isEmpty {
+    private func windowAgentEntries(named name: String) -> some View {
+        if let win = remoteService.sharedWindow(named: name),
+           let list = remoteService.windowAgents[win.id] {
             Divider()
+            if let error = remoteService.windowAgentErrors[win.id], !error.isEmpty {
+                Button("agents: \(error)") {}.disabled(true)
+            } else if list.isEmpty {
+                Button("no agents defined — Settings › Agents") {}.disabled(true)
+            }
             ForEach(list) { a in
                 let icon = a.icon.isEmpty ? "⚙" : a.icon
                 if a.state == "running" {
-                    Button("■ \(icon) \(a.name) — stop") { stopAgent(workspace, a) }
+                    Button("● \(icon) \(a.name) — open") {
+                        onSelectWorkspace(RemoteWorkspaceBuilder.workspaceUUID(a.workspace))
+                    }
+                    Button("■ \(icon) \(a.name) — sleep") { sleepAgent(win, a) }
                 } else {
                     let mark = a.state == "asleep" ? "○" : "+"
                     let verb = a.state == "asleep" ? "wake…" : "add…"
                     Button("\(mark) \(icon) \(a.name) — \(verb)" + (a.drift ? " ↻" : "")) {
-                        promptAndStartAgent(workspace, a)
+                        promptAndStartAgent(win, a)
                     }
                 }
             }
@@ -707,7 +717,7 @@ struct SidebarView: View {
 
     /// The Mac's composer: a prompt for the first message, then the same
     /// daemon call a peer's contact makes. Empty text just starts it.
-    private func promptAndStartAgent(_ workspace: Workspace, _ a: DaemonAgentInstance) {
+    private func promptAndStartAgent(_ win: DaemonWindow, _ a: DaemonAgentInstance) {
         let alert = NSAlert()
         alert.messageText = "Message \(a.name)"
         alert.informativeText = a.description
@@ -720,16 +730,16 @@ struct SidebarView: View {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let prompt = field.stringValue
         Task {
-            guard let error = await remoteService.startAgent(workspace.id, name: a.name, prompt: prompt) else { return }
+            guard let error = await remoteService.startAgent(windowId: win.id, name: a.name, prompt: prompt) else { return }
             await MainActor.run { reportFailure(action: "Start agent \(a.name)", error: error) }
         }
     }
 
-    /// Stop a running instance: its pane closes, the project folder stays.
-    private func stopAgent(_ workspace: Workspace, _ a: DaemonAgentInstance) {
+    /// Put a running instance to sleep: its session and folder stay.
+    private func sleepAgent(_ win: DaemonWindow, _ a: DaemonAgentInstance) {
         Task {
-            guard let error = await remoteService.stopAgent(workspace.id, name: a.name) else { return }
-            await MainActor.run { reportFailure(action: "Stop agent \(a.name)", error: error) }
+            guard let error = await remoteService.sleepAgent(windowId: win.id, name: a.name) else { return }
+            await MainActor.run { reportFailure(action: "Sleep agent \(a.name)", error: error) }
         }
     }
 

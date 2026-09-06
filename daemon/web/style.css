@@ -72,11 +72,17 @@ body {
   display: flex; align-items: center; justify-content: space-between;
 }
 .group-hdr:first-child { margin-top: 2px; }
+.group-hdr > span { flex: 1; }
 .group-hdr .grp-msgs {
   background: transparent; border: 0; cursor: pointer; padding: 0 2px;
   font-size: 11px; line-height: 1; opacity: .55;
 }
 .group-hdr .grp-msgs:hover { opacity: 1; }
+.group-hdr .grp-agents {
+  background: none; border: 0; color: inherit; cursor: pointer;
+  font-size: 11px; opacity: 0.5; padding: 0 4px; margin-left: 2px;
+}
+.group-hdr .grp-agents:hover { opacity: 1; }
 
 /* settings sheet */
 .setting-label {

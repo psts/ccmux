@@ -87,7 +87,8 @@ type Manager struct {
 	// open work is never put to sleep. Wired from the peers bus; nil = 0.
 	OpenTasksForPane func(paneID string) int
 	// AgentsMax caps running agent panes daemon-wide (0 = no cap); checked
-	// inside SpawnAgentPane/StartAgentInPane under agentStartMu.
+	// inside CreateAgentWorkspace/StartAgentInPane/ReviveAgentWorkspace under
+	// agentStartMu.
 	AgentsMax    int
 	activity     agentActivity
 	agentStartMu sync.Mutex
@@ -216,7 +217,25 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy, gr
 		cwd = repoPath
 	}
 	pane0 := m.newPane(wsID, cwd, startupCmd, createdBy)
+	ctrl, err := m.openSession(wsID, sessionName, cwd, pane0)
+	if err != nil {
+		return nil, err
+	}
+	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand, true)
+	ws := &model.Workspace{
+		ID: wsID, Name: name, RepoPath: repoPath, CreatedBy: createdBy,
+		CreatedAt: nowMillis(), TmuxSession: sessionName, Status: model.StatusLive,
+		Group: group, Panes: []*model.Pane{pane0},
+	}
+	if err := m.registerWorkspace(ws, ctrl); err != nil {
+		return nil, err
+	}
+	return ws, nil
+}
 
+// openSession creates a new workspace's tmux session with pane0 adopted as
+// its first window, sized like every other pane start.
+func (m *Manager) openSession(wsID, sessionName, cwd string, pane0 *model.Pane) (*session.Controller, error) {
 	if err := m.server.NewSession(sessionName, cwd, defaultCols, defaultRows, m.paneEnv(nil, pane0.ID)); err != nil {
 		return nil, err
 	}
@@ -234,24 +253,25 @@ func (m *Manager) CreateWorkspace(name, repoPath, cwd, startupCmd, createdBy, gr
 		return nil, err
 	}
 	_ = ctrl.Resize(pane0.ID, defaultCols, defaultRows)
-	m.deliverStartup(ctrl, pane0.ID, pane0.StartupCommand, true)
+	return ctrl, nil
+}
 
-	ws := &model.Workspace{
-		ID: wsID, Name: name, RepoPath: repoPath, CreatedBy: createdBy,
-		CreatedAt: nowMillis(), TmuxSession: sessionName, Status: model.StatusLive,
-		Group: group, Panes: []*model.Pane{pane0},
-	}
+// registerWorkspace persists a freshly opened workspace, starts watching its
+// session and announces it. A workspace that cannot be saved is not
+// registered: the lens must never see a session the next restart forgets.
+func (m *Manager) registerWorkspace(ws *model.Workspace, ctrl *session.Controller) error {
 	if err := m.store.SaveWorkspace(ws); err != nil {
-		return nil, err
+		return err
 	}
-	_ = m.store.SavePane(pane0)
-
+	for _, p := range ws.Panes {
+		_ = m.store.SavePane(p)
+	}
 	m.mu.Lock()
-	m.byID[wsID] = &entry{ws: ws, ctrl: ctrl}
+	m.byID[ws.ID] = &entry{ws: ws, ctrl: ctrl}
 	m.mu.Unlock()
-	go m.watch(wsID, ctrl)
-	m.events.publish(Event{Kind: "workspace-added", WorkspaceID: wsID})
-	return ws, nil
+	go m.watch(ws.ID, ctrl)
+	m.events.publish(Event{Kind: "workspace-added", WorkspaceID: ws.ID})
+	return nil
 }
 
 // SpawnPane adds a pane (tmux window) to a live workspace.
@@ -443,6 +463,14 @@ func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnes
 // pane's startup command (panes[0] becomes the session's first window). This is
 // the resurrection path: tmux died, the SQLite recipe brings it back.
 func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
+	return m.reviveWorkspace(wsID, nil)
+}
+
+// reviveWorkspace is ReviveWorkspace with deliver overriding what gets typed
+// into the named panes (keyed by pane id) instead of their persisted startup
+// command — an agent wake replays the launch WITH its one-shot first prompt,
+// which must never be the persisted line.
+func (m *Manager) reviveWorkspace(wsID string, deliver map[string]string) (*model.Workspace, error) {
 	e := m.entry(wsID)
 	if e == nil {
 		return nil, fmt.Errorf("unknown workspace %s", wsID)
@@ -465,7 +493,7 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	applied, err := m.revivePanes(ctrl, ws, want)
+	applied, err := m.revivePanes(ctrl, ws, want, deliver)
 	if err != nil {
 		ctrl.Close()
 		return nil, err
@@ -543,7 +571,7 @@ func sizeFor(want map[string]paneDims, paneID string) paneDims {
 // session's own first window, the rest each get one. Returns the size tmux actually
 // accepted per pane, so the caller records only what really happened — a size tmux
 // refused must not be written to the registry as fact.
-func (m *Manager) revivePanes(ctrl *session.Controller, ws *model.Workspace, want map[string]paneDims) (map[string]paneDims, error) {
+func (m *Manager) revivePanes(ctrl *session.Controller, ws *model.Workspace, want map[string]paneDims, deliver map[string]string) (map[string]paneDims, error) {
 	win, tmuxPane, err := ctrl.FirstWindow()
 	if err != nil {
 		return nil, err
@@ -553,18 +581,27 @@ func (m *Manager) revivePanes(ctrl *session.Controller, ws *model.Workspace, wan
 		return nil, err
 	}
 	applied := map[string]paneDims{}
-	if d := sizeFor(want, pane0.ID); m.sizeAndStart(ctrl, pane0, d) {
+	if d := sizeFor(want, pane0.ID); m.sizeAndStart(ctrl, pane0, d, startupFor(pane0, deliver)) {
 		applied[pane0.ID] = d
 	}
 	for _, p := range ws.Panes[1:] {
 		if err := ctrl.SpawnWindow(p.ID, p.CWD, m.paneEnv(ws, p.ID)); err != nil {
 			return nil, err
 		}
-		if d := sizeFor(want, p.ID); m.sizeAndStart(ctrl, p, d) {
+		if d := sizeFor(want, p.ID); m.sizeAndStart(ctrl, p, d, startupFor(p, deliver)) {
 			applied[p.ID] = d
 		}
 	}
 	return applied, nil
+}
+
+// startupFor is what a revived pane gets typed: the override when the caller
+// named one for it, else its persisted startup command.
+func startupFor(p *model.Pane, deliver map[string]string) string {
+	if cmd, ok := deliver[p.ID]; ok {
+		return cmd
+	}
+	return p.StartupCommand
 }
 
 // sizeAndStart sizes a revived pane and then replays its startup command, in that
@@ -575,13 +612,13 @@ func (m *Manager) revivePanes(ctrl *session.Controller, ws *model.Workspace, wan
 //
 // Reports whether tmux accepted the size, so the caller records only sizes that
 // really took; a pane whose resize failed keeps whatever the registry already had.
-func (m *Manager) sizeAndStart(ctrl *session.Controller, p *model.Pane, d paneDims) (sized bool) {
+func (m *Manager) sizeAndStart(ctrl *session.Controller, p *model.Pane, d paneDims, cmd string) (sized bool) {
 	if err := ctrl.Resize(p.ID, d.cols, d.rows); err != nil {
 		log.Printf("revive: resize pane %s to %dx%d: %v", p.ID, d.cols, d.rows, err)
 	} else {
 		sized = true
 	}
-	m.deliverStartup(ctrl, p.ID, p.StartupCommand, m.confirmFor(p))
+	m.deliverStartup(ctrl, p.ID, cmd, m.confirmFor(p))
 	p.Status = model.StatusLive
 	return sized
 }
@@ -632,10 +669,12 @@ func (m *Manager) archiveIf(wsID string, stillTrue func(*entry) bool) (*model.Wo
 	session := e.ws.TmuxSession
 	e.ctrl = nil // detach before killing so the close-triggered exit notice is a no-op
 	e.ws.Status = model.StatusCold
+	panes := append([]*model.Pane(nil), e.ws.Panes...)
 	m.mu.Unlock()
 	if ctrl == nil {
 		return e.ws, nil // already cold
 	}
+	m.forgetAgentStarts(wsID, panes) // nothing is "starting" in a dead session
 	ctrl.Close()
 	_ = m.server.KillSession(session)
 	_ = m.store.SetWorkspaceStatus(wsID, model.StatusCold)

@@ -161,13 +161,14 @@ type Service struct {
 	secret []byte
 
 	// Agents: contacting a base agent by name starts (or wakes) it in the
-	// sender's workspace instead of guessing a repo folder. IsAgent says
-	// whether a name is a base agent; StartAgent does the start; PushToPane
+	// sender's window (its bus group) instead of guessing a repo folder.
+	// IsAgent says whether a name is a base agent; StartAgent does the start
+	// in the named window; PushToPane
 	// hands a delivered message to a pane whose harness cannot receive channel
 	// pushes (opencode instances take it through their TUI server). All three
 	// are wired by the api layer; nil disables that piece.
 	IsAgent    func(name string) (bool, error)
-	StartAgent func(wsID, name, prompt string) error
+	StartAgent func(group, name, prompt string) error
 	PushToPane func(paneID, text string) error
 	// WakePane starts the asleep agent instance in paneID with text as its
 	// first prompt — what a message to a sleeping agent means.

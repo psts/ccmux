@@ -14,7 +14,7 @@ func TestAgentColumnsPersistAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveWorkspace(&model.Workspace{ID: "w1", Name: "p", RepoPath: "/r"}); err != nil {
+	if err := s.SaveWorkspace(&model.Workspace{ID: "w1", Name: "p", RepoPath: "/r", Agent: "x-poster"}); err != nil {
 		t.Fatal(err)
 	}
 	p := &model.Pane{ID: "p1", WorkspaceID: "w1", Harness: "opencode", Agent: "x-poster", AgentVersion: "1.0.2"}
@@ -32,7 +32,7 @@ func TestAgentColumnsPersistAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(wss) != 1 || len(wss[0].Panes) != 1 {
+	if len(wss) != 1 || len(wss[0].Panes) != 1 || wss[0].Agent != "x-poster" {
 		t.Fatalf("load: %+v", wss)
 	}
 	got := wss[0].Panes[0]

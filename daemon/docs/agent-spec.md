@@ -7,6 +7,12 @@ An agent is a **base** (a folder of plain files, shared by every project) plus
 zero or more **instances** (the base added to one project). The base says what
 the agent is. The instance says what it is for here.
 
+A project is a **shared window**, not a repo (changed 2026-09-06). An instance
+is its own session inside the window, named after the agent, and every
+session in that window reaches it on the bus by name. It gets read access to
+the window's repos on its host, and its folder lives beside the bases, not
+inside any repo.
+
 ## 1. Identity
 
 | Decide | Rule | Where it lands |
@@ -130,12 +136,13 @@ caps running instances; asleep ones do not count.
   closes the loop on task updates.
 - Permission relay: the agent answers `yes|no <id>` only for work it asked for.
 
-Implemented (2026-09-05): `POST /v1/peers/agents` gives a session the bases
-with their state in its own workspace; the shim appends an AGENTS ON THIS BUS
-paragraph to the instructions and an Agents footer to `list_peers`.
-`send_message(to_name=<agent>, spawn_if_missing=true)` from a pane starts or
-wakes the agent in the SENDER's workspace and delivers the message once it
-registers. opencode instances receive bus messages typed into their TUI
+Implemented (2026-09-05, window-keyed since 2026-09-06): `POST
+/v1/peers/agents` gives a session the bases with their state in its own
+window; the shim appends an AGENTS ON THIS BUS paragraph to the instructions
+and an Agents footer to `list_peers`. `send_message(to_name=<agent>,
+spawn_if_missing=true)` from a pane starts or wakes the agent in the SENDER's
+window (its bus group) and delivers the message once it registers. A sender
+outside a shared window is told the agent needs one. opencode instances receive bus messages typed into their TUI
 through the instance's server (channel pushes do not reach opencode); Claude
 Code instances get them as channel messages.
 
@@ -217,7 +224,7 @@ Code instances get them as channel messages.
 ### Instance folder
 
 ```
-<repo>/.ccmux/agents/x-poster/
+~/.ccmux/windows/<window-slug>/agents/x-poster/
 ├── AGENTS.md          starter header + project instructions
 ├── CLAUDE.md          @AGENTS.md
 ├── .claude/skills/
@@ -235,18 +242,42 @@ skills/knowledge/mcp.json), `Delete`, `Bootstrap` (instance folder, once),
 `WriteInstanceConfig`. API: `GET /v1/agents`, `PUT /v1/agents/{name}`
 (per-name upsert, not list replace), `DELETE /v1/agents/{name}`.
 
+Instances (2026-09-06): `GET /v1/windows/{id}/agents` lists every base with
+its state in that window (absent, asleep, running) and the id of its session
+and pane; `POST /v1/windows/{id}/agents/{name}` `{prompt, createdBy}` adds
+the agent as a new session in the window (201) or wakes its existing one
+(200), the prompt as first message; `DELETE .../agents/{name}` puts it to
+sleep (ctrl-d, history kept). Removing the session is the session's own
+Remove. The agent session carries `agent: "<name>"` on the workspace and
+`agent`/`agentVersion` on its first pane; its name is the base's icon and
+name. The folder path is recorded on the session (its RepoPath) and never
+rebuilt, so renaming a window keeps memory for agents already added; a fresh
+add after a rename makes a new folder under the new slug. Agent sessions run
+on the daemon lenses talk to (the hub); repos on other hosts are not passed
+as extra directories. A closed window archives its agent sessions like any
+other; opening it revives them with their persisted launch, so they come up
+running and idle exit puts them back to sleep.
+
+Sleep (and idle exit) is a ctrl-d at the harness prompt. Verified 2026-09-06
+on opencode: at its plain prompt it quits; with a permission dialog open the
+keystroke rejects the dialog instead and the agent stays running, so a
+second sleep is needed once the dialog is gone. Same known hole as a human
+mid-typing; a state-aware exit is a follow-up.
+
 
 ## Lenses (2026-09-05)
 
-Web: Settings → Agents (rows save on change, delete confirmed), the project
-menu lists every base with its state here (● running opens it, ○ asleep
-wakes it, + not yet added adds it), a sleeping agent pane shows a composer
+Web: Settings → Agents (rows save on change, delete confirmed), the WINDOW
+header's ⚙ button or right-click lists every base with its state here
+(● running opens its session, ■ puts it to sleep, ○ asleep wakes it, + not
+yet added adds it as a new session), a sleeping agent pane shows a composer
 over its history (Enter wakes it with the text as first message, with a ↻
-note when the base has moved), and agent panes carry a ⚙ tab mark.
+note when the base has moved), and agent panes carry a ⚙ tab mark. Session
+menus no longer carry agent rows (2026-09-06).
 
-Mac: the same Agents tab and project-menu rows (stop for running, wake or
-add with a first-message prompt box for the rest); the prompt box stands in
-for the composer (the Mac has no bar over the pane). Known gaps on the Mac,
-to close when it can be built: no ⚙ mark on agent pane tabs, and "open" for
-a running agent (the web jumps to its pane). Unbuilt on the Linux host; the
-release tag job builds it.
+Mac: the same Agents tab and the same rows on the window header's right-click
+menu (open and sleep for running, wake or add with a first-message prompt box
+for the rest); the prompt box stands in for the composer (the Mac has no bar
+over the pane). The lists refresh every poll for open windows. Known gap on
+the Mac, to close when it can be built: no ⚙ mark on agent pane tabs.
+Unbuilt on the Linux host; the release tag job builds it.

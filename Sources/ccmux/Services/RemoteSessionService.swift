@@ -59,10 +59,13 @@ final class RemoteSessionService: ObservableObject {
     @Published private(set) var hostnames: [UUID: [DaemonHostname]] = [:]
     /// Whether the workspace's dev-server pane is running (▶/■ state).
     @Published private(set) var devRunning: [UUID: Bool] = [:]
-    /// Base agents as seen from each hosted workspace (state, drift), refreshed
-    /// when a sidebar row appears and after an agent start. Same daemon call the
-    /// web lens's workspace menu makes.
-    @Published private(set) var workspaceAgents: [UUID: [DaemonAgentInstance]] = [:]
+    /// Base agents as seen from each OPEN shared window (state, drift), keyed
+    /// by the daemon's window id and refreshed every poll and after an agent
+    /// start or sleep. Same daemon call the web lens's window menu makes.
+    @Published private(set) var windowAgents: [String: [DaemonAgentInstance]] = [:]
+    /// The daemon's error text for a window whose agent list failed (it fails
+    /// the whole list on one broken base and names it), "" when it loaded.
+    @Published private(set) var windowAgentErrors: [String: String] = [:]
     /// Stored dev-command override per workspace ("" = daemon detects).
     private(set) var devCommands: [UUID: String] = [:]
     private var attachments: [UUID: WorkspaceAttachment] = [:]
@@ -408,6 +411,9 @@ final class RemoteSessionService: ObservableObject {
             await MainActor.run {
                 self.sharedWindows = windows
                 self.reconcile(list)
+            }
+            for win in windows where win.open {
+                await refreshWindowAgents(win.id)
             }
         } catch {
             await MainActor.run {
@@ -1207,40 +1213,57 @@ final class RemoteSessionService: ObservableObject {
         return error
     }
 
-    /// Stop an agent instance in a workspace: closes its pane, keeps the folder.
-    func stopAgent(_ id: UUID, name: String) async -> String? {
-        guard let daemonId = daemonIds[id] else { return "workspace is not hosted" }
+    /// The shared window answering to a sidebar window name, matched the way
+    /// membership is (case-insensitive, trimmed) — the Mac's own window ids
+    /// are local; the daemon's are what the agent routes take.
+    func sharedWindow(named name: String) -> DaemonWindow? {
+        sharedWindows.first { WindowManager.sameWindowName($0.name, name) }
+    }
+
+    /// Put a running agent to sleep: its session and folder stay, the pane
+    /// drops to its shell. Removing it is the session's own Remove.
+    func sleepAgent(windowId: String, name: String) async -> String? {
         let error = await sendReportingError(
-            "DELETE", path: "/v1/workspaces/\(daemonId)/agents/\(agentPath(name))", body: nil, expect: 204)
-        await refreshWorkspaceAgents(id)
+            "DELETE", path: "/v1/windows/\(windowId)/agents/\(agentPath(name))", body: nil, expect: 204)
+        await refreshWindowAgents(windowId)
         return error
     }
 
-    /// Refresh the agent list for one hosted workspace.
-    func refreshWorkspaceAgents(_ id: UUID) async {
-        guard let daemonId = daemonIds[id],
-              let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/agents"),
-              let (data, resp) = try? await session.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+    /// Refresh the agent list for one shared window.
+    func refreshWindowAgents(_ windowId: String) async {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(windowId)/agents"),
+              let (data, resp) = try? await session.data(from: url) else { return }
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            // Same rule as the web lens: a broken base is shown by name, not
+            // hidden behind an empty menu that reads as "no agents".
+            struct APIError: Decodable { let error: String }
+            let text = (try? JSONDecoder().decode(APIError.self, from: data))?.error
+                ?? "HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)"
+            await MainActor.run { self.windowAgentErrors[windowId] = text }
+            return
+        }
         struct Body: Decodable { let agents: [DaemonAgentInstance] }
         guard let list = (try? JSONDecoder().decode(Body.self, from: data))?.agents else { return }
-        await MainActor.run { self.workspaceAgents[id] = list }
+        await MainActor.run {
+            self.windowAgents[windowId] = list
+            self.windowAgentErrors[windowId] = ""
+        }
     }
 
-    /// Add or wake an agent in a workspace with the text as its first message
-    /// (empty = just start it). 201 = added, 200 = woken; anything else is the
-    /// daemon's error text. Not routed through sendReportingError, whose single
-    /// expected code would flag one of the two successes as a failure.
-    func startAgent(_ id: UUID, name: String, prompt: String) async -> String? {
-        guard let daemonId = daemonIds[id] else { return "workspace is not hosted" }
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/agents/\(agentPath(name))"),
+    /// Add or wake an agent in a shared window with the text as its first
+    /// message (empty = just start it). 201 = added (a new session in the
+    /// window), 200 = woken; anything else is the daemon's error text. Not
+    /// routed through sendReportingError, whose single expected code would
+    /// flag one of the two successes as a failure.
+    func startAgent(windowId: String, name: String, prompt: String) async -> String? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(windowId)/agents/\(agentPath(name))"),
               let payload = try? JSONSerialization.data(withJSONObject: ["prompt": prompt, "createdBy": "mac"])
         else { return "bad request for agent \(name)" }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.httpBody = payload
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        defer { Task { await refreshWorkspaceAgents(id) } }
+        defer { Task { await refreshWindowAgents(windowId) } }
         do {
             let (data, resp) = try await session.data(for: req)
             guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }

@@ -164,7 +164,7 @@ struct DaemonAgent: Codable, Identifiable {
     }
 }
 
-/// A base agent as seen from one workspace (GET /v1/workspaces/{id}/agents):
+/// A base agent as seen from one shared window (GET /v1/windows/{id}/agents):
 /// state is "absent" | "asleep" | "running"; drift = the base moved since the
 /// instance last started.
 struct DaemonAgentInstance: Codable, Identifiable {
@@ -173,6 +173,8 @@ struct DaemonAgentInstance: Codable, Identifiable {
     var description: String
     var version: String
     var state: String
+    /// The agent's own session in the window ("" until added) and its pane.
+    var workspace: String
     var pane: String
     var paneVersion: String
     var drift: Bool
@@ -185,13 +187,14 @@ struct DaemonAgentInstance: Codable, Identifiable {
         description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
         version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
         state = try c.decodeIfPresent(String.self, forKey: .state) ?? "absent"
+        workspace = try c.decodeIfPresent(String.self, forKey: .workspace) ?? ""
         pane = try c.decodeIfPresent(String.self, forKey: .pane) ?? ""
         paneVersion = try c.decodeIfPresent(String.self, forKey: .paneVersion) ?? ""
         drift = try c.decodeIfPresent(Bool.self, forKey: .drift) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, icon, description, version, state, pane, paneVersion, drift
+        case name, icon, description, version, state, workspace, pane, paneVersion, drift
     }
 }
 
@@ -379,6 +382,9 @@ struct DaemonWorkspace: Codable, Identifiable {
     /// stamped by the hub. "" in single-host mode (or the hub's own sessions).
     /// Used to attach the terminal stream direct to the owning host.
     var host: String
+    /// The base agent this session IS an instance of ("" for a project
+    /// session). An agent session belongs to its shared window, not a repo.
+    var agent: String
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -398,6 +404,7 @@ struct DaemonWorkspace: Codable, Identifiable {
         owner = try c.decodeIfPresent(String.self, forKey: .owner) ?? ""
         hostnames = try c.decodeIfPresent([DaemonHostname].self, forKey: .hostnames) ?? []
         devCommand = try c.decodeIfPresent(String.self, forKey: .devCommand) ?? ""
+        agent = try c.decodeIfPresent(String.self, forKey: .agent) ?? ""
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
     }
 

@@ -519,7 +519,7 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met within 2s")
 }
 
-func TestSpawn_AgentStartsInSendersWorkspace(t *testing.T) {
+func TestSpawn_AgentStartsInSendersWindow(t *testing.T) {
 	svc, hook := newTestService(t)
 	hook.groups["pane-a"] = "PROJ"
 	a := registerPane(svc, "pane-a", "/w/ccmux").PeerID
@@ -527,10 +527,10 @@ func TestSpawn_AgentStartsInSendersWorkspace(t *testing.T) {
 	var started []string
 	var mu sync.Mutex
 	svc.IsAgent = func(name string) (bool, error) { return name == "x-poster", nil }
-	svc.StartAgent = func(wsID, name, prompt string) error {
+	svc.StartAgent = func(group, name, prompt string) error {
 		mu.Lock()
 		defer mu.Unlock()
-		started = append(started, wsID+"|"+name+"|"+prompt)
+		started = append(started, group+"|"+name+"|"+prompt)
 		return nil
 	}
 
@@ -542,8 +542,8 @@ func TestSpawn_AgentStartsInSendersWorkspace(t *testing.T) {
 	mu.Lock()
 	got := started[0]
 	mu.Unlock()
-	if !strings.HasPrefix(got, "ws-of-pane-a|x-poster|") || !strings.Contains(got, "teammate") {
-		t.Fatalf("start call = %q, want the sender's workspace and a birth prompt", got)
+	if !strings.HasPrefix(got, "PROJ|x-poster|") || !strings.Contains(got, "teammate") {
+		t.Fatalf("start call = %q, want the sender's window and a birth prompt", got)
 	}
 	if hook.spawnCount() != 0 {
 		t.Fatal("agent start must not fall through to the repo-guess spawn")

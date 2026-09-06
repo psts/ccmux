@@ -2,10 +2,11 @@ package manager
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -32,36 +33,124 @@ type AgentLaunch struct {
 // Both are checked here, under agentStartMu, so two concurrent starts (an
 // HTTP click and a bus contact for the same name) cannot both pass.
 var (
-	ErrAgentRunning = errors.New("agent is already running in this workspace")
+	ErrAgentRunning = errors.New("agent is already running in this window")
 	ErrAgentCap     = errors.New("agent concurrency cap reached")
+	// ErrNotAgent refuses an agent-only action (sleep) on an ordinary pane.
+	ErrNotAgent = errors.New("not an agent pane")
 )
 
-// SpawnAgentPane adds a new pane running an agent instance. The persisted
-// startup command has no prompt (a revive must not replay a message); the
-// typed one carries the first prompt when there is one.
-func (m *Manager) SpawnAgentPane(wsID, createdBy string, l AgentLaunch) (*model.Pane, error) {
+// CreateAgentWorkspace opens the session that IS an agent instance in shared
+// window group: its first pane runs the launch, its RepoPath is the instance
+// folder (l.CWD), and the workspace carries the base name so a window lists
+// it as that agent. The double-start guard is by window and base for the
+// 5s start window (there is no pane to confirm against until tmux reports
+// the harness), then by the new workspace like every other spawn.
+func (m *Manager) CreateAgentWorkspace(name, createdBy, group string, l AgentLaunch) (*model.Workspace, error) {
 	m.agentStartMu.Lock()
 	defer m.agentStartMu.Unlock()
 	now := time.Now()
-	if p := m.AgentPane(wsID, l.Name); p != nil && (!atBareShell(p) || m.starting.inProgress(p.ID, now)) {
-		return nil, ErrAgentRunning // running, or a wake typed into it moments ago
-	}
-	if m.starting.inProgress(spawnKey(wsID, l.Name), now) {
+	if m.starting.inProgress(spawnKey("window:"+group, l.Name), now) {
 		return nil, ErrAgentRunning
 	}
 	if m.overAgentCap() {
 		return nil, ErrAgentCap
 	}
-	p, err := m.spawnPane(wsID, l.CWD, l.Persist, l.Deliver, createdBy, l.Harness.Name, l.Harness.Autoconfirm, l.RouteAccount)
+	wsID := uuid.NewString()
+	pane0 := m.newPane(wsID, l.CWD, l.Persist, createdBy)
+	pane0.Harness = l.Harness.Name
+	pane0.Agent, pane0.AgentVersion = l.Name, l.Version
+	if err := m.routeLLM(pane0.ID, l.RouteAccount); err != nil {
+		return nil, err
+	}
+	sessionName := model.SessionName(model.Slug(l.CWD), wsID)
+	ctrl, err := m.openSession(wsID, sessionName, l.CWD, pane0)
 	if err != nil {
 		return nil, err
 	}
-	m.starting.mark(spawnKey(wsID, l.Name), time.Now())
-	stamped := m.stampAgent(p.ID, l)
-	if stamped == nil {
-		return nil, fmt.Errorf("agent %s: pane %s vanished right after spawn", l.Name, p.ID)
+	m.deliverStartup(ctrl, pane0.ID, l.Deliver, l.Harness.Autoconfirm)
+	ws := &model.Workspace{
+		ID: wsID, Name: name, RepoPath: l.CWD, CreatedBy: createdBy,
+		CreatedAt: nowMillis(), TmuxSession: sessionName, Status: model.StatusLive,
+		Group: group, Agent: l.Name, Panes: []*model.Pane{pane0},
 	}
-	return stamped, nil
+	if err := m.registerWorkspace(ws, ctrl); err != nil {
+		return nil, err
+	}
+	m.starting.mark(spawnKey("window:"+group, l.Name), now)
+	m.starting.mark(spawnKey(wsID, l.Name), now)
+	return ws, nil
+}
+
+// ReviveAgentWorkspace brings an archived agent session back with the
+// CURRENT launch, not the recipe it was archived with: the pane is stamped
+// with the new base version and persisted line first, and the replay types
+// the delivery form (launch plus first prompt) into it. Guarded like every
+// other start: marks by pane and by session, and the cap.
+func (m *Manager) ReviveAgentWorkspace(wsID string, l AgentLaunch) (*model.Pane, error) {
+	m.agentStartMu.Lock()
+	defer m.agentStartMu.Unlock()
+	now := time.Now()
+	p := m.AgentPane(wsID, l.Name)
+	if p == nil {
+		return nil, ErrNotAgent
+	}
+	if m.starting.inProgress(p.ID, now) || m.starting.inProgress(spawnKey(wsID, l.Name), now) {
+		return nil, ErrAgentRunning
+	}
+	if m.overAgentCap() {
+		return nil, ErrAgentCap
+	}
+	if err := m.routeLLM(p.ID, l.RouteAccount); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if _, live := m.findPaneLocked(p.ID); live != nil {
+		live.StartupCommand, live.Harness = l.Persist, l.Harness.Name
+		live.Agent, live.AgentVersion = l.Name, l.Version
+	}
+	m.mu.Unlock()
+	if _, err := m.reviveWorkspace(wsID, map[string]string{p.ID: l.Deliver}); err != nil {
+		return nil, err
+	}
+	m.starting.mark(p.ID, now)
+	m.starting.mark(spawnKey(wsID, l.Name), now)
+	return m.AgentPane(wsID, l.Name), nil
+}
+
+// forgetAgentStarts clears the start marks of a session being archived: a
+// wake typed moments before the archive is not in flight any more, and a
+// revive right after must not read it as one.
+func (m *Manager) forgetAgentStarts(wsID string, panes []*model.Pane) {
+	for _, p := range panes {
+		m.starting.forget(p.ID)
+		if p.Agent != "" {
+			m.starting.forget(spawnKey(wsID, p.Agent))
+		}
+	}
+}
+
+// SleepAgent ends a running instance's harness session the way idle exit
+// does (ctrl-d at its prompt): the pane drops to its shell with history
+// intact, and the next message wakes it. Refuses a non-agent pane; an
+// instance already asleep is left alone.
+func (m *Manager) SleepAgent(paneID string) error {
+	m.mu.RLock()
+	e, p := m.findPaneLocked(paneID)
+	var wsID string
+	if e != nil {
+		wsID = e.ws.ID
+	}
+	asleep := p != nil && atBareShell(p)
+	isAgent := p != nil && p.Agent != ""
+	m.mu.RUnlock()
+	if !isAgent {
+		return ErrNotAgent
+	}
+	if asleep {
+		return nil
+	}
+	m.exitAgent(paneID, wsID, "asked to sleep")
+	return nil
 }
 
 // StartAgentInPane restarts an instance whose pane sits at a bare shell — the

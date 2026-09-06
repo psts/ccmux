@@ -166,7 +166,7 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 	}
 	switch decideAgent(m.agentViewFor(p, d, now), now) {
 	case actExit:
-		m.exitAgent(p.ID, wsID)
+		m.exitAgent(p.ID, wsID, "idle past its cap")
 	case actWake:
 		m.wakeWithBackoff(wsID, p, now)
 	}
@@ -273,7 +273,7 @@ func claudeBusy(att model.Attention) bool { return att == model.AttentionIdle }
 // exitAgent ends the harness session with an end-of-input: Claude Code and
 // opencode both quit on ctrl-d at their prompt, which is where an idle
 // agent sits. The pane drops to its shell and stays (history intact).
-func (m *Manager) exitAgent(paneID, wsID string) {
+func (m *Manager) exitAgent(paneID, wsID, why string) {
 	m.mu.RLock()
 	e, p := m.findPaneLocked(paneID)
 	var ctrl *session.Controller
@@ -284,7 +284,7 @@ func (m *Manager) exitAgent(paneID, wsID string) {
 	if ctrl == nil {
 		return // pane gone between the tick's snapshot and now
 	}
-	log.Printf("agent pane %s: idle past its cap, ending the session", paneID)
+	log.Printf("agent pane %s: %s, ending the session", paneID, why)
 	if err := ctrl.SendInput(paneID, []byte{0x04}); err != nil {
 		log.Printf("agent pane %s: exit keystroke failed: %v", paneID, err)
 		return

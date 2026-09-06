@@ -26,19 +26,20 @@ type Launch struct {
 // instead of the folder's. The rest is per harness:
 //
 //   - claude: the base rides in as a plugin and an appended system prompt,
-//     the project is reachable through --add-dir, the prompt is positional
-//     after "--" (the channels flag is variadic and would swallow it);
+//     the window's project folders (dirs) are reachable through --add-dir,
+//     the prompt is positional after "--" (the channels flag is variadic and
+//     would swallow it);
 //   - opencode: the instance's opencode.jsonc (WriteInstanceConfig) already
 //     carries instructions, permissions and MCP, so only --agent and the
 //     server --port remain; the prompt travels over that port afterwards;
 //   - anything else: the harness command as configured, prompt appended
 //     positionally, which is what pi and codex accept.
-func LaunchCommand(d Definition, h harness.Harness, baseDir, repo, prompt string, port int) Launch {
+func LaunchCommand(d Definition, h harness.Harness, baseDir string, dirs []string, prompt string, port int) Launch {
 	prefix := "CLAUDE_PEERS_NAME=" + shellQuote(d.Name) + " "
 	var persist, deliver string
 	switch h.Name {
 	case harness.Builtin:
-		persist = prefix + claudeFlags(d, h.Command, baseDir, repo)
+		persist = prefix + claudeFlags(d, h.Command, baseDir, dirs)
 		deliver = persist
 		if prompt != "" {
 			deliver += " -- " + shellQuote(prompt)
@@ -62,14 +63,13 @@ func LaunchCommand(d Definition, h harness.Harness, baseDir, repo, prompt string
 	return Launch{Persist: persist, Deliver: deliver}
 }
 
-func claudeFlags(d Definition, cmd, baseDir, repo string) string {
+func claudeFlags(d Definition, cmd, baseDir string, dirs []string) string {
 	parts := []string{cmd,
 		"--name", shellQuote(d.Name),
 		"--plugin-dir", shellQuote(baseDir),
 		"--append-system-prompt-file", shellQuote(filepath.Join(baseDir, fileAgents)),
-		"--add-dir", shellQuote(repo),
 	}
-	for _, dir := range d.AddDirs {
+	for _, dir := range append(append([]string{}, dirs...), d.AddDirs...) {
 		parts = append(parts, "--add-dir", shellQuote(dir))
 	}
 	if d.Model != "" {

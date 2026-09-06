@@ -4,28 +4,59 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// InstanceDir is where a base lives inside one project: the project's own
-// instructions, skills, memory and log for that agent (spec §12).
-func InstanceDir(repo, name string) string {
-	return filepath.Join(repo, ".ccmux", "agents", name)
+// InstanceDir is where a base lives inside one shared window (a project):
+// the project's own instructions, skills, memory and log for that agent
+// (spec §12). It sits beside the bases,
+// ~/.ccmux/windows/<window-slug>-<id prefix>/agents/<name>: the slug keeps
+// the folder readable, the id prefix keeps two windows whose names slug the
+// same ("Chart Labs", "Chart-Labs") apart. The folder is found again through
+// the agent session's RepoPath, never by rebuilding this path, so a window
+// rename does not lose memory.
+func (s *Store) InstanceDir(windowID, windowName, name string) string {
+	return filepath.Join(filepath.Dir(s.Root), "windows", windowFolder(windowID, windowName), "agents", name)
 }
 
-// Bootstrap creates the instance folder for base d inside repo if it is not
-// there yet. Every file is a starter written ONCE; the daemon never writes
-// here again — humans and the agent own it from then on.
-func Bootstrap(repo string, d Definition) (dir string, created bool, err error) {
-	if !ValidName(d.Name) {
-		return "", false, fmt.Errorf("agent name %q invalid", d.Name)
+// windowFolder is "<slug>-<first 8 of the id>"; the slug lowercases the
+// whole name and collapses every non-alphanumeric run to one dash.
+func windowFolder(id, name string) string {
+	var b strings.Builder
+	dash := true
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			dash = false
+		} else if !dash {
+			b.WriteByte('-')
+			dash = true
+		}
 	}
-	dir = InstanceDir(repo, d.Name)
+	slug := strings.TrimRight(b.String(), "-")
+	prefix := id
+	if len(prefix) > 8 {
+		prefix = prefix[:8]
+	}
+	if slug == "" {
+		return prefix
+	}
+	return slug + "-" + prefix
+}
+
+// Bootstrap creates the instance folder dir for base d if it is not there
+// yet. Every file is a starter written ONCE; the daemon never writes here
+// again — humans and the agent own it from then on.
+func Bootstrap(dir string, d Definition) (created bool, err error) {
+	if !ValidName(d.Name) {
+		return false, fmt.Errorf("agent name %q invalid", d.Name)
+	}
 	if _, err := os.Stat(filepath.Join(dir, fileAgents)); err == nil {
-		return dir, false, nil
+		return false, nil
 	}
 	for _, sub := range []string{"", "memory", filepath.Join(".claude", "skills")} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
-			return "", false, err
+			return false, err
 		}
 	}
 	starter := map[string]string{
@@ -39,8 +70,8 @@ func Bootstrap(repo string, d Definition) (dir string, created bool, err error) 
 	}
 	for name, body := range starter {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			return "", false, err
+			return false, err
 		}
 	}
-	return dir, true, nil
+	return true, nil
 }

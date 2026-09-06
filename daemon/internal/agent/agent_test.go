@@ -154,11 +154,22 @@ func TestListFailsLoudOnCorruptFolder(t *testing.T) {
 }
 
 func TestBootstrapOnce(t *testing.T) {
-	repo := t.TempDir()
+	s := NewStore(filepath.Join(t.TempDir(), "agents"))
 	d := Definition{Name: "x-poster", Description: "Posts X threads."}
-	dir, created, err := Bootstrap(repo, d)
-	if err != nil || !created || dir != filepath.Join(repo, ".ccmux", "agents", "x-poster") {
-		t.Fatalf("%s %v %v", dir, created, err)
+	dir := s.InstanceDir("a86926c5-54af-46ca", "Chart Labs", d.Name)
+	if dir != filepath.Join(filepath.Dir(s.Root), "windows", "chart-labs-a86926c5", "agents", "x-poster") {
+		t.Fatalf("instance dir %s", dir)
+	}
+	// Names that slug alike stay apart by id; a name with no letters is just the id.
+	if a, b := s.InstanceDir("11111111-x", "Chart-Labs", "a"), s.InstanceDir("22222222-y", "Chart Labs", "a"); a == b {
+		t.Fatalf("two windows share a folder: %s", a)
+	}
+	if got := s.InstanceDir("33333333-z", "***", "a"); !strings.Contains(got, "/windows/33333333/") {
+		t.Fatalf("empty slug: %s", got)
+	}
+	created, err := Bootstrap(dir, d)
+	if err != nil || !created {
+		t.Fatalf("%v %v", created, err)
 	}
 	for _, f := range []string{"AGENTS.md", "CLAUDE.md", "memory/MEMORY.md", "log.md", ".claude/skills"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
@@ -166,7 +177,7 @@ func TestBootstrapOnce(t *testing.T) {
 		}
 	}
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("edited by human\n"), 0o644)
-	_, created, err = Bootstrap(repo, d)
+	created, err = Bootstrap(dir, d)
 	if err != nil || created {
 		t.Fatalf("second bootstrap must be a no-op: %v %v", created, err)
 	}
@@ -182,7 +193,7 @@ func TestNamesThatAreNotFolderSegmentsNeverReachTheFilesystem(t *testing.T) {
 		if _, err := s.Get(bad); err != ErrNotFound {
 			t.Errorf("Get(%q) = %v, want ErrNotFound", bad, err)
 		}
-		if _, _, err := Bootstrap(t.TempDir(), Definition{Name: bad, Description: "d"}); err == nil {
+		if _, err := Bootstrap(t.TempDir(), Definition{Name: bad, Description: "d"}); err == nil {
 			t.Errorf("Bootstrap(%q) accepted", bad)
 		}
 		if err := s.WriteInstanceConfig(Definition{Name: bad}, t.TempDir()); err == nil {

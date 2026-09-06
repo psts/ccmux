@@ -6,7 +6,7 @@ import (
 )
 
 // agentEntry mirrors the daemon's agent-instance view for the caller's
-// workspace (POST /v1/peers/agents).
+// window (POST /v1/peers/agents).
 type agentEntry struct {
 	Name        string `json:"name"`
 	Icon        string `json:"icon"`
@@ -14,7 +14,7 @@ type agentEntry struct {
 	State       string `json:"state"` // absent | asleep | running
 }
 
-// agents fetches the base agents as seen from this session's workspace; nil
+// agents fetches the base agents as seen from this session's window; nil
 // on any failure — the catalog is advisory, never a reason to fail a tool.
 func (a *app) agents() []agentEntry {
 	id := a.peerID()

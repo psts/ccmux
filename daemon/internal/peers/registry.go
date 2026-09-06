@@ -50,16 +50,17 @@ type RegisterResp struct {
 // the host it came from.
 func (s *Service) Register(req RegisterReq) RegisterResp { return s.RegisterFrom(req, "") }
 
-// WorkspaceOfPeer is the workspace of a pane peer ("" for pane-less or
-// unknown) — where the agents catalog is evaluated from.
-func (s *Service) WorkspaceOfPeer(peerID string) string {
+// GroupOfPeer is the resolved bus group of a peer ("" when unknown): the
+// shared window for a session inside one — where the agents catalog is
+// evaluated from.
+func (s *Service) GroupOfPeer(peerID string) string {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	p := s.peers[peerID]
-	s.mu.Unlock()
-	if p == nil || p.PaneID == "" {
+	if p == nil {
 		return ""
 	}
-	return s.mgr.WorkspaceForPane(p.PaneID)
+	return s.groupOfLocked(p)
 }
 
 // RegisterFrom is Register plus the connection's origin IP, which the hub turns

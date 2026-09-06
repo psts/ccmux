@@ -14,55 +14,114 @@ import (
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
-// agentInstance is one base agent as seen from one workspace: the base's
-// identity plus whether it has been added here and what it is doing.
+// agentInstance is one base agent as seen from one shared window: the base's
+// identity plus whether it has been added there and what it is doing.
 type agentInstance struct {
 	Name        string `json:"name"`
 	Icon        string `json:"icon"`
 	Description string `json:"description"`
 	Version     string `json:"version"`
-	// State is "absent" (never added to this workspace), "asleep" (its pane
-	// sits at a shell; a message starts it) or "running".
+	// State is "absent" (never added to this window), "asleep" (its session
+	// sits at a shell or is archived; a message starts it) or "running".
 	State string `json:"state"`
-	Pane  string `json:"pane,omitempty"`
+	// Workspace is the agent's own session in the window, Pane its agent
+	// pane — what a lens opens to watch it.
+	Workspace string `json:"workspace,omitempty"`
+	Pane      string `json:"pane,omitempty"`
 	// PaneVersion is the base version the instance last started with; Drift
 	// says the base has moved since — a restart picks the new one up.
 	PaneVersion string `json:"paneVersion,omitempty"`
 	Drift       bool   `json:"drift,omitempty"`
 }
 
-// listWorkspaceAgents: GET /v1/workspaces/{id}/agents.
-func (s *Server) listWorkspaceAgents(w http.ResponseWriter, r *http.Request) {
-	ws := s.mgr.Workspace(r.PathValue("id"))
-	if ws == nil {
-		writeError(w, http.StatusNotFound, "unknown workspace")
+// listWindowAgents: GET /v1/windows/{id}/agents.
+func (s *Server) listWindowAgents(w http.ResponseWriter, r *http.Request) {
+	win, ok := s.windowByID(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown window")
 		return
 	}
 	if !s.agentsReady(w) {
 		return
 	}
-	defs, err := s.agents.List()
+	out, err := s.windowInstances(win)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error()) // names the broken base; 503 is "no agents support"
 		return
 	}
-	out := make([]agentInstance, 0, len(defs))
-	for _, d := range defs {
-		out = append(out, s.instanceOf(ws.ID, d))
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
 }
 
-func (s *Server) instanceOf(wsID string, d agent.Definition) agentInstance {
+// windowInstances is every base as seen from win.
+func (s *Server) windowInstances(win manager.WindowInfo) ([]agentInstance, error) {
+	defs, err := s.agents.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentInstance, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, s.instanceOf(win, d))
+	}
+	return out, nil
+}
+
+// windowByID finds a shared window; windowByName the same case-insensitively
+// (the bus knows windows by name, lenses by id).
+func (s *Server) windowByID(id string) (manager.WindowInfo, bool) {
+	for _, win := range s.mgr.Windows() {
+		if win.ID == id {
+			return win, true
+		}
+	}
+	return manager.WindowInfo{}, false
+}
+
+func (s *Server) windowByName(name string) (manager.WindowInfo, bool) {
+	id, ok := s.mgr.WindowByName(name)
+	if !ok {
+		return manager.WindowInfo{}, false
+	}
+	return s.windowByID(id)
+}
+
+// agentWorkspace is the session in win that IS base name's instance, live or
+// archived, or nil when the agent was never added there. Agents run on this
+// host: a member this daemon has never heard of cannot be one.
+func (s *Server) agentWorkspace(win manager.WindowInfo, name string) *model.Workspace {
+	for _, id := range win.WorkspaceIDs {
+		if ws := s.mgr.Workspace(id); ws != nil && ws.Agent == name {
+			return ws
+		}
+	}
+	return nil
+}
+
+// windowRepos lists the project folders of win's ordinary sessions on this
+// host — what the agent gets read access to (--add-dir).
+func (s *Server) windowRepos(win manager.WindowInfo) []string {
+	var dirs []string
+	for _, id := range win.WorkspaceIDs {
+		if ws := s.mgr.Workspace(id); ws != nil && ws.Agent == "" {
+			dirs = append(dirs, ws.RepoPath)
+		}
+	}
+	return dirs
+}
+
+func (s *Server) instanceOf(win manager.WindowInfo, d agent.Definition) agentInstance {
 	inst := agentInstance{Name: d.Name, Icon: d.Icon, Description: d.Description, Version: d.Version, State: "absent"}
-	p := s.mgr.AgentPane(wsID, d.Name)
+	ws := s.agentWorkspace(win, d.Name)
+	if ws == nil {
+		return inst
+	}
+	inst.Workspace, inst.State = ws.ID, "asleep"
+	p := s.mgr.AgentPane(ws.ID, d.Name)
 	if p == nil {
 		return inst
 	}
 	inst.Pane, inst.PaneVersion, inst.Drift = p.ID, p.AgentVersion, agent.Drifted(p.AgentVersion, d.Version)
-	inst.State = "running"
-	if s.mgr.PaneAtShell(p.ID) {
-		inst.State = "asleep"
+	if ws.Status == model.StatusLive && !s.mgr.PaneAtShell(p.ID) {
+		inst.State = "running"
 	}
 	return inst
 }
@@ -72,22 +131,23 @@ type startAgentReq struct {
 	CreatedBy string `json:"createdBy"`
 }
 
-// startWorkspaceAgent: POST /v1/workspaces/{id}/agents/{name} adds the base
-// to the workspace (instance folder bootstrapped once, opencode config
-// regenerated) and starts it with the prompt as its first message, or wakes
-// an asleep instance the same way. 409 when the instance is already running
-// (type into its pane instead) or the concurrency cap is reached.
-func (s *Server) startWorkspaceAgent(w http.ResponseWriter, r *http.Request) {
-	ws := s.mgr.Workspace(r.PathValue("id"))
-	if ws == nil {
-		writeError(w, http.StatusNotFound, "unknown workspace")
+// startWindowAgentRoute: POST /v1/windows/{id}/agents/{name} adds the base
+// to the window as its own session (instance folder bootstrapped once,
+// opencode config regenerated) and starts it with the prompt as its first
+// message, or wakes an asleep instance the same way. 409 when the instance
+// is already running (type into its pane instead) or the concurrency cap is
+// reached.
+func (s *Server) startWindowAgentRoute(w http.ResponseWriter, r *http.Request) {
+	win, ok := s.windowByID(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown window")
 		return
 	}
 	var req startAgentReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	out := s.startAgent(ws.ID, r.PathValue("name"), req.Prompt, req.CreatedBy)
+	out := s.startWindowAgent(win, r.PathValue("name"), req.Prompt, req.CreatedBy)
 	if out.msg != "" {
 		writeError(w, out.status, out.msg)
 		return
@@ -95,9 +155,61 @@ func (s *Server) startWorkspaceAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out.status, out.pane)
 }
 
-// resolveAgentLaunch turns a base name into a ready AgentLaunch for ws, or an
-// HTTP status and message explaining why not.
-func (s *Server) resolveAgentLaunch(ws *model.Workspace, name, prompt string) (manager.AgentLaunch, int, string) {
+// startWindowAgent is the ONE add-or-wake flow for a window: an instance
+// already there is woken through startAgent, a missing one is created as a
+// new session in the window. The HTTP route and the bus are adapters over it.
+func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdBy string) startOutcome {
+	if s.agents == nil {
+		return startOutcome{status: http.StatusServiceUnavailable, msg: agentsUnavailable}
+	}
+	if ws := s.agentWorkspace(win, name); ws != nil {
+		return s.startAgent(ws.ID, name, prompt, createdBy)
+	}
+	d, err := s.agents.Get(name)
+	if errors.Is(err, agent.ErrNotFound) {
+		return startOutcome{status: http.StatusNotFound, msg: "no such agent"}
+	}
+	if err != nil {
+		return startOutcome{status: http.StatusServiceUnavailable, msg: err.Error()}
+	}
+	if msg := s.agentCapMessage(); msg != "" {
+		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
+	}
+	l, status, msg := s.resolveAgentLaunch(s.agents.InstanceDir(win.ID, win.Name, name), s.windowRepos(win), "", name, prompt)
+	if msg != "" {
+		return startOutcome{status: status, msg: msg}
+	}
+	ws, err := s.mgr.CreateAgentWorkspace(agentSessionName(d), createdBy, win.Name, l)
+	if err != nil {
+		return startOutcome{status: agentErrStatus(err), msg: err.Error(), err: err}
+	}
+	if err := s.mgr.SeedWindowMembership(ws.ID, win.Name); err != nil {
+		// Without the membership row the window never finds this session
+		// again (it walks members), and the next add would make a second one
+		// on the same folder: undo, and say so.
+		if kerr := s.mgr.KillWorkspace(ws.ID); kerr != nil {
+			log.Printf("agent %s: session %s left behind after a membership failure: %v", name, ws.ID, kerr)
+		}
+		return startOutcome{status: http.StatusInternalServerError, msg: "window membership: " + err.Error(), err: err}
+	}
+	s.pushPromptLater(ws.Panes[0].ID, l)
+	return startOutcome{pane: ws.Panes[0], status: http.StatusCreated}
+}
+
+// agentSessionName is the session row's title: the base's icon and name.
+func agentSessionName(d agent.Definition) string {
+	if d.Icon == "" {
+		return d.Name
+	}
+	return d.Icon + " " + d.Name
+}
+
+// resolveAgentLaunch turns a base name into a ready AgentLaunch for the
+// instance folder dir (written here) with dirs as the project folders, or an
+// HTTP status and message explaining why not. wsID is the instance's
+// existing session when it has one (its opencode port is reused), "" for a
+// fresh add.
+func (s *Server) resolveAgentLaunch(dir string, dirs []string, wsID, name, prompt string) (manager.AgentLaunch, int, string) {
 	if s.agents == nil || s.mgr.Harnesses == nil {
 		return manager.AgentLaunch{}, http.StatusServiceUnavailable, agentsUnavailable
 	}
@@ -116,18 +228,17 @@ func (s *Server) resolveAgentLaunch(ws *model.Workspace, name, prompt string) (m
 	if msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}
-	dir, _, err := agent.Bootstrap(ws.RepoPath, d)
-	if err != nil {
+	if _, err := agent.Bootstrap(dir, d); err != nil {
 		return manager.AgentLaunch{}, http.StatusInternalServerError, "instance folder: " + err.Error()
 	}
 	if err := s.agents.WriteInstanceConfig(d, dir); err != nil {
 		return manager.AgentLaunch{}, http.StatusInternalServerError, "instance config: " + err.Error()
 	}
-	port, status, msg := s.agentPort(ws.ID, d.Name, h)
+	port, status, msg := s.agentPort(wsID, d.Name, h)
 	if msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}
-	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), ws.RepoPath, prompt, port)
+	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), dirs, prompt, port)
 	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route, Prompt: prompt, Port: port}, 0, ""
 }
 
@@ -192,41 +303,68 @@ func (s *Server) agentRoute(d agent.Definition, h harness.Harness) (string, int,
 	return d.Account, 0, ""
 }
 
-// startAgent is the ONE start-or-wake flow: cap and "already running" first
-// (before any side effect), then launch resolution (which writes the
-// instance folder), then spawn or wake, then the first prompt. Returns the
-// pane, the HTTP status a transport would answer with (201 added, 200 woken)
-// and the refusal message, "" when it went through. The HTTP route, the bus
-// and the lifecycle loop are all adapters over this.
+// startAgent is the ONE wake flow for an existing agent session wsID: cap
+// and "already running" first (before any side effect), then launch
+// resolution (which refreshes the instance folder's generated config), then
+// the start into its pane, then the first prompt. An archived session is
+// revived instead, which replays its persisted launch. Returns the pane, the
+// HTTP status a transport would answer with (200 woken) and the refusal
+// message, "" when it went through. The window route, the bus and the
+// lifecycle loop are all adapters over this.
 func (s *Server) startAgent(wsID, name, prompt, createdBy string) startOutcome {
 	ws := s.mgr.Workspace(wsID)
-	if ws == nil {
-		return startOutcome{status: http.StatusNotFound, msg: "unknown workspace"}
+	if ws == nil || ws.Agent != name {
+		return startOutcome{status: http.StatusNotFound, msg: "no session for agent " + name + " here"}
 	}
 	existing := s.mgr.AgentPane(wsID, name)
-	if existing != nil && !s.mgr.PaneAtShell(existing.ID) {
-		return startOutcome{pane: existing, status: http.StatusConflict, msg: "agent " + name + " is running in this workspace — type into its pane", err: manager.ErrAgentRunning}
+	if existing == nil {
+		return startOutcome{status: http.StatusConflict, msg: "agent " + name + "'s session lost its agent pane — remove the session and add the agent again"}
+	}
+	if ws.Status == model.StatusLive && !s.mgr.PaneAtShell(existing.ID) {
+		return startOutcome{pane: existing, status: http.StatusConflict, msg: "agent " + name + " is running in this window — type into its pane", err: manager.ErrAgentRunning}
 	}
 	if msg := s.agentCapMessage(); msg != "" {
 		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
 	}
-	l, status, msg := s.resolveAgentLaunch(ws, name, prompt)
+	l, status, msg := s.resolveAgentLaunch(ws.RepoPath, s.windowReposOfPane(existing.ID), wsID, name, prompt)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
-	if existing != nil {
-		if err := s.mgr.StartAgentInPane(existing.ID, l); err != nil {
-			return startOutcome{status: agentErrStatus(err), msg: err.Error(), err: err}
-		}
-		s.pushPromptLater(existing.ID, l)
-		return startOutcome{pane: s.mgr.AgentPane(wsID, name), status: http.StatusOK}
+	if out := s.launchIntoAgentSession(ws, existing.ID, l); out.msg != "" {
+		return out
 	}
-	p, err := s.mgr.SpawnAgentPane(wsID, createdBy, l)
-	if err != nil {
+	s.pushPromptLater(existing.ID, l)
+	return startOutcome{pane: s.mgr.AgentPane(wsID, name), status: http.StatusOK}
+}
+
+// launchIntoAgentSession types the launch into a live agent session's pane,
+// or revives an archived session with it (the replay carries the prompt).
+// The outcome's msg is "" when it went through.
+func (s *Server) launchIntoAgentSession(ws *model.Workspace, paneID string, l manager.AgentLaunch) startOutcome {
+	if ws.Status != model.StatusLive {
+		if _, err := s.mgr.ReviveAgentWorkspace(ws.ID, l); err != nil {
+			return startOutcome{status: agentErrStatus(err), msg: "revive agent session: " + err.Error(), err: err}
+		}
+		return startOutcome{}
+	}
+	if err := s.mgr.StartAgentInPane(paneID, l); err != nil {
 		return startOutcome{status: agentErrStatus(err), msg: err.Error(), err: err}
 	}
-	s.pushPromptLater(p.ID, l)
-	return startOutcome{pane: p, status: http.StatusCreated}
+	return startOutcome{}
+}
+
+// windowReposOfPane is windowRepos for the window the pane's session sits in
+// (its RESOLVED window, not the legacy column); nil when it has none.
+func (s *Server) windowReposOfPane(paneID string) []string {
+	group, ok := s.mgr.GroupForPane(paneID)
+	if !ok || group == "" {
+		return nil
+	}
+	win, ok := s.windowByName(group)
+	if !ok {
+		return nil
+	}
+	return s.windowRepos(win)
 }
 
 // startOutcome is what startAgent hands its adapters: the pane, the HTTP
@@ -257,23 +395,26 @@ func (s *Server) agentCapMessage() string {
 	return ""
 }
 
-// stopWorkspaceAgent: DELETE /v1/workspaces/{id}/agents/{name} closes the
-// instance's pane. The instance folder in the repo stays: it is the
-// project's own instructions, memory and log for that agent.
-func (s *Server) stopWorkspaceAgent(w http.ResponseWriter, r *http.Request) {
-	ws := s.mgr.Workspace(r.PathValue("id"))
+// sleepWindowAgent: DELETE /v1/windows/{id}/agents/{name} puts the instance
+// to sleep the way idle exit does: the session and its folder stay (the
+// project's own instructions, memory and log for that agent), the pane drops
+// to its shell. Removing the session is the session's own Remove.
+func (s *Server) sleepWindowAgent(w http.ResponseWriter, r *http.Request) {
+	win, ok := s.windowByID(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown window")
+		return
+	}
+	ws := s.agentWorkspace(win, r.PathValue("name"))
 	if ws == nil {
-		writeError(w, http.StatusNotFound, "unknown workspace")
+		writeError(w, http.StatusNotFound, "agent not added to this window")
 		return
 	}
-	p := s.mgr.AgentPane(ws.ID, r.PathValue("name"))
-	if p == nil {
-		writeError(w, http.StatusNotFound, "agent not added to this workspace")
-		return
-	}
-	if err := s.mgr.KillPane(ws.ID, p.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if p := s.mgr.AgentPane(ws.ID, ws.Agent); p != nil && ws.Status == model.StatusLive {
+		if err := s.mgr.SleepAgent(p.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

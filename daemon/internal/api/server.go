@@ -253,10 +253,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents", s.listAgents)
 	mux.HandleFunc("PUT /v1/agents/{name}", s.putAgent)
 	mux.HandleFunc("DELETE /v1/agents/{name}", s.deleteAgent)
-	// Instances: a base agent added to one workspace, started with a prompt.
-	mux.HandleFunc("GET /v1/workspaces/{id}/agents", s.scoped(s.listWorkspaceAgents))
-	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}", s.scoped(s.startWorkspaceAgent))
-	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}", s.scoped(s.stopWorkspaceAgent))
+	// Instances: a base agent added to one shared window as its own session,
+	// started with a prompt. Windows live on the daemon lenses talk to (the
+	// hub), and so do agent sessions — no owner routing.
+	mux.HandleFunc("GET /v1/windows/{id}/agents", s.listWindowAgents)
+	mux.HandleFunc("POST /v1/windows/{id}/agents/{name}", s.startWindowAgentRoute)
+	mux.HandleFunc("DELETE /v1/windows/{id}/agents/{name}", s.sleepWindowAgent)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.

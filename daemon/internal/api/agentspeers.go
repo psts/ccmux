@@ -9,10 +9,10 @@ import (
 )
 
 // peersAgents: POST /v1/peers/agents {"peer_id"} → the base agents as seen
-// from the caller's workspace (state absent/asleep/running), which is what a
+// from the caller's window (state absent/asleep/running), which is what a
 // session needs to know that "x-poster" exists and that messaging it by name
-// starts it here. Pane-less callers have no workspace, so every agent reads
-// as absent.
+// starts it here. A caller outside a shared window (pane-less, or an
+// ungrouped session) sees every agent as absent.
 func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 	if !s.peersEnabled(w) {
 		return
@@ -34,20 +34,25 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// A pane-less caller has no workspace; instanceOf("") reads every base as absent.
-	wsID := s.peersSvc.WorkspaceOfPeer(req.PeerID)
+	// A group that is not a window (the directory fallback) has no members,
+	// so instanceOf reads every base as absent.
+	win, _ := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
 	for _, d := range defs {
-		out = append(out, s.instanceOf(wsID, d))
+		out = append(out, s.instanceOf(win, d))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // startAgentForPeer is the bus's spawn_if_missing path for agents: the one
-// start flow in the caller's workspace, with the birth prompt as first
-// message. An instance already running is not an error: the bus delivers to
-// it directly.
-func (s *Server) startAgentForPeer(wsID, name, prompt string) error {
-	return peerStartError(s.startAgent(wsID, name, prompt, "claude-peers"))
+// add-or-wake flow in the caller's window (its bus group), with the birth
+// prompt as first message. An instance already running is not an error: the
+// bus delivers to it directly.
+func (s *Server) startAgentForPeer(group, name, prompt string) error {
+	win, ok := s.windowByName(group)
+	if !ok {
+		return errors.New("agent " + name + " joins a shared window, and " + group + " is not one — only a session inside a window can add it")
+	}
+	return peerStartError(s.startWindowAgent(win, name, prompt, "claude-peers"))
 }
 
 // peerStartError is the bus's reading of a start: "already running" (a live

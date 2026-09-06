@@ -76,7 +76,7 @@ func TestAgents_UnavailableWithoutStore(t *testing.T) {
 // TestWorkspaceAgents_AddWakeStop drives an instance through its life with a
 // harmless harness: added with a prompt (pane spawned, folder bootstrapped),
 // asleep once the command exits, woken by a second start, closed by DELETE.
-func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
+func TestWindowAgents_AddWakeSleep(t *testing.T) {
 	_, base := harnessStack(t)
 	ws := createWS(t, base)
 	put := func(path, body string) *http.Response {
@@ -95,16 +95,20 @@ func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
 	if resp := put("/v1/settings", `{"harnesses":[{"name":"noop","icon":"·","command":"sleep 1;:"}]}`); resp.StatusCode != 200 {
 		t.Fatalf("put harnesses: %d", resp.StatusCode)
 	}
-	if resp := put("/v1/agents/x-poster", `{"description":"Posts X threads.","harness":"noop","instructions":"# Role\n"}`); resp.StatusCode != 200 {
+	if resp := put("/v1/agents/x-poster", `{"icon":"🐦","description":"Posts X threads.","harness":"noop","instructions":"# Role\n"}`); resp.StatusCode != 200 {
 		t.Fatalf("put agent: %d", resp.StatusCode)
 	}
+	// The project session joins a shared window; the agent joins THAT.
+	if resp := put("/v1/workspaces/"+ws.ID+"/group", `{"group":"Chart Labs"}`); resp.StatusCode != 204 {
+		t.Fatalf("put group: %d", resp.StatusCode)
+	}
+	winID := windowID(t, base, "Chart Labs")
 
-	// Absent before it is added.
 	var list struct {
 		Agents []agentInstance `json:"agents"`
 	}
 	getList := func() []agentInstance {
-		resp, err := http.Get(base + "/v1/workspaces/" + ws.ID + "/agents")
+		resp, err := http.Get(base + "/v1/windows/" + winID + "/agents")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,21 +120,22 @@ func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
 		t.Fatalf("before add: %+v", l)
 	}
 
-	// Add with a prompt: 201, pane stamped, folder bootstrapped, prompt not persisted.
-	resp, err := http.Post(base+"/v1/workspaces/"+ws.ID+"/agents/x-poster", "application/json",
+	// Add with a prompt: 201, a NEW session in the window named after the
+	// agent, its pane stamped, folder under windows/, prompt not persisted.
+	resp, err := http.Post(base+"/v1/windows/"+winID+"/agents/x-poster", "application/json",
 		strings.NewReader(`{"prompt":"hello there","createdBy":"tester"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var pane struct {
-		ID, CWD, StartupCommand, Agent, AgentVersion string
+		ID, WorkspaceID, CWD, StartupCommand, Agent, AgentVersion string
 	}
 	json.NewDecoder(resp.Body).Decode(&pane)
 	resp.Body.Close()
-	if resp.StatusCode != 201 || pane.Agent != "x-poster" || pane.AgentVersion != "1.0.0" {
+	if resp.StatusCode != 201 || pane.Agent != "x-poster" || pane.AgentVersion != "1.0.0" || pane.WorkspaceID == ws.ID {
 		t.Fatalf("add = %d %+v", resp.StatusCode, pane)
 	}
-	if !strings.HasSuffix(pane.CWD, "/.ccmux/agents/x-poster") || strings.Contains(pane.StartupCommand, "hello there") || !strings.HasPrefix(pane.StartupCommand, "CLAUDE_PEERS_NAME=x-poster ") {
+	if !strings.Contains(pane.CWD, "/windows/chart-labs-") || !strings.HasSuffix(pane.CWD, "/agents/x-poster") || strings.Contains(pane.StartupCommand, "hello there") || !strings.HasPrefix(pane.StartupCommand, "CLAUDE_PEERS_NAME=x-poster ") {
 		t.Fatalf("pane cwd/command: %+v", pane)
 	}
 	for _, f := range []string{"AGENTS.md", "opencode.jsonc", "memory/MEMORY.md", "log.md"} {
@@ -138,11 +143,20 @@ func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
 			t.Errorf("instance folder missing %s", f)
 		}
 	}
+	var agentWS map[string]any
+	for _, w := range getJSONList(t, base+"/v1/workspaces") {
+		if w["id"] == pane.WorkspaceID {
+			agentWS = w
+		}
+	}
+	if agentWS["agent"] != "x-poster" || agentWS["name"] != "🐦 x-poster" || agentWS["group"] != "Chart Labs" {
+		t.Fatalf("agent session: %+v", agentWS)
+	}
 
 	// The noop command exits at once, so the instance is asleep; wake it.
 	deadline := time.Now().Add(8 * time.Second)
 	for {
-		if l := getList(); l[0].State == "asleep" && l[0].Pane == pane.ID {
+		if l := getList(); l[0].State == "asleep" && l[0].Pane == pane.ID && l[0].Workspace == pane.WorkspaceID {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -150,29 +164,102 @@ func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	resp, _ = http.Post(base+"/v1/workspaces/"+ws.ID+"/agents/x-poster", "application/json", strings.NewReader(`{"prompt":"again"}`))
+	resp, _ = http.Post(base+"/v1/windows/"+winID+"/agents/x-poster", "application/json", strings.NewReader(`{"prompt":"again"}`))
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("wake = %d", resp.StatusCode)
 	}
+	if n := len(getJSONList(t, base+"/v1/workspaces")); n != 2 {
+		t.Fatalf("a wake must reuse the agent's session, got %d sessions", n)
+	}
 
-	// Stop closes the pane; the instance is absent again but its folder stays.
-	req, _ := http.NewRequest("DELETE", base+"/v1/workspaces/"+ws.ID+"/agents/x-poster", nil)
+	// An archived agent session wakes by revive, with the CURRENT launch: the
+	// session comes back live, the persisted line still carries no prompt.
+	resp, _ = http.Post(base+"/v1/workspaces/"+pane.WorkspaceID+"/archive?force=1", "application/json", strings.NewReader(`{}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("archive agent session = %d", resp.StatusCode)
+	}
+	if l := getList(); l[0].State != "asleep" {
+		t.Fatalf("archived must read asleep: %+v", l)
+	}
+	resp, _ = http.Post(base+"/v1/windows/"+winID+"/agents/x-poster", "application/json", strings.NewReader(`{"prompt":"after archive"}`))
+	var woken struct{ ID, StartupCommand string }
+	json.NewDecoder(resp.Body).Decode(&woken)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || woken.ID != pane.ID || strings.Contains(woken.StartupCommand, "after archive") {
+		t.Fatalf("wake after archive = %d %+v", resp.StatusCode, woken)
+	}
+	for _, w := range getJSONList(t, base+"/v1/workspaces") {
+		if w["id"] == pane.WorkspaceID && w["status"] != "live" {
+			t.Fatalf("agent session not revived: %v", w["status"])
+		}
+	}
+	// A second wake inside the start window is "already running", not a
+	// second launch typed into the same pane.
+	resp, _ = http.Post(base+"/v1/windows/"+winID+"/agents/x-poster", "application/json", strings.NewReader(`{"prompt":"again"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 409 {
+		t.Fatalf("double wake after revive = %d, want 409", resp.StatusCode)
+	}
+	deadline = time.Now().Add(8 * time.Second)
+	for {
+		if l := getList(); l[0].State == "asleep" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never went asleep after revive: %+v", getList())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Sleep is idempotent and keeps the session and its folder.
+	req, _ := http.NewRequest("DELETE", base+"/v1/windows/"+winID+"/agents/x-poster", nil)
 	resp, _ = http.DefaultClient.Do(req)
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("stop = %d", resp.StatusCode)
+		t.Fatalf("sleep = %d", resp.StatusCode)
 	}
-	if l := getList(); l[0].State != "absent" {
-		t.Fatalf("after stop: %+v", l)
+	if l := getList(); l[0].State == "absent" || l[0].Workspace != pane.WorkspaceID {
+		t.Fatalf("after sleep: %+v", l)
 	}
 	if _, err := os.Stat(pane.CWD + "/AGENTS.md"); err != nil {
-		t.Error("instance folder must survive a stop")
+		t.Error("instance folder must survive a sleep")
 	}
-	// Unknown agent → 404.
-	resp, _ = http.Post(base+"/v1/workspaces/"+ws.ID+"/agents/nobody", "application/json", strings.NewReader(`{}`))
+	// Unknown agent → 404; unknown window → 404.
+	resp, _ = http.Post(base+"/v1/windows/"+winID+"/agents/nobody", "application/json", strings.NewReader(`{}`))
 	if resp.StatusCode != 404 {
 		t.Fatalf("unknown agent = %d", resp.StatusCode)
 	}
+	resp, _ = http.Post(base+"/v1/windows/nope/agents/x-poster", "application/json", strings.NewReader(`{}`))
+	if resp.StatusCode != 404 {
+		t.Fatalf("unknown window = %d", resp.StatusCode)
+	}
+}
+
+// windowID finds a shared window by name through GET /v1/windows.
+func windowID(t *testing.T, base, name string) string {
+	t.Helper()
+	for _, w := range getJSONList(t, base+"/v1/windows") {
+		if w["name"] == name {
+			return w["id"].(string)
+		}
+	}
+	t.Fatalf("window %q not listed", name)
+	return ""
+}
+
+func getJSONList(t *testing.T, url string) []map[string]any {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("%s: %v", url, err)
+	}
+	return out
 }
 
 func TestAgents_PeersHooksWiredInEitherOrder(t *testing.T) {

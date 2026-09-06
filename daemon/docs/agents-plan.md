@@ -340,7 +340,11 @@ subscription question on shakier ground.
 
 ## The model
 
-Two things, kept apart on disk:
+Two things, kept apart on disk. (Placement changed 2026-09-06: an instance is
+its own session in the project's shared WINDOW, with its folder under
+`~/.ccmux/windows/<window>/agents/<name>/`; the table below and the "no new
+workspace kind" bullet describe the earlier per-repo placement. See
+`agent-spec.md` §12 for what runs now.)
 
 | | Base agent (template) | Instance (base × project) |
 |---|---|---|
