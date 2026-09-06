@@ -3,6 +3,8 @@ package manager
 import (
 	"context"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -193,5 +195,34 @@ func TestStartMarks_ShellReportKeepsThem_HarnessReportClearsThem(t *testing.T) {
 	m.applyPaneTitleSignal("w", "p1", "pane-command", "opencode")
 	if m.starting.inProgress("p1", now) || m.starting.inProgress(spawnKey("w", "x-poster"), now) {
 		t.Fatal("the harness in the foreground confirms the start")
+	}
+}
+
+func TestPushLockedSerializesPerPane(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	var inside, overlaps int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.PushLocked("p1", func() error {
+				if atomic.AddInt32(&inside, 1) > 1 {
+					atomic.AddInt32(&overlaps, 1)
+				}
+				time.Sleep(2 * time.Millisecond)
+				atomic.AddInt32(&inside, -1)
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+	if overlaps != 0 {
+		t.Fatalf("%d overlapping pushes on one pane", overlaps)
 	}
 }

@@ -28,6 +28,16 @@ func pushLock(paneID string) *sync.Mutex {
 	return mu.(*sync.Mutex)
 }
 
+// PushLocked runs fn under the pane's push lock, for callers that push into
+// a TUI by another path (the first prompt after a start): every push to one
+// pane must share the one mutex or two can interleave into a merged turn.
+func (m *Manager) PushLocked(paneID string, fn func() error) error {
+	mu := pushLock(paneID)
+	mu.Lock()
+	defer mu.Unlock()
+	return fn()
+}
+
 // PushToAgentPane types a bus message into an opencode agent instance through
 // its TUI server; the peers bus calls it for every delivered message and it
 // declines panes that are not opencode instances (those get channel pushes

@@ -153,14 +153,17 @@ func (s *Server) agentPort(wsID, name string, h harness.Harness) (int, int, stri
 // pushPromptLater delivers an opencode instance's first message through its
 // server once it is up. Runs off the request: the pane is already live and
 // the human sees the TUI come up; a push failure is logged, not a 5xx.
-func (s *Server) pushPromptLater(l manager.AgentLaunch) {
+func (s *Server) pushPromptLater(paneID string, l manager.AgentLaunch) {
 	if l.Port == 0 || l.Prompt == "" {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		if err := agent.PushPrompt(ctx, l.Port, l.Prompt); err != nil {
+		// Under the pane's push lock: a bus message retried during this start
+		// must queue behind the first prompt, not interleave with it.
+		err := s.mgr.PushLocked(paneID, func() error { return agent.PushPrompt(ctx, l.Port, l.Prompt) })
+		if err != nil {
 			log.Printf("agent %s: first prompt not delivered: %v", l.Name, err)
 		}
 	}()
@@ -215,14 +218,14 @@ func (s *Server) startAgent(wsID, name, prompt, createdBy string) startOutcome {
 		if err := s.mgr.StartAgentInPane(existing.ID, l); err != nil {
 			return startOutcome{status: agentErrStatus(err), msg: err.Error(), err: err}
 		}
-		s.pushPromptLater(l)
+		s.pushPromptLater(existing.ID, l)
 		return startOutcome{pane: s.mgr.AgentPane(wsID, name), status: http.StatusOK}
 	}
 	p, err := s.mgr.SpawnAgentPane(wsID, createdBy, l)
 	if err != nil {
 		return startOutcome{status: agentErrStatus(err), msg: err.Error(), err: err}
 	}
-	s.pushPromptLater(l)
+	s.pushPromptLater(p.ID, l)
 	return startOutcome{pane: p, status: http.StatusCreated}
 }
 
