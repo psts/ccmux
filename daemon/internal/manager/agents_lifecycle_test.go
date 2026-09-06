@@ -173,3 +173,25 @@ func TestStartMarks_PrunedOnDropAndConfirmedByTmux(t *testing.T) {
 		t.Fatal("confirm must clear both marks")
 	}
 }
+
+func TestStartMarks_ShellReportKeepsThem_HarnessReportClearsThem(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	ws := &model.Workspace{ID: "w", Panes: []*model.Pane{{ID: "p1", Agent: "x-poster"}}}
+	m.byID["w"] = &entry{ws: ws}
+	now := time.Now()
+	m.starting.mark("p1", now)
+	m.starting.mark(spawnKey("w", "x-poster"), now)
+	m.applyPaneTitleSignal("w", "p1", "pane-command", "zsh")
+	if !m.starting.inProgress("p1", now) || !m.starting.inProgress(spawnKey("w", "x-poster"), now) {
+		t.Fatal("a bare-shell report is what a fresh pane says before the typed command execs; it must not clear the marks")
+	}
+	m.applyPaneTitleSignal("w", "p1", "pane-command", "opencode")
+	if m.starting.inProgress("p1", now) || m.starting.inProgress(spawnKey("w", "x-poster"), now) {
+		t.Fatal("the harness in the foreground confirms the start")
+	}
+}

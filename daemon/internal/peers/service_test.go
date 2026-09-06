@@ -614,3 +614,30 @@ func TestSpawn_AgentReadErrorIsReportedNotGuessed(t *testing.T) {
 		t.Fatal("must not fall through to the repo guess")
 	}
 }
+
+func TestPushOrWake_RetriesAfterAnInFlightStart(t *testing.T) {
+	svc, _ := newTestService(t)
+	var mu sync.Mutex
+	var pushes int
+	svc.PushToPane = func(paneID, text string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		pushes++
+		if pushes == 1 {
+			return ErrAgentAsleep
+		}
+		if pushes == 2 {
+			return ErrAgentAsleep // harness not up yet on the first retry
+		}
+		return nil
+	}
+	svc.WakePane = func(string, string) error { return ErrStartInFlight }
+	if err := svc.pushOrWake("pane-x", "hello"); err != nil {
+		t.Fatalf("push should succeed once the harness answers, got %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if pushes != 3 {
+		t.Fatalf("expected asleep, retry, success = 3 pushes, got %d", pushes)
+	}
+}

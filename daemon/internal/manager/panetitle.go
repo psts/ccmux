@@ -98,7 +98,7 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 		p.RawTitle = value
 	} else {
 		p.RawCommand = value
-		m.starting.confirm(wsID, p) // tmux has reported the foreground: any typed start is confirmed
+		m.starting.confirm(wsID, p) // clears the start marks only when a harness is in the foreground
 	}
 	if p.DevServer {
 		// The dev pane records the raw COMMAND signal — the ▶ restart path

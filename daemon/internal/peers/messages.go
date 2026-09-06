@@ -7,6 +7,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
 )
@@ -215,22 +216,51 @@ func (s *Service) pushToPaneLocked(ev *model.PeerEvent) {
 	}
 	paneID, text := target.PaneID, pushText(ev)
 	go func() {
-		err := s.PushToPane(paneID, text)
-		if errors.Is(err, ErrAgentAsleep) && s.WakePane != nil {
-			err = s.WakePane(paneID, text)
-		}
-		if err != nil && !errors.Is(err, ErrNoPanePush) {
+		if err := s.pushOrWake(paneID, text); err != nil && !errors.Is(err, ErrNoPanePush) {
 			log.Printf("peers: pane push to %s skipped: %v", paneID, err)
 		}
 	}()
 }
 
+// pushRetryEvery and pushRetries bound the wait for a harness that another
+// start is bringing up: the push is retried until the TUI answers.
+const (
+	pushRetryEvery = 2 * time.Second
+	pushRetries    = 5
+)
+
+// pushOrWake delivers text to a pane: push into a running TUI; wake an asleep
+// agent with it as first prompt; and when another start is already in
+// flight (whose prompt is not this message), retry the push until the
+// harness is up and takes it.
+func (s *Service) pushOrWake(paneID, text string) error {
+	err := s.PushToPane(paneID, text)
+	if errors.Is(err, ErrAgentAsleep) && s.WakePane != nil {
+		err = s.WakePane(paneID, text)
+	}
+	if !errors.Is(err, ErrStartInFlight) {
+		return err
+	}
+	// The pane still reads asleep while the other start's harness comes up;
+	// keep trying until the TUI takes the push or the wait runs out.
+	for i := 0; i < pushRetries; i++ {
+		time.Sleep(pushRetryEvery)
+		if err = s.PushToPane(paneID, text); !errors.Is(err, ErrAgentAsleep) {
+			return err
+		}
+	}
+	return err
+}
+
 // ErrNoPanePush is what a PushToPane hook returns for a pane that takes no
 // TUI push — normal peer traffic — so the bus does not log every message.
 // ErrAgentAsleep says the pane is an agent at its shell: WakePane instead.
+// ErrStartInFlight from WakePane says another start of that agent is under
+// way with a different first prompt; pushOrWake retries the push.
 var (
-	ErrNoPanePush  = errors.New("pane takes no push")
-	ErrAgentAsleep = errors.New("agent pane is asleep")
+	ErrNoPanePush    = errors.New("pane takes no push")
+	ErrAgentAsleep   = errors.New("agent pane is asleep")
+	ErrStartInFlight = errors.New("agent start in flight")
 )
 
 // pushText renders a bus message the way a channel tag would, so an agent

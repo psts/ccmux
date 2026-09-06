@@ -81,7 +81,13 @@ func (s *Server) wakePane(paneID, text string) error {
 	}
 	for _, p := range ws.Panes {
 		if p.ID == paneID && p.Agent != "" {
-			return peerStartError(s.startAgent(wsID, p.Agent, text, "claude-peers"))
+			out := s.startAgent(wsID, p.Agent, text, "claude-peers")
+			if errors.Is(out.err, manager.ErrAgentRunning) {
+				// Another start is in flight with ITS prompt; this message is
+				// not in it. The bus retries the TUI push once the harness is up.
+				return peers.ErrStartInFlight
+			}
+			return peerStartError(out)
 		}
 	}
 	return errors.New("not an agent pane")

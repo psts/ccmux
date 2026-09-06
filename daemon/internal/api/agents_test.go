@@ -87,7 +87,12 @@ func TestWorkspaceAgents_AddWakeStop(t *testing.T) {
 		}
 		return resp
 	}
-	if resp := put("/v1/settings", `{"harnesses":[{"name":"noop","icon":"·","command":": noop-harness"}]}`); resp.StatusCode != 200 {
+	// A real (short-lived) process, not a shell builtin: tmux must report a
+	// harness in the foreground for the start mark to clear, as it does for
+	// every real harness; a builtin never leaves the shell.
+	// "sleep 1;:" — sleep is the foreground (not a shell name, unlike sh),
+	// and the trailing ":" swallows the prompt the launch line appends.
+	if resp := put("/v1/settings", `{"harnesses":[{"name":"noop","icon":"·","command":"sleep 1;:"}]}`); resp.StatusCode != 200 {
 		t.Fatalf("put harnesses: %d", resp.StatusCode)
 	}
 	if resp := put("/v1/agents/x-poster", `{"description":"Posts X threads.","harness":"noop","instructions":"# Role\n"}`); resp.StatusCode != 200 {

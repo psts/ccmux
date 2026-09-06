@@ -42,10 +42,11 @@ var (
 func (m *Manager) SpawnAgentPane(wsID, createdBy string, l AgentLaunch) (*model.Pane, error) {
 	m.agentStartMu.Lock()
 	defer m.agentStartMu.Unlock()
-	if p := m.AgentPane(wsID, l.Name); p != nil && !atBareShell(p) {
-		return nil, ErrAgentRunning
+	now := time.Now()
+	if p := m.AgentPane(wsID, l.Name); p != nil && (!atBareShell(p) || m.starting.inProgress(p.ID, now)) {
+		return nil, ErrAgentRunning // running, or a wake typed into it moments ago
 	}
-	if m.starting.inProgress(spawnKey(wsID, l.Name), time.Now()) {
+	if m.starting.inProgress(spawnKey(wsID, l.Name), now) {
 		return nil, ErrAgentRunning
 	}
 	if m.overAgentCap() {
@@ -125,9 +126,14 @@ func (s *startMarks) mark(key string, now time.Time) {
 	s.at[key] = now
 }
 
-// confirm clears the marks for a pane once tmux reported its foreground
-// command: from here on the ordinary liveness checks tell the truth.
+// confirm clears the marks for a pane once tmux reports a HARNESS in its
+// foreground: from here on the ordinary liveness checks tell the truth. A
+// shell report proves nothing — a fresh pane says "zsh" before the typed
+// command execs — so it leaves the marks standing.
 func (s *startMarks) confirm(wsID string, p *model.Pane) {
+	if atBareShell(p) {
+		return
+	}
 	s.forget(p.ID)
 	if p.Agent != "" {
 		s.forget(spawnKey(wsID, p.Agent))
