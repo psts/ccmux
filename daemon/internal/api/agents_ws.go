@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
@@ -85,11 +86,19 @@ func (s *Server) windowByID(id string) (manager.WindowInfo, int, string) {
 }
 
 func (s *Server) windowByName(name string) (manager.WindowInfo, int, string) {
-	id, ok := s.mgr.WindowByName(name)
-	if !ok {
-		return manager.WindowInfo{}, http.StatusNotFound, "unknown window " + name
+	// Strict here too: the cached name map goes EMPTY on a failed store
+	// read, which would turn "unreadable" into "no such window".
+	windows, err := s.mgr.WindowsListStrict()
+	if err != nil {
+		log.Printf("windows: listing failed: %v", err)
+		return manager.WindowInfo{}, http.StatusServiceUnavailable, "window state unreadable — retry"
 	}
-	return s.windowByID(id)
+	for _, win := range windows {
+		if strings.EqualFold(win.Name, name) {
+			return win, 0, ""
+		}
+	}
+	return manager.WindowInfo{}, http.StatusNotFound, "unknown window " + name
 }
 
 // agentWorkspace is the session in win that IS base name's instance, live or
@@ -388,9 +397,9 @@ func (s *Server) launchIntoAgentSession(ws *model.Workspace, paneID string, l ma
 
 // windowReposOfPane is windowRepos for the window the pane's session sits in
 // (its RESOLVED window, not the legacy column). A session outside any
-// window launches with no project folders, said once in the log; an
-// unreadable window table is a refusal (status, message), because a launch
-// with no folders would be persisted as the agent's recipe.
+// window launches with no project folders, and the log says so at every
+// such start; an unreadable window table is a refusal (status, message),
+// because a launch with no folders would be persisted as the agent's recipe.
 func (s *Server) windowReposOfPane(paneID string) ([]string, int, string) {
 	group, ok := s.mgr.GroupForPane(paneID)
 	if !ok || group == "" {

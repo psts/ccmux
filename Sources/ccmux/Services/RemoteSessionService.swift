@@ -1252,6 +1252,7 @@ final class RemoteSessionService: ObservableObject {
                 struct APIError: Decodable { let error: String }
                 windowAgentErrors[windowId] = (try? JSONDecoder().decode(APIError.self, from: data))?.error
                     ?? "HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)"
+                windowAgents[windowId] = [] // the web lens drops the list on failure too
                 return
             }
             struct Body: Decodable { let agents: [DaemonAgentInstance] }
@@ -1259,6 +1260,7 @@ final class RemoteSessionService: ObservableObject {
             windowAgentErrors[windowId] = ""
         } catch {
             windowAgentErrors[windowId] = error.localizedDescription
+            windowAgents[windowId] = []
         }
     }
 
