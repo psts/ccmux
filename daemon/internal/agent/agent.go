@@ -152,6 +152,14 @@ func withDefaults(d Definition) Definition {
 	return d
 }
 
+// Drifted is the ONE definition of "the base moved since this instance last
+// started": both versions known and different. A blank pane version (a
+// stamp that never persisted) is unknown, not drift — the lifecycle and the
+// lenses must agree on that, so neither spells the rule itself.
+func Drifted(paneVersion, baseVersion string) bool {
+	return paneVersion != "" && baseVersion != "" && paneVersion != baseVersion
+}
+
 // Defaults is the definition a NEW agent starts from before the request is
 // merged over it: the same fill as withDefaults plus the idle cap, which
 // withDefaults leaves alone because 0 means "never sleep" once stored.

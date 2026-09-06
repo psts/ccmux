@@ -2,9 +2,7 @@ package api
 
 import (
 	"errors"
-	"log"
 	"net/http"
-	"strings"
 
 	"ccmux.dev/ccmuxd/internal/agent"
 )
@@ -48,23 +46,29 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 // message. An instance already running is not an error: the bus delivers to
 // it directly.
 func (s *Server) startAgentForPeer(wsID, name, prompt string) error {
-	_, status, msg := s.startAgent(wsID, name, prompt, "claude-peers")
-	if msg == "" || status == http.StatusConflict && strings.Contains(msg, "is running") {
+	p, status, msg := s.startAgent(wsID, name, prompt, "claude-peers")
+	// A 409 that hands back the pane is "already running": fine for the bus,
+	// which delivers to it directly. A 409 without one is the cap.
+	if msg == "" || status == http.StatusConflict && p != nil {
 		return nil
 	}
 	return errors.New(msg)
 }
 
-// isAgent answers the bus's "is this name a base agent" question. A base
-// that exists but cannot be read is logged and reported as not-an-agent,
-// so the caller's error names the real cause instead of a repo guess.
-func (s *Server) isAgent(name string) bool {
+// isAgent answers the bus's "is this name a base agent" question three
+// ways: yes, no, or "it exists but cannot be read" — the last as an error the
+// bus hands to the sender, so a corrupt agent.json is reported as that and
+// not as a missing repo folder.
+func (s *Server) isAgent(name string) (bool, error) {
 	if s.agents == nil {
-		return false
+		return false, nil
 	}
 	_, err := s.agents.Get(name)
-	if err != nil && !errors.Is(err, agent.ErrNotFound) {
-		log.Printf("peers: agent %q unreadable, treated as not an agent: %v", name, err)
+	if errors.Is(err, agent.ErrNotFound) {
+		return false, nil
 	}
-	return err == nil
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

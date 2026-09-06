@@ -2,7 +2,10 @@ package manager
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -42,14 +45,19 @@ func (m *Manager) SpawnAgentPane(wsID, createdBy string, l AgentLaunch) (*model.
 	if p := m.AgentPane(wsID, l.Name); p != nil && !atBareShell(p) {
 		return nil, ErrAgentRunning
 	}
-	if m.overAgentCap() {
+	if m.starting.inProgress(wsID+"|"+l.Name, time.Now()) || m.overAgentCap() {
 		return nil, ErrAgentCap
 	}
 	p, err := m.spawnPane(wsID, l.CWD, l.Persist, l.Deliver, createdBy, l.Harness.Name, l.Harness.Autoconfirm, l.RouteAccount)
 	if err != nil {
 		return nil, err
 	}
-	return m.stampAgent(p.ID, l), nil
+	m.starting.mark(wsID+"|"+l.Name, time.Now())
+	stamped := m.stampAgent(p.ID, l)
+	if stamped == nil {
+		return nil, fmt.Errorf("agent %s: pane %s vanished right after spawn", l.Name, p.ID)
+	}
+	return stamped, nil
 }
 
 // StartAgentInPane restarts an instance whose pane sits at a bare shell — the
@@ -58,18 +66,58 @@ func (m *Manager) SpawnAgentPane(wsID, createdBy string, l AgentLaunch) (*model.
 func (m *Manager) StartAgentInPane(paneID string, l AgentLaunch) error {
 	m.agentStartMu.Lock()
 	defer m.agentStartMu.Unlock()
+	// A wake typed moments ago has not yet changed tmux's foreground command,
+	// so "at a shell" would still read true: the marker is what says "in
+	// progress" until tmux reports the harness (or the window lapses).
+	if m.starting.inProgress(paneID, time.Now()) {
+		return ErrAgentRunning
+	}
 	if m.overAgentCap() {
 		return ErrAgentCap
 	}
 	if err := m.startInPane(paneID, l.Harness, l.Persist, l.Deliver, l.RouteAccount); err != nil {
 		return err
 	}
+	m.starting.mark(paneID, time.Now())
 	m.stampAgent(paneID, l)
 	return nil
 }
 
 func (m *Manager) overAgentCap() bool {
 	return m.AgentsMax > 0 && m.RunningAgents() >= m.AgentsMax
+}
+
+// startMarks remembers starts typed within the last startWindow, keyed by
+// pane (wakes) or by workspace|name (spawns): the liveness every other guard
+// reads comes from tmux's async foreground signal, which lags the keystroke
+// by the harness's exec time — long enough for a second start to slip in.
+type startMarks struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}
+
+const startWindow = 20 * time.Second
+
+func (s *startMarks) inProgress(key string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.at[key]
+	return ok && now.Sub(t) < startWindow
+}
+
+func (s *startMarks) mark(key string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.at == nil {
+		s.at = map[string]time.Time{}
+	}
+	s.at[key] = now
+}
+
+func (s *startMarks) forget(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.at, key)
 }
 
 // stampAgent records the base name and version on the pane after a start.

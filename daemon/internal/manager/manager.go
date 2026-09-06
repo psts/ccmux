@@ -92,6 +92,7 @@ type Manager struct {
 	activity     agentActivity
 	agentStartMu sync.Mutex
 	wakeBackoff  wakeBackoff
+	starting     startMarks
 
 	// PaneLLMRoute, when set, points a pane's llm route at a named account
 	// (wired to llmproxy.SetPaneRoute in main). Harness starts use it for
@@ -1158,6 +1159,8 @@ func (m *Manager) dropPane(wsID, paneID string) {
 	}
 	m.activity.forget(paneID)
 	m.wakeBackoff.forget(paneID)
+	m.starting.forget(paneID)
+	pushLocks.Delete(paneID)
 	m.mu.Lock()
 	dropped := false
 	if e := m.byID[wsID]; e != nil && len(e.ws.Panes) > 1 {

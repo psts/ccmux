@@ -1071,7 +1071,12 @@ async function fetchWorkspaceAgents(wsId) {
   if (agentCatalog.wsId === wsId && Date.now() - agentCatalog.at < 5000) return agentCatalog.list;
   try {
     const r = await fetch(`/v1/workspaces/${wsId}/agents`);
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) {
+      const body = await r.text();
+      let msg = body;
+      try { msg = JSON.parse(body).error || body; } catch (_) { /* not JSON */ }
+      throw new Error(msg);
+    }
     const list = (await r.json()).agents || [];
     Object.assign(agentCatalog, { wsId, list, at: Date.now(), error: "" });
     return list;

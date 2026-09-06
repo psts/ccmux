@@ -166,7 +166,7 @@ type Service struct {
 	// hands a delivered message to a pane whose harness cannot receive channel
 	// pushes (opencode instances take it through their TUI server). All three
 	// are wired by the api layer; nil disables that piece.
-	IsAgent    func(name string) bool
+	IsAgent    func(name string) (bool, error)
 	StartAgent func(wsID, name, prompt string) error
 	PushToPane func(paneID, text string) error
 	// WakePane starts the asleep agent instance in paneID with text as its

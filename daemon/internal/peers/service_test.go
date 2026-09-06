@@ -1,6 +1,7 @@
 package peers
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -525,7 +526,7 @@ func TestSpawn_AgentStartsInSendersWorkspace(t *testing.T) {
 
 	var started []string
 	var mu sync.Mutex
-	svc.IsAgent = func(name string) bool { return name == "x-poster" }
+	svc.IsAgent = func(name string) (bool, error) { return name == "x-poster", nil }
 	svc.StartAgent = func(wsID, name, prompt string) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -560,7 +561,7 @@ func TestSpawn_AgentStartsInSendersWorkspace(t *testing.T) {
 
 func TestSpawn_AgentRefusedForPanelessSender(t *testing.T) {
 	svc, _ := newTestService(t)
-	svc.IsAgent = func(string) bool { return true }
+	svc.IsAgent = func(string) (bool, error) { return true, nil }
 	svc.StartAgent = func(string, string, string) error { t.Fatal("must not start"); return nil }
 	resp := registerPaneless(svc, "/w/x")
 	got := svc.Send(SendReq{FromID: resp.PeerID, ToName: "x-poster", Text: "hi", SpawnIfMissing: true})
@@ -596,5 +597,20 @@ func TestPushToPane_WakesAnAsleepAgentWithTheMessage(t *testing.T) {
 	defer mu.Unlock()
 	if pushed[0] != "pane-x" || !strings.HasPrefix(woken[0], "pane-x|[claude-peers message from") || !strings.Contains(woken[0], "post v2") || !strings.Contains(woken[0], "to_id="+a) {
 		t.Fatalf("pushed %v woken %v", pushed, woken)
+	}
+}
+
+func TestSpawn_AgentReadErrorIsReportedNotGuessed(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.groups["pane-a"] = "PROJ"
+	a := registerPane(svc, "pane-a", "/w/ccmux").PeerID
+	svc.IsAgent = func(string) (bool, error) { return false, errors.New("agent.json: unexpected end of JSON input") }
+	svc.StartAgent = func(string, string, string) error { t.Fatal("must not start"); return nil }
+	got := svc.Send(SendReq{FromID: a, ToName: "x-poster", Text: "hi", SpawnIfMissing: true})
+	if !strings.Contains(got.Error, "cannot be read") || !strings.Contains(got.Error, "agent.json") {
+		t.Fatalf("sender must see the real cause, got %+v", got)
+	}
+	if hook.spawnCount() != 0 {
+		t.Fatal("must not fall through to the repo guess")
 	}
 }

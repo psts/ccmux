@@ -48,7 +48,6 @@ func (m *Manager) PushToAgentPane(paneID, text string) error {
 	if port == 0 {
 		return ErrNotAgentPane // a Claude instance: channel push, not TUI
 	}
-	_ = name
 	if asleep {
 		return ErrAgentAsleep // a wake, not a push, is the answer
 	}

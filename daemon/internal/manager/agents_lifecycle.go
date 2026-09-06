@@ -180,7 +180,7 @@ func (m *Manager) agentViewFor(p model.Pane, d agent.Definition, now time.Time) 
 		atShell:   atBareShell(&p),
 		keepAlive: d.KeepAlive,
 		idleExit:  time.Duration(d.IdleExitMinutes) * time.Minute,
-		drift:     p.AgentVersion != "" && d.Version != "" && p.AgentVersion != d.Version,
+		drift:     agent.Drifted(p.AgentVersion, d.Version),
 	}
 	if act, ok := m.activity.get(p.ID); ok {
 		v.idle, v.idleSince = !act.busy, act.since

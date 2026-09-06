@@ -379,7 +379,7 @@ struct DaemonSettingsView: View {
     private func agentCard(_ idx: Int) -> some View {
         let binding = Binding(
             get: { agents?[idx] ?? DaemonAgent(name: "") },
-            set: { agents?[idx] = $0 })
+            set: { if let n = agents?.count, idx < n { agents?[idx] = $0 } })
         let isNew = binding.wrappedValue.version.isEmpty
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -424,17 +424,27 @@ struct DaemonSettingsView: View {
             agentStatus = "✗ \(a.name): \(error)"
             return
         }
-        // Replace only the saved row: a whole-list refetch would drop other
-        // rows the user has added and not saved yet.
-        if let fresh = await RemoteSessionService.shared.fetchAgents().list.first(where: { $0.name == a.name }) {
-            agents?[idx] = fresh
+        // Replace only the saved row, found by NAME (the index was captured
+        // before the await and the list may have moved): a whole-list refetch
+        // would drop other rows the user has added and not saved yet.
+        let res = await RemoteSessionService.shared.fetchAgents()
+        if let err = res.error {
+            agentStatus = "✓ Saved \(a.name), but the list could not be refreshed: \(err)"
+            return
+        }
+        if let fresh = res.list.first(where: { $0.name == a.name }),
+           let at = agents?.firstIndex(where: { $0.name == a.name }) {
+            agents?[at] = fresh
         }
         agentStatus = "✓ Saved \(a.name)."
     }
 
     private func deleteAgent(_ idx: Int) {
         guard let a = agents?[idx] else { return }
-        if a.version.isEmpty { agents?.remove(at: idx); return }
+        if a.version.isEmpty {
+            if let at = agents?.firstIndex(where: { $0.name == a.name && $0.version.isEmpty }) { agents?.remove(at: at) }
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Delete agent “\(a.name)”?"
         alert.informativeText = "Removes its folder, skills and knowledge included. Project instance folders stay."
@@ -447,7 +457,8 @@ struct DaemonSettingsView: View {
                 agentStatus = "✗ \(a.name): \(error)"
                 return
             }
-            agents?.remove(at: idx)
+            // By name, not the index captured before the await.
+            if let at = agents?.firstIndex(where: { $0.name == a.name }) { agents?.remove(at: at) }
             agentStatus = "Deleted \(a.name)."
         }
     }

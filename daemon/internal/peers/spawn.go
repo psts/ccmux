@@ -56,7 +56,16 @@ func birthPrompt(name, requesterName string) string {
 // its own name in the sender's group (CLAUDE_PEERS_NAME) and the queued
 // request is delivered then. ok=false means "not an agent, carry on".
 func (s *Service) tryStartAgentLocked(sender *Peer, key, group, name, text, prompt string) (SendResp, bool) {
-	if s.IsAgent == nil || s.StartAgent == nil || !s.IsAgent(name) {
+	if s.IsAgent == nil || s.StartAgent == nil {
+		return SendResp{}, false
+	}
+	isAgent, err := s.IsAgent(name)
+	if err != nil {
+		// The base exists and is broken: say so, rather than fall through to a
+		// repo guess whose error would name a folder nobody meant to exist.
+		return SendResp{Error: fmt.Sprintf("agent %q exists but cannot be read: %v", name, err)}, true
+	}
+	if !isAgent {
 		return SendResp{}, false
 	}
 	if sender.PaneID == "" {

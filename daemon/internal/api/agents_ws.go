@@ -59,7 +59,7 @@ func (s *Server) instanceOf(wsID string, d agent.Definition) agentInstance {
 	if p == nil {
 		return inst
 	}
-	inst.Pane, inst.PaneVersion, inst.Drift = p.ID, p.AgentVersion, p.AgentVersion != d.Version
+	inst.Pane, inst.PaneVersion, inst.Drift = p.ID, p.AgentVersion, agent.Drifted(p.AgentVersion, d.Version)
 	inst.State = "running"
 	if s.mgr.PaneAtShell(p.ID) {
 		inst.State = "asleep"

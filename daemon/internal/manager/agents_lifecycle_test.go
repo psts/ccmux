@@ -105,3 +105,23 @@ func TestWakeBackoffDoublesAndResets(t *testing.T) {
 		t.Fatal("forget resets the schedule")
 	}
 }
+
+func TestStartMarksHoldForTheWindowThenLapse(t *testing.T) {
+	var sm startMarks
+	t0 := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	if sm.inProgress("p", t0) {
+		t.Fatal("nothing marked yet")
+	}
+	sm.mark("p", t0)
+	if !sm.inProgress("p", t0.Add(5*time.Second)) {
+		t.Fatal("a start 5s ago is in progress")
+	}
+	if sm.inProgress("p", t0.Add(startWindow)) {
+		t.Fatal("the window has lapsed")
+	}
+	sm.mark("p", t0)
+	sm.forget("p")
+	if sm.inProgress("p", t0) {
+		t.Fatal("forget clears the mark")
+	}
+}
