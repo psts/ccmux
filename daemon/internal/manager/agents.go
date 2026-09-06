@@ -45,14 +45,17 @@ func (m *Manager) SpawnAgentPane(wsID, createdBy string, l AgentLaunch) (*model.
 	if p := m.AgentPane(wsID, l.Name); p != nil && !atBareShell(p) {
 		return nil, ErrAgentRunning
 	}
-	if m.starting.inProgress(wsID+"|"+l.Name, time.Now()) || m.overAgentCap() {
+	if m.starting.inProgress(spawnKey(wsID, l.Name), time.Now()) {
+		return nil, ErrAgentRunning
+	}
+	if m.overAgentCap() {
 		return nil, ErrAgentCap
 	}
 	p, err := m.spawnPane(wsID, l.CWD, l.Persist, l.Deliver, createdBy, l.Harness.Name, l.Harness.Autoconfirm, l.RouteAccount)
 	if err != nil {
 		return nil, err
 	}
-	m.starting.mark(wsID+"|"+l.Name, time.Now())
+	m.starting.mark(spawnKey(wsID, l.Name), time.Now())
 	stamped := m.stampAgent(p.ID, l)
 	if stamped == nil {
 		return nil, fmt.Errorf("agent %s: pane %s vanished right after spawn", l.Name, p.ID)
@@ -86,6 +89,10 @@ func (m *Manager) StartAgentInPane(paneID string, l AgentLaunch) error {
 func (m *Manager) overAgentCap() bool {
 	return m.AgentsMax > 0 && m.RunningAgents() >= m.AgentsMax
 }
+
+// spawnKey is the start mark for a fresh spawn: the pane does not exist yet,
+// so the mark is by workspace and base. dropPane prunes it with the pane.
+func spawnKey(wsID, name string) string { return wsID + "|" + name }
 
 // startMarks remembers starts typed within the last startWindow, keyed by
 // pane (wakes) or by workspace|name (spawns): the liveness every other guard

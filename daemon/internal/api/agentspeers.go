@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/manager"
 )
 
 // peersAgents: POST /v1/peers/agents {"peer_id"} → the base agents as seen
@@ -46,13 +47,13 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 // message. An instance already running is not an error: the bus delivers to
 // it directly.
 func (s *Server) startAgentForPeer(wsID, name, prompt string) error {
-	p, status, msg := s.startAgent(wsID, name, prompt, "claude-peers")
-	// A 409 that hands back the pane is "already running": fine for the bus,
-	// which delivers to it directly. A 409 without one is the cap.
-	if msg == "" || status == http.StatusConflict && p != nil {
+	out := s.startAgent(wsID, name, prompt, "claude-peers")
+	// "Already running" (a live pane, or a start in flight) is fine for the
+	// bus, which delivers to it directly; the cap and the rest are failures.
+	if out.msg == "" || errors.Is(out.err, manager.ErrAgentRunning) {
 		return nil
 	}
-	return errors.New(msg)
+	return errors.New(out.msg)
 }
 
 // isAgent answers the bus's "is this name a base agent" question three

@@ -205,11 +205,13 @@ func (m *Manager) wakeWithBackoff(wsID string, p model.Pane, now time.Time) {
 	if m.WakeAgent == nil || !m.wakeBackoff.due(p.ID, now) {
 		return
 	}
-	if err := m.WakeAgent(wsID, p.Agent); err != nil {
+	err := m.WakeAgent(wsID, p.Agent)
+	if err != nil && !errors.Is(err, ErrAgentRunning) {
 		wait := m.wakeBackoff.failed(p.ID, now)
 		log.Printf("agent %s: keep-alive wake failed (%v); next try in %s", p.Agent, err, wait)
 		return
 	}
+	// Started, or someone else's start is in flight: either way not a failure.
 	m.wakeBackoff.forget(p.ID)
 }
 

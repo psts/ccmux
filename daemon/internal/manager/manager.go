@@ -1168,6 +1168,8 @@ func (m *Manager) dropPane(wsID, paneID string) {
 		for _, p := range e.ws.Panes {
 			if p.ID != paneID {
 				kept = append(kept, p)
+			} else if p.Agent != "" {
+				m.starting.forget(spawnKey(wsID, p.Agent)) // re-adding right after a stop must not read as in progress
 			}
 		}
 		dropped = len(kept) != len(e.ws.Panes)

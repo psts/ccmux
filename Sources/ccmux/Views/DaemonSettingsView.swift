@@ -378,7 +378,7 @@ struct DaemonSettingsView: View {
 
     private func agentCard(_ idx: Int) -> some View {
         let binding = Binding(
-            get: { agents?[idx] ?? DaemonAgent(name: "") },
+            get: { agentAt(idx) ?? DaemonAgent(name: "") },
             set: { if let n = agents?.count, idx < n { agents?[idx] = $0 } })
         let isNew = binding.wrappedValue.version.isEmpty
         return VStack(alignment: .leading, spacing: 6) {
@@ -418,8 +418,15 @@ struct DaemonSettingsView: View {
         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
     }
 
+    /// Bounds-checked row lookup: SwiftUI can hand a stale index after the
+    /// array shrinks, and `agents?[idx]` only guards nil, not the range.
+    private func agentAt(_ idx: Int) -> DaemonAgent? {
+        guard let list = agents, idx >= 0, idx < list.count else { return nil }
+        return list[idx]
+    }
+
     private func saveAgent(_ idx: Int) async {
-        guard let a = agents?[idx] else { return }
+        guard let a = agentAt(idx) else { return }
         if let error = await RemoteSessionService.shared.putAgent(a) {
             agentStatus = "✗ \(a.name): \(error)"
             return
@@ -440,7 +447,7 @@ struct DaemonSettingsView: View {
     }
 
     private func deleteAgent(_ idx: Int) {
-        guard let a = agents?[idx] else { return }
+        guard let a = agentAt(idx) else { return }
         if a.version.isEmpty {
             if let at = agents?.firstIndex(where: { $0.name == a.name && $0.version.isEmpty }) { agents?.remove(at: at) }
             return

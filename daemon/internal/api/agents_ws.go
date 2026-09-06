@@ -87,12 +87,12 @@ func (s *Server) startWorkspaceAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	p, status, msg := s.startAgent(ws.ID, r.PathValue("name"), req.Prompt, req.CreatedBy)
-	if msg != "" {
-		writeError(w, status, msg)
+	out := s.startAgent(ws.ID, r.PathValue("name"), req.Prompt, req.CreatedBy)
+	if out.msg != "" {
+		writeError(w, out.status, out.msg)
 		return
 	}
-	writeJSON(w, status, p)
+	writeJSON(w, out.status, out.pane)
 }
 
 // resolveAgentLaunch turns a base name into a ready AgentLaunch for ws, or an
@@ -195,35 +195,46 @@ func (s *Server) agentRoute(d agent.Definition, h harness.Harness) (string, int,
 // pane, the HTTP status a transport would answer with (201 added, 200 woken)
 // and the refusal message, "" when it went through. The HTTP route, the bus
 // and the lifecycle loop are all adapters over this.
-func (s *Server) startAgent(wsID, name, prompt, createdBy string) (*model.Pane, int, string) {
+func (s *Server) startAgent(wsID, name, prompt, createdBy string) startOutcome {
 	ws := s.mgr.Workspace(wsID)
 	if ws == nil {
-		return nil, http.StatusNotFound, "unknown workspace"
+		return startOutcome{status: http.StatusNotFound, msg: "unknown workspace"}
 	}
 	existing := s.mgr.AgentPane(wsID, name)
 	if existing != nil && !s.mgr.PaneAtShell(existing.ID) {
-		return existing, http.StatusConflict, "agent " + name + " is running in this workspace — type into its pane"
+		return startOutcome{pane: existing, status: http.StatusConflict, msg: "agent " + name + " is running in this workspace — type into its pane", err: manager.ErrAgentRunning}
 	}
 	if msg := s.agentCapMessage(); msg != "" {
-		return nil, http.StatusConflict, msg
+		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
 	}
 	l, status, msg := s.resolveAgentLaunch(ws, name, prompt)
 	if msg != "" {
-		return nil, status, msg
+		return startOutcome{status: status, msg: msg}
 	}
 	if existing != nil {
 		if err := s.mgr.StartAgentInPane(existing.ID, l); err != nil {
-			return nil, agentErrStatus(err), err.Error()
+			return startOutcome{status: agentErrStatus(err), msg: err.Error(), err: err}
 		}
 		s.pushPromptLater(l)
-		return s.mgr.AgentPane(wsID, name), http.StatusOK, ""
+		return startOutcome{pane: s.mgr.AgentPane(wsID, name), status: http.StatusOK}
 	}
 	p, err := s.mgr.SpawnAgentPane(wsID, createdBy, l)
 	if err != nil {
-		return nil, agentErrStatus(err), err.Error()
+		return startOutcome{status: agentErrStatus(err), msg: err.Error(), err: err}
 	}
 	s.pushPromptLater(l)
-	return p, http.StatusCreated, ""
+	return startOutcome{pane: p, status: http.StatusCreated}
+}
+
+// startOutcome is what startAgent hands its adapters: the pane, the HTTP
+// status a transport answers with, the refusal message ("" = went through),
+// and the manager's sentinel when one caused the refusal — so a non-HTTP
+// caller can tell "already running" from a real failure without parsing text.
+type startOutcome struct {
+	pane   *model.Pane
+	status int
+	msg    string
+	err    error
 }
 
 // agentErrStatus maps the manager's refusals to HTTP: the cap and a duplicate

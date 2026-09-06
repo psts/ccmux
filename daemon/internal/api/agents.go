@@ -61,10 +61,14 @@ func (s *Server) wirePeersAgents() {
 // wakeAgent is the lifecycle loop's restart path for a keep-alive instance
 // found asleep: the one start flow, from the CURRENT base, with no prompt.
 func (s *Server) wakeAgent(wsID, name string) error {
-	if _, _, msg := s.startAgent(wsID, name, "", "lifecycle"); msg != "" {
-		return errors.New(msg)
+	out := s.startAgent(wsID, name, "", "lifecycle")
+	switch {
+	case out.msg == "":
+		return nil
+	case out.err != nil:
+		return out.err // keeps ErrAgentRunning / ErrAgentCap for the backoff to read
 	}
-	return nil
+	return errors.New(out.msg)
 }
 
 // wakePane is the bus's answer to a message for an asleep opencode instance:
@@ -77,9 +81,8 @@ func (s *Server) wakePane(paneID, text string) error {
 	}
 	for _, p := range ws.Panes {
 		if p.ID == paneID && p.Agent != "" {
-			_, _, msg := s.startAgent(wsID, p.Agent, text, "claude-peers")
-			if msg != "" {
-				return errors.New(msg)
+			if out := s.startAgent(wsID, p.Agent, text, "claude-peers"); out.msg != "" {
+				return errors.New(out.msg)
 			}
 			return nil
 		}
