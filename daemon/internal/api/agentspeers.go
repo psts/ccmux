@@ -36,7 +36,7 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	// A group that is not a window (the directory fallback) has no members,
 	// so instanceOf reads every base as absent.
-	win, _ := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
+	win, _, _ := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
 	for _, d := range defs {
 		out = append(out, s.instanceOf(win, d))
 	}
@@ -48,9 +48,12 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 // prompt as first message. An instance already running is not an error: the
 // bus delivers to it directly.
 func (s *Server) startAgentForPeer(group, name, prompt string) error {
-	win, ok := s.windowByName(group)
-	if !ok {
+	win, status, msg := s.windowByName(group)
+	if status == http.StatusNotFound {
 		return errors.New("agent " + name + " joins a shared window, and " + group + " is not one — only a session inside a window can add it")
+	}
+	if msg != "" {
+		return errors.New(msg)
 	}
 	return peerStartError(s.startWindowAgent(win, name, prompt, "claude-peers"))
 }

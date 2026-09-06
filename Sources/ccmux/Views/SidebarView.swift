@@ -689,15 +689,20 @@ struct SidebarView: View {
     /// not to one session: adding one makes it a session of its own here.
     @ViewBuilder
     private func windowAgentEntries(named name: String) -> some View {
-        if let win = remoteService.sharedWindow(named: name),
-           let list = remoteService.windowAgents[win.id] {
-            Divider()
-            if let error = remoteService.windowAgentErrors[win.id], !error.isEmpty {
+        if let win = remoteService.sharedWindow(named: name) {
+            let error = remoteService.windowAgentErrors[win.id] ?? ""
+            let list = remoteService.windowAgents[win.id]
+            // An error row shows even when no list ever loaded: a broken base
+            // fails the whole list, and silence would read as "no agents".
+            if !error.isEmpty || list != nil {
+                Divider()
+            }
+            if !error.isEmpty {
                 Button("agents: \(error)") {}.disabled(true)
-            } else if list.isEmpty {
+            } else if let list, list.isEmpty {
                 Button("no agents defined — Settings › Agents") {}.disabled(true)
             }
-            ForEach(list) { a in
+            ForEach(list ?? []) { a in
                 let icon = a.icon.isEmpty ? "⚙" : a.icon
                 if a.state == "running" {
                     Button("● \(icon) \(a.name) — open") {

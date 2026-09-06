@@ -250,6 +250,15 @@ func migrateAgentColumns(db *sql.DB) error {
 			return fmt.Errorf("migrate %s.%s: %w", tc.table, tc.col, err)
 		}
 	}
+	// An agent pane inside an ordinary project session is the pre-0.1.48
+	// model (the agent lived in one repo). It has no agent session to be
+	// woken through now, so it becomes a plain pane: the lifecycle stops
+	// trying to wake it and the bus treats it as any other. Its folder in
+	// the repo stays on disk. Idempotent: agent sessions keep their pane.
+	if _, err := db.Exec(`UPDATE panes SET agent='', agent_version='' WHERE agent != ''
+		AND workspace_id IN (SELECT id FROM workspaces WHERE agent = '')`); err != nil {
+		return fmt.Errorf("migrate legacy agent panes: %w", err)
+	}
 	return nil
 }
 

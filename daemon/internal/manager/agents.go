@@ -74,6 +74,10 @@ func (m *Manager) CreateAgentWorkspace(name, createdBy, group string, l AgentLau
 		Group: group, Agent: l.Name, Panes: []*model.Pane{pane0},
 	}
 	if err := m.registerWorkspace(ws, ctrl); err != nil {
+		// The harness is already up; a session no lens lists and no cap
+		// counts must not keep running.
+		ctrl.Close()
+		_ = m.server.KillSession(sessionName)
 		return nil, err
 	}
 	m.starting.mark(spawnKey("window:"+group, l.Name), now)

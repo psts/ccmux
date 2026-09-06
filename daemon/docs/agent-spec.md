@@ -258,6 +258,12 @@ as extra directories. A closed window archives its agent sessions like any
 other; opening it revives them with their persisted launch, so they come up
 running and idle exit puts them back to sleep.
 
+Upgrading from the per-repo model (0.1.47): an agent pane that sat inside an
+ordinary project session becomes a plain pane on the daemon's first open
+(the lifecycle stops waking it, the bus treats it as any other); its folder
+under `<repo>/.ccmux/agents/` stays on disk and is no longer read. Add the
+agent to the window to get it back.
+
 Sleep (and idle exit) is a ctrl-d at the harness prompt. Verified 2026-09-06
 on opencode: at its plain prompt it quits; with a permission dialog open the
 keystroke rejects the dialog instead and the agent stays running, so a

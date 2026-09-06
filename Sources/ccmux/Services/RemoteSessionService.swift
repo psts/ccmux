@@ -66,6 +66,10 @@ final class RemoteSessionService: ObservableObject {
     /// The daemon's error text for a window whose agent list failed (it fails
     /// the whole list on one broken base and names it), "" when it loaded.
     @Published private(set) var windowAgentErrors: [String: String] = [:]
+    /// When each window's agent list was last fetched. The poll runs every
+    /// 4s and again on every coalesced firehose refresh; the catalog is a
+    /// disk read per base on the daemon, so it gets the web lens's 5s TTL.
+    private var windowAgentsFetchedAt: [String: Date] = [:]
     /// Stored dev-command override per workspace ("" = daemon detects).
     private(set) var devCommands: [UUID: String] = [:]
     private var attachments: [UUID: WorkspaceAttachment] = [:]
@@ -1225,12 +1229,15 @@ final class RemoteSessionService: ObservableObject {
     func sleepAgent(windowId: String, name: String) async -> String? {
         let error = await sendReportingError(
             "DELETE", path: "/v1/windows/\(windowId)/agents/\(agentPath(name))", body: nil, expect: 204)
-        await refreshWindowAgents(windowId)
+        await refreshWindowAgents(windowId, force: true)
         return error
     }
 
-    /// Refresh the agent list for one shared window.
-    func refreshWindowAgents(_ windowId: String) async {
+    /// Refresh the agent list for one shared window. `force` skips the TTL
+    /// (after a start or sleep the state just changed).
+    func refreshWindowAgents(_ windowId: String, force: Bool = false) async {
+        if !force, let at = windowAgentsFetchedAt[windowId], Date().timeIntervalSince(at) < 5 { return }
+        windowAgentsFetchedAt[windowId] = Date()
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(windowId)/agents"),
               let (data, resp) = try? await session.data(from: url) else { return }
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
@@ -1263,7 +1270,7 @@ final class RemoteSessionService: ObservableObject {
         req.httpMethod = "POST"
         req.httpBody = payload
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        defer { Task { await refreshWindowAgents(windowId) } }
+        defer { Task { await refreshWindowAgents(windowId, force: true) } }
         do {
             let (data, resp) = try await session.data(for: req)
             guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }

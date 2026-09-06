@@ -36,9 +36,9 @@ type agentInstance struct {
 
 // listWindowAgents: GET /v1/windows/{id}/agents.
 func (s *Server) listWindowAgents(w http.ResponseWriter, r *http.Request) {
-	win, ok := s.windowByID(r.PathValue("id"))
-	if !ok {
-		writeError(w, http.StatusNotFound, "unknown window")
+	win, status, msg := s.windowByID(r.PathValue("id"))
+	if msg != "" {
+		writeError(w, status, msg)
 		return
 	}
 	if !s.agentsReady(w) {
@@ -65,21 +65,28 @@ func (s *Server) windowInstances(win manager.WindowInfo) ([]agentInstance, error
 	return out, nil
 }
 
-// windowByID finds a shared window; windowByName the same case-insensitively
-// (the bus knows windows by name, lenses by id).
-func (s *Server) windowByID(id string) (manager.WindowInfo, bool) {
-	for _, win := range s.mgr.Windows() {
+// windowByID finds a shared window by id, windowByName by name (the bus knows
+// windows by name, lenses by id); both answer an HTTP status and message when
+// they cannot. They read the STRICT window list: these are actions, and a
+// partial snapshot from a failed store read would show a window with no
+// members, which is "the agent was never added" — and a second session.
+func (s *Server) windowByID(id string) (manager.WindowInfo, int, string) {
+	windows, err := s.mgr.WindowsListStrict()
+	if err != nil {
+		return manager.WindowInfo{}, http.StatusServiceUnavailable, "window state unreadable — retry"
+	}
+	for _, win := range windows {
 		if win.ID == id {
-			return win, true
+			return win, 0, ""
 		}
 	}
-	return manager.WindowInfo{}, false
+	return manager.WindowInfo{}, http.StatusNotFound, "unknown window"
 }
 
-func (s *Server) windowByName(name string) (manager.WindowInfo, bool) {
+func (s *Server) windowByName(name string) (manager.WindowInfo, int, string) {
 	id, ok := s.mgr.WindowByName(name)
 	if !ok {
-		return manager.WindowInfo{}, false
+		return manager.WindowInfo{}, http.StatusNotFound, "unknown window " + name
 	}
 	return s.windowByID(id)
 }
@@ -138,9 +145,9 @@ type startAgentReq struct {
 // is already running (type into its pane instead) or the concurrency cap is
 // reached.
 func (s *Server) startWindowAgentRoute(w http.ResponseWriter, r *http.Request) {
-	win, ok := s.windowByID(r.PathValue("id"))
-	if !ok {
-		writeError(w, http.StatusNotFound, "unknown window")
+	win, status, msg := s.windowByID(r.PathValue("id"))
+	if msg != "" {
+		writeError(w, status, msg)
 		return
 	}
 	var req startAgentReq
@@ -360,8 +367,8 @@ func (s *Server) windowReposOfPane(paneID string) []string {
 	if !ok || group == "" {
 		return nil
 	}
-	win, ok := s.windowByName(group)
-	if !ok {
+	win, _, msg := s.windowByName(group)
+	if msg != "" {
 		return nil
 	}
 	return s.windowRepos(win)
@@ -400,9 +407,9 @@ func (s *Server) agentCapMessage() string {
 // project's own instructions, memory and log for that agent), the pane drops
 // to its shell. Removing the session is the session's own Remove.
 func (s *Server) sleepWindowAgent(w http.ResponseWriter, r *http.Request) {
-	win, ok := s.windowByID(r.PathValue("id"))
-	if !ok {
-		writeError(w, http.StatusNotFound, "unknown window")
+	win, status, msg := s.windowByID(r.PathValue("id"))
+	if msg != "" {
+		writeError(w, status, msg)
 		return
 	}
 	ws := s.agentWorkspace(win, r.PathValue("name"))

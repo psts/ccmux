@@ -49,3 +49,33 @@ func TestAgentColumnsPersistAcrossReopen(t *testing.T) {
 		t.Fatal("clear did not persist")
 	}
 }
+
+// A stamped pane inside an ordinary session (the per-repo model) loses its
+// stamp on open; a pane inside an agent session keeps it.
+func TestLegacyAgentPanesBecomePlainOnOpen(t *testing.T) {
+	path := t.TempDir() + "/reg.db"
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SaveWorkspace(&model.Workspace{ID: "repo", Name: "backend", RepoPath: "/r"})
+	s.SaveWorkspace(&model.Workspace{ID: "agent", Name: "🐦 x-poster", RepoPath: "/w/agents/x-poster", Agent: "x-poster"})
+	s.SavePane(&model.Pane{ID: "p-legacy", WorkspaceID: "repo", Agent: "x-poster", AgentVersion: "1.0.0"})
+	s.SavePane(&model.Pane{ID: "p-agent", WorkspaceID: "agent", Agent: "x-poster", AgentVersion: "1.0.0"})
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	wss, _ := s.Load()
+	for _, w := range wss {
+		p := w.Panes[0]
+		if w.ID == "repo" && (p.Agent != "" || p.AgentVersion != "") {
+			t.Fatalf("legacy pane kept its stamp: %+v", p)
+		}
+		if w.ID == "agent" && p.Agent != "x-poster" {
+			t.Fatalf("agent session pane lost its stamp: %+v", p)
+		}
+	}
+}
