@@ -10,6 +10,7 @@ package peers
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 
 	"ccmux.dev/ccmuxd/internal/model"
@@ -255,10 +256,13 @@ var taskHeaderRe = regexp.MustCompile(`^\[claude-peers delegation task (tsk_[a-z
 
 // OpenTaskCountForPane is the lifecycle loop's "does this agent still owe
 // anyone work" check, keyed by pane: a pane's peer id is derived from it.
+// A store error answers "assume busy" (1): failing open would let a database
+// hiccup end an agent that still owes a delegator its result.
 func (s *Service) OpenTaskCountForPane(paneID string) int {
 	tasks, err := s.st.OpenPeerTasksFor(derivedID(paneID), 20)
 	if err != nil {
-		return 0
+		log.Printf("peers: open tasks for pane %s unreadable (%v); treating the agent as busy", paneID, err)
+		return 1
 	}
 	return len(tasks)
 }

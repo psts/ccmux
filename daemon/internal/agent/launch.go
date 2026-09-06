@@ -11,8 +11,9 @@ import (
 )
 
 // Launch is the pair of commands an instance start needs: Persist is what
-// the pane records as its startup command (a revive or a keep-alive restart
-// runs it as-is), Deliver is what gets typed now — Persist plus the one-shot
+// the pane records as its startup command (a revive runs it as-is; a
+// keep-alive wake regenerates it from the current base), Deliver is what
+// gets typed now — Persist plus the one-shot
 // first prompt, if any. The prompt is deliberately never persisted: a
 // restart must not replay a message.
 type Launch struct {

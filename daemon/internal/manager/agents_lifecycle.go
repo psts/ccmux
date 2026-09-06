@@ -2,10 +2,12 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
 )
@@ -155,14 +157,30 @@ func (m *Manager) agentTick(now time.Time) {
 
 func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 	d, err := m.Agents.Get(p.Agent)
-	if err != nil {
+	if errors.Is(err, agent.ErrNotFound) {
 		return // base deleted: the pane is just a pane now
 	}
+	if err != nil {
+		log.Printf("agent %s pane %s: base unreadable, lifecycle skipped this tick: %v", p.Agent, p.ID, err)
+		return
+	}
+	switch decideAgent(m.agentViewFor(p, d, now), now) {
+	case actExit:
+		m.exitAgent(p.ID, wsID)
+	case actWake:
+		m.wakeWithBackoff(wsID, p, now)
+	}
+}
+
+// agentViewFor assembles what decideAgent reads for one pane: the pane's
+// shell state, the base's policy, drift, the harness's busy/idle signal (or
+// the attention fallback before the first signal) and open delegations.
+func (m *Manager) agentViewFor(p model.Pane, d agent.Definition, now time.Time) agentView {
 	v := agentView{
 		atShell:   atBareShell(&p),
 		keepAlive: d.KeepAlive,
 		idleExit:  time.Duration(d.IdleExitMinutes) * time.Minute,
-		drift:     p.AgentVersion != d.Version,
+		drift:     p.AgentVersion != "" && d.Version != "" && p.AgentVersion != d.Version,
 	}
 	if act, ok := m.activity.get(p.ID); ok {
 		v.idle, v.idleSince = !act.busy, act.since
@@ -176,16 +194,69 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 	if m.OpenTasksForPane != nil {
 		v.openTasks = m.OpenTasksForPane(p.ID)
 	}
-	switch decideAgent(v, now) {
-	case actExit:
-		m.exitAgent(p.ID, wsID)
-	case actWake:
-		if m.WakeAgent != nil {
-			if err := m.WakeAgent(wsID, p.Agent); err != nil {
-				log.Printf("agent %s: keep-alive wake failed: %v", p.Agent, err)
-			}
-		}
+	return v
+}
+
+// wakeWithBackoff retries a keep-alive wake with a doubling wait (one tick up
+// to an hour) so a wake that keeps failing — cap reached, harness missing,
+// launch line that exits at once — does not retype into the pane every 30
+// seconds for the life of the daemon.
+func (m *Manager) wakeWithBackoff(wsID string, p model.Pane, now time.Time) {
+	if m.WakeAgent == nil || !m.wakeBackoff.due(p.ID, now) {
+		return
 	}
+	if err := m.WakeAgent(wsID, p.Agent); err != nil {
+		wait := m.wakeBackoff.failed(p.ID, now)
+		log.Printf("agent %s: keep-alive wake failed (%v); next try in %s", p.Agent, err, wait)
+		return
+	}
+	m.wakeBackoff.forget(p.ID)
+}
+
+// wakeBackoff is the per-pane retry schedule for keep-alive wakes.
+type wakeBackoff struct {
+	mu   sync.Mutex
+	next map[string]wakeState
+}
+
+type wakeState struct {
+	fails int
+	at    time.Time
+}
+
+const (
+	wakeRetryMin = 30 * time.Second
+	wakeRetryMax = time.Hour
+)
+
+func (b *wakeBackoff) due(paneID string, now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	st, ok := b.next[paneID]
+	return !ok || !now.Before(st.at)
+}
+
+func (b *wakeBackoff) failed(paneID string, now time.Time) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.next == nil {
+		b.next = map[string]wakeState{}
+	}
+	st := b.next[paneID]
+	st.fails++
+	wait := wakeRetryMin << uint(st.fails-1)
+	if wait > wakeRetryMax || wait <= 0 {
+		wait = wakeRetryMax
+	}
+	st.at = now.Add(wait)
+	b.next[paneID] = st
+	return wait
+}
+
+func (b *wakeBackoff) forget(paneID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.next, paneID)
 }
 
 // claudeBusy reads a Claude Code pane's attention as the lifecycle's
@@ -193,8 +264,8 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 // mapping is easy to invert: user_prompt_submit → "idle" (the flash clears
 // because the human is there), which for an agent is the moment work STARTS;
 // stop → "done" and permission/ask → "needs_input" are the moments it stops.
-// So "idle" is busy and everything else is not. Verified against
-// hooks.go's attentionFor before trusting it (2026-09-05 review).
+// So "idle" is busy and everything else is not; see hooks.outcome for the
+// mapping this reads.
 func claudeBusy(att model.Attention) bool { return att == model.AttentionIdle }
 
 // exitAgent ends the harness session with an end-of-input: Claude Code and

@@ -86,7 +86,12 @@ type Manager struct {
 	// OpenTasksForPane reports a pane's open peer delegations; an agent with
 	// open work is never put to sleep. Wired from the peers bus; nil = 0.
 	OpenTasksForPane func(paneID string) int
-	activity         agentActivity
+	// AgentsMax caps running agent panes daemon-wide (0 = no cap); checked
+	// inside SpawnAgentPane/StartAgentInPane under agentStartMu.
+	AgentsMax    int
+	activity     agentActivity
+	agentStartMu sync.Mutex
+	wakeBackoff  wakeBackoff
 
 	// PaneLLMRoute, when set, points a pane's llm route at a named account
 	// (wired to llmproxy.SetPaneRoute in main). Harness starts use it for
@@ -1151,6 +1156,8 @@ func (m *Manager) dropPane(wsID, paneID string) {
 	if paneID == "" {
 		return
 	}
+	m.activity.forget(paneID)
+	m.wakeBackoff.forget(paneID)
 	m.mu.Lock()
 	dropped := false
 	if e := m.byID[wsID]; e != nil && len(e.ws.Panes) > 1 {

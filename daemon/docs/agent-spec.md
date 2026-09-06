@@ -92,16 +92,17 @@ Three layers. Decide what goes where.
 | Agent memory | the agent | instance `memory/` and `log.md` | "posts with images get 3x replies here", "last thread 2026-09-05" |
 
 Rules: the base is read-only to instances. Memory is per instance by default.
-Cross-project learning is human-curated into `knowledge/`. If an agent should
-share memory across projects, say so in `agent.json.memory: "shared"` and
-accept that project details will leak between them.
+Cross-project learning is human-curated into `knowledge/`. `agent.json.memory:
+"shared"` is recorded but NOT implemented yet: every instance still gets its
+own folder. Same for `start: "continue"` and `sideEffects`: stored and shown,
+not acted on. Enforcement is a follow-up.
 
 ## 8. Lifecycle
 
 | Decide | Default | When to change |
 |---|---|---|
 | Start mode | fresh conversation per start | `continue` for one-long-thread agents |
-| Idle exit | 10 minutes with no open task | shorter for chatty cheap agents, longer for slow external APIs |
+| Idle exit | 10 minutes with no open task | shorter for chatty cheap agents, longer for slow external APIs; 0 = never |
 | Keep alive | off | on for agents that must answer inside a second |
 | Concurrency | daemon cap shared by all agents | pin `maxConcurrent: 1` for agents with a rate-limited upstream |
 | Autostart | off | on only with keep alive |
@@ -111,8 +112,10 @@ Busy/idle comes from the harness: Claude Code panes through their hooks,
 opencode panes through the embedded ccmux plugin (`agents/.ccmux/
 ccmux-opencode.ts`, listed in every instance's `opencode.jsonc`), which posts
 to `POST /v1/panes/{id}/agent-signal` on loopback. An instance idle past
-`idleExitMinutes` with no open peer delegation gets ctrl-d and drops to its
-shell ("asleep"); a keep-alive instance found asleep is started again from
+`idleExitMinutes` (0 = never) with no open peer delegation gets ctrl-d and
+drops to its shell ("asleep") — note the loop cannot tell a human composing
+in the TUI from an idle agent, so a draft in a running agent's input can be
+lost at the cap; a keep-alive instance found asleep is started again from
 the current base, and a keep-alive instance whose base version moved exits
 when idle so that restart picks the new base up. `-agents-max` (default 6)
 caps running instances; asleep ones do not count.

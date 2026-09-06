@@ -169,6 +169,9 @@ type Service struct {
 	IsAgent    func(name string) bool
 	StartAgent func(wsID, name, prompt string) error
 	PushToPane func(paneID, text string) error
+	// WakePane starts the asleep agent instance in paneID with text as its
+	// first prompt — what a message to a sleeping agent means.
+	WakePane func(paneID, text string) error
 
 	// SpawnTimeout is how long a spawned teammate has to register before its
 	// requester gets an "unreachable" notice. Exported for tests.

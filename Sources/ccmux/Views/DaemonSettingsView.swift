@@ -379,7 +379,7 @@ struct DaemonSettingsView: View {
     private func agentCard(_ idx: Int) -> some View {
         let binding = Binding(
             get: { agents?[idx] ?? DaemonAgent(name: "") },
-            set: { if agents != nil, idx < agents!.count { agents![idx] = $0 } })
+            set: { agents?[idx] = $0 })
         let isNew = binding.wrappedValue.version.isEmpty
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -424,7 +424,11 @@ struct DaemonSettingsView: View {
             agentStatus = "✗ \(a.name): \(error)"
             return
         }
-        agents = await RemoteSessionService.shared.fetchAgents().list
+        // Replace only the saved row: a whole-list refetch would drop other
+        // rows the user has added and not saved yet.
+        if let fresh = await RemoteSessionService.shared.fetchAgents().list.first(where: { $0.name == a.name }) {
+            agents?[idx] = fresh
+        }
         agentStatus = "✓ Saved \(a.name)."
     }
 
@@ -443,7 +447,7 @@ struct DaemonSettingsView: View {
                 agentStatus = "✗ \(a.name): \(error)"
                 return
             }
-            agents = await RemoteSessionService.shared.fetchAgents().list
+            agents?.remove(at: idx)
             agentStatus = "Deleted \(a.name)."
         }
     }

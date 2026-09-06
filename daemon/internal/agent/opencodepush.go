@@ -14,7 +14,7 @@ import (
 
 // opencode's TUI serves its HTTP API on --port; that is how a prompt reaches
 // a running instance from outside the terminal. --prompt on the command line
-// only prefills the input (seen live 2026-09-05: the session was created and
+// only prefills the input (seen live: the session was created and
 // nothing was sent), so the daemon types the launch line and then pushes the
 // first message through the API. The same path carries peer messages later.
 

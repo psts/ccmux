@@ -366,7 +366,13 @@ function openWsMenu(ws, x, y) {
 // reserved, and only if the menu still belongs to the same workspace.
 async function appendAgentEntries(menu, slot, ws) {
   const list = await fetchWorkspaceAgents(ws.id);
-  if (!list.length || menu.dataset.ws !== ws.id || !slot.isConnected) return;
+  if (menu.dataset.ws !== ws.id || !slot.isConnected) return;
+  if (agentCatalog.error) {
+    slot.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
+    slot.appendChild(Object.assign(document.createElement("div"), { className: "host-line", textContent: "agents: " + agentCatalog.error }));
+    return;
+  }
+  if (!list.length) return;
   const add = (label, fn, cls) => {
     const b = document.createElement("button");
     b.textContent = label;
@@ -1065,11 +1071,17 @@ async function fetchWorkspaceAgents(wsId) {
   if (agentCatalog.wsId === wsId && Date.now() - agentCatalog.at < 5000) return agentCatalog.list;
   try {
     const r = await fetch(`/v1/workspaces/${wsId}/agents`);
-    if (!r.ok) return [];
+    if (!r.ok) throw new Error(await r.text());
     const list = (await r.json()).agents || [];
-    Object.assign(agentCatalog, { wsId, list, at: Date.now() });
+    Object.assign(agentCatalog, { wsId, list, at: Date.now(), error: "" });
     return list;
-  } catch (_) { return []; }
+  } catch (e) {
+    // The daemon fails the whole list on one broken base and names it; keep
+    // that visible instead of an empty menu that looks like "no agents".
+    console.warn("agents:", e.message);
+    Object.assign(agentCatalog, { wsId, list: [], at: Date.now(), error: e.message });
+    return [];
+  }
 }
 
 async function updateAgentComposer(p) {
@@ -1790,7 +1802,11 @@ function wireAgentSettings() {
     row.className = "entry-card agent-card";
     row.dataset.name = a.name || "";
     const isNew = !a.name;
-    const opts = [""].concat(harnessNames).map((h) =>
+    // A harness the settings no longer list stays selectable: otherwise the
+    // select would show the first option and any other edit would save it.
+    const names = [""].concat(harnessNames);
+    if (a.harness && !names.includes(a.harness)) names.push(a.harness);
+    const opts = names.map((h) =>
       `<option value="${esc(h)}"${(a.harness || "") === h ? " selected" : ""}>${h ? esc(h) : "default harness"}</option>`).join("");
     row.innerHTML =
       `<div class="entry-line">` +
@@ -1799,7 +1815,7 @@ function wireAgentSettings() {
       (a.version ? `<span class="agent-version">v${esc(a.version)}</span>` : "") +
       `<select class="setting-input ag-harness">${opts}</select>` +
       `<label class="hx-confirm" title="Restart it when it exits; otherwise it starts on contact"><input class="ag-keep" type="checkbox"${a.keepAlive ? " checked" : ""}>keep alive</label>` +
-      `<label class="hx-confirm" title="Minutes idle before it goes to sleep">idle <input class="setting-input agent-num ag-idle" type="number" min="0" value="${a.idleExitMinutes || 10}">m</label>` +
+      `<label class="hx-confirm" title="Minutes idle before it goes to sleep; 0 = never">idle <input class="setting-input agent-num ag-idle" type="number" min="0" value="${a.idleExitMinutes ?? 10}">m</label>` +
       `<button class="rule-del" type="button" title="Delete agent and its folder">&times;</button>` +
       `</div>` +
       `<div class="entry-line">` +
@@ -1849,8 +1865,13 @@ function wireAgentSettings() {
     const name = row.dataset.name;
     if (!name) { row.remove(); return; }
     if (!confirm(`Delete agent "${name}" and its folder (skills, knowledge included)? Project instance folders stay.`)) return;
-    const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
-    if (!r.ok && r.status !== 404) { statusEl.textContent = "Not deleted: " + (await r.text()); return; }
+    try {
+      const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
+      if (!r.ok && r.status !== 404) throw new Error(await r.text());
+    } catch (e) {
+      statusEl.textContent = "Not deleted: " + e.message;
+      return;
+    }
     row.remove();
     statusEl.textContent = `Deleted ${name}.`;
     agentCatalog.at = 0;
@@ -1863,6 +1884,7 @@ function wireAgentSettings() {
       box.innerHTML = "";
       if (r.status === 503) { statusEl.textContent = "This daemon has no agents support."; addBtn.disabled = true; return; }
       addBtn.disabled = false;
+      if (!r.ok) { statusEl.textContent = "Couldn't load agents: " + (await r.text()); return; } // names the broken folder
       for (const a of (await r.json()).agents || []) box.appendChild(agentRow(a));
       statusEl.textContent = "Rows save on change. Skills, MCP servers and knowledge files live in the agent's folder.";
     } catch (_) {

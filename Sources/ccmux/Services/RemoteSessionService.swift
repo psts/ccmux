@@ -1201,7 +1201,9 @@ final class RemoteSessionService: ObservableObject {
     /// removed base (404) counts as done, as in the web lens.
     func deleteAgent(_ name: String) async -> String? {
         let error = await sendReportingError("DELETE", path: "/v1/agents/\(agentPath(name))", body: nil, expect: 204)
-        if error == "HTTP 404" { return nil }
+        // The daemon's 404 body is {"error":"no such agent"}; sendReportingError
+        // hands back that text, not the code.
+        if error == "no such agent" { return nil }
         return error
     }
 

@@ -12,6 +12,9 @@ import (
 const (
 	restartMin = time.Second
 	restartMax = 30 * time.Second
+	// healthyRun is how long a child must have lived for its next crash to
+	// restart at restartMin again instead of the ceiling it climbed to.
+	healthyRun = time.Minute
 )
 
 // proc is one supervised child and its restart loop.
@@ -39,12 +42,17 @@ func (p *proc) run() {
 	defer close(p.done)
 	delay := restartMin
 	for {
+		started := time.Now()
 		err := p.once()
 		if p.ctx.Err() != nil {
 			return
 		}
+		if time.Since(started) > healthyRun {
+			delay = restartMin // a long healthy run earns a fresh backoff
+		}
 		p.mu.Lock()
 		p.restarts++
+		p.lastErr = ""
 		if err != nil {
 			p.lastErr = err.Error()
 		}

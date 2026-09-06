@@ -6,9 +6,10 @@
 // is the source of truth; there is no database row. Layout and the reasoning
 // behind every field: docs/agent-spec.md.
 //
-// The package writes only what it generates (agent.json, plugin.json,
-// CLAUDE.md, CHANGELOG.md, and AGENTS.md on an explicit save). Skills,
-// knowledge and everything a human or the agent put there are never touched.
+// The package writes generated files and write-once seeds, and never rewrites
+// a file a human may have edited: AGENTS.md only on an explicit save with new
+// text, mcp.json and the instance starters only when absent. Skills, knowledge
+// and everything a human or the agent put there are never touched.
 package agent
 
 import (
@@ -55,6 +56,9 @@ type Definition struct {
 	IdleExitMinutes int    `json:"idleExitMinutes"`
 	KeepAlive       bool   `json:"keepAlive"`
 
+	// MaxTurnsPerTask, MaxTokensPerTask and SideEffects are recorded for the
+	// lenses and the spec; the daemon does not enforce or render them yet
+	// (docs/agent-spec.md §10). Memory and Start likewise: stored, not acted on.
 	MaxTurnsPerTask  int      `json:"maxTurnsPerTask"`
 	MaxTokensPerTask int      `json:"maxTokensPerTask"`
 	SideEffects      []string `json:"sideEffects,omitempty"`
@@ -136,9 +140,9 @@ func withDefaults(d Definition) Definition {
 	def(&d.Permissions.Edit, "allow")
 	def(&d.Permissions.Bash, "ask")
 	def(&d.Permissions.Webfetch, "ask")
-	if d.IdleExitMinutes == 0 {
-		d.IdleExitMinutes = DefaultIdleExitMinutes
-	}
+	// IdleExitMinutes is NOT defaulted here: 0 is a real value ("never put it
+	// to sleep", decideAgent) and must survive a save. New agents get the
+	// 10-minute default from Defaults(), which the API merges a request over.
 	if d.MaxTurnsPerTask == 0 {
 		d.MaxTurnsPerTask = DefaultMaxTurnsPerTask
 	}
@@ -146,6 +150,13 @@ func withDefaults(d Definition) Definition {
 		d.MaxTokensPerTask = DefaultMaxTokensPerTask
 	}
 	return d
+}
+
+// Defaults is the definition a NEW agent starts from before the request is
+// merged over it: the same fill as withDefaults plus the idle cap, which
+// withDefaults leaves alone because 0 means "never sleep" once stored.
+func Defaults() Definition {
+	return withDefaults(Definition{IdleExitMinutes: DefaultIdleExitMinutes})
 }
 
 // ErrNotFound is returned for a name with no base folder.
@@ -210,7 +221,10 @@ func (s *Store) Get(name string) (Definition, error) {
 		return Definition{}, fmt.Errorf("agent.json: %w", err)
 	}
 	d.Name = name // the folder is the identity
-	d.Version, _ = readVersion(s.Dir(name))
+	d.Version, err = readVersion(s.Dir(name))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Definition{}, err // a corrupt manifest must not read as "version unknown, drift everywhere"
+	}
 	body, err := os.ReadFile(filepath.Join(s.Dir(name), "AGENTS.md"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Definition{}, err

@@ -16,7 +16,7 @@ import (
 // (internal/meridian). Reconciled here from the stored accounts and again on
 // every settings apply; the opencode plugin path rides into pane env when
 // Meridian is installed.
-func wireSidecars(ctx context.Context, llmSvc *llmproxy.Service, apiSrv *api.Server, mgr *manager.Manager) {
+func wireSidecars(ctx context.Context, llmSvc *llmproxy.Service, apiSrv *api.Server, mgr *manager.Manager) *meridian.Supervisor {
 	sidecars := meridian.New(ctx, harness.LookPath)
 	if accs, err := llmSvc.Accounts(); err != nil {
 		log.Printf("meridian: llm accounts unreadable at boot, no sidecars started: %v", err)
@@ -25,4 +25,5 @@ func wireSidecars(ctx context.Context, llmSvc *llmproxy.Service, apiSrv *api.Ser
 	}
 	apiSrv.SetSidecars(sidecars)
 	mgr.OpencodePlugin = func() string { return meridian.PluginPath(harness.LookPath) }
+	return sidecars
 }

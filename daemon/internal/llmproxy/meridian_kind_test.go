@@ -45,6 +45,10 @@ func TestTwoMeridianAccountsNeedDistinctPorts(t *testing.T) {
 	if msg := validateAccounts(same); !strings.Contains(msg, "own port") {
 		t.Fatalf("same port should be refused, got %q", msg)
 	}
+	same[1].BaseURL = "http://localhost:3456" // same socket, other spelling
+	if msg := validateAccounts(same); !strings.Contains(msg, "own port") {
+		t.Fatalf("localhost and 127.0.0.1 on one port must clash, got %q", msg)
+	}
 	same[1].BaseURL = "http://127.0.0.1:3457"
 	if msg := validateAccounts(same); msg != "" {
 		t.Fatalf("distinct ports should be accepted, got %q", msg)

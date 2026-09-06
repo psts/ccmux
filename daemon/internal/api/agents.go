@@ -17,8 +17,22 @@ import (
 func (s *Server) SetAgents(st *agent.Store, maxRunning int) {
 	s.agents, s.agentsMax = st, maxRunning
 	s.mgr.Agents = st
+	s.mgr.AgentsMax = maxRunning
 	s.mgr.WakeAgent = s.wakeAgent
 	s.wirePeersAgents()
+}
+
+const agentsUnavailable = "agents are not available on this daemon"
+
+// agentsReady answers the 503 for a daemon without the agent store; "" on
+// the other error paths means "the store is there, something else broke",
+// which the lenses show by message instead of hiding the feature.
+func (s *Server) agentsReady(w http.ResponseWriter) bool {
+	if s.agents == nil {
+		writeError(w, http.StatusServiceUnavailable, agentsUnavailable)
+		return false
+	}
+	return true
 }
 
 // wirePeersAgents gives the bus its agent hooks once BOTH the store and the
@@ -31,47 +45,57 @@ func (s *Server) wirePeersAgents() {
 	}
 	s.peersSvc.IsAgent = s.isAgent
 	s.peersSvc.StartAgent = s.startAgentForPeer
+	s.peersSvc.WakePane = s.wakePane
 	s.peersSvc.PushToPane = func(paneID, text string) error {
 		err := s.mgr.PushToAgentPane(paneID, text)
-		if errors.Is(err, manager.ErrNotAgentPane) {
+		switch {
+		case errors.Is(err, manager.ErrNotAgentPane):
 			return peers.ErrNoPanePush
+		case errors.Is(err, manager.ErrAgentAsleep):
+			return peers.ErrAgentAsleep
 		}
 		return err
 	}
 }
 
 // wakeAgent is the lifecycle loop's restart path for a keep-alive instance
-// found asleep: resolve the launch from the CURRENT base (so a drifted
-// instance comes back on the new version) and type it into its pane.
+// found asleep: the one start flow, from the CURRENT base, with no prompt.
 func (s *Server) wakeAgent(wsID, name string) error {
+	if _, _, msg := s.startAgent(wsID, name, "", "lifecycle"); msg != "" {
+		return errors.New(msg)
+	}
+	return nil
+}
+
+// wakePane is the bus's answer to a message for an asleep opencode instance:
+// start it with that message as its first prompt.
+func (s *Server) wakePane(paneID, text string) error {
+	wsID := s.mgr.WorkspaceForPane(paneID)
 	ws := s.mgr.Workspace(wsID)
 	if ws == nil {
-		return errors.New("unknown workspace")
+		return errors.New("unknown pane")
 	}
-	p := s.mgr.AgentPane(wsID, name)
-	if p == nil {
-		return errors.New("agent not added to this workspace")
+	for _, p := range ws.Panes {
+		if p.ID == paneID && p.Agent != "" {
+			_, _, msg := s.startAgent(wsID, p.Agent, text, "claude-peers")
+			if msg != "" {
+				return errors.New(msg)
+			}
+			return nil
+		}
 	}
-	if msg := s.agentCapMessage(); msg != "" {
-		return errors.New(msg)
-	}
-	l, _, msg := s.resolveAgentLaunch(ws, name, "")
-	if msg != "" {
-		return errors.New(msg)
-	}
-	return s.mgr.StartAgentInPane(p.ID, l)
+	return errors.New("not an agent pane")
 }
 
 // listAgents: GET /v1/agents → every base definition, instructions included.
 // An unreadable base is a 503 with its name, never a silently shorter list.
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
-	if s.agents == nil {
-		writeError(w, http.StatusServiceUnavailable, "agents are not available on this daemon")
+	if !s.agentsReady(w) {
 		return
 	}
 	defs, err := s.agents.List()
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error()) // names the broken base; 503 is "no agents support"
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": defs})
@@ -82,8 +106,7 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 // holds skills and knowledge a human wrote, so removing one must be the
 // explicit DELETE, never the side effect of a list that omitted it.
 func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
-	if s.agents == nil {
-		writeError(w, http.StatusServiceUnavailable, "agents are not available on this daemon")
+	if !s.agentsReady(w) {
 		return
 	}
 	name := r.PathValue("name")
@@ -95,8 +118,10 @@ func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
 	// json.Unmarshal into the STORED definition leaves every other field as it
 	// was — a hand-tuned permission or a pinned model survives a blur-save.
 	d, err := s.agents.Get(name)
-	if err != nil && !errors.Is(err, agent.ErrNotFound) {
-		writeError(w, http.StatusServiceUnavailable, err.Error())
+	if errors.Is(err, agent.ErrNotFound) {
+		d = agent.Defaults() // a new agent starts from the defaults, request on top
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
@@ -137,8 +162,7 @@ func (s *Server) rejectAgentHarness(name string) string {
 // deleteAgent: DELETE /v1/agents/{name} removes the base folder, knowledge
 // and skills included. The lens confirms with the human before calling.
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
-	if s.agents == nil {
-		writeError(w, http.StatusServiceUnavailable, "agents are not available on this daemon")
+	if !s.agentsReady(w) {
 		return
 	}
 	err := s.agents.Delete(r.PathValue("name"))

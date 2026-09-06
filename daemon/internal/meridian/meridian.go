@@ -15,7 +15,7 @@ package meridian
 import (
 	"context"
 	"fmt"
-	"net"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/llmproxy"
@@ -58,7 +59,7 @@ func SpecsFrom(accs []llmproxy.Account) []Spec {
 type Status struct {
 	Running   bool      `json:"running"`
 	PID       int       `json:"pid,omitempty"`
-	Since     time.Time `json:"since,omitempty"`
+	Since     time.Time `json:"since,omitzero"`
 	Restarts  int       `json:"restarts"`
 	LastError string    `json:"lastError,omitempty"`
 }
@@ -71,7 +72,7 @@ func Listen(baseURL string) (host string, port int, err error) {
 		baseURL = DefaultBaseURL
 	}
 	u, err := url.Parse(baseURL)
-	if err != nil || u.Scheme != "http" || !loopback(u.Hostname()) {
+	if err != nil || u.Scheme != "http" || !llmproxy.LoopbackHost(u.Hostname()) {
 		return "", 0, fmt.Errorf("meridian: base URL %q must be http://<loopback>:port", baseURL)
 	}
 	// The port is the one thing the proxy and the sidecar must agree on, so
@@ -83,14 +84,6 @@ func Listen(baseURL string) (host string, port int, err error) {
 	return u.Hostname(), port, nil
 }
 
-func loopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
 // Command builds the child command for one spec. Exported for the test and
 // for `ccmuxd doctor`-style inspection; the supervisor calls it on every
 // (re)start so a token rotated through settings applies on the next restart.
@@ -100,6 +93,16 @@ func Command(ctx context.Context, bin string, s Spec) (*exec.Cmd, error) {
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, bin)
+	// Its own process group, and the whole group on cancel: the Agent SDK
+	// inside Meridian spawns a claude child that a bare kill of the node PID
+	// would orphan, holding the port and the token.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = 5 * time.Second
+	// Output to the daemon log with a prefix, so a bad token or a bound port
+	// says what it is instead of collapsing into "exit status 1".
+	cmd.Stdout = logWriter{prefix: "meridian[" + s.Name + "] "}
+	cmd.Stderr = cmd.Stdout
 	cmd.Env = append(os.Environ(),
 		"PATH="+childPath(bin),
 		"CLAUDE_CODE_OAUTH_TOKEN="+s.Token,
@@ -108,6 +111,18 @@ func Command(ctx context.Context, bin string, s Spec) (*exec.Cmd, error) {
 		"MERIDIAN_PASSTHROUGH=1",
 	)
 	return cmd, nil
+}
+
+// logWriter forwards a child's output lines to the daemon log.
+type logWriter struct{ prefix string }
+
+func (w logWriter) Write(b []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if line != "" {
+			log.Print(w.prefix + line)
+		}
+	}
+	return len(b), nil
 }
 
 // childPath is the PATH the sidecar runs with. The daemon lives under systemd

@@ -682,9 +682,6 @@ struct SidebarView: View {
         alert.runModal()
     }
 
-    /// Guard the permanent purge behind an explicit confirmation — it kills the
-    /// session and erases the recipe (layout, hostnames, dev command), unlike
-    /// Close Session, which keeps everything for a later revive.
     /// One row per base agent, same rule as the web lens's workspace menu:
     /// running offers stop, asleep or not-yet-added starts it here with a
     /// message typed into a prompt box (the Mac has no bar over the pane).
@@ -693,7 +690,6 @@ struct SidebarView: View {
         let list = remoteService.workspaceAgents[workspace.id] ?? []
         if !list.isEmpty {
             Divider()
-                .onAppear { Task { await remoteService.refreshWorkspaceAgents(workspace.id) } }
             ForEach(list) { a in
                 let icon = a.icon.isEmpty ? "⚙" : a.icon
                 if a.state == "running" {
@@ -737,6 +733,9 @@ struct SidebarView: View {
         }
     }
 
+    /// Guard the permanent purge behind an explicit confirmation — it kills the
+    /// session and erases the recipe (layout, hostnames, dev command), unlike
+    /// Close Session, which keeps everything for a later revive.
     private func confirmRemoveSession(name: String, perform: @escaping () -> Void) {
         let alert = NSAlert()
         alert.messageText = "Remove “\(name)”?"

@@ -42,7 +42,7 @@ func TestSaveCreatesLayoutWithDefaultsAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != "1.0.0" || got.Harness != DefaultHarness || got.Permissions.Bash != "ask" || got.IdleExitMinutes != DefaultIdleExitMinutes || got.Start != "fresh" {
+	if got.Version != "1.0.0" || got.Harness != DefaultHarness || got.Permissions.Bash != "ask" || got.IdleExitMinutes != 0 || got.Start != "fresh" {
 		t.Fatalf("defaults not applied: %+v", got)
 	}
 	dir := s.Dir("x-poster")
@@ -188,5 +188,20 @@ func TestNamesThatAreNotFolderSegmentsNeverReachTheFilesystem(t *testing.T) {
 		if err := s.WriteInstanceConfig(Definition{Name: bad}, t.TempDir()); err == nil {
 			t.Errorf("WriteInstanceConfig(%q) accepted", bad)
 		}
+	}
+}
+
+func TestIdleZeroSurvivesAndDefaultsApplyOnlyToNewAgents(t *testing.T) {
+	if Defaults().IdleExitMinutes != DefaultIdleExitMinutes {
+		t.Fatal("a new agent starts with the idle default")
+	}
+	s := testStore(t)
+	got, err := s.Save(Definition{Name: "never-sleeps", Description: "d", IdleExitMinutes: 0})
+	if err != nil || got.IdleExitMinutes != 0 {
+		t.Fatalf("0 must mean never, got %d (%v)", got.IdleExitMinutes, err)
+	}
+	os.WriteFile(filepath.Join(s.Dir("never-sleeps"), ".claude-plugin", "plugin.json"), []byte("{bad"), 0o644)
+	if _, err := s.Get("never-sleeps"); err == nil {
+		t.Fatal("a corrupt manifest must be an error, not version \"\"")
 	}
 }

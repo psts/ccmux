@@ -172,7 +172,7 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 # Counts $current, so say what $current is: functions over the cap right now. It
-# is not the size of the frozen list, which stays 28 until an entry is pruned —
+# is not the size of the frozen list, which stays fixed until an entry is pruned —
 # and when the two disagree the second pass has already printed why.
 if [ "$stale" -ne 0 ]; then
   echo "qa-gates: gocyclo ok ($(printf '%s\n' "$current" | wc -l) over-cap functions, none new or worse) — but see the prune list above"

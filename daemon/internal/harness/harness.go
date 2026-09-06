@@ -65,8 +65,9 @@ const settingHarnesses = "harnesses"
 // dialect too but is a third party to Anthropic, so it never gets the raw
 // subscription token (claude kind) — Anthropic refuses it server-side — and
 // spends a subscription only through a meridian sidecar — listed first, so
-// that pairing wins over a local model when both exist; pi is the same
-// shape. Absent names (custom entries) mean any kind except codex and
+// it wins the fallback pairing when the global route is a kind opencode
+// cannot use (a claude or codex account); with an allowed global route the
+// pane follows that route, whatever the order. pi is the same shape. Absent names (custom entries) mean any kind except codex and
 // meridian (see api.kindAllowed): a harness that has not said it can ride a
 // sidecar must not, since a hand-started claude there would run a second
 // agent loop under the first.

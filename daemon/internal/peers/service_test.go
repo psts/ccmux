@@ -568,3 +568,33 @@ func TestSpawn_AgentRefusedForPanelessSender(t *testing.T) {
 		t.Fatalf("pane-less caller should be told why, got %+v", got)
 	}
 }
+
+func TestPushToPane_WakesAnAsleepAgentWithTheMessage(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.groups["pane-a"], hook.groups["pane-x"] = "PROJ", "PROJ"
+	a := registerPane(svc, "pane-a", "/w/ccmux").PeerID
+	x := registerPane(svc, "pane-x", "/repo/.ccmux/agents/x-poster").PeerID
+	var mu sync.Mutex
+	var pushed, woken []string
+	svc.PushToPane = func(paneID, text string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		pushed = append(pushed, paneID)
+		return ErrAgentAsleep
+	}
+	svc.WakePane = func(paneID, text string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		woken = append(woken, paneID+"|"+text)
+		return nil
+	}
+	if resp := svc.Send(SendReq{FromID: a, ToID: x, Text: "post v2"}); !resp.OK {
+		t.Fatalf("send = %+v", resp)
+	}
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(woken) == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if pushed[0] != "pane-x" || !strings.HasPrefix(woken[0], "pane-x|[claude-peers message from") || !strings.Contains(woken[0], "post v2") || !strings.Contains(woken[0], "to_id="+a) {
+		t.Fatalf("pushed %v woken %v", pushed, woken)
+	}
+}

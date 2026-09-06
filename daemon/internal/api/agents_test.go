@@ -191,3 +191,28 @@ func TestAgents_PeersHooksWiredInEitherOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestAgents_PutMergesOverStoredDefinition(t *testing.T) {
+	s := agentsServer(t)
+	rec := do(t, s, "PUT", "/v1/agents/x-poster", `{"description":"d","permissions":{"bash":"deny","bashAllow":["git log *"]},"model":"anthropic/claude-opus-5","instructions":"# Role\n"}`)
+	if rec.Code != 200 {
+		t.Fatalf("first put = %d %s", rec.Code, rec.Body)
+	}
+	rec = do(t, s, "PUT", "/v1/agents/x-poster", `{"description":"d2"}`)
+	if rec.Code != 200 {
+		t.Fatalf("second put = %d %s", rec.Code, rec.Body)
+	}
+	var d agent.Definition
+	json.Unmarshal(rec.Body.Bytes(), &d)
+	if d.Description != "d2" || d.Permissions.Bash != "deny" || len(d.Permissions.BashAllow) != 1 || d.Model != "anthropic/claude-opus-5" || d.Instructions != "# Role\n" {
+		t.Fatalf("a partial PUT must not reset the rest: %+v", d)
+	}
+	if d.Version != "1.0.1" || d.IdleExitMinutes != agent.DefaultIdleExitMinutes {
+		t.Fatalf("version %s idle %d: a changed description bumps, a new agent got the idle default", d.Version, d.IdleExitMinutes)
+	}
+	rec = do(t, s, "PUT", "/v1/agents/x-poster", `{"idleExitMinutes":0}`)
+	json.Unmarshal(rec.Body.Bytes(), &d)
+	if d.IdleExitMinutes != 0 {
+		t.Fatalf("idle 0 (never) must survive a save, got %d", d.IdleExitMinutes)
+	}
+}

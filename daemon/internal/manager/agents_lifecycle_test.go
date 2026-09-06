@@ -78,3 +78,30 @@ func TestExitAgentSurvivesAVanishedPane(t *testing.T) {
 		t.Fatalf("push to unknown pane = %v, want ErrNotAgentPane", err)
 	}
 }
+
+func TestWakeBackoffDoublesAndResets(t *testing.T) {
+	var b wakeBackoff
+	t0 := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	if !b.due("p", t0) {
+		t.Fatal("first wake is due")
+	}
+	if w := b.failed("p", t0); w != 30*time.Second {
+		t.Fatalf("first wait %s", w)
+	}
+	if b.due("p", t0.Add(10*time.Second)) {
+		t.Fatal("not due inside the wait")
+	}
+	if w := b.failed("p", t0); w != time.Minute {
+		t.Fatalf("second wait %s", w)
+	}
+	for i := 0; i < 12; i++ {
+		b.failed("p", t0)
+	}
+	if w := b.failed("p", t0); w != time.Hour {
+		t.Fatalf("capped wait %s", w)
+	}
+	b.forget("p")
+	if !b.due("p", t0) {
+		t.Fatal("forget resets the schedule")
+	}
+}

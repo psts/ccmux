@@ -30,7 +30,7 @@ github.com/fzipp/gocyclo/cmd/gocyclo@latest` before it can sign anything.
 a lint: it catches a typo, never a logic error.
 
 The complexity cap is 10, and the gate is a ratchet over the debt that existed
-when it landed (`.claude/gates/gocyclo-frozen.txt`, 28 non-test functions).
+when it landed (`.claude/gates/gocyclo-frozen.txt`, the non-test functions listed there).
 Anything new over the cap fails, and so does a frozen function that gets worse.
 **The frozen list is delete-only.** Split the function, or land it under the
 cap; adding a line to keep a gate quiet is how the list stops meaning anything.

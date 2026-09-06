@@ -1,7 +1,8 @@
 package manager
 
 import (
-	"fmt"
+	"errors"
+	"log"
 
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -23,45 +24,74 @@ type AgentLaunch struct {
 	Port   int
 }
 
+// ErrAgentRunning refuses a second instance of one base in one workspace;
+// ErrAgentCap refuses a start that would exceed AgentsMax running agents.
+// Both are checked here, under agentStartMu, so two concurrent starts (an
+// HTTP click and a bus contact for the same name) cannot both pass.
+var (
+	ErrAgentRunning = errors.New("agent is already running in this workspace")
+	ErrAgentCap     = errors.New("agent concurrency cap reached")
+)
+
 // SpawnAgentPane adds a new pane running an agent instance. The persisted
 // startup command has no prompt (a revive must not replay a message); the
 // typed one carries the first prompt when there is one.
 func (m *Manager) SpawnAgentPane(wsID, createdBy string, l AgentLaunch) (*model.Pane, error) {
+	m.agentStartMu.Lock()
+	defer m.agentStartMu.Unlock()
+	if p := m.AgentPane(wsID, l.Name); p != nil && !atBareShell(p) {
+		return nil, ErrAgentRunning
+	}
+	if m.overAgentCap() {
+		return nil, ErrAgentCap
+	}
 	p, err := m.spawnPane(wsID, l.CWD, l.Persist, l.Deliver, createdBy, l.Harness.Name, l.Harness.Autoconfirm, l.RouteAccount)
 	if err != nil {
 		return nil, err
 	}
-	return m.stampAgent(p.ID, l)
+	return m.stampAgent(p.ID, l), nil
 }
 
 // StartAgentInPane restarts an instance whose pane sits at a bare shell — the
 // "asleep" agent a human or a peer just contacted. Refuses a busy pane with
-// ErrPaneBusy like a harness start does.
+// ErrPaneBusy like a harness start does, and the cap like SpawnAgentPane.
 func (m *Manager) StartAgentInPane(paneID string, l AgentLaunch) error {
+	m.agentStartMu.Lock()
+	defer m.agentStartMu.Unlock()
+	if m.overAgentCap() {
+		return ErrAgentCap
+	}
 	if err := m.startInPane(paneID, l.Harness, l.Persist, l.Deliver, l.RouteAccount); err != nil {
 		return err
 	}
-	_, err := m.stampAgent(paneID, l)
-	return err
+	m.stampAgent(paneID, l)
+	return nil
+}
+
+func (m *Manager) overAgentCap() bool {
+	return m.AgentsMax > 0 && m.RunningAgents() >= m.AgentsMax
 }
 
 // stampAgent records the base name and version on the pane after a start.
-func (m *Manager) stampAgent(paneID string, l AgentLaunch) (*model.Pane, error) {
+// The harness is already running by now, so a failed persist is logged and
+// the live pane still carries the stamp: reporting "could not be started"
+// for an agent that IS running would be the bigger lie.
+func (m *Manager) stampAgent(paneID string, l AgentLaunch) *model.Pane {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("unknown pane %s", paneID)
+		return nil
 	}
 	p.Agent, p.AgentVersion = l.Name, l.Version
 	saved := *p
 	wsID := e.ws.ID
 	m.mu.Unlock()
 	if err := m.store.SavePane(&saved); err != nil {
-		return nil, err
+		log.Printf("agent %s pane %s: stamp not persisted (%v); a daemon restart forgets it is an agent pane", l.Name, paneID, err)
 	}
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
-	return &saved, nil
+	return &saved
 }
 
 // AgentPane returns a copy of the pane that is workspace wsID's instance of

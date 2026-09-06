@@ -220,8 +220,12 @@ func (s *Service) spawnTimedOut(key string) {
 	}
 	delete(s.spawns, key)
 	secs := int(s.SpawnTimeout / time.Second)
+	where := "able to host " + pending.repo
+	if pending.repo == "" {
+		where = "the daemon log for the agent start" // an agent spawn: no repo guess involved
+	}
 	text := fmt.Sprintf("Teammate %q could not be started — ccmux did not register it within %ds. "+
-		"Check that ccmux is installed and able to host %s.", pending.name, secs, pending.repo)
+		"Check that ccmux is installed and %s.", pending.name, secs, where)
 	s.failTasksInLocked(pending, text)
 	s.notifyRequestersLocked(pending, text)
 }

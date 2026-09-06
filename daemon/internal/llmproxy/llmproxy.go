@@ -305,10 +305,12 @@ func meridianPortClash(accs []Account) string {
 		if err != nil {
 			continue // shape errors were reported by validateUpstream
 		}
-		if first, dup := owner[u.Host]; dup {
-			return fmt.Sprintf("llm accounts %q and %q are both meridian on %s — each sidecar needs its own port", first, a.Name, u.Host)
+		// Keyed by PORT: the host is already pinned to loopback, and localhost
+		// and 127.0.0.1 are one socket however they are spelled.
+		if first, dup := owner[u.Port()]; dup {
+			return fmt.Sprintf("llm accounts %q and %q are both meridian on port %s — each sidecar needs its own port", first, a.Name, u.Port())
 		}
-		owner[u.Host] = a.Name
+		owner[u.Port()] = a.Name
 	}
 	return ""
 }
@@ -355,7 +357,7 @@ func hostPinViolation(a Account, u *url.URL) string {
 	}
 	// A meridian sidecar holds that same token in its process environment,
 	// so it may only ever listen on this machine.
-	if a.Kind == KindMeridian && (u.Scheme != "http" || !loopbackHost(host) || u.Port() == "") {
+	if a.Kind == KindMeridian && (u.Scheme != "http" || !LoopbackHost(host) || u.Port() == "") {
 		return fmt.Sprintf("llm account %q: a meridian account must point at http://127.0.0.1:<port> on this host, port included", a.Name)
 	}
 	if a.APIKey == "" && !passthroughHostAllowed(a, host) {
@@ -364,7 +366,9 @@ func hostPinViolation(a Account, u *url.URL) string {
 	return ""
 }
 
-func loopbackHost(hostname string) bool {
+// LoopbackHost is the one definition of "this machine" for a URL host: the
+// meridian sidecar pins its listen address with it too.
+func LoopbackHost(hostname string) bool {
 	if hostname == "localhost" {
 		return true
 	}
