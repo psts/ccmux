@@ -80,6 +80,7 @@ func TestAgents_UnavailableWithoutStore(t *testing.T) {
 // Labs". Tests drive the window's agent through it.
 type windowAgentFixture struct {
 	srv   *Server
+	st    *store.SQLite
 	base  string
 	winID string
 	ws    wsResult
@@ -87,8 +88,8 @@ type windowAgentFixture struct {
 
 func newWindowAgentFixture(t *testing.T, harnessCmd string) *windowAgentFixture {
 	t.Helper()
-	srv, _, base := harnessStackServer(t)
-	f := &windowAgentFixture{srv: srv, base: base, ws: createWS(t, base)}
+	srv, _, base, st := harnessStackServer(t)
+	f := &windowAgentFixture{srv: srv, st: st, base: base, ws: createWS(t, base)}
 	// A real (short-lived) process, not a shell builtin: tmux must report a
 	// harness in the foreground for the start mark to clear, as it does for
 	// every real harness; a builtin never leaves the shell.
@@ -311,6 +312,23 @@ func TestWindowAgents_ProjectFoldersOnTheLaunch(t *testing.T) {
 	dirs, _, msg := f.srv.windowReposOfPane(pane.ID)
 	if msg != "" || len(dirs) != 1 || dirs[0] != "/tmp" {
 		t.Fatalf("repos of the agent's pane = %v %q", dirs, msg)
+	}
+}
+
+// An unreadable window table is a refusal, never a launch with no project
+// folders (that launch would be persisted as the agent's recipe) and never
+// "not a window" on the bus.
+func TestWindowAgents_UnreadableWindowsFailClosed(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	_, pane := f.start(t, "x-poster", "")
+	f.waitState(t, "asleep")
+	_ = f.st.Close() // the window tables are now unreadable
+	if dirs, status, msg := f.srv.windowReposOfPane(pane.ID); status != http.StatusServiceUnavailable || msg == "" || dirs != nil {
+		t.Fatalf("repos with unreadable windows = %v %d %q, want a 503 refusal", dirs, status, msg)
+	}
+	err := f.srv.startAgentForPeer("chart labs", "x-poster", "hi")
+	if err == nil || strings.Contains(err.Error(), "joins a shared window") {
+		t.Fatalf("bus start with unreadable windows = %v, want the unreadable refusal", err)
 	}
 }
 

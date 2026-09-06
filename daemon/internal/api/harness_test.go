@@ -22,13 +22,14 @@ import (
 // wires it.
 func harnessStack(t *testing.T) (*manager.Manager, string) {
 	t.Helper()
-	_, mgr, base := harnessStackServer(t)
+	_, mgr, base, _ := harnessStackServer(t)
 	return mgr, base
 }
 
-// harnessStackServer is harnessStack plus the Server itself, for tests that
-// call an adapter (the bus's start, the repo list) directly.
-func harnessStackServer(t *testing.T) (*Server, *manager.Manager, string) {
+// harnessStackServer is harnessStack plus the Server itself and its store,
+// for tests that call an adapter (the bus's start, the repo list) directly
+// or make the store unreadable mid-test.
+func harnessStackServer(t *testing.T) (*Server, *manager.Manager, string, *store.SQLite) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
@@ -59,7 +60,7 @@ func harnessStackServer(t *testing.T) (*Server, *manager.Manager, string) {
 	srv.SetAgents(agent.NewStore(t.TempDir()+"/agents"), 6)
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
-	return srv, mgr, hs.URL
+	return srv, mgr, hs.URL, st
 }
 
 func TestSpawnPaneByHarness(t *testing.T) {
