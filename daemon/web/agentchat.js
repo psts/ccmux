@@ -281,33 +281,43 @@
   }
 
   // --- questions: the question tool asking you to choose ---
+  // A single-choice question answers on the tap itself: the options are a
+  // vertical list, label and description, full width so a phone can hit
+  // them. Several choices (or a free answer) keep an Answer button.
   function addQuestion(req) {
     if (!req || cur.perms.has(req.id)) return;
     const card = el("div", "ac-perm ac-question");
-    const pickers = (req.questions || []).map((q) => questionPicker(card, q));
+    const qs = req.questions || [];
+    const direct = qs.length === 1 && !qs[0].multiple && !qs[0].custom;
+    const pickers = qs.map((q) => questionPicker(card, q, direct ? (label) => send({ t: "question", id: req.id, answers: [[label]] }) : null));
     const row = el("div", "ac-perm-actions");
-    const answer = el("button", "ac-perm-btn once", "Answer");
-    answer.onclick = () => send({ t: "question", id: req.id, answers: pickers.map((p) => p.answers()) });
+    if (!direct) {
+      const answer = el("button", "ac-perm-btn once", "Answer");
+      answer.onclick = () => send({ t: "question", id: req.id, answers: pickers.map((p) => p.answers()) });
+      row.appendChild(answer);
+    }
     const reject = el("button", "ac-perm-btn reject", "Reject");
     reject.onclick = () => send({ t: "question-reject", id: req.id });
-    row.appendChild(answer); row.appendChild(reject);
+    row.appendChild(reject);
     card.appendChild(row);
     cur.perms.set(req.id, card);
     $("agent-chat").querySelector(".ac-perms").appendChild(card);
   }
 
-  // questionPicker renders one question's options as toggles (one at a time
-  // unless the question allows several) plus a free text field when it
-  // allows a custom answer; answers() is the chosen labels.
-  function questionPicker(card, q) {
+  // questionPicker renders one question: its options stacked, each with its
+  // description. With onPick, a tap answers; otherwise taps toggle (one at a
+  // time unless the question allows several) and answers() reads them.
+  function questionPicker(card, q, onPick) {
     card.appendChild(el("div", "ac-perm-text", `${q.header ? q.header + ": " : ""}${q.question}`));
     const opts = el("div", "ac-q-options");
     const chosen = new Set();
     const buttons = [];
     for (const o of q.options || []) {
-      const b = el("button", "ac-q-opt", o.label);
-      b.title = o.description || "";
+      const b = el("button", "ac-q-opt");
+      b.appendChild(el("span", "ac-q-label", o.label));
+      if (o.description) b.appendChild(el("span", "ac-q-desc", o.description));
       b.onclick = () => {
+        if (onPick) { onPick(o.label); return; }
         if (!q.multiple) { chosen.clear(); buttons.forEach((x) => x.classList.remove("chosen")); }
         if (chosen.has(o.label)) { chosen.delete(o.label); b.classList.remove("chosen"); }
         else { chosen.add(o.label); b.classList.add("chosen"); }

@@ -226,9 +226,9 @@ struct AgentPartView: View {
     }
 }
 
-/// One question request: each question's options as toggles (one at a
-/// time unless it allows several), a free answer when allowed, then
-/// Answer or Reject.
+/// One question request: each question's options stacked, label and
+/// description, full width. A single-choice question answers on the tap
+/// itself; several choices or a free answer keep an Answer button.
 struct AgentQuestionCard: View {
     let question: AgentQuestion
     let agent: String
@@ -237,27 +237,25 @@ struct AgentQuestionCard: View {
     @State private var chosen: [Set<String>] = []
     @State private var custom: [String] = []
 
+    private var direct: Bool {
+        question.questions.count == 1 && !(question.questions[0].multiple ?? false) && !(question.questions[0].custom ?? false)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(question.questions.enumerated()), id: \.offset) { i, q in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text((q.header.map { "\($0): " } ?? "") + q.question).font(.system(size: 11))
-                    HStack(spacing: 6) {
-                        ForEach(q.options) { o in
-                            let picked = chosen.indices.contains(i) && chosen[i].contains(o.label)
-                            Button(o.label) { toggle(i, o.label, multiple: q.multiple ?? false) }
-                                .font(.system(size: 11))
-                                .foregroundColor(picked ? .green : .primary)
-                                .help(o.description ?? "")
-                        }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text((q.header.map { "\($0): " } ?? "") + q.question).font(.system(size: 12, weight: .semibold))
+                    ForEach(q.options) { o in
+                        optionRow(i, o, multiple: q.multiple ?? false)
                     }
                     if q.custom ?? false {
-                        TextField("Or type your own answer", text: binding(i)).font(.system(size: 11))
+                        TextField("Or type your own answer", text: binding(i)).font(.system(size: 12))
                     }
                 }
             }
             HStack(spacing: 6) {
-                Button("Answer") { onAnswer(answers()) }
+                if !direct { Button("Answer") { onAnswer(answers()) } }
                 Button("Reject", action: onReject)
             }
             .font(.system(size: 11))
@@ -269,6 +267,25 @@ struct AgentQuestionCard: View {
             chosen = Array(repeating: [], count: question.questions.count)
             custom = Array(repeating: "", count: question.questions.count)
         }
+    }
+
+    private func optionRow(_ i: Int, _ o: AgentQuestionOption, multiple: Bool) -> some View {
+        let picked = chosen.indices.contains(i) && chosen[i].contains(o.label)
+        return Button {
+            if direct { onAnswer([[o.label]]) } else { toggle(i, o.label, multiple: multiple) }
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(o.label).font(.system(size: 12, weight: .semibold))
+                if let d = o.description, !d.isEmpty {
+                    Text(d).font(.system(size: 11)).foregroundColor(.secondary)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(picked ? Color.green : Color.secondary.opacity(0.4), lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func toggle(_ i: Int, _ label: String, multiple: Bool) {
