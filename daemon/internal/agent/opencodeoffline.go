@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sort"
 
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -26,7 +27,7 @@ func OfflineSessions(ctx context.Context, dir string) ([]OpencodeSession, error)
 	}
 	mine := []OpencodeSession{}
 	for _, s := range all {
-		if s.Directory == dir {
+		if SameDir(s.Directory, dir) {
 			mine = append(mine, s)
 		}
 	}
@@ -53,4 +54,17 @@ func runOpencode(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("opencode %v: %w", args, err)
 	}
 	return out, nil
+}
+
+// SameDir says whether two folder paths are the same folder once symlinks
+// are resolved: opencode records a session's directory as the real path,
+// while a pane's cwd may be the name it was opened by (a migrated window
+// folder kept as a symlink), and a session must not be lost to that.
+func SameDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, erra := filepath.EvalSymlinks(a)
+	rb, errb := filepath.EvalSymlinks(b)
+	return erra == nil && errb == nil && ra == rb
 }

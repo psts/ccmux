@@ -367,7 +367,7 @@ func (c *chatConn) asleepHello(ctx context.Context) chatFrame {
 
 func newestIn(sessions []agent.OpencodeSession, dir string) *agent.OpencodeSession {
 	for i := range sessions {
-		if sessions[i].Directory == dir {
+		if agent.SameDir(sessions[i].Directory, dir) {
 			return &sessions[i]
 		}
 	}
@@ -461,7 +461,7 @@ func (c *chatConn) maybeSwitchSession(p eventProps) {
 		Directory string `json:"directory"`
 	}
 	_ = json.Unmarshal(p.Info, &info)
-	if info.Directory != c.pane.CWD || info.ID == "" {
+	if info.ID == "" || !agent.SameDir(info.Directory, c.pane.CWD) {
 		return
 	}
 	c.mu.Lock()

@@ -4,7 +4,9 @@ import (
 	"ccmux.dev/ccmuxd/internal/agent/agenttest"
 	"context"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -94,5 +96,23 @@ func TestOfflineSessionsFiltersByDirectory(t *testing.T) {
 	mine, err := OfflineSessions(ctx, "/nowhere/at/all")
 	if err != nil || len(mine) != 0 {
 		t.Fatalf("a folder with no sessions lists none: %v %v", mine, err)
+	}
+}
+
+func TestSameDirResolvesSymlinks(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "chartlabs-a86926c5")
+	os.MkdirAll(filepath.Join(real, "agents", "scout"), 0o755)
+	if err := os.Symlink(real, filepath.Join(root, "chartlabs")); err != nil {
+		t.Skip("no symlinks here")
+	}
+	if !SameDir(filepath.Join(root, "chartlabs", "agents", "scout"), filepath.Join(real, "agents", "scout")) {
+		t.Error("the symlinked name and the real folder are the same folder")
+	}
+	if SameDir(filepath.Join(root, "chartlabs"), filepath.Join(root, "other")) {
+		t.Error("a missing folder matches nothing but itself")
+	}
+	if !SameDir("/no/such", "/no/such") {
+		t.Error("identical strings match without touching disk")
 	}
 }

@@ -1026,8 +1026,12 @@ async function updateHarnessBar() {
   const p = state.panes.find((x) => x.id === paneId);
   // A pane at a bare shell gets the bar: no harness yet = "Start here:",
   // harness recorded but exited (its shell is back) = "Restart:".
-  if (p && p.agent) { setHarnessBar(false); updateAgentComposer(p); return; }
-  setAgentComposer(false);
+  if (p && p.agent) {
+    setHarnessBar(false);
+    window.ccmuxAgentChat.show(p, state.workspaces.find((w) => w.id === state.wsId));
+    return;
+  }
+  window.ccmuxAgentChat.hide();
   if (!p || p.devServer || !(p.atShell || p.dormant)) { setHarnessBar(false); return; }
   const ws = state.workspaces.find((w) => w.id === state.wsId);
   let cfg;
@@ -1078,9 +1082,8 @@ async function startHarness(paneId, name) {
   }
 }
 
-// --- Agent composer: an asleep agent's pane keeps its history and gets a
-// message box on top. Enter wakes the agent with the text as its first
-// message — the same daemon call a peer's contact makes. ---
+// --- Agents: the window's catalog (icons, drift) and the wake call the
+// sidebar menu uses. The pane-level chat view lives in agentchat.js. ---
 const agentCatalog = { winId: "", list: [], at: 0 };
 
 // windowOf is the shared window a workspace sits in (by its group name), or
@@ -1113,55 +1116,7 @@ async function fetchWindowAgents(winId) {
   }
 }
 
-async function updateAgentComposer(p) {
-  const box = $("agent-composer");
-  const asleep = p.atShell || p.dormant;
-  if (!asleep) { setAgentComposer(false); return; }
-  const paneId = p.id;
-  const win = windowOf(state.workspaces.find((w) => w.id === state.wsId));
-  const list = win ? await fetchWindowAgents(win.id) : [];
-  if (state.paneId !== paneId) return;
-  const inst = list.find((a) => a.name === p.agent) || {};
-  // Already showing for this pane: a registry refresh must not wipe an unsent
-  // message or pull focus off whatever the user is doing.
-  if (box.dataset.pane === paneId && !box.classList.contains("hidden")) return;
-  box.dataset.pane = paneId;
-  box.innerHTML = "";
-  const label = document.createElement("span");
-  label.className = "agent-label";
-  label.textContent = `${inst.icon || "⚙"} ${p.agent} asleep`;
-  box.appendChild(label);
-  const input = document.createElement("input");
-  input.className = "setting-input";
-  input.type = "text";
-  input.placeholder = win ? `Message ${p.agent}… Enter starts it` : `${p.agent} has no window — add its session to one first`;
-  input.disabled = !win;
-  input.onkeydown = (e) => {
-    if (e.key !== "Enter" || !win) return;
-    e.preventDefault();
-    wakeAgent(win.id, p.agent, input.value.trim());
-  };
-  box.appendChild(input);
-  if (inst.drift) {
-    const d = document.createElement("span");
-    d.className = "agent-drift";
-    d.title = `ran ${inst.paneVersion || "?"}, base is ${inst.version}`;
-    d.textContent = `↻ base ${inst.version} — next start picks it up`;
-    box.appendChild(d);
-  }
-  setAgentComposer(true);
-  input.focus();
-}
-
-function setAgentComposer(show) {
-  const box = $("agent-composer");
-  if (!show) delete box.dataset.pane;
-  box.classList.toggle("hidden", !show);
-  scheduleFit();
-}
-
 async function wakeAgent(winId, name, prompt) {
-  setAgentComposer(false);
   try {
     const r = await fetch(`/v1/windows/${winId}/agents/${encodeURIComponent(name)}`, {
       method: "POST",
