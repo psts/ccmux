@@ -259,6 +259,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents", s.listAgents)
 	mux.HandleFunc("PUT /v1/agents/{name}", s.putAgent)
 	mux.HandleFunc("DELETE /v1/agents/{name}", s.deleteAgent)
+	mux.HandleFunc("GET /v1/agents/{name}/skills", s.listAgentSkills)
+	mux.HandleFunc("POST /v1/agents/{name}/skills", s.addAgentSkill)
+	mux.HandleFunc("GET /v1/agents/{name}/skills/{skill}", s.agentSkillText)
+	mux.HandleFunc("POST /v1/agents/{name}/skills/{skill}/update", s.updateAgentSkill)
+	mux.HandleFunc("DELETE /v1/agents/{name}/skills/{skill}", s.deleteAgentSkill)
+	mux.HandleFunc("GET /v1/agents/{name}/mcp", s.listAgentMCP)
+	mux.HandleFunc("POST /v1/agents/{name}/mcp", s.addAgentMCP)
+	mux.HandleFunc("DELETE /v1/agents/{name}/mcp/{server}", s.deleteAgentMCP)
+	mux.HandleFunc("GET /v1/agents/{name}/instances", s.listAgentInstances)
+	mux.HandleFunc("POST /v1/agents/{name}/instances/restart", s.restartAgentInstances)
 	// Instances: a base agent added to one shared window as its own session,
 	// started with a prompt. Windows live on the daemon lenses talk to (the
 	// hub), and so do agent sessions — no owner routing.

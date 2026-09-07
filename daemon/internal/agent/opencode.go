@@ -45,7 +45,9 @@ func OpencodeInstanceConfig(d Definition, baseDir string, mcp map[string]mcpEntr
 		"instructions": []string{filepath.Join(baseDir, fileAgents)},
 		"snapshot":     false,
 		"mcp":          servers,
-		"plugin":       plugins,
+		"plugin":       append(append([]string{}, plugins...), d.Plugins...),
+		// The base's skills, the way Claude Code gets them through --plugin-dir.
+		"skills": map[string]any{"paths": []string{filepath.Join(baseDir, skillsFolder)}},
 		"agent": map[string]any{
 			d.Name: map[string]any{
 				"mode":        "primary",

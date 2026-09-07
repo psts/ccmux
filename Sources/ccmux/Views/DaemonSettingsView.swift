@@ -31,6 +31,7 @@ struct DaemonSettingsView: View {
     /// Base agents from GET /v1/agents; nil = this daemon has no agents support.
     @State private var agents: [DaemonAgent]? = nil
     @State private var agentStatus = ""
+    @State private var editingAgent: AgentEditTarget? = nil
     @State private var supportsLLM = false
     @State private var supportsHarnesses = false
     @State private var supportsHarnessRules = false
@@ -348,25 +349,21 @@ struct DaemonSettingsView: View {
         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
     }
 
-    /// Base agents: folders the daemon owns, one card each. Rows save on their
-    /// own button (per-name upsert, not part of the settings Save); delete is
-    /// confirmed because the folder holds skills a human wrote.
+    /// Base agents: a list, one row each; New and Edit open the editor sheet
+    /// (AgentEditorView), where the whole base lives — role, harness,
+    /// permissions, skills, servers, plugins, lifecycle and deployments.
     private var agentsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Role agents live as folders under ~/.ccmux/agents. Add one to a project from the project's menu; message it by name on the bus. Skills and MCP servers live in the folder.")
+                Text("Role agents live as folders under ~/.ccmux/agents. Edit one to set its role, skills and tools; add it to a project from the window's ⚙ menu.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                // Keyed by position, not name: the name is what a new row is
-                // typing, and a per-keystroke identity change drops focus.
-                ForEach(Array((agents ?? []).enumerated()), id: \.offset) { idx, _ in
-                    agentCard(idx)
+                ForEach(Array((agents ?? []).enumerated()), id: \.offset) { idx, a in
+                    agentRow(idx, a)
                 }
-                Button("New agent") {
-                    agents?.append(DaemonAgent(name: ""))
-                }
-                .controlSize(.small)
+                Button("New agent") { editingAgent = AgentEditTarget(agent: nil) }
+                    .controlSize(.small)
                 Text(agentStatus)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -374,48 +371,35 @@ struct DaemonSettingsView: View {
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .sheet(item: $editingAgent) { target in
+            AgentEditorView(agent: target.agent, harnesses: harnesses.map(\.name), accounts: accounts.map(\.name)) {
+                editingAgent = nil
+                Task { await reloadAgents() }
+            }
+        }
     }
 
-    private func agentCard(_ idx: Int) -> some View {
-        let binding = Binding(
-            get: { agentAt(idx) ?? DaemonAgent(name: "") },
-            set: { if let n = agents?.count, idx < n { agents?[idx] = $0 } })
-        let isNew = binding.wrappedValue.version.isEmpty
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                TextField("⚙", text: binding.icon).frame(width: 36)
-                TextField("name (a-z, 0-9, -)", text: binding.name).disabled(!isNew)
-                if !isNew { Text("v\(binding.wrappedValue.version)").font(.system(size: 11)).foregroundColor(.secondary) }
-                Picker("", selection: binding.harness) {
-                    Text("default harness").tag("")
-                    ForEach(harnesses.map(\.name), id: \.self) { Text($0).tag($0) }
-                }
-                .labelsHidden().frame(width: 130)
-                Toggle("keep alive", isOn: binding.keepAlive).toggleStyle(.checkbox)
-                Text("idle").font(.system(size: 11))
-                TextField("10", value: binding.idleExitMinutes, format: .number).frame(width: 44)
-                Text("m").font(.system(size: 11))
-            }
-            .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12))
-            TextField("one sentence: what it does and when to call it", text: binding.description)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12))
-            TextEditor(text: binding.instructions)
-                .font(.system(size: 12, design: .monospaced))
-                .frame(minHeight: 72)
-                .border(Color.white.opacity(0.12))
-            HStack {
-                Button("Save agent") { Task { await saveAgent(idx) } }
-                    .controlSize(.small)
-                    .disabled(binding.wrappedValue.name.isEmpty || binding.wrappedValue.description.isEmpty)
+    private func agentRow(_ idx: Int, _ a: DaemonAgent) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(a.icon.isEmpty ? "⚙" : a.icon).frame(width: 22)
+                Text(a.name).font(.system(size: 12, weight: .semibold))
+                Text("v\(a.version)").font(.system(size: 11)).foregroundColor(.secondary)
+                Text(a.harness).font(.system(size: 11)).foregroundColor(.secondary)
                 Spacer()
-                Button("Delete…", role: .destructive) { deleteAgent(idx) }
-                    .controlSize(.small)
+                Button("Edit") { editingAgent = AgentEditTarget(agent: a) }.controlSize(.small)
+                Button("Delete…", role: .destructive) { deleteAgent(idx) }.controlSize(.small)
             }
+            Text(a.description).font(.system(size: 11)).foregroundColor(.secondary)
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+    }
+
+    private func reloadAgents() async {
+        let res = await RemoteSessionService.shared.fetchAgents()
+        if let err = res.error { agentStatus = "Couldn't reload agents: \(err)"; return }
+        agents = res.list
     }
 
     /// Bounds-checked row lookup: SwiftUI can hand a stale index after the
@@ -425,33 +409,8 @@ struct DaemonSettingsView: View {
         return list[idx]
     }
 
-    private func saveAgent(_ idx: Int) async {
-        guard let a = agentAt(idx) else { return }
-        if let error = await RemoteSessionService.shared.putAgent(a) {
-            agentStatus = "✗ \(a.name): \(error)"
-            return
-        }
-        // Replace only the saved row, found by NAME (the index was captured
-        // before the await and the list may have moved): a whole-list refetch
-        // would drop other rows the user has added and not saved yet.
-        let res = await RemoteSessionService.shared.fetchAgents()
-        if let err = res.error {
-            agentStatus = "✓ Saved \(a.name), but the list could not be refreshed: \(err)"
-            return
-        }
-        if let fresh = res.list.first(where: { $0.name == a.name }),
-           let at = agents?.firstIndex(where: { $0.name == a.name }) {
-            agents?[at] = fresh
-        }
-        agentStatus = "✓ Saved \(a.name)."
-    }
-
     private func deleteAgent(_ idx: Int) {
         guard let a = agentAt(idx) else { return }
-        if a.version.isEmpty {
-            if let at = agents?.firstIndex(where: { $0.name == a.name && $0.version.isEmpty }) { agents?.remove(at: at) }
-            return
-        }
         let alert = NSAlert()
         alert.messageText = "Delete agent “\(a.name)”?"
         alert.informativeText = "Removes its folder, skills included. Project instance folders stay."
@@ -745,4 +704,11 @@ struct DaemonSettingsView: View {
         cloudflareToken = cloudflareTokenSet ? Self.secretSentinel : ""
         tailscaleAuthKey = tailscaleAuthKeySet ? Self.secretSentinel : ""
     }
+}
+
+/// What the agents tab is editing: an existing base, or nil for a new one.
+/// Identifiable so `.sheet(item:)` can present it.
+struct AgentEditTarget: Identifiable {
+    let agent: DaemonAgent?
+    var id: String { agent?.name ?? "new" }
 }

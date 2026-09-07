@@ -65,6 +65,9 @@ type Definition struct {
 	MaxTokensPerTask int      `json:"maxTokensPerTask"`
 	SideEffects      []string `json:"sideEffects,omitempty"`
 	AddDirs          []string `json:"addDirs,omitempty"`
+	// Plugins are opencode plugin packages (npm names or paths) the instance
+	// loads besides ccmux's own; other harnesses ignore them.
+	Plugins []string `json:"plugins,omitempty"`
 
 	// Version comes from .claude-plugin/plugin.json; Save bumps it when the
 	// generated content changed. Read-only through the API.

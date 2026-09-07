@@ -1781,75 +1781,28 @@ wireHarnessSettings();
 function wireAgentSettings() {
   const box = $("agent-list"), addBtn = $("agent-add"), statusEl = $("agent-state");
   if (!box) return;
-  let harnessNames = [];
+  let cfg = {};
 
   function agentRow(a) {
     const row = document.createElement("div");
     row.className = "entry-card agent-card";
-    row.dataset.name = a.name || "";
-    const isNew = !a.name;
-    // A harness the settings no longer list stays selectable: otherwise the
-    // select would show the first option and any other edit would save it.
-    const names = [""].concat(harnessNames);
-    if (a.harness && !names.includes(a.harness)) names.push(a.harness);
-    const opts = names.map((h) =>
-      `<option value="${esc(h)}"${(a.harness || "") === h ? " selected" : ""}>${h ? esc(h) : "default harness"}</option>`).join("");
     row.innerHTML =
       `<div class="entry-line">` +
-      `<input class="setting-input ag-icon" type="text" spellcheck="false" placeholder="⚙" value="${esc(a.icon || "")}">` +
-      `<input class="setting-input ag-name grow" type="text" spellcheck="false" placeholder="name (a-z, 0-9, -)" value="${esc(a.name || "")}"${isNew ? "" : " readonly"}>` +
-      (a.version ? `<span class="agent-version">v${esc(a.version)}</span>` : "") +
-      `<select class="setting-input ag-harness">${opts}</select>` +
-      `<label class="hx-confirm" title="Restart it when it exits; otherwise it starts on contact"><input class="ag-keep" type="checkbox"${a.keepAlive ? " checked" : ""}>keep alive</label>` +
-      `<label class="hx-confirm" title="Minutes idle before it goes to sleep; 0 = never">idle <input class="setting-input agent-num ag-idle" type="number" min="0" value="${a.idleExitMinutes ?? 10}">m</label>` +
+      `<span class="agent-icon">${esc(a.icon || "⚙")}</span>` +
+      `<span class="agent-name">${esc(a.name)}</span>` +
+      `<span class="agent-version">v${esc(a.version || "")}</span>` +
+      `<span class="agent-harness">${esc(a.harness || "")}</span>` +
+      `<span class="grow"></span>` +
+      `<button class="rule-add ag-edit" type="button">Edit</button>` +
       `<button class="rule-del" type="button" title="Delete agent and its folder">&times;</button>` +
       `</div>` +
-      `<div class="entry-line">` +
-      `<input class="setting-input ag-desc grow" type="text" spellcheck="false" placeholder="one sentence: what it does and when to call it" value="${esc(a.description || "")}">` +
-      `</div>` +
-      `<div class="entry-line">` +
-      `<textarea class="setting-input ag-instr" spellcheck="false" placeholder="# Role&#10;&#10;What it does, inputs, outputs, how it works, quality bar…">${esc(a.instructions || "")}</textarea>` +
-      `</div>`;
-    for (const el of row.querySelectorAll("input, select, textarea")) {
-      el.addEventListener("change", () => saveRow(row));
-      if (el.tagName !== "TEXTAREA") el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
-    }
-    row.querySelector(".rule-del").onclick = () => deleteRow(row);
+      `<div class="agent-desc">${esc(a.description || "")}</div>`;
+    row.querySelector(".ag-edit").onclick = () => window.ccmuxAgentModal.open(a, cfg, load);
+    row.querySelector(".rule-del").onclick = () => deleteAgent(a.name);
     return row;
   }
 
-  function rowValue(row) {
-    return {
-      icon: row.querySelector(".ag-icon").value.trim(),
-      description: row.querySelector(".ag-desc").value.trim(),
-      harness: row.querySelector(".ag-harness").value,
-      keepAlive: row.querySelector(".ag-keep").checked,
-      idleExitMinutes: Number(row.querySelector(".ag-idle").value) || 0,
-      instructions: row.querySelector(".ag-instr").value,
-    };
-  }
-
-  async function saveRow(row) {
-    const name = row.querySelector(".ag-name").value.trim();
-    const v = rowValue(row);
-    if (!name || !v.description) { statusEl.textContent = "An agent needs a name and a one-sentence description."; return; }
-    try {
-      const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(v),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      const saved = await r.json();
-      row.replaceWith(agentRow(saved));
-      statusEl.textContent = `Saved ${saved.name} v${saved.version}.`;
-      agentCatalog.at = 0;
-    } catch (e) {
-      statusEl.textContent = "Not saved: " + e.message;
-    }
-  }
-
-  async function deleteRow(row) {
-    const name = row.dataset.name;
-    if (!name) { row.remove(); return; }
+  async function deleteAgent(name) {
     if (!confirm(`Delete agent "${name}" and its folder (skills included)? Project instance folders stay.`)) return;
     try {
       const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
@@ -1858,31 +1811,30 @@ function wireAgentSettings() {
       statusEl.textContent = "Not deleted: " + e.message;
       return;
     }
-    row.remove();
     statusEl.textContent = `Deleted ${name}.`;
     agentCatalog.at = 0;
+    load();
   }
 
   async function load() {
     try {
-      const [cfg, r] = await Promise.all([(await fetch("/v1/settings")).json(), fetch("/v1/agents")]);
-      harnessNames = (cfg.harnesses || []).map((h) => h.name);
+      const [c, r] = await Promise.all([(await fetch("/v1/settings")).json(), fetch("/v1/agents")]);
+      cfg = c;
       box.innerHTML = "";
       if (r.status === 503) { statusEl.textContent = "This daemon has no agents support."; addBtn.disabled = true; return; }
       addBtn.disabled = false;
       if (!r.ok) { statusEl.textContent = "Couldn't load agents: " + (await r.text()); return; } // names the broken folder
-      for (const a of (await r.json()).agents || []) box.appendChild(agentRow(a));
-      statusEl.textContent = "Rows save on change. Skills and MCP servers live in the agent's folder.";
+      const list = (await r.json()).agents || [];
+      for (const a of list) box.appendChild(agentRow(a));
+      statusEl.textContent = list.length ? "" : "No agents yet.";
+      agentCatalog.at = 0;
     } catch (_) {
       statusEl.textContent = "Couldn't load agents.";
     }
   }
 
   $("open-settings").addEventListener("click", load);
-  addBtn.addEventListener("click", () => {
-    box.appendChild(agentRow({}));
-    box.lastChild.querySelector(".ag-name").focus();
-  });
+  addBtn.addEventListener("click", () => window.ccmuxAgentModal.open(null, cfg, load));
 }
 wireAgentSettings();
 

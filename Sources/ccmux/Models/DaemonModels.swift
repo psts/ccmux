@@ -128,12 +128,17 @@ struct DaemonSettings: Codable {
 }
 
 /// One base agent as GET /v1/agents reports it (daemon/docs/agent-spec.md).
-/// Only the fields the Mac editor shows; the folder holds the rest.
+/// The fields the editor round-trips; the folder holds the rest.
 struct DaemonAgent: Codable, Identifiable {
     var name: String
     var icon: String
     var description: String
     var harness: String
+    var account: String
+    var model: String
+    var permissions: DaemonAgentPermissions
+    var plugins: [String]
+    var start: String
     var keepAlive: Bool
     var idleExitMinutes: Int
     var version: String
@@ -143,6 +148,7 @@ struct DaemonAgent: Codable, Identifiable {
     init(name: String, icon: String = "", description: String = "", harness: String = "",
          keepAlive: Bool = false, idleExitMinutes: Int = 10, version: String = "", instructions: String = "") {
         self.name = name; self.icon = icon; self.description = description; self.harness = harness
+        self.account = ""; self.model = ""; self.permissions = DaemonAgentPermissions(); self.plugins = []; self.start = "fresh"
         self.keepAlive = keepAlive; self.idleExitMinutes = idleExitMinutes; self.version = version
         self.instructions = instructions
     }
@@ -153,6 +159,11 @@ struct DaemonAgent: Codable, Identifiable {
         icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? ""
         description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
         harness = try c.decodeIfPresent(String.self, forKey: .harness) ?? ""
+        account = try c.decodeIfPresent(String.self, forKey: .account) ?? ""
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+        permissions = try c.decodeIfPresent(DaemonAgentPermissions.self, forKey: .permissions) ?? DaemonAgentPermissions()
+        plugins = try c.decodeIfPresent([String].self, forKey: .plugins) ?? []
+        start = try c.decodeIfPresent(String.self, forKey: .start) ?? "fresh"
         keepAlive = try c.decodeIfPresent(Bool.self, forKey: .keepAlive) ?? false
         idleExitMinutes = try c.decodeIfPresent(Int.self, forKey: .idleExitMinutes) ?? 10
         version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
@@ -160,8 +171,60 @@ struct DaemonAgent: Codable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, icon, description, harness, keepAlive, idleExitMinutes, version, instructions
+        case name, icon, description, harness, account, model, permissions, plugins, start, keepAlive, idleExitMinutes, version, instructions
     }
+}
+
+/// The neutral permission vocabulary: allow | ask | deny per gate, plus bash
+/// patterns always allowed.
+struct DaemonAgentPermissions: Codable, Equatable {
+    var read = "allow"
+    var edit = "allow"
+    var bash = "ask"
+    var webfetch = "ask"
+    var bashAllow: [String] = []
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        read = try c.decodeIfPresent(String.self, forKey: .read) ?? "allow"
+        edit = try c.decodeIfPresent(String.self, forKey: .edit) ?? "allow"
+        bash = try c.decodeIfPresent(String.self, forKey: .bash) ?? "ask"
+        webfetch = try c.decodeIfPresent(String.self, forKey: .webfetch) ?? "ask"
+        bashAllow = try c.decodeIfPresent([String].self, forKey: .bashAllow) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey { case read, edit, bash, webfetch, bashAllow }
+}
+
+/// A skill in a base (GET /v1/agents/{name}/skills); source is the git URL it
+/// came from, empty for a hand-written one.
+struct DaemonSkill: Decodable, Identifiable {
+    let name: String
+    let description: String
+    let source: String?
+    let files: Int
+    var id: String { name }
+}
+
+/// An MCP server in a base (GET /v1/agents/{name}/mcp).
+struct DaemonMCPServer: Decodable, Identifiable {
+    let name: String
+    let command: String
+    let args: [String]?
+    let env: [String: String]?
+    var id: String { name }
+}
+
+/// One window a base is deployed to (GET /v1/agents/{name}/instances).
+struct DaemonAgentDeployment: Decodable, Identifiable {
+    let window: String
+    let windowId: String
+    let state: String
+    let paneVersion: String?
+    let drift: Bool?
+    var id: String { windowId }
 }
 
 /// A base agent as seen from one shared window (GET /v1/windows/{id}/agents):

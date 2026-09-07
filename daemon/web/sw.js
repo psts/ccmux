@@ -3,7 +3,7 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v8"; // v8: chat history across sessions, resume switch
+const CACHE = "ccmux-shell-v9"; // v9: agent editor modal
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.
@@ -17,6 +17,7 @@ const SHELL = [
   "/index.html",
   "/app.js",
   "/agentchat.js",
+  "/agentmodal.js",
   "/peers.js",
   "/push.js",
   "/style.css",

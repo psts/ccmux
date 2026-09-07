@@ -1208,10 +1208,94 @@ final class RemoteSessionService: ObservableObject {
     func putAgent(_ a: DaemonAgent) async -> String? {
         var body: [String: Any] = [
             "icon": a.icon, "description": a.description, "harness": a.harness,
+            "account": a.account, "model": a.model, "plugins": a.plugins, "start": a.start,
+            "permissions": ["read": a.permissions.read, "edit": a.permissions.edit, "bash": a.permissions.bash,
+                            "webfetch": a.permissions.webfetch, "bashAllow": a.permissions.bashAllow],
             "keepAlive": a.keepAlive, "idleExitMinutes": a.idleExitMinutes,
         ]
         if !a.instructions.isEmpty { body["instructions"] = a.instructions }
         return await sendReportingError("PUT", path: "/v1/agents/\(agentPath(a.name))", body: body, expect: 200)
+    }
+
+    // MARK: - Agent parts: skills, MCP servers, deployments (agent editor)
+
+    /// GET a JSON document from the daemon; the error text on failure.
+    private func getDecoded<T: Decodable>(_ type: T.Type, path: String) async -> (T?, String?) {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)\(path)") else { return (nil, "bad daemon URL") }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                struct APIError: Decodable { let error: String }
+                return (nil, (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)")
+            }
+            return (try JSONDecoder().decode(T.self, from: data), nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
+    func fetchSkills(agent: String) async -> ([DaemonSkill], String?) {
+        struct Body: Decodable { let skills: [DaemonSkill] }
+        let (b, err) = await getDecoded(Body.self, path: "/v1/agents/\(agentPath(agent))/skills")
+        return (b?.skills ?? [], err)
+    }
+
+    /// Install a skill from a git folder URL.
+    func addSkill(agent: String, url: String) async -> String? {
+        await sendReportingError("POST", path: "/v1/agents/\(agentPath(agent))/skills", body: ["url": url], expect: 200)
+    }
+
+    /// Install a skill from files (paths relative to the skill folder, text).
+    func addSkill(agent: String, name: String, files: [String: String]) async -> String? {
+        await sendReportingError("POST", path: "/v1/agents/\(agentPath(agent))/skills", body: ["name": name, "files": files], expect: 200)
+    }
+
+    func updateSkill(agent: String, skill: String) async -> String? {
+        await sendReportingError("POST", path: "/v1/agents/\(agentPath(agent))/skills/\(agentPath(skill))/update", body: nil, expect: 200)
+    }
+
+    func deleteSkill(agent: String, skill: String) async -> String? {
+        await sendReportingError("DELETE", path: "/v1/agents/\(agentPath(agent))/skills/\(agentPath(skill))", body: nil, expect: 204)
+    }
+
+    func fetchMCP(agent: String) async -> ([DaemonMCPServer], String?) {
+        struct Body: Decodable { let servers: [DaemonMCPServer] }
+        let (b, err) = await getDecoded(Body.self, path: "/v1/agents/\(agentPath(agent))/mcp")
+        return (b?.servers ?? [], err)
+    }
+
+    /// Merge a pasted MCP snippet (the readme's JSON) into the base.
+    func addMCP(agent: String, snippet: String) async -> String? {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/agents/\(agentPath(agent))/mcp") else { return "bad daemon URL" }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.httpBody = snippet.data(using: .utf8)
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 200 { return nil }
+            struct APIError: Decodable { let error: String }
+            return (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func deleteMCP(agent: String, server: String) async -> String? {
+        await sendReportingError("DELETE", path: "/v1/agents/\(agentPath(agent))/mcp/\(agentPath(server))", body: nil, expect: 204)
+    }
+
+    func fetchDeployments(agent: String) async -> ([DaemonAgentDeployment], String?) {
+        struct Body: Decodable { let instances: [DaemonAgentDeployment] }
+        let (b, err) = await getDecoded(Body.self, path: "/v1/agents/\(agentPath(agent))/instances")
+        return (b?.instances ?? [], err)
+    }
+
+    /// Sleep and wake every running instance so it starts from the current base.
+    func restartInstances(agent: String) async -> String? {
+        await sendReportingError("POST", path: "/v1/agents/\(agentPath(agent))/instances/restart", body: nil, expect: 202)
     }
 
     /// Delete a base and its folder. The caller confirms first. An already

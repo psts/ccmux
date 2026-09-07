@@ -59,6 +59,14 @@ put them in skills and reference them.
   unique across agents.
 - Project skills go in the instance `.claude/skills/`. Both Claude Code and
   opencode read that path.
+- Skills arrive from where they already live, never from a text box: the
+  agent editor takes a GitHub folder URL (or any git URL plus a path) and
+  does a shallow sparse clone of that folder into `skills/`, keeping the
+  source in `.source` so it can be updated; or files dropped on it. Routes:
+  `GET/POST /v1/agents/{name}/skills`, `GET|DELETE
+  /v1/agents/{name}/skills/{skill}`, `POST .../skills/{skill}/update`.
+  opencode reads the base's `skills/` through its config (`skills.paths`),
+  Claude Code through `--plugin-dir`.
 
 ## 4. Tools and MCP servers
 
@@ -66,6 +74,11 @@ put them in skills and reference them.
   `{ "<name>": { "command": "...", "args": [...], "env": {...} } }`.
   Secrets come from env names, never literal values.
 - `ccmux-peers` is always present; do not list it.
+- Servers arrive as the snippet a server's readme ships, pasted into the
+  agent editor: `{ "mcpServers": { ... } }` or the bare map, merged by name
+  (`GET/POST /v1/agents/{name}/mcp`, `DELETE /v1/agents/{name}/mcp/{server}`).
+- opencode plugins (npm names or paths) are `agent.json.plugins`, loaded
+  beside ccmux's own; other harnesses ignore them.
 - Ask: does this tool let the agent do damage outside its role? If yes, the
   permission block (section 6) must gate it.
 
@@ -341,7 +354,14 @@ mid-typing; a state-aware exit is a follow-up.
 
 ## Lenses (2026-09-05)
 
-Web: Settings → Agents (rows save on change, delete confirmed), the WINDOW
+Web (2026-09-07): Settings → Agents is a list; New and Edit open one modal
+with a section per concern (identity, role, harness and model, permissions,
+skills, MCP servers, opencode plugins, lifecycle, instances). Every skill
+or server change bumps the base; the Instances section lists where the base
+is deployed with the version each runs, and "Restart to apply" sleeps and
+wakes the running ones (`GET /v1/agents/{name}/instances`, `POST
+.../instances/restart`); asleep ones pick the base up on their own. The
+Mac has the same editor as a sheet. Before that: rows save on change, the WINDOW
 header's ⚙ button or right-click lists every base with its state here
 (● running opens its session, ■ puts it to sleep, ○ asleep wakes it, + not
 yet added adds it as a new session), a sleeping agent pane shows a composer

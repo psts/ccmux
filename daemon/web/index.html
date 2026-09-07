@@ -143,7 +143,7 @@
           <p id="harness-rules-state" class="hint setting-hint"></p>
         </section>
         <section class="settings-page hidden" data-page="agents">
-          <p class="hint setting-hint">Role agents live as folders under <code>~/.ccmux/agents</code>. Add one to a project from the project's menu; message it by name on the bus.</p>
+          <p class="hint setting-hint">Role agents live as folders under <code>~/.ccmux/agents</code>. Edit one to set its role, skills and tools; add it to a project from the window's ⚙ menu.</p>
           <div id="agent-list" class="rules-list"></div>
           <button id="agent-add" class="rule-add" type="button">+ New agent</button>
           <p id="agent-state" class="hint setting-hint"></p>
@@ -162,8 +162,23 @@
 
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
+  <div id="agent-modal" class="modal agent-modal hidden">
+    <div class="sheet agent-sheet">
+      <header>
+        <span id="agent-modal-title">Agent</span>
+        <button id="agent-modal-close" title="Close">&times;</button>
+      </header>
+      <div class="agent-modal-body"></div>
+      <div class="sheet-actions agent-modal-actions">
+        <span id="agent-modal-state" class="hint"></span>
+        <button id="agent-modal-save" class="primary" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
   <script src="/agentchat.js"></script>
+  <script src="/agentmodal.js"></script>
   <script src="/peers.js"></script>
   <script src="/push.js"></script>
 </body>
