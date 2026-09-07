@@ -66,3 +66,72 @@ func agentsSection(list []agentEntry) string {
 	}
 	return b.String()
 }
+
+// sessionEntry mirrors the daemon's view of one repo session in the
+// caller's window (POST /v1/peers/sessions).
+type sessionEntry struct {
+	Name     string `json:"name"`
+	RepoPath string `json:"repoPath"`
+	Status   string `json:"status"` // live | cold
+}
+
+// sessions fetches the repo sessions of this session's window; nil on any
+// failure, like agents: advisory, never a reason to fail a tool.
+func (a *app) sessions() []sessionEntry {
+	id := a.peerID()
+	if id == "" || a.daemon == nil {
+		return nil
+	}
+	var out []sessionEntry
+	if err := a.daemon.post("/v1/peers/sessions", map[string]any{"peer_id": id}, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// windowParagraph is what initialize appends after the frozen server
+// instructions: the window's repo sessions, then its agents. An agent's own
+// folder holds only its memory; this paragraph is how it learns where the
+// project's code is without anyone writing paths into its instructions.
+func (a *app) windowParagraph() string {
+	return sessionsParagraph(a.sessions()) + agentsParagraph(a.agents())
+}
+
+// windowSection is the list_peers footer: the same two lists, tool-shaped.
+func (a *app) windowSection() string {
+	return sessionsSection(a.sessions()) + agentsSection(a.agents())
+}
+
+func sessionsParagraph(list []sessionEntry) string {
+	if len(list) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nPROJECT SESSIONS IN THIS WINDOW: the repos this project is made of, each its own session on this host. ")
+	b.WriteString("Read their files directly at the folder. To ask a session something, message it by name; ")
+	b.WriteString("if list_peers does not show it, send with spawn_if_missing=true and it starts.\n")
+	for _, e := range list {
+		b.WriteString(sessionLine(e))
+	}
+	return b.String()
+}
+
+func sessionsSection(list []sessionEntry) string {
+	if len(list) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nProject sessions in this window (folders on this host; message by name, spawn_if_missing=true starts one that is not listed above):\n")
+	for _, e := range list {
+		b.WriteString(sessionLine(e))
+	}
+	return b.String()
+}
+
+func sessionLine(e sessionEntry) string {
+	state := e.Status
+	if state == "cold" {
+		state = "archived; starts on contact"
+	}
+	return fmt.Sprintf("- %s: %s [%s]\n", e.Name, e.RepoPath, state)
+}

@@ -6,6 +6,7 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/model"
 )
 
 // peersAgents: POST /v1/peers/agents {"peer_id"} → the base agents as seen
@@ -14,14 +15,8 @@ import (
 // starts it here. A caller outside a shared window (pane-less, or an
 // ungrouped session) sees every agent as absent.
 func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
-	if !s.peersEnabled(w) {
-		return
-	}
-	var req peerIDReq
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if !s.requirePeer(w, r, req.PeerID) {
+	win, ok := s.peerWindow(w, r)
+	if !ok {
 		return
 	}
 	out := []agentInstance{}
@@ -34,18 +29,56 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// A group that is not a window (the directory fallback) has no members,
-	// so instanceOf reads every base as absent. An unreadable window table
-	// is NOT that: it answers 503, never "nothing is added".
-	win, status, msg := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
-	if msg != "" && status != http.StatusNotFound {
-		writeError(w, status, msg)
-		return
-	}
 	for _, d := range defs {
 		out = append(out, s.instanceOf(win, d))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// windowSession is one repo session of a shared window as the bus tells it
+// to every session there: the name it is messaged by, where its code is on
+// this host, and whether its tmux session is open. Whether someone is
+// listening there is list_peers' question, not this one's.
+type windowSession struct {
+	Name     string       `json:"name"`
+	RepoPath string       `json:"repoPath"`
+	Status   model.Status `json:"status"`
+}
+
+// peersSessions: POST /v1/peers/sessions {"peer_id"} → the repo sessions of
+// the caller's window. This is how an agent finds the project it was added
+// to: its own folder holds only its memory, the code lives in these. A
+// caller outside a shared window sees an empty list.
+func (s *Server) peersSessions(w http.ResponseWriter, r *http.Request) {
+	win, ok := s.peerWindow(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.windowSessions(win))
+}
+
+// peerWindow authenticates a bus caller and resolves its window. A group
+// that is not a window (the directory fallback) resolves to an empty
+// WindowInfo, so the caller sees no members. An unreadable window table is
+// NOT that: it answers 503, never "nothing here". ok=false means the
+// response was already written.
+func (s *Server) peerWindow(w http.ResponseWriter, r *http.Request) (manager.WindowInfo, bool) {
+	if !s.peersEnabled(w) {
+		return manager.WindowInfo{}, false
+	}
+	var req peerIDReq
+	if !decodeJSON(w, r, &req) {
+		return manager.WindowInfo{}, false
+	}
+	if !s.requirePeer(w, r, req.PeerID) {
+		return manager.WindowInfo{}, false
+	}
+	win, status, msg := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
+	if msg != "" && status != http.StatusNotFound {
+		writeError(w, status, msg)
+		return manager.WindowInfo{}, false
+	}
+	return win, true
 }
 
 // startAgentForPeer is the bus's spawn_if_missing path for agents: the one

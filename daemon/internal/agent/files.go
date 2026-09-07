@@ -35,7 +35,7 @@ func (s *Store) Save(d Definition) (Definition, error) {
 	}
 	d = withDefaults(d)
 	dir := s.Dir(d.Name)
-	for _, sub := range []string{"", "skills", "knowledge", filepath.Dir(fileManifest)} {
+	for _, sub := range []string{"", "skills", filepath.Dir(fileManifest)} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			return Definition{}, err
 		}
@@ -174,7 +174,7 @@ func appendFile(path, line string) error {
 	return err
 }
 
-// Delete removes a base folder entirely — knowledge and skills included.
+// Delete removes a base folder entirely — skills included.
 // Callers confirm with the human first; this is the one destructive call.
 func (s *Store) Delete(name string) error {
 	if !ValidName(name) {

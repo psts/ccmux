@@ -9,12 +9,15 @@ the agent is. The instance says what it is for here.
 
 A project is a **shared window**, not a repo (changed 2026-09-06). An instance
 is its own session inside the window, named after the agent, and every
-session in that window reaches it on the bus by name. It can reach the
-window's repos on its host through the harness's extra-directory flag (its
-base's permissions say whether it may edit there, and the defaults allow
-edits), and its folder lives beside the bases, not inside any repo. The
-folder name is the window's slug plus the first eight characters of its id,
-so two windows whose names slug alike stay apart.
+session in that window reaches it on the bus by name. The bus tells it where
+the project is: the peers shim appends the window's repo sessions (name,
+folder, live or archived) to its instructions and to `list_peers`, so an
+agent reads the code at those folders or messages the session by name, and
+nobody writes repo paths into its instructions. A claude agent additionally
+gets each folder as `--add-dir` (its base's permissions say whether it may
+edit there, and the defaults allow edits). Its folder lives beside the bases,
+not inside any repo. The folder name is the window's slug plus the first
+eight characters of its id, so two windows whose names slug alike stay apart.
 
 ## 1. Identity
 
@@ -92,16 +95,17 @@ clean for a week, then `allow` with a bash pattern list.
 
 ## 7. Memory policy
 
-Three layers. Decide what goes where.
+Agents write their own memory; no layer is human-curated. Two layers today,
+a third planned.
 
 | Layer | Owner | Lives | Example |
 |---|---|---|---|
-| Base knowledge | human | `knowledge/` in the base | style guide, API docs, tone examples |
-| Project instructions | human, in git | instance `AGENTS.md`, `.claude/skills/` | which repo paths matter, project voice, who approves |
+| Project instructions | whoever added the agent | instance `AGENTS.md`, `.claude/skills/` | project voice, who approves |
 | Agent memory | the agent | instance `memory/` and `log.md` | "posts with images get 3x replies here", "last thread 2026-09-05" |
+| Window shared (planned) | every agent in the window | `shared/` beside the window's `agents/` | what one agent learned that another in the same project needs |
 
-Rules: the base is read-only to instances. Memory is per instance by default.
-Cross-project learning is human-curated into `knowledge/`. `agent.json.memory:
+There is no base `knowledge/` folder (dropped 2026-09-07): learning that
+crosses windows has no home yet. Memory is per instance. `agent.json.memory:
 "shared"` is recorded but NOT implemented yet: every instance still gets its
 own folder. Same for `start: "continue"` and `sideEffects`: stored and shown,
 not acted on. Enforcement is a follow-up.
@@ -220,8 +224,7 @@ Code instances get them as channel messages.
 ├── CLAUDE.md                    @AGENTS.md
 ├── CHANGELOG.md
 ├── skills/<name>/SKILL.md
-├── mcp.json
-└── knowledge/
+└── mcp.json
 ```
 
 ### Instance folder
@@ -241,7 +244,7 @@ Code instances get them as channel messages.
 Implemented in `daemon/internal/agent` (2026-09-05): `Store` over
 `~/.ccmux/agents` (`-agents-dir`), `Reject`, `Save` (bumps the patch version
 when agent.json or AGENTS.md changed, appends CHANGELOG.md, never touches
-skills/knowledge/mcp.json), `Delete`, `Bootstrap` (instance folder, once),
+skills/mcp.json), `Delete`, `Bootstrap` (instance folder, once),
 `WriteInstanceConfig`. API: `GET /v1/agents`, `PUT /v1/agents/{name}`
 (per-name upsert, not list replace), `DELETE /v1/agents/{name}`.
 

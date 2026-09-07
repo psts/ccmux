@@ -243,7 +243,7 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 	}, &peers); err != nil {
 		return toolText("Error listing peers: "+err.Error(), true)
 	}
-	agents := agentsSection(a.agents())
+	agents := a.windowSection()
 	if len(peers) == 0 {
 		return toolText(fmt.Sprintf("No other Claude Code instances found (scope: %s, project: %s).",
 			in.Scope, a.group())+agents, false)

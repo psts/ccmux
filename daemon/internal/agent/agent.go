@@ -8,8 +8,8 @@
 //
 // The package writes generated files and write-once seeds, and never rewrites
 // a file a human may have edited: AGENTS.md only on an explicit save with new
-// text, mcp.json and the instance starters only when absent. Skills, knowledge
-// and everything a human or the agent put there are never touched.
+// text, mcp.json and the instance starters only when absent. Skills and
+// everything a human or the agent put there are never touched.
 package agent
 
 import (

@@ -471,7 +471,7 @@ func (a *app) installHandlers() {
 				},
 			},
 			"serverInfo":   map[string]any{"name": "claude-peers", "version": shimVersion},
-			"instructions": serverInstructions + agentsParagraph(a.agents()),
+			"instructions": serverInstructions + a.windowParagraph(),
 		}, nil
 	}
 	// 2026-07-28 clients probe with server/discover before falling back to the
@@ -491,7 +491,7 @@ func (a *app) installHandlers() {
 					"claude/channel/permission": map[string]any{},
 				},
 			},
-			"instructions": serverInstructions + agentsParagraph(a.agents()),
+			"instructions": serverInstructions + a.windowParagraph(),
 			"_meta": map[string]any{
 				"io.modelcontextprotocol/serverInfo": map[string]any{"name": "claude-peers", "version": shimVersion},
 			},

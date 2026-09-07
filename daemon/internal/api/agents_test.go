@@ -313,6 +313,12 @@ func TestWindowAgents_ProjectFoldersOnTheLaunch(t *testing.T) {
 	if msg != "" || len(dirs) != 1 || dirs[0] != "/tmp" {
 		t.Fatalf("repos of the agent's pane = %v %q", dirs, msg)
 	}
+	// The bus tells the same folders by session: the agent's own session is
+	// not a project folder, so it is not in the list.
+	sessions := f.srv.windowSessions(win)
+	if len(sessions) != 1 || sessions[0].Name != "flood" || sessions[0].RepoPath != "/tmp" || sessions[0].Status != "live" {
+		t.Fatalf("window sessions = %+v, want the project session only", sessions)
+	}
 }
 
 // An unreadable window table is a refusal, never a launch with no project

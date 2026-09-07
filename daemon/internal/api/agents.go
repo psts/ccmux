@@ -109,8 +109,8 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 
 // putAgent: PUT /v1/agents/{name} creates or updates ONE base. Deliberately
 // not a whole-list replace like the other settings objects: a base folder
-// holds skills and knowledge a human wrote, so removing one must be the
-// explicit DELETE, never the side effect of a list that omitted it.
+// holds skills a human wrote, so removing one must be the explicit DELETE,
+// never the side effect of a list that omitted it.
 func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.agentsReady(w) {
 		return
@@ -165,8 +165,8 @@ func (s *Server) rejectAgentHarness(name string) string {
 	return ""
 }
 
-// deleteAgent: DELETE /v1/agents/{name} removes the base folder, knowledge
-// and skills included. The lens confirms with the human before calling.
+// deleteAgent: DELETE /v1/agents/{name} removes the base folder, skills
+// included. The lens confirms with the human before calling.
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.agentsReady(w) {
 		return

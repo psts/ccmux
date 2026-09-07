@@ -113,15 +113,24 @@ func (s *Server) agentWorkspace(win manager.WindowInfo, name string) *model.Work
 	return nil
 }
 
-// windowRepos lists the project folders of win's ordinary sessions on this
-// host — what the agent can reach through --add-dir (its base's permissions
-// say whether it may edit there).
-func (s *Server) windowRepos(win manager.WindowInfo) []string {
-	var dirs []string
+// windowSessions lists win's ordinary (non-agent) sessions on this host —
+// the project's repos, as the bus tells them to every session in the window.
+func (s *Server) windowSessions(win manager.WindowInfo) []windowSession {
+	out := []windowSession{}
 	for _, id := range win.WorkspaceIDs {
 		if ws := s.mgr.Workspace(id); ws != nil && ws.Agent == "" {
-			dirs = append(dirs, ws.RepoPath)
+			out = append(out, windowSession{Name: ws.Name, RepoPath: ws.RepoPath, Status: ws.Status})
 		}
+	}
+	return out
+}
+
+// windowRepos is the folders of windowSessions — what a claude agent reaches
+// through --add-dir (its base's permissions say whether it may edit there).
+func (s *Server) windowRepos(win manager.WindowInfo) []string {
+	var dirs []string
+	for _, e := range s.windowSessions(win) {
+		dirs = append(dirs, e.RepoPath)
 	}
 	return dirs
 }

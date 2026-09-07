@@ -51,7 +51,7 @@ func TestSaveCreatesLayoutWithDefaultsAndVersion(t *testing.T) {
 			t.Errorf("missing %s", f)
 		}
 	}
-	for _, d := range []string{"skills", "knowledge"} {
+	for _, d := range []string{"skills"} {
 		if fi, err := os.Stat(filepath.Join(dir, d)); err != nil || !fi.IsDir() {
 			t.Errorf("missing dir %s", d)
 		}
@@ -106,11 +106,11 @@ func TestSaveNeverTouchesHumanFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(`{"x":{"command":"x-mcp"}}`), 0o644)
 	os.MkdirAll(filepath.Join(dir, "skills", "post"), 0o755)
 	os.WriteFile(filepath.Join(dir, "skills", "post", "SKILL.md"), []byte("---\nname: post\n---\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "knowledge", "style.md"), []byte("tone"), 0o644)
+	os.WriteFile(filepath.Join(dir, "notes.md"), []byte("tone"), 0o644)
 	if _, err := s.Save(Definition{Name: "x-poster", Description: "d2", Instructions: "r2\n"}); err != nil {
 		t.Fatal(err)
 	}
-	for f, want := range map[string]string{"mcp.json": `{"x":{"command":"x-mcp"}}`, "skills/post/SKILL.md": "---\nname: post\n---\n", "knowledge/style.md": "tone"} {
+	for f, want := range map[string]string{"mcp.json": `{"x":{"command":"x-mcp"}}`, "skills/post/SKILL.md": "---\nname: post\n---\n", "notes.md": "tone"} {
 		if b, _ := os.ReadFile(filepath.Join(dir, f)); string(b) != want {
 			t.Errorf("%s was rewritten: %q", f, b)
 		}
