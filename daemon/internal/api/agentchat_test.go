@@ -150,7 +150,7 @@ func TestAgentChat_HistoryAndResume(t *testing.T) {
 	for i := 6; i >= 1; i-- {
 		sessions = append(sessions, agent.OpencodeSession{ID: fmt.Sprintf("ses_%d", i), Title: fmt.Sprintf("t%d", i), Updated: int64(i)})
 	}
-	turns, err := history(context.Background(), sessions, func(id string) ([]agent.Turn, error) {
+	turns, err := history(sessions, func(id string) ([]agent.Turn, error) {
 		return []agent.Turn{{ID: "m-" + id, Role: "user"}}, nil
 	})
 	if err != nil || len(turns) != 2*historySessions {

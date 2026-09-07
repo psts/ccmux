@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"ccmux.dev/ccmuxd/internal/harness"
 )
@@ -51,6 +53,10 @@ func runOpencode(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	out, err := exec.CommandContext(ctx, bin, args...).Output()
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			return nil, fmt.Errorf("opencode %v: %w: %s", args, err, strings.TrimSpace(string(exit.Stderr)))
+		}
 		return nil, fmt.Errorf("opencode %v: %w", args, err)
 	}
 	return out, nil

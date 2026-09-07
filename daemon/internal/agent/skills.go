@@ -129,11 +129,9 @@ func (s *Store) PutSkillFiles(agentName, name string, files map[string]string) (
 	if !ok {
 		return Skill{}, errors.New("a skill needs a SKILL.md")
 	}
-	if fm := frontmatter(body)["name"]; fm != "" {
-		name = fm
-	}
-	if !ValidSkillName(name) {
-		return Skill{}, fmt.Errorf("skill name %q: use a-z, 0-9, - and _", name)
+	name, err := skillNameFrom(body, name)
+	if err != nil {
+		return Skill{}, err
 	}
 	dir := filepath.Join(s.Dir(agentName), skillsFolder, name)
 	if err := os.RemoveAll(dir); err != nil {
@@ -180,7 +178,24 @@ func ParseSkillURL(raw string) (GitSource, error) {
 	} else {
 		src.Path = frag
 	}
-	return src, nil
+	if strings.HasPrefix(repo, "-") {
+		return GitSource{}, fmt.Errorf("repository %q: a git URL does not start with -", repo)
+	}
+	return src, checkSkillPath(src.Path)
+}
+
+// checkSkillPath refuses a folder that would leave the clone: absolute,
+// or with a .. that climbs out. Every source path passes through here, so
+// a pasted "#../../home" never reaches the copy.
+func checkSkillPath(p string) error {
+	if p == "" {
+		return nil
+	}
+	clean := filepath.ToSlash(filepath.Clean(p))
+	if filepath.IsAbs(p) || clean != strings.TrimSuffix(p, "/") || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("folder %q: must be a plain path inside the repository", p)
+	}
+	return nil
 }
 
 func parseGitHubURL(raw string, parts []string) (GitSource, error) {
@@ -195,7 +210,7 @@ func parseGitHubURL(raw string, parts []string) (GitSource, error) {
 	if parts[2] == "blob" {
 		src.Path = filepath.Dir(src.Path)
 	}
-	return src, nil
+	return src, checkSkillPath(src.Path)
 }
 
 // InstallSkillFromGit fetches src.Path from src.Repo at src.Ref (the
@@ -207,19 +222,41 @@ func (s *Store) InstallSkillFromGit(ctx context.Context, agentName string, src G
 	if !ValidName(agentName) {
 		return Skill{}, ErrNotFound
 	}
+	if err := checkSkillPath(src.Path); err != nil {
+		return Skill{}, err
+	}
 	tmp, err := os.MkdirTemp("", "ccmux-skill-")
 	if err != nil {
 		return Skill{}, err
 	}
 	defer os.RemoveAll(tmp)
-	if err := sparseClone(ctx, tmp, src); err != nil {
+	from, err := fetchSkillFolder(ctx, tmp, src)
+	if err != nil {
 		return Skill{}, err
 	}
-	from := filepath.Join(tmp, filepath.FromSlash(src.Path))
 	name, err := skillNameOf(from)
 	if err != nil {
 		return Skill{}, fmt.Errorf("%s %q: %w", src.Repo, src.Path, err)
 	}
+	return s.installSkillDir(agentName, name, from, source)
+}
+
+// fetchSkillFolder clones src into tmp and returns the folder to install,
+// refusing one that resolves outside the clone.
+func fetchSkillFolder(ctx context.Context, tmp string, src GitSource) (string, error) {
+	if err := sparseClone(ctx, tmp, src); err != nil {
+		return "", err
+	}
+	from := filepath.Join(tmp, filepath.FromSlash(src.Path))
+	if rel, err := filepath.Rel(tmp, from); err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("folder %q leaves the clone", src.Path)
+	}
+	return from, nil
+}
+
+// installSkillDir replaces the agent's skill name with the folder at from,
+// records its source and bumps the base.
+func (s *Store) installSkillDir(agentName, name, from, source string) (Skill, error) {
 	dir := filepath.Join(s.Dir(agentName), skillsFolder, name)
 	if err := os.RemoveAll(dir); err != nil {
 		return Skill{}, err
@@ -240,8 +277,15 @@ func skillNameOf(dir string) (string, error) {
 	if err != nil {
 		return "", errors.New("no " + skillFile + " there")
 	}
-	name := filepath.Base(dir)
-	if fm := frontmatter(string(body))["name"]; fm != "" {
+	return skillNameFrom(string(body), filepath.Base(dir))
+}
+
+// skillNameFrom is the one rule for a skill's name, whether it came from
+// git or from dropped files: the SKILL.md frontmatter name wins over the
+// fallback, and either must be a valid folder name.
+func skillNameFrom(body, fallback string) (string, error) {
+	name := fallback
+	if fm := frontmatter(body)["name"]; fm != "" {
 		name = fm
 	}
 	if !ValidSkillName(name) {
@@ -285,14 +329,9 @@ func (s *Store) DeleteSkill(agentName, skill string) error {
 // change outside agent.json and AGENTS.md, so instances see drift.
 func (s *Store) noteBaseChange(agentName, note string) error {
 	dir := s.Dir(agentName)
-	cur, err := readVersion(dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	if _, err := s.bumpIfChanged(dir, true); err != nil {
 		return err
 	}
-	_ = cur
 	return appendFile(filepath.Join(dir, fileChangelog), "  "+note+"\n")
 }
 
@@ -304,7 +343,7 @@ func sparseClone(ctx context.Context, into string, src GitSource) error {
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(string(out)))
+			return fmt.Errorf("git %s (%s): %v: %s", args[0], src.Repo, err, strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
@@ -312,11 +351,13 @@ func sparseClone(ctx context.Context, into string, src GitSource) error {
 	if src.Ref != "" {
 		clone = append(clone, "--branch", src.Ref)
 	}
-	if err := run("", append(clone, src.Repo, into)...); err != nil {
+	// "--" ends the options: a repository or ref that starts with - is an
+	// argument, never a flag.
+	if err := run("", append(clone, "--", src.Repo, into)...); err != nil {
 		return err
 	}
 	if src.Path != "" {
-		if err := run(into, "sparse-checkout", "set", "--no-cone", src.Path); err != nil {
+		if err := run(into, "sparse-checkout", "set", "--no-cone", "--", src.Path); err != nil {
 			return err
 		}
 	}
@@ -330,6 +371,11 @@ func copyTree(from, to string) error {
 		}
 		rel, _ := filepath.Rel(from, p)
 		target := filepath.Join(to, rel)
+		if d.Type()&os.ModeSymlink != 0 {
+			// A link in a fetched repo points wherever its author chose,
+			// a private key included; the skill does without it.
+			return nil
+		}
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}

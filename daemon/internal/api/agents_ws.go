@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -139,8 +140,8 @@ func (s *Server) windowRepos(win manager.WindowInfo) []string {
 
 // windowDirs is what an agent start needs from its window: the repo folders
 // and the shared folder, created here (with its README, once) so it exists
-// from the first start and the bus can name it. A window outside... is not a
-// case: callers resolve the window first.
+// from the first start and the bus can name it. Callers have resolved the
+// window already; a session outside any window never reaches this.
 func (s *Server) windowDirs(win manager.WindowInfo) (repos []string, shared string, msg string) {
 	shared, err := s.agents.EnsureShared(win.ID, win.Name)
 	if err != nil {
@@ -269,8 +270,8 @@ func (s *Server) agentDefinition(name string) (agent.Definition, int, string) {
 // folder dir (written here) with dirs as the project folders and shared the
 // window's shared folder ("" outside a window), or an HTTP status and
 // message explaining why not. The shared folder rides along as one more
-// --add-dir, and its .env plus the instance's own are sourced at start
-// (instance last, so it wins). wsID is the instance's existing session when
+// --add-dir, and its .env plus the instance's own are loaded at start by
+// ccmuxd env-exec (instance last, so it wins). wsID is the instance's existing session when
 // it has one (its opencode port is reused), "" for a fresh add.
 func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []string, shared, wsID, prompt string, resume *bool) (manager.AgentLaunch, int, string) {
 	if s.mgr.Harnesses == nil {
@@ -294,13 +295,19 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 	if msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}
-	envFiles := []string{filepath.Join(dir, agent.EnvFile)}
+	// Env files load in this order, the instance's last so it wins.
+	var envFiles []string
 	if shared != "" {
 		dirs = append(dirs, shared)
-		envFiles = []string{filepath.Join(shared, agent.EnvFile), envFiles[0]}
+		envFiles = append(envFiles, filepath.Join(shared, agent.EnvFile))
+	}
+	envFiles = append(envFiles, filepath.Join(dir, agent.EnvFile))
+	session, err := s.resumeSession(d, h, dir, resume)
+	if err != nil {
+		return manager.AgentLaunch{}, http.StatusBadGateway, err.Error()
 	}
 	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), agent.LaunchOpts{
-		Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port, Session: s.resumeSession(d, h, dir, resume),
+		Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port, Session: session,
 	})
 	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route, Prompt: prompt, Port: port}, 0, ""
 }
@@ -309,21 +316,26 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 // instance's newest, when the caller asked to resume or (asked nothing)
 // the base says start: continue; "" for a fresh conversation, for other
 // harnesses, and for an instance with no session yet.
-func (s *Server) resumeSession(d agent.Definition, h harness.Harness, dir string, resume *bool) string {
+func (s *Server) resumeSession(d agent.Definition, h harness.Harness, dir string, resume *bool) (string, error) {
 	want := d.Start == "continue"
 	if resume != nil {
 		want = *resume
 	}
 	if !want || h.Name != "opencode" {
-		return ""
+		return "", nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	sessions, err := s.offlineSessions(ctx, dir)
-	if err != nil || len(sessions) == 0 {
-		return ""
+	if err != nil {
+		// Asked to continue and unable to find what: refuse rather than
+		// start a fresh conversation the caller did not ask for.
+		return "", fmt.Errorf("cannot find the conversation to continue: %w", err)
 	}
-	return sessions[0].ID
+	if len(sessions) == 0 {
+		return "", nil
+	}
+	return sessions[0].ID, nil
 }
 
 // agentPort is the opencode server port for an instance: the one its pane

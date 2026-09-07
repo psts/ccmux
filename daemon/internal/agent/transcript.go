@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 )
 
 // Turn is one message of an agent's conversation in the shape both lenses
@@ -142,6 +143,7 @@ func NormalizeInfo(raw json.RawMessage) (Turn, error) {
 func NormalizePart(raw json.RawMessage) (messageID string, part TurnPart, ok bool) {
 	var in rawPart
 	if err := json.Unmarshal(raw, &in); err != nil {
+		log.Printf("opencode part unreadable (%d bytes): %v", len(raw), err)
 		return "", TurnPart{}, false
 	}
 	part = TurnPart{ID: in.ID, Type: in.Type}

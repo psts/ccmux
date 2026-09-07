@@ -49,7 +49,7 @@ struct AgentQuestion: Codable, Identifiable {
 struct AgentQuestionInfo: Codable {
     var question: String
     var header: String?
-    var options: [AgentQuestionOption]
+    var options: [AgentQuestionOption]?
     var multiple: Bool?
     var custom: Bool?
 }
@@ -151,7 +151,7 @@ enum AnyJSON: Codable {
     var pretty: String {
         switch self {
         case .string(let s): return s
-        case .number(let n): return n == n.rounded() ? String(Int(n)) : String(n)
+        case .number(let n): return n == n.rounded() && abs(n) < 1e15 ? String(Int(n)) : String(n)
         case .bool(let b): return String(b)
         case .null: return "null"
         case .array(let a): return "[" + a.map(\.pretty).joined(separator: ", ") + "]"

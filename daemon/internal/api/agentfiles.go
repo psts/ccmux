@@ -22,7 +22,11 @@ func (s *Server) agentNamed(w http.ResponseWriter, r *http.Request) (string, boo
 	}
 	name := r.PathValue("name")
 	if _, err := s.agents.Get(name); err != nil {
-		writeError(w, http.StatusNotFound, "no such agent")
+		if errors.Is(err, agent.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no such agent")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "agent "+name+": "+err.Error())
+		}
 		return "", false
 	}
 	return name, true
@@ -143,7 +147,7 @@ func (s *Server) listAgentMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := s.agents.MCPServers(name)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": list})
@@ -206,8 +210,11 @@ func (s *Server) listAgentInstances(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deployments(name string) ([]agentDeployment, int, string) {
 	d, err := s.agents.Get(name)
-	if err != nil {
+	if errors.Is(err, agent.ErrNotFound) {
 		return nil, http.StatusNotFound, "no such agent"
+	}
+	if err != nil {
+		return nil, http.StatusServiceUnavailable, "agent " + name + ": " + err.Error()
 	}
 	wins, err := s.mgr.WindowsListStrict()
 	if err != nil {

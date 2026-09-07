@@ -41,7 +41,7 @@ struct AgentChatPaneView: View {
         self.agent = agent
         self.wsOrigin = wsOrigin
         self.onTerminal = onTerminal
-        _chat = StateObject(wrappedValue: AgentChatState(agent: agent))
+        _chat = StateObject(wrappedValue: AgentChatState())
     }
 
     var body: some View {
@@ -107,6 +107,11 @@ struct AgentChatPaneView: View {
             .onChange(of: chat.turns.count) {
                 if let last = chat.turns.last?.id { proxy.scrollTo(last, anchor: .bottom) }
             }
+            // A streaming answer grows the last turn's parts without adding a
+            // turn: keep the bottom in view then too, as the web lens does.
+            .onChange(of: chat.turns.last?.parts.count ?? 0) {
+                if let last = chat.turns.last?.id { proxy.scrollTo(last, anchor: .bottom) }
+            }
         }
     }
 
@@ -156,8 +161,7 @@ struct AgentChatPaneView: View {
     }
 
     private func submit() {
-        chat.send(prompt: draft)
-        draft = ""
+        if chat.send(prompt: draft) { draft = "" }
     }
 }
 
@@ -279,7 +283,7 @@ struct AgentQuestionCard: View {
             ForEach(Array(question.questions.enumerated()), id: \.offset) { i, q in
                 VStack(alignment: .leading, spacing: 6) {
                     Text((q.header.map { "\($0): " } ?? "") + q.question).font(.system(size: 12, weight: .semibold))
-                    ForEach(q.options) { o in
+                    ForEach(q.options ?? []) { o in
                         optionRow(i, o, multiple: q.multiple ?? false)
                     }
                     if q.custom ?? false {

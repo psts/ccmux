@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -179,14 +180,15 @@ func (c *Opencode) RejectQuestion(ctx context.Context, requestID string) error {
 }
 
 // Events reads GET /event (server-sent events, one JSON object per data:
-// line) and hands each to fn until ctx ends or the server closes the
-// stream, which is the error returned.
+// line) and hands each to fn until ctx ends (ctx.Err()) or the server
+// closes the stream (nil when it closed cleanly, else the read error).
 func (c *Opencode) Events(ctx context.Context, fn func(OpencodeEvent)) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.Base+"/event", nil)
 	if err != nil {
 		return err
 	}
-	resp, err := (&http.Client{}).Do(req) // no timeout: this stream lives as long as ctx
+	// c.HTTP's timeout would cut the stream; its transport still applies.
+	resp, err := (&http.Client{Transport: c.HTTP.Transport}).Do(req)
 	if err != nil {
 		return err
 	}
@@ -202,9 +204,11 @@ func (c *Opencode) Events(ctx context.Context, fn func(OpencodeEvent)) error {
 			continue
 		}
 		var ev OpencodeEvent
-		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev); err == nil {
-			fn(ev)
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev); err != nil {
+			log.Printf("opencode %s: event line unreadable (%d bytes): %v", c.Base, len(line), err)
+			continue
 		}
+		fn(ev)
 	}
 	if err := sc.Err(); err != nil && ctx.Err() == nil {
 		return err

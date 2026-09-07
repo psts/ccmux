@@ -20,12 +20,9 @@ final class AgentChatState: ObservableObject {
     @Published var resume = false
     @Published private(set) var connection: DaemonConnectionState = .closed
 
-    let agent: String
     private var pump: WebSocketPump?
 
-    init(agent: String) {
-        self.agent = agent
-    }
+    init() {}
 
     /// Dials the chat socket; the pump reconnects on its own.
     func start(paneId: String, wsOrigin: String) {
@@ -33,12 +30,20 @@ final class AgentChatState: ObservableObject {
         let url = URL(string: "\(wsOrigin)/v1/panes/\(paneId)/agent/ws")
         let p = WebSocketPump(label: "agent-chat-\(paneId)") { url }
         p.onText = { [weak self] text in
-            guard let data = text.data(using: .utf8),
-                  let frame = try? JSONDecoder().decode(AgentChatFrame.self, from: data) else { return }
-            DispatchQueue.main.async { self?.apply(frame) }
+            guard let data = text.data(using: .utf8) else { return }
+            let frame: AgentChatFrame
+            do {
+                frame = try JSONDecoder().decode(AgentChatFrame.self, from: data)
+            } catch {
+                // A frame this build cannot read is worth a line, not silence:
+                // a lost hello leaves the pane at "connecting" with no clue.
+                NSLog("[ccmux agent chat] dropped an undecodable frame: %@ (%d bytes)", "\(error)", data.count)
+                return
+            }
+            Task { @MainActor in self?.apply(frame) }
         }
         p.onState = { [weak self] s in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self?.connection = s
                 if s != .connected { self?.state = "reconnecting" }
             }
@@ -52,11 +57,19 @@ final class AgentChatState: ObservableObject {
         pump = nil
     }
 
-    func send(prompt text: String) {
+    /// Sends the prompt; false (with error set) when the socket is not
+    /// connected, so the view keeps the draft for a retry.
+    @discardableResult
+    func send(prompt text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
+        guard connection == .connected else {
+            error = "Not connected to the agent right now; try again in a moment."
+            return false
+        }
         busy = true
         send(AgentChatFrame(t: "prompt", text: trimmed, resume: state == "asleep" ? resume : nil))
+        return true
     }
 
     func abort() { send(AgentChatFrame(t: "abort")) }
@@ -106,8 +119,8 @@ final class AgentChatState: ObservableObject {
         session = f.session ?? ""
         if let r = f.resume { resume = r }
         error = f.error ?? ""
-        busy = false
         for t in f.turns ?? [] { upsert(t) }
+        busy = false // after the replay: history must not leave the view "thinking"
     }
 
     private func upsert(_ t: AgentTurn) {

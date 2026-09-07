@@ -602,6 +602,9 @@ struct DaemonPane: Codable, Identifiable {
     /// web lens shows; decoded so the fields are not dropped on the floor.
     var agent: String
     var agentVersion: String
+    /// The harness the pane runs ("" = a plain shell pane); an agent pane
+    /// shows the chat view only on opencode, whose server the chat rides.
+    var harness: String
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -616,6 +619,7 @@ struct DaemonPane: Codable, Identifiable {
         dormant = try c.decodeIfPresent(Bool.self, forKey: .dormant) ?? false
         agent = try c.decodeIfPresent(String.self, forKey: .agent) ?? ""
         agentVersion = try c.decodeIfPresent(String.self, forKey: .agentVersion) ?? ""
+        harness = try c.decodeIfPresent(String.self, forKey: .harness) ?? ""
     }
 }
 

@@ -9,7 +9,7 @@ import (
 func TestParseEnvFileIsDataNotShell(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".env")
-	os.WriteFile(p, []byte("# comment\n\nTOKEN=abc$(rm -rf /)\nexport NAME=\"two words\"\nSINGLE='it''s'\nSPACED = padded \nbad line\n1BAD=x\nrm -rf /\n"), 0o600)
+	os.WriteFile(p, []byte("# comment\n\nTOKEN=abc$(rm -rf /)\nexport NAME=\"two words\"\nSINGLE='it''s'\nSPACED = padded \nbad line\n1BAD=x\nrm -rf /\nPATH=/evil\nLD_PRELOAD=/evil.so\nCLAUDE_PEERS_NAME=other\n"), 0o600)
 	vars, problems, err := ParseEnvFile(p)
 	if err != nil {
 		t.Fatal(err)
@@ -23,8 +23,13 @@ func TestParseEnvFileIsDataNotShell(t *testing.T) {
 	if len(vars) != len(want) {
 		t.Errorf("vars = %v", vars)
 	}
-	if len(problems) != 3 {
-		t.Errorf("problems = %v, want the three bad lines named", problems)
+	if len(problems) != 6 {
+		t.Errorf("problems = %v, want the three bad lines and the three refused keys named", problems)
+	}
+	for _, k := range []string{"PATH", "LD_PRELOAD", "CLAUDE_PEERS_NAME"} {
+		if _, set := vars[k]; set {
+			t.Errorf("%s must never come from a .env", k)
+		}
 	}
 	if v, probs, err := ParseEnvFile(filepath.Join(dir, "missing")); err != nil || v != nil || probs != nil {
 		t.Errorf("missing file = %v %v %v, want nothing", v, probs, err)

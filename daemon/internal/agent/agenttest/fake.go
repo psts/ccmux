@@ -48,6 +48,15 @@ func NewFakeOpencode() *FakeOpencode {
 	f := &FakeOpencode{replies: map[string]string{}, answers: map[string][][]string{}, Events: make(chan string, 16)}
 	f.Sessions = `[{"id":"ses_old","title":"old","directory":"/inst","time":{"updated":1}},{"id":"ses_1","title":"new","directory":"/inst","time":{"updated":9}}]`
 	mux := http.NewServeMux()
+	f.sessionRoutes(mux)
+	f.requestRoutes(mux)
+	f.eventRoute(mux)
+	f.Server = httptest.NewServer(mux)
+	return f
+}
+
+// sessionRoutes: the session list, a session's messages, prompt and abort.
+func (f *FakeOpencode) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /session", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, f.Sessions) })
 	mux.HandleFunc("GET /session/{id}/message", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, SampleMessages) })
 	mux.HandleFunc("POST /session/{id}/prompt_async", func(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +75,10 @@ func NewFakeOpencode() *FakeOpencode {
 		f.mu.Unlock()
 		w.WriteHeader(200)
 	})
+}
+
+// requestRoutes: permission and question listing and replies.
+func (f *FakeOpencode) requestRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /permission", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `[{"id":"per_1","sessionID":"ses_1","permission":"bash","patterns":["ls *"],"metadata":{},"always":["*"]}]`)
 	})
@@ -96,6 +109,10 @@ func NewFakeOpencode() *FakeOpencode {
 		f.mu.Unlock()
 		w.WriteHeader(200)
 	})
+}
+
+// eventRoute: the SSE stream, fed from Events.
+func (f *FakeOpencode) eventRoute(mux *http.ServeMux) {
 	mux.HandleFunc("GET /event", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
@@ -114,8 +131,6 @@ func NewFakeOpencode() *FakeOpencode {
 			}
 		}
 	})
-	f.Server = httptest.NewServer(mux)
-	return f
 }
 
 // Port is the fake's listening port, for a startup line's --port.

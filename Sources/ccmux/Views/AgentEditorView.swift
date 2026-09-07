@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -174,7 +175,10 @@ struct AgentEditorView: View {
                         if let src = sk.source, !src.isEmpty {
                             Button("Update") { Task { await run(skillsStatus: "Updated \(sk.name).") { await service.updateSkill(agent: agent.name, skill: sk.name) } } }.controlSize(.small)
                         }
-                        Button("Remove") { Task { await run(skillsStatus: "Removed \(sk.name).") { await service.deleteSkill(agent: agent.name, skill: sk.name) } } }.controlSize(.small)
+                        Button("Remove") {
+                            guard confirmRemoval("skill", sk.name) else { return }
+                            Task { await run(skillsStatus: "Removed \(sk.name).") { await service.deleteSkill(agent: agent.name, skill: sk.name) } }
+                        }.controlSize(.small)
                     }
                 }
                 HStack(spacing: 6) {
@@ -208,7 +212,10 @@ struct AgentEditorView: View {
                             if let env = sv.env, !env.isEmpty { Text("env: " + env.keys.sorted().joined(separator: ", ")).font(.system(size: 10)).foregroundColor(.secondary) }
                         }
                         Spacer()
-                        Button("Remove") { Task { await run(mcpStatus: "Removed \(sv.name).") { await service.deleteMCP(agent: agent.name, server: sv.name) } } }.controlSize(.small)
+                        Button("Remove") {
+                            guard confirmRemoval("MCP server", sv.name) else { return }
+                            Task { await run(mcpStatus: "Removed \(sv.name).") { await service.deleteMCP(agent: agent.name, server: sv.name) } }
+                        }.controlSize(.small)
                     }
                 }
                 TextEditor(text: $mcpSnippet).font(.system(size: 11, design: .monospaced)).frame(minHeight: 60).border(Color.white.opacity(0.12))
@@ -276,10 +283,23 @@ struct AgentEditorView: View {
         if let error = await service.putAgent(agent) { status = "Not saved: \(error)"; return }
         let wasNew = isNew
         isNew = false
-        let res = await service.fetchAgents()
-        if let fresh = res.list.first(where: { $0.name == agent.name }) { agent.version = fresh.version }
-        status = "Saved v\(agent.version)." + (wasNew ? " You can add skills and servers now." : "")
+        if let err = await refreshVersion() {
+            status = "Saved \(agent.name), but the version could not be read back: \(err)"
+        } else {
+            status = "Saved v\(agent.version)." + (wasNew ? " You can add skills and servers now." : "")
+        }
         await loadAll()
+    }
+
+    /// The same confirmation the web lens asks before a destructive removal.
+    private func confirmRemoval(_ kind: String, _ name: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Remove \(kind) “\(name)”?"
+        alert.informativeText = "This deletes it from the agent's folder and bumps the base."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func lines(_ text: String) -> [String] {
@@ -296,9 +316,14 @@ struct AgentEditorView: View {
         deployments = de.0; if let e = de.1 { deployStatus = e }
     }
 
-    private func refreshVersion() async {
+    /// Re-reads the base's version after a change; the error text when the
+    /// list could not be fetched.
+    @discardableResult
+    private func refreshVersion() async -> String? {
         let res = await service.fetchAgents()
+        if let err = res.error { return err }
         if let fresh = res.list.first(where: { $0.name == agent.name }) { agent.version = fresh.version }
+        return nil
     }
 
     /// run does one skill or server change and reloads; the status line

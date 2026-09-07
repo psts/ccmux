@@ -841,7 +841,7 @@ final class RemoteSessionService: ObservableObject {
             devRunning[appId] = dw.panes.contains { $0.devServer }
             devCommands[appId] = dw.devCommand
             for p in dw.panes where !p.agent.isEmpty {
-                agentPanes[p.id] = AgentPaneRef(agent: p.agent, wsOrigin: attachOrigin(for: dw) ?? DaemonConfig.wsBaseURL)
+                agentPanes[p.id] = AgentPaneRef(agent: p.agent, harness: p.harness, wsOrigin: attachOrigin(for: dw) ?? DaemonConfig.wsBaseURL)
             }
             // Pane titles change without the pane set changing (the daemon re-derives
             // them from tmux as programs start/stop) — fold them into the tab chips.
@@ -1441,5 +1441,6 @@ final class RemoteSessionService: ObservableObject {
 /// An agent instance's pane as the chat view needs it.
 struct AgentPaneRef: Equatable {
     let agent: String
+    let harness: String
     let wsOrigin: String
 }

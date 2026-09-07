@@ -8,7 +8,8 @@ import (
 )
 
 // paneBusContext: GET /v1/panes/{id}/bus-context → the window paragraph for
-// the pane's session as text: its repo sessions, then its agents. This is
+// the pane's session as text: its repo sessions, its shared folder, then
+// its agents. This is
 // the opencode carrier: opencode ignores an MCP server's instructions, so
 // the ccmux plugin fetches this at every turn and appends it to the system
 // prompt (Claude Code gets the same text through the peers shim). Loopback

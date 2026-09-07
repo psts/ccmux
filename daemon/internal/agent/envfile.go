@@ -16,6 +16,33 @@ var EnvExecPath = "ccmuxd"
 
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// deniedEnvKeys are variables a .env may not set: they change which program
+// runs or what code it loads before the harness starts, which is the one
+// gate the file must not open (an agent can write the file; it must not
+// gain a shell by it). The pane's own identity is on the list too, so a
+// shared .env cannot make one agent register as another.
+var deniedEnvKeys = map[string]bool{
+	"PATH": true, "SHELL": true, "IFS": true, "ENV": true, "BASH_ENV": true,
+	"NODE_OPTIONS": true, "PYTHONPATH": true, "PYTHONSTARTUP": true, "PYTHONHOME": true,
+	"PERL5OPT": true, "PERL5LIB": true, "RUBYOPT": true, "RUBYLIB": true,
+	"CLAUDE_PEERS_NAME": true, "CCMUX_PANE_ID": true, "CCMUX_PANE_TOKEN": true, "CCMUX_DAEMON_URL": true,
+}
+
+var deniedEnvPrefixes = []string{"LD_", "DYLD_", "GIT_", "OPENCODE_CONFIG"}
+
+// DeniedEnvKey says whether a .env line with this key is refused.
+func DeniedEnvKey(k string) bool {
+	if deniedEnvKeys[k] {
+		return true
+	}
+	for _, p := range deniedEnvPrefixes {
+		if strings.HasPrefix(k, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseEnvFile reads KEY=VALUE lines from path: blank lines and # comments
 // skipped, an "export " prefix tolerated, matching single or double quotes
 // around a value stripped. Nothing is expanded or executed — the file is
@@ -42,6 +69,10 @@ func ParseEnvFile(path string) (vars map[string]string, problems []string, err e
 		key = strings.TrimSpace(key)
 		if !ok || !envKey.MatchString(key) {
 			problems = append(problems, fmt.Sprintf("%s:%d: not a KEY=VALUE line, skipped", path, n))
+			continue
+		}
+		if DeniedEnvKey(key) {
+			problems = append(problems, fmt.Sprintf("%s:%d: %s is not a variable a .env may set, skipped", path, n, key))
 			continue
 		}
 		vars[key] = unquote(strings.TrimSpace(val))

@@ -523,7 +523,7 @@ body {
 .ac-compose { display: flex; gap: 8px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .ac-compose textarea { flex: 1; resize: none; font-family: inherit; font-size: 13px; background: var(--bg2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .agent-card .agent-version { opacity: 0.6; font-size: 11px; white-space: nowrap; }
-.agent-card .agent-num { width: 64px; }
+.am-idle { width: 70px; }
 
 /* Agent list rows in Settings, and the agent editor modal (agentmodal.js).
    The modal sits above the settings sheet; its body scrolls, the header and

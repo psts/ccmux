@@ -42,15 +42,22 @@
   function submit(ta) {
     const text = ta.value.trim();
     if (!text || !cur) return;
-    ta.value = "";
-    setBusy(true);
     const frame = { t: "prompt", text };
     if (cur.state === "asleep") frame.resume = $("agent-chat").querySelector(".ac-resume input").checked;
-    send(frame);
+    if (!send(frame)) return; // the text stays in the box for the retry
+    ta.value = "";
+    setBusy(true);
   }
 
+  // send delivers a frame, or says it could not: a click during a reconnect
+  // is not silently lost.
   function send(frame) {
-    if (cur && cur.sock && cur.sock.readyState === WebSocket.OPEN) cur.sock.send(JSON.stringify(frame));
+    if (cur && cur.sock && cur.sock.readyState === WebSocket.OPEN) {
+      cur.sock.send(JSON.stringify(frame));
+      return true;
+    }
+    showError("Not connected to the agent right now; try again in a moment.");
+    return false;
   }
 
   // show puts the chat (or, in terminal mode, its one-line bar) on screen
@@ -60,8 +67,7 @@
     build();
     if (cur && cur.paneId === pane.id) { applyMode(); return; }
     close();
-    cur = { paneId: pane.id, wsRec, sock: null, turns: new Map(), order: [], els: new Map(), perms: new Map(), busy: false, agent: pane.agent };
-    // Question cards share the permission slot; both are the agent waiting on you.
+    cur = { paneId: pane.id, wsRec, sock: null, turns: new Map(), els: new Map(), perms: new Map(), busy: false, agent: pane.agent };
     $("agent-chat").querySelector(".ac-title").textContent = "⚙ " + pane.agent;
     $("agent-chat-bar").querySelector(".ac-bar-label").textContent = "⚙ " + pane.agent + " · terminal";
     setState("connecting", "");
@@ -110,7 +116,7 @@
     cur.sock = sock;
     sock.onmessage = (ev) => {
       let f;
-      try { f = JSON.parse(ev.data); } catch (_) { return; }
+      try { f = JSON.parse(ev.data); } catch (e) { console.warn("agent chat: unreadable frame", e, ev.data.slice(0, 120)); return; }
       if (cur && cur.sock === sock) apply(f);
     };
     sock.onclose = () => {
@@ -139,7 +145,7 @@
 
   function hello(f) {
     const box = $("agent-chat");
-    cur.turns = new Map(); cur.order = []; cur.els = new Map(); cur.perms = new Map();
+    cur.turns = new Map(); cur.els = new Map(); cur.perms = new Map();
     box.querySelector(".ac-log").innerHTML = "";
     box.querySelector(".ac-perms").innerHTML = "";
     showError(f.error || "");
@@ -202,7 +208,6 @@
       rec.err = el("div", "ac-turn-error hidden");
       rec.el.appendChild(rec.err);
       cur.turns.set(t.id, rec);
-      cur.order.push(t.id);
       log.appendChild(rec.el);
     }
     rec.turn = Object.assign(rec.turn, t, { parts: rec.turn.parts });

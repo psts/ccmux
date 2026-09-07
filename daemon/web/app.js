@@ -1028,7 +1028,10 @@ async function updateHarnessBar() {
   // harness recorded but exited (its shell is back) = "Restart:".
   if (p && p.agent) {
     setHarnessBar(false);
-    window.ccmuxAgentChat.show(p, state.workspaces.find((w) => w.id === state.wsId));
+    // The chat rides opencode's server; an agent on another harness (claude)
+    // keeps its terminal, which is where that harness talks.
+    if (p.harness === "opencode") window.ccmuxAgentChat.show(p, state.workspaces.find((w) => w.id === state.wsId));
+    else window.ccmuxAgentChat.hide();
     return;
   }
   window.ccmuxAgentChat.hide();
@@ -1775,9 +1778,9 @@ function wireHarnessSettings() {
 }
 wireHarnessSettings();
 
-// --- Agents tab: base agents are folders the daemon owns; each row saves on
-// change to PUT /v1/agents/{name}. Delete is explicit and confirmed: the
-// folder holds skills a human wrote. ---
+// --- Agents tab: base agents are folders the daemon owns, listed here; New
+// and Edit open the editor (agentmodal.js), which does the PUT. Delete is
+// explicit and confirmed: the folder holds skills a human wrote. ---
 function wireAgentSettings() {
   const box = $("agent-list"), addBtn = $("agent-add"), statusEl = $("agent-state");
   if (!box) return;

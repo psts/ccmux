@@ -178,8 +178,8 @@
     const url = input.value.trim();
     if (!url) return;
     q(".am-skills-state").textContent = "Fetching…";
-    await act("/skills", "POST", { url }, ".am-skills-state", "Installed.", loadSkills);
-    input.value = "";
+    // The URL stays in the box on failure, so it can be fixed rather than retyped.
+    if (await act("/skills", "POST", { url }, ".am-skills-state", "Installed.", loadSkills)) input.value = "";
   }
 
   // wireDrop takes a dropped SKILL.md, a set of files, or a folder (walked
@@ -193,26 +193,35 @@
       if (!cur || cur.isNew) { q(".am-skills-state").textContent = "Save the agent first."; return; }
       const files = {};
       let folder = "";
-      for (const item of e.dataTransfer.items) {
-        const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
-        if (entry && entry.isDirectory) { folder = folder || entry.name; await walk(entry, "", files); }
-        else if (entry && entry.isFile) { const f = item.getAsFile(); files[f.name] = await f.text(); }
+      try {
+        for (const item of e.dataTransfer.items) {
+          const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+          if (entry && entry.isDirectory) { folder = folder || entry.name; await walk(entry, "", files); }
+          else if (entry && entry.isFile) { const f = item.getAsFile(); if (f) files[f.name] = await f.text(); }
+        }
+      } catch (err) {
+        q(".am-skills-state").textContent = "Couldn't read the drop: " + err.message;
+        return;
       }
       if (!files["SKILL.md"]) { q(".am-skills-state").textContent = "That has no SKILL.md."; return; }
       await act("/skills", "POST", { name: folder || "skill", files }, ".am-skills-state", "Installed.", loadSkills);
     };
   }
 
+  // walk reads a dropped folder into files. readEntries hands back a folder
+  // in batches and an empty batch means done, so it is called until then;
+  // a read error rejects rather than hanging the drop.
   function walk(dir, prefix, files) {
-    return new Promise((res) => {
-      dir.createReader().readEntries(async (entries) => {
+    const reader = dir.createReader();
+    const batch = () => new Promise((res, rej) => reader.readEntries(res, rej));
+    return (async () => {
+      for (let entries = await batch(); entries.length; entries = await batch()) {
         for (const en of entries) {
           if (en.isDirectory) await walk(en, prefix + en.name + "/", files);
-          else await new Promise((r2) => en.file(async (f) => { files[prefix + f.name] = await f.text(); r2(); }));
+          else files[prefix + en.name] = await new Promise((res, rej) => en.file((f) => f.text().then(res, rej), rej));
         }
-        res();
-      });
-    });
+      }
+    })();
   }
 
   // --- MCP ---
@@ -250,8 +259,7 @@
     const ta = q(".am-mcp-paste");
     const text = ta.value.trim();
     if (!text) return;
-    await act("/mcp", "POST", text, ".am-mcp-state", "Added.", loadMCP);
-    ta.value = "";
+    if (await act("/mcp", "POST", text, ".am-mcp-state", "Added.", loadMCP)) ta.value = "";
   }
 
   // --- instances ---
@@ -281,9 +289,9 @@
   }
 
   // act is one call against the agent's sub-resources, reporting into a
-  // state line and refreshing a list on success.
+  // state line and refreshing a list on success; true when it went through.
   async function act(path, method, body, stateSel, okText, reload) {
-    if (!cur) return;
+    if (!cur) return false;
     const state = q(stateSel);
     try {
       const init = { method };
@@ -297,8 +305,10 @@
       onChange();
       await reload();
       refreshVersion();
+      return true;
     } catch (e) {
       state.textContent = e.message;
+      return false;
     }
   }
 

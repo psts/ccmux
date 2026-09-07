@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,11 +30,14 @@ func (s *Store) WindowDir(windowID, windowName string) string {
 	root := filepath.Join(filepath.Dir(s.Root), "windows")
 	prefix := idPrefix(windowID)
 	entries, err := os.ReadDir(root)
-	if err == nil {
-		for _, e := range entries {
-			if e.IsDir() && (e.Name() == prefix || strings.HasSuffix(e.Name(), "-"+prefix)) {
-				return filepath.Join(root, e.Name())
-			}
+	if err != nil && !os.IsNotExist(err) {
+		// Unreadable is not "nothing there": say so, because the fallback
+		// below names a fresh folder and the window's memory stays behind.
+		log.Printf("windows folder %s unreadable (%v); window %s gets a fresh folder", root, err, windowID)
+	}
+	for _, e := range entries {
+		if e.IsDir() && (e.Name() == prefix || strings.HasSuffix(e.Name(), "-"+prefix)) {
+			return filepath.Join(root, e.Name())
 		}
 	}
 	return filepath.Join(root, windowFolder(windowID, windowName))

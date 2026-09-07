@@ -22,7 +22,7 @@ type Launch struct {
 }
 
 // LaunchCommand renders the harness command for base d. Every harness gets
-// the env files sourced first (envPrefix) and CLAUDE_PEERS_NAME so the peers
+// the env files loaded first (envPrefix, as data) and CLAUDE_PEERS_NAME so the peers
 // shim registers under the agent's name instead of the folder's. The rest
 // is per harness:
 //

@@ -34,20 +34,26 @@ func cmdEnvExec(args []string) error {
 	for _, p := range problems {
 		fmt.Fprintln(os.Stderr, "ccmuxd env-exec:", p)
 	}
-	for k, v := range vars {
-		os.Setenv(k, v)
-	}
+	var assignments [][2]string
 	for len(rest) > 0 && strings.Contains(rest[0], "=") {
 		k, v, _ := strings.Cut(rest[0], "=")
-		os.Setenv(k, v)
+		assignments = append(assignments, [2]string{k, v})
 		rest = rest[1:]
 	}
 	if len(rest) == 0 {
 		return errors.New("env-exec: no program to run after the assignments")
 	}
+	// The program resolves against the daemon's own PATH, before any file
+	// variable applies; the launch line's assignments apply last so they win.
 	path, err := exec.LookPath(rest[0])
 	if err != nil {
 		return err
+	}
+	for k, v := range vars {
+		os.Setenv(k, v)
+	}
+	for _, kv := range assignments {
+		os.Setenv(kv[0], kv[1])
 	}
 	return syscall.Exec(path, rest, os.Environ())
 }

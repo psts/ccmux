@@ -26,6 +26,11 @@ func TestParseSkillURL(t *testing.T) {
 	if _, err := ParseSkillURL("https://github.com/only-owner"); err == nil {
 		t.Error("an owner without a repo is not a source")
 	}
+	for _, bad := range []string{"https://gitlab.com/o/r.git#../../home", "https://github.com/o/r/tree/main/../x", "https://gitlab.com/o/r.git#/etc", "https://gitlab.com/o/r.git#a/../../b", "-oProxyCommand=x#skills/a"} {
+		if _, err := ParseSkillURL(bad); err == nil {
+			t.Errorf("%s must be refused: it leaves the clone or is an option", bad)
+		}
+	}
 }
 
 // seedSkillsRepo makes a local git repo holding skills/<name>/SKILL.md plus
@@ -41,6 +46,8 @@ func seedSkillsRepo(t *testing.T, name, description string) string {
 	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: "+name+"\ndescription: "+description+"\n---\n# "+name+"\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "refs", "notes.md"), []byte("more"), 0o644)
 	os.WriteFile(filepath.Join(repo, "README.md"), []byte("not a skill"), 0o644)
+	// A link out of the repo, the way a hostile skill would try to read a key.
+	os.Symlink("/etc/hostname", filepath.Join(dir, "leak.txt"))
 	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "."}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repo
@@ -67,7 +74,10 @@ func TestSkillsFromGitAndFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sk.Name != "post-thread" || sk.Description != "Posts a thread." || sk.Source != source || sk.Files != 2 {
-		t.Fatalf("installed: %+v", sk)
+		t.Fatalf("installed: %+v (a symlink in the repo must not be copied)", sk)
+	}
+	if _, err := os.Lstat(filepath.Join(s.Dir("x-poster"), "skills", "post-thread", "leak.txt")); err == nil {
+		t.Error("the symlinked file was copied")
 	}
 	if _, err := os.Stat(filepath.Join(s.Dir("x-poster"), "skills", "post-thread", "refs", "notes.md")); err != nil {
 		t.Error("the whole skill folder comes along, not just SKILL.md")

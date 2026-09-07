@@ -38,11 +38,14 @@ func (a *app) windowList(path string, out any) {
 	if id == "" || a.daemon == nil {
 		return
 	}
-	_ = a.daemon.post(path, map[string]any{"peer_id": id}, out)
+	if err := a.daemon.post(path, map[string]any{"peer_id": id}, out); err != nil {
+		logf("%s: %v (the window context is left out)", path, err)
+	}
 }
 
 // windowParagraph is what initialize appends after the frozen server
-// instructions: the window's repo sessions, then its agents. An agent's own
+// instructions: the window's repo sessions, its shared folder, then its
+// agents. An agent's own
 // folder holds only its memory; this paragraph is how it learns where the
 // project's code is without anyone writing paths into its instructions.
 func (a *app) windowParagraph() string {

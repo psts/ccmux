@@ -66,16 +66,27 @@ type chatFrame struct {
 // one scroll, newest last, each behind a session marker.
 const historySessions = 4
 
-// chatConn is one lens's chat socket on one agent pane.
+// chatConn is one lens's chat socket on one agent pane. paneID, agent and
+// cwd never change for a pane, so every goroutine reads them freely; oc,
+// sid and starting are the live state, under mu.
 type chatConn struct {
 	s      *Server
-	pane   *model.Pane
+	paneID string
+	agent  string
+	cwd    string
 	out    chan chatFrame
 	wake   chan wakeReq
 	cancel context.CancelFunc
 	mu     sync.Mutex
 	oc     *agent.Opencode // live client, nil while asleep
 	sid    string
+	// starting is set from the wake until the server answers: a prompt in
+	// that window is refused with a note rather than queued into nothing.
+	starting bool
+}
+
+func newChatConn(s *Server, p *model.Pane, cancel context.CancelFunc) *chatConn {
+	return &chatConn{s: s, paneID: p.ID, agent: p.Agent, cwd: p.CWD, out: make(chan chatFrame, 64), wake: make(chan wakeReq, 1), cancel: cancel}
 }
 
 // paneAgentHistory: GET /v1/panes/{id}/agent → the hello frame: state,
@@ -85,14 +96,19 @@ func (s *Server) paneAgentHistory(w http.ResponseWriter, r *http.Request) {
 	if p == nil {
 		return
 	}
-	c := &chatConn{s: s, pane: p}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	c := newChatConn(s, p, cancel)
 	if oc := c.liveClient(ctx); oc != nil {
-		if hello, err := c.liveHello(ctx, oc); err == nil {
-			writeJSON(w, http.StatusOK, hello)
+		hello, err := c.liveHello(ctx, oc)
+		if err != nil {
+			// The server answers but its history does not: say so rather
+			// than call a running agent asleep.
+			writeError(w, http.StatusBadGateway, "opencode: "+err.Error())
 			return
 		}
+		writeJSON(w, http.StatusOK, hello)
+		return
 	}
 	writeJSON(w, http.StatusOK, c.asleepHello(ctx))
 }
@@ -112,7 +128,7 @@ func (s *Server) paneAgentChat(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	c := &chatConn{s: s, pane: p, out: make(chan chatFrame, 64), wake: make(chan wakeReq, 1), cancel: cancel}
+	c := newChatConn(s, p, cancel)
 	go c.readLoop(conn)
 	go c.run(ctx)
 	c.writeLoop(ctx, conn)
@@ -163,14 +179,19 @@ func (c *chatConn) readLoop(conn *websocket.Conn) {
 // wake), an abort, or an answer to a permission or question request.
 func (c *chatConn) handle(f chatFrame) {
 	c.mu.Lock()
-	oc, sid := c.oc, c.sid
+	oc, sid, starting := c.oc, c.sid, c.starting
 	c.mu.Unlock()
 	if f.T == "prompt" && oc == nil {
+		if starting {
+			c.send(chatFrame{T: "error", Error: "the agent is still starting; send that again in a moment"})
+			return
+		}
 		c.requestWake(wakeReq{text: f.Text, resume: f.Resume})
 		return
 	}
 	if oc == nil {
-		return // nothing to abort or answer while asleep
+		c.send(chatFrame{T: "error", Error: "the agent is not running, so there is nothing to " + f.T})
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -185,7 +206,7 @@ func (c *chatConn) handle(f chatFrame) {
 func (c *chatConn) liveAction(ctx context.Context, oc *agent.Opencode, sid string, f chatFrame) error {
 	switch f.T {
 	case "prompt":
-		return c.s.mgr.PushLocked(c.pane.ID, func() error { return oc.Prompt(ctx, sid, f.Text) })
+		return c.s.mgr.PushLocked(c.paneID, func() error { return oc.Prompt(ctx, sid, f.Text) })
 	case "abort":
 		return oc.Abort(ctx, sid)
 	case "permission":
@@ -218,7 +239,9 @@ func (c *chatConn) send(f chatFrame) {
 	case c.out <- f:
 	default:
 		// A lens that cannot keep up loses a frame rather than stalling the
-		// source; the next hello (state change) resyncs it.
+		// source; the next hello (state change) resyncs it. Said in the log,
+		// since a dropped permission or question is a request nobody sees.
+		log.Printf("agent chat %s: lens not reading; %s frame dropped", c.paneID, f.T)
 	}
 }
 
@@ -238,11 +261,10 @@ func (c *chatConn) run(ctx context.Context) {
 // port on its startup line, a foreground that is not the shell, and a
 // server that answers.
 func (c *chatConn) liveClient(ctx context.Context) *agent.Opencode {
-	p := c.s.mgr.PaneByID(c.pane.ID)
+	p := c.s.mgr.PaneByID(c.paneID)
 	if p == nil {
 		return nil
 	}
-	c.pane = p
 	port := agent.OpencodePort(p.StartupCommand)
 	if port == 0 || c.s.mgr.PaneAtShell(p.ID) {
 		return nil
@@ -264,12 +286,14 @@ func (c *chatConn) awaitWake(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case w := <-c.wake:
-			if msg := c.s.wakeFromChat(c.pane, w); msg != "" {
+			if msg := c.s.wakeFromChat(c.paneID, c.agent, w); msg != "" {
 				c.send(chatFrame{T: "error", Error: msg})
 				continue
 			}
+			c.setStarting(true)
 			c.send(chatFrame{T: "state", State: "starting"})
 			c.awaitServer(ctx)
+			c.setStarting(false)
 			return
 		case <-tick.C:
 			if c.liveClient(ctx) != nil {
@@ -277,6 +301,12 @@ func (c *chatConn) awaitWake(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (c *chatConn) setStarting(v bool) {
+	c.mu.Lock()
+	c.starting = v
+	c.mu.Unlock()
 }
 
 // awaitServer polls for the woken agent's server; the caller's loop then
@@ -294,8 +324,8 @@ func (c *chatConn) awaitServer(ctx context.Context) {
 
 // wakeFromChat starts the agent with text as its first message, through the
 // one add-or-wake flow (the pane's session must sit in a shared window).
-func (s *Server) wakeFromChat(p *model.Pane, w wakeReq) string {
-	group, ok := s.mgr.GroupForPane(p.ID)
+func (s *Server) wakeFromChat(paneID, agentName string, w wakeReq) string {
+	group, ok := s.mgr.GroupForPane(paneID)
 	if !ok || group == "" {
 		return "this agent's session is in no shared window; add it to one first"
 	}
@@ -303,7 +333,7 @@ func (s *Server) wakeFromChat(p *model.Pane, w wakeReq) string {
 	if msg != "" {
 		return msg
 	}
-	return s.startWindowAgent(win, p.Agent, w.text, "chat", w.resume).msg
+	return s.startWindowAgent(win, agentName, w.text, "chat", w.resume).msg
 }
 
 // runLive serves one live phase: hello with the transcript, then the event
@@ -311,7 +341,7 @@ func (s *Server) wakeFromChat(p *model.Pane, w wakeReq) string {
 func (c *chatConn) runLive(ctx context.Context, oc *agent.Opencode) {
 	hello, err := c.liveHello(ctx, oc)
 	if err != nil {
-		log.Printf("agent chat %s: %v", c.pane.ID, err)
+		log.Printf("agent chat %s: %v", c.paneID, err)
 		time.Sleep(time.Second)
 		return
 	}
@@ -322,7 +352,7 @@ func (c *chatConn) runLive(ctx context.Context, oc *agent.Opencode) {
 	live, stop := context.WithCancel(ctx)
 	go c.watchLive(live, stop, oc)
 	if err := oc.Events(live, c.onEvent); err != nil && ctx.Err() == nil {
-		log.Printf("agent chat %s: event stream ended: %v", c.pane.ID, err)
+		log.Printf("agent chat %s: event stream ended: %v", c.paneID, err)
 	}
 	stop()
 	c.mu.Lock()
@@ -338,7 +368,7 @@ func (c *chatConn) watchLive(ctx context.Context, stop context.CancelFunc, oc *a
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			if c.s.mgr.PaneAtShell(c.pane.ID) || !oc.Up(ctx) {
+			if c.s.mgr.PaneAtShell(c.paneID) || !oc.Up(ctx) {
 				stop()
 				return
 			}
@@ -347,20 +377,21 @@ func (c *chatConn) watchLive(ctx context.Context, stop context.CancelFunc, oc *a
 }
 
 // liveHello reads the running agent's newest session in its own folder,
-// its transcript and the permission requests waiting on it.
+// the last few conversations there (history), and the permission and
+// question requests waiting on the current one.
 func (c *chatConn) liveHello(ctx context.Context, oc *agent.Opencode) (chatFrame, error) {
 	sessions, err := oc.Sessions(ctx)
 	if err != nil {
 		return chatFrame{}, err
 	}
-	hello := chatFrame{T: "hello", Agent: c.pane.Agent, State: "running", Turns: []agent.Turn{}, Resume: c.resumeDefault()}
-	mine := sessionsIn(sessions, c.pane.CWD)
+	hello := chatFrame{T: "hello", Agent: c.agent, State: "running", Turns: []agent.Turn{}, Resume: c.resumeDefault()}
+	mine := sessionsIn(sessions, c.cwd)
 	if len(mine) == 0 {
 		return hello, nil
 	}
 	cur := mine[0]
 	hello.Session, hello.Title = cur.ID, cur.Title
-	if hello.Turns, err = history(ctx, mine, func(id string) ([]agent.Turn, error) { return oc.Messages(ctx, id) }); err != nil {
+	if hello.Turns, err = history(mine, func(id string) ([]agent.Turn, error) { return oc.Messages(ctx, id) }); err != nil {
 		return chatFrame{}, err
 	}
 	perms, err := oc.Permissions(ctx)
@@ -384,12 +415,13 @@ func (c *chatConn) liveHello(ctx context.Context, oc *agent.Opencode) (chatFrame
 	return hello, nil
 }
 
-// asleepHello is the transcript of the newest session opened in the
-// instance folder, from opencode's store; empty when it has none, or when
-// opencode's CLI cannot answer (said in Error, not hidden).
+// asleepHello is the last few conversations opened in the instance folder,
+// from opencode's store, the newest as the current session; empty when it
+// has none, or when opencode's CLI cannot answer (said in Error, not
+// hidden).
 func (c *chatConn) asleepHello(ctx context.Context) chatFrame {
-	hello := chatFrame{T: "hello", Agent: c.pane.Agent, State: "asleep", Turns: []agent.Turn{}, Resume: c.resumeDefault()}
-	sessions, err := c.s.offlineSessions(ctx, c.pane.CWD)
+	hello := chatFrame{T: "hello", Agent: c.agent, State: "asleep", Turns: []agent.Turn{}, Resume: c.resumeDefault()}
+	sessions, err := c.s.offlineSessions(ctx, c.cwd)
 	if err != nil {
 		hello.Error = err.Error()
 		return hello
@@ -398,7 +430,7 @@ func (c *chatConn) asleepHello(ctx context.Context) chatFrame {
 		return hello
 	}
 	hello.Session, hello.Title = sessions[0].ID, sessions[0].Title
-	if hello.Turns, err = history(ctx, sessions, func(id string) ([]agent.Turn, error) { return c.s.offlineTranscript(ctx, id) }); err != nil {
+	if hello.Turns, err = history(sessions, func(id string) ([]agent.Turn, error) { return c.s.offlineTranscript(ctx, id) }); err != nil {
 		hello.Error, hello.Turns = err.Error(), []agent.Turn{}
 	}
 	return hello
@@ -410,7 +442,7 @@ func (c *chatConn) resumeDefault() *bool {
 	if c.s.agents == nil {
 		return nil
 	}
-	d, err := c.s.agents.Get(c.pane.Agent)
+	d, err := c.s.agents.Get(c.agent)
 	if err != nil {
 		return nil
 	}
@@ -419,8 +451,8 @@ func (c *chatConn) resumeDefault() *bool {
 }
 
 // sessionsIn is the sessions opened in dir, newest first (the list is
-// already newest first); every session when none matches, so a stray
-// folder still shows something.
+// already newest first). Only those: another folder's conversation is not
+// this agent's, whatever else the server holds.
 func sessionsIn(sessions []agent.OpencodeSession, dir string) []agent.OpencodeSession {
 	var mine []agent.OpencodeSession
 	for _, s := range sessions {
@@ -428,16 +460,13 @@ func sessionsIn(sessions []agent.OpencodeSession, dir string) []agent.OpencodeSe
 			mine = append(mine, s)
 		}
 	}
-	if len(mine) == 0 {
-		return sessions
-	}
 	return mine
 }
 
 // history is the last historySessions conversations in one scroll, oldest
 // first, each behind its marker, so a woken agent's earlier work stays on
 // screen above the fresh conversation.
-func history(ctx context.Context, newestFirst []agent.OpencodeSession, fetch func(id string) ([]agent.Turn, error)) ([]agent.Turn, error) {
+func history(newestFirst []agent.OpencodeSession, fetch func(id string) ([]agent.Turn, error)) ([]agent.Turn, error) {
 	if len(newestFirst) > historySessions {
 		newestFirst = newestFirst[:historySessions]
 	}
@@ -483,7 +512,10 @@ type eventProps struct {
 // the current one (the TUI opened a new conversation) with a fresh hello.
 func (c *chatConn) onEvent(ev agent.OpencodeEvent) {
 	var p eventProps
-	_ = json.Unmarshal(ev.Props, &p)
+	if err := json.Unmarshal(ev.Props, &p); err != nil {
+		log.Printf("agent chat %s: %s event unreadable: %v", c.paneID, ev.Type, err)
+		return
+	}
 	if ev.Type == "session.created" {
 		c.maybeSwitchSession(p)
 		return
@@ -519,7 +551,8 @@ func requestFrame(kind string, p eventProps) (chatFrame, bool) {
 	switch kind {
 	case "permission.asked":
 		var req agent.PermissionRequest
-		if err := json.Unmarshal(mustJSON(p), &req); err != nil || req.ID == "" {
+		if err := json.Unmarshal(requestJSON(p), &req); err != nil || req.ID == "" {
+			log.Printf("agent chat: permission.asked unreadable (%v); the agent waits on a request nobody sees", err)
 			return chatFrame{}, false
 		}
 		return chatFrame{T: "permission", Permission: &req}, true
@@ -527,7 +560,8 @@ func requestFrame(kind string, p eventProps) (chatFrame, bool) {
 		return chatFrame{T: "permission-replied", ID: p.RequestID, Reply: p.Reply}, true
 	case "question.asked":
 		var req agent.QuestionRequest
-		if err := json.Unmarshal(mustJSON(p), &req); err != nil || req.ID == "" {
+		if err := json.Unmarshal(requestJSON(p), &req); err != nil || req.ID == "" {
+			log.Printf("agent chat: question.asked unreadable (%v); the agent waits on a question nobody sees", err)
 			return chatFrame{}, false
 		}
 		return chatFrame{T: "question", Question: &req}, true
@@ -543,13 +577,14 @@ func transcriptFrame(kind string, p eventProps) (chatFrame, bool) {
 	case "message.updated":
 		t, err := agent.NormalizeInfo(p.Info)
 		if err != nil {
+			log.Printf("agent chat: message.updated unreadable: %v", err)
 			return chatFrame{}, false
 		}
 		return chatFrame{T: "turn", Turn: &t}, true
 	case "message.part.updated":
 		mid, part, ok := agent.NormalizePart(p.Part)
 		if !ok {
-			return chatFrame{}, false
+			return chatFrame{}, false // a kind the transcript does not show, or garbage NormalizePart logged
 		}
 		return chatFrame{T: "part", MessageID: mid, Part: &part}, true
 	default:
@@ -564,7 +599,7 @@ func (c *chatConn) maybeSwitchSession(p eventProps) {
 		Directory string `json:"directory"`
 	}
 	_ = json.Unmarshal(p.Info, &info)
-	if info.ID == "" || !agent.SameDir(info.Directory, c.pane.CWD) {
+	if info.ID == "" || !agent.SameDir(info.Directory, c.cwd) {
 		return
 	}
 	c.mu.Lock()
@@ -576,14 +611,18 @@ func (c *chatConn) maybeSwitchSession(p eventProps) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if hello, err := c.liveHello(ctx, oc); err == nil {
-		c.send(hello)
+	hello, err := c.liveHello(ctx, oc)
+	if err != nil {
+		log.Printf("agent chat %s: switched to session %s but its history failed: %v", c.paneID, info.ID, err)
+		c.send(chatFrame{T: "error", Error: "new conversation started, but its history could not be read: " + err.Error()})
+		return
 	}
+	c.send(hello)
 }
 
-// mustJSON re-encodes the permission.asked properties, which ARE the
-// request object, for the typed decode.
-func mustJSON(p eventProps) []byte {
+// requestJSON re-encodes the event properties of permission.asked and
+// question.asked, which ARE the request object, for the typed decode.
+func requestJSON(p eventProps) []byte {
 	b, _ := json.Marshal(p)
 	return b
 }
