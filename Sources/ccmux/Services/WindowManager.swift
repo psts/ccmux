@@ -906,7 +906,7 @@ class WindowManager {
         // made two lenses overwrite each other's arrangement.
         syncLocalPaneGroups()
         // Displayed workspaces may have changed — keep the daemon focus frames
-        // (phone-push suppression) truthful.
+        // (what counts as looked at; push suppression rides along) truthful.
         RemoteSessionService.shared.syncFocusFrames()
     }
 
@@ -993,6 +993,9 @@ class WindowManager {
             queue: .main
         ) { [weak self] _ in
             self?.orderPendingWindowsForCurrentSpace()
+            // A key window that left the active Space is no longer looked at
+            // (see isWatching); keep the daemon's focus frames truthful.
+            RemoteSessionService.shared.syncFocusFrames()
         }
     }
 

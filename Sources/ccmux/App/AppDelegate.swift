@@ -158,13 +158,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func startRemoteSessions() {
         let service = RemoteSessionService.shared
         service.isWatched = { [weak self] id in self?.windowManager?.isWatching(id) ?? false }
-        // Displayed hosted workspaces get a daemon focus frame while the user is
-        // at this Mac — that's what keeps phone pushes quiet at the desk.
+        // The daemon takes a focus frame as "this person is looking at that
+        // pane" and retires the workspace's flash on EVERY lens. So the claim has
+        // to be true by the same rule the alert suppression uses (isWatching:
+        // app active, key window, on the current Space). Naming every displayed
+        // workspace here, as this once did, would let a ccmux window sitting
+        // behind another app silence the web lens. Presence (at the Mac at all)
+        // rides the same frame separately and is what keeps phone pushes quiet.
         service.displayedHostedWorkspaceIds = { [weak self] in
             guard let wm = self?.windowManager else { return [] }
             return Set(wm.windowControllers
                 .compactMap { $0.windowContext.displayedWorkspaceId }
-                .filter { RemoteSessionService.shared.isHosted($0) })
+                .filter { RemoteSessionService.shared.isHosted($0) && wm.isWatching($0) })
         }
         service.onAttention = { [weak self] workspace, state in
             self?.attentionNotifier.post(for: workspace, state: state)
@@ -244,6 +249,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             wm.createWindow(displayingWorkspace: id)
         }
         workspaceManager.activeWorkspaceId = id
+    }
+
+    // Which hosted workspace is "being looked at" changes with app activation,
+    // so the daemon focus frames must be re-sent on both edges; the window and
+    // Space edges are handled by WorkspaceWindowController and WindowManager.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        RemoteSessionService.shared.syncFocusFrames()
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        RemoteSessionService.shared.syncFocusFrames()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

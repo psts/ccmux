@@ -139,6 +139,9 @@ type Server struct {
 
 func NewServer(mgr *manager.Manager) *Server {
 	presence := newPresenceHub(mgr)
+	// Attaches go direct to the owning host, so its own hub knows who is
+	// looking; no federation needed for the "already watching" rule.
+	mgr.Watched = presence.Watched
 	return &Server{
 		mgr:               mgr,
 		presence:          presence,

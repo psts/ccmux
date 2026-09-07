@@ -414,11 +414,21 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 			// logged and dropped per-pane in sendSnapshot.
 			rs.request(msg.Pane)
 		case "focus":
-			s.presence.Focus(wsID, connID, msg.Pane)
-			if msg.Present != nil {
-				s.presence.SetPresent(wsID, connID, *msg.Present)
-			}
+			s.applyFocus(wsID, connID, msg)
 		}
+	}
+}
+
+// applyFocus records what a lens is looking at and whether its screen is
+// live. Naming a pane is the lens saying "I am looking at this", which retires
+// the workspace's flash everywhere, not just on this lens.
+func (s *Server) applyFocus(wsID, connID string, msg wsMsg) {
+	s.presence.Focus(wsID, connID, msg.Pane)
+	if msg.Present != nil {
+		s.presence.SetPresent(wsID, connID, *msg.Present)
+	}
+	if msg.Pane != "" {
+		s.mgr.MarkSeen(wsID)
 	}
 }
 

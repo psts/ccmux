@@ -267,7 +267,8 @@ async function closeWindow(win) {
 function wsRow(ws) {
   const active = ws.id === state.wsId;
   // Suppress the flash on the workspace you're already watching (mirrors the
-  // native "clear on watch"); other rows flash live from the firehose.
+  // native "clear on watch"); other rows flash live from the firehose and stop
+  // when the daemon says the workspace was looked at somewhere (attention idle).
   const att = active ? "" : wsAttention(ws);
   const open = !!state.gitOpen[ws.id];
   const running = (ws.panes || []).some((p) => p.attention === "running");

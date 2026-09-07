@@ -190,8 +190,9 @@ final class RemoteSessionService: ObservableObject {
     /// called all of that nobody-is-home. The result was a silent Mac and a phone
     /// that buzzed at the desk.
     ///
-    /// FOCUS stays per workspace: which pane this lens is actually looking at. It
-    /// clears that workspace's flash and nothing more.
+    /// FOCUS stays per workspace: which pane this lens is actually looking at. The
+    /// daemon takes it as "seen" and retires that workspace's flash on every lens,
+    /// so the displayed set it reads must be the watched one (see AppDelegate).
     ///
     /// Both ride the same frame, so one call keeps them consistent.
     func syncFocusFrames() {

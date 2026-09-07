@@ -237,6 +237,27 @@ func (h *presenceHub) Leave(wsID, connID string) {
 	h.broadcast(wsID, snap)
 }
 
+// Watched reports whether any lens at a screen is looking at a pane of this
+// workspace right now. It is the manager's "already seen" question: a pane
+// that finishes under someone's eyes should not start flashing on the other
+// lenses. Focus alone is not enough — a lens whose screen is locked still
+// carries its last focused pane — so the same atAScreen rule that gates
+// notifications gates this.
+func (h *presenceHub) Watched(wsID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	wp := h.byWS[wsID]
+	if wp == nil {
+		return false
+	}
+	for _, c := range wp.clients {
+		if c.info.Focused != "" && c.atAScreen() {
+			return true
+		}
+	}
+	return false
+}
+
 // Focus records which pane a client is looking at.
 func (h *presenceHub) Focus(wsID, connID, pane string) {
 	h.mu.Lock()

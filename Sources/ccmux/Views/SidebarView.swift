@@ -844,9 +844,17 @@ private struct AttentionRowBackground: View {
     let isDisplayed: Bool
     let onTap: () -> Void
 
-    /// Drives the pulse oscillation; flipped once when entering `needsInput` so the
-    /// repeating animation interpolates the tint/accent opacity back and forth.
+    /// Drives the pulse oscillation; flipped once when entering a flashing state
+    /// so the repeating animation interpolates the tint/accent opacity back and
+    /// forth. Both states blink — orange for needs-input, green for done — and
+    /// keep blinking until the workspace is looked at on some lens.
     @State private var pulse = false
+
+    /// Reduce Motion (System Settings > Accessibility) turns the blink into a
+    /// steady tint, matching the web lens's prefers-reduced-motion guard.
+    private var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -866,27 +874,38 @@ private struct AttentionRowBackground: View {
     }
 
     private func syncPulse() {
-        pulse = (monitor.state == .needsInput)
+        let flashing = (monitor.state != .none) && !reduceMotion
+        guard flashing, pulse else { pulse = flashing; return }
+        // Already flashing in the other colour (a permission answered elsewhere,
+        // then a Stop: needsInput -> done). `pulse` is true on both sides, so
+        // nothing would re-trigger the animation and the row would sit at the
+        // bright end. Drop and re-raise the flag so the oscillation restarts.
+        pulse = false
+        DispatchQueue.main.async { self.pulse = true }
     }
 
     private var pulseAnimation: Animation {
-        monitor.state == .needsInput
+        monitor.state != .none && !reduceMotion
             ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
             : .easeOut(duration: 0.25)
     }
 
+    /// The bright end of the blink. With Reduce Motion the row holds it as a
+    /// steady tint rather than sitting at the dim trough.
+    private var lit: Bool { pulse || reduceMotion }
+
     private var tintColor: Color {
         switch monitor.state {
-        case .needsInput: return Color.orange.opacity(pulse ? 0.30 : 0.05)
-        case .done: return Color.green.opacity(0.14)
+        case .needsInput: return Color.orange.opacity(lit ? 0.30 : 0.05)
+        case .done: return Color.green.opacity(lit ? 0.28 : 0.06)
         case .none: return Color.clear
         }
     }
 
     private var accentColor: Color {
         switch monitor.state {
-        case .needsInput: return Color.orange.opacity(pulse ? 0.95 : 0.45)
-        case .done: return Color.green.opacity(0.85)
+        case .needsInput: return Color.orange.opacity(lit ? 0.95 : 0.45)
+        case .done: return Color.green.opacity(lit ? 0.95 : 0.45)
         case .none: return Color.clear
         }
     }

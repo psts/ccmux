@@ -183,3 +183,41 @@ func TestPresence_WireShapesDriveTheRightFallback(t *testing.T) {
 		t.Error("an explicit present=false must win over a stale focused pane")
 	}
 }
+
+// Watched is the manager's "already seen" question: a pane that finishes while
+// a lens is looking at its workspace never starts flashing on the others. A
+// focused pane on a locked screen does not count, for the same reason it does
+// not suppress a push above.
+func TestWatched_NeedsAFocusedPaneOnALiveScreen(t *testing.T) {
+	h := newHub(t)
+	if h.Watched("ws1") {
+		t.Fatal("nobody attached")
+	}
+	id := h.Join("ws1", ClientInfo{User: "dev"}, "dev", "")
+	h.SetPresent("ws1", id, true)
+	if h.Watched("ws1") {
+		t.Fatal("present but looking at nothing is not watching")
+	}
+	h.Focus("ws1", id, "pane-1")
+	if !h.Watched("ws1") {
+		t.Fatal("focused on a live screen is watching")
+	}
+	h.SetPresent("ws1", id, false)
+	if h.Watched("ws1") {
+		t.Fatal("a locked screen is not watching, whatever it last focused")
+	}
+	h.SetPresent("ws1", id, true)
+	h.Focus("ws1", id, "")
+	if h.Watched("ws1") {
+		t.Fatal("looking away stops watching")
+	}
+}
+
+func TestWatched_OlderLensCountsByFocusAlone(t *testing.T) {
+	h := newHub(t)
+	id := h.Join("ws1", ClientInfo{User: "old"}, "old", "")
+	h.Focus("ws1", id, "pane-1")
+	if !h.Watched("ws1") {
+		t.Fatal("a lens that never reports presence falls back to focus")
+	}
+}

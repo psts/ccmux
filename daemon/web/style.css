@@ -258,17 +258,24 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* firehose attention on the session list — flashes a row that needs you even
-   when it isn't attached (mirrors the native AttentionRowBackground). */
+/* firehose attention on the session list — blinks a row that needs you (orange)
+   or finished (green) even when it isn't attached (mirrors the native
+   AttentionRowBackground). Both blink until the workspace is looked at on ANY
+   lens: the daemon turns the pane idle then, and idle has no rule here. */
 .ws.att-done { background: rgba(114, 185, 121, .13); box-shadow: inset 3px 0 0 var(--done); }
-.ws.att-needs_input { box-shadow: inset 3px 0 0 var(--needs); }
+.ws.att-needs_input { background: rgba(224, 160, 74, .10); box-shadow: inset 3px 0 0 var(--needs); }
 .ws.att-needs_input .name { color: var(--needs); }
 @media (prefers-reduced-motion: no-preference) {
   .ws.att-needs_input { animation: ws-pulse 1.6s ease-in-out infinite; }
+  .ws.att-done { animation: ws-pulse-done 1.6s ease-in-out infinite; }
 }
 @keyframes ws-pulse {
   0%, 100% { background: rgba(224, 160, 74, .10); }
   50% { background: rgba(224, 160, 74, .26); }
+}
+@keyframes ws-pulse-done {
+  0%, 100% { background: rgba(114, 185, 121, .08); }
+  50% { background: rgba(114, 185, 121, .26); }
 }
 
 /* main */

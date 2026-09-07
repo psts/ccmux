@@ -159,6 +159,11 @@ func runDaemon() {
 	// live workspace — lenses render it; they can't read the daemon's repos.
 	mgr.StartGitStatus(5 * time.Second)
 
+	// Built before the hooks listener: NewServer wires mgr.Watched, which
+	// ApplyAttention reads on every hook, and a hook can land the moment the
+	// socket is up.
+	apiSrv := api.NewServer(mgr)
+
 	// Claude Code hooks → attention fan-out. The daemon owns a DISTINCT socket
 	// (default <runtimeDir>/hooks.sock) from the native app's /tmp/ccmux-hooks.sock,
 	// and injects its path into hosted panes as CCMUX_HOOKS_SOCK — so hosted hooks
@@ -177,7 +182,6 @@ func runDaemon() {
 		log.Printf("hooks listening on %s", *hooksSock)
 	}
 
-	apiSrv := api.NewServer(mgr)
 	apiSrv.SetProjectsRoot(*projectsRoot)
 	// LLM routing proxy: every pane's ANTHROPIC_BASE_URL points at
 	// /llm/pane/<id> on this daemon (stamped in paneEnv); accounts and the

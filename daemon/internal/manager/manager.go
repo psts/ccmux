@@ -86,6 +86,11 @@ type Manager struct {
 	// OpenTasksForPane reports a pane's open peer delegations; an agent with
 	// open work is never put to sleep. Wired from the peers bus; nil = 0.
 	OpenTasksForPane func(paneID string) int
+	// Watched reports whether a lens at a screen is looking at this workspace
+	// right now; a pane that finishes under someone's eyes never starts to
+	// flash (see attention_seen.go). Wired from the api's presence hub; nil
+	// means nobody is ever watching.
+	Watched func(wsID string) bool
 	// AgentsMax caps running agent panes daemon-wide (0 = no cap); checked
 	// inside CreateAgentWorkspace/StartAgentInPane/ReviveAgentWorkspace under
 	// agentStartMu.
@@ -872,6 +877,9 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
 	// per-workspace attach WebSocket.
 	m.events.publish(Event{Kind: "attention", WorkspaceID: wsID, PaneID: paneID, Attention: att})
 	_ = m.store.SavePane(&saved)
+	// Then, if someone is already looking, take the flash straight back
+	// (attention_seen.go). After the broadcast, so pushes still see the hook.
+	m.retireIfWatched(wsID, att)
 }
 
 func (m *Manager) findPaneLocked(paneID string) (*entry, *model.Pane) {

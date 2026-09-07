@@ -17,6 +17,7 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
@@ -561,4 +562,90 @@ func readFirehose(t *testing.T, conn *websocket.Conn) firehoseMsg {
 		t.Fatalf("read: %v", err)
 	}
 	return m
+}
+
+// TestAPI_FocusRetiresTheFlashEverywhere: a lens that reports it is looking at
+// a pane retires the workspace's flash for every lens, not just itself. The
+// daemon answers with an attention change to idle, which is what a sidebar on
+// another screen needs to stop blinking.
+func TestAPI_FocusRetiresTheFlashEverywhere(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-seen-itest"
+	tsrv := &tmux.Server{Socket: socket, ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := manager.New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	hs := httptest.NewServer(NewServer(mgr).Handler())
+	defer hs.Close()
+
+	ws, err := mgr.CreateWorkspace("t", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pane0 := ws.Panes[0].ID
+
+	// Two lenses: one that will look, one on another screen that must be told.
+	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http") + "/v1/attach?workspace=" + ws.ID
+	looker, _, err := websocket.DefaultDialer.Dial(wsURL+"&user=a&device=web", nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer looker.Close()
+	other, _, err := websocket.DefaultDialer.Dial(wsURL+"&user=b&device=mac", nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer other.Close()
+	for _, c := range []*websocket.Conn{looker, other} {
+		if m := readMsg(t, c); m.T != "hello" {
+			t.Fatalf("first frame = %q, want hello", m.T)
+		}
+	}
+
+	// Nobody is looking yet, so the finish flashes.
+	mgr.ApplyAttention(pane0, model.AttentionDone)
+	waitAttention(t, other, pane0, model.AttentionDone)
+
+	// The first lens looks at the pane; the other lens hears the flash retire.
+	present := true
+	if err := looker.WriteJSON(wsMsg{T: "focus", Pane: pane0, Present: &present}); err != nil {
+		t.Fatalf("focus: %v", err)
+	}
+	waitAttention(t, other, pane0, model.AttentionIdle)
+
+	// And while the first lens keeps looking, a new finish is taken back at
+	// once: the hook's frame still goes out (pushes read it), idle follows.
+	mgr.ApplyAttention(pane0, model.AttentionDone)
+	waitAttention(t, other, pane0, model.AttentionDone)
+	waitAttention(t, other, pane0, model.AttentionIdle)
+}
+
+// waitAttention reads frames until an attention frame for the pane arrives and
+// checks its state, skipping presence and output frames on the way.
+func waitAttention(t *testing.T, conn *websocket.Conn, pane string, want model.Attention) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for i := 0; i < 200; i++ {
+		m := readMsg(t, conn)
+		if m.T == "attention" && m.Pane == pane {
+			if m.State != want {
+				t.Fatalf("attention = %q, want %q", m.State, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("no attention frame for %s", pane)
 }

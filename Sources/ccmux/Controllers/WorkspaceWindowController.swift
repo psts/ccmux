@@ -291,12 +291,20 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             // clear any attention flash so a Cmd-Tab back stops the pulse.
             workspaceManager.attentionMonitors[wsId]?.clear()
             RemoteSessionService.shared.attentionMonitors[wsId]?.clear()
+            // And tell the daemon, so every other lens stops flashing it too.
+            RemoteSessionService.shared.syncFocusFrames()
             // Cheap belt-and-suspenders for "user just Cmd-Tabbed back from an
             // external editor" — FSEvents would catch the change eventually,
             // but a focus-event refresh makes the sidebar feel instant and
             // covers any missed events on weird filesystems.
             workspaceManager.monitors[wsId]?.refresh()
         }
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // The key window is the one whose workspace counts as looked at; when it
+        // stops being key the daemon must hear that claim withdrawn.
+        RemoteSessionService.shared.syncFocusFrames()
     }
 
     @objc func togglePeerMessages() {

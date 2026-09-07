@@ -232,8 +232,9 @@ func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
 // holdWhileWorking rewrites a turn-ending claim made while subagents are still
 // running. It returns the attention to apply, or "" to drop the event outright.
 //
-// Dropping is not enough on its own. Attention is sticky — manager.ApplyAttention
-// is the only writer — so a pane already showing needs_input keeps showing it for
+// Dropping is not enough on its own. Attention is sticky — hooks reach it only
+// through manager.ApplyAttention, and the one other writer (MarkSeen) needs a
+// human to look — so a pane already showing needs_input keeps showing it for
 // the whole agent run, which is the very false alert this file exists to remove,
 // preserved rather than created. Measured over 322 holds, 32 met a flagged pane.
 // So a hold asserts idle instead: the turn is not over, and Claude is not waiting
