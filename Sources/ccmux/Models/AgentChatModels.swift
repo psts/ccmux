@@ -21,15 +21,41 @@ struct AgentChatFrame: Codable {
     var permission: AgentPermission?
     var id: String?
     var reply: String?
+    var questions: [AgentQuestion]?
+    var question: AgentQuestion?
+    var answers: [[String]]?
     var text: String?
     var error: String?
 
-    init(t: String, text: String? = nil, id: String? = nil, reply: String? = nil) {
+    init(t: String, text: String? = nil, id: String? = nil, reply: String? = nil, answers: [[String]]? = nil) {
         self.t = t
         self.text = text
         self.id = id
         self.reply = reply
+        self.answers = answers
     }
+}
+
+/// The question tool asking the human to choose; the reply is the chosen
+/// labels per question, in order.
+struct AgentQuestion: Codable, Identifiable {
+    var id: String
+    var sessionID: String?
+    var questions: [AgentQuestionInfo]
+}
+
+struct AgentQuestionInfo: Codable {
+    var question: String
+    var header: String?
+    var options: [AgentQuestionOption]
+    var multiple: Bool?
+    var custom: Bool?
+}
+
+struct AgentQuestionOption: Codable, Identifiable {
+    var label: String
+    var description: String?
+    var id: String { label }
 }
 
 /// One message of the conversation, in the daemon's normalized shape.

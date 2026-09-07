@@ -45,12 +45,22 @@ func TestOpencodeClientRoundTrips(t *testing.T) {
 	if err := c.ReplyPermission(ctx, "per_1", "once"); err != nil {
 		t.Fatal(err)
 	}
+	qs, err := c.Questions(ctx)
+	if err != nil || len(qs) != 1 || qs[0].ID != "que_1" || qs[0].Questions[0].Header != "Demo" || len(qs[0].Questions[0].Options) != 2 {
+		t.Fatalf("questions: %+v %v", qs, err)
+	}
+	if err := c.ReplyQuestion(ctx, "que_1", [][]string{{"Tea"}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.ReplyPermission(ctx, "per_1", "maybe"); err == nil {
 		t.Error("an unknown reply must be refused before it reaches opencode")
 	}
 	prompts, aborts, replies := f.Recorded()
 	if len(prompts) != 1 || prompts[0] != "ses_1:hello" || aborts != 1 || replies["per_1"] != "once" {
 		t.Errorf("recorded: prompts %v aborts %d replies %v", prompts, aborts, replies)
+	}
+	if a := f.Answers(); len(a["que_1"]) != 1 || a["que_1"][0][0] != "Tea" {
+		t.Errorf("answers: %v", a)
 	}
 }
 

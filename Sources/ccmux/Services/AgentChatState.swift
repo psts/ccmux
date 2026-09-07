@@ -9,6 +9,7 @@ import Foundation
 final class AgentChatState: ObservableObject {
     @Published private(set) var turns: [AgentTurn] = []
     @Published private(set) var permissions: [AgentPermission] = []
+    @Published private(set) var questions: [AgentQuestion] = []
     @Published private(set) var state = "connecting"
     @Published private(set) var title = ""
     @Published private(set) var error = ""
@@ -60,6 +61,14 @@ final class AgentChatState: ObservableObject {
         send(AgentChatFrame(t: "permission", id: permission.id, reply: reply))
     }
 
+    func answer(_ question: AgentQuestion, _ answers: [[String]]) {
+        send(AgentChatFrame(t: "question", id: question.id, answers: answers))
+    }
+
+    func reject(_ question: AgentQuestion) {
+        send(AgentChatFrame(t: "question-reject", id: question.id))
+    }
+
     private func send(_ frame: AgentChatFrame) {
         guard let data = try? JSONEncoder().encode(frame), let text = String(data: data, encoding: .utf8) else { return }
         pump?.send(text)
@@ -77,6 +86,8 @@ final class AgentChatState: ObservableObject {
         case "idle": busy = false
         case "permission": if let p = f.permission, !permissions.contains(where: { $0.id == p.id }) { permissions.append(p) }
         case "permission-replied": permissions.removeAll { $0.id == f.id }
+        case "question": if let q = f.question, !questions.contains(where: { $0.id == q.id }) { questions.append(q) }
+        case "question-replied": questions.removeAll { $0.id == f.id }
         case "error": error = f.error ?? ""
         default: break
         }
@@ -85,6 +96,7 @@ final class AgentChatState: ObservableObject {
     private func hello(_ f: AgentChatFrame) {
         turns = []
         permissions = f.permissions ?? []
+        questions = f.questions ?? []
         state = f.state ?? "asleep"
         title = f.title ?? ""
         error = f.error ?? ""

@@ -58,6 +58,7 @@
     if (cur && cur.paneId === pane.id) { applyMode(); return; }
     close();
     cur = { paneId: pane.id, wsRec, sock: null, turns: new Map(), order: [], els: new Map(), perms: new Map(), busy: false, agent: pane.agent };
+    // Question cards share the permission slot; both are the agent waiting on you.
     $("agent-chat").querySelector(".ac-title").textContent = "⚙ " + pane.agent;
     $("agent-chat-bar").querySelector(".ac-bar-label").textContent = "⚙ " + pane.agent + " · terminal";
     setState("connecting", "");
@@ -127,6 +128,8 @@
       case "idle": return setBusy(false);
       case "permission": return addPermission(f.permission);
       case "permission-replied": return removePermission(f.id);
+      case "question": return addQuestion(f.question);
+      case "question-replied": return removeQuestion(f.id);
       case "error": return showError(f.error);
     }
   }
@@ -140,6 +143,7 @@
     setState(f.state, f.title || "");
     for (const t of f.turns || []) upsertTurn(t);
     for (const p of f.permissions || []) addPermission(p);
+    for (const q of f.questions || []) addQuestion(q);
     setBusy(false);
     const log = box.querySelector(".ac-log");
     log.scrollTop = log.scrollHeight;
@@ -223,10 +227,13 @@
       body = el("div", "ac-reason-text");
       root.appendChild(body);
     }
+    // A reasoning part with no text (the provider returned only a signature)
+    // is not worth a row; it shows the moment text arrives.
+    const reflect = () => { if (p.type === "reasoning") root.classList.toggle("hidden", !body.textContent); };
     return {
       root,
-      update: (np) => { body.textContent = np.text || ""; },
-      append: (field, d) => { if (field === "text") body.textContent += d; },
+      update: (np) => { body.textContent = np.text || ""; reflect(); },
+      append: (field, d) => { if (field === "text") { body.textContent += d; reflect(); } },
     };
   }
 
@@ -272,6 +279,53 @@
     const card = cur.perms.get(id);
     if (card) { card.remove(); cur.perms.delete(id); }
   }
+
+  // --- questions: the question tool asking you to choose ---
+  function addQuestion(req) {
+    if (!req || cur.perms.has(req.id)) return;
+    const card = el("div", "ac-perm ac-question");
+    const pickers = (req.questions || []).map((q) => questionPicker(card, q));
+    const row = el("div", "ac-perm-actions");
+    const answer = el("button", "ac-perm-btn once", "Answer");
+    answer.onclick = () => send({ t: "question", id: req.id, answers: pickers.map((p) => p.answers()) });
+    const reject = el("button", "ac-perm-btn reject", "Reject");
+    reject.onclick = () => send({ t: "question-reject", id: req.id });
+    row.appendChild(answer); row.appendChild(reject);
+    card.appendChild(row);
+    cur.perms.set(req.id, card);
+    $("agent-chat").querySelector(".ac-perms").appendChild(card);
+  }
+
+  // questionPicker renders one question's options as toggles (one at a time
+  // unless the question allows several) plus a free text field when it
+  // allows a custom answer; answers() is the chosen labels.
+  function questionPicker(card, q) {
+    card.appendChild(el("div", "ac-perm-text", `${q.header ? q.header + ": " : ""}${q.question}`));
+    const opts = el("div", "ac-q-options");
+    const chosen = new Set();
+    const buttons = [];
+    for (const o of q.options || []) {
+      const b = el("button", "ac-q-opt", o.label);
+      b.title = o.description || "";
+      b.onclick = () => {
+        if (!q.multiple) { chosen.clear(); buttons.forEach((x) => x.classList.remove("chosen")); }
+        if (chosen.has(o.label)) { chosen.delete(o.label); b.classList.remove("chosen"); }
+        else { chosen.add(o.label); b.classList.add("chosen"); }
+      };
+      buttons.push(b);
+      opts.appendChild(b);
+    }
+    card.appendChild(opts);
+    let custom = null;
+    if (q.custom) {
+      custom = el("input", "setting-input ac-q-custom");
+      custom.placeholder = "Or type your own answer";
+      card.appendChild(custom);
+    }
+    return { answers: () => { const a = [...chosen]; if (custom && custom.value.trim()) a.push(custom.value.trim()); return a; } };
+  }
+
+  function removeQuestion(id) { removePermission(id); }
 
   window.ccmuxAgentChat = { show, hide };
 })();

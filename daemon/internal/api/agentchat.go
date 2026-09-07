@@ -48,6 +48,12 @@ type chatFrame struct {
 	Permission *agent.PermissionRequest `json:"permission,omitempty"`
 	ID         string                   `json:"id,omitempty"`
 	Reply      string                   `json:"reply,omitempty"`
+	// question (asked) / question-replied; the client answers with
+	// {t:"question", id, answers} (one list of labels per question) or
+	// {t:"question-reject", id}. Questions ride the hello too.
+	Questions []agent.QuestionRequest `json:"questions,omitempty"`
+	Question  *agent.QuestionRequest  `json:"question,omitempty"`
+	Answers   [][]string              `json:"answers,omitempty"`
 	// prompt (client → daemon) carries Text; error carries Error.
 	Text  string `json:"text,omitempty"`
 	Error string `json:"error,omitempty"`
@@ -147,33 +153,42 @@ func (c *chatConn) readLoop(conn *websocket.Conn) {
 }
 
 // handle is a client frame: a prompt (to the server when live, else a
-// wake), an abort, or a permission reply.
+// wake), an abort, or an answer to a permission or question request.
 func (c *chatConn) handle(f chatFrame) {
 	c.mu.Lock()
 	oc, sid := c.oc, c.sid
 	c.mu.Unlock()
+	if f.T == "prompt" && oc == nil {
+		c.requestWake(f.Text)
+		return
+	}
+	if oc == nil {
+		return // nothing to abort or answer while asleep
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	var err error
-	switch f.T {
-	case "prompt":
-		if oc == nil {
-			c.requestWake(f.Text)
-			return
-		}
-		err = c.s.mgr.PushLocked(c.pane.ID, func() error { return oc.Prompt(ctx, sid, f.Text) })
-	case "abort":
-		if oc != nil {
-			err = oc.Abort(ctx, sid)
-		}
-	case "permission":
-		if oc != nil {
-			err = oc.ReplyPermission(ctx, f.ID, f.Reply)
-		}
-	}
-	if err != nil {
+	if err := c.liveAction(ctx, oc, sid, f); err != nil {
 		c.send(chatFrame{T: "error", Error: err.Error()})
 	}
+}
+
+// liveAction is one client frame against the running server. The prompt
+// goes under the pane's push lock so it cannot interleave with a bus
+// delivery into the same instance.
+func (c *chatConn) liveAction(ctx context.Context, oc *agent.Opencode, sid string, f chatFrame) error {
+	switch f.T {
+	case "prompt":
+		return c.s.mgr.PushLocked(c.pane.ID, func() error { return oc.Prompt(ctx, sid, f.Text) })
+	case "abort":
+		return oc.Abort(ctx, sid)
+	case "permission":
+		return oc.ReplyPermission(ctx, f.ID, f.Reply)
+	case "question":
+		return oc.ReplyQuestion(ctx, f.ID, f.Answers)
+	case "question-reject":
+		return oc.RejectQuestion(ctx, f.ID)
+	}
+	return nil
 }
 
 func (c *chatConn) requestWake(text string) {
@@ -342,6 +357,15 @@ func (c *chatConn) liveHello(ctx context.Context, oc *agent.Opencode) (chatFrame
 			hello.Permissions = append(hello.Permissions, p)
 		}
 	}
+	questions, err := oc.Questions(ctx)
+	if err != nil {
+		return chatFrame{}, err
+	}
+	for _, q := range questions {
+		if q.SessionID == cur.ID {
+			hello.Questions = append(hello.Questions, q)
+		}
+	}
 	return hello, nil
 }
 
@@ -390,6 +414,15 @@ type eventProps struct {
 	RequestID string          `json:"requestID"`
 	Reply     string          `json:"reply"`
 	Error     json.RawMessage `json:"error"`
+	// permission.asked and question.asked carry the request itself as the
+	// properties; these fields let mustJSON hand it to a typed decode.
+	ID         string          `json:"id,omitempty"`
+	Permission string          `json:"permission,omitempty"`
+	Patterns   []string        `json:"patterns,omitempty"`
+	Always     []string        `json:"always,omitempty"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	Questions  json.RawMessage `json:"questions,omitempty"`
+	Tool       json.RawMessage `json:"tool,omitempty"`
 }
 
 // onEvent maps one opencode event onto the socket. Only the current
@@ -417,20 +450,37 @@ func (c *chatConn) frameFor(kind string, p eventProps) (chatFrame, bool) {
 	switch kind {
 	case "message.updated", "message.part.updated", "message.part.delta":
 		return transcriptFrame(kind, p)
+	case "permission.asked", "permission.replied", "question.asked", "question.replied", "question.rejected":
+		return requestFrame(kind, p)
 	case "session.idle":
 		return chatFrame{T: "idle"}, true
+	case "session.error":
+		return chatFrame{T: "error", Error: string(p.Error)}, true
+	}
+	return chatFrame{}, false
+}
+
+// requestFrame is opencode asking the human something (a permission before
+// a tool runs, a question from the question tool) or reporting it answered.
+func requestFrame(kind string, p eventProps) (chatFrame, bool) {
+	switch kind {
 	case "permission.asked":
 		var req agent.PermissionRequest
-		if err := json.Unmarshal(mustJSON(p), &req); err != nil {
+		if err := json.Unmarshal(mustJSON(p), &req); err != nil || req.ID == "" {
 			return chatFrame{}, false
 		}
 		return chatFrame{T: "permission", Permission: &req}, true
 	case "permission.replied":
 		return chatFrame{T: "permission-replied", ID: p.RequestID, Reply: p.Reply}, true
-	case "session.error":
-		return chatFrame{T: "error", Error: string(p.Error)}, true
+	case "question.asked":
+		var req agent.QuestionRequest
+		if err := json.Unmarshal(mustJSON(p), &req); err != nil || req.ID == "" {
+			return chatFrame{}, false
+		}
+		return chatFrame{T: "question", Question: &req}, true
+	default:
+		return chatFrame{T: "question-replied", ID: p.RequestID}, true
 	}
-	return chatFrame{}, false
 }
 
 // transcriptFrame is one change to the transcript: a turn (its header), a

@@ -56,6 +56,11 @@ struct AgentChatPaneView: View {
             }
             transcript
             if !chat.permissions.isEmpty { permissionCards }
+            ForEach(chat.questions) { q in
+                AgentQuestionCard(question: q, agent: agent,
+                                  onAnswer: { chat.answer(q, $0) }, onReject: { chat.reject(q) })
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
             Divider()
             composer
         }
@@ -175,6 +180,9 @@ struct AgentPartView: View {
 
     var body: some View {
         switch part.type {
+        case "reasoning" where (part.text ?? "").isEmpty:
+            // The provider returned only a signature: nothing to show yet.
+            EmptyView()
         case "reasoning":
             DisclosureGroup("Thought") {
                 Text(part.text ?? "").font(.system(size: 11)).foregroundColor(.secondary).textSelection(.enabled)
@@ -214,6 +222,76 @@ struct AgentPartView: View {
         case "error": return .red
         case "running": return .orange
         default: return .secondary
+        }
+    }
+}
+
+/// One question request: each question's options as toggles (one at a
+/// time unless it allows several), a free answer when allowed, then
+/// Answer or Reject.
+struct AgentQuestionCard: View {
+    let question: AgentQuestion
+    let agent: String
+    let onAnswer: ([[String]]) -> Void
+    let onReject: () -> Void
+    @State private var chosen: [Set<String>] = []
+    @State private var custom: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(question.questions.enumerated()), id: \.offset) { i, q in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text((q.header.map { "\($0): " } ?? "") + q.question).font(.system(size: 11))
+                    HStack(spacing: 6) {
+                        ForEach(q.options) { o in
+                            let picked = chosen.indices.contains(i) && chosen[i].contains(o.label)
+                            Button(o.label) { toggle(i, o.label, multiple: q.multiple ?? false) }
+                                .font(.system(size: 11))
+                                .foregroundColor(picked ? .green : .primary)
+                                .help(o.description ?? "")
+                        }
+                    }
+                    if q.custom ?? false {
+                        TextField("Or type your own answer", text: binding(i)).font(.system(size: 11))
+                    }
+                }
+            }
+            HStack(spacing: 6) {
+                Button("Answer") { onAnswer(answers()) }
+                Button("Reject", action: onReject)
+            }
+            .font(.system(size: 11))
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange, lineWidth: 1))
+        .onAppear {
+            chosen = Array(repeating: [], count: question.questions.count)
+            custom = Array(repeating: "", count: question.questions.count)
+        }
+    }
+
+    private func toggle(_ i: Int, _ label: String, multiple: Bool) {
+        guard chosen.indices.contains(i) else { return }
+        if chosen[i].contains(label) {
+            chosen[i].remove(label)
+        } else {
+            if !multiple { chosen[i].removeAll() }
+            chosen[i].insert(label)
+        }
+    }
+
+    private func binding(_ i: Int) -> Binding<String> {
+        Binding(get: { custom.indices.contains(i) ? custom[i] : "" },
+                set: { if custom.indices.contains(i) { custom[i] = $0 } })
+    }
+
+    private func answers() -> [[String]] {
+        question.questions.indices.map { i in
+            var a = Array(chosen.indices.contains(i) ? chosen[i] : [])
+            let free = custom.indices.contains(i) ? custom[i].trimmingCharacters(in: .whitespaces) : ""
+            if !free.isEmpty { a.append(free) }
+            return a
         }
     }
 }

@@ -509,6 +509,10 @@ body {
 .ac-perms { padding: 0 12px; }
 .ac-perm { border: 1px solid var(--needs); border-radius: 6px; padding: 8px; margin-bottom: 8px; font-size: 12px; }
 .ac-perm-actions { display: flex; gap: 6px; margin-top: 6px; }
+.ac-q-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.ac-q-opt { font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg2); color: var(--fg); cursor: pointer; }
+.ac-q-opt.chosen { border-color: var(--accent); color: var(--accent); }
+.ac-q-custom { width: 100%; margin-bottom: 6px; }
 .ac-compose { display: flex; gap: 8px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .ac-compose textarea { flex: 1; resize: none; font-family: inherit; font-size: 13px; background: var(--bg2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .agent-card textarea.setting-input { width: 100%; min-height: 72px; resize: vertical; font-family: inherit; font-size: 12px; }

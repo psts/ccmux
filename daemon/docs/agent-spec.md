@@ -164,8 +164,9 @@ opencode's server: `GET /v1/panes/{id}/agent/ws` (and a one-shot `GET
 /v1/panes/{id}/agent`) sends a hello with the agent's state (asleep,
 starting, running), its newest session in the instance folder, the
 transcript and the permission requests waiting, then turn, part, delta,
-idle, permission and error frames as opencode's event stream reports them;
-the lens sends prompt, abort and permission replies (once, always,
+idle, permission, question and error frames as opencode's event stream
+reports them; the lens sends prompt, abort, permission replies (once,
+always, reject) and question answers (the chosen labels per question, or a
 reject). Asleep, the transcript comes from opencode's store through its
 CLI (`session list`, `export`), and a prompt wakes the agent with that
 text. One normalized shape, `agent.Turn`, in `internal/agent/transcript.go`;

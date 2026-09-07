@@ -53,6 +53,33 @@ type PermissionRequest struct {
 	} `json:"tool,omitempty"`
 }
 
+// QuestionRequest is opencode's question tool asking the human to choose:
+// one or more questions, each with options (single or multiple choice, a
+// free answer allowed when Custom). The reply is one list of chosen labels
+// per question, in order.
+type QuestionRequest struct {
+	ID        string         `json:"id"`
+	SessionID string         `json:"sessionID"`
+	Questions []QuestionInfo `json:"questions"`
+	Tool      *struct {
+		MessageID string `json:"messageID"`
+		CallID    string `json:"callID"`
+	} `json:"tool,omitempty"`
+}
+
+type QuestionInfo struct {
+	Question string           `json:"question"`
+	Header   string           `json:"header"`
+	Options  []QuestionOption `json:"options"`
+	Multiple bool             `json:"multiple,omitempty"`
+	Custom   bool             `json:"custom,omitempty"`
+}
+
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
 // OpencodeEvent is one frame of GET /event: its kind and the properties
 // as opencode sent them, decoded by whoever knows the kind.
 type OpencodeEvent struct {
@@ -127,6 +154,28 @@ func (c *Opencode) ReplyPermission(ctx context.Context, requestID, reply string)
 	}
 	body, _ := json.Marshal(map[string]string{"reply": reply})
 	return post(ctx, c.HTTP, c.Base+"/permission/"+requestID+"/reply", body)
+}
+
+// Questions lists every question still waiting for an answer.
+func (c *Opencode) Questions(ctx context.Context) ([]QuestionRequest, error) {
+	out := []QuestionRequest{}
+	err := c.getJSON(ctx, "/question", &out)
+	return out, err
+}
+
+// ReplyQuestion answers one request: the chosen labels per question.
+func (c *Opencode) ReplyQuestion(ctx context.Context, requestID string, answers [][]string) error {
+	if answers == nil {
+		answers = [][]string{}
+	}
+	body, _ := json.Marshal(map[string]any{"answers": answers})
+	return post(ctx, c.HTTP, c.Base+"/question/"+requestID+"/reply", body)
+}
+
+// RejectQuestion declines to answer; the tool call fails and the agent
+// carries on without it.
+func (c *Opencode) RejectQuestion(ctx context.Context, requestID string) error {
+	return post(ctx, c.HTTP, c.Base+"/question/"+requestID+"/reject", []byte("{}"))
 }
 
 // Events reads GET /event (server-sent events, one JSON object per data:

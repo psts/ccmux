@@ -49,8 +49,12 @@ func TestAgentChat_LiveThenAsleep(t *testing.T) {
 	if hello.State != "running" || hello.Session != "ses_1" || hello.Title != "now" || len(hello.Turns) != 2 || len(hello.Permissions) != 1 || hello.Permissions[0].ID != "per_1" {
 		t.Fatalf("live hello: %+v", hello)
 	}
+	if len(hello.Questions) != 1 || hello.Questions[0].ID != "que_1" || hello.Questions[0].Questions[0].Options[1].Label != "Coffee" {
+		t.Fatalf("hello questions: %+v", hello.Questions)
+	}
 	conn.WriteJSON(chatFrame{T: "prompt", Text: "and then?"})
 	conn.WriteJSON(chatFrame{T: "permission", ID: "per_1", Reply: "always"})
+	conn.WriteJSON(chatFrame{T: "question", ID: "que_1", Answers: [][]string{{"Coffee"}}})
 	oc.Events <- `{"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_a2","role":"assistant","time":{"created":5}}}}`
 	oc.Events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_x","messageID":"m","partID":"p","field":"text","delta":"NOT MINE"}}`
 	oc.Events <- `{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_9","messageID":"msg_a2","type":"tool","tool":"read","state":{"status":"running","input":{"path":"a"},"title":"read a"}}}}`
@@ -64,11 +68,19 @@ func TestAgentChat_LiveThenAsleep(t *testing.T) {
 		t.Fatalf("part: %+v", part)
 	}
 	readChat(t, conn, "idle")
+	oc.Events <- `{"type":"question.asked","properties":{"id":"que_2","sessionID":"ses_1","questions":[{"question":"Again?","header":"Q2","options":[{"label":"Yes","description":""}]}]}}`
+	oc.Events <- `{"type":"question.rejected","properties":{"sessionID":"ses_1","requestID":"que_2"}}`
+	if q := readChat(t, conn, "question"); q.Question == nil || q.Question.ID != "que_2" || q.Question.Questions[0].Header != "Q2" {
+		t.Fatalf("question frame: %+v", q)
+	}
+	if r := readChat(t, conn, "question-replied"); r.ID != "que_2" {
+		t.Fatalf("question-replied: %+v", r)
+	}
 	// The reader handles client frames on its own goroutine: give it a moment.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		prompts, _, replies := oc.Recorded()
-		if len(prompts) == 1 && prompts[0] == "ses_1:and then?" && replies["per_1"] == "always" {
+		if a := oc.Answers(); len(prompts) == 1 && prompts[0] == "ses_1:and then?" && replies["per_1"] == "always" && len(a["que_1"]) == 1 && a["que_1"][0][0] == "Coffee" {
 			break
 		}
 		if time.Now().After(deadline) {

@@ -37,6 +37,7 @@ type FakeOpencode struct {
 	prompts []string
 	aborts  int
 	replies map[string]string
+	answers map[string][][]string
 	// Events is fed by the test: each string is one SSE data payload.
 	Events   chan string
 	Server   *httptest.Server
@@ -44,7 +45,7 @@ type FakeOpencode struct {
 }
 
 func NewFakeOpencode() *FakeOpencode {
-	f := &FakeOpencode{replies: map[string]string{}, Events: make(chan string, 16)}
+	f := &FakeOpencode{replies: map[string]string{}, answers: map[string][][]string{}, Events: make(chan string, 16)}
 	f.Sessions = `[{"id":"ses_old","title":"old","directory":"/inst","time":{"updated":1}},{"id":"ses_1","title":"new","directory":"/inst","time":{"updated":9}}]`
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /session", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, f.Sessions) })
@@ -73,6 +74,25 @@ func NewFakeOpencode() *FakeOpencode {
 		json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.replies[r.PathValue("id")] = body.Reply
+		f.mu.Unlock()
+		w.WriteHeader(200)
+	})
+	mux.HandleFunc("GET /question", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"Pick one.","header":"Demo","options":[{"label":"Tea","description":"calm"},{"label":"Coffee","description":"alert"}]}]}]`)
+	})
+	mux.HandleFunc("POST /question/{id}/reply", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Answers [][]string `json:"answers"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.answers[r.PathValue("id")] = body.Answers
+		f.mu.Unlock()
+		w.WriteHeader(200)
+	})
+	mux.HandleFunc("POST /question/{id}/reject", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.answers[r.PathValue("id")] = nil
 		f.mu.Unlock()
 		w.WriteHeader(200)
 	})
@@ -115,4 +135,15 @@ func (f *FakeOpencode) Recorded() (prompts []string, aborts int, replies map[str
 		replies[k] = v
 	}
 	return append([]string(nil), f.prompts...), f.aborts, replies
+}
+
+// Answers is what the client answered per question request (nil = rejected).
+func (f *FakeOpencode) Answers() map[string][][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string][][]string{}
+	for k, v := range f.answers {
+		out[k] = v
+	}
+	return out
 }
