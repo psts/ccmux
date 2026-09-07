@@ -371,7 +371,7 @@ menus no longer carry agent rows (2026-09-06).
 
 Mac: the same Agents tab and the same rows on the window header's right-click
 menu (open and sleep for running, wake or add with a first-message prompt box
-for the rest); the prompt box stands in for the composer (the Mac has no bar
-over the pane). The lists refresh every poll for open windows. Known gap on
-the Mac, to close when it can be built: no ⚙ mark on agent pane tabs.
+for the rest); the chat view (§10) is the composer on both. The lists
+refresh every poll for open windows, and agent pane tabs carry a gear on
+both (⚙ in the web strip, gearshape in the Mac tab bar, 2026-09-07).
 Unbuilt on the Linux host; the release tag job builds it.

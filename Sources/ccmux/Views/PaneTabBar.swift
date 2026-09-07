@@ -206,12 +206,20 @@ private struct TabChip: View {
     let onClose: () -> Void
 
     @State private var isHovered = false
+    @ObservedObject private var service = RemoteSessionService.shared
+
+    /// An agent instance's pane carries the gear the web lens's tab strip
+    /// shows (⚙), so the two lenses read the same at a glance.
+    private var isAgent: Bool {
+        guard let id = tab.hostedPaneId else { return false }
+        return service.agentPanes[id] != nil
+    }
 
     var body: some View {
         HStack(spacing: 5) {
             // A dormant tab is dimmed rather than badged: it marks an absence,
             // not an alert, and must not compete with attention states.
-            Image(systemName: tab.isDormant ? "moon.zzz" : tab.iconName)
+            Image(systemName: tab.isDormant ? "moon.zzz" : (isAgent ? "gearshape" : tab.iconName))
                 .font(.system(size: 10))
                 .foregroundColor(isActive ? .primary : .secondary)
                 .opacity(tab.isDormant ? 0.55 : 1)

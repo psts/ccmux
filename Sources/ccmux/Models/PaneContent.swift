@@ -31,6 +31,12 @@ enum PaneContent: Identifiable, Codable {
         }
     }
 
+    /// The daemon pane id when this tab is a hosted terminal, else nil.
+    var hostedPaneId: String? {
+        if case .terminal(let c) = self { return c.host.hostedPaneId }
+        return nil
+    }
+
     /// True when this tab is a hosted terminal whose Claude has exited.
     var isDormant: Bool {
         if case .terminal(let c) = self { return c.dormant }
