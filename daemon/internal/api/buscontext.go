@@ -44,7 +44,7 @@ func (s *Server) busContextOfPane(paneID string) (string, int, string) {
 	if err != nil {
 		return "", http.StatusInternalServerError, err.Error()
 	}
-	return buscontext.Paragraph(s.windowSessions(win), agents), 0, ""
+	return buscontext.Paragraph(s.windowSessions(win), s.sharedDirOf(win), agents), 0, ""
 }
 
 // windowAgentsOf is windowInstances in the renderer's shape; no agent store

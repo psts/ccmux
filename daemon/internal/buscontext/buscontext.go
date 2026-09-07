@@ -30,16 +30,32 @@ type Agent struct {
 	State       string `json:"state"`
 }
 
-// Paragraph is the instructions form: sessions first, then agents. Empty
-// when there is nothing to say, so a caller outside any window appends
-// nothing.
-func Paragraph(sessions []Session, agents []Agent) string {
-	return sessionsParagraph(sessions) + agentsParagraph(agents)
+// Paragraph is the instructions form: sessions first, then the window's
+// shared folder (shared is its path, "" before any agent has started
+// there), then agents. Empty when there is nothing to say, so a caller
+// outside any window appends nothing.
+func Paragraph(sessions []Session, shared string, agents []Agent) string {
+	return sessionsParagraph(sessions) + sharedParagraph(shared) + agentsParagraph(agents)
 }
 
-// Section is the list_peers footer: the same two lists, tool-shaped.
-func Section(sessions []Session, agents []Agent) string {
-	return sessionsSection(sessions) + agentsSection(agents)
+// Section is the list_peers footer: the same lists, tool-shaped.
+func Section(sessions []Session, shared string, agents []Agent) string {
+	return sessionsSection(sessions) + sharedSection(shared) + agentsSection(agents)
+}
+
+func sharedParagraph(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return "\n\nSHARED FOLDER of this window: " + dir + ". Every agent here reads and writes it: put what another agent in this project needs there. " +
+		"Its .env is loaded into every agent's environment at its next start: one KEY=VALUE per line, the value taken as-is (surrounding quotes stripped, no shell syntax, nothing runs); an agent's own folder may hold a .env too, and that one wins. Secrets go in .env, never in notes or memory.\n"
+}
+
+func sharedSection(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return "\n\nShared folder of this window (every agent reads and writes it; its .env loads into agents at start): " + dir + "\n"
 }
 
 func sessionsParagraph(list []Session) string {

@@ -18,10 +18,17 @@ func (a *app) agents() []agentEntry {
 	return out
 }
 
-// sessions fetches the repo sessions of this session's window; nil on any
-// failure, like agents.
-func (a *app) sessions() []sessionEntry {
-	var out []sessionEntry
+// windowSessions is the daemon's answer to POST /v1/peers/sessions: the
+// window's repo sessions and its shared folder ("" before it exists).
+type windowSessions struct {
+	Sessions []sessionEntry `json:"sessions"`
+	Shared   string         `json:"shared"`
+}
+
+// sessions fetches the repo sessions and shared folder of this session's
+// window; empty on any failure, like agents.
+func (a *app) sessions() windowSessions {
+	var out windowSessions
 	a.windowList("/v1/peers/sessions", &out)
 	return out
 }
@@ -39,10 +46,12 @@ func (a *app) windowList(path string, out any) {
 // folder holds only its memory; this paragraph is how it learns where the
 // project's code is without anyone writing paths into its instructions.
 func (a *app) windowParagraph() string {
-	return buscontext.Paragraph(a.sessions(), a.agents())
+	w := a.sessions()
+	return buscontext.Paragraph(w.Sessions, w.Shared, a.agents())
 }
 
-// windowSection is the list_peers footer: the same two lists, tool-shaped.
+// windowSection is the list_peers footer: the same lists, tool-shaped.
 func (a *app) windowSection() string {
-	return buscontext.Section(a.sessions(), a.agents())
+	w := a.sessions()
+	return buscontext.Section(w.Sessions, w.Shared, a.agents())
 }

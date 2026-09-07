@@ -20,7 +20,7 @@ import (
 // Returns "" when there is no program (empty command, or `env` with nothing
 // after its flags).
 func StartupProgram(startupCmd string) string {
-	fields := strings.Fields(startupCmd)
+	fields := strings.Fields(stripEnvSourcing(startupCmd))
 	for i := 0; i < len(fields); i++ {
 		f := fields[i]
 		switch {
@@ -33,6 +33,23 @@ func StartupProgram(startupCmd string) string {
 		}
 	}
 	return ""
+}
+
+// EnvExecVerb is ccmuxd's subcommand an agent launch puts ahead of its
+// harness line to load .env files ("<ccmuxd> env-exec -f F ... -- ...",
+// agent.LaunchCommand). The program is what comes after the "--", not
+// ccmuxd.
+const EnvExecVerb = "env-exec"
+
+func stripEnvSourcing(cmd string) string {
+	fields := strings.Fields(cmd)
+	if len(fields) < 2 || filepath.Base(fields[0]) != "ccmuxd" || fields[1] != EnvExecVerb {
+		return cmd
+	}
+	if _, rest, ok := strings.Cut(cmd, " -- "); ok {
+		return rest
+	}
+	return cmd
 }
 
 // skipEnvOptions takes the index of an `env` field and returns the index of the

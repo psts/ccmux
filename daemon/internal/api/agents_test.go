@@ -3,13 +3,16 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,6 +93,7 @@ type windowAgentFixture struct {
 func newWindowAgentFixture(t *testing.T, harnessCmd string) *windowAgentFixture {
 	t.Helper()
 	srv, _, base, st := harnessStackServer(t)
+	agent.EnvExecPath = envExecBinary(t) // the launch line calls ccmuxd back; use THIS tree's, not the installed one
 	f := &windowAgentFixture{srv: srv, st: st, base: base, ws: createWS(t, base)}
 	// A real (short-lived) process, not a shell builtin: tmux must report a
 	// harness in the foreground for the start mark to clear, as it does for
@@ -204,7 +208,7 @@ func TestWindowAgents_AddWakeSleep(t *testing.T) {
 		if code != 201 || p.Agent != "x-poster" || p.AgentVersion != "1.0.0" || p.WorkspaceID == f.ws.ID {
 			t.Fatalf("add = %d %+v", code, p)
 		}
-		if !strings.Contains(p.CWD, "/windows/chart-labs-") || !strings.HasSuffix(p.CWD, "/agents/x-poster") || strings.Contains(p.StartupCommand, "hello there") || !strings.HasPrefix(p.StartupCommand, "CLAUDE_PEERS_NAME=x-poster ") {
+		if !strings.Contains(p.CWD, "/windows/chart-labs-") || !strings.HasSuffix(p.CWD, "/agents/x-poster") || strings.Contains(p.StartupCommand, "hello there") || !strings.Contains(p.StartupCommand, " -- CLAUDE_PEERS_NAME=x-poster ") {
 			t.Fatalf("pane cwd/command: %+v", p)
 		}
 		for _, file := range []string{"AGENTS.md", "opencode.jsonc", "memory/MEMORY.md", "log.md"} {
@@ -310,9 +314,17 @@ func TestWindowAgents_ProjectFoldersOnTheLaunch(t *testing.T) {
 	if dirs := f.srv.windowRepos(win); len(dirs) != 1 || dirs[0] != "/tmp" {
 		t.Fatalf("window repos = %v, want the project session only", dirs)
 	}
-	dirs, _, msg := f.srv.windowReposOfPane(pane.ID)
-	if msg != "" || len(dirs) != 1 || dirs[0] != "/tmp" {
-		t.Fatalf("repos of the agent's pane = %v %q", dirs, msg)
+	dirs, shared, _, msg := f.srv.windowDirsOfPane(pane.ID)
+	if msg != "" || len(dirs) != 1 || dirs[0] != "/tmp" || !strings.HasSuffix(shared, filepath.Join("chart-labs-"+f.winID[:8], "shared")) {
+		t.Fatalf("dirs of the agent's pane = %v shared %q %q", dirs, shared, msg)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "README.md")); err != nil {
+		t.Fatalf("the first start creates the shared folder with its README: %v", err)
+	}
+	// The launch reaches the shared folder (claude: one more --add-dir) and
+	// sources both env files, the instance's last so it wins.
+	if !strings.Contains(pane.StartupCommand, " env-exec -f "+shared+"/.env -f "+pane.CWD+"/.env -- ") {
+		t.Fatalf("startup command does not name the env files: %s", pane.StartupCommand)
 	}
 	// The bus tells the same folders by session: the agent's own session is
 	// not a project folder, so it is not in the list.
@@ -330,8 +342,8 @@ func TestWindowAgents_UnreadableWindowsFailClosed(t *testing.T) {
 	_, pane := f.start(t, "x-poster", "")
 	f.waitState(t, "asleep")
 	_ = f.st.Close() // the window tables are now unreadable
-	if dirs, status, msg := f.srv.windowReposOfPane(pane.ID); status != http.StatusServiceUnavailable || msg == "" || dirs != nil {
-		t.Fatalf("repos with unreadable windows = %v %d %q, want a 503 refusal", dirs, status, msg)
+	if dirs, shared, status, msg := f.srv.windowDirsOfPane(pane.ID); status != http.StatusServiceUnavailable || msg == "" || dirs != nil || shared != "" {
+		t.Fatalf("dirs with unreadable windows = %v %q %d %q, want a 503 refusal", dirs, shared, status, msg)
 	}
 	err := f.srv.startAgentForPeer("chart labs", "x-poster", "hi")
 	if err == nil || strings.Contains(err.Error(), "joins a shared window") {
@@ -468,12 +480,25 @@ func TestPeersSessions_AndPaneBusContext(t *testing.T) {
 		t.Fatalf("register: %d %v", resp.StatusCode, err)
 	}
 	resp = postJSON(t, f.base+"/v1/peers/sessions", tok, map[string]any{"peer_id": reg.PeerID})
-	var sessions []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil || resp.StatusCode != 200 {
+	var got struct {
+		Sessions []map[string]any `json:"sessions"`
+		Shared   string           `json:"shared"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("sessions: %d %v", resp.StatusCode, err)
 	}
+	sessions := got.Sessions
 	if len(sessions) != 1 || sessions[0]["name"] != "flood" || sessions[0]["repoPath"] != "/tmp" || sessions[0]["status"] != "live" {
 		t.Fatalf("sessions = %v, want the project session only", sessions)
+	}
+	if got.Shared != "" {
+		t.Fatalf("no agent has started here yet, so no shared folder: %q", got.Shared)
+	}
+	f.start(t, "x-poster", "")
+	resp = postJSON(t, f.base+"/v1/peers/sessions", tok, map[string]any{"peer_id": reg.PeerID})
+	json.NewDecoder(resp.Body).Decode(&got)
+	if !strings.HasSuffix(got.Shared, "/shared") {
+		t.Fatalf("after the first agent start the bus names the shared folder: %q", got.Shared)
 	}
 	if resp := postJSON(t, f.base+"/v1/peers/sessions", "", map[string]any{"peer_id": reg.PeerID}); resp.StatusCode != 401 {
 		t.Fatalf("no token = %d, want 401", resp.StatusCode)
@@ -482,12 +507,12 @@ func TestPeersSessions_AndPaneBusContext(t *testing.T) {
 	resp = postJSON(t, f.base+"/v1/peers/register", peers.PanelessToken(testSecret), map[string]any{"pid": nextFakePID, "cwd": "/home/u/elsewhere", "git_root": "/home/u/elsewhere"})
 	json.NewDecoder(resp.Body).Decode(&reg)
 	resp = postJSON(t, f.base+"/v1/peers/sessions", peers.PanelessToken(testSecret), map[string]any{"peer_id": reg.PeerID})
-	if b, _ := io.ReadAll(resp.Body); resp.StatusCode != 200 || strings.TrimSpace(string(b)) != "[]" {
-		t.Fatalf("outside a window = %d %q, want an empty list", resp.StatusCode, b)
+	if b, _ := io.ReadAll(resp.Body); resp.StatusCode != 200 || strings.TrimSpace(string(b)) != `{"sessions":[],"shared":""}` {
+		t.Fatalf("outside a window = %d %q, want an empty list and no folder", resp.StatusCode, b)
 	}
 
 	text := getText(t, f.base+"/v1/panes/"+pane+"/bus-context")
-	for _, want := range []string{"PROJECT SESSIONS IN THIS WINDOW", "- flood: /tmp [live]", "AGENTS ON THIS BUS", "- x-poster: "} {
+	for _, want := range []string{"PROJECT SESSIONS IN THIS WINDOW", "- flood: /tmp [live]", "SHARED FOLDER of this window: " + got.Shared, "AGENTS ON THIS BUS", "- x-poster: "} {
 		if !strings.Contains(text, want) {
 			t.Errorf("bus-context missing %q:\n%s", want, text)
 		}
@@ -509,4 +534,76 @@ func getText(t *testing.T, url string) string {
 		t.Fatalf("GET %s = %d %s", url, resp.StatusCode, b)
 	}
 	return string(b)
+}
+
+var (
+	envExecOnce sync.Once
+	envExecPath string
+	envExecErr  error
+)
+
+// envExecBinary builds this tree's ccmuxd once per test run, for launch
+// lines that call its env-exec verb: the fixture's panes would otherwise
+// run whatever ccmuxd is installed on the host, which may predate the verb.
+func envExecBinary(t *testing.T) string {
+	t.Helper()
+	envExecOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "ccmuxd-envexec-")
+		if err != nil {
+			envExecErr = err
+			return
+		}
+		envExecPath = filepath.Join(dir, "ccmuxd")
+		out, err := exec.Command("go", "build", "-o", envExecPath, "../../cmd/ccmuxd").CombinedOutput()
+		if err != nil {
+			envExecErr = fmt.Errorf("go build ccmuxd: %v\n%s", err, out)
+		}
+	})
+	if envExecErr != nil {
+		t.Fatal(envExecErr)
+	}
+	return envExecPath
+}
+
+// A value in the window's shared .env reaches the harness's environment,
+// and the instance's own .env wins over it — through env-exec, with the
+// file read as data (the shell line in it is a variable's value, not a
+// command).
+func TestWindowAgents_EnvFilesReachTheHarness(t *testing.T) {
+	dir := t.TempDir()
+	out, script := filepath.Join(dir, "seen"), filepath.Join(dir, "harness.sh")
+	// A script, so the harness line (which the fixture drops into JSON) stays
+	// quote-free; sh is the foreground program, as the startup line says.
+	os.WriteFile(script, []byte("sleep 1; printf '%s|%s' \"$CCMUX_T_SHARED\" \"$CCMUX_T_BOTH\" > "+out+"\n"), 0o755)
+	f := newWindowAgentFixture(t, "sh "+script)
+	win, _, msg := f.srv.windowByID(f.winID)
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	shared, err := f.srv.agents.EnsureShared(win.ID, win.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(shared, ".env"), []byte("CCMUX_T_SHARED='from shared; $(true)'\nCCMUX_T_BOTH=shared\n"), 0o600)
+	inst := f.srv.agents.InstanceDir(win.ID, win.Name, "x-poster")
+	os.MkdirAll(inst, 0o755)
+	os.WriteFile(filepath.Join(inst, ".env"), []byte("CCMUX_T_BOTH=instance\nnot a pair\n"), 0o600)
+	if code, _ := f.start(t, "x-poster", ""); code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	// "asleep" is also what the pane reports before the harness has begun,
+	// so wait for the file itself.
+	var b []byte
+	for deadline := time.Now().Add(8 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		var err error
+		if b, err = os.ReadFile(out); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the harness never wrote its environment: %v", err)
+		}
+	}
+	if got := string(b); got != "from shared; $(true)|instance" {
+		t.Fatalf("harness saw %q", got)
+	}
 }

@@ -4,35 +4,58 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
 // InstanceDir is where a base lives inside one shared window (a project):
 // the project's own instructions, skills, memory and log for that agent
-// (spec §12). It sits beside the bases,
-// ~/.ccmux/windows/<window-slug>-<id prefix>/agents/<name>: the slug keeps
-// the folder readable, the id prefix keeps two windows whose names slug the
-// same ("Chart Labs", "Chart-Labs") apart. The folder is found again through
-// the agent session's RepoPath, never by rebuilding this path, so a window
-// rename does not lose memory.
+// (spec §12). It sits beside the bases, under the window's folder
+// (WindowDir), as agents/<name>. A running instance is found again through
+// the agent session's RepoPath, never by rebuilding this path.
 func (s *Store) InstanceDir(windowID, windowName, name string) string {
-	return filepath.Join(filepath.Dir(s.Root), "windows", windowFolder(windowID, windowName), "agents", name)
+	return filepath.Join(s.WindowDir(windowID, windowName), "agents", name)
+}
+
+// WindowDir is the window's folder, ~/.ccmux/windows/<slug>-<id prefix>: the
+// slug keeps it readable, the id prefix keeps two windows whose names slug
+// the same ("Chart Labs", "Chart-Labs") apart. Resolved by lookup, so a
+// renamed window keeps its folder: an existing folder ending in the id
+// prefix wins, and only a window without one gets a new name. Nothing is
+// matched by name alone: a folder that merely shares the slug is not this
+// window's, and adopting it would hand its shared/.env to the wrong project.
+func (s *Store) WindowDir(windowID, windowName string) string {
+	root := filepath.Join(filepath.Dir(s.Root), "windows")
+	prefix := idPrefix(windowID)
+	entries, err := os.ReadDir(root)
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() && (e.Name() == prefix || strings.HasSuffix(e.Name(), "-"+prefix)) {
+				return filepath.Join(root, e.Name())
+			}
+		}
+	}
+	return filepath.Join(root, windowFolder(windowID, windowName))
 }
 
 // windowFolder is "<slug>-<first 8 of the id>" (model.SlugText: ASCII
 // letters and digits, one dash per other run, none at the ends); just the
 // id prefix when the name has no ASCII letters or digits.
 func windowFolder(id, name string) string {
-	prefix := id
-	if len(prefix) > 8 {
-		prefix = prefix[:8]
-	}
+	prefix := idPrefix(id)
 	slug := model.SlugText(name)
 	if slug == "" {
 		return prefix
 	}
 	return slug + "-" + prefix
+}
+
+func idPrefix(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // Bootstrap creates the instance folder dir for base d if it is not there

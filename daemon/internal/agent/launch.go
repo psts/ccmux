@@ -22,8 +22,9 @@ type Launch struct {
 }
 
 // LaunchCommand renders the harness command for base d. Every harness gets
-// CLAUDE_PEERS_NAME so the peers shim registers under the agent's name
-// instead of the folder's. The rest is per harness:
+// the env files sourced first (envPrefix) and CLAUDE_PEERS_NAME so the peers
+// shim registers under the agent's name instead of the folder's. The rest
+// is per harness:
 //
 //   - claude: the base rides in as a plugin and an appended system prompt,
 //     the window's project folders (dirs) are reachable through --add-dir,
@@ -34,8 +35,8 @@ type Launch struct {
 //     server --port remain; the prompt travels over that port afterwards;
 //   - anything else: the harness command as configured, prompt appended
 //     positionally, which is what pi and codex accept.
-func LaunchCommand(d Definition, h harness.Harness, baseDir string, dirs []string, prompt string, port int) Launch {
-	prefix := "CLAUDE_PEERS_NAME=" + shellQuote(d.Name) + " "
+func LaunchCommand(d Definition, h harness.Harness, baseDir string, dirs, envFiles []string, prompt string, port int) Launch {
+	prefix := envPrefix(envFiles) + "CLAUDE_PEERS_NAME=" + shellQuote(d.Name) + " "
 	var persist, deliver string
 	switch h.Name {
 	case harness.Builtin:
@@ -61,6 +62,23 @@ func LaunchCommand(d Definition, h harness.Harness, baseDir string, dirs []strin
 		}
 	}
 	return Launch{Persist: persist, Deliver: deliver}
+}
+
+// envPrefix puts ccmuxd's env-exec verb ahead of the harness line with the
+// env files to load, in order (a later file wins). The files are parsed as
+// KEY=VALUE data by the verb (never sourced: a file an agent wrote must not
+// be able to run anything), the values ride in the harness's environment
+// and never in the persisted command, and the files are read again at
+// every start, so a token an agent saved is back next time.
+func envPrefix(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	parts := []string{shellQuote(EnvExecPath), harness.EnvExecVerb}
+	for _, f := range files {
+		parts = append(parts, "-f", shellQuote(f))
+	}
+	return strings.Join(parts, " ") + " -- "
 }
 
 func claudeFlags(d Definition, cmd, baseDir string, dirs []string) string {

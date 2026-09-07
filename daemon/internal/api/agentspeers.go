@@ -34,16 +34,27 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// peersSessions: POST /v1/peers/sessions {"peer_id"} → the repo sessions of
-// the caller's window. This is how an agent finds the project it was added
-// to: its own folder holds only its memory, the code lives in these. A
-// caller outside a shared window sees an empty list.
+// peersSessions: POST /v1/peers/sessions {"peer_id"} → {"sessions", "shared"}:
+// the repo sessions of the caller's window and the window's shared folder
+// ("" until an agent's first start there creates it). This is how an agent
+// finds the project it was added to: its own folder holds only its memory,
+// the code lives in these. A caller outside a shared window sees an empty
+// list and no folder.
 func (s *Server) peersSessions(w http.ResponseWriter, r *http.Request) {
 	win, ok := s.peerWindow(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.windowSessions(win))
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.windowSessions(win), "shared": s.sharedDirOf(win)})
+}
+
+// sharedDirOf is the window's shared folder when it exists, "" otherwise —
+// and "" outside any window or without an agent store.
+func (s *Server) sharedDirOf(win manager.WindowInfo) string {
+	if s.agents == nil || win.ID == "" {
+		return ""
+	}
+	return s.agents.ExistingSharedDir(win.ID, win.Name)
 }
 
 // peerWindow authenticates a bus caller and resolves its window. A group

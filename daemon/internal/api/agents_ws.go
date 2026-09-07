@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -136,6 +137,18 @@ func (s *Server) windowRepos(win manager.WindowInfo) []string {
 	return dirs
 }
 
+// windowDirs is what an agent start needs from its window: the repo folders
+// and the shared folder, created here (with its README, once) so it exists
+// from the first start and the bus can name it. A window outside... is not a
+// case: callers resolve the window first.
+func (s *Server) windowDirs(win manager.WindowInfo) (repos []string, shared string, msg string) {
+	shared, err := s.agents.EnsureShared(win.ID, win.Name)
+	if err != nil {
+		return nil, "", "shared folder: " + err.Error()
+	}
+	return s.windowRepos(win), shared, ""
+}
+
 func (s *Server) instanceOf(win manager.WindowInfo, d agent.Definition) agentInstance {
 	inst := agentInstance{Name: d.Name, Icon: d.Icon, Description: d.Description, Version: d.Version, State: "absent"}
 	ws := s.agentWorkspace(win, d.Name)
@@ -200,7 +213,11 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 	if msg := s.agentCapMessage(); msg != "" {
 		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
 	}
-	l, status, msg := s.resolveAgentLaunch(d, s.agents.InstanceDir(win.ID, win.Name, name), s.windowRepos(win), "", prompt)
+	dirs, shared, msg := s.windowDirs(win)
+	if msg != "" {
+		return startOutcome{status: http.StatusInternalServerError, msg: msg}
+	}
+	l, status, msg := s.resolveAgentLaunch(d, s.agents.InstanceDir(win.ID, win.Name, name), dirs, shared, "", prompt)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
@@ -246,10 +263,13 @@ func (s *Server) agentDefinition(name string) (agent.Definition, int, string) {
 }
 
 // resolveAgentLaunch turns base d into a ready AgentLaunch for the instance
-// folder dir (written here) with dirs as the project folders, or an HTTP
-// status and message explaining why not. wsID is the instance's existing
-// session when it has one (its opencode port is reused), "" for a fresh add.
-func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []string, wsID, prompt string) (manager.AgentLaunch, int, string) {
+// folder dir (written here) with dirs as the project folders and shared the
+// window's shared folder ("" outside a window), or an HTTP status and
+// message explaining why not. The shared folder rides along as one more
+// --add-dir, and its .env plus the instance's own are sourced at start
+// (instance last, so it wins). wsID is the instance's existing session when
+// it has one (its opencode port is reused), "" for a fresh add.
+func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []string, shared, wsID, prompt string) (manager.AgentLaunch, int, string) {
 	if s.mgr.Harnesses == nil {
 		return manager.AgentLaunch{}, http.StatusServiceUnavailable, agentsUnavailable
 	}
@@ -271,7 +291,12 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 	if msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}
-	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), dirs, prompt, port)
+	envFiles := []string{filepath.Join(dir, agent.EnvFile)}
+	if shared != "" {
+		dirs = append(dirs, shared)
+		envFiles = []string{filepath.Join(shared, agent.EnvFile), envFiles[0]}
+	}
+	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), dirs, envFiles, prompt, port)
 	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route, Prompt: prompt, Port: port}, 0, ""
 }
 
@@ -353,11 +378,11 @@ func (s *Server) startAgent(wsID, name, prompt string) startOutcome {
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
-	dirs, status, msg := s.windowReposOfPane(existing.ID)
+	dirs, shared, status, msg := s.windowDirsOfPane(existing.ID)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
-	l, status, msg := s.resolveAgentLaunch(d, ws.RepoPath, dirs, wsID, prompt)
+	l, status, msg := s.resolveAgentLaunch(d, ws.RepoPath, dirs, shared, wsID, prompt)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
@@ -405,26 +430,31 @@ func (s *Server) launchIntoAgentSession(ws *model.Workspace, paneID string, l ma
 	return startOutcome{}
 }
 
-// windowReposOfPane is windowRepos for the window the pane's session sits in
+// windowDirsOfPane is windowDirs for the window the pane's session sits in
 // (its RESOLVED window, not the legacy column). A session outside any
-// window launches with no project folders, and the log says so at every
-// such start; an unreadable window table is a refusal (status, message),
-// because a launch with no folders would be persisted as the agent's recipe.
-func (s *Server) windowReposOfPane(paneID string) ([]string, int, string) {
+// window launches with no project folders and no shared folder, and the
+// log says so at every such start; an unreadable window table is a refusal
+// (status, message), because a launch with no folders would be persisted as
+// the agent's recipe.
+func (s *Server) windowDirsOfPane(paneID string) ([]string, string, int, string) {
 	group, ok := s.mgr.GroupForPane(paneID)
 	if !ok || group == "" {
 		log.Printf("agent pane %s: its session is in no shared window; launching without project folders", paneID)
-		return nil, 0, ""
+		return nil, "", 0, ""
 	}
 	win, status, msg := s.windowByName(group)
 	if status == http.StatusNotFound {
 		log.Printf("agent pane %s: group %q is not a shared window; launching without project folders", paneID, group)
-		return nil, 0, ""
+		return nil, "", 0, ""
 	}
 	if msg != "" {
-		return nil, status, msg
+		return nil, "", status, msg
 	}
-	return s.windowRepos(win), 0, ""
+	dirs, shared, msg := s.windowDirs(win)
+	if msg != "" {
+		return nil, "", http.StatusInternalServerError, msg
+	}
+	return dirs, shared, 0, ""
 }
 
 // startOutcome is what startAgent hands its adapters: the pane, the HTTP

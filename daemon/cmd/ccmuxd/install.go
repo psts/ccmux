@@ -54,6 +54,8 @@ func runSubcommand(name string, args []string) {
 		err = cmdUninstall(args)
 	case "upgrade":
 		err = cmdUpgrade(args)
+	case "env-exec":
+		err = cmdEnvExec(args)
 	case "version": // -version/--version arrive here via main's carve-out
 		fmt.Printf("ccmuxd %s (wire contract %d)\n", version.Build, version.Contract)
 		os.Exit(0)

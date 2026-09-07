@@ -99,17 +99,18 @@ clean for a week, then `allow` with a bash pattern list.
 
 ## 7. Memory policy
 
-Agents write their own memory; no layer is human-curated. Two layers today,
-a third planned.
+Agents write their own memory; no layer is human-curated. Three layers.
 
 | Layer | Owner | Lives | Example |
 |---|---|---|---|
 | Project instructions | whoever added the agent | instance `AGENTS.md`, `.claude/skills/` | project voice, who approves |
 | Agent memory | the agent | instance `memory/` and `log.md` | "posts with images get 3x replies here", "last thread 2026-09-05" |
-| Window shared (planned) | every agent in the window | `shared/` beside the window's `agents/` | what one agent learned that another in the same project needs |
+| Window shared | every agent in the window | `shared/` beside the window's `agents/` (created, with a README, by the first agent start there) | what one agent learned that another in the same project needs |
 
-There is no base `knowledge/` folder (dropped 2026-09-07): learning that
-crosses windows has no home yet. Memory is per instance. `agent.json.memory:
+The bus names the shared folder to every session in the window (same
+paragraph as the repo sessions), and a claude agent gets it as one more
+`--add-dir`. There is no base `knowledge/` folder (dropped 2026-09-07):
+learning that crosses windows has no home yet. Memory is per instance. `agent.json.memory:
 "shared"` is recorded but NOT implemented yet: every instance still gets its
 own folder. Same for `start: "continue"` and `sideEffects`: stored and shown,
 not acted on. Enforcement is a follow-up.
@@ -189,7 +190,10 @@ Code instances get them as channel messages.
 
 - Which window/group? The instance is reachable by name inside that group;
   other groups use `to_group`.
-- Which repo folders does it need? `addDirs`.
+- Which repo folders does it need beyond the window's own? `addDirs`. The
+  window's repos and its `shared/` folder come for free.
+- Which secrets? `KEY=VALUE` lines in the instance `.env`, or in the
+  window's `shared/.env` when every agent there needs them.
 - Which project instructions does it need on day one? Write them in the
   instance `AGENTS.md`. Keep the starter file's header.
 - Any project-only skills? `.claude/skills/`.
@@ -234,6 +238,19 @@ Code instances get them as channel messages.
 └── mcp.json
 ```
 
+### Window folder
+
+```
+~/.ccmux/windows/<window-slug>-<id prefix>/
+├── shared/            every agent in the window reads and writes it
+│   ├── README.md      written once
+│   └── .env           optional; loaded into every agent's environment at start
+└── agents/<name>/     one instance folder per agent added to the window
+```
+
+The folder is found by lookup, so a renamed window keeps it: a folder
+ending in the window's id prefix, else a new one. Never by name alone.
+
 ### Instance folder
 
 ```
@@ -243,10 +260,25 @@ Code instances get them as channel messages.
 ├── .claude/skills/
 ├── memory/MEMORY.md
 ├── log.md
+├── .env               optional; this agent's own secrets, wins over shared/.env
 └── opencode.jsonc     GENERATED at every start from the base: instructions
                        path, permissions, MCP servers + peers bus, snapshot off.
                        The one daemon-owned file here; do not edit.
 ```
+
+### Secrets: `.env`
+
+Never in memory, notes or instructions. One `KEY=VALUE` per line, the
+value taken as-is (surrounding quotes stripped, no shell syntax), in
+`shared/.env` (every agent in the window) or the instance's `.env` (this
+agent only, wins). The launch line is `ccmuxd env-exec -f shared/.env -f
+<instance>/.env -- <harness line>`: the verb parses the files as data and
+execs the harness with the variables set, so nothing in a file ever runs
+(an agent that can write a file must not gain a shell past its permission
+gate), the values ride in the harness's environment and never in the
+persisted command, and the files are read again at every start, so a token
+an agent saved is back next time. An agent that obtains a credential
+writes it there itself.
 
 Implemented in `daemon/internal/agent` (2026-09-05): `Store` over
 `~/.ccmux/agents` (`-agents-dir`), `Reject`, `Save` (bumps the patch version

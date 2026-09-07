@@ -64,6 +64,7 @@ func main() {
 }
 
 func runDaemon() {
+	agent.EnvExecPath = selfExecutable() // the launch line names this binary's env-exec verb
 	socket := flag.String("socket", "ccmux", "tmux server socket name (-L)")
 	addr := flag.String("addr", "127.0.0.1:7890", "HTTP listen address")
 	dbPath := flag.String("db", defaultDBPath(), "registry SQLite path")
@@ -696,4 +697,14 @@ func configDir() string {
 		dir = os.TempDir()
 	}
 	return filepath.Join(dir, "ccmuxd")
+}
+
+// selfExecutable is this binary's path, for launch lines that must call it
+// back (env-exec); the bare name when the OS cannot say, leaving PATH to
+// find it.
+func selfExecutable() string {
+	if self, err := os.Executable(); err == nil {
+		return self
+	}
+	return "ccmuxd"
 }
