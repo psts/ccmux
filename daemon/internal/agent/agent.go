@@ -51,14 +51,16 @@ type Definition struct {
 	// Memory is "per-instance" (default) or "shared": whether an agent's own
 	// notes are kept per project or across them (spec §7).
 	Memory string `json:"memory,omitempty"`
-	// Start is "fresh" (default) or "continue" (spec §8).
+	// Start is "fresh" (default) or "continue" (spec §8): whether a wake
+	// resumes the instance's last opencode session by default. A chat wake
+	// may say otherwise for that one start.
 	Start           string `json:"start,omitempty"`
 	IdleExitMinutes int    `json:"idleExitMinutes"`
 	KeepAlive       bool   `json:"keepAlive"`
 
 	// MaxTurnsPerTask, MaxTokensPerTask and SideEffects are recorded for the
 	// lenses and the spec; the daemon does not enforce or render them yet
-	// (docs/agent-spec.md §10). Memory and Start likewise: stored, not acted on.
+	// (docs/agent-spec.md §10). Memory likewise: stored, not acted on.
 	MaxTurnsPerTask  int      `json:"maxTurnsPerTask"`
 	MaxTokensPerTask int      `json:"maxTokensPerTask"`
 	SideEffects      []string `json:"sideEffects,omitempty"`

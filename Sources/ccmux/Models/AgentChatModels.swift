@@ -25,14 +25,16 @@ struct AgentChatFrame: Codable {
     var question: AgentQuestion?
     var answers: [[String]]?
     var text: String?
+    var resume: Bool?
     var error: String?
 
-    init(t: String, text: String? = nil, id: String? = nil, reply: String? = nil, answers: [[String]]? = nil) {
+    init(t: String, text: String? = nil, id: String? = nil, reply: String? = nil, answers: [[String]]? = nil, resume: Bool? = nil) {
         self.t = t
         self.text = text
         self.id = id
         self.reply = reply
         self.answers = answers
+        self.resume = resume
     }
 }
 
@@ -65,6 +67,8 @@ struct AgentTurn: Codable, Identifiable {
     var time: Int64
     var parts: [AgentTurnPart]
     var error: String?
+    /// Set on a role "session" marker: the divider between two conversations.
+    var title: String?
 
     init(id: String, role: String, time: Int64 = 0, parts: [AgentTurnPart] = [], error: String? = nil) {
         self.id = id
@@ -81,6 +85,7 @@ struct AgentTurn: Codable, Identifiable {
         time = try c.decodeIfPresent(Int64.self, forKey: .time) ?? 0
         parts = try c.decodeIfPresent([AgentTurnPart].self, forKey: .parts) ?? []
         error = try c.decodeIfPresent(String.self, forKey: .error)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
     }
 }
 

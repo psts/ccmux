@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,8 +47,11 @@ func TestAgentChat_LiveThenAsleep(t *testing.T) {
 	conn := dialChat(t, f.base, pane.ID)
 	defer conn.Close()
 	hello := readChat(t, conn, "hello")
-	if hello.State != "running" || hello.Session != "ses_1" || hello.Title != "now" || len(hello.Turns) != 2 || len(hello.Permissions) != 1 || hello.Permissions[0].ID != "per_1" {
+	if hello.State != "running" || hello.Session != "ses_1" || hello.Title != "now" || len(hello.Turns) != 3 || len(hello.Permissions) != 1 || hello.Permissions[0].ID != "per_1" {
 		t.Fatalf("live hello: %+v", hello)
+	}
+	if hello.Turns[0].Role != "session" || hello.Turns[0].Title != "now" || hello.Resume == nil || *hello.Resume {
+		t.Fatalf("history opens with the session marker and carries the base's resume default: %+v %v", hello.Turns[0], hello.Resume)
 	}
 	if len(hello.Questions) != 1 || hello.Questions[0].ID != "que_1" || hello.Questions[0].Questions[0].Options[1].Label != "Coffee" {
 		t.Fatalf("hello questions: %+v", hello.Questions)
@@ -91,11 +95,12 @@ func TestAgentChat_LiveThenAsleep(t *testing.T) {
 	// sleep ends: the pane is at its shell, the view goes asleep with the
 	// offline history.
 	asleep := readChat(t, conn, "hello")
-	if asleep.State != "asleep" || asleep.Session != "ses_off" || len(asleep.Turns) != 1 || asleep.Turns[0].Parts[0].Text != "earlier" {
+	if asleep.State != "asleep" || asleep.Session != "ses_off" || len(asleep.Turns) != 2 || asleep.Turns[0].Role != "session" || asleep.Turns[1].Parts[0].Text != "earlier" {
 		t.Fatalf("asleep hello: %+v", asleep)
 	}
 	// A prompt while asleep wakes the agent with it: starting, then live again.
-	conn.WriteJSON(chatFrame{T: "prompt", Text: "wake up"})
+	yes := true
+	conn.WriteJSON(chatFrame{T: "prompt", Text: "wake up", Resume: &yes})
 	if st := readChat(t, conn, "state"); st.State != "starting" {
 		t.Fatalf("after a prompt while asleep: %+v", st)
 	}
@@ -133,6 +138,52 @@ func readChat(t *testing.T, conn *websocket.Conn, kind string) chatFrame {
 		}
 		if f.T == "error" {
 			t.Logf("error frame while waiting for %q: %s", kind, f.Error)
+		}
+	}
+}
+
+// History is the last few conversations oldest first, each behind its
+// marker, capped; and resuming names the newest session on the typed
+// launch line only, by the caller's choice over the base's default.
+func TestAgentChat_HistoryAndResume(t *testing.T) {
+	var sessions []agent.OpencodeSession
+	for i := 6; i >= 1; i-- {
+		sessions = append(sessions, agent.OpencodeSession{ID: fmt.Sprintf("ses_%d", i), Title: fmt.Sprintf("t%d", i), Updated: int64(i)})
+	}
+	turns, err := history(context.Background(), sessions, func(id string) ([]agent.Turn, error) {
+		return []agent.Turn{{ID: "m-" + id, Role: "user"}}, nil
+	})
+	if err != nil || len(turns) != 2*historySessions {
+		t.Fatalf("history = %d turns, %v", len(turns), err)
+	}
+	if turns[0].ID != "session:ses_3" || turns[1].ID != "m-ses_3" || turns[len(turns)-1].ID != "m-ses_6" {
+		t.Fatalf("order: %s … %s", turns[0].ID, turns[len(turns)-1].ID)
+	}
+
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	f.srv.offlineSessions = func(context.Context, string) ([]agent.OpencodeSession, error) {
+		return []agent.OpencodeSession{{ID: "ses_last"}}, nil
+	}
+	f.put(t, "/v1/settings", `{"harnesses":[{"name":"opencode","icon":"·","command":"sleep 1;:"}]}`, 200)
+	d, _, msg := f.srv.agentDefinition("x-poster")
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	d.Harness = "opencode"
+	yes, no := true, false
+	for _, tc := range []struct {
+		start  string
+		resume *bool
+		want   bool
+	}{{"fresh", nil, false}, {"continue", nil, true}, {"fresh", &yes, true}, {"continue", &no, false}} {
+		d.Start = tc.start
+		l, status, msg := f.srv.resolveAgentLaunch(d, t.TempDir(), nil, "", "", "", tc.resume)
+		if msg != "" {
+			t.Fatalf("resolve (%s, %v): %d %s", tc.start, tc.resume, status, msg)
+		}
+		got := strings.Contains(l.Deliver, "--session ses_last")
+		if got != tc.want || strings.Contains(l.Persist, "--session") {
+			t.Errorf("start=%s resume=%v: deliver %q persist %q", tc.start, tc.resume, l.Deliver, l.Persist)
 		}
 	}
 }

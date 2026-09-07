@@ -112,8 +112,9 @@ paragraph as the repo sessions), and a claude agent gets it as one more
 `--add-dir`. There is no base `knowledge/` folder (dropped 2026-09-07):
 learning that crosses windows has no home yet. Memory is per instance. `agent.json.memory:
 "shared"` is recorded but NOT implemented yet: every instance still gets its
-own folder. Same for `start: "continue"` and `sideEffects`: stored and shown,
-not acted on. Enforcement is a follow-up.
+own folder. `start: "continue"` is the default for whether a wake resumes the
+instance's last opencode session (the chat view offers the choice per wake);
+`sideEffects` is stored and shown, not acted on. Enforcement is a follow-up.
 
 ## 8. Lifecycle
 
@@ -169,7 +170,12 @@ reports them; the lens sends prompt, abort, permission replies (once,
 always, reject) and question answers (the chosen labels per question, or a
 reject). Asleep, the transcript comes from opencode's store through its
 CLI (`session list`, `export`), and a prompt wakes the agent with that
-text. One normalized shape, `agent.Turn`, in `internal/agent/transcript.go`;
+text. The transcript is the agent's last four conversations in one scroll,
+oldest first, each behind a session marker (a role "session" turn), so a
+woken agent's earlier work stays above the fresh conversation. Asleep, the
+prompt box offers "Continue previous conversation": on, the launch adds
+`--session <newest>` on the typed line (never the persisted one); the
+base's `start` is the default, and bus wakes follow it. One normalized shape, `agent.Turn`, in `internal/agent/transcript.go`;
 `daemon/web/agentchat.js` and `Sources/ccmux/Views/AgentChatPaneView.swift`
 render it. Claude-harness agents keep the terminal for now. `send_message(to_name=<agent>,
 spawn_if_missing=true)` from a pane starts or wakes the agent in the SENDER's

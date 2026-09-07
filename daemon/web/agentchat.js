@@ -23,6 +23,7 @@
       `<span class="ac-spacer"></span><button class="ac-stop" title="Stop the current turn">Stop</button>` +
       `<button class="ac-term" title="Show the raw terminal">Terminal</button></div>` +
       `<div class="ac-error hidden"></div><div class="ac-log"></div><div class="ac-perms"></div>` +
+      `<label class="ac-resume hidden"><input type="checkbox"> Continue previous conversation</label>` +
       `<form class="ac-compose"><textarea rows="2"></textarea><button type="submit">Send</button></form>`;
     box.querySelector(".ac-term").onclick = () => setMode("terminal");
     box.querySelector(".ac-stop").onclick = () => send({ t: "abort" });
@@ -43,7 +44,9 @@
     if (!text || !cur) return;
     ta.value = "";
     setBusy(true);
-    send({ t: "prompt", text });
+    const frame = { t: "prompt", text };
+    if (cur.state === "asleep") frame.resume = $("agent-chat").querySelector(".ac-resume input").checked;
+    send(frame);
   }
 
   function send(frame) {
@@ -140,6 +143,8 @@
     box.querySelector(".ac-log").innerHTML = "";
     box.querySelector(".ac-perms").innerHTML = "";
     showError(f.error || "");
+    cur.session = f.session || "";
+    if (typeof f.resume === "boolean") $("agent-chat").querySelector(".ac-resume input").checked = f.resume;
     setState(f.state, f.title || "");
     for (const t of f.turns || []) upsertTurn(t);
     for (const p of f.permissions || []) addPermission(p);
@@ -156,6 +161,8 @@
     box.querySelector(".ac-state").dataset.state = state;
     if (title != null) box.querySelector(".ac-session").textContent = title;
     box.querySelector(".ac-stop").classList.toggle("hidden", state !== "running" || !cur.busy);
+    // The choice only exists while asleep, and only with something to continue.
+    box.querySelector(".ac-resume").classList.toggle("hidden", !(state === "asleep" && cur.session));
     box.querySelector("textarea").placeholder =
       state === "asleep" ? `Message ${cur.agent}… Enter starts it` : `Message ${cur.agent}… Enter sends, Shift+Enter for a new line`;
   }
@@ -177,6 +184,15 @@
   function upsertTurn(t) {
     const log = $("agent-chat").querySelector(".ac-log");
     const follow = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
+    if (t.role === "session") {
+      if (!cur.turns.has(t.id)) {
+        const d = el("div", "ac-session-mark", `${t.title || "conversation"} · ${fmtWhen(t.time)}`);
+        cur.turns.set(t.id, { turn: t, el: d, parts: d, err: d });
+        log.appendChild(d);
+      }
+      if (follow) log.scrollTop = log.scrollHeight;
+      return;
+    }
     let rec = cur.turns.get(t.id);
     if (!rec) {
       rec = { turn: t, el: el("div", "ac-turn " + t.role) };
@@ -253,6 +269,13 @@
       output.classList.toggle("error", !!np.error);
     };
     return { root, update, append: (field, d) => { if (field === "output") output.textContent += d; } };
+  }
+
+  function fmtWhen(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    const sameDay = d.toDateString() === new Date().toDateString();
+    return sameDay ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
   function pretty(v) {

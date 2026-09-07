@@ -35,33 +35,50 @@ type Launch struct {
 //     server --port remain; the prompt travels over that port afterwards;
 //   - anything else: the harness command as configured, prompt appended
 //     positionally, which is what pi and codex accept.
-func LaunchCommand(d Definition, h harness.Harness, baseDir string, dirs, envFiles []string, prompt string, port int) Launch {
-	prefix := envPrefix(envFiles) + "CLAUDE_PEERS_NAME=" + shellQuote(d.Name) + " "
+func LaunchCommand(d Definition, h harness.Harness, baseDir string, o LaunchOpts) Launch {
+	prefix := envPrefix(o.EnvFiles) + "CLAUDE_PEERS_NAME=" + shellQuote(d.Name) + " "
 	var persist, deliver string
 	switch h.Name {
 	case harness.Builtin:
-		persist = prefix + claudeFlags(d, h.Command, baseDir, dirs)
+		persist = prefix + claudeFlags(d, h.Command, baseDir, o.Dirs)
 		deliver = persist
-		if prompt != "" {
-			deliver += " -- " + shellQuote(prompt)
+		if o.Prompt != "" {
+			deliver += " -- " + shellQuote(o.Prompt)
 		}
 	case "opencode":
 		// The prompt is NOT on this line: --prompt only prefills the TUI. The
 		// caller pushes it through the server on --port (PushPrompt), which
 		// is why the port is persisted: a wake reads it back (OpencodePort).
-		persist = prefix + h.Command + " --agent " + shellQuote(d.Name) + " --port " + strconv.Itoa(port)
+		persist = prefix + h.Command + " --agent " + shellQuote(d.Name) + " --port " + strconv.Itoa(o.Port)
 		if d.Model != "" {
 			persist += " --model " + shellQuote(d.Model)
 		}
 		deliver = persist
+		if o.Session != "" {
+			// Resume rides on the typed line only: it is this start's
+			// choice, and a persisted --session would pin every later one.
+			deliver += " --session " + shellQuote(o.Session)
+		}
 	default:
 		persist = prefix + h.Command
 		deliver = persist
-		if prompt != "" {
-			deliver += " " + shellQuote(prompt)
+		if o.Prompt != "" {
+			deliver += " " + shellQuote(o.Prompt)
 		}
 	}
 	return Launch{Persist: persist, Deliver: deliver}
+}
+
+// LaunchOpts is what one start adds to the base: the window's folders
+// (--add-dir for claude), the env files to load, the first prompt, the
+// opencode server port, and the opencode session to continue ("" starts a
+// fresh conversation).
+type LaunchOpts struct {
+	Dirs     []string
+	EnvFiles []string
+	Prompt   string
+	Port     int
+	Session  string
 }
 
 // envPrefix puts ccmuxd's env-exec verb ahead of the harness line with the

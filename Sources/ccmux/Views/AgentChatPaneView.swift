@@ -131,6 +131,16 @@ struct AgentChatPaneView: View {
     }
 
     private var composer: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if chat.state == "asleep", !chat.session.isEmpty {
+                Toggle("Continue previous conversation", isOn: $chat.resume)
+                    .toggleStyle(.checkbox).font(.system(size: 11)).padding(.horizontal, 10)
+            }
+            composerRow
+        }
+    }
+
+    private var composerRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField(placeholder, text: $draft, axis: .vertical)
                 .lineLimit(1...6)
@@ -157,6 +167,29 @@ struct AgentTurnRow: View {
     let agent: String
 
     var body: some View {
+        if turn.role == "session" {
+            HStack(spacing: 8) {
+                Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1)
+                Text("\(turn.title ?? "conversation") · \(when(turn.time))")
+                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1).fixedSize()
+                Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1)
+            }
+            .padding(.vertical, 6)
+        } else {
+            message
+        }
+    }
+
+    private func when(_ ms: Int64) -> String {
+        guard ms > 0 else { return "" }
+        let d = Date(timeIntervalSince1970: Double(ms) / 1000)
+        let f = DateFormatter()
+        f.dateStyle = Calendar.current.isDateInToday(d) ? .none : .medium
+        f.timeStyle = .short
+        return f.string(from: d)
+    }
+
+    private var message: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(turn.role == "user" ? "you" : agent)
                 .font(.system(size: 10))

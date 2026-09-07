@@ -170,6 +170,9 @@ func (s *Server) instanceOf(win manager.WindowInfo, d agent.Definition) agentIns
 type startAgentReq struct {
 	Prompt    string `json:"prompt"`
 	CreatedBy string `json:"createdBy"`
+	// Resume, when given, says whether this start continues the instance's
+	// last conversation; absent, the base's start setting decides.
+	Resume *bool `json:"resume,omitempty"`
 }
 
 // startWindowAgentRoute: POST /v1/windows/{id}/agents/{name} adds the base
@@ -188,7 +191,7 @@ func (s *Server) startWindowAgentRoute(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	out := s.startWindowAgent(win, r.PathValue("name"), req.Prompt, req.CreatedBy)
+	out := s.startWindowAgent(win, r.PathValue("name"), req.Prompt, req.CreatedBy, req.Resume)
 	if out.msg != "" {
 		writeError(w, out.status, out.msg)
 		return
@@ -199,12 +202,12 @@ func (s *Server) startWindowAgentRoute(w http.ResponseWriter, r *http.Request) {
 // startWindowAgent is the ONE add-or-wake flow for a window: an instance
 // already there is woken through startAgent, a missing one is created as a
 // new session in the window. The HTTP route and the bus are adapters over it.
-func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdBy string) startOutcome {
+func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdBy string, resume *bool) startOutcome {
 	if s.agents == nil {
 		return startOutcome{status: http.StatusServiceUnavailable, msg: agentsUnavailable}
 	}
 	if ws := s.agentWorkspace(win, name); ws != nil {
-		return s.startAgent(ws.ID, name, prompt)
+		return s.startAgent(ws.ID, name, prompt, resume)
 	}
 	d, status, msg := s.agentDefinition(name)
 	if msg != "" {
@@ -217,7 +220,7 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 	if msg != "" {
 		return startOutcome{status: http.StatusInternalServerError, msg: msg}
 	}
-	l, status, msg := s.resolveAgentLaunch(d, s.agents.InstanceDir(win.ID, win.Name, name), dirs, shared, "", prompt)
+	l, status, msg := s.resolveAgentLaunch(d, s.agents.InstanceDir(win.ID, win.Name, name), dirs, shared, "", prompt, resume)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
@@ -269,7 +272,7 @@ func (s *Server) agentDefinition(name string) (agent.Definition, int, string) {
 // --add-dir, and its .env plus the instance's own are sourced at start
 // (instance last, so it wins). wsID is the instance's existing session when
 // it has one (its opencode port is reused), "" for a fresh add.
-func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []string, shared, wsID, prompt string) (manager.AgentLaunch, int, string) {
+func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []string, shared, wsID, prompt string, resume *bool) (manager.AgentLaunch, int, string) {
 	if s.mgr.Harnesses == nil {
 		return manager.AgentLaunch{}, http.StatusServiceUnavailable, agentsUnavailable
 	}
@@ -296,8 +299,31 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 		dirs = append(dirs, shared)
 		envFiles = []string{filepath.Join(shared, agent.EnvFile), envFiles[0]}
 	}
-	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), dirs, envFiles, prompt, port)
+	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), agent.LaunchOpts{
+		Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port, Session: s.resumeSession(d, h, dir, resume),
+	})
 	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route, Prompt: prompt, Port: port}, 0, ""
+}
+
+// resumeSession is the opencode session this start continues: the
+// instance's newest, when the caller asked to resume or (asked nothing)
+// the base says start: continue; "" for a fresh conversation, for other
+// harnesses, and for an instance with no session yet.
+func (s *Server) resumeSession(d agent.Definition, h harness.Harness, dir string, resume *bool) string {
+	want := d.Start == "continue"
+	if resume != nil {
+		want = *resume
+	}
+	if !want || h.Name != "opencode" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sessions, err := s.offlineSessions(ctx, dir)
+	if err != nil || len(sessions) == 0 {
+		return ""
+	}
+	return sessions[0].ID
 }
 
 // agentPort is the opencode server port for an instance: the one its pane
@@ -369,7 +395,7 @@ func (s *Server) agentRoute(d agent.Definition, h harness.Harness) (string, int,
 // persisted line. Returns the pane, the HTTP status a transport would answer
 // with (200 woken) and the refusal message, "" when it went through. The
 // window route, the bus and the lifecycle loop are all adapters over this.
-func (s *Server) startAgent(wsID, name, prompt string) startOutcome {
+func (s *Server) startAgent(wsID, name, prompt string, resume *bool) startOutcome {
 	ws, existing, refusal := s.agentSessionReady(wsID, name)
 	if refusal.msg != "" {
 		return refusal
@@ -382,7 +408,7 @@ func (s *Server) startAgent(wsID, name, prompt string) startOutcome {
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
-	l, status, msg := s.resolveAgentLaunch(d, ws.RepoPath, dirs, shared, wsID, prompt)
+	l, status, msg := s.resolveAgentLaunch(d, ws.RepoPath, dirs, shared, wsID, prompt, resume)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}

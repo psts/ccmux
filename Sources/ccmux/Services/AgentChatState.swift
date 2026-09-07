@@ -14,6 +14,10 @@ final class AgentChatState: ObservableObject {
     @Published private(set) var title = ""
     @Published private(set) var error = ""
     @Published private(set) var busy = false
+    @Published private(set) var session = ""
+    /// The "continue previous conversation" choice for the next wake; seeded
+    /// from the base's start setting on every hello.
+    @Published var resume = false
     @Published private(set) var connection: DaemonConnectionState = .closed
 
     let agent: String
@@ -52,7 +56,7 @@ final class AgentChatState: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         busy = true
-        send(AgentChatFrame(t: "prompt", text: trimmed))
+        send(AgentChatFrame(t: "prompt", text: trimmed, resume: state == "asleep" ? resume : nil))
     }
 
     func abort() { send(AgentChatFrame(t: "abort")) }
@@ -99,6 +103,8 @@ final class AgentChatState: ObservableObject {
         questions = f.questions ?? []
         state = f.state ?? "asleep"
         title = f.title ?? ""
+        session = f.session ?? ""
+        if let r = f.resume { resume = r }
         error = f.error ?? ""
         busy = false
         for t in f.turns ?? [] { upsert(t) }

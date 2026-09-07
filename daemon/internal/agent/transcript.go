@@ -17,6 +17,15 @@ type Turn struct {
 	// Error is the assistant turn's failure, if it ended in one ("aborted",
 	// a provider refusal), in one line.
 	Error string `json:"error,omitempty"`
+	// Title is set on a role "session" marker: the divider between two
+	// conversations when a chat shows an agent's last few in one scroll.
+	Title string `json:"title,omitempty"`
+}
+
+// SessionMarker is the divider turn a chat puts ahead of one session's
+// turns; lenses draw it as a line, never as a message.
+func SessionMarker(s OpencodeSession) Turn {
+	return Turn{ID: "session:" + s.ID, Role: "session", Time: s.Updated, Parts: []TurnPart{}, Title: s.Title}
 }
 
 // TurnPart is one piece of a turn: text the model wrote, its reasoning, or

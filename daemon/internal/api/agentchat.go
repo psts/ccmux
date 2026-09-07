@@ -54,17 +54,24 @@ type chatFrame struct {
 	Questions []agent.QuestionRequest `json:"questions,omitempty"`
 	Question  *agent.QuestionRequest  `json:"question,omitempty"`
 	Answers   [][]string              `json:"answers,omitempty"`
-	// prompt (client → daemon) carries Text; error carries Error.
-	Text  string `json:"text,omitempty"`
-	Error string `json:"error,omitempty"`
+	// prompt (client → daemon) carries Text, and Resume when the agent is
+	// asleep: whether this start continues the last conversation. On the
+	// hello, Resume is the base's default for that choice.
+	Text   string `json:"text,omitempty"`
+	Resume *bool  `json:"resume,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
+
+// historySessions is how many of an agent's conversations a chat shows in
+// one scroll, newest last, each behind a session marker.
+const historySessions = 4
 
 // chatConn is one lens's chat socket on one agent pane.
 type chatConn struct {
 	s      *Server
 	pane   *model.Pane
 	out    chan chatFrame
-	wake   chan string
+	wake   chan wakeReq
 	cancel context.CancelFunc
 	mu     sync.Mutex
 	oc     *agent.Opencode // live client, nil while asleep
@@ -105,7 +112,7 @@ func (s *Server) paneAgentChat(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	c := &chatConn{s: s, pane: p, out: make(chan chatFrame, 64), wake: make(chan string, 1), cancel: cancel}
+	c := &chatConn{s: s, pane: p, out: make(chan chatFrame, 64), wake: make(chan wakeReq, 1), cancel: cancel}
 	go c.readLoop(conn)
 	go c.run(ctx)
 	c.writeLoop(ctx, conn)
@@ -159,7 +166,7 @@ func (c *chatConn) handle(f chatFrame) {
 	oc, sid := c.oc, c.sid
 	c.mu.Unlock()
 	if f.T == "prompt" && oc == nil {
-		c.requestWake(f.Text)
+		c.requestWake(wakeReq{text: f.Text, resume: f.Resume})
 		return
 	}
 	if oc == nil {
@@ -191,9 +198,16 @@ func (c *chatConn) liveAction(ctx context.Context, oc *agent.Opencode, sid strin
 	return nil
 }
 
-func (c *chatConn) requestWake(text string) {
+// wakeReq is a prompt typed into an asleep agent: the text, and whether to
+// continue the last conversation (nil = the base's default).
+type wakeReq struct {
+	text   string
+	resume *bool
+}
+
+func (c *chatConn) requestWake(w wakeReq) {
 	select {
-	case c.wake <- text:
+	case c.wake <- w:
 	default:
 		c.send(chatFrame{T: "error", Error: "already starting"})
 	}
@@ -249,8 +263,8 @@ func (c *chatConn) awaitWake(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case text := <-c.wake:
-			if msg := c.s.wakeFromChat(c.pane, text); msg != "" {
+		case w := <-c.wake:
+			if msg := c.s.wakeFromChat(c.pane, w); msg != "" {
 				c.send(chatFrame{T: "error", Error: msg})
 				continue
 			}
@@ -280,7 +294,7 @@ func (c *chatConn) awaitServer(ctx context.Context) {
 
 // wakeFromChat starts the agent with text as its first message, through the
 // one add-or-wake flow (the pane's session must sit in a shared window).
-func (s *Server) wakeFromChat(p *model.Pane, text string) string {
+func (s *Server) wakeFromChat(p *model.Pane, w wakeReq) string {
 	group, ok := s.mgr.GroupForPane(p.ID)
 	if !ok || group == "" {
 		return "this agent's session is in no shared window; add it to one first"
@@ -289,7 +303,7 @@ func (s *Server) wakeFromChat(p *model.Pane, text string) string {
 	if msg != "" {
 		return msg
 	}
-	return s.startWindowAgent(win, p.Agent, text, "chat").msg
+	return s.startWindowAgent(win, p.Agent, w.text, "chat", w.resume).msg
 }
 
 // runLive serves one live phase: hello with the transcript, then the event
@@ -339,13 +353,14 @@ func (c *chatConn) liveHello(ctx context.Context, oc *agent.Opencode) (chatFrame
 	if err != nil {
 		return chatFrame{}, err
 	}
-	hello := chatFrame{T: "hello", Agent: c.pane.Agent, State: "running", Turns: []agent.Turn{}}
-	cur := newestIn(sessions, c.pane.CWD)
-	if cur == nil {
+	hello := chatFrame{T: "hello", Agent: c.pane.Agent, State: "running", Turns: []agent.Turn{}, Resume: c.resumeDefault()}
+	mine := sessionsIn(sessions, c.pane.CWD)
+	if len(mine) == 0 {
 		return hello, nil
 	}
+	cur := mine[0]
 	hello.Session, hello.Title = cur.ID, cur.Title
-	if hello.Turns, err = oc.Messages(ctx, cur.ID); err != nil {
+	if hello.Turns, err = history(ctx, mine, func(id string) ([]agent.Turn, error) { return oc.Messages(ctx, id) }); err != nil {
 		return chatFrame{}, err
 	}
 	perms, err := oc.Permissions(ctx)
@@ -373,7 +388,7 @@ func (c *chatConn) liveHello(ctx context.Context, oc *agent.Opencode) (chatFrame
 // instance folder, from opencode's store; empty when it has none, or when
 // opencode's CLI cannot answer (said in Error, not hidden).
 func (c *chatConn) asleepHello(ctx context.Context) chatFrame {
-	hello := chatFrame{T: "hello", Agent: c.pane.Agent, State: "asleep", Turns: []agent.Turn{}}
+	hello := chatFrame{T: "hello", Agent: c.pane.Agent, State: "asleep", Turns: []agent.Turn{}, Resume: c.resumeDefault()}
 	sessions, err := c.s.offlineSessions(ctx, c.pane.CWD)
 	if err != nil {
 		hello.Error = err.Error()
@@ -383,22 +398,60 @@ func (c *chatConn) asleepHello(ctx context.Context) chatFrame {
 		return hello
 	}
 	hello.Session, hello.Title = sessions[0].ID, sessions[0].Title
-	if hello.Turns, err = c.s.offlineTranscript(ctx, sessions[0].ID); err != nil {
+	if hello.Turns, err = history(ctx, sessions, func(id string) ([]agent.Turn, error) { return c.s.offlineTranscript(ctx, id) }); err != nil {
 		hello.Error, hello.Turns = err.Error(), []agent.Turn{}
 	}
 	return hello
 }
 
-func newestIn(sessions []agent.OpencodeSession, dir string) *agent.OpencodeSession {
-	for i := range sessions {
-		if agent.SameDir(sessions[i].Directory, dir) {
-			return &sessions[i]
+// resumeDefault is the base's start setting as the chat's default for the
+// "continue previous conversation" choice; nil when the base cannot be read.
+func (c *chatConn) resumeDefault() *bool {
+	if c.s.agents == nil {
+		return nil
+	}
+	d, err := c.s.agents.Get(c.pane.Agent)
+	if err != nil {
+		return nil
+	}
+	v := d.Start == "continue"
+	return &v
+}
+
+// sessionsIn is the sessions opened in dir, newest first (the list is
+// already newest first); every session when none matches, so a stray
+// folder still shows something.
+func sessionsIn(sessions []agent.OpencodeSession, dir string) []agent.OpencodeSession {
+	var mine []agent.OpencodeSession
+	for _, s := range sessions {
+		if agent.SameDir(s.Directory, dir) {
+			mine = append(mine, s)
 		}
 	}
-	if len(sessions) > 0 {
-		return &sessions[0]
+	if len(mine) == 0 {
+		return sessions
 	}
-	return nil
+	return mine
+}
+
+// history is the last historySessions conversations in one scroll, oldest
+// first, each behind its marker, so a woken agent's earlier work stays on
+// screen above the fresh conversation.
+func history(ctx context.Context, newestFirst []agent.OpencodeSession, fetch func(id string) ([]agent.Turn, error)) ([]agent.Turn, error) {
+	if len(newestFirst) > historySessions {
+		newestFirst = newestFirst[:historySessions]
+	}
+	turns := []agent.Turn{}
+	for i := len(newestFirst) - 1; i >= 0; i-- {
+		s := newestFirst[i]
+		got, err := fetch(s.ID)
+		if err != nil {
+			return nil, err
+		}
+		turns = append(turns, agent.SessionMarker(s))
+		turns = append(turns, got...)
+	}
+	return turns, nil
 }
 
 // eventProps is the union of what the chat view reads from opencode's

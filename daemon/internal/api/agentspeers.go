@@ -93,7 +93,7 @@ func (s *Server) startAgentForPeer(group, name, prompt string) error {
 	if msg != "" {
 		return errors.New(msg)
 	}
-	return peerStartError(s.startWindowAgent(win, name, prompt, "claude-peers"))
+	return peerStartError(s.startWindowAgent(win, name, prompt, "claude-peers", nil))
 }
 
 // peerStartError is the bus's reading of a start: "already running" (a live
