@@ -6,7 +6,6 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/manager"
-	"ccmux.dev/ccmuxd/internal/model"
 )
 
 // peersAgents: POST /v1/peers/agents {"peer_id"} → the base agents as seen
@@ -33,16 +32,6 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, s.instanceOf(win, d))
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// windowSession is one repo session of a shared window as the bus tells it
-// to every session there: the name it is messaged by, where its code is on
-// this host, and whether its tmux session is open. Whether someone is
-// listening there is list_peers' question, not this one's.
-type windowSession struct {
-	Name     string       `json:"name"`
-	RepoPath string       `json:"repoPath"`
-	Status   model.Status `json:"status"`
 }
 
 // peersSessions: POST /v1/peers/sessions {"peer_id"} → the repo sessions of

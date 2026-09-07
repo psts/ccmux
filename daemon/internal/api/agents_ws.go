@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/buscontext"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -115,11 +116,11 @@ func (s *Server) agentWorkspace(win manager.WindowInfo, name string) *model.Work
 
 // windowSessions lists win's ordinary (non-agent) sessions on this host —
 // the project's repos, as the bus tells them to every session in the window.
-func (s *Server) windowSessions(win manager.WindowInfo) []windowSession {
-	out := []windowSession{}
+func (s *Server) windowSessions(win manager.WindowInfo) []buscontext.Session {
+	out := []buscontext.Session{}
 	for _, id := range win.WorkspaceIDs {
 		if ws := s.mgr.Workspace(id); ws != nil && ws.Agent == "" {
-			out = append(out, windowSession{Name: ws.Name, RepoPath: ws.RepoPath, Status: ws.Status})
+			out = append(out, buscontext.Session{Name: ws.Name, RepoPath: ws.RepoPath, Status: string(ws.Status)})
 		}
 	}
 	return out

@@ -350,11 +350,11 @@ struct DaemonSettingsView: View {
 
     /// Base agents: folders the daemon owns, one card each. Rows save on their
     /// own button (per-name upsert, not part of the settings Save); delete is
-    /// confirmed because the folder holds skills and knowledge a human wrote.
+    /// confirmed because the folder holds skills a human wrote.
     private var agentsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Role agents live as folders under ~/.ccmux/agents. Add one to a project from the project's menu; message it by name on the bus. Skills, MCP servers and knowledge files live in the folder.")
+                Text("Role agents live as folders under ~/.ccmux/agents. Add one to a project from the project's menu; message it by name on the bus. Skills and MCP servers live in the folder.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -454,7 +454,7 @@ struct DaemonSettingsView: View {
         }
         let alert = NSAlert()
         alert.messageText = "Delete agent “\(a.name)”?"
-        alert.informativeText = "Removes its folder, skills and knowledge included. Project instance folders stay."
+        alert.informativeText = "Removes its folder, skills included. Project instance folders stay."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")

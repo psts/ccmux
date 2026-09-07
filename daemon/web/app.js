@@ -1822,7 +1822,7 @@ wireHarnessSettings();
 
 // --- Agents tab: base agents are folders the daemon owns; each row saves on
 // change to PUT /v1/agents/{name}. Delete is explicit and confirmed: the
-// folder holds skills and knowledge a human wrote. ---
+// folder holds skills a human wrote. ---
 function wireAgentSettings() {
   const box = $("agent-list"), addBtn = $("agent-add"), statusEl = $("agent-state");
   if (!box) return;
@@ -1895,7 +1895,7 @@ function wireAgentSettings() {
   async function deleteRow(row) {
     const name = row.dataset.name;
     if (!name) { row.remove(); return; }
-    if (!confirm(`Delete agent "${name}" and its folder (skills, knowledge included)? Project instance folders stay.`)) return;
+    if (!confirm(`Delete agent "${name}" and its folder (skills included)? Project instance folders stay.`)) return;
     try {
       const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
       if (!r.ok && r.status !== 404) throw new Error(await r.text());
@@ -1917,7 +1917,7 @@ function wireAgentSettings() {
       addBtn.disabled = false;
       if (!r.ok) { statusEl.textContent = "Couldn't load agents: " + (await r.text()); return; } // names the broken folder
       for (const a of (await r.json()).agents || []) box.appendChild(agentRow(a));
-      statusEl.textContent = "Rows save on change. Skills, MCP servers and knowledge files live in the agent's folder.";
+      statusEl.textContent = "Rows save on change. Skills and MCP servers live in the agent's folder.";
     } catch (_) {
       statusEl.textContent = "Couldn't load agents.";
     }

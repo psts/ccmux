@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -446,4 +447,66 @@ func TestPeerStartError_InFlightIsNotAFailure(t *testing.T) {
 	if err := peerStartError(startOutcome{status: 404, msg: "no such agent"}); err == nil || err.Error() != "no such agent" {
 		t.Fatalf("other refusals carry their message: %v", err)
 	}
+}
+
+// The bus tells a session in a window which repo sessions the window holds
+// (POST /v1/peers/sessions, as the peer) and serves the same as one
+// paragraph to the opencode plugin (GET /v1/panes/{id}/bus-context, by pane).
+// A caller outside any window gets an empty list or an empty body, never an
+// error; a caller without a token gets nothing.
+func TestPeersSessions_AndPaneBusContext(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	f.srv.EnablePeers(peers.NewService(f.st, f.srv.mgr, testSecret))
+	pane := f.ws.Panes[0].ID
+	tok := peers.TokenForPane(testSecret, pane)
+	nextFakePID++
+	resp := postJSON(t, f.base+"/v1/peers/register", tok, map[string]any{"pane_id": pane, "pid": nextFakePID, "cwd": "/tmp", "git_root": "/tmp"})
+	var reg struct {
+		PeerID string `json:"peer_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&reg); err != nil || reg.PeerID == "" {
+		t.Fatalf("register: %d %v", resp.StatusCode, err)
+	}
+	resp = postJSON(t, f.base+"/v1/peers/sessions", tok, map[string]any{"peer_id": reg.PeerID})
+	var sessions []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("sessions: %d %v", resp.StatusCode, err)
+	}
+	if len(sessions) != 1 || sessions[0]["name"] != "flood" || sessions[0]["repoPath"] != "/tmp" || sessions[0]["status"] != "live" {
+		t.Fatalf("sessions = %v, want the project session only", sessions)
+	}
+	if resp := postJSON(t, f.base+"/v1/peers/sessions", "", map[string]any{"peer_id": reg.PeerID}); resp.StatusCode != 401 {
+		t.Fatalf("no token = %d, want 401", resp.StatusCode)
+	}
+	nextFakePID++
+	resp = postJSON(t, f.base+"/v1/peers/register", peers.PanelessToken(testSecret), map[string]any{"pid": nextFakePID, "cwd": "/home/u/elsewhere", "git_root": "/home/u/elsewhere"})
+	json.NewDecoder(resp.Body).Decode(&reg)
+	resp = postJSON(t, f.base+"/v1/peers/sessions", peers.PanelessToken(testSecret), map[string]any{"peer_id": reg.PeerID})
+	if b, _ := io.ReadAll(resp.Body); resp.StatusCode != 200 || strings.TrimSpace(string(b)) != "[]" {
+		t.Fatalf("outside a window = %d %q, want an empty list", resp.StatusCode, b)
+	}
+
+	text := getText(t, f.base+"/v1/panes/"+pane+"/bus-context")
+	for _, want := range []string{"PROJECT SESSIONS IN THIS WINDOW", "- flood: /tmp [live]", "AGENTS ON THIS BUS", "- x-poster: "} {
+		if !strings.Contains(text, want) {
+			t.Errorf("bus-context missing %q:\n%s", want, text)
+		}
+	}
+	if text := getText(t, f.base+"/v1/panes/no-such-pane/bus-context"); text != "" {
+		t.Fatalf("unknown pane = %q, want empty", text)
+	}
+}
+
+func getText(t *testing.T, url string) string {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET %s = %d %s", url, resp.StatusCode, b)
+	}
+	return string(b)
 }

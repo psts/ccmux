@@ -10,10 +10,14 @@ the agent is. The instance says what it is for here.
 A project is a **shared window**, not a repo (changed 2026-09-06). An instance
 is its own session inside the window, named after the agent, and every
 session in that window reaches it on the bus by name. The bus tells it where
-the project is: the peers shim appends the window's repo sessions (name,
-folder, live or archived) to its instructions and to `list_peers`, so an
-agent reads the code at those folders or messages the session by name, and
-nobody writes repo paths into its instructions. A claude agent additionally
+the project is: the window's repo sessions (name, folder, live or archived)
+and its agents reach every session as one paragraph, rendered by
+`internal/buscontext`. Claude Code gets it as the peers shim's MCP
+instructions and as a `list_peers` footer; opencode ignores MCP
+instructions, so the ccmux opencode plugin fetches the same text from
+`GET /v1/panes/{id}/bus-context` at every turn and appends it to the system
+prompt. So an agent reads the code at those folders or messages the session
+by name, and nobody writes repo paths into its instructions. A claude agent additionally
 gets each folder as `--add-dir` (its base's permissions say whether it may
 edit there, and the defaults allow edits). Its folder lives beside the bases,
 not inside any repo. The folder name is the window's slug plus the first
@@ -145,8 +149,11 @@ caps running instances; asleep ones do not count.
 
 Implemented (2026-09-05, window-keyed since 2026-09-06): `POST
 /v1/peers/agents` gives a session the bases with their state in its own
-window; the shim appends an AGENTS ON THIS BUS paragraph to the instructions
-and an Agents footer to `list_peers`. `send_message(to_name=<agent>,
+window, `POST /v1/peers/sessions` (2026-09-07) its repo sessions; the shim
+appends a PROJECT SESSIONS paragraph and an AGENTS ON THIS BUS paragraph to
+the instructions and the matching footers to `list_peers`, and `GET
+/v1/panes/{id}/bus-context` serves the same paragraph to the opencode
+plugin. `send_message(to_name=<agent>,
 spawn_if_missing=true)` from a pane starts or wakes the agent in the SENDER's
 window (its bus group) and delivers the message once it registers. A sender
 outside a shared window is told the agent needs one. opencode instances receive bus messages typed into their TUI

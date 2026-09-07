@@ -243,10 +243,10 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 	}, &peers); err != nil {
 		return toolText("Error listing peers: "+err.Error(), true)
 	}
-	agents := a.windowSection()
+	footer := a.windowSection()
 	if len(peers) == 0 {
 		return toolText(fmt.Sprintf("No other Claude Code instances found (scope: %s, project: %s).",
-			in.Scope, a.group())+agents, false)
+			in.Scope, a.group())+footer, false)
 	}
 	lines := make([]string, 0, len(peers))
 	for _, p := range peers {
@@ -266,7 +266,7 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 		lines = append(lines, strings.Join(parts, "\n  "))
 	}
 	return toolText(fmt.Sprintf("Found %d peer(s) (scope: %s, project: %s):\n\n%s",
-		len(peers), in.Scope, a.group(), strings.Join(lines, "\n\n"))+agents, false)
+		len(peers), in.Scope, a.group(), strings.Join(lines, "\n\n"))+footer, false)
 }
 
 func (a *app) toolSendMessage(args json.RawMessage) any {
