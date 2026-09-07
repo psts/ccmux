@@ -154,7 +154,23 @@ window, `POST /v1/peers/sessions` (2026-09-07) its repo sessions; the shim
 appends a PROJECT SESSIONS paragraph and an AGENTS ON THIS BUS paragraph to
 the instructions and the matching footers to `list_peers`, and `GET
 /v1/panes/{id}/bus-context` serves the same paragraph to the opencode
-plugin. `send_message(to_name=<agent>,
+plugin.
+
+## 10. The chat view (2026-09-07)
+
+An agent pane shows its conversation as a chat in both lenses, the raw
+TUI behind a per-pane "Terminal" toggle. The daemon is the one reader of
+opencode's server: `GET /v1/panes/{id}/agent/ws` (and a one-shot `GET
+/v1/panes/{id}/agent`) sends a hello with the agent's state (asleep,
+starting, running), its newest session in the instance folder, the
+transcript and the permission requests waiting, then turn, part, delta,
+idle, permission and error frames as opencode's event stream reports them;
+the lens sends prompt, abort and permission replies (once, always,
+reject). Asleep, the transcript comes from opencode's store through its
+CLI (`session list`, `export`), and a prompt wakes the agent with that
+text. One normalized shape, `agent.Turn`, in `internal/agent/transcript.go`;
+`daemon/web/agentchat.js` and `Sources/ccmux/Views/AgentChatPaneView.swift`
+render it. Claude-harness agents keep the terminal for now. `send_message(to_name=<agent>,
 spawn_if_missing=true)` from a pane starts or wakes the agent in the SENDER's
 window (its bus group) and delivers the message once it registers. A sender
 outside a shared window is told the agent needs one. opencode instances receive bus messages typed into their TUI

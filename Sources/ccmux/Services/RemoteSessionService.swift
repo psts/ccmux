@@ -19,6 +19,10 @@ final class RemoteSessionService: ObservableObject {
     @Published private(set) var workspaces: [Workspace] = []
     /// Cold (revivable) daemon workspaces — surfaced for a one-click revive affordance.
     @Published private(set) var coldWorkspaces: [DaemonWorkspace] = []
+    /// Agent instance panes by daemon pane id: the base's name and the origin
+    /// their chat socket dials (host-direct, like the terminal stream). What
+    /// PaneContentView reads to show the chat view instead of the terminal.
+    @Published private(set) var agentPanes: [String: AgentPaneRef] = [:]
     /// Per-workspace connection state, for the reconnect overlay.
     @Published private(set) var connectionStates: [UUID: DaemonConnectionState] = [:]
 
@@ -836,6 +840,9 @@ final class RemoteSessionService: ObservableObject {
             hostnames[appId] = dw.hostnames
             devRunning[appId] = dw.panes.contains { $0.devServer }
             devCommands[appId] = dw.devCommand
+            for p in dw.panes where !p.agent.isEmpty {
+                agentPanes[p.id] = AgentPaneRef(agent: p.agent, wsOrigin: attachOrigin(for: dw) ?? DaemonConfig.wsBaseURL)
+            }
             // Pane titles change without the pane set changing (the daemon re-derives
             // them from tmux as programs start/stop) — fold them into the tab chips.
             if let controller = controllers[appId],
@@ -1345,4 +1352,10 @@ final class RemoteSessionService: ObservableObject {
             return false
         }
     }
+}
+
+/// An agent instance's pane as the chat view needs it.
+struct AgentPaneRef: Equatable {
+    let agent: String
+    let wsOrigin: String
 }

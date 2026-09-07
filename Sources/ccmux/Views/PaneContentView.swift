@@ -5,6 +5,7 @@ struct PaneContentView: View {
     let paneId: UUID
     let tabs: PaneTabs
     @ObservedObject var controller: SplitTreeController
+    @ObservedObject private var service = RemoteSessionService.shared
 
     var body: some View {
         if let active = tabs.activeTab {
@@ -21,8 +22,14 @@ struct PaneContentView: View {
         case .terminal(let config):
             if let hostedPaneId = config.host.hostedPaneId {
                 // Hosted pane: attach to the daemon over WebSocket instead of spawning
-                // a local process. The local driver path below is untouched.
-                HostedTerminalPaneView(tabId: config.id, paneId: hostedPaneId, workingDirectory: config.workingDirectory)
+                // a local process. The local driver path below is untouched. An
+                // agent instance's pane shows its chat view, terminal behind a toggle.
+                if let ref = service.agentPanes[hostedPaneId] {
+                    AgentPaneView(tabId: config.id, paneId: hostedPaneId, workingDirectory: config.workingDirectory,
+                                  agent: ref.agent, wsOrigin: ref.wsOrigin)
+                } else {
+                    HostedTerminalPaneView(tabId: config.id, paneId: hostedPaneId, workingDirectory: config.workingDirectory)
+                }
             } else {
                 TerminalPaneView(terminalId: config.id, workingDirectory: config.workingDirectory, startupCommand: config.startupCommand)
             }
