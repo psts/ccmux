@@ -298,3 +298,16 @@ func (m *Manager) RunningAgents() int {
 	}
 	return n
 }
+
+// PaneByID is a copy of the pane, for callers outside the manager's lock;
+// nil when no live workspace holds it.
+func (m *Manager) PaneByID(paneID string) *model.Pane {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, p := m.findPaneLocked(paneID)
+	if p == nil {
+		return nil
+	}
+	c := *p
+	return &c
+}

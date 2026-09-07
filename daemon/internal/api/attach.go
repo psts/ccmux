@@ -57,6 +57,9 @@ type paneInfo struct {
 	AtShell   bool   `json:"atShell,omitempty"`
 	Dormant   bool   `json:"dormant,omitempty"`
 	DevServer bool   `json:"devServer,omitempty"`
+	// Agent names the base when this is an agent instance's pane: the lens
+	// shows its chat view (/v1/panes/{id}/agent/ws) in place of the terminal.
+	Agent string `json:"agent,omitempty"`
 }
 
 // attach upgrades to a WebSocket and streams one workspace's panes. Only this
@@ -451,7 +454,7 @@ func paneInfos(ws *model.Workspace) []paneInfo {
 			ID: p.ID, Title: p.Title, CWD: p.CWD, Attention: p.Attention,
 			Cols: p.Cols, Rows: p.Rows,
 			Harness: p.Harness, AtShell: p.AtShell, Dormant: p.Dormant,
-			DevServer: p.DevServer,
+			DevServer: p.DevServer, Agent: p.Agent,
 		}
 	}
 	return out

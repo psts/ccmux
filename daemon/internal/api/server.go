@@ -131,17 +131,23 @@ type Server struct {
 	// than a package global so a test can compress it without racing connection
 	// goroutines that outlive the test. See keepalive.go.
 	ka keepalive
+	// offlineSessions/offlineTranscript read an asleep agent's history from
+	// opencode's store (its CLI); tests substitute canned answers.
+	offlineSessions   func(ctx context.Context, dir string) ([]agent.OpencodeSession, error)
+	offlineTranscript func(ctx context.Context, sessionID string) ([]agent.Turn, error)
 }
 
 func NewServer(mgr *manager.Manager) *Server {
 	presence := newPresenceHub(mgr)
 	return &Server{
-		mgr:          mgr,
-		presence:     presence,
-		focus:        presence,
-		ka:           defaultKeepalive(),
-		identity:     tailnet.NewResolver(),
-		spawnUpgrade: realSpawnUpgrade,
+		mgr:               mgr,
+		presence:          presence,
+		focus:             presence,
+		ka:                defaultKeepalive(),
+		offlineSessions:   agent.OfflineSessions,
+		offlineTranscript: agent.OfflineTranscript,
+		identity:          tailnet.NewResolver(),
+		spawnUpgrade:      realSpawnUpgrade,
 		// Same-origin default; the web lens is served from this daemon, and
 		// tailnet identity gates access. Loosened checks come with auth.
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
@@ -306,6 +312,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/panes/{id}/harness", s.scoped(s.startPaneHarness))
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.scoped(s.paneSnapshot))
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.scoped(s.paneDriver))
+	mux.HandleFunc("GET /v1/panes/{id}/agent", s.scoped(s.paneAgentHistory))
+	mux.HandleFunc("GET /v1/panes/{id}/agent/ws", s.paneAgentChat)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
 	mux.HandleFunc("GET /v1/push/subscriptions", s.listSubscriptions)
 	mux.HandleFunc("POST /v1/push/subscriptions", s.createSubscription)
