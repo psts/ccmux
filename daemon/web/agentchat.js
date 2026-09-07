@@ -6,7 +6,7 @@
 // away ("Terminal"), per pane, for when the TUI itself is what you want.
 (() => {
   const modes = new Map(); // paneId → "chat" | "terminal"
-  let cur = null; // the pane being shown: { paneId, wsRec, sock, turns, order, els, perms, busy }
+  let cur = null; // the pane being shown: { paneId, wsRec, sock, turns, els, perms, busy }
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;

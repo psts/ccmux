@@ -574,7 +574,7 @@ func TestWindowAgents_EnvFilesReachTheHarness(t *testing.T) {
 	out, script := filepath.Join(dir, "seen"), filepath.Join(dir, "harness.sh")
 	// A script, so the harness line (which the fixture drops into JSON) stays
 	// quote-free; sh is the foreground program, as the startup line says.
-	os.WriteFile(script, []byte("sleep 1; printf '%s|%s' \"$CCMUX_T_SHARED\" \"$CCMUX_T_BOTH\" > "+out+"\n"), 0o755)
+	os.WriteFile(script, []byte("sleep 1; printf '%s|%s' \"$ENVTEST_SHARED\" \"$ENVTEST_BOTH\" > "+out+"\n"), 0o755)
 	f := newWindowAgentFixture(t, "sh "+script)
 	win, _, msg := f.srv.windowByID(f.winID)
 	if msg != "" {
@@ -584,10 +584,10 @@ func TestWindowAgents_EnvFilesReachTheHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(shared, ".env"), []byte("CCMUX_T_SHARED='from shared; $(true)'\nCCMUX_T_BOTH=shared\n"), 0o600)
+	os.WriteFile(filepath.Join(shared, ".env"), []byte("ENVTEST_SHARED='from shared; $(true)'\nENVTEST_BOTH=shared\n"), 0o600)
 	inst := f.srv.agents.InstanceDir(win.ID, win.Name, "x-poster")
 	os.MkdirAll(inst, 0o755)
-	os.WriteFile(filepath.Join(inst, ".env"), []byte("CCMUX_T_BOTH=instance\nnot a pair\n"), 0o600)
+	os.WriteFile(filepath.Join(inst, ".env"), []byte("ENVTEST_BOTH=instance\nnot a pair\n"), 0o600)
 	if code, _ := f.start(t, "x-poster", ""); code != 201 {
 		t.Fatalf("start = %d", code)
 	}

@@ -40,12 +40,18 @@ final class AgentChatState: ObservableObject {
                 NSLog("[ccmux agent chat] dropped an undecodable frame: %@ (%d bytes)", "\(error)", data.count)
                 return
             }
-            Task { @MainActor in self?.apply(frame) }
+            // The main queue keeps frames in order (a Task per frame would
+            // not, and hello / delta are order-sensitive); assumeIsolated is
+            // what makes the dispatch closure a MainActor context to the
+            // compiler, as PaneFocusCoordinator does.
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.apply(frame) } }
         }
         p.onState = { [weak self] s in
-            Task { @MainActor in
-                self?.connection = s
-                if s != .connected { self?.state = "reconnecting" }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.connection = s
+                    if s != .connected { self?.state = "reconnecting" }
+                }
             }
         }
         pump = p
@@ -63,12 +69,8 @@ final class AgentChatState: ObservableObject {
     func send(prompt text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        guard connection == .connected else {
-            error = "Not connected to the agent right now; try again in a moment."
-            return false
-        }
+        guard send(AgentChatFrame(t: "prompt", text: trimmed, resume: state == "asleep" ? resume : nil)) else { return false }
         busy = true
-        send(AgentChatFrame(t: "prompt", text: trimmed, resume: state == "asleep" ? resume : nil))
         return true
     }
 
@@ -86,9 +88,17 @@ final class AgentChatState: ObservableObject {
         send(AgentChatFrame(t: "question-reject", id: question.id))
     }
 
-    private func send(_ frame: AgentChatFrame) {
-        guard let data = try? JSONEncoder().encode(frame), let text = String(data: data, encoding: .utf8) else { return }
+    /// One rule for every frame out, as in the web lens: not connected means
+    /// an error line, never a silent drop. False when it did not go.
+    @discardableResult
+    private func send(_ frame: AgentChatFrame) -> Bool {
+        guard connection == .connected else {
+            error = "Not connected to the agent right now; try again in a moment."
+            return false
+        }
+        guard let data = try? JSONEncoder().encode(frame), let text = String(data: data, encoding: .utf8) else { return false }
         pump?.send(text)
+        return true
     }
 
     // MARK: - Frames

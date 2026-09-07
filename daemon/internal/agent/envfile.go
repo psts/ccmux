@@ -25,10 +25,14 @@ var deniedEnvKeys = map[string]bool{
 	"PATH": true, "SHELL": true, "IFS": true, "ENV": true, "BASH_ENV": true,
 	"NODE_OPTIONS": true, "PYTHONPATH": true, "PYTHONSTARTUP": true, "PYTHONHOME": true,
 	"PERL5OPT": true, "PERL5LIB": true, "RUBYOPT": true, "RUBYLIB": true,
-	"CLAUDE_PEERS_NAME": true, "CCMUX_PANE_ID": true, "CCMUX_PANE_TOKEN": true, "CCMUX_DAEMON_URL": true,
+	// Where a harness reads its config from: a folder the agent can write
+	// would carry a hook or an MCP command into the next start.
+	"HOME": true, "CLAUDE_CONFIG_DIR": true,
 }
 
-var deniedEnvPrefixes = []string{"LD_", "DYLD_", "GIT_", "OPENCODE_CONFIG"}
+// Whole families: loaders, git's own knobs, config locations, and every
+// variable ccmux and the peers shim use for a pane's identity and bus.
+var deniedEnvPrefixes = []string{"LD_", "DYLD_", "GIT_", "XDG_", "OPENCODE_CONFIG", "CCMUX_", "CLAUDE_PEERS_"}
 
 // DeniedEnvKey says whether a .env line with this key is refused.
 func DeniedEnvKey(k string) bool {

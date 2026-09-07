@@ -9,7 +9,7 @@ import (
 func TestParseEnvFileIsDataNotShell(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".env")
-	os.WriteFile(p, []byte("# comment\n\nTOKEN=abc$(rm -rf /)\nexport NAME=\"two words\"\nSINGLE='it''s'\nSPACED = padded \nbad line\n1BAD=x\nrm -rf /\nPATH=/evil\nLD_PRELOAD=/evil.so\nCLAUDE_PEERS_NAME=other\n"), 0o600)
+	os.WriteFile(p, []byte("# comment\n\nTOKEN=abc$(rm -rf /)\nexport NAME=\"two words\"\nSINGLE='it''s'\nSPACED = padded \nbad line\n1BAD=x\nrm -rf /\nPATH=/evil\nLD_PRELOAD=/evil.so\nCLAUDE_PEERS_NAME=other\nHOME=/tmp/x\nXDG_CONFIG_HOME=/tmp/x\nCCMUX_PEERS_URL=http://evil\nCCMUX_CMD_FILE=/tmp/ccmux-cmd-victim\n"), 0o600)
 	vars, problems, err := ParseEnvFile(p)
 	if err != nil {
 		t.Fatal(err)
@@ -23,10 +23,10 @@ func TestParseEnvFileIsDataNotShell(t *testing.T) {
 	if len(vars) != len(want) {
 		t.Errorf("vars = %v", vars)
 	}
-	if len(problems) != 6 {
-		t.Errorf("problems = %v, want the three bad lines and the three refused keys named", problems)
+	if len(problems) != 10 {
+		t.Errorf("problems = %v, want the three bad lines and the seven refused keys named", problems)
 	}
-	for _, k := range []string{"PATH", "LD_PRELOAD", "CLAUDE_PEERS_NAME"} {
+	for _, k := range []string{"PATH", "LD_PRELOAD", "CLAUDE_PEERS_NAME", "HOME", "XDG_CONFIG_HOME", "CCMUX_PEERS_URL", "CCMUX_CMD_FILE"} {
 		if _, set := vars[k]; set {
 			t.Errorf("%s must never come from a .env", k)
 		}
