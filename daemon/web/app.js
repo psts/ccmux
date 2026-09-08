@@ -434,16 +434,16 @@ async function appendWindowAgentEntries(menu, slot, win) {
     slot.appendChild(b);
   };
   for (const a of list) {
-    // The base's icon and name, or just the name: no stand-in glyph for an
-    // icon-less base (same rule as the session name).
+    // No stand-in glyph for an icon-less base (same rule as the session name).
     const title = a.icon ? `${a.icon} ${a.name}` : a.name;
     if (a.state === "running") {
       add(`● ${title} — open`, () => attach(a.workspace, a.pane));
       add(`■ ${title} — sleep`, () => sleepAgent(win.id, a.name));
       continue;
     }
+    const mark = a.state === "asleep" ? "○" : "+";
     const verb = a.state === "asleep" ? "wake…" : "add…";
-    add(`${a.state === "asleep" ? "○" : "+"} ${title} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
+    add(`${mark} ${title} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
       const text = prompt(`Message ${a.name} (empty = just start it):`, "");
       if (text === null) return;
       const p = await wakeAgent(win.id, a.name, text.trim());

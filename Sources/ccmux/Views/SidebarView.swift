@@ -730,8 +730,7 @@ struct SidebarView: View {
                 Button("no agents defined — Settings › Agents") {}.disabled(true)
             }
             ForEach(list ?? []) { a in
-                // The base's icon and name, or just the name: no stand-in
-                // glyph for an icon-less base (same rule as the session name).
+                // No stand-in glyph for an icon-less base (same rule as the session name).
                 let title = a.icon.isEmpty ? a.name : "\(a.icon) \(a.name)"
                 if a.state == "running" {
                     Button("● \(title) — open") {
@@ -1184,8 +1183,9 @@ private let hostedMarkerWidth: CGFloat = 11
 // MARK: - Agent row (one line, no dashboard)
 
 /// An agent instance's session: one line, no disclosure and no git
-/// dashboard (its folder is not a repo). The base's own icon in the name
-/// tells it from a repo; the hosted marker is a spark, not the antenna.
+/// dashboard (its folder is not a repo). The spark marker tells it from a
+/// repo (the base's icon, when it has one, leads the name); the hosted
+/// marker is a spark, not the antenna.
 /// The web lens's isAgentWs row keeps an "agent" tag instead, on purpose:
 /// the tag reads well there and not here.
 private struct AgentWorkspaceRow: View {
@@ -1218,11 +1218,10 @@ private struct AgentWorkspaceRow: View {
                 ConnectionDot(state: hostedConnection)
             }
         }
-        // No leading padding on purpose. A List draws a DisclosureGroup's
-        // triangle in the outline gutter, outside the row's content, so a
-        // repo row's label already starts at the row origin — the same place
-        // this HStack starts. The 9pt that used to sit here pushed the spark
-        // a full marker-width right of the antenna column.
+        // No leading padding on purpose. Measured on a screenshot (not in a
+        // running build): a List draws a DisclosureGroup's triangle in the
+        // outline gutter, outside the row's content, so a repo row's label
+        // starts at the row origin — the same place this HStack starts.
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { onSelect?() }

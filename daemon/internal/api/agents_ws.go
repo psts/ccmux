@@ -243,9 +243,8 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 }
 
 // startExistingInstance wakes an instance already in the window. A session
-// named before the base's icon changed (or before the ⚙ fallback for an
-// icon-less base was dropped) carries a stale name; every start repairs it
-// first.
+// keeps the name it was given at creation, so any change to the base's icon
+// or to the naming rule leaves it stale; every start repairs it first.
 func (s *Server) startExistingInstance(ws *model.Workspace, d agent.Definition, prompt string, resume *bool) startOutcome {
 	if err := s.mgr.RenameWorkspace(ws.ID, agentSessionName(d)); err != nil {
 		log.Printf("agent %s: session name not refreshed on start: %v", d.Name, err)
