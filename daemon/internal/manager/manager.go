@@ -751,14 +751,15 @@ func (m *Manager) List() []*model.Workspace {
 // their base's icon and name, so a base whose icon changed renames its
 // instances through this. A failed persist is an error and the old name
 // stays: memory and store never disagree, so nothing reverts on the next
-// daemon start behind the caller's back. ErrWorkspaceGone for an unknown id.
+// daemon start behind the caller's back. ErrUnknownWorkspace for an id it
+// does not hold, so the API's 404 mapping applies as everywhere else.
 func (m *Manager) RenameWorkspace(wsID, name string) error {
 	m.mu.Lock()
 	e := m.byID[wsID]
 	if e == nil || e.ws.Name == name {
 		m.mu.Unlock()
 		if e == nil {
-			return ErrWorkspaceGone
+			return fmt.Errorf("%w: %s", ErrUnknownWorkspace, wsID)
 		}
 		return nil
 	}
@@ -777,10 +778,6 @@ func (m *Manager) RenameWorkspace(wsID, name string) error {
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return nil
 }
-
-// ErrWorkspaceGone is RenameWorkspace's answer for an id it does not hold:
-// a session killed between a caller's listing and its call.
-var ErrWorkspaceGone = errors.New("workspace is gone")
 
 // Workspace returns one workspace's metadata.
 func (m *Manager) Workspace(wsID string) *model.Workspace {

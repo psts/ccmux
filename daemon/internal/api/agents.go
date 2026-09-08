@@ -168,7 +168,7 @@ func (s *Server) renameInstances(d agent.Definition) error {
 			continue
 		}
 		err := s.mgr.RenameWorkspace(ws.ID, want)
-		if err != nil && !errors.Is(err, manager.ErrWorkspaceGone) && first == nil {
+		if err != nil && !errors.Is(err, manager.ErrUnknownWorkspace) && first == nil {
 			first = fmt.Errorf("session %s: %w", ws.ID, err)
 		}
 	}

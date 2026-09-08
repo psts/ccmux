@@ -161,8 +161,8 @@ func TestRenameWorkspace_PersistsAndAnnounces(t *testing.T) {
 		t.Fatalf("no-op rename announced %+v", ev)
 	default:
 	}
-	if err := m.RenameWorkspace("nope", "x"); !errors.Is(err, ErrWorkspaceGone) {
-		t.Fatalf("unknown workspace = %v, want ErrWorkspaceGone", err)
+	if err := m.RenameWorkspace("nope", "x"); !errors.Is(err, ErrUnknownWorkspace) {
+		t.Fatalf("unknown workspace = %v, want ErrUnknownWorkspace", err)
 	}
 
 	st.Close()
