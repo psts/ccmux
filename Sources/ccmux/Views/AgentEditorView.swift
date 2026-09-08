@@ -94,7 +94,7 @@ struct AgentEditorView: View {
     private var identity: some View {
         section("Identity") {
             HStack(spacing: 6) {
-                TextField("⚙", text: $agent.icon).frame(width: 40)
+                TextField("icon", text: $agent.icon).frame(width: 40)
                 TextField("name (a-z, 0-9, -)", text: $agent.name).disabled(!isNew)
             }
             TextField("One sentence: what it does and when to call it. Other agents read this to decide.", text: $agent.description)

@@ -434,14 +434,16 @@ async function appendWindowAgentEntries(menu, slot, win) {
     slot.appendChild(b);
   };
   for (const a of list) {
-    const icon = a.icon || "⚙";
+    // The base's icon and name, or just the name: no stand-in glyph for an
+    // icon-less base (same rule as the session name).
+    const title = a.icon ? `${a.icon} ${a.name}` : a.name;
     if (a.state === "running") {
-      add(`● ${icon} ${a.name} — open`, () => attach(a.workspace, a.pane));
-      add(`■ ${icon} ${a.name} — sleep`, () => sleepAgent(win.id, a.name));
+      add(`● ${title} — open`, () => attach(a.workspace, a.pane));
+      add(`■ ${title} — sleep`, () => sleepAgent(win.id, a.name));
       continue;
     }
     const verb = a.state === "asleep" ? "wake…" : "add…";
-    add(`${a.state === "asleep" ? "○" : "+"} ${icon} ${a.name} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
+    add(`${a.state === "asleep" ? "○" : "+"} ${title} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
       const text = prompt(`Message ${a.name} (empty = just start it):`, "");
       if (text === null) return;
       const p = await wakeAgent(win.id, a.name, text.trim());
@@ -1936,7 +1938,7 @@ function wireAgentSettings() {
     row.className = "entry-card agent-card";
     row.innerHTML =
       `<div class="entry-line">` +
-      `<span class="agent-icon">${esc(a.icon || "⚙")}</span>` +
+      `<span class="agent-icon">${esc(a.icon || "")}</span>` +
       `<span class="agent-name">${esc(a.name)}</span>` +
       `<span class="agent-version">v${esc(a.version || "")}</span>` +
       `<span class="agent-harness">${esc(a.harness || "")}</span>` +

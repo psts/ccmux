@@ -730,16 +730,18 @@ struct SidebarView: View {
                 Button("no agents defined — Settings › Agents") {}.disabled(true)
             }
             ForEach(list ?? []) { a in
-                let icon = a.icon.isEmpty ? "⚙" : a.icon
+                // The base's icon and name, or just the name: no stand-in
+                // glyph for an icon-less base (same rule as the session name).
+                let title = a.icon.isEmpty ? a.name : "\(a.icon) \(a.name)"
                 if a.state == "running" {
-                    Button("● \(icon) \(a.name) — open") {
+                    Button("● \(title) — open") {
                         onSelectWorkspace(RemoteWorkspaceBuilder.workspaceUUID(a.workspace))
                     }
-                    Button("■ \(icon) \(a.name) — sleep") { sleepAgent(win, a) }
+                    Button("■ \(title) — sleep") { sleepAgent(win, a) }
                 } else {
                     let mark = a.state == "asleep" ? "○" : "+"
                     let verb = a.state == "asleep" ? "wake…" : "add…"
-                    Button("\(mark) \(icon) \(a.name) — \(verb)" + (a.drift ? " ↻" : "")) {
+                    Button("\(mark) \(title) — \(verb)" + (a.drift ? " ↻" : "")) {
                         promptAndStartAgent(win, a)
                     }
                 }
@@ -1088,6 +1090,7 @@ private struct WorkspaceRow: View {
                     Image(systemName: "antenna.radiowaves.left.and.right")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
+                        .frame(width: hostedMarkerWidth)
                         .help("Hosted session")
                 }
 
@@ -1172,6 +1175,12 @@ private struct WorkspaceRow: View {
     }
 }
 
+/// The hosted marker's column width, shared by the repo row's antenna and
+/// the agent row's spark so the names after them start at the same x. The
+/// two glyphs differ in width (the antenna is the wider), so without a fixed
+/// frame the agent names sat a few points left of the repo names.
+private let hostedMarkerWidth: CGFloat = 11
+
 // MARK: - Agent row (one line, no dashboard)
 
 /// An agent instance's session: one line, no disclosure and no git
@@ -1192,6 +1201,7 @@ private struct AgentWorkspaceRow: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
+                    .frame(width: hostedMarkerWidth)
                     .help("Agent session")
             }
             Text(workspace.name)
@@ -1208,10 +1218,11 @@ private struct AgentWorkspaceRow: View {
                 ConnectionDot(state: hostedConnection)
             }
         }
-        // A repo row's label sits right of the DisclosureGroup triangle; this
-        // row has none, so pad by the triangle's width so the marker and the
-        // name line up with the repo rows.
-        .padding(.leading, 9)
+        // No leading padding on purpose. A List draws a DisclosureGroup's
+        // triangle in the outline gutter, outside the row's content, so a
+        // repo row's label already starts at the row origin — the same place
+        // this HStack starts. The 9pt that used to sit here pushed the spark
+        // a full marker-width right of the antenna column.
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { onSelect?() }

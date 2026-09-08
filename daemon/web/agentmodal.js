@@ -19,7 +19,7 @@
     const sel = (cls, opts) => `<select class="setting-input ${cls}">${opts.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>`;
     m.querySelector(".agent-modal-body").innerHTML =
       section("Identity",
-        `<div class="entry-line"><input class="setting-input am-icon" placeholder="⚙" title="icon"><input class="setting-input am-name grow" placeholder="name (a-z, 0-9, -)" spellcheck="false"><span class="am-version agent-version"></span></div>` +
+        `<div class="entry-line"><input class="setting-input am-icon" placeholder="icon" title="icon"><input class="setting-input am-name grow" placeholder="name (a-z, 0-9, -)" spellcheck="false"><span class="am-version agent-version"></span></div>` +
         `<input class="setting-input am-desc" placeholder="One sentence: what it does and when to call it. Other agents read this to decide.">`) +
       section("Role", `<textarea class="setting-input am-instr" rows="8" spellcheck="false" placeholder="# Role&#10;&#10;What it does, inputs, outputs, how it works, what it never does…"></textarea>`) +
       section("Harness and model",

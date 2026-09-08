@@ -622,21 +622,23 @@ func TestAgents_IconChangeRenamesInstances(t *testing.T) {
 	if name := f.workspace(t, f.list(t).Workspace)["name"]; name != "🚀 x-poster" {
 		t.Fatalf("session name after the icon change = %v", name)
 	}
-	// No icon at all still marks the session as an agent, like every lens does.
+	// No icon at all is just the name: no stand-in glyph, the lens marks
+	// the row as an agent on its own.
 	f.put(t, "/v1/agents/x-poster", `{"icon":""}`, 200)
-	if name := f.workspace(t, f.list(t).Workspace)["name"]; name != "⚙ x-poster" {
+	if name := f.workspace(t, f.list(t).Workspace)["name"]; name != "x-poster" {
 		t.Fatalf("session name without an icon = %v", name)
 	}
-	// A session named before the rule existed is repaired by its next start.
+	// A session named before the rule existed (a stale ⚙ prefix) is
+	// repaired by its next start.
 	wsID := f.list(t).Workspace
-	if err := f.srv.mgr.RenameWorkspace(wsID, "x-poster"); err != nil {
+	if err := f.srv.mgr.RenameWorkspace(wsID, "⚙ x-poster"); err != nil {
 		t.Fatal(err)
 	}
 	f.waitState(t, "asleep")
 	if code, _ := f.start(t, "x-poster", ""); code != 200 { // a wake, not a first start
 		t.Fatalf("second start = %d", code)
 	}
-	if name := f.workspace(t, wsID)["name"]; name != "⚙ x-poster" {
+	if name := f.workspace(t, wsID)["name"]; name != "x-poster" {
 		t.Fatalf("session name after a start = %v", name)
 	}
 }

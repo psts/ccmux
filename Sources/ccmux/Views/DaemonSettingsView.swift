@@ -382,7 +382,9 @@ struct DaemonSettingsView: View {
     private func agentRow(_ idx: Int, _ a: DaemonAgent) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text(a.icon.isEmpty ? "⚙" : a.icon).frame(width: 22)
+                // An icon-less base keeps the cell (so names line up) but
+                // shows nothing in it: no stand-in glyph.
+                Text(a.icon).frame(width: 22)
                 Text(a.name).font(.system(size: 12, weight: .semibold))
                 Text("v\(a.version)").font(.system(size: 11)).foregroundColor(.secondary)
                 Text(a.harness).font(.system(size: 11)).foregroundColor(.secondary)

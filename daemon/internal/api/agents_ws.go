@@ -243,8 +243,9 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 }
 
 // startExistingInstance wakes an instance already in the window. A session
-// named before the base's icon changed (or before icon-less bases got
-// their ⚙) carries a stale name; every start repairs it first.
+// named before the base's icon changed (or before the ⚙ fallback for an
+// icon-less base was dropped) carries a stale name; every start repairs it
+// first.
 func (s *Server) startExistingInstance(ws *model.Workspace, d agent.Definition, prompt string, resume *bool) startOutcome {
 	if err := s.mgr.RenameWorkspace(ws.ID, agentSessionName(d)); err != nil {
 		log.Printf("agent %s: session name not refreshed on start: %v", d.Name, err)
@@ -252,13 +253,15 @@ func (s *Server) startExistingInstance(ws *model.Workspace, d agent.Definition, 
 	return s.startAgent(ws.ID, d.Name, prompt, resume)
 }
 
-// agentSessionName is the session row's title: the base's icon and name.
+// agentSessionName is the session row's title: the base's icon and name,
+// or just the name. No icon means no icon — a lens marks the row as an
+// agent on its own (the Mac's spark, the web's "agent" tag), so a stand-in
+// glyph here would only read as an icon the user never picked.
 func agentSessionName(d agent.Definition) string {
-	icon := d.Icon
-	if icon == "" {
-		icon = "⚙" // the fallback every lens uses for an icon-less base
+	if d.Icon == "" {
+		return d.Name
 	}
-	return icon + " " + d.Name
+	return d.Icon + " " + d.Name
 }
 
 // agentDefinition reads base name: 404 for a name with no base, 503 when
