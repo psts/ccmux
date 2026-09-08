@@ -214,7 +214,10 @@ function groupedWorkspaces() {
     byGroup.get(g).push(ws);
   }
   for (const list of byGroup.values()) {
-    list.sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
+    // Repos first by name, then the window's agents by name: an agent
+    // session is a member of the project, not a peer of its repos.
+    list.sort((a, b) => (isAgentWs(a) - isAgentWs(b)) ||
+      (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
   }
   return [...byGroup.entries()].sort(([a], [b]) =>
     a === "" ? 1 : b === "" ? -1 : a.localeCompare(b));
@@ -271,8 +274,26 @@ async function closeWindow(win) {
   fetchWorkspaces();
 }
 
+// isAgentWs: the session is an agent instance (the daemon stamps the base
+// name on the workspace). Such a row is one line: no git dashboard (its
+// folder is not a repo), an "agent" tag instead, sorted after the repos.
+// Same rule as the Mac sidebar's AgentWorkspaceRow.
+function isAgentWs(ws) {
+  return ws.agent ? 1 : 0;
+}
+
+// wsBadges is the right-hand column of a session row: what it is (agent,
+// or whose it is), whether it is working, and its git state or sleep.
+function wsBadges(ws, agent, cold, running, label) {
+  return (agent ? `<span class="owner-tag agent-tag">agent</span>` : "") +
+    (label && !agent ? `<span class="owner-tag">${esc(label)}</span>` : "") +
+    (running ? `<span class="bolt">⚡</span>` : "") +
+    (cold ? `<span class="cold-tag">zzz</span>` : agent ? "" : gitBadges(ws.git));
+}
+
 function wsRow(ws) {
   const active = ws.id === state.wsId;
+  const agent = !!isAgentWs(ws);
   // Suppress the flash on the workspace you're already watching (mirrors the
   // native "clear on watch"); other rows flash live from the firehose and stop
   // when the daemon says the workspace was looked at somewhere (attention idle).
@@ -285,18 +306,16 @@ function wsRow(ws) {
   li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "") + (cold ? " cold" : "");
   li.innerHTML =
     `<div class="ws-row">` +
-    `<span class="exp${open ? " open" : " closed"}"></span>` +
+    (agent ? `<span class="exp none"></span>` : `<span class="exp${open ? " open" : " closed"}"></span>`) +
     `<span class="dot ${esc(ws.status)}"></span>` +
     `<span class="name">${esc(ws.name || ws.repoPath)}</span>` +
-    (label ? `<span class="owner-tag">${esc(label)}</span>` : "") +
-    (running ? `<span class="bolt">⚡</span>` : "") +
-    (cold ? `<span class="cold-tag">zzz</span>` : gitBadges(ws.git)) +
+    wsBadges(ws, agent, cold, running, label) +
     `<button class="more" title="Session menu">⋯</button>` +
     `</div>` +
-    (open ? gitDetail(ws) : "");
+    (open && !agent ? gitDetail(ws) : "");
   // A cold session has nothing to attach to — clicking revives it in place.
   li.onclick = cold ? () => reviveWorkspace(ws.id) : () => attach(ws.id, null);
-  li.querySelector(".exp").onclick = (e) => {
+  if (!agent) li.querySelector(".exp").onclick = (e) => {
     e.stopPropagation();
     state.gitOpen[ws.id] = !open;
     renderList();

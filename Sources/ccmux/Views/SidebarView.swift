@@ -34,11 +34,22 @@ struct SidebarView: View {
         workspaces(ownedBy: windowContext.ownedWorkspaceIds)
     }
 
-    /// Local + hosted workspaces owned by the given window, sorted by name.
+    /// Local + hosted workspaces owned by the given window: repos by name,
+    /// then the window's agents by name (an agent session is a member of the
+    /// project, not a peer of its repos; same order as the web lens).
     private func workspaces(ownedBy ids: some Collection<UUID>) -> [Workspace] {
         (manager.workspaces + remoteService.workspaces)
             .filter { ids.contains($0.id) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted(by: reposThenAgents)
+    }
+
+    /// Repos by name, then agents by name: the sidebar's one order for
+    /// sessions, wherever they are listed.
+    private func reposThenAgents(_ a: Workspace, _ b: Workspace) -> Bool {
+        let aAgent = remoteService.agentWorkspaces[a.id] != nil
+        let bAgent = remoteService.agentWorkspaces[b.id] != nil
+        if aAgent != bAgent { return !aAgent }
+        return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
     }
 
     /// Current window's display name
@@ -46,7 +57,12 @@ struct SidebarView: View {
     /// inside its section so a session that merely went cold doesn't visually
     /// leave the window it belongs to.
     private func coldWorkspaces(inGroup name: String) -> [DaemonWorkspace] {
-        remoteService.coldWorkspaces.filter { WindowManager.sameWindowName($0.group, name) }
+        remoteService.coldWorkspaces
+            .filter { WindowManager.sameWindowName($0.group, name) }
+            .sorted { a, b in
+                if a.agent.isEmpty != b.agent.isEmpty { return a.agent.isEmpty }
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
     }
 
     /// Cold sessions in NO window (ungrouped): they render under AVAILABLE.
@@ -67,7 +83,7 @@ struct SidebarView: View {
                     && !windowContext.ownedWorkspaceIds.contains($0.id)
                     && !windowContext.otherWindowWorkspaceIds.contains($0.id)
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted(by: reposThenAgents)
     }
 
     /// Shared windows this login has closed — one row each in the Open Window
@@ -406,7 +422,16 @@ struct SidebarView: View {
     private func hostedRow(_ workspace: Workspace, dimmed: Bool) -> some View {
         let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
         Group {
-            if dimmed {
+            if remoteService.agentWorkspaces[workspace.id] != nil {
+                AgentWorkspaceRow(
+                    workspace: workspace,
+                    claudeMonitor: remoteService.claudeMonitors[workspace.id] ?? ClaudeProcessMonitor.empty,
+                    isActive: isDisplayed && !dimmed,
+                    hostedConnection: remoteService.connectionState(for: workspace.id),
+                    onSelect: { onSelectWorkspace(workspace.id) }
+                )
+                .opacity(dimmed ? 0.7 : 1)
+            } else if dimmed {
                 OtherWindowWorkspaceRow(
                     workspace: workspace,
                     monitor: remoteService.gitMonitors[workspace.id] ?? GitStatusMonitor.empty,
@@ -593,6 +618,7 @@ struct SidebarView: View {
                 .font(.system(size: 11))
             Text(workspace.name)
                 .lineLimit(1)
+            if remoteService.agentWorkspaces[workspace.id] != nil { AgentTag() }
             Spacer()
             Text(ownerLabel(owner: remoteService.owners[workspace.id] ?? ""))
                 .font(.system(size: 10))
@@ -622,6 +648,7 @@ struct SidebarView: View {
                 .font(.system(size: 11))
             Text(cold.name)
                 .lineLimit(1)
+            if !cold.agent.isEmpty { AgentTag() }
             Spacer()
             if claimHere {
                 Text(ownerLabel(owner: cold.owner))
@@ -1142,6 +1169,61 @@ private struct WorkspaceRow: View {
             return "~" + path.dropFirst(home.count)
         }
         return path
+    }
+}
+
+// MARK: - Agent row (one line, no dashboard)
+
+/// The small "agent" marker every sidebar row of an agent session carries,
+/// live, available or cold, so it reads apart from the repos.
+private struct AgentTag: View {
+    var body: some View {
+        Text("agent")
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.12)))
+    }
+}
+
+/// An agent instance's session: one line, no disclosure and no git
+/// dashboard (its folder is not a repo), an "agent" tag so it reads apart
+/// from the repos. Same rule as the web lens's isAgentWs row.
+private struct AgentWorkspaceRow: View {
+    let workspace: Workspace
+    @ObservedObject var claudeMonitor: ClaudeProcessMonitor
+    let isActive: Bool
+    var hostedConnection: DaemonConnectionState?
+    var onSelect: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if hostedConnection != nil {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .help("Hosted session")
+            }
+            Text(workspace.name)
+                .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                .foregroundColor(.primary)
+            AgentTag()
+            if claudeMonitor.isRunning {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(.orange)
+                    .help("Working")
+            }
+            Spacer()
+            if let hostedConnection {
+                ConnectionDot(state: hostedConnection)
+            }
+        }
+        // Where a repo row's disclosure triangle sits, so names line up.
+        .padding(.leading, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect?() }
     }
 }
 

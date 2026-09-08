@@ -570,3 +570,7 @@ body {
 .ac-sched-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ac-sched-when { font-family: ui-monospace, monospace; }
 .ac-sched-next, .ac-sched-empty { color: var(--muted); }
+
+/* Sidebar: an agent session is one line (app.js isAgentWs). */
+.ws .exp.none { visibility: hidden; }
+.ws .agent-tag { font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: .04em; opacity: .8; }

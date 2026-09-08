@@ -28,6 +28,10 @@ final class RemoteSessionService: ObservableObject {
     /// their chat socket dials (host-direct, like the terminal stream). What
     /// PaneContentView reads to show the chat view instead of the terminal.
     @Published private(set) var agentPanes: [String: AgentPaneRef] = [:]
+    /// App workspace id → base agent name, for every hosted session that is
+    /// an agent instance. The sidebar renders those as one line, after the
+    /// repos (same rule as the web lens's isAgentWs).
+    @Published private(set) var agentWorkspaces: [UUID: String] = [:]
     /// Per-workspace connection state, for the reconnect overlay.
     @Published private(set) var connectionStates: [UUID: DaemonConnectionState] = [:]
 
@@ -875,6 +879,7 @@ final class RemoteSessionService: ObservableObject {
             for p in dw.panes where !p.agent.isEmpty {
                 agentPanes[p.id] = AgentPaneRef(agent: p.agent, harness: p.harness, wsOrigin: attachOrigin(for: dw) ?? DaemonConfig.wsBaseURL)
             }
+            agentWorkspaces[appId] = dw.agent.isEmpty ? nil : dw.agent
             // Pane titles change without the pane set changing (the daemon re-derives
             // them from tmux as programs start/stop) — fold them into the tab chips.
             if let controller = controllers[appId],

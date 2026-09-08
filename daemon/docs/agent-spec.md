@@ -149,7 +149,14 @@ Implemented (2026-09-05): the daemon's lifecycle loop ticks every 30 s.
 Busy/idle comes from the harness: Claude Code panes through their hooks,
 opencode panes through the embedded ccmux plugin (`agents/.ccmux/
 ccmux-opencode.ts`, listed in every instance's `opencode.jsonc`), which posts
-to `POST /v1/panes/{id}/agent-signal` on loopback. An instance idle past
+to `POST /v1/panes/{id}/agent-signal` on loopback. Since 2026-09-08 that
+signal also carries `needs-input` (a permission or question is up) and
+`replied`, and every state sets the pane's attention the way a Claude
+pane's hooks do: busy → running, idle → done, needs-input → needs_input
+(tab badge, sidebar flash, web push), replied → running. needs-input keeps
+the busy clock running: an agent waiting on a human is mid-task, not idle. Before that an
+opencode agent waiting on a permission was silent everywhere but its own
+chat view. An instance idle past
 `idleExitMinutes` (0 = never) with no open peer delegation gets ctrl-d and
 drops to its shell ("asleep") — note the loop cannot tell a human composing
 in the TUI from an idle agent, so a draft in a running agent's input can be

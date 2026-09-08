@@ -1,9 +1,11 @@
 // ccmux opencode plugin, two jobs:
 //
-//   - tells the daemon when this agent pane is busy or idle, which is what
-//     the lifecycle loop needs to put an idle agent to sleep (docs/agent-spec.md
-//     §8). Claude Code panes report the same through the hooks socket;
-//     opencode has no hooks, so this plugin is the equivalent;
+//   - tells the daemon when this agent pane is busy, idle, or waiting on a
+//     permission or question. Busy/idle is what the lifecycle loop needs to
+//     put an idle agent to sleep (docs/agent-spec.md §8); waiting is what
+//     badges the tab, flashes the sidebar and pushes to a phone, the same as
+//     a Claude Code pane's hooks do. opencode has no hooks, so this plugin
+//     is the equivalent;
 //   - appends the window context (the project's repo sessions and its
 //     agents) to the system prompt at every turn. Claude Code reads that
 //     from the peers shim's MCP instructions; opencode ignores those, so the
@@ -19,7 +21,7 @@ export const CcmuxPlugin: Plugin = async () => {
   const daemon = process.env.CCMUX_DAEMON_URL
   const pane = process.env.CCMUX_PANE_ID
   if (!daemon || !pane) return {}
-  const signal = async (state: "busy" | "idle") => {
+  const signal = async (state: "busy" | "idle" | "needs-input" | "replied") => {
     try {
       await fetch(`${daemon}/v1/panes/${pane}/agent-signal`, {
         method: "POST",
@@ -51,6 +53,16 @@ export const CcmuxPlugin: Plugin = async () => {
           break
         case "message.updated":
           if (event.properties?.info?.role === "user") await signal("busy")
+          break
+        case "permission.asked": // opencode ≥ 1.18 (v2 events)
+        case "permission.updated": // older event name, kept so both work
+        case "question.asked":
+          await signal("needs-input")
+          break
+        case "permission.replied":
+        case "question.replied":
+        case "question.rejected":
+          await signal("replied")
           break
       }
     },
