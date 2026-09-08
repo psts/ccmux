@@ -229,23 +229,24 @@ func (s *Server) deployments(name string) ([]agentDeployment, int, string) {
 		if inst.State == "absent" {
 			continue
 		}
-		n, err := s.scheduleCount(win.ID, name)
-		if err != nil {
-			return nil, http.StatusServiceUnavailable, "schedules: " + err.Error()
-		}
-		out = append(out, agentDeployment{Window: win.Name, WindowID: win.ID, Schedules: n, agentInstance: inst})
+		out = append(out, agentDeployment{Window: win.Name, WindowID: win.ID, Schedules: s.scheduleCount(win.ID, name), agentInstance: inst})
 	}
 	return out, 0, ""
 }
 
-// scheduleCount is the instance's schedule count, 0 on a daemon without
-// the schedule store.
-func (s *Server) scheduleCount(windowID, name string) (int, error) {
+// scheduleCount is the instance's schedule count: a display figure, so a
+// store error is logged and shown as 0 rather than taking the instances
+// list (and the restart route built on it) down with it.
+func (s *Server) scheduleCount(windowID, name string) int {
 	if s.schedules == nil {
-		return 0, nil
+		return 0
 	}
 	list, err := s.schedules.AgentSchedulesFor(windowID, name)
-	return len(list), err
+	if err != nil {
+		log.Printf("agent %s in window %s: schedule count unavailable: %v", name, windowID, err)
+		return 0
+	}
+	return len(list)
 }
 
 // restartAgentInstances: POST /v1/agents/{name}/instances/restart puts every

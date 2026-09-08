@@ -53,19 +53,6 @@ func (a *agentActivity) forget(paneID string) {
 	delete(a.state, paneID)
 }
 
-// NoteAgentSignal records a busy/idle signal for a pane (the plugin route).
-// Unknown panes are refused so a stray POST cannot grow the map.
-func (m *Manager) NoteAgentSignal(paneID string, busy bool) bool {
-	m.mu.RLock()
-	_, p := m.findPaneLocked(paneID)
-	m.mu.RUnlock()
-	if p == nil {
-		return false
-	}
-	m.activity.note(paneID, busy, time.Now())
-	return true
-}
-
 // AgentBusy says whether the harness in paneID last reported busy. No
 // signal yet reads as idle: a pane nobody has typed into is not mid-task.
 func (m *Manager) AgentBusy(paneID string) bool {

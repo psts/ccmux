@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -10,8 +11,75 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent/agenttest"
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
 )
+
+// failingRuns is the schedule store with the one write that must not stay
+// quiet made to fail.
+type failingRuns struct{ *store.SQLite }
+
+func (failingRuns) MarkAgentScheduleRun(int64, int64, int64) error { return errors.New("disk full") }
+
+// A run whose next slot cannot be saved is paused, so the row does not
+// read as due again next tick and repeat the prompt.
+func TestSchedules_FailedRunWriteParksTheSchedule(t *testing.T) {
+	s, st, winID := scheduleServer(t)
+	s.SetSchedules(failingRuns{st}, 6*time.Hour)
+	now := s.scheduleNow()
+	due := now.Add(-7 * time.Hour).UnixMilli() // the missed-slot path reaches markRun without a pane
+	id, _ := st.AddAgentSchedule(store.AgentSchedule{WindowID: winID, Agent: "scout", Cron: "@hourly", Prompt: "x", NextRunAt: due})
+	s.fireDueSchedules()
+	sc, _ := st.AgentSchedule(id)
+	if sc == nil || !sc.Paused || sc.NextRunAt != due {
+		t.Fatalf("after a failed write = %+v, want paused with the slot untouched", sc)
+	}
+}
+
+// failingLists is the schedule store with the count query broken.
+type failingLists struct{ *store.SQLite }
+
+func (failingLists) AgentSchedulesFor(string, string) ([]store.AgentSchedule, error) {
+	return nil, errors.New("database is locked")
+}
+
+// A broken count query is a display problem, not a reason to hide the
+// instance list or refuse a restart: both routes still answer.
+func TestSchedules_CountErrorDoesNotBlockInstancesOrRestart(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	f.srv.SetSchedules(failingLists{f.st}, 6*time.Hour)
+	if code, _ := f.start(t, "x-poster", ""); code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	rec := do(t, f.srv, "GET", "/v1/agents/x-poster/instances", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"schedules":0`) || !strings.Contains(rec.Body.String(), `"window":"Chart Labs"`) {
+		t.Fatalf("instances with a broken count = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, f.srv, "POST", "/v1/agents/x-poster/instances/restart", ""); rec.Code != 202 {
+		t.Fatalf("restart with a broken count = %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The instances payload carries each instance's schedule count, which is
+// all the editor rows in both lenses read.
+func TestSchedules_InstancesCarryTheCount(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	f.srv.SetSchedules(f.st, 6*time.Hour)
+	if code, _ := f.start(t, "x-poster", ""); code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	for _, agentName := range []string{"x-poster", "x-poster", "someone-else"} {
+		f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: agentName, Cron: "@hourly", Prompt: "x", NextRunAt: 1})
+	}
+	rec := do(t, f.srv, "GET", "/v1/agents/x-poster/instances", "")
+	var out struct {
+		Instances []agentDeployment `json:"instances"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != 200 || len(out.Instances) != 1 || out.Instances[0].Schedules != 2 {
+		t.Fatalf("instances = %d %s", rec.Code, rec.Body)
+	}
+}
 
 // scheduleServer is an agents server with a schedule store, a fixed clock
 // (Wednesday 9 Sep 2026, noon local) and one window holding no session.
@@ -208,18 +276,18 @@ func TestSchedules_TickPushesIntoIdleAndWaitsForBusy(t *testing.T) {
 	if len(prompts) != 1 || !strings.HasPrefix(prompts[0], "[ccmux schedule #") || !strings.HasSuffix(prompts[0], "post the digest") {
 		t.Fatalf("pushed prompts = %q", prompts)
 	}
-	if sc, _ := f.st.AgentSchedule(pushed); sc.LastRunAt == 0 || sc.NextRunAt <= now.UnixMilli() {
+	if sc, _ := f.st.AgentSchedule(pushed); sc == nil || sc.LastRunAt == 0 || sc.NextRunAt <= now.UnixMilli() {
 		t.Fatalf("pushed row not stamped: %+v", sc)
 	}
 
 	// Busy: the row waits, nothing is pushed, nothing is stamped.
-	f.srv.mgr.NoteAgentSignal(pane.ID, true)
+	f.srv.mgr.ApplyAgentSignal(pane.ID, model.AttentionRunning, true)
 	waiting, _ := f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: "x-poster", Cron: "@hourly", Prompt: "later", NextRunAt: now.Add(-time.Second).UnixMilli()})
 	f.srv.fireDueSchedules()
 	if prompts, _, _ := oc.Recorded(); len(prompts) != 1 {
 		t.Fatalf("a busy agent was pushed into: %q", prompts)
 	}
-	if sc, _ := f.st.AgentSchedule(waiting); sc.LastRunAt != 0 || sc.NextRunAt != now.Add(-time.Second).UnixMilli() {
+	if sc, _ := f.st.AgentSchedule(waiting); sc == nil || sc.LastRunAt != 0 || sc.NextRunAt != now.Add(-time.Second).UnixMilli() {
 		t.Fatalf("waiting row was touched: %+v", sc)
 	}
 }
@@ -236,7 +304,7 @@ func TestSchedules_TickSkipsRunningClaudeInstance(t *testing.T) {
 	now := time.Now()
 	id, _ := f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: "x-poster", Cron: "@hourly", Prompt: "x", NextRunAt: now.Add(-time.Second).UnixMilli()})
 	f.srv.fireDueSchedules()
-	if sc, _ := f.st.AgentSchedule(id); sc.LastRunAt != 0 || sc.NextRunAt <= now.UnixMilli() {
+	if sc, _ := f.st.AgentSchedule(id); sc == nil || sc.LastRunAt != 0 || sc.NextRunAt <= now.UnixMilli() {
 		t.Fatalf("skip should advance without a run: %+v", sc)
 	}
 }

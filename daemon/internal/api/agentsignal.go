@@ -42,8 +42,9 @@ func (s *Server) agentSignal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, `state must be one of "busy", "idle", "needs-input", "replied"`)
 		return
 	}
-	// One manager call sets attention and the busy clock together, so the
-	// lifecycle tick can never read the pane between the two.
+	// One manager call, so the busy clock gets a single write: the old two
+	// steps noted the Claude reading of needs-input (idle) before the
+	// plugin's busy landed, and a tick between them could end the pane.
 	if !s.mgr.ApplyAgentSignal(r.PathValue("id"), att, busy) {
 		writeError(w, http.StatusNotFound, "unknown pane")
 		return

@@ -47,8 +47,8 @@ func TestAgentSignal_OutcomeTable(t *testing.T) {
 }
 
 // The handler on a real agent pane: needs-input badges the pane AND keeps
-// the busy clock running (one manager call, so no tick can read the pane
-// between the two); idle ends both.
+// the busy clock running (a single activity write, never the Claude
+// reading first); idle ends both.
 func TestAgentSignal_NeedsInputBadgesAndStaysBusy(t *testing.T) {
 	f := newWindowAgentFixture(t, "sleep 4;:")
 	code, pane := f.start(t, "x-poster", "")

@@ -88,8 +88,8 @@ func viewOf(sc store.AgentSchedule) scheduleView {
 	return v
 }
 
-// nextRunText spells a run time out in the daemon's local zone, for the
-// tool's answer and the log.
+// nextRunText spells a run time out in the daemon's local zone: the lens's
+// schedule list, the tool's answer and the log all show this form.
 func nextRunText(millis int64) string {
 	return time.UnixMilli(millis).Local().Format("Mon 2 Jan 15:04 MST")
 }
