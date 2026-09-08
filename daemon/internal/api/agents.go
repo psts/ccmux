@@ -158,7 +158,8 @@ func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
 // renameInstances keeps every instance session named after the base's
 // current icon and name, so an icon changed in the editor shows in the
 // sidebars at once, without a restart. The first failure is returned; the
-// rest are still attempted.
+// rest are still attempted. A session killed between the listing and its
+// rename is nothing to report.
 func (s *Server) renameInstances(d agent.Definition) error {
 	want := agentSessionName(d)
 	var first error
@@ -166,7 +167,8 @@ func (s *Server) renameInstances(d agent.Definition) error {
 		if ws.Agent != d.Name {
 			continue
 		}
-		if err := s.mgr.RenameWorkspace(ws.ID, want); err != nil && first == nil {
+		err := s.mgr.RenameWorkspace(ws.ID, want)
+		if err != nil && !errors.Is(err, manager.ErrWorkspaceGone) && first == nil {
 			first = fmt.Errorf("session %s: %w", ws.ID, err)
 		}
 	}

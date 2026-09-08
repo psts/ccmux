@@ -749,28 +749,38 @@ func (m *Manager) List() []*model.Workspace {
 // RenameWorkspace sets a workspace's display name (live or cold), persists
 // it and tells every lens the list changed. Agent sessions are named after
 // their base's icon and name, so a base whose icon changed renames its
-// instances through this. A failed persist is an error, not a log line:
-// memory would show the new name until the next daemon start put the
-// stored one back, and nothing would say why.
+// instances through this. A failed persist is an error and the old name
+// stays: memory and store never disagree, so nothing reverts on the next
+// daemon start behind the caller's back. ErrWorkspaceGone for an unknown id.
 func (m *Manager) RenameWorkspace(wsID, name string) error {
 	m.mu.Lock()
 	e := m.byID[wsID]
 	if e == nil || e.ws.Name == name {
 		m.mu.Unlock()
 		if e == nil {
-			return errors.New("unknown workspace " + wsID)
+			return ErrWorkspaceGone
 		}
 		return nil
 	}
+	old := e.ws.Name
 	e.ws.Name = name
 	saved := *e.ws
 	m.mu.Unlock()
-	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	if err := m.store.SaveWorkspace(&saved); err != nil {
-		return fmt.Errorf("rename to %q not persisted: %w", name, err)
+		m.mu.Lock()
+		if cur := m.byID[wsID]; cur != nil && cur.ws.Name == name {
+			cur.ws.Name = old
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("rename to %q not saved: %w", name, err)
 	}
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return nil
 }
+
+// ErrWorkspaceGone is RenameWorkspace's answer for an id it does not hold:
+// a session killed between a caller's listing and its call.
+var ErrWorkspaceGone = errors.New("workspace is gone")
 
 // Workspace returns one workspace's metadata.
 func (m *Manager) Workspace(wsID string) *model.Workspace {

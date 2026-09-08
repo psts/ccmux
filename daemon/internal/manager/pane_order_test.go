@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -160,8 +161,8 @@ func TestRenameWorkspace_PersistsAndAnnounces(t *testing.T) {
 		t.Fatalf("no-op rename announced %+v", ev)
 	default:
 	}
-	if err := m.RenameWorkspace("nope", "x"); err == nil {
-		t.Fatal("unknown workspace accepted")
+	if err := m.RenameWorkspace("nope", "x"); !errors.Is(err, ErrWorkspaceGone) {
+		t.Fatalf("unknown workspace = %v, want ErrWorkspaceGone", err)
 	}
 
 	st.Close()
