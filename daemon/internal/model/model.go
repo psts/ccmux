@@ -234,12 +234,17 @@ type Pane struct {
 	// Agent names the base agent this pane is an instance of ("" = not an
 	// agent pane), and AgentVersion the base version it last started with,
 	// so a lens can show drift against the current base (internal/agent).
-	Agent        string    `json:"agent,omitempty"`
-	AgentVersion string    `json:"agentVersion,omitempty"`
-	CreatedBy    string    `json:"createdBy"`
-	CreatedAt    int64     `json:"createdAt"`
-	Status       Status    `json:"status"`
-	Attention    Attention `json:"attention"`
+	Agent        string `json:"agent,omitempty"`
+	AgentVersion string `json:"agentVersion,omitempty"`
+	CreatedBy    string `json:"createdBy"`
+	CreatedAt    int64  `json:"createdAt"`
+	// Position is the pane's place in the workspace's tab order, shared by
+	// every lens: a lens drags a tab, the daemon renumbers, the others follow.
+	// Panes are served sorted by it (creation time breaks ties, which is also
+	// what every pane made before the column existed sorts by).
+	Position  int       `json:"position"`
+	Status    Status    `json:"status"`
+	Attention Attention `json:"attention"`
 	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
 	// ■). Its presence is the "running" signal lenses render.
 	DevServer bool `json:"devServer,omitempty"`

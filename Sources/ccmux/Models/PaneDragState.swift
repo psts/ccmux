@@ -7,6 +7,11 @@ class PaneDragState: ObservableObject {
     @Published var currentLocation: CGPoint?
     @Published var hoveredPaneId: UUID?
     @Published var dropZone: DropZone?
+    /// Insertion index in the SOURCE leaf's own tab strip while the pointer is
+    /// over that strip (a reorder); nil once it leaves, when the pane-edge drop
+    /// zones take over (a move into a split). The strip computes it, since only
+    /// the strip knows its chips.
+    @Published var tabSlot: Int?
 
     /// Cached pane frames in the "splitTree" coordinate space, updated via PreferenceKey.
     var paneFrames: [UUID: CGRect] = [:]
@@ -17,8 +22,16 @@ class PaneDragState: ObservableObject {
         draggedPaneId = paneId
     }
 
+    /// The pointer is over the source strip: a reorder, not a move.
+    func setTabSlot(_ slot: Int) {
+        tabSlot = slot
+        hoveredPaneId = nil
+        dropZone = nil
+    }
+
     func updateLocation(_ location: CGPoint) {
         currentLocation = location
+        tabSlot = nil
         // Hit test against cached pane frames
         for (id, frame) in paneFrames {
             if id != draggedPaneId && frame.contains(location) {
@@ -36,6 +49,7 @@ class PaneDragState: ObservableObject {
         currentLocation = nil
         hoveredPaneId = nil
         dropZone = nil
+        tabSlot = nil
     }
 
     /// Determine which zone a point falls in within a rect.
@@ -70,6 +84,21 @@ enum DropZone: Equatable {
         case .right, .bottom: return false
         }
     }
+}
+
+/// Tab chip frames (by tab id) in the shared coordinate space, read by the
+/// strip they belong to so it can map a pointer to a slot.
+struct TabFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// A tab strip's own frame in the shared coordinate space.
+struct TabBarFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
 /// PreferenceKey for collecting pane frames in the shared coordinate space.

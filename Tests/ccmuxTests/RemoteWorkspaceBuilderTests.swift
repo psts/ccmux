@@ -129,3 +129,21 @@ final class RemoteWorkspaceBuilderTests: XCTestCase {
         XCTAssertEqual(placed.focusLeafId, last.id)
     }
 }
+
+extension RemoteWorkspaceBuilderTests {
+    /// A tab dragged on the web reaches the Mac as a new daemon order. Hosted
+    /// tabs swap among their own slots in the leaf; a browser tab between them
+    /// stays where it was.
+    func testMergedTreeFollowsDaemonOrderWithinALeaf() throws {
+        let cfg = { (id: String) in PaneContent.terminal(RemoteWorkspaceBuilder.terminalConfig(for: self.pane(id), repoPath: "/repo")) }
+        let browser = PaneContent.browser(BrowserConfig(id: UUID(), urlString: "https://example.com"))
+        let leaf = PaneTabs(id: UUID(), tabs: [cfg("p1"), browser, cfg("p2"), cfg("p3")], activeTabId: browser.id)
+        let tree = SplitTree<PaneTabs>.leaf(id: leaf.id, content: leaf)
+
+        let merged = try XCTUnwrap(RemoteWorkspaceBuilder.mergedTree(
+            tree, panes: [pane("p3"), pane("p1"), pane("p2")], repoPath: "/repo"))
+        let tabs = try XCTUnwrap(merged.findLeaf(id: leaf.id))
+        XCTAssertEqual(tabs.tabs.map { $0.hostedPaneId ?? "browser" }, ["p3", "browser", "p1", "p2"])
+        XCTAssertEqual(tabs.activeTabId, browser.id)
+    }
+}

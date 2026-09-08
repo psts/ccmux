@@ -15,6 +15,8 @@ struct PaneTabBar: View {
     let onActivateTab: (UUID) -> Void
     let onCloseTab: (UUID) -> Void
     var onMovePane: ((UUID, DropZone) -> Void)?
+    /// A tab dropped along its own strip: (tab id, slot). See PaneTabs.moveTab.
+    var onMoveTab: ((UUID, Int) -> Void)?
     /// TerminalConfig.id designated as the workspace's Claude pane (for the checkmark).
     var claudePaneId: UUID?
     /// Toggle a terminal tab as the designated Claude pane.
@@ -32,14 +34,18 @@ struct PaneTabBar: View {
     var onSetPaneLLMRoute: ((String, String) -> Void)?
 
     @EnvironmentObject var dragState: PaneDragState
+    /// Chip and strip frames in the "splitTree" space, for mapping a drag to a slot.
+    @State private var tabFrames: [UUID: CGRect] = [:]
+    @State private var barFrame: CGRect = .zero
 
     var body: some View {
         HStack(spacing: 0) {
-            // Scrollable tab strip — each tab is clickable, draggable (to move the whole pane),
-            // and has a hover-close button.
+            // Scrollable tab strip — each tab is clickable, draggable (along the
+            // strip to reorder, onto a pane edge to move the whole pane), and has
+            // a hover-close button.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
-                    ForEach(tabs.tabs) { tab in
+                    ForEach(Array(tabs.tabs.enumerated()), id: \.element.id) { index, tab in
                         TabChip(
                             tab: tab,
                             isActive: tab.id == tabs.activeTabId,
@@ -47,30 +53,24 @@ struct PaneTabBar: View {
                             onActivate: { onActivateTab(tab.id) },
                             onClose: { onCloseTab(tab.id) }
                         )
-                        .gesture(
-                            DragGesture(minimumDistance: 5, coordinateSpace: .named("splitTree"))
-                                .onChanged { value in
-                                    if !dragState.isDragging {
-                                        dragState.beginDrag(paneId: paneId)
-                                    }
-                                    dragState.updateLocation(value.location)
-                                }
-                                .onEnded { _ in
-                                    if let targetId = dragState.hoveredPaneId,
-                                       let zone = dragState.dropZone {
-                                        onMovePane?(targetId, zone)
-                                    }
-                                    dragState.endDrag()
-                                }
-                                .exclusively(before: TapGesture().onEnded {
-                                    onFocus()
-                                    onActivateTab(tab.id)
-                                })
-                        )
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(
+                                key: TabFramePreferenceKey.self,
+                                value: [tab.id: geo.frame(in: .named("splitTree"))])
+                        })
+                        .overlay(alignment: .leading) { dropMarker(before: index) }
+                        .overlay(alignment: .trailing) { dropMarker(after: index) }
+                        .gesture(tabDrag(for: tab))
                         .contextMenu { tabContextMenu(for: tab) }
                     }
                 }
+                .onPreferenceChange(TabFramePreferenceKey.self) { tabFrames = $0 }
             }
+            .background(GeometryReader { geo in
+                Color.clear.preference(
+                    key: TabBarFramePreferenceKey.self, value: geo.frame(in: .named("splitTree")))
+            })
+            .onPreferenceChange(TabBarFramePreferenceKey.self) { barFrame = $0 }
             .frame(maxHeight: .infinity)
 
             Spacer(minLength: 4)
@@ -134,6 +134,66 @@ struct PaneTabBar: View {
                     .fill(Color.accentColor)
                     .frame(height: 1)
             }
+        }
+    }
+
+    // MARK: - Drag
+
+    /// One gesture, two outcomes. While the pointer stays over this strip the
+    /// drag is a reorder and lands as a slot; once it leaves, it is the old
+    /// move-the-pane drag and lands on another pane's edge zone.
+    private func tabDrag(for tab: PaneContent) -> some Gesture {
+        DragGesture(minimumDistance: 5, coordinateSpace: .named("splitTree"))
+            .onChanged { value in
+                if !dragState.isDragging {
+                    dragState.beginDrag(paneId: paneId)
+                }
+                if let slot = slot(at: value.location) {
+                    dragState.setTabSlot(slot)
+                } else {
+                    dragState.updateLocation(value.location)
+                }
+            }
+            .onEnded { _ in
+                if let slot = dragState.tabSlot {
+                    onMoveTab?(tab.id, slot)
+                } else if let targetId = dragState.hoveredPaneId, let zone = dragState.dropZone {
+                    onMovePane?(targetId, zone)
+                }
+                dragState.endDrag()
+            }
+            .exclusively(before: TapGesture().onEnded {
+                onFocus()
+                onActivateTab(tab.id)
+            })
+    }
+
+    /// Where along this strip a drop would land: the number of chips whose
+    /// middle lies left of the pointer, the dragged one counted too (the move
+    /// removes it first). Nil when the pointer is off the strip. Same maths as
+    /// the web lens's dropSlotAt, so a drag reads the same on both.
+    private func slot(at point: CGPoint) -> Int? {
+        guard barFrame.contains(point) else { return nil }
+        return tabs.tabs.filter { tab in
+            guard let frame = tabFrames[tab.id] else { return false }
+            return frame.midX < point.x
+        }.count
+    }
+
+    /// The drop marker: a 2pt accent line before the chip the dragged tab would
+    /// push right, or after the last chip when it would land at the end.
+    @ViewBuilder
+    private func dropMarker(before index: Int) -> some View {
+        if dragState.draggedPaneId == paneId, dragState.tabSlot == index {
+            Rectangle().fill(Color.accentColor).frame(width: 2)
+        }
+    }
+
+    @ViewBuilder
+    private func dropMarker(after index: Int) -> some View {
+        if dragState.draggedPaneId == paneId, index == tabs.tabs.count - 1,
+           dragState.tabSlot == tabs.tabs.count {
+            Rectangle().fill(Color.accentColor).frame(width: 2)
         }
     }
 

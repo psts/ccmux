@@ -22,6 +22,7 @@ type Store interface {
 	SaveWorkspace(*model.Workspace) error
 	SavePane(*model.Pane) error
 	UpdatePaneSize(paneID string, cols, rows int) error
+	UpdatePanePositions(wsID string, orderedIDs []string) error
 	DeleteWorkspace(id string) error
 	DeletePane(id string) error
 	SetWorkspaceStatus(id string, status model.Status) error
@@ -95,7 +96,7 @@ CREATE TABLE IF NOT EXISTS panes (
   status TEXT, attention TEXT, is_dev INTEGER DEFAULT 0,
   dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0,
   cols INTEGER DEFAULT 0, rows INTEGER DEFAULT 0, harness TEXT DEFAULT '',
-  agent TEXT DEFAULT '', agent_version TEXT DEFAULT ''
+  agent TEXT DEFAULT '', agent_version TEXT DEFAULT '', position INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -202,7 +203,10 @@ func Open(path string) (*SQLite, error) {
 	// missing, and the widened SELECT below then fails Load with "no such column:
 	// cols" — sending whoever debugs it after a missing column rather than the
 	// locked database that caused it.
-	for _, col := range []string{"cols", "rows"} {
+	// position (tab order) joins the same strict loop for the same reason: the
+	// widened SELECT needs it. Existing rows get 0 and keep sorting by
+	// created_at, so nothing moves the day it lands.
+	for _, col := range []string{"cols", "rows", "position"} {
 		if _, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col + ` INTEGER DEFAULT 0`); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column name") {
 			db.Close()
@@ -285,17 +289,39 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
 // under the lock and then write it after unrelated work, so a title or attention
 // update carrying a stale size would put the old size back — and because memory
 // stays correct, ResizePane's `changed` check is false from then on and nothing
-// ever re-persists it. Size updates go through UpdatePaneSize instead.
+// ever re-persists it. Size updates go through UpdatePaneSize instead, and
+// position (tab order) through UpdatePanePositions, for the same reason.
 func (s *SQLite) SavePane(p *model.Pane) error {
 	_, err := s.db.Exec(`
-INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version,position)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
   startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention,
   is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude,
   harness=excluded.harness, agent=excluded.agent, agent_version=excluded.agent_version`,
-		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows, p.Harness, p.Agent, p.AgentVersion)
+		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows, p.Harness, p.Agent, p.AgentVersion, p.Position)
 	return err
+}
+
+// UpdatePanePositions renumbers a workspace's panes to the given order in one
+// transaction. It is position's only writer past the INSERT, for the same
+// reason cols/rows have UpdatePaneSize: SavePane callers write a snapshot
+// taken under the lock, and a reorder landing in between would be undone. Like UpdatePaneSize it is an UPDATE, never an upsert: a reorder
+// racing a close must not resurrect the closed pane's row. Ids that have no
+// row (closed mid-drag) are skipped, not errors — the order of what remains
+// is still right.
+func (s *SQLite) UpdatePanePositions(wsID string, orderedIDs []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	for i, id := range orderedIDs {
+		if _, err := tx.Exec(`UPDATE panes SET position=? WHERE id=? AND workspace_id=?`, i, id, wsID); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // UpdatePaneSize writes only the size, and only for a pane that still has a row.
@@ -597,14 +623,14 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 }
 
 func (s *SQLite) attachPanes(byID map[string]*model.Workspace) error {
-	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version FROM panes ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version,position FROM panes ORDER BY position, created_at`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		p := &model.Pane{}
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows, &p.Harness, &p.Agent, &p.AgentVersion); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows, &p.Harness, &p.Agent, &p.AgentVersion, &p.Position); err != nil {
 			return err
 		}
 		if w := byID[p.WorkspaceID]; w != nil {

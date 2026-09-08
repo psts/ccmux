@@ -42,6 +42,20 @@ struct PaneTabs: Codable, Identifiable {
         return true
     }
 
+    /// Move a tab to `slot`, an index over the strip as drawn with the moving
+    /// tab still in place (what a pointer position maps to: the number of
+    /// chips whose middle lies left of it). Returns false when nothing moves.
+    /// The active tab stays active; only positions change.
+    @discardableResult
+    mutating func moveTab(tabId: UUID, to slot: Int) -> Bool {
+        guard let from = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+        let to = min(max(slot > from ? slot - 1 : slot, 0), tabs.count - 1)
+        guard to != from else { return false }
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: to)
+        return true
+    }
+
     mutating func updateTab(tabId: UUID, newContent: PaneContent) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         tabs[idx] = newContent

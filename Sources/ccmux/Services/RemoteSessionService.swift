@@ -669,6 +669,16 @@ final class RemoteSessionService: ObservableObject {
         await refresh()
     }
 
+    /// Send the tree's hosted pane order after a tab drag, so the web strip
+    /// follows the Mac (the daemon renumbers and fans a workspace-status out).
+    /// A refusal is not retried: the next reconcile re-sorts the leaf from the
+    /// daemon's order, which is the shared truth.
+    private func pushPaneOrder(appId: UUID, order: [String]) async {
+        guard let daemonId = daemonIds[appId], !order.isEmpty else { return }
+        _ = await sendReportingError(
+            "PUT", path: "/v1/workspaces/\(daemonId)/pane-order", body: ["order": order], expect: 200)
+    }
+
     /// Resurrect a cold workspace from its stored recipe. Returns nil on success or
     /// the daemon's error text — a refusal here is the answer to a click on a cold
     /// row, so it must reach the user rather than leaving the row looking inert.
@@ -940,6 +950,11 @@ final class RemoteSessionService: ObservableObject {
         }
         controller.onHostedPaneClosed = { [weak self] paneId in
             Task { await self?.killHostedPane(appId: appId, paneId: paneId) }
+        }
+        controller.onHostedTabsReordered = { [weak self, weak controller] in
+            guard let controller else { return }
+            let order = controller.tree.allLeaves.flatMap { $0.content.tabs.compactMap(\.hostedPaneId) }
+            Task { await self?.pushPaneOrder(appId: appId, order: order) }
         }
         controllers[appId] = controller
         daemonIds[appId] = dw.id

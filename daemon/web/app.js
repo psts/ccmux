@@ -18,6 +18,7 @@ const state = {
   fit: null,
   firehose: null,    // global /v1/events WS (sidebar attention, all workspaces)
   attn: {},          // wsId -> { paneId -> attentionState } from the firehose
+  tabDrag: null,     // pane id of the tab being dragged along the strip, else null
   paneCols: 0,       // authoritative width of the current pane (from the daemon)
   gitOpen: {},       // wsId -> true when the row's changed-files list is expanded
 };
@@ -99,7 +100,7 @@ function attachOrigin(ws) {
 function syncPaneTitles() {
   const ws = state.workspaces.find((w) => w.id === state.wsId);
   if (!ws || !ws.panes) return;
-  let changed = false, shellChanged = false;
+  let changed = syncPaneOrder(ws), shellChanged = false;
   for (const p of state.panes) {
     const q = ws.panes.find((x) => x.id === p.id);
     if (!q) continue;
@@ -951,8 +952,110 @@ function sendInput(data) {
   send({ t: "input", pane: state.paneId, data: bytesToB64(new TextEncoder().encode(data)) });
 }
 
+// The daemon serves panes in the shared tab order. Another lens dragging a tab
+// reaches us as a workspace-status refresh, so re-sort the open session's tabs
+// to the served order here; the pane objects themselves are kept (their
+// attention and titles ride on them). Returns true when anything moved.
+function syncPaneOrder(ws) {
+  const rank = new Map(ws.panes.map((p, i) => [p.id, i]));
+  const sorted = state.panes.slice().sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+  if (sorted.every((p, i) => p === state.panes[i])) return false;
+  state.panes = sorted;
+  return true;
+}
+
+// --- tab reorder: drag a tab along the strip ---
+// Mouse and pen start after 6px of sideways movement; touch holds 350ms first
+// so a tap or a scroll is never read as a drag. The new order goes to the
+// daemon, which renumbers and tells every other lens (the Mac's tab strips
+// re-sort from the same served order).
+// Listeners live on the window, not the button: the strip is rebuilt by
+// renderTabs on every title or attention change, and a listener on a button
+// that gets replaced mid-drag never sees the release. renderTabs itself holds
+// off while a drag is live and runs once it ends.
+function wireTabDrag(btn, paneId) {
+  btn.onpointerdown = (e) => {
+    if (e.button !== 0) return;
+    const start = { x: e.clientX, y: e.clientY };
+    const touch = e.pointerType === "touch";
+    let live = false, slot = null, hold = null;
+    // Capture keeps the button as the target through the release, so the click
+    // that follows can be told apart from a plain click. Best effort: a pointer
+    // the browser will not capture still reports through the window listeners.
+    try { btn.setPointerCapture(e.pointerId); } catch (_) { /* window listeners suffice */ }
+    const arm = () => {
+      live = true;
+      state.tabDrag = paneId; // the context menu and pane switch stay shut while a drag is live
+      btn.classList.add("dragging");
+    };
+    const move = (ev) => {
+      if (!live) {
+        if (touch) { if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > 8) stop(); return; }
+        if (Math.abs(ev.clientX - start.x) < 6) return;
+        arm();
+      }
+      slot = dropSlotAt(ev.clientX);
+      showDropSlot(slot);
+    };
+    const up = () => { const done = live && slot !== null; stop(); if (done) movePaneTab(paneId, slot); };
+    const cancel = () => stop(); // the browser took the gesture: never a drop
+    const stop = () => {
+      clearTimeout(hold);
+      // The click that follows a release must still see the drag; then redraw
+      // whatever renderTabs skipped while it was live.
+      if (live) setTimeout(() => { state.tabDrag = null; renderTabs(); }, 0);
+      live = false;
+      btn.classList.remove("dragging");
+      showDropSlot(null);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+    };
+    if (touch) hold = setTimeout(arm, 350);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  };
+}
+
+// dropSlotAt maps an x position to an index in the strip: the number of tabs
+// whose middle lies left of it. Counting the dragged tab too keeps the maths
+// the same as the Mac's (the move removes it first, then inserts).
+function dropSlotAt(x) {
+  const tabs = [...document.querySelectorAll("#tabs .tab")];
+  return tabs.filter((t) => { const r = t.getBoundingClientRect(); return r.left + r.width / 2 < x; }).length;
+}
+
+function showDropSlot(slot) {
+  const tabs = [...document.querySelectorAll("#tabs .tab")];
+  tabs.forEach((t) => t.classList.remove("drop-before", "drop-after"));
+  if (slot === null) return;
+  if (slot < tabs.length) tabs[slot].classList.add("drop-before");
+  else if (tabs.length) tabs[tabs.length - 1].classList.add("drop-after");
+}
+
+// movePaneTab applies the drop locally first (the strip must not wait on the
+// round trip), then sends the whole order. A refusal re-syncs from the daemon.
+async function movePaneTab(paneId, slot) {
+  const ids = state.panes.map((p) => p.id);
+  const from = ids.indexOf(paneId);
+  if (from < 0) return;
+  ids.splice(from, 1);
+  const at = slot > from ? slot - 1 : slot;
+  if (at === from) return;
+  ids.splice(at, 0, paneId);
+  const byId = new Map(state.panes.map((p) => [p.id, p]));
+  state.panes = ids.map((id) => byId.get(id));
+  renderTabs();
+  const r = await fetch(`/v1/workspaces/${state.wsId}/pane-order`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: ids }),
+  });
+  if (!r.ok) fetchWorkspaces();
+}
+
 // --- pane tabs ---
 function renderTabs() {
+  if (state.tabDrag) return; // rebuilding the strip mid-drag would orphan the drag
   const tabs = $("tabs");
   tabs.innerHTML = "";
   state.panes.forEach((p, i) => {
@@ -966,8 +1069,10 @@ function renderTabs() {
     b.title = p.agent ? `agent ${p.agent}` + (p.atShell || p.dormant ? " — asleep" : "")
       : p.dormant ? "Claude exited — shell only" : "";
     b.textContent = (p.agent ? "⚙ " : "") + (p.title || `pane ${i + 1}`);
-    b.onclick = () => attach(state.wsId, p.id);
-    b.oncontextmenu = (e) => { e.preventDefault(); openPaneLLMMenu(p.id, e.clientX, e.clientY); };
+    // A drop ends with a click on the same button; that click must not switch panes.
+    b.onclick = () => { if (!state.tabDrag) attach(state.wsId, p.id); };
+    b.oncontextmenu = (e) => { e.preventDefault(); if (!state.tabDrag) openPaneLLMMenu(p.id, e.clientX, e.clientY); };
+    wireTabDrag(b, p.id);
     tabs.appendChild(b);
   });
 }

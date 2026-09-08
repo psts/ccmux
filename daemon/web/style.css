@@ -343,8 +343,14 @@ body {
   background: var(--bg2); color: var(--muted); border: 1px solid var(--line);
   border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px;
   display: inline-flex; align-items: center; gap: 6px;
+  /* Tabs are dragged to reorder (pointer events): no text selection, no touch
+     scrolling from a tab, no long-press callout on iOS. The strip never scrolls. */
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
 .tab.active { color: var(--fg); border-color: #3a3e44; background: #262b31; }
+.tab.dragging { opacity: .5; }
+.tab.drop-before { box-shadow: -3px 0 0 var(--accent); }
+.tab.drop-after { box-shadow: 3px 0 0 var(--accent); }
 .tab::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: transparent; }
 .tab.att-needs_input::before { background: var(--needs); box-shadow: 0 0 6px var(--needs); }
 .tab.att-done::before { background: var(--done); }

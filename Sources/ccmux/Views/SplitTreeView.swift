@@ -185,6 +185,9 @@ private struct LeafPaneView: View {
                         insertAsFirst: zone.insertAsFirst
                     )
                 },
+                onMoveTab: { tabId, slot in
+                    controller.moveTab(leafId: paneId, tabId: tabId, to: slot)
+                },
                 claudePaneId: controller.claudePaneId,
                 onDesignateClaudePane: { terminalId in
                     controller.setClaudePane(terminalId: terminalId)
@@ -234,8 +237,9 @@ private struct LeafPaneView: View {
                 DropZoneOverlay(zone: zone)
             }
         }
-        // Dim while being dragged
-        .opacity(dragState.draggedPaneId == paneId ? 0.4 : 1.0)
+        // Dim while being dragged out — not while a tab is only sliding along
+        // this pane's own strip, which is a reorder and leaves the pane put.
+        .opacity(dragState.draggedPaneId == paneId && dragState.tabSlot == nil ? 0.4 : 1.0)
     }
 }
 

@@ -48,6 +48,10 @@ class SplitTreeController: ObservableObject {
     /// so the service kills the remote pane (otherwise it would keep running and
     /// the next reconcile's merge would resurface it).
     var onHostedPaneClosed: ((String) -> Void)?
+    /// Fired after a tab moves within a leaf that holds hosted panes, so the
+    /// service sends the tree's pane order to the daemon and the web strip
+    /// (one flat row) follows the Mac.
+    var onHostedTabsReordered: (() -> Void)?
 
     init(workingDirectory: String) {
         self.workingDirectory = workingDirectory
@@ -109,6 +113,15 @@ class SplitTreeController: ObservableObject {
         if let newTree = tree.moveLeaf(sourceId: sourceId, targetId: targetId, direction: direction, insertAsFirst: insertAsFirst) {
             tree = newTree
             focusedPaneId = sourceId
+        }
+    }
+
+    /// Move a tab within its leaf to `slot` (see PaneTabs.moveTab for the index).
+    func moveTab(leafId: UUID, tabId: UUID, to slot: Int) {
+        guard var pane = tree.findLeaf(id: leafId), pane.moveTab(tabId: tabId, to: slot) else { return }
+        tree = tree.replaceContent(leafId: leafId, newContent: pane)
+        if pane.tabs.contains(where: { $0.hostedPaneId != nil }) {
+            onHostedTabsReordered?()
         }
     }
 

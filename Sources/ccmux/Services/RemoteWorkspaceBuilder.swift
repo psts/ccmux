@@ -76,9 +76,31 @@ enum RemoteWorkspaceBuilder {
     /// Nil when no leaf remains.
     static func mergedTree(_ tree: SplitTree<PaneTabs>, panes: [DaemonPane], repoPath: String) -> SplitTree<PaneTabs>? {
         guard let pruned = pruneStalePanes(tree, liveIds: Set(panes.map { $0.id })) else { return nil }
-        return insertNewPanes(
+        let placed = insertNewPanes(
             pruned, panes: panes,
             alreadyPlaced: HostedLayoutCodec.hostedPaneIds(tree), repoPath: repoPath)
+        return orderedByDaemon(placed, panes: panes)
+    }
+
+    /// Within each leaf, hosted terminal tabs take the daemon's pane order (a
+    /// tab dragged on the web, or on another Mac). They swap among the slots
+    /// hosted tabs already occupy, so browser and scratchpad tabs keep their
+    /// places and the split geometry is untouched. Order ACROSS leaves is not
+    /// something a split view can show, so it is not enforced.
+    static func orderedByDaemon(_ tree: SplitTree<PaneTabs>, panes: [DaemonPane]) -> SplitTree<PaneTabs> {
+        let rank = Dictionary(panes.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        func daemonRank(_ tab: PaneContent) -> Int { tab.hostedPaneId.flatMap { rank[$0] } ?? .max }
+        var result = tree
+        for (leafId, tabs) in tree.allLeaves {
+            let slots = tabs.tabs.indices.filter { tabs.tabs[$0].hostedPaneId != nil }
+            let hosted = slots.map { tabs.tabs[$0] }.sorted { daemonRank($0) < daemonRank($1) }
+            var reordered = tabs
+            for (slot, tab) in zip(slots, hosted) { reordered.tabs[slot] = tab }
+            if reordered.tabs.map(\.id) != tabs.tabs.map(\.id) {
+                result = result.replaceContent(leafId: leafId, newContent: reordered)
+            }
+        }
+        return result
     }
 
     /// Fold refreshed daemon pane titles into a tree's hosted terminal tabs (the

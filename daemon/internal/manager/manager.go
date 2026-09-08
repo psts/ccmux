@@ -458,6 +458,7 @@ func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnes
 	m.deliverStartup(e.ctrl, p.ID, deliverCmd, confirm)
 
 	m.mu.Lock()
+	p.Position = nextPosition(e.ws.Panes)
 	e.ws.Panes = append(e.ws.Panes, p)
 	m.mu.Unlock()
 	_ = m.store.SavePane(p)
