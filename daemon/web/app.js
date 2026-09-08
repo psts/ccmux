@@ -1035,7 +1035,9 @@ function showDropSlot(slot) {
 }
 
 // movePaneTab applies the drop locally first (the strip must not wait on the
-// round trip), then sends the whole order. A refusal re-syncs from the daemon.
+// round trip), then sends the whole order. A refusal or a dead connection is
+// said out loud like every other write here, then the strip re-syncs from the
+// daemon so it never shows an order the daemon does not hold.
 async function movePaneTab(paneId, slot) {
   const ids = state.panes.map((p) => p.id);
   const from = ids.indexOf(paneId);
@@ -1047,10 +1049,15 @@ async function movePaneTab(paneId, slot) {
   const byId = new Map(state.panes.map((p) => [p.id, p]));
   state.panes = ids.map((id) => byId.get(id));
   renderTabs();
-  const r = await fetch(`/v1/workspaces/${state.wsId}/pane-order`, {
-    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: ids }),
-  });
-  if (!r.ok) fetchWorkspaces();
+  try {
+    const r = await fetch(`/v1/workspaces/${state.wsId}/pane-order`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: ids }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+  } catch (err) {
+    alert("reorder tabs: " + (err.message || err));
+    fetchWorkspaces();
+  }
 }
 
 // --- pane tabs ---

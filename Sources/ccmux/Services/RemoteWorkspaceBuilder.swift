@@ -197,6 +197,17 @@ enum RemoteWorkspaceBuilder {
         return tree.replaceContent(leafId: target.id, newContent: tabs)
     }
 
+    /// The order to send after a tab drag inside one leaf: the daemon's current
+    /// order with that leaf's panes swapped among the slots they already hold.
+    /// The mirror of orderedByDaemon. A pane the daemon does not list yet (a
+    /// spawn racing the drag) goes on the end, in leaf order.
+    static func daemonOrder(current: [String], leafOrder: [String]) -> [String] {
+        let known = Set(current), moving = Set(leafOrder)
+        var fill = leafOrder.filter { known.contains($0) }.makeIterator()
+        let placed = current.map { moving.contains($0) ? (fill.next() ?? $0) : $0 }
+        return placed + leafOrder.filter { !known.contains($0) }
+    }
+
     /// Ordered daemon pane-id set — a change means the layout must be rebuilt;
     /// no change means keep the live tree/connection untouched (no churn).
     static func paneSignature(_ panes: [DaemonPane]) -> [String] { panes.map { $0.id } }

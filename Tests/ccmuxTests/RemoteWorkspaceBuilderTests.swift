@@ -147,3 +147,19 @@ extension RemoteWorkspaceBuilderTests {
         XCTAssertEqual(tabs.activeTabId, browser.id)
     }
 }
+
+extension RemoteWorkspaceBuilderTests {
+    /// A drag inside one leaf must not move panes that live in other leaves:
+    /// leaf B=[p3] sits left of leaf A=[p1,p2] on the Mac while the daemon
+    /// serves p1,p2,p3. Dragging p2 before p1 sends p2,p1,p3 — p3 stays last.
+    func testDaemonOrderOnlyMovesTheDraggedLeafsPanes() {
+        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "p2", "p3"], leafOrder: ["p2", "p1"]),
+                       ["p2", "p1", "p3"])
+        // Non-adjacent slots are still that leaf's own slots.
+        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "x", "p2", "p3"], leafOrder: ["p2", "p1"]),
+                       ["p2", "x", "p1", "p3"])
+        // A pane the daemon has not listed yet trails, in leaf order.
+        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "p2"], leafOrder: ["new", "p2", "p1"]),
+                       ["p2", "p1", "new"])
+    }
+}

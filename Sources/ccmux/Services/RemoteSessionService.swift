@@ -2,6 +2,11 @@ import AppKit
 import Combine
 import Foundation
 
+/// The daemon's error body ({"error": "..."}). One file-scope type: Swift
+/// refuses a type declared inside a generic function, which is how v0.1.50's
+/// Mac build failed (a local copy of this inside getDecoded<T>).
+private struct APIError: Decodable { let error: String }
+
 /// The lens-side face of ccmuxd: fetches hosted workspaces over REST, materializes
 /// each as an app `Workspace` (`mode: .hosted`) + `SplitTreeController` rendered by
 /// the *same* SplitTree/sidebar machinery as local ones, and keeps a live attach
@@ -951,10 +956,16 @@ final class RemoteSessionService: ObservableObject {
         controller.onHostedPaneClosed = { [weak self] paneId in
             Task { await self?.killHostedPane(appId: appId, paneId: paneId) }
         }
-        controller.onHostedTabsReordered = { [weak self, weak controller] in
-            guard let controller else { return }
-            let order = controller.tree.allLeaves.flatMap { $0.content.tabs.compactMap(\.hostedPaneId) }
-            Task { await self?.pushPaneOrder(appId: appId, order: order) }
+        controller.onHostedTabsReordered = { [weak self] leafOrder in
+            guard let self else { return }
+            // Only the dragged leaf's panes move; every other pane keeps the
+            // slot the daemon last served it in. Pushing the whole tree's
+            // leaf-major order instead moved panes in OTHER leaves on the web,
+            // because split geometry is not order and the pull side (merge)
+            // deliberately leaves cross-leaf order alone.
+            let order = RemoteWorkspaceBuilder.daemonOrder(
+                current: self.paneSignatures[appId] ?? [], leafOrder: leafOrder)
+            Task { await self.pushPaneOrder(appId: appId, order: order) }
         }
         controllers[appId] = controller
         daemonIds[appId] = dw.id
@@ -1148,7 +1159,6 @@ final class RemoteSessionService: ObservableObject {
                 }
                 return nil
             }
-            struct APIError: Decodable { let error: String }
             return (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
         } catch {
             return error.localizedDescription
@@ -1186,7 +1196,6 @@ final class RemoteSessionService: ObservableObject {
                 await refresh() // the new/removed pane changes the workspace tree
                 return nil
             }
-            struct APIError: Decodable { let error: String }
             let message = (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
             await MainActor.run { self.lastError = message }
             return message
@@ -1242,7 +1251,6 @@ final class RemoteSessionService: ObservableObject {
             let (data, resp) = try await session.data(from: url)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200 else {
-                struct APIError: Decodable { let error: String }
                 return (nil, (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)")
             }
             return (try JSONDecoder().decode(T.self, from: data), nil)
@@ -1292,7 +1300,6 @@ final class RemoteSessionService: ObservableObject {
             let (data, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if code == 200 { return nil }
-            struct APIError: Decodable { let error: String }
             return (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
         } catch {
             return error.localizedDescription
@@ -1356,7 +1363,6 @@ final class RemoteSessionService: ObservableObject {
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                 // Same rule as the web lens: a broken base is shown by name, not
                 // hidden behind an empty menu that reads as "no agents".
-                struct APIError: Decodable { let error: String }
                 windowAgentErrors[windowId] = (try? JSONDecoder().decode(APIError.self, from: data))?.error
                     ?? "HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)"
                 windowAgents[windowId] = [] // the web lens drops the list on failure too
@@ -1389,7 +1395,6 @@ final class RemoteSessionService: ObservableObject {
             let (data, resp) = try await session.data(for: req)
             guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
             if code == 200 || code == 201 { return nil }
-            struct APIError: Decodable { let error: String }
             return (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
         } catch {
             return error.localizedDescription
@@ -1426,7 +1431,6 @@ final class RemoteSessionService: ObservableObject {
             let (data, resp) = try await session.data(for: req)
             guard let code = (resp as? HTTPURLResponse)?.statusCode else { return "no response" }
             if code == expect { return nil }
-            struct APIError: Decodable { let error: String }
             let message = (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)"
             await MainActor.run { self.lastError = message }
             return message
