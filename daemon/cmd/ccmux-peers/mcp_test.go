@@ -101,7 +101,7 @@ func TestMCP_ToolsListIsVerbatimSurface(t *testing.T) {
 	for _, tl := range tools {
 		names = append(names, tl.(map[string]any)["name"].(string))
 	}
-	want := []string{"list_peers", "send_message", "delegate", "update_task", "set_summary", "check_messages"}
+	want := []string{"list_peers", "send_message", "delegate", "update_task", "set_summary", "schedule", "check_messages"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}

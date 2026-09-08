@@ -35,6 +35,11 @@ struct AgentChatPaneView: View {
     let onTerminal: () -> Void
     @StateObject private var chat: AgentChatState
     @State private var draft = ""
+    @State private var showSchedules = false
+    @State private var schedules: [DaemonAgentSchedule] = []
+    @State private var schedulesError = ""
+    @State private var removing: DaemonAgentSchedule?
+    private let service = RemoteSessionService.shared
 
     init(paneId: String, agent: String, wsOrigin: String, onTerminal: @escaping () -> Void) {
         self.paneId = paneId
@@ -52,6 +57,10 @@ struct AgentChatPaneView: View {
                 Text(chat.error).font(.system(size: 11)).foregroundColor(.red)
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
+            }
+            if showSchedules {
+                schedulesPanel
                 Divider()
             }
             transcript
@@ -77,9 +86,53 @@ struct AgentChatPaneView: View {
             if chat.busy && chat.state == "running" {
                 Button("Stop") { chat.abort() }.font(.system(size: 11))
             }
+            Button("Schedules") {
+                showSchedules.toggle()
+                if showSchedules { Task { await scheduleAction("list") } }
+            }.font(.system(size: 11)).help("Timed runs of this agent")
             Button("Terminal", action: onTerminal).font(.system(size: 11))
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
+    }
+
+    /// The agent's timed runs in this window, through the pane route the
+    /// shim's `schedule` tool uses; the web lens shows the same panel.
+    private var schedulesPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !schedulesError.isEmpty {
+                Text("Couldn't load schedules: \(schedulesError)").font(.system(size: 11)).foregroundColor(.red)
+            } else if schedules.isEmpty {
+                Text("No schedules. Ask \(agent) in the chat, e.g. \"run this every Monday at 07:00\".")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            }
+            ForEach(schedules) { sc in
+                HStack(spacing: 8) {
+                    Text("#\(sc.id) \(sc.cron)").font(.system(size: 11, design: .monospaced))
+                    Text(sc.paused ? "paused" : "next \(sc.nextRun)").font(.system(size: 11)).foregroundColor(.secondary)
+                    Text(sc.prompt).font(.system(size: 11)).lineLimit(1).help(sc.prompt)
+                    Spacer()
+                    Button(sc.paused ? "Resume" : "Pause") { Task { await scheduleAction(sc.paused ? "resume" : "pause", id: sc.id) } }
+                    Button("Remove") { removing = sc }
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .confirmationDialog("Remove schedule #\(removing?.id ?? 0) (\(removing?.cron ?? ""))?",
+                            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+                            titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                if let sc = removing { Task { await scheduleAction("remove", id: sc.id) } }
+                removing = nil
+            }
+        }
+    }
+
+    private func scheduleAction(_ action: String, id: Int64? = nil) async {
+        let (list, err) = await service.paneSchedules(pane: paneId, action: action, id: id)
+        schedules = list
+        schedulesError = err ?? ""
     }
 
     private var stateColor: Color {

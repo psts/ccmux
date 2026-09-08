@@ -1,0 +1,186 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"ccmux.dev/ccmuxd/internal/store"
+)
+
+// scheduleServer is an agents server with a schedule store, a fixed clock
+// (Wednesday 9 Sep 2026, noon local) and one window holding no session.
+func scheduleServer(t *testing.T) (*Server, *store.SQLite, string) {
+	t.Helper()
+	s := agentsServer(t)
+	st, err := store.Open(filepath.Join(t.TempDir(), "sched.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s.SetSchedules(st, 6*time.Hour)
+	s.scheduleNow = func() time.Time { return time.Date(2026, time.September, 9, 12, 0, 0, 0, time.Local) }
+	winID, err := s.mgr.EnsureWindow("Chart Labs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := do(t, s, "PUT", "/v1/agents/scout", `{"icon":"🔍","description":"Reads.","instructions":"# Role\n"}`); rec.Code != 200 {
+		t.Fatalf("put agent = %d %s", rec.Code, rec.Body)
+	}
+	return s, st, winID
+}
+
+func schedulesOf(t *testing.T, s *Server, winID string) []scheduleView {
+	t.Helper()
+	rec := do(t, s, "GET", "/v1/windows/"+winID+"/agents/scout/schedules", "")
+	if rec.Code != 200 {
+		t.Fatalf("list = %d %s", rec.Code, rec.Body)
+	}
+	var out struct {
+		Schedules []scheduleView `json:"schedules"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	return out.Schedules
+}
+
+func TestSchedules_AddPauseResumeDeleteThroughWindowRoutes(t *testing.T) {
+	s, _, winID := scheduleServer(t)
+	if list := schedulesOf(t, s, winID); len(list) != 0 {
+		t.Fatalf("fresh list = %+v", list)
+	}
+	msg, status, err := s.applyScheduleAction(winID, "scout", "pane-1", scheduleReq{Action: "add", Cron: "0 7 * * 1", Prompt: "Run the weekly sweep."})
+	if err != nil || status != 0 || !strings.Contains(msg, "Next run Mon 14 Sep 07:00") {
+		t.Fatalf("add = %q, %d, %v", msg, status, err)
+	}
+	for _, bad := range []scheduleReq{
+		{Action: "add", Cron: "7 * *", Prompt: "x"},
+		{Action: "add", Cron: "0 7 * * 1", Prompt: ""},
+		{Action: "add", Cron: "0 0 31 feb *", Prompt: "never"},
+		{Action: "dance"},
+	} {
+		if _, status, err := s.applyScheduleAction(winID, "scout", "pane-1", bad); status != http.StatusBadRequest || err == nil {
+			t.Fatalf("%+v accepted: %d, %v", bad, status, err)
+		}
+	}
+	list := schedulesOf(t, s, winID)
+	if len(list) != 1 || list[0].Cron != "0 7 * * 1" || list[0].CreatedBy != "pane-1" || list[0].NextRun == "" {
+		t.Fatalf("after add = %+v", list)
+	}
+	monday := time.Date(2026, time.September, 14, 7, 0, 0, 0, time.Local).UnixMilli()
+	if list[0].NextRunAt != monday {
+		t.Fatalf("next = %d, want %d", list[0].NextRunAt, monday)
+	}
+	id := list[0].ID
+	if msg, _, err := s.applyScheduleAction(winID, "scout", "p", scheduleReq{Action: "pause", ID: id}); err != nil || msg != "Paused #"+itoa(id)+"." {
+		t.Fatalf("pause = %q, %v", msg, err)
+	}
+	if list := schedulesOf(t, s, winID); !list[0].Paused || list[0].NextRun != "" {
+		t.Fatalf("paused view = %+v", list[0])
+	}
+	if msg, _, err := s.applyScheduleAction(winID, "scout", "p", scheduleReq{Action: "resume", ID: id}); err != nil || !strings.Contains(msg, "Next run Mon 14 Sep 07:00") {
+		t.Fatalf("resume = %q, %v", msg, err)
+	}
+	// Another agent's id is nobody's business: 404.
+	if _, status, err := s.applyScheduleAction(winID, "writer", "p", scheduleReq{Action: "remove", ID: id}); status != 404 || err == nil {
+		t.Fatalf("remove as writer = %d, %v", status, err)
+	}
+	if msg, _, err := s.applyScheduleAction(winID, "scout", "p", scheduleReq{Action: "remove", ID: id}); err != nil || msg != "Removed #"+itoa(id)+"." {
+		t.Fatalf("remove = %q, %v", msg, err)
+	}
+	if list := schedulesOf(t, s, winID); len(list) != 0 {
+		t.Fatalf("after delete = %+v", list)
+	}
+	if rec := do(t, s, "GET", "/v1/windows/nope/agents/scout/schedules", ""); rec.Code != 404 {
+		t.Fatalf("unknown window = %d", rec.Code)
+	}
+	if rec := do(t, agentsServer(t), "GET", "/v1/windows/x/agents/scout/schedules", ""); rec.Code != 503 {
+		t.Fatalf("no store = %d, want 503", rec.Code)
+	}
+}
+
+func TestSchedules_CapPerInstance(t *testing.T) {
+	s, _, winID := scheduleServer(t)
+	for i := 0; i < maxSchedulesPerInstance; i++ {
+		if _, _, err := s.applyScheduleAction(winID, "scout", "p", scheduleReq{Action: "add", Cron: "@hourly", Prompt: "p"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, status, err := s.applyScheduleAction(winID, "scout", "p", scheduleReq{Action: "add", Cron: "@hourly", Prompt: "one too many"}); status != http.StatusConflict || err == nil {
+		t.Fatalf("over the cap = %d, %v", status, err)
+	}
+}
+
+// The tick without tmux: everything that does not reach a pane.
+func TestSchedules_TickSkipsMissedSlotsAndDropsOrphans(t *testing.T) {
+	s, st, winID := scheduleServer(t)
+	now := s.scheduleNow()
+	missed, _ := st.AddAgentSchedule(store.AgentSchedule{WindowID: winID, Agent: "scout", Cron: "0 7 * * 1", Prompt: "late", NextRunAt: now.Add(-7 * time.Hour).UnixMilli()})
+	noBase, _ := st.AddAgentSchedule(store.AgentSchedule{WindowID: winID, Agent: "ghost", Cron: "@hourly", Prompt: "x", NextRunAt: now.UnixMilli()})
+	noWindow, _ := st.AddAgentSchedule(store.AgentSchedule{WindowID: "gone", Agent: "scout", Cron: "@hourly", Prompt: "x", NextRunAt: now.UnixMilli()})
+	broken, _ := st.AddAgentSchedule(store.AgentSchedule{WindowID: winID, Agent: "scout", Cron: "not cron", Prompt: "x", NextRunAt: now.UnixMilli()})
+	future, _ := st.AddAgentSchedule(store.AgentSchedule{WindowID: winID, Agent: "scout", Cron: "@hourly", Prompt: "x", NextRunAt: now.Add(time.Hour).UnixMilli()})
+
+	s.fireDueSchedules()
+
+	if sc, _ := st.AgentSchedule(missed); sc.LastRunAt != 0 || sc.NextRunAt <= now.UnixMilli() {
+		t.Fatalf("missed slot should skip ahead without a run: %+v", sc)
+	}
+	if sc, _ := st.AgentSchedule(noBase); sc != nil {
+		t.Fatalf("deleted base's schedule kept: %+v", sc)
+	}
+	if sc, _ := st.AgentSchedule(noWindow); sc != nil {
+		t.Fatalf("gone window's schedule kept: %+v", sc)
+	}
+	if sc, _ := st.AgentSchedule(broken); !sc.Paused {
+		t.Fatalf("unparseable cron not paused: %+v", sc)
+	}
+	if sc, _ := st.AgentSchedule(future); sc.NextRunAt != now.Add(time.Hour).UnixMilli() {
+		t.Fatalf("future row touched: %+v", sc)
+	}
+}
+
+// The tick with tmux: a due schedule for an instance not yet in the window
+// starts it with the prompt, stamps the run and moves to the next slot.
+func TestSchedules_TickStartsTheInstanceAndPaneRouteWorks(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	f.srv.SetSchedules(f.st, 6*time.Hour)
+	before := time.Now()
+	id, _ := f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: "x-poster", Cron: "@hourly", Prompt: "post the digest", NextRunAt: before.Add(-time.Second).UnixMilli()})
+
+	f.srv.fireDueSchedules()
+
+	sc, _ := f.st.AgentSchedule(id)
+	if sc.LastRunAt < before.UnixMilli() || sc.NextRunAt <= before.UnixMilli() {
+		t.Fatalf("not stamped as run: %+v", sc)
+	}
+	if a := f.list(t); a.State == "absent" {
+		t.Fatalf("instance not started: %+v", a)
+	}
+	f.waitState(t, "asleep") // the noop harness exits at once
+	ws := f.workspace(t, f.list(t).Workspace)
+	if ws["createdBy"] != scheduleSource {
+		t.Fatalf("session createdBy = %v, want %q", ws["createdBy"], scheduleSource)
+	}
+
+	// The pane route, as the shim's tool calls it: from the agent's own pane.
+	pane := f.list(t).Pane
+	rec := do(t, f.srv, "POST", "/v1/panes/"+pane+"/schedules", `{"action":"add","cron":"*/5 * * * *","prompt":"poll"}`)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Scheduled #") || !strings.Contains(rec.Body.String(), `"cron":"*/5 * * * *"`) {
+		t.Fatalf("pane add = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, f.srv, "POST", "/v1/panes/"+pane+"/schedules", `{"action":"list"}`); rec.Code != 200 || strings.Count(rec.Body.String(), `"id":`) != 2 {
+		t.Fatalf("pane list = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, f.srv, "POST", "/v1/panes/"+f.ws.Panes[0].ID+"/schedules", `{"action":"list"}`); rec.Code != 400 {
+		t.Fatalf("a plain pane may not schedule: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, f.srv, "POST", "/v1/panes/nope/schedules", `{"action":"list"}`); rec.Code != 404 {
+		t.Fatalf("unknown pane = %d", rec.Code)
+	}
+}
+
+func itoa(id int64) string { return strconv.FormatInt(id, 10) }

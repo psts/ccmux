@@ -158,6 +158,24 @@ the current base, and a keep-alive instance whose base version moved exits
 when idle so that restart picks the new base up. `-agents-max` (default 6)
 caps running instances; asleep ones do not count.
 
+**Schedules (2026-09-08).** An agent can ask for timed runs of itself from
+its own chat: the peers shim's `schedule` tool (both harnesses load the
+shim) turns "every Monday at 07:00" into a five-field cron line plus the
+prompt to deliver, and posts it to `POST /v1/panes/{id}/schedules`
+(`action: add|list|pause|resume|remove`). The daemon keeps one row per
+schedule in `agent_schedules` (window + agent + cron + prompt + next run)
+and answers with the next run time, which the agent repeats to the human.
+A 30 s tick in the api layer (`agentschedules_fire.go`) delivers a due
+prompt the way a chat message would: pushed into a running, idle opencode
+TUI, or as the first line of a start when the instance is asleep or not
+yet in the window. Busy waits for the next tick; a slot missed by more than
+six hours (daemon down, agent busy) skips ahead; a running Claude-harness
+instance has no chat path and is skipped with a log line. The lenses list,
+pause and remove schedules from the agent chat header (the same pane route)
+and show a count per instance in the editor
+(`GET /v1/windows/{id}/agents/{name}/schedules`, read-only).
+Cron parsing is `internal/schedule`, hand-rolled; the host's local zone.
+
 ## 9. Bus contract
 
 - Discovery text = description. Other agents see: name, description, status.

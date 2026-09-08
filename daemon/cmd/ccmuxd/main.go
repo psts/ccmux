@@ -196,6 +196,10 @@ func runDaemon() {
 	agent.DefaultModel = *agentsModel
 	apiSrv.SetAgents(agent.NewStore(*agentsDir), *agentsMax)
 	mgr.StartAgentLifecycle(ctx, 30*time.Second)
+	// Timed prompts: a run missed by more than six hours (daemon down, agent
+	// busy the whole time) skips to its next slot rather than firing late.
+	apiSrv.SetSchedules(st, 6*time.Hour)
+	apiSrv.StartScheduler(ctx, 30*time.Second)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)

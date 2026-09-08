@@ -227,6 +227,17 @@ struct DaemonAgentDeployment: Decodable, Identifiable {
     var id: String { windowId }
 }
 
+/// One timed run of an agent instance (POST /v1/panes/{id}/schedules,
+/// GET /v1/windows/{id}/agents/{name}/schedules). nextRun is spelled out by
+/// the daemon in its local time; empty while paused.
+struct DaemonAgentSchedule: Decodable, Identifiable {
+    let id: Int64
+    let cron: String
+    let prompt: String
+    let paused: Bool
+    let nextRun: String
+}
+
 /// A base agent as seen from one shared window (GET /v1/windows/{id}/agents):
 /// state is "absent" | "asleep" | "running"; drift = the base moved since the
 /// instance last started.

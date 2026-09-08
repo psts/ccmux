@@ -166,7 +166,13 @@ CREATE TABLE IF NOT EXISTS window_members (
 );
 CREATE TABLE IF NOT EXISTS window_open (
   login TEXT, window_id TEXT, PRIMARY KEY (login, window_id)
-);`
+);
+CREATE TABLE IF NOT EXISTS agent_schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, window_id TEXT NOT NULL, agent TEXT NOT NULL,
+  cron TEXT NOT NULL, prompt TEXT NOT NULL, paused INTEGER DEFAULT 0,
+  created_by TEXT DEFAULT '', created_at INTEGER, last_run_at INTEGER DEFAULT 0, next_run_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS agent_schedules_by_instance ON agent_schedules(window_id, agent);`
 
 // Open opens (creating if needed) the registry at path.
 func Open(path string) (*SQLite, error) {

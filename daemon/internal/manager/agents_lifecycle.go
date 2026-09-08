@@ -66,6 +66,13 @@ func (m *Manager) NoteAgentSignal(paneID string, busy bool) bool {
 	return true
 }
 
+// AgentBusy says whether the harness in paneID last reported busy. No
+// signal yet reads as idle: a pane nobody has typed into is not mid-task.
+func (m *Manager) AgentBusy(paneID string) bool {
+	act, ok := m.activity.get(paneID)
+	return ok && act.busy
+}
+
 // agentAction is what one lifecycle tick decides for one agent pane.
 type agentAction int
 

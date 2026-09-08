@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -49,6 +50,12 @@ type Server struct {
 	// /v1/push/* handlers then answer 503 and no notifier runs).
 	sender    pushSender
 	pushStore pushStore
+
+	// schedules is the timed-prompt store (agentschedules.go); nil answers
+	// 503 on its routes. scheduleNow is the clock, replaced in tests.
+	schedules       scheduleStore
+	scheduleCatchUp time.Duration
+	scheduleNow     func() time.Time
 
 	// projectsRoot is the one folder whose direct subdirectories are offered as
 	// hosted-workspace locations (GET /v1/projects). Empty disables the listing
@@ -278,6 +285,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/windows/{id}/agents", s.listWindowAgents)
 	mux.HandleFunc("POST /v1/windows/{id}/agents/{name}", s.startWindowAgentRoute)
 	mux.HandleFunc("DELETE /v1/windows/{id}/agents/{name}", s.sleepWindowAgent)
+	mux.HandleFunc("GET /v1/windows/{id}/agents/{name}/schedules", s.listWindowSchedules)
+	mux.HandleFunc("POST /v1/panes/{id}/schedules", s.paneSchedules)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)
 	mux.HandleFunc("GET /v1/panes/{id}/bus-context", s.paneBusContext)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)

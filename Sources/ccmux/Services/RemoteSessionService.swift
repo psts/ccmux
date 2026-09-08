@@ -1275,6 +1275,28 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
+    /// POST a JSON body and decode the JSON answer; the error text on failure.
+    private func postDecoded<T: Decodable>(_ type: T.Type, path: String, body: [String: Any]) async -> (T?, String?) {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)\(path)") else { return (nil, "bad daemon URL") }
+        guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
+            return (nil, "could not encode the request for \(path)")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.httpBody = payload
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                return (nil, (try? JSONDecoder().decode(APIError.self, from: data))?.error ?? "HTTP \(code)")
+            }
+            return (try JSONDecoder().decode(T.self, from: data), nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
     func fetchSkills(agent: String) async -> ([DaemonSkill], String?) {
         struct Body: Decodable { let skills: [DaemonSkill] }
         let (b, err) = await getDecoded(Body.self, path: "/v1/agents/\(agentPath(agent))/skills")
@@ -1330,6 +1352,24 @@ final class RemoteSessionService: ObservableObject {
         struct Body: Decodable { let instances: [DaemonAgentDeployment] }
         let (b, err) = await getDecoded(Body.self, path: "/v1/agents/\(agentPath(agent))/instances")
         return (b?.instances ?? [], err)
+    }
+
+    /// The instance's timed runs in one window, as the agent editor counts them.
+    func fetchSchedules(windowId: String, agent: String) async -> ([DaemonAgentSchedule], String?) {
+        struct Body: Decodable { let schedules: [DaemonAgentSchedule] }
+        let (b, err) = await getDecoded(Body.self, path: "/v1/windows/\(agentPath(windowId))/agents/\(agentPath(agent))/schedules")
+        return (b?.schedules ?? [], err)
+    }
+
+    /// One schedule action from an agent pane (list, pause, resume, remove):
+    /// the route the shim's `schedule` tool posts to. Answers the list after
+    /// the change, or the error text.
+    func paneSchedules(pane: String, action: String, id: Int64? = nil) async -> ([DaemonAgentSchedule], String?) {
+        struct Body: Decodable { let schedules: [DaemonAgentSchedule] }
+        var body: [String: Any] = ["action": action]
+        if let id { body["id"] = id }
+        let (b, err) = await postDecoded(Body.self, path: "/v1/panes/\(agentPath(pane))/schedules", body: body)
+        return (b?.schedules ?? [], err)
     }
 
     /// Sleep and wake every running instance so it starts from the current base.

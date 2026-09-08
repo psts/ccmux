@@ -164,6 +164,33 @@ var toolsList = []map[string]any{
 		},
 	},
 	{
+		"name":        "schedule",
+		"description": "Timed runs of YOURSELF, kept by ccmux. Use when a human asks you to do something every day, every hour, every Monday at 07:00 and so on. Turn their words into a five-field cron line (minute hour day-of-month month day-of-week, daemon local time; @hourly/@daily/@weekly/@monthly also work) and a prompt that will be sent to you at that time as if the human had typed it. Actions: add (cron + prompt), list, pause/resume/remove (id). The answer names the next run: repeat it back to the human so a misread time is caught at once.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"action": map[string]any{
+					"type":        "string",
+					"enum":        []string{"add", "list", "pause", "resume", "remove"},
+					"description": "What to do.",
+				},
+				"cron": map[string]any{
+					"type":        "string",
+					"description": "add only: the five-field cron line, e.g. \"0 7 * * 1\" for Mondays at 07:00.",
+				},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "add only: the message you will receive at that time. Write it so a fresh instance of you knows what to do.",
+				},
+				"id": map[string]any{
+					"type":        "integer",
+					"description": "pause, resume, remove: the schedule id from list.",
+				},
+			},
+			"required": []string{"action"},
+		},
+	},
+	{
 		"name":        "check_messages",
 		"description": "Manually check for new messages from other Claude Code instances. Messages are normally pushed automatically via channel notifications, but you can use this as a fallback.",
 		"inputSchema": map[string]any{
@@ -212,6 +239,8 @@ func (a *app) callTool(name string, args json.RawMessage) any {
 		return a.toolSetSummary(args)
 	case "check_messages":
 		return a.toolCheckMessages()
+	case "schedule":
+		return a.toolSchedule(args)
 	default:
 		return toolText("Unknown tool: "+name, true)
 	}
@@ -386,4 +415,53 @@ func peerStatus(p listEntry) string {
 	default:
 		return "online (reconnecting)"
 	}
+}
+
+// toolSchedule hands the call to the daemon's pane route, which knows the
+// pane's window and agent; the shim adds nothing but the identity. The
+// daemon's message (next run, refusal reason) is what the agent sees, with
+// the current list under it.
+func (a *app) toolSchedule(args json.RawMessage) any {
+	if a.paneID == "" {
+		return toolText("Schedules need an agent pane; this session has none.", true)
+	}
+	var in struct {
+		Action string `json:"action"`
+		Cron   string `json:"cron"`
+		Prompt string `json:"prompt"`
+		ID     int64  `json:"id"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return toolText("Bad arguments: "+err.Error(), true)
+	}
+	var resp struct {
+		Message   string `json:"message"`
+		Schedules []struct {
+			ID      int64  `json:"id"`
+			Cron    string `json:"cron"`
+			Prompt  string `json:"prompt"`
+			Paused  bool   `json:"paused"`
+			NextRun string `json:"nextRun"`
+		} `json:"schedules"`
+	}
+	if err := a.daemon.post("/v1/panes/"+a.paneID+"/schedules", in, &resp); err != nil {
+		return toolText("Schedule failed: "+err.Error(), true)
+	}
+	var b strings.Builder
+	if resp.Message != "" {
+		b.WriteString(resp.Message + "\n")
+	}
+	if len(resp.Schedules) == 0 {
+		b.WriteString("No schedules for this agent here.")
+		return toolText(b.String(), false)
+	}
+	b.WriteString("Schedules:\n")
+	for _, sc := range resp.Schedules {
+		state := "next " + sc.NextRun
+		if sc.Paused {
+			state = "paused"
+		}
+		fmt.Fprintf(&b, "- #%d  %s  (%s): %s\n", sc.ID, sc.Cron, state, sc.Prompt)
+	}
+	return toolText(strings.TrimRight(b.String(), "\n"), false)
 }

@@ -21,12 +21,14 @@
     box.innerHTML =
       `<div class="ac-head"><span class="ac-title"></span><span class="ac-state"></span><span class="ac-session"></span>` +
       `<span class="ac-spacer"></span><button class="ac-stop" title="Stop the current turn">Stop</button>` +
+      `<button class="ac-sched" title="Timed runs of this agent">Schedules</button>` +
       `<button class="ac-term" title="Show the raw terminal">Terminal</button></div>` +
-      `<div class="ac-error hidden"></div><div class="ac-log"></div><div class="ac-perms"></div>` +
+      `<div class="ac-error hidden"></div><div class="ac-scheds hidden"></div><div class="ac-log"></div><div class="ac-perms"></div>` +
       `<label class="ac-resume hidden"><input type="checkbox"> Continue previous conversation</label>` +
       `<form class="ac-compose"><textarea rows="2"></textarea><button type="submit">Send</button></form>`;
     box.querySelector(".ac-term").onclick = () => setMode("terminal");
     box.querySelector(".ac-stop").onclick = () => send({ t: "abort" });
+    box.querySelector(".ac-sched").onclick = toggleSchedules;
     const form = box.querySelector(".ac-compose");
     const ta = form.querySelector("textarea");
     form.onsubmit = (e) => { e.preventDefault(); submit(ta); };
@@ -37,6 +39,52 @@
     bar.innerHTML = `<span class="ac-bar-label"></span><button class="ac-bar-chat">Chat</button>`;
     bar.querySelector(".ac-bar-chat").onclick = () => setMode("chat");
     return box;
+  }
+
+  // --- schedules: the agent's timed runs in this window, through the same
+  // pane route the shim's `schedule` tool uses (list, pause, resume, remove).
+  function toggleSchedules() {
+    const panel = $("agent-chat").querySelector(".ac-scheds");
+    panel.classList.toggle("hidden");
+    if (!panel.classList.contains("hidden")) scheduleAction("list");
+  }
+
+  async function scheduleAction(action, id) {
+    if (!cur) return;
+    const panel = $("agent-chat").querySelector(".ac-scheds");
+    try {
+      const r = await fetch(`/v1/panes/${encodeURIComponent(cur.paneId)}/schedules`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, id }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+      renderSchedules(panel, (await r.json()).schedules || []);
+    } catch (e) {
+      panel.innerHTML = "";
+      panel.appendChild(el("div", "ac-sched-empty", "Couldn't load schedules: " + e.message));
+    }
+  }
+
+  function renderSchedules(panel, list) {
+    panel.innerHTML = "";
+    if (!list.length) {
+      panel.appendChild(el("div", "ac-sched-empty", `No schedules. Ask ${cur.agent} in the chat, e.g. "run this every Monday at 07:00".`));
+      return;
+    }
+    for (const sc of list) {
+      const row = el("div", "ac-sched-row");
+      row.appendChild(el("span", "ac-sched-when", `#${sc.id} ${sc.cron}`));
+      row.appendChild(el("span", "ac-sched-next", sc.paused ? "paused" : `next ${sc.nextRun}`));
+      const prompt = el("span", "grow", sc.prompt);
+      prompt.title = sc.prompt;
+      row.appendChild(prompt);
+      const pause = el("button", null, sc.paused ? "Resume" : "Pause");
+      pause.onclick = () => scheduleAction(sc.paused ? "resume" : "pause", sc.id);
+      row.appendChild(pause);
+      const remove = el("button", null, "Remove");
+      remove.onclick = () => { if (confirm(`Remove schedule #${sc.id} (${sc.cron})?`)) scheduleAction("remove", sc.id); };
+      row.appendChild(remove);
+      panel.appendChild(row);
+    }
   }
 
   function submit(ta) {
@@ -149,6 +197,7 @@
     box.querySelector(".ac-log").innerHTML = "";
     box.querySelector(".ac-perms").innerHTML = "";
     showError(f.error || "");
+    box.querySelector(".ac-scheds").classList.add("hidden");
     cur.session = f.session || "";
     if (typeof f.resume === "boolean") $("agent-chat").querySelector(".ac-resume input").checked = f.resume;
     setState(f.state, f.title || "");

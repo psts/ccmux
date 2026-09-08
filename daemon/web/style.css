@@ -563,3 +563,10 @@ body {
 .am-drop { border: 1px dashed var(--line); border-radius: 8px; padding: 12px; text-align: center; font-size: 12px; color: var(--muted); }
 .am-drop.over { border-color: var(--accent); color: var(--fg); }
 @media (max-width: 600px) { .sheet.agent-sheet { height: 100vh; max-width: 100vw; border-radius: 0; } .modal.agent-modal { padding: 0; } }
+
+/* Agent chat: the schedules panel under the header (agentchat.js). */
+.ac-scheds { padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.ac-sched-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.ac-sched-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-sched-when { font-family: ui-monospace, monospace; }
+.ac-sched-next, .ac-sched-empty { color: var(--muted); }

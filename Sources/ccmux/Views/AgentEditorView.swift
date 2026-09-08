@@ -26,6 +26,7 @@ struct AgentEditorView: View {
     @State private var mcpStatus = ""
     @State private var deployments: [DaemonAgentDeployment] = []
     @State private var deployStatus = ""
+    @State private var scheduleCounts: [String: Int] = [:]
     @State private var dropTargeted = false
 
     private let service = RemoteSessionService.shared
@@ -264,6 +265,9 @@ struct AgentEditorView: View {
                         if let v = d.paneVersion, !v.isEmpty {
                             Text("runs v\(v)" + ((d.drift ?? false) ? " ↻ older than the base" : "")).font(.system(size: 11)).foregroundColor(.secondary)
                         }
+                        if let n = scheduleCounts[d.windowId], n > 0 {
+                            Text("· \(n) schedule\(n == 1 ? "" : "s")").font(.system(size: 11)).foregroundColor(.secondary)
+                        }
                     }
                 }
                 HStack {
@@ -314,6 +318,11 @@ struct AgentEditorView: View {
         skills = sk.0; if let e = sk.1 { skillsStatus = e }
         servers = se.0; if let e = se.1 { mcpStatus = e }
         deployments = de.0; if let e = de.1 { deployStatus = e }
+        var counts: [String: Int] = [:]
+        for d in deployments {
+            counts[d.windowId] = await service.fetchSchedules(windowId: d.windowId, agent: agent.name).0.count
+        }
+        scheduleCounts = counts
     }
 
     /// Re-reads the base's version after a change; the error text when the
