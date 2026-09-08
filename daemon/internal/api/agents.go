@@ -149,7 +149,26 @@ func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.renameInstances(stored)
 	writeJSON(w, http.StatusOK, stored)
+}
+
+// renameInstances keeps every instance session named after the base's
+// current icon and name, so an icon changed in the editor shows in the
+// sidebars at once, without a restart. Best effort: a window list that
+// cannot be read is logged, the save already went through.
+func (s *Server) renameInstances(d agent.Definition) {
+	wins, err := s.mgr.WindowsListStrict()
+	if err != nil {
+		log.Printf("agent %s: instances not renamed: %v", d.Name, err)
+		return
+	}
+	want := agentSessionName(d)
+	for _, win := range wins {
+		if ws := s.agentWorkspace(win, d.Name); ws != nil && ws.Name != want {
+			s.mgr.RenameWorkspace(ws.ID, want)
+		}
+	}
 }
 
 // rejectAgentHarness refuses a harness name the registry cannot resolve, so

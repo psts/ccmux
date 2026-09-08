@@ -746,6 +746,31 @@ func (m *Manager) List() []*model.Workspace {
 	return out
 }
 
+// RenameWorkspace sets a workspace's display name (live or cold), persists
+// it and tells every lens the list changed. Agent sessions are named after
+// their base's icon and name, so a base whose icon changed renames its
+// instances through this. False when the workspace is unknown.
+func (m *Manager) RenameWorkspace(wsID, name string) bool {
+	m.mu.Lock()
+	e := m.byID[wsID]
+	if e == nil {
+		m.mu.Unlock()
+		return false
+	}
+	if e.ws.Name == name {
+		m.mu.Unlock()
+		return true
+	}
+	e.ws.Name = name
+	saved := *e.ws
+	m.mu.Unlock()
+	if err := m.store.SaveWorkspace(&saved); err != nil {
+		log.Printf("workspace %s: rename to %q not persisted: %v", wsID, name, err)
+	}
+	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
+	return true
+}
+
 // Workspace returns one workspace's metadata.
 func (m *Manager) Workspace(wsID string) *model.Workspace {
 	if e := m.entry(wsID); e != nil {

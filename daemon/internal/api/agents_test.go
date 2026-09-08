@@ -607,3 +607,24 @@ func TestWindowAgents_EnvFilesReachTheHarness(t *testing.T) {
 		t.Fatalf("harness saw %q", got)
 	}
 }
+
+// Changing a base's icon renames its instance sessions at once: the
+// sidebars show the session name, and "🚀 x-poster" is what it now is.
+func TestAgents_IconChangeRenamesInstances(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	if code, _ := f.start(t, "x-poster", ""); code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	if name := f.workspace(t, f.list(t).Workspace)["name"]; name != "🐦 x-poster" {
+		t.Fatalf("session name before = %v", name)
+	}
+	f.put(t, "/v1/agents/x-poster", `{"icon":"🚀"}`, 200)
+	if name := f.workspace(t, f.list(t).Workspace)["name"]; name != "🚀 x-poster" {
+		t.Fatalf("session name after the icon change = %v", name)
+	}
+	// No icon at all still marks the session as an agent, like every lens does.
+	f.put(t, "/v1/agents/x-poster", `{"icon":""}`, 200)
+	if name := f.workspace(t, f.list(t).Workspace)["name"]; name != "⚙ x-poster" {
+		t.Fatalf("session name without an icon = %v", name)
+	}
+}

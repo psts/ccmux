@@ -244,10 +244,11 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 
 // agentSessionName is the session row's title: the base's icon and name.
 func agentSessionName(d agent.Definition) string {
-	if d.Icon == "" {
-		return d.Name
+	icon := d.Icon
+	if icon == "" {
+		icon = "⚙" // the fallback every lens uses for an icon-less base
 	}
-	return d.Icon + " " + d.Name
+	return icon + " " + d.Name
 }
 
 // agentDefinition reads base name: 404 for a name with no base, 503 when

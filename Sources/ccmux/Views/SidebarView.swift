@@ -616,11 +616,10 @@ struct SidebarView: View {
     /// own view row on the daemon, never anyone else's arrangement.
     private func availableRow(_ workspace: Workspace) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "antenna.radiowaves.left.and.right")
+            Image(systemName: remoteService.agentWorkspaces[workspace.id] != nil ? "sparkles" : "antenna.radiowaves.left.and.right")
                 .font(.system(size: 11))
             Text(workspace.name)
                 .lineLimit(1)
-            if remoteService.agentWorkspaces[workspace.id] != nil { AgentTag() }
             Spacer()
             Text(ownerLabel(owner: remoteService.owners[workspace.id] ?? ""))
                 .font(.system(size: 10))
@@ -650,7 +649,6 @@ struct SidebarView: View {
                 .font(.system(size: 11))
             Text(cold.name)
                 .lineLimit(1)
-            if !cold.agent.isEmpty { AgentTag() }
             Spacer()
             if claimHere {
                 Text(ownerLabel(owner: cold.owner))
@@ -1176,21 +1174,11 @@ private struct WorkspaceRow: View {
 
 // MARK: - Agent row (one line, no dashboard)
 
-/// The small "agent" marker every sidebar row of an agent session carries,
-/// live, available or cold, so it reads apart from the repos.
-private struct AgentTag: View {
-    var body: some View {
-        Text("agent")
-            .font(.system(size: 9, design: .monospaced))
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 4).padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.12)))
-    }
-}
-
 /// An agent instance's session: one line, no disclosure and no git
-/// dashboard (its folder is not a repo), an "agent" tag so it reads apart
-/// from the repos. Same rule as the web lens's isAgentWs row.
+/// dashboard (its folder is not a repo). The base's own icon in the name
+/// tells it from a repo; the hosted marker is a spark, not the antenna.
+/// The web lens's isAgentWs row keeps an "agent" tag instead: a deliberate
+/// difference (2026-09-08), the tag reads well there and not here.
 private struct AgentWorkspaceRow: View {
     let workspace: Workspace
     @ObservedObject var claudeMonitor: ClaudeProcessMonitor
@@ -1201,15 +1189,14 @@ private struct AgentWorkspaceRow: View {
     var body: some View {
         HStack(spacing: 5) {
             if hostedConnection != nil {
-                Image(systemName: "antenna.radiowaves.left.and.right")
+                Image(systemName: "sparkles")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
-                    .help("Hosted session")
+                    .help("Agent session")
             }
             Text(workspace.name)
                 .font(.system(size: 12, weight: isActive ? .semibold : .regular))
                 .foregroundColor(.primary)
-            AgentTag()
             if claudeMonitor.isRunning {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 9))
@@ -1221,8 +1208,11 @@ private struct AgentWorkspaceRow: View {
                 ConnectionDot(state: hostedConnection)
             }
         }
-        // Where a repo row's disclosure triangle sits, so names line up.
-        .padding(.leading, 18)
+        // A repo row's label sits right of the DisclosureGroup triangle; this
+        // row has none, so pad by the triangle's width so the marker and the
+        // name line up with the repo rows. Measured on a 1x screenshot of the
+        // sidebar (2026-09-08); nudge here if it drifts on another macOS.
+        .padding(.leading, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { onSelect?() }
