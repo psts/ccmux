@@ -49,10 +49,11 @@ class SplitTreeController: ObservableObject {
     /// the next reconcile's merge would resurface it).
     var onHostedPaneClosed: ((String) -> Void)?
     /// Fired after a tab moves within a leaf that holds hosted panes, with that
-    /// leaf's hosted pane ids in their new order, so the service can send the
+    /// leaf's hosted pane ids in their new order and the hosted pane the leaf
+    /// is showing (where a refusal can be said), so the service can send the
     /// daemon an order in which only those panes moved (see
     /// RemoteWorkspaceBuilder.daemonOrder). The web strip follows.
-    var onHostedTabsReordered: (([String]) -> Void)?
+    var onHostedTabsReordered: ((_ order: [String], _ shownPane: String) -> Void)?
 
     init(workingDirectory: String) {
         self.workingDirectory = workingDirectory
@@ -122,9 +123,11 @@ class SplitTreeController: ObservableObject {
         guard var pane = tree.findLeaf(id: leafId), pane.moveTab(tabId: tabId, to: slot) else { return }
         tree = tree.replaceContent(leafId: leafId, newContent: pane)
         let hosted = pane.tabs.compactMap(\.hostedPaneId)
-        if !hosted.isEmpty {
-            onHostedTabsReordered?(hosted)
-        }
+        guard let first = hosted.first else { return }
+        // A leaf renders only its active tab, so that is where a notice can be
+        // seen; the dragged tab is the fallback when the active one is not hosted.
+        let dragged = pane.tabs.first { $0.id == tabId }?.hostedPaneId
+        onHostedTabsReordered?(hosted, pane.activeTab?.hostedPaneId ?? dragged ?? first)
     }
 
     // MARK: - Claude Pane Designation

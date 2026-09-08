@@ -3,8 +3,8 @@ import Combine
 import Foundation
 
 /// The daemon's error body ({"error": "..."}). One file-scope type: Swift
-/// refuses a type declared inside a generic function, which is how v0.1.50's
-/// Mac build failed (a local copy of this inside getDecoded<T>).
+/// refuses a type declared inside a generic function (getDecoded<T>), so a
+/// local copy per call site is not an option.
 private struct APIError: Decodable { let error: String }
 
 /// The lens-side face of ccmuxd: fetches hosted workspaces over REST, materializes
@@ -674,23 +674,30 @@ final class RemoteSessionService: ObservableObject {
         await refresh()
     }
 
-    /// Send the tree's hosted pane order after a tab drag, so the web strip
-    /// follows the Mac (the daemon renumbers and fans a workspace-status out).
-    /// A refusal is said on the dragged leaf's pane and then undone, the same
+    /// Send the leaf's new order after a tab drag, so the web strip follows
+    /// the Mac (the daemon renumbers and fans a workspace-status out). A
+    /// refusal is said on the pane the leaf shows and then undone, the same
     /// rule the web lens applies (alert, then re-sync): the strip must never
-    /// hold an order the daemon does not. Undoing takes a forced reconcile —
-    /// the drag changed only the local tree, so the daemon's pane signature is
-    /// unchanged and an ordinary refresh would keep the live tree as is.
-    private func pushPaneOrder(appId: UUID, order: [String], noticePane: String) async {
+    /// hold an order the daemon does not. The undo re-sorts the tree from the
+    /// cached daemon order right here; the cache is never cleared, because a
+    /// drag with no cache would have nothing to place its leaf against.
+    private func pushPaneOrder(appId: UUID, order: [String], noticePane: String, controller: SplitTreeController?) async {
         guard let daemonId = daemonIds[appId], !order.isEmpty else { return }
         let err = await sendReportingError(
             "PUT", path: "/v1/workspaces/\(daemonId)/pane-order", body: ["order": order], expect: 200)
-        guard let err else { return }
         await MainActor.run {
+            guard let err else {
+                // The cache is what the NEXT drag's push is computed from; left
+                // stale, a second drag in another leaf before the refresh lands
+                // would send the first leaf's old order back and undo it.
+                paneSignatures[appId] = order
+                return
+            }
             postPaneNotice(paneId: noticePane, text: "Reorder tabs: \(err)")
-            paneSignatures.removeValue(forKey: appId) // next reconcile re-sorts from the daemon
+            if let controller, let current = paneSignatures[appId] {
+                controller.tree = RemoteWorkspaceBuilder.orderedByDaemon(controller.tree, order: current)
+            }
         }
-        await refresh()
     }
 
     /// Resurrect a cold workspace from its stored recipe. Returns nil on success or
@@ -965,16 +972,17 @@ final class RemoteSessionService: ObservableObject {
         controller.onHostedPaneClosed = { [weak self] paneId in
             Task { await self?.killHostedPane(appId: appId, paneId: paneId) }
         }
-        controller.onHostedTabsReordered = { [weak self] leafOrder in
-            guard let self else { return }
+        controller.onHostedTabsReordered = { [weak self, weak controller] leafOrder, shownPane in
             // Only the dragged leaf's panes move; every other pane keeps the
             // slot the daemon last served it in. Pushing the whole tree's
             // leaf-major order instead moved panes in OTHER leaves on the web,
             // because split geometry is not order and the pull side (merge)
-            // deliberately leaves cross-leaf order alone.
-            let order = RemoteWorkspaceBuilder.daemonOrder(
-                current: self.paneSignatures[appId] ?? [], leafOrder: leafOrder)
-            Task { await self.pushPaneOrder(appId: appId, order: order, noticePane: leafOrder[0]) }
+            // deliberately leaves cross-leaf order alone. With no cached order
+            // there is nothing to place the leaf against, so nothing is sent:
+            // a list of just this leaf's panes would be read as "these first".
+            guard let self, let current = self.paneSignatures[appId] else { return }
+            let order = RemoteWorkspaceBuilder.daemonOrder(current: current, leafOrder: leafOrder)
+            Task { await self.pushPaneOrder(appId: appId, order: order, noticePane: shownPane, controller: controller) }
         }
         controllers[appId] = controller
         daemonIds[appId] = dw.id
@@ -1007,7 +1015,6 @@ final class RemoteSessionService: ObservableObject {
             attachment.detachAllTerminals()
         }
         controllers.removeValue(forKey: appId)
-        attentionMonitors[appId]?.stop()
         attentionMonitors.removeValue(forKey: appId)
         layoutObservers[appId]?.cancel()
         layoutObservers.removeValue(forKey: appId)

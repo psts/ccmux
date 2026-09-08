@@ -158,8 +158,14 @@ extension RemoteWorkspaceBuilderTests {
         // Non-adjacent slots are still that leaf's own slots.
         XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "x", "p2", "p3"], leafOrder: ["p2", "p1"]),
                        ["p2", "x", "p1", "p3"])
-        // A pane the daemon has not listed yet trails, in leaf order.
-        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "p2"], leafOrder: ["new", "p2", "p1"]),
-                       ["p2", "p1", "new"])
+        // A pane the daemon has not listed yet (a spawn racing the drag) lands
+        // where it was dropped: with the pane that follows it, or after the last.
+        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "p2"], leafOrder: ["new", "p1", "p2"]),
+                       ["new", "p1", "p2"])
+        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "p2"], leafOrder: ["p2", "new", "p1"]),
+                       ["p2", "new", "p1"])
+        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1", "x", "p2"], leafOrder: ["p1", "p2", "new"]),
+                       ["p1", "x", "p2", "new"])
+        XCTAssertEqual(RemoteWorkspaceBuilder.daemonOrder(current: ["p1"], leafOrder: ["new"]), ["p1", "new"])
     }
 }

@@ -7,6 +7,17 @@ import (
 	"ccmux.dev/ccmuxd/internal/manager"
 )
 
+// writeWorkspaceError maps a manager error to its status: an unknown id is a
+// 404, anything else a bad request. One place, so the next handler that
+// returns ErrUnknownWorkspace cannot forget the 404.
+func writeWorkspaceError(w http.ResponseWriter, err error) {
+	code := http.StatusBadRequest
+	if errors.Is(err, manager.ErrUnknownWorkspace) {
+		code = http.StatusNotFound
+	}
+	writeError(w, code, err.Error())
+}
+
 type paneOrderReq struct {
 	Order []string `json:"order"`
 }
@@ -26,11 +37,7 @@ func (s *Server) putPaneOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, err := s.mgr.ReorderPanes(r.PathValue("id"), req.Order)
 	if err != nil {
-		code := http.StatusBadRequest
-		if errors.Is(err, manager.ErrUnknownWorkspace) {
-			code = http.StatusNotFound
-		}
-		writeError(w, code, err.Error())
+		writeWorkspaceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)

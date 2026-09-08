@@ -421,13 +421,15 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 
 // applyFocus records what a lens is looking at and whether its screen is
 // live. Naming a pane is the lens saying "I am looking at this", which retires
-// the workspace's flash everywhere, not just on this lens.
+// the workspace's flash everywhere, not just on this lens — but only from a
+// live screen, the same rule presenceHub.Watched applies: a lens that says
+// present=false with a pane still named is a locked screen, not a look.
 func (s *Server) applyFocus(wsID, connID string, msg wsMsg) {
 	s.presence.Focus(wsID, connID, msg.Pane)
 	if msg.Present != nil {
 		s.presence.SetPresent(wsID, connID, *msg.Present)
 	}
-	if msg.Pane != "" {
+	if msg.Pane != "" && (msg.Present == nil || *msg.Present) {
 		s.mgr.MarkSeen(wsID)
 	}
 }

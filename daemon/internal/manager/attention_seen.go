@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"log"
+
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
 )
@@ -58,6 +60,8 @@ func (m *Manager) MarkSeen(wsID string) {
 			ctrl.Broadcast(session.Event{Kind: "attention", PaneID: p.ID, Attention: p.Attention})
 		}
 		m.events.publish(Event{Kind: "attention", WorkspaceID: wsID, PaneID: p.ID, Attention: p.Attention})
-		_ = m.store.SavePane(p)
+		if err := m.store.SavePane(p); err != nil {
+			log.Printf("pane %s: seen not persisted (the flash returns after a restart): %v", p.ID, err)
+		}
 	}
 }

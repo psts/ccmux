@@ -98,6 +98,12 @@ function attachOrigin(ws) {
 // programs start and stop); fold the refreshed titles into the open session's
 // tabs. Pane add/close still re-attaches via the pane-added/pane-closed frames.
 function syncPaneTitles() {
+  // Both the list and the strip hold still while a tab is being dragged: the
+  // drop index is counted over the chips on screen and applied to the list,
+  // so the two must not drift apart mid-gesture. The refresh that fired
+  // during the drag is not lost — the daemon's answer to the drop, or the
+  // next poll, folds everything in.
+  if (state.tabDrag) return;
   const ws = state.workspaces.find((w) => w.id === state.wsId);
   if (!ws || !ws.panes) return;
   let changed = syncPaneOrder(ws), shellChanged = false;
@@ -970,7 +976,7 @@ function syncPaneOrder(ws) {
 // daemon, which renumbers and tells every other lens (the Mac's tab strips
 // re-sort from the same served order).
 // Listeners live on the window, not the button: the strip is rebuilt by
-// renderTabs on every title or attention change, and a listener on a button
+// renderTabs on every title or order change, and a listener on a button
 // that gets replaced mid-drag never sees the release. renderTabs itself holds
 // off while a drag is live and runs once it ends.
 function wireTabDrag(btn, paneId) {
@@ -994,8 +1000,7 @@ function wireTabDrag(btn, paneId) {
         if (Math.abs(ev.clientX - start.x) < 6) return;
         arm();
       }
-      slot = dropSlotAt(ev.clientX);
-      showDropSlot(slot);
+      slot = markDropSlot(ev.clientX);
     };
     const up = () => { const done = live && slot !== null; stop(); if (done) movePaneTab(paneId, slot); };
     const cancel = () => stop(); // the browser took the gesture: never a drop
@@ -1006,7 +1011,7 @@ function wireTabDrag(btn, paneId) {
       if (live) setTimeout(() => { state.tabDrag = null; renderTabs(); }, 0);
       live = false;
       btn.classList.remove("dragging");
-      showDropSlot(null);
+      clearDropSlot();
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
@@ -1018,20 +1023,22 @@ function wireTabDrag(btn, paneId) {
   };
 }
 
-// dropSlotAt maps an x position to an index in the strip: the number of tabs
-// whose middle lies left of it. Counting the dragged tab too keeps the maths
-// the same as the Mac's (the move removes it first, then inserts).
-function dropSlotAt(x) {
-  const tabs = [...document.querySelectorAll("#tabs .tab")];
-  return tabs.filter((t) => { const r = t.getBoundingClientRect(); return r.left + r.width / 2 < x; }).length;
-}
-
-function showDropSlot(slot) {
-  const tabs = [...document.querySelectorAll("#tabs .tab")];
-  tabs.forEach((t) => t.classList.remove("drop-before", "drop-after"));
-  if (slot === null) return;
+// markDropSlot maps an x position to an index in the strip (the number of tabs
+// whose middle lies left of it, the dragged one counted too, which keeps the
+// maths the same as the Mac's: the move removes it first, then inserts) and
+// draws the marker there. Returns the index.
+function markDropSlot(x) {
+  const tabs = clearDropSlot();
+  const slot = tabs.filter((t) => { const r = t.getBoundingClientRect(); return r.left + r.width / 2 < x; }).length;
   if (slot < tabs.length) tabs[slot].classList.add("drop-before");
   else if (tabs.length) tabs[tabs.length - 1].classList.add("drop-after");
+  return slot;
+}
+
+function clearDropSlot() {
+  const tabs = [...document.querySelectorAll("#tabs .tab")];
+  tabs.forEach((t) => t.classList.remove("drop-before", "drop-after"));
+  return tabs;
 }
 
 // movePaneTab applies the drop locally first (the strip must not wait on the

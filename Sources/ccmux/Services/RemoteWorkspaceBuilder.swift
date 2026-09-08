@@ -88,7 +88,12 @@ enum RemoteWorkspaceBuilder {
     /// places and the split geometry is untouched. Order ACROSS leaves is not
     /// something a split view can show, so it is not enforced.
     static func orderedByDaemon(_ tree: SplitTree<PaneTabs>, panes: [DaemonPane]) -> SplitTree<PaneTabs> {
-        let rank = Dictionary(panes.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        orderedByDaemon(tree, order: panes.map { $0.id })
+    }
+
+    /// Same, from the daemon's ordered pane ids (the cached signature).
+    static func orderedByDaemon(_ tree: SplitTree<PaneTabs>, order: [String]) -> SplitTree<PaneTabs> {
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         func daemonRank(_ tab: PaneContent) -> Int { tab.hostedPaneId.flatMap { rank[$0] } ?? .max }
         var result = tree
         for (leafId, tabs) in tree.allLeaves {
@@ -199,13 +204,30 @@ enum RemoteWorkspaceBuilder {
 
     /// The order to send after a tab drag inside one leaf: the daemon's current
     /// order with that leaf's panes swapped among the slots they already hold.
-    /// The mirror of orderedByDaemon. A pane the daemon does not list yet (a
-    /// spawn racing the drag) goes on the end, in leaf order.
+    /// The mirror of orderedByDaemon. A pane the daemon's list does not hold
+    /// yet (a spawn whose refresh has not landed) rides with the leaf pane
+    /// that follows it in the strip, so a drop is honoured where it was made;
+    /// one dropped after the leaf's last known pane lands right after it.
     static func daemonOrder(current: [String], leafOrder: [String]) -> [String] {
         let known = Set(current), moving = Set(leafOrder)
-        var fill = leafOrder.filter { known.contains($0) }.makeIterator()
-        let placed = current.map { moving.contains($0) ? (fill.next() ?? $0) : $0 }
-        return placed + leafOrder.filter { !known.contains($0) }
+        // Each known leaf pane, with the not-yet-listed panes dropped before it.
+        var groups: [[String]] = [], pending: [String] = []
+        for id in leafOrder {
+            pending.append(id)
+            if known.contains(id) { groups.append(pending); pending = [] }
+        }
+        var next = groups.makeIterator()
+        var out: [String] = [], afterLeaf = -1
+        for id in current {
+            if moving.contains(id), let group = next.next() {
+                out += group
+                afterLeaf = out.count
+            } else {
+                out.append(id)
+            }
+        }
+        out.insert(contentsOf: pending, at: afterLeaf < 0 ? out.count : afterLeaf)
+        return out
     }
 
     /// Ordered daemon pane-id set — a change means the layout must be rebuilt;

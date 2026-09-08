@@ -3,15 +3,17 @@ import SwiftUI
 /// Tracks the state of a pane drag-and-drop operation.
 /// Shared across the view hierarchy via @EnvironmentObject.
 class PaneDragState: ObservableObject {
-    @Published var draggedPaneId: UUID?
-    @Published var currentLocation: CGPoint?
-    @Published var hoveredPaneId: UUID?
-    @Published var dropZone: DropZone?
+    // Written only by the methods below, which keep the two drag modes
+    // (a reorder slot, or a pane-edge target) from ever being set together.
+    @Published private(set) var draggedPaneId: UUID?
+    @Published private(set) var currentLocation: CGPoint?
+    @Published private(set) var hoveredPaneId: UUID?
+    @Published private(set) var dropZone: DropZone?
     /// Insertion index in the SOURCE leaf's own tab strip while the pointer is
     /// over that strip (a reorder); nil once it leaves, when the pane-edge drop
     /// zones take over (a move into a split). The strip computes it, since only
     /// the strip knows its chips.
-    @Published var tabSlot: Int?
+    @Published private(set) var tabSlot: Int?
 
     /// Cached pane frames in the "splitTree" coordinate space, updated via PreferenceKey.
     var paneFrames: [UUID: CGRect] = [:]

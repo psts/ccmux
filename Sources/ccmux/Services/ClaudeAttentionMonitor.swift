@@ -37,10 +37,4 @@ final class ClaudeAttentionMonitor: ObservableObject {
     func clear() {
         set(.none)
     }
-
-    /// Lifecycle teardown (workspace closed/removed). Nothing pending to cancel
-    /// any more; kept so the call sites read as intent.
-    func stop() {
-        set(.none)
-    }
 }

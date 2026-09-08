@@ -775,11 +775,7 @@ func (s *Server) putHostnames(w http.ResponseWriter, r *http.Request) {
 		err = s.mgr.SetDevCommand(r.PathValue("id"), *req.DevCommand)
 	}
 	if err != nil {
-		code := http.StatusBadRequest
-		if errors.Is(err, manager.ErrUnknownWorkspace) {
-			code = http.StatusNotFound
-		}
-		writeError(w, code, err.Error())
+		writeWorkspaceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
@@ -805,11 +801,7 @@ func (s *Server) devServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		code := http.StatusBadRequest
-		if errors.Is(err, manager.ErrUnknownWorkspace) {
-			code = http.StatusNotFound
-		}
-		writeError(w, code, err.Error())
+		writeWorkspaceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)

@@ -619,7 +619,14 @@ func TestAPI_FocusRetiresTheFlashEverywhere(t *testing.T) {
 	mgr.ApplyAttention(pane0, model.AttentionDone)
 	waitAttention(t, other, pane0, model.AttentionDone)
 
-	// The first lens looks at the pane; the other lens hears the flash retire.
+	// A pane still named from a locked screen is not a look: nothing retires.
+	locked := false
+	if err := looker.WriteJSON(wsMsg{T: "focus", Pane: pane0, Present: &locked}); err != nil {
+		t.Fatalf("focus: %v", err)
+	}
+	// The first lens looks at the pane from a live screen; the other lens
+	// hears the flash retire. Had the locked frame retired it, the frame
+	// below would find nothing to retire and no idle would follow.
 	present := true
 	if err := looker.WriteJSON(wsMsg{T: "focus", Pane: pane0, Present: &present}); err != nil {
 		t.Fatalf("focus: %v", err)

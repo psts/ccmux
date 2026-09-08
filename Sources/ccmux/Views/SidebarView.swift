@@ -873,9 +873,12 @@ private struct AttentionRowBackground: View {
         .animation(pulseAnimation, value: pulse)
     }
 
+    /// Whether the row blinks: something to show, and motion allowed.
+    private var flashing: Bool { monitor.state != .none && !reduceMotion }
+
     private func syncPulse() {
-        let flashing = (monitor.state != .none) && !reduceMotion
-        guard flashing, pulse else { pulse = flashing; return }
+        guard flashing else { pulse = false; return }
+        guard pulse else { pulse = true; return }
         // Already flashing in the other colour (a permission answered elsewhere,
         // then a Stop: needsInput -> done). `pulse` is true on both sides, so
         // nothing would re-trigger the animation and the row would sit at the
@@ -885,7 +888,7 @@ private struct AttentionRowBackground: View {
     }
 
     private var pulseAnimation: Animation {
-        monitor.state != .none && !reduceMotion
+        flashing
             ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
             : .easeOut(duration: 0.25)
     }

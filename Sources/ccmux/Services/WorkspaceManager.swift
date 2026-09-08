@@ -573,7 +573,6 @@ class WorkspaceManager: ObservableObject {
         monitors.removeValue(forKey: id)
         claudeMonitors[id]?.stop()
         claudeMonitors.removeValue(forKey: id)
-        attentionMonitors[id]?.stop()
         attentionMonitors.removeValue(forKey: id)
 
         if activeWorkspaceId == id {
@@ -683,7 +682,6 @@ class WorkspaceManager: ObservableObject {
         monitors.removeValue(forKey: id)
         claudeMonitors[id]?.stop()
         claudeMonitors.removeValue(forKey: id)
-        attentionMonitors[id]?.stop()
         attentionMonitors.removeValue(forKey: id)
         if activeWorkspaceId == id {
             activeWorkspaceId = workspaces.first?.id
