@@ -749,26 +749,27 @@ func (m *Manager) List() []*model.Workspace {
 // RenameWorkspace sets a workspace's display name (live or cold), persists
 // it and tells every lens the list changed. Agent sessions are named after
 // their base's icon and name, so a base whose icon changed renames its
-// instances through this. False when the workspace is unknown.
-func (m *Manager) RenameWorkspace(wsID, name string) bool {
+// instances through this. A failed persist is an error, not a log line:
+// memory would show the new name until the next daemon start put the
+// stored one back, and nothing would say why.
+func (m *Manager) RenameWorkspace(wsID, name string) error {
 	m.mu.Lock()
 	e := m.byID[wsID]
-	if e == nil {
+	if e == nil || e.ws.Name == name {
 		m.mu.Unlock()
-		return false
-	}
-	if e.ws.Name == name {
-		m.mu.Unlock()
-		return true
+		if e == nil {
+			return errors.New("unknown workspace " + wsID)
+		}
+		return nil
 	}
 	e.ws.Name = name
 	saved := *e.ws
 	m.mu.Unlock()
-	if err := m.store.SaveWorkspace(&saved); err != nil {
-		log.Printf("workspace %s: rename to %q not persisted: %v", wsID, name, err)
-	}
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
-	return true
+	if err := m.store.SaveWorkspace(&saved); err != nil {
+		return fmt.Errorf("rename to %q not persisted: %w", name, err)
+	}
+	return nil
 }
 
 // Workspace returns one workspace's metadata.

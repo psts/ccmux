@@ -1177,8 +1177,8 @@ private struct WorkspaceRow: View {
 /// An agent instance's session: one line, no disclosure and no git
 /// dashboard (its folder is not a repo). The base's own icon in the name
 /// tells it from a repo; the hosted marker is a spark, not the antenna.
-/// The web lens's isAgentWs row keeps an "agent" tag instead: a deliberate
-/// difference (2026-09-08), the tag reads well there and not here.
+/// The web lens's isAgentWs row keeps an "agent" tag instead, on purpose:
+/// the tag reads well there and not here.
 private struct AgentWorkspaceRow: View {
     let workspace: Workspace
     @ObservedObject var claudeMonitor: ClaudeProcessMonitor
@@ -1210,8 +1210,7 @@ private struct AgentWorkspaceRow: View {
         }
         // A repo row's label sits right of the DisclosureGroup triangle; this
         // row has none, so pad by the triangle's width so the marker and the
-        // name line up with the repo rows. Measured on a 1x screenshot of the
-        // sidebar (2026-09-08); nudge here if it drifts on another macOS.
+        // name line up with the repo rows.
         .padding(.leading, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())

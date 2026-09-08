@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -136,11 +137,7 @@ func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Name = name
-	if msg := agent.Reject(d); msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
-		return
-	}
-	if msg := s.rejectAgentHarness(d.Harness); msg != "" {
+	if msg := s.rejectDefinition(d); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -149,26 +146,40 @@ func (s *Server) putAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.renameInstances(stored)
+	if err := s.renameInstances(stored); err != nil {
+		// The base is saved; what failed is the part the user will look for
+		// in the sidebar, so say so instead of answering 200.
+		writeError(w, http.StatusInternalServerError, "base saved, but its instance sessions were not renamed: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, stored)
 }
 
 // renameInstances keeps every instance session named after the base's
 // current icon and name, so an icon changed in the editor shows in the
-// sidebars at once, without a restart. Best effort: a window list that
-// cannot be read is logged, the save already went through.
-func (s *Server) renameInstances(d agent.Definition) {
-	wins, err := s.mgr.WindowsListStrict()
-	if err != nil {
-		log.Printf("agent %s: instances not renamed: %v", d.Name, err)
-		return
-	}
+// sidebars at once, without a restart. The first failure is returned; the
+// rest are still attempted.
+func (s *Server) renameInstances(d agent.Definition) error {
 	want := agentSessionName(d)
-	for _, win := range wins {
-		if ws := s.agentWorkspace(win, d.Name); ws != nil && ws.Name != want {
-			s.mgr.RenameWorkspace(ws.ID, want)
+	var first error
+	for _, ws := range s.mgr.List() {
+		if ws.Agent != d.Name {
+			continue
+		}
+		if err := s.mgr.RenameWorkspace(ws.ID, want); err != nil && first == nil {
+			first = fmt.Errorf("session %s: %w", ws.ID, err)
 		}
 	}
+	return first
+}
+
+// rejectDefinition is every reason a definition is refused before anything
+// is written: the shape rules, then the harness registry.
+func (s *Server) rejectDefinition(d agent.Definition) string {
+	if msg := agent.Reject(d); msg != "" {
+		return msg
+	}
+	return s.rejectAgentHarness(d.Harness)
 }
 
 // rejectAgentHarness refuses a harness name the registry cannot resolve, so

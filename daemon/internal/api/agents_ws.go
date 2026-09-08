@@ -207,12 +207,12 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 	if s.agents == nil {
 		return startOutcome{status: http.StatusServiceUnavailable, msg: agentsUnavailable}
 	}
-	if ws := s.agentWorkspace(win, name); ws != nil {
-		return s.startAgent(ws.ID, name, prompt, resume)
-	}
 	d, status, msg := s.agentDefinition(name)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
+	}
+	if ws := s.agentWorkspace(win, name); ws != nil {
+		return s.startExistingInstance(ws, d, prompt, resume)
 	}
 	if msg := s.agentCapMessage(); msg != "" {
 		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
@@ -240,6 +240,16 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 	}
 	s.pushPromptLater(ws.Panes[0].ID, l)
 	return startOutcome{pane: ws.Panes[0], status: http.StatusCreated}
+}
+
+// startExistingInstance wakes an instance already in the window. A session
+// named before the base's icon changed (or before icon-less bases got
+// their ⚙) carries a stale name; every start repairs it first.
+func (s *Server) startExistingInstance(ws *model.Workspace, d agent.Definition, prompt string, resume *bool) startOutcome {
+	if err := s.mgr.RenameWorkspace(ws.ID, agentSessionName(d)); err != nil {
+		log.Printf("agent %s: session name not refreshed on start: %v", d.Name, err)
+	}
+	return s.startAgent(ws.ID, d.Name, prompt, resume)
 }
 
 // agentSessionName is the session row's title: the base's icon and name.

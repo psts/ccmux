@@ -122,3 +122,59 @@ func TestReorderPanes_PersistsAndAnnounces(t *testing.T) {
 		t.Fatalf("after restart: %+v", all)
 	}
 }
+
+func TestRenameWorkspace_PersistsAndAnnounces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reg.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	ws := &model.Workspace{ID: "ws", Name: "🐦 x-poster", Agent: "x-poster"}
+	if err := st.SaveWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	m.byID["ws"] = &entry{ws: ws}
+	_, ch := m.events.subscribe()
+
+	if err := m.RenameWorkspace("ws", "🚀 x-poster"); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Workspace("ws").Name; got != "🚀 x-poster" {
+		t.Fatalf("served name %q", got)
+	}
+	select {
+	case ev := <-ch:
+		if ev.Kind != "workspace-status" || ev.WorkspaceID != "ws" {
+			t.Fatalf("event %+v", ev)
+		}
+	default:
+		t.Fatal("no firehose event: lenses would never redraw")
+	}
+	// Same name again: nothing to say, nothing announced.
+	if err := m.RenameWorkspace("ws", "🚀 x-poster"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("no-op rename announced %+v", ev)
+	default:
+	}
+	if err := m.RenameWorkspace("nope", "x"); err == nil {
+		t.Fatal("unknown workspace accepted")
+	}
+
+	st.Close()
+	st2, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	all, err := st2.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Name != "🚀 x-poster" {
+		t.Fatalf("after restart: %+v", all)
+	}
+}

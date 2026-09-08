@@ -279,8 +279,8 @@ async function closeWindow(win) {
 // name on the workspace). Such a row is one line: no git dashboard (its
 // folder is not a repo), an "agent" tag instead, sorted after the repos.
 // The Mac sidebar's AgentWorkspaceRow follows the same rule but marks the
-// row with a spark icon instead of the tag (deliberate, 2026-09-08: the
-// tag reads well here and not there).
+// row with a spark icon instead of the tag, on purpose: the tag reads well
+// here and not there.
 function isAgentWs(ws) {
   return !!ws.agent;
 }

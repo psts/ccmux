@@ -835,8 +835,9 @@ final class RemoteSessionService: ObservableObject {
         var rebuilt: [Workspace] = []
         for dw in live {
             let appId = RemoteWorkspaceBuilder.workspaceUUID(dw.id)
-            if let existing = workspaces.first(where: { $0.id == appId }),
+            if var existing = workspaces.first(where: { $0.id == appId }),
                paneSignatures[appId] == RemoteWorkspaceBuilder.paneSignature(dw.panes) {
+                existing.name = dw.name                // a rename touches no pane; take it here
                 rebuilt.append(existing)               // unchanged — keep the live connection
             } else if let patched = patchWorkspace(dw, appId: appId) {
                 rebuilt.append(patched)                // pane set changed — patch the live tree in place
@@ -925,6 +926,7 @@ final class RemoteSessionService: ObservableObject {
         paneSignatures[appId] = RemoteWorkspaceBuilder.paneSignature(dw.panes)
         existing.layout = merged
         existing.focusedPaneId = controller.focusedPaneId
+        existing.name = dw.name
         return existing
     }
 
