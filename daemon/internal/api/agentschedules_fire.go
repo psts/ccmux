@@ -22,7 +22,7 @@ type fireAction int
 const (
 	fireStart fireAction = iota // asleep or absent: start it with the prompt as first line
 	firePush                    // running opencode, idle: push into its TUI
-	fireWait                    // running and busy, or a start in flight: try next tick
+	fireWait                    // running and busy: try next tick
 	fireSkip                    // running Claude harness: no chat path, skip this slot
 )
 
@@ -47,14 +47,12 @@ func (s *Server) fireDueSchedules() {
 func (s *Server) fireSchedule(sc store.AgentSchedule, now time.Time) {
 	spec, err := schedule.Parse(sc.Cron)
 	if err != nil {
-		log.Printf("agent %s: schedule #%d has an unreadable cron line (%q); paused", sc.Agent, sc.ID, sc.Cron)
-		_, _ = s.schedules.SetAgentSchedulePaused(sc.ID, true, sc.NextRunAt)
+		s.pauseBroken(sc, "has an unreadable cron line")
 		return
 	}
 	next, hasNext := nextRunMillis(spec, now)
 	if !hasNext {
-		log.Printf("agent %s: schedule #%d never fires again (%q); paused", sc.Agent, sc.ID, sc.Cron)
-		_, _ = s.schedules.SetAgentSchedulePaused(sc.ID, true, sc.NextRunAt)
+		s.pauseBroken(sc, "never fires again")
 		return
 	}
 	win, d, ok := s.scheduleTarget(sc)
@@ -62,15 +60,15 @@ func (s *Server) fireSchedule(sc store.AgentSchedule, now time.Time) {
 		return
 	}
 	if late := now.Sub(time.UnixMilli(sc.NextRunAt)); late > s.scheduleCatchUp {
-		log.Printf("agent %s: schedule #%d missed its slot by %s (more than %s); skipping to %s", sc.Agent, sc.ID, late.Round(time.Minute), s.scheduleCatchUp, viewOf(store.AgentSchedule{NextRunAt: next}).NextRun)
-		_ = s.schedules.MarkAgentScheduleRun(sc.ID, 0, next)
+		log.Printf("agent %s: schedule #%d missed its slot by %s (more than %s); skipping to %s", sc.Agent, sc.ID, late.Round(time.Minute), s.scheduleCatchUp, nextRunText(next))
+		s.markRun(sc, 0, next)
 		return
 	}
 	text := fmt.Sprintf("[ccmux schedule #%d, %s] %s", sc.ID, sc.Cron, sc.Prompt)
 	action, paneID := s.decideFire(win, d)
 	if action == fireSkip {
-		log.Printf("agent %s in %s: schedule #%d due while a Claude-harness instance runs; no chat path, skipping to %s", sc.Agent, win.Name, sc.ID, viewOf(store.AgentSchedule{NextRunAt: next}).NextRun)
-		_ = s.schedules.MarkAgentScheduleRun(sc.ID, 0, next)
+		log.Printf("agent %s in %s: schedule #%d due while a Claude-harness instance runs; no chat path, skipping to %s", sc.Agent, win.Name, sc.ID, nextRunText(next))
+		s.markRun(sc, 0, next)
 		return
 	}
 	delivered, err := s.deliverSchedule(action, paneID, win, sc.Agent, text)
@@ -81,7 +79,31 @@ func (s *Server) fireSchedule(sc store.AgentSchedule, now time.Time) {
 		return // busy, a start in flight, or the error above: the next tick retries, bounded by the catch-up window
 	}
 	log.Printf("agent %s in %s: schedule #%d fired", sc.Agent, win.Name, sc.ID)
-	_ = s.schedules.MarkAgentScheduleRun(sc.ID, now.UnixMilli(), next)
+	s.markRun(sc, now.UnixMilli(), next)
+}
+
+// markRun records a run (or a skip, ranAt 0) and moves the row to its next
+// slot. A failed write is the one thing that must not stay quiet: the row
+// would still read as due and the same prompt would go out every tick, so
+// the schedule is paused and the log says why.
+func (s *Server) markRun(sc store.AgentSchedule, ranAt, next int64) {
+	err := s.schedules.MarkAgentScheduleRun(sc.ID, ranAt, next)
+	if err == nil {
+		return
+	}
+	log.Printf("agent %s: schedule #%d ran but its next slot could not be saved (%v); pausing it so it does not repeat every tick", sc.Agent, sc.ID, err)
+	if _, perr := s.schedules.SetAgentSchedulePaused(sc.ID, true, sc.NextRunAt); perr != nil {
+		log.Printf("agent %s: schedule #%d could not be paused either: %v", sc.Agent, sc.ID, perr)
+	}
+}
+
+// pauseBroken parks a schedule whose cron line cannot produce a run.
+func (s *Server) pauseBroken(sc store.AgentSchedule, why string) {
+	if _, err := s.schedules.SetAgentSchedulePaused(sc.ID, true, sc.NextRunAt); err != nil {
+		log.Printf("agent %s: schedule #%d %s (%q) and could not be paused: %v", sc.Agent, sc.ID, why, sc.Cron, err)
+		return
+	}
+	log.Printf("agent %s: schedule #%d %s (%q); paused", sc.Agent, sc.ID, why, sc.Cron)
 }
 
 // deliverSchedule hands the text to the instance per the decided action.
@@ -111,8 +133,7 @@ func (s *Server) deliverSchedule(action fireAction, paneID string, win manager.W
 func (s *Server) scheduleTarget(sc store.AgentSchedule) (manager.WindowInfo, agent.Definition, bool) {
 	win, status, msg := s.windowByID(sc.WindowID)
 	if status == http.StatusNotFound {
-		log.Printf("agent %s: schedule #%d points at a window that is gone; removed", sc.Agent, sc.ID)
-		_, _ = s.schedules.DeleteAgentSchedule(sc.ID)
+		s.dropOrphan(sc, "a window that is gone")
 		return win, agent.Definition{}, false
 	}
 	if msg != "" {
@@ -121,8 +142,7 @@ func (s *Server) scheduleTarget(sc store.AgentSchedule) (manager.WindowInfo, age
 	}
 	d, err := s.agents.Get(sc.Agent)
 	if errors.Is(err, agent.ErrNotFound) {
-		log.Printf("agent %s: schedule #%d points at a deleted base; removed", sc.Agent, sc.ID)
-		_, _ = s.schedules.DeleteAgentSchedule(sc.ID)
+		s.dropOrphan(sc, "a deleted base")
 		return win, d, false
 	}
 	if err != nil {
@@ -130,6 +150,15 @@ func (s *Server) scheduleTarget(sc store.AgentSchedule) (manager.WindowInfo, age
 		return win, d, false
 	}
 	return win, d, true
+}
+
+// dropOrphan removes a schedule whose target no longer exists.
+func (s *Server) dropOrphan(sc store.AgentSchedule, what string) {
+	if _, err := s.schedules.DeleteAgentSchedule(sc.ID); err != nil {
+		log.Printf("agent %s: schedule #%d points at %s and could not be removed: %v", sc.Agent, sc.ID, what, err)
+		return
+	}
+	log.Printf("agent %s: schedule #%d points at %s; removed", sc.Agent, sc.ID, what)
 }
 
 // decideFire reads the instance's state: not running means start it with

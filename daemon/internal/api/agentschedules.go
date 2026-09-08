@@ -83,9 +83,15 @@ type scheduleView struct {
 func viewOf(sc store.AgentSchedule) scheduleView {
 	v := scheduleView{AgentSchedule: sc}
 	if !sc.Paused && sc.NextRunAt > 0 {
-		v.NextRun = time.UnixMilli(sc.NextRunAt).Local().Format("Mon 2 Jan 15:04 MST")
+		v.NextRun = nextRunText(sc.NextRunAt)
 	}
 	return v
+}
+
+// nextRunText spells a run time out in the daemon's local zone, for the
+// tool's answer and the log.
+func nextRunText(millis int64) string {
+	return time.UnixMilli(millis).Local().Format("Mon 2 Jan 15:04 MST")
 }
 
 func viewsOf(list []store.AgentSchedule) []scheduleView {
@@ -209,7 +215,7 @@ func (s *Server) addSchedule(windowID, name, paneID string, req scheduleReq) (st
 		return "", http.StatusInternalServerError, err
 	}
 	log.Printf("agent %s: schedule #%d added (%s)", name, id, req.Cron)
-	return fmt.Sprintf("Scheduled #%d (%s). Next run %s.", id, req.Cron, viewOf(store.AgentSchedule{NextRunAt: next}).NextRun), 0, nil
+	return fmt.Sprintf("Scheduled #%d (%s). Next run %s.", id, req.Cron, nextRunText(next)), 0, nil
 }
 
 // ownedSchedule loads a schedule and checks it belongs to this instance;
@@ -248,7 +254,7 @@ func (s *Server) pauseSchedule(windowID, name string, id int64, paused bool) (st
 	if paused {
 		return fmt.Sprintf("Paused #%d.", id), 0, nil
 	}
-	return fmt.Sprintf("Resumed #%d. Next run %s.", id, viewOf(store.AgentSchedule{NextRunAt: next}).NextRun), 0, nil
+	return fmt.Sprintf("Resumed #%d. Next run %s.", id, nextRunText(next)), 0, nil
 }
 
 func (s *Server) removeSchedule(windowID, name string, id int64) (string, int, error) {

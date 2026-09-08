@@ -1036,6 +1036,7 @@ final class RemoteSessionService: ObservableObject {
         hostnames.removeValue(forKey: appId)
         devRunning.removeValue(forKey: appId)
         devCommands.removeValue(forKey: appId)
+        agentWorkspaces.removeValue(forKey: appId)
         workspaces.removeAll { $0.id == appId }
     }
 
@@ -1357,13 +1358,6 @@ final class RemoteSessionService: ObservableObject {
         struct Body: Decodable { let instances: [DaemonAgentDeployment] }
         let (b, err) = await getDecoded(Body.self, path: "/v1/agents/\(agentPath(agent))/instances")
         return (b?.instances ?? [], err)
-    }
-
-    /// The instance's timed runs in one window, as the agent editor counts them.
-    func fetchSchedules(windowId: String, agent: String) async -> ([DaemonAgentSchedule], String?) {
-        struct Body: Decodable { let schedules: [DaemonAgentSchedule] }
-        let (b, err) = await getDecoded(Body.self, path: "/v1/windows/\(agentPath(windowId))/agents/\(agentPath(agent))/schedules")
-        return (b?.schedules ?? [], err)
     }
 
     /// One schedule action from an agent pane (list, pause, resume, remove):

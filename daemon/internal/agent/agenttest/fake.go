@@ -103,6 +103,17 @@ func (f *FakeOpencode) requestRoutes(mux *http.ServeMux) {
 		f.mu.Unlock()
 		w.WriteHeader(200)
 	})
+	// The TUI routes the daemon's PushPrompt uses for a bus message or a
+	// scheduled run: the appended text lands in the same recorded prompts.
+	mux.HandleFunc("POST /tui/append-prompt", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Text string }
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.prompts = append(f.prompts, body.Text)
+		f.mu.Unlock()
+		w.WriteHeader(200)
+	})
+	mux.HandleFunc("POST /tui/submit-prompt", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	mux.HandleFunc("POST /question/{id}/reject", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.answers[r.PathValue("id")] = nil

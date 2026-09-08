@@ -224,6 +224,8 @@ struct DaemonAgentDeployment: Decodable, Identifiable {
     let state: String
     let paneVersion: String?
     let drift: Bool?
+    /// Timed runs the instance has in that window; absent on an older daemon.
+    let schedules: Int?
     var id: String { windowId }
 }
 

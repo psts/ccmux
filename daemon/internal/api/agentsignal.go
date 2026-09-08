@@ -42,11 +42,9 @@ func (s *Server) agentSignal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, `state must be one of "busy", "idle", "needs-input", "replied"`)
 		return
 	}
-	// Attention first: ApplyAttention notes the Claude reading of busy for
-	// agent panes, and the signal's own reading must land last.
-	paneID := r.PathValue("id")
-	s.mgr.ApplyAttention(paneID, att)
-	if !s.mgr.NoteAgentSignal(paneID, busy) {
+	// One manager call sets attention and the busy clock together, so the
+	// lifecycle tick can never read the pane between the two.
+	if !s.mgr.ApplyAgentSignal(r.PathValue("id"), att, busy) {
 		writeError(w, http.StatusNotFound, "unknown pane")
 		return
 	}
@@ -54,16 +52,14 @@ func (s *Server) agentSignal(w http.ResponseWriter, r *http.Request) {
 }
 
 // agentSignalOutcome is the table above; ok=false for an unknown state.
-func agentSignalOutcome(state string) (model.Attention, bool, bool) {
+func agentSignalOutcome(state string) (att model.Attention, busy, ok bool) {
 	switch state {
-	case "busy":
+	case "busy", "replied":
 		return model.AttentionRunning, true, true
 	case "idle":
 		return model.AttentionDone, false, true
 	case "needs-input":
 		return model.AttentionNeedsInput, true, true
-	case "replied":
-		return model.AttentionRunning, true, true
 	}
 	return "", false, false
 }

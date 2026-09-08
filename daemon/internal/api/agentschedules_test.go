@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/agent/agenttest"
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
@@ -184,3 +185,58 @@ func TestSchedules_TickStartsTheInstanceAndPaneRouteWorks(t *testing.T) {
 }
 
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
+
+// The tick against a RUNNING opencode instance: an idle one gets the prompt
+// pushed and the row stamped; a busy one is left alone, row untouched, so
+// the next tick retries.
+func TestSchedules_TickPushesIntoIdleAndWaitsForBusy(t *testing.T) {
+	oc := agenttest.NewFakeOpencode()
+	defer oc.Server.Close()
+	f := newWindowAgentFixture(t, "sleep 4;: --port "+strconv.Itoa(oc.Port()))
+	f.srv.SetSchedules(f.st, 6*time.Hour)
+	code, pane := f.start(t, "x-poster", "")
+	if code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	f.waitState(t, "running")
+	now := time.Now()
+	pushed, _ := f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: "x-poster", Cron: "@hourly", Prompt: "post the digest", NextRunAt: now.Add(-time.Second).UnixMilli()})
+
+	f.srv.fireDueSchedules()
+
+	prompts, _, _ := oc.Recorded()
+	if len(prompts) != 1 || !strings.HasPrefix(prompts[0], "[ccmux schedule #") || !strings.HasSuffix(prompts[0], "post the digest") {
+		t.Fatalf("pushed prompts = %q", prompts)
+	}
+	if sc, _ := f.st.AgentSchedule(pushed); sc.LastRunAt == 0 || sc.NextRunAt <= now.UnixMilli() {
+		t.Fatalf("pushed row not stamped: %+v", sc)
+	}
+
+	// Busy: the row waits, nothing is pushed, nothing is stamped.
+	f.srv.mgr.NoteAgentSignal(pane.ID, true)
+	waiting, _ := f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: "x-poster", Cron: "@hourly", Prompt: "later", NextRunAt: now.Add(-time.Second).UnixMilli()})
+	f.srv.fireDueSchedules()
+	if prompts, _, _ := oc.Recorded(); len(prompts) != 1 {
+		t.Fatalf("a busy agent was pushed into: %q", prompts)
+	}
+	if sc, _ := f.st.AgentSchedule(waiting); sc.LastRunAt != 0 || sc.NextRunAt != now.Add(-time.Second).UnixMilli() {
+		t.Fatalf("waiting row was touched: %+v", sc)
+	}
+}
+
+// The tick against a running instance with no opencode port (a Claude
+// harness): no chat path, so the slot is skipped, not run and not retried.
+func TestSchedules_TickSkipsRunningClaudeInstance(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 4;:")
+	f.srv.SetSchedules(f.st, 6*time.Hour)
+	if code, _ := f.start(t, "x-poster", ""); code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	f.waitState(t, "running")
+	now := time.Now()
+	id, _ := f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: "x-poster", Cron: "@hourly", Prompt: "x", NextRunAt: now.Add(-time.Second).UnixMilli()})
+	f.srv.fireDueSchedules()
+	if sc, _ := f.st.AgentSchedule(id); sc.LastRunAt != 0 || sc.NextRunAt <= now.UnixMilli() {
+		t.Fatalf("skip should advance without a run: %+v", sc)
+	}
+}

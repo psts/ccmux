@@ -189,6 +189,9 @@ func (s *Server) deleteAgentMCP(w http.ResponseWriter, r *http.Request) {
 type agentDeployment struct {
 	Window   string `json:"window"`
 	WindowID string `json:"windowId"`
+	// Schedules is how many timed runs the instance has there, so the
+	// editor's row needs no second request per window.
+	Schedules int `json:"schedules"`
 	agentInstance
 }
 
@@ -226,9 +229,23 @@ func (s *Server) deployments(name string) ([]agentDeployment, int, string) {
 		if inst.State == "absent" {
 			continue
 		}
-		out = append(out, agentDeployment{Window: win.Name, WindowID: win.ID, agentInstance: inst})
+		n, err := s.scheduleCount(win.ID, name)
+		if err != nil {
+			return nil, http.StatusServiceUnavailable, "schedules: " + err.Error()
+		}
+		out = append(out, agentDeployment{Window: win.Name, WindowID: win.ID, Schedules: n, agentInstance: inst})
 	}
 	return out, 0, ""
+}
+
+// scheduleCount is the instance's schedule count, 0 on a daemon without
+// the schedule store.
+func (s *Server) scheduleCount(windowID, name string) (int, error) {
+	if s.schedules == nil {
+		return 0, nil
+	}
+	list, err := s.schedules.AgentSchedulesFor(windowID, name)
+	return len(list), err
 }
 
 // restartAgentInstances: POST /v1/agents/{name}/instances/restart puts every

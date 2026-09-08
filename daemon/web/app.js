@@ -205,7 +205,8 @@ function renderList() {
 }
 
 // groupedWorkspaces buckets by the shared window name: named windows
-// alphabetically, the ungrouped bucket ("") last; workspaces sort by name.
+// alphabetically, the ungrouped bucket ("") last; inside a bucket, repos by
+// name then agents by name.
 function groupedWorkspaces() {
   const byGroup = new Map();
   for (const ws of state.workspaces) {
@@ -216,7 +217,7 @@ function groupedWorkspaces() {
   for (const list of byGroup.values()) {
     // Repos first by name, then the window's agents by name: an agent
     // session is a member of the project, not a peer of its repos.
-    list.sort((a, b) => (isAgentWs(a) - isAgentWs(b)) ||
+    list.sort((a, b) => (Number(isAgentWs(a)) - Number(isAgentWs(b))) ||
       (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
   }
   return [...byGroup.entries()].sort(([a], [b]) =>
@@ -279,21 +280,24 @@ async function closeWindow(win) {
 // folder is not a repo), an "agent" tag instead, sorted after the repos.
 // Same rule as the Mac sidebar's AgentWorkspaceRow.
 function isAgentWs(ws) {
-  return ws.agent ? 1 : 0;
+  return !!ws.agent;
 }
 
 // wsBadges is the right-hand column of a session row: what it is (agent,
 // or whose it is), whether it is working, and its git state or sleep.
 function wsBadges(ws, agent, cold, running, label) {
-  return (agent ? `<span class="owner-tag agent-tag">agent</span>` : "") +
-    (label && !agent ? `<span class="owner-tag">${esc(label)}</span>` : "") +
-    (running ? `<span class="bolt">⚡</span>` : "") +
-    (cold ? `<span class="cold-tag">zzz</span>` : agent ? "" : gitBadges(ws.git));
+  let tag = "";
+  if (agent) tag = `<span class="owner-tag agent-tag">agent</span>`;
+  else if (label) tag = `<span class="owner-tag">${esc(label)}</span>`;
+  let trailing = "";
+  if (cold) trailing = `<span class="cold-tag">zzz</span>`;
+  else if (!agent) trailing = gitBadges(ws.git);
+  return tag + (running ? `<span class="bolt">⚡</span>` : "") + trailing;
 }
 
 function wsRow(ws) {
   const active = ws.id === state.wsId;
-  const agent = !!isAgentWs(ws);
+  const agent = isAgentWs(ws);
   // Suppress the flash on the workspace you're already watching (mirrors the
   // native "clear on watch"); other rows flash live from the firehose and stop
   // when the daemon says the workspace was looked at somewhere (attention idle).

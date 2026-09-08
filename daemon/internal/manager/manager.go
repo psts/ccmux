@@ -853,20 +853,37 @@ func (m *Manager) markHostedClaude(paneID string) {
 }
 
 // ApplyAttention sets a pane's attention state, persists it, and broadcasts the
-// change to every lens attached to its workspace.
+// change to every lens attached to its workspace. For an agent pane the
+// Claude reading of busy (claudeBusy) is noted alongside; a harness that
+// reports its own busy flag uses ApplyAgentSignal instead.
 func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
+	m.applyAttention(paneID, att, nil)
+}
+
+// ApplyAgentSignal is ApplyAttention for a harness that reports its own
+// busy/idle reading (the opencode plugin): attention and activity land in
+// one call, so no tick can read the pane between two writes. False when
+// the pane is unknown.
+func (m *Manager) ApplyAgentSignal(paneID string, att model.Attention, busy bool) bool {
+	return m.applyAttention(paneID, att, &busy)
+}
+
+func (m *Manager) applyAttention(paneID string, att model.Attention, busy *bool) bool {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil {
 		m.mu.Unlock()
-		return
+		return false
 	}
 	p.Attention = att
 	ctrl := e.ctrl
 	wsID := e.ws.ID
 	saved := *p
 	m.mu.Unlock()
-	if saved.Agent != "" {
+	switch {
+	case busy != nil:
+		m.activity.note(paneID, *busy, time.Now())
+	case saved.Agent != "":
 		// A Claude Code agent's hooks are its busy/idle signal (claudeBusy).
 		m.activity.note(paneID, claudeBusy(att), time.Now())
 	}
@@ -881,6 +898,7 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
 	// Then, if someone is already looking, take the flash straight back
 	// (attention_seen.go). After the broadcast, so pushes still see the hook.
 	m.retireIfWatched(wsID, att)
+	return true
 }
 
 func (m *Manager) findPaneLocked(paneID string) (*entry, *model.Pane) {

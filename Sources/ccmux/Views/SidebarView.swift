@@ -43,8 +43,8 @@ struct SidebarView: View {
             .sorted(by: reposThenAgents)
     }
 
-    /// Repos by name, then agents by name: the sidebar's one order for
-    /// sessions, wherever they are listed.
+    /// Repos by name, then agents by name, for live sessions; cold rows use
+    /// coldReposThenAgents, the same rule on the daemon's own record.
     private func reposThenAgents(_ a: Workspace, _ b: Workspace) -> Bool {
         let aAgent = remoteService.agentWorkspaces[a.id] != nil
         let bAgent = remoteService.agentWorkspaces[b.id] != nil
@@ -59,10 +59,12 @@ struct SidebarView: View {
     private func coldWorkspaces(inGroup name: String) -> [DaemonWorkspace] {
         remoteService.coldWorkspaces
             .filter { WindowManager.sameWindowName($0.group, name) }
-            .sorted { a, b in
-                if a.agent.isEmpty != b.agent.isEmpty { return a.agent.isEmpty }
-                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            }
+            .sorted(by: coldReposThenAgents)
+    }
+
+    private func coldReposThenAgents(_ a: DaemonWorkspace, _ b: DaemonWorkspace) -> Bool {
+        if a.agent.isEmpty != b.agent.isEmpty { return a.agent.isEmpty }
+        return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
     }
 
     /// Cold sessions in NO window (ungrouped): they render under AVAILABLE.
@@ -70,7 +72,7 @@ struct SidebarView: View {
     /// of a CLOSED shared window are that window's business — opening it wakes
     /// them — and rendering them here too would put one session in two places.
     private var ungroupedColdWorkspaces: [DaemonWorkspace] {
-        remoteService.coldWorkspaces.filter { $0.group.isEmpty }
+        remoteService.coldWorkspaces.filter { $0.group.isEmpty }.sorted(by: coldReposThenAgents)
     }
 
     /// Live hosted sessions in NO window at all (ungrouped) — sessions in a

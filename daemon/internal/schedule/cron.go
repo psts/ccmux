@@ -140,7 +140,7 @@ func parseBound(s string, f field) (int, error) {
 // (31 Feb) reports false rather than spinning.
 const horizon = 5 * 366 * 24 * time.Hour
 
-// Next is the first minute strictly after t that matches, in t's location.
+// Next is the first minute strictly after `after` that matches, in its location.
 func (sp Spec) Next(after time.Time) (time.Time, bool) {
 	t := after.Truncate(time.Minute).Add(time.Minute)
 	end := after.Add(horizon)

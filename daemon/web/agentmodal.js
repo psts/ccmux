@@ -278,23 +278,12 @@
         const line = el("div", "entry-line");
         line.appendChild(el("span", "grow", `${i.window} · ${i.state}`));
         line.appendChild(el("span", "am-row-sub", i.paneVersion ? `runs v${i.paneVersion}` + (i.drift ? " ↻ older than the base" : "") : ""));
-        const sched = el("span", "am-row-sub", "");
-        line.appendChild(sched);
+        const n = i.schedules || 0;
+        line.appendChild(el("span", "am-row-sub", n ? ` · ${n} schedule${n === 1 ? "" : "s"}` : ""));
         row.appendChild(line);
         box.appendChild(row);
-        scheduleCount(i.windowId).then((n) => { sched.textContent = n ? ` · ${n} schedule${n === 1 ? "" : "s"}` : ""; });
       }
     } catch (e) { q(".am-inst-state").textContent = "Couldn't load instances: " + e.message; }
-  }
-
-  // scheduleCount is how many timed runs the instance in that window has;
-  // the runs themselves are managed from the agent's chat view.
-  async function scheduleCount(windowId) {
-    try {
-      const r = await fetch(`/v1/windows/${encodeURIComponent(windowId)}/agents/${encodeURIComponent(cur.name)}/schedules`);
-      if (!r.ok) return 0;
-      return ((await r.json()).schedules || []).length;
-    } catch { return 0; }
   }
 
   async function restart() {
