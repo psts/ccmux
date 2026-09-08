@@ -676,12 +676,21 @@ final class RemoteSessionService: ObservableObject {
 
     /// Send the tree's hosted pane order after a tab drag, so the web strip
     /// follows the Mac (the daemon renumbers and fans a workspace-status out).
-    /// A refusal is not retried: the next reconcile re-sorts the leaf from the
-    /// daemon's order, which is the shared truth.
-    private func pushPaneOrder(appId: UUID, order: [String]) async {
+    /// A refusal is said on the dragged leaf's pane and then undone, the same
+    /// rule the web lens applies (alert, then re-sync): the strip must never
+    /// hold an order the daemon does not. Undoing takes a forced reconcile —
+    /// the drag changed only the local tree, so the daemon's pane signature is
+    /// unchanged and an ordinary refresh would keep the live tree as is.
+    private func pushPaneOrder(appId: UUID, order: [String], noticePane: String) async {
         guard let daemonId = daemonIds[appId], !order.isEmpty else { return }
-        _ = await sendReportingError(
+        let err = await sendReportingError(
             "PUT", path: "/v1/workspaces/\(daemonId)/pane-order", body: ["order": order], expect: 200)
+        guard let err else { return }
+        await MainActor.run {
+            postPaneNotice(paneId: noticePane, text: "Reorder tabs: \(err)")
+            paneSignatures.removeValue(forKey: appId) // next reconcile re-sorts from the daemon
+        }
+        await refresh()
     }
 
     /// Resurrect a cold workspace from its stored recipe. Returns nil on success or
@@ -965,7 +974,7 @@ final class RemoteSessionService: ObservableObject {
             // deliberately leaves cross-leaf order alone.
             let order = RemoteWorkspaceBuilder.daemonOrder(
                 current: self.paneSignatures[appId] ?? [], leafOrder: leafOrder)
-            Task { await self.pushPaneOrder(appId: appId, order: order) }
+            Task { await self.pushPaneOrder(appId: appId, order: order, noticePane: leafOrder[0]) }
         }
         controllers[appId] = controller
         daemonIds[appId] = dw.id
