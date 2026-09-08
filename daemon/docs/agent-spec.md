@@ -122,7 +122,13 @@ Agents write their own memory; no layer is human-curated. Three layers.
 
 The bus names the shared folder to every session in the window (same
 paragraph as the repo sessions), and a claude agent gets it as one more
-`--add-dir`. There is no base `knowledge/` folder (dropped 2026-09-07):
+`--add-dir`. Its layout is a convention, seeded by the README the daemon
+writes there once (2026-09-08): each agent owns `shared/<its name>/` and
+writes nowhere else; one dated file per finding (`YYYY-MM-DD-<slug>.md`),
+never rewritten; frontmatter `date`, `agent`, `topic`, `source`, `tags` so
+grep finds things across agents; a `README.md` per agent folder saying what
+it publishes; and the bus for questions the files do not answer. No database
+and no search tool until a folder outgrows grep. There is no base `knowledge/` folder (dropped 2026-09-07):
 learning that crosses windows has no home yet. Memory is per instance. `agent.json.memory:
 "shared"` is recorded but NOT implemented yet: every instance still gets its
 own folder. `start: "continue"` is the default for whether a wake resumes the

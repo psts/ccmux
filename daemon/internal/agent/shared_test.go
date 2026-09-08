@@ -47,6 +47,12 @@ func TestEnsureSharedWritesTheReadmeOnce(t *testing.T) {
 		t.Fatal("existing after ensure")
 	}
 	readme := filepath.Join(dir, "README.md")
+	seeded, _ := os.ReadFile(readme)
+	for _, want := range []string{"One folder per agent", "YYYY-MM-DD-<slug>.md", "Frontmatter", "`.env`"} {
+		if !strings.Contains(string(seeded), want) {
+			t.Fatalf("seeded README lacks %q", want)
+		}
+	}
 	os.WriteFile(readme, []byte("mine now"), 0o644)
 	if _, err := s.EnsureShared(id, "Dasha"); err != nil {
 		t.Fatal(err)

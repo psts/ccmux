@@ -22,7 +22,7 @@ func TestParagraphAndSection(t *testing.T) {
 		"PROJECT SESSIONS IN THIS WINDOW", "spawn_if_missing=true",
 		"- backend: /ext/projects/chartlabs/backend [live]",
 		"- hq: /ext/projects/chartlabs/hq [archived; starts on contact]",
-		"SHARED FOLDER of this window: /w/shared.", ".env",
+		"SHARED FOLDER of this window: /w/shared.", "folder named after you", ".env",
 		"AGENTS ON THIS BUS",
 		"- x-poster: Posts X threads. [not in this project yet; starts on contact]",
 		"- kb-writer: Writes KB articles. [running]",

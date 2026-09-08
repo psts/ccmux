@@ -47,7 +47,8 @@ func sharedParagraph(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	return "\n\nSHARED FOLDER of this window: " + dir + ". Every agent here reads and writes it: put what another agent in this project needs there. " +
+	return "\n\nSHARED FOLDER of this window: " + dir + ". Every agent here reads and writes it: put what another agent in this project needs there, " +
+		"as dated files with frontmatter inside a folder named after you (the shared folder's own README.md has the layout). " +
 		"Its .env is loaded into every agent's environment at its next start: one KEY=VALUE per line, the value taken as-is (surrounding quotes stripped, no shell syntax, nothing runs); an agent's own folder may hold a .env too, and that one wins. Secrets go in .env, never in notes or memory.\n"
 }
 

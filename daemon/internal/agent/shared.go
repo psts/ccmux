@@ -48,6 +48,18 @@ func (s *Store) EnsureShared(windowID, windowName string) (string, error) {
 const sharedReadme = "# Shared by every agent in this window\n\n" +
 	"<!-- Written once by ccmux; yours from here on. -->\n\n" +
 	"Any agent added to this window reads and writes here. Put what another agent in this project needs.\n\n" +
+	"## How knowledge is laid out\n\n" +
+	"- **One folder per agent, named after it** (`scout/`, `writer/`). Your findings go only inside your own folder; you read every folder. " +
+	"What you did last time and when is your own memory (`memory/`, `log.md` in your instance folder), not this folder.\n" +
+	"- **One file per finding, never rewritten.** Name it `YYYY-MM-DD-<slug>.md`, so a listing sorts newest last and history stays. " +
+	"Correct a finding with a newer file, not an edit.\n" +
+	"- **Frontmatter on every file**: `date`, `agent`, `topic`, `source` (a URL or a file), `tags` (a list). " +
+	"That is what makes grep useful: search by tag, topic or date across every agent's folder.\n" +
+	"- **A `README.md` in your folder** that says what you publish, how the files are named and which tags you use. " +
+	"Write it on your first finding, keep it current. A reader starts there.\n" +
+	"- **Ask on the bus for what is not written.** A question like \"anything new on X since last week?\" goes to the agent by name (`send_message`, `delegate`); " +
+	"its answer that matters to others lands here as a file.\n\n" +
+	"## Secrets\n\n" +
 	"A `.env` beside this file is loaded into every agent's environment at its next start: one KEY=VALUE per line, the value taken as-is " +
 	"(surrounding quotes stripped, no shell syntax, nothing runs). " +
-	"An agent's own folder may hold a `.env` too; that one wins. Secrets go in `.env`, never in notes or memory.\n"
+	"An agent's instance folder may hold a `.env` too; that one wins. Secrets go in `.env`, never in notes or memory.\n"
