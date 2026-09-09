@@ -645,14 +645,31 @@ struct DaemonSettingsView: View {
         return kinds.contains(kind)
     }
 
+    /// Swaps two VISIBLE rows inside the harness's STORED order.
+    ///
+    /// It works on the stored array rather than replacing it with `ordered`,
+    /// because `ordered` is kind-filtered: assigning it would throw away the
+    /// accounts an unchecked kind has parked, so unchecking a kind, nudging a
+    /// visible row and rechecking would move a parked account from first to
+    /// last and silently change which account the harness tries first. Same
+    /// rule as the web lens's moveInOrder.
     private func moveHarnessAccount(
         _ harness: Binding<EditableHarness>, _ ordered: [String], _ i: Int, by delta: Int
     ) {
         let j = i + delta
         guard j >= 0 && j < ordered.count else { return }
-        var next = ordered
-        next.swapAt(i, j)
-        harness.wrappedValue.order = next
+        // Seed any visible account the stored order does not name yet — one
+        // added since "custom" was turned on — so both sides of the swap are
+        // findable. The web lens seeds the same way before it paints.
+        var stored = harness.wrappedValue.order
+        for name in ordered where !stored.contains(name) {
+            stored.append(name)
+        }
+        guard let a = stored.firstIndex(of: ordered[i]),
+            let b = stored.firstIndex(of: ordered[j])
+        else { return }
+        stored.swapAt(a, b)
+        harness.wrappedValue.order = stored
     }
 
     /// Moves one account in the list, which IS the stored failover order —
