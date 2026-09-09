@@ -355,8 +355,7 @@ struct DaemonSettingsView: View {
                 Button("Edit") { editingAccount = AccountEditTarget(index: index) }
                     .controlSize(.small)
                 Button {
-                    if llmRoute == account.name { llmRoute = "" }
-                    accounts.removeAll { $0.id == account.id }
+                    removeAccount(account)
                 } label: {
                     Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
                 }
@@ -672,6 +671,21 @@ struct DaemonSettingsView: View {
     /// Moves one account in the list, which IS the stored failover order —
     /// the daemon reads the array's order, so there is no separate weight to
     /// keep in step. A move off either end is a no-op rather than a wrap.
+    /// Confirms first, the way deleting an agent does: the ✕ sits beside the
+    /// order arrows, and the next Save takes the account's stored credential
+    /// with it. Same prompt the web lens puts up.
+    private func removeAccount(_ account: EditableAccount) {
+        let alert = NSAlert()
+        alert.messageText = "Remove account “\(account.name)”?"
+        alert.informativeText = "Its stored key goes with it. Panes routed at it fall back to the default account."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if llmRoute == account.name { llmRoute = "" }
+        accounts.removeAll { $0.id == account.id }
+    }
+
     private func moveAccount(_ id: UUID, by delta: Int) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
         let j = i + delta

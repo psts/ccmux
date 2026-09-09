@@ -60,7 +60,7 @@ struct AccountEditorView: View {
                             .font(.system(size: 12, design: .monospaced))
                         Picker("", selection: modelPick) {
                             Text("map claude → …").tag("")
-                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                            ForEach(modelOptions, id: \.self) { Text($0).tag($0) }
                         }
                         .labelsHidden()
                         .frame(width: 190)
@@ -92,6 +92,17 @@ struct AccountEditorView: View {
         // One upstream, asked when you open it. The list used to ask every
         // account's upstream every time the tab opened.
         .task { await loadModels() }
+    }
+
+    /// The models the picker offers. The account's CURRENT mapping is always
+    /// among them, even when the upstream cannot be listed: a selection with
+    /// no matching tag renders blank, which reads as "nothing mapped" for an
+    /// account that is mapped. The web lens seeds it the same way.
+    private var modelOptions: [String] {
+        let current = DaemonSettingsView.parseAliases(account.aliases)
+            .first { $0["from"] == "claude-*" }?["to"] ?? ""
+        if current.isEmpty || models.contains(current) { return models }
+        return [current] + models
     }
 
     private var urlHint: String {

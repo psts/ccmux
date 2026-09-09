@@ -1627,8 +1627,7 @@ function wireLLMSettings() {
     row.querySelector(".ord-dn").onclick = () => moveAccount(i, 1);
     row.querySelector(".rule-del").onclick = () => {
       if (!confirm(`Remove account "${a.name}"? Its stored key goes with it.`)) return;
-      accounts.splice(i, 1);
-      saveAccounts();
+      saveAccounts(accounts.filter((_, n) => n !== i));
     };
     return row;
   }
@@ -1637,8 +1636,9 @@ function wireLLMSettings() {
   function moveAccount(i, delta) {
     const j = i + delta;
     if (j < 0 || j >= accounts.length) return;
-    [accounts[i], accounts[j]] = [accounts[j], accounts[i]];
-    saveAccounts();
+    const next = accounts.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    saveAccounts(next);
   }
 
   function renderAccounts() {
@@ -1687,9 +1687,17 @@ function wireLLMSettings() {
     });
   }
 
+  // Bumped on every open. fillModelPick captures it and drops a response
+  // that arrives after the sheet moved on: the modal is ONE element reused
+  // for every account, so a slow upstream would otherwise append its models
+  // to whichever account you opened next, and picking one would alias that
+  // account to a model its own upstream has never heard of.
+  let openGeneration = 0;
+
   function openAccount(i) {
     buildModal();
     editing = i;
+    openGeneration++;
     const a = accounts[i] || {};
     mq(".lm-name").value = a.name || "";
     mq(".lm-kind").value = a.kind || "anthropic";
@@ -1705,7 +1713,7 @@ function wireLLMSettings() {
     modal().classList.remove("hidden");
     // One upstream, asked when you open it — the list used to ask every
     // account's upstream on every settings open.
-    fillModelPick(a);
+    fillModelPick(a, openGeneration);
     mq(".lm-name").focus();
   }
 
@@ -1714,7 +1722,7 @@ function wireLLMSettings() {
   // Fill the model picker from this account's upstream. An upstream that
   // doesn't answer says why rather than leaving an empty picker that reads
   // as a broken feature.
-  async function fillModelPick(a) {
+  async function fillModelPick(a, generation) {
     const sel = mq(".lm-model-pick");
     const current = ((a.modelAliases || []).find((x) => x.from === "claude-*") || {}).to || "";
     sel.innerHTML = `<option value="">map claude → …</option>` +
@@ -1722,13 +1730,16 @@ function wireLLMSettings() {
     if (!a.name) return; // unsaved: there is no upstream to ask yet
     try {
       const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(a.name)}/models`);
+      if (generation !== openGeneration) return; // the sheet moved on
       if (!r.ok) {
         const msg = (await r.json().catch(() => ({}))).error || `HTTP ${r.status}`;
         sel.title = "couldn't list models: " + msg;
         sel.options[0].textContent = "models unavailable";
         return;
       }
-      for (const m of (await r.json()).models || []) {
+      const list = (await r.json()).models || [];
+      if (generation !== openGeneration) return;
+      for (const m of list) {
         if (m === current) continue;
         const o = document.createElement("option");
         o.value = m; o.textContent = m;
@@ -1753,12 +1764,15 @@ function wireLLMSettings() {
     const key = mq(".lm-key").value;
     if (key) next.apiKey = key;
     else if (accounts[editing]) next.apiKeySet = accounts[editing].apiKeySet;
-    if (editing >= 0 && editing < accounts.length) accounts[editing] = next;
-    else accounts.push(next);
+    const candidate = accounts.slice();
+    if (editing >= 0 && editing < candidate.length) candidate[editing] = next;
+    else candidate.push(next);
     try {
-      await saveAccounts({ rethrow: true });
+      await saveAccounts(candidate, { rethrow: true });
       closeModal();
     } catch (e) {
+      // `accounts` is untouched, so the rows still show what the daemon
+      // holds and the sheet stays open on the edit that was refused.
       $("llm-modal-state").textContent = "Not saved: " + e.message;
     }
   }
@@ -1810,9 +1824,14 @@ function wireLLMSettings() {
     }
   }
 
-  async function saveAccounts(opts) {
+  // saveAccounts takes the list to PUT rather than reading the module one,
+  // and `accounts` only advances when the daemon accepted it. Mutating first
+  // and saving second is what let a REFUSED edit sit in memory until the next
+  // unrelated row click PUT it — silently, and without the key it never
+  // carried, so the stored credential went with it.
+  async function saveAccounts(candidate, opts) {
     try {
-      const cfg = await put({ llmAccounts: accounts.map(({ apiKeySet, ...rest }) => rest) });
+      const cfg = await put({ llmAccounts: candidate.map(({ apiKeySet, ...rest }) => rest) });
       // Re-seed from the daemon's echo: it normalizes URLs and reports which
       // accounts hold a key, neither of which this side should guess at.
       accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
