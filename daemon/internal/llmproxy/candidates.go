@@ -99,10 +99,16 @@ func (s *Service) readRouteState() (routeState, error) {
 // candidatesFor builds the ordered pool for one pane. Never empty: the last
 // resort is the default account, which with nothing configured is the direct
 // Anthropic pass-through.
-func (s *Service) candidatesFor(paneID string) ([]Account, error) {
+// The bool reports that the HEAD is the built-in pass-through rather than a
+// configured account. Decided here, where the pool is actually built: the
+// handler used to re-derive it from the route, which is wrong for any pane
+// that resolves at tier 2 — harnessPool runs BEFORE defaultPool is consulted,
+// so a pane on a real keyless account with no Default account picked was
+// announced as being on the pass-through.
+func (s *Service) candidatesFor(paneID string) ([]Account, bool, error) {
 	st, err := s.readRouteState()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	return s.candidatesIn(st, paneID)
 }
@@ -124,7 +130,7 @@ func (s *Service) PaneOrders(paneIDs []string) (orders map[string][]string, fail
 	orders = make(map[string][]string, len(paneIDs))
 	failures = map[string]string{}
 	for _, id := range paneIDs {
-		pool, err := s.candidatesIn(st, id)
+		pool, _, err := s.candidatesIn(st, id)
 		if err != nil {
 			log.Printf("llm: pane %s: routing unresolved: %v", id, err)
 			failures[id] = err.Error()
@@ -143,21 +149,26 @@ func accountNames(pool []Account) []string {
 	return names
 }
 
-func (s *Service) candidatesIn(st routeState, paneID string) ([]Account, error) {
+func (s *Service) candidatesIn(st routeState, paneID string) ([]Account, bool, error) {
+	passthrough := false
 	pool := s.harnessPool(paneID, st.accounts)
 	if len(pool) == 0 {
 		// Either no harness declaration to work from, or nothing configured
 		// that it can use. Both mean the same thing to a pane: fall back to
 		// the default account rather than fail.
 		var err error
-		if pool, err = s.defaultPool(st, paneID); err != nil {
-			return nil, err
+		if pool, passthrough, err = s.defaultPool(st, paneID); err != nil {
+			return nil, false, err
 		}
 	}
 	if head := overrideFor(st.accounts, st.paneRoutes[paneID]); head != nil {
 		pool = headFirst(pool, *head)
+		passthrough = false // an override always names a configured account
 	}
-	return s.health.order(sameDialect(pool)), nil
+	// When the pass-through is the answer it is the WHOLE pool (defaultPool
+	// returns it alone), so neither the dialect filter nor health ordering
+	// can move it off the head.
+	return s.health.order(sameDialect(pool)), passthrough, nil
 }
 
 // harnessPool is tier 2: the accounts the pane's harness declared it can
@@ -185,7 +196,7 @@ func (s *Service) harnessPool(paneID string, accs []Account) []Account {
 // The synthetic pass-through (no route configured) pools with nothing: it
 // forwards the pane's OWN login, so failing it over onto a keyed account
 // would silently change whose credential answers.
-func (s *Service) defaultPool(st routeState, paneID string) ([]Account, error) {
+func (s *Service) defaultPool(st routeState, paneID string) ([]Account, bool, error) {
 	route := st.global
 	if name, ok := st.paneRoutes[paneID]; ok {
 		route = name
@@ -195,14 +206,14 @@ func (s *Service) defaultPool(st routeState, paneID string) ([]Account, error) {
 	// account may legally take — matching on it would pool a pane's own login
 	// with keyed accounts, the one thing this branch exists to prevent.
 	if route == "" {
-		return []Account{{Name: "anthropic", Kind: "anthropic", BaseURL: s.defaultUpstream}}, nil
+		return []Account{{Name: "anthropic", Kind: "anthropic", BaseURL: s.defaultUpstream}}, true, nil
 	}
 	preferred := findAccount(st.accounts, route)
 	if preferred == nil {
 		// A route naming a deleted account fails LOUDLY rather than falling
 		// back: guessing where to send a pane's tokens is worse than saying
 		// the routing is broken.
-		return nil, fmt.Errorf("llm route %q names no account", route)
+		return nil, false, fmt.Errorf("llm route %q names no account", route)
 	}
 	pool := []Account{*preferred}
 	for _, a := range st.accounts {
@@ -210,7 +221,7 @@ func (s *Service) defaultPool(st routeState, paneID string) ([]Account, error) {
 			pool = append(pool, a)
 		}
 	}
-	return pool, nil
+	return pool, false, nil
 }
 
 func overrideFor(accs []Account, name string) *Account {

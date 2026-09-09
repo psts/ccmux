@@ -471,7 +471,7 @@ func (s *Service) PaneStatus(paneID string) (explicit string, order []string, er
 	if err != nil {
 		return "", nil, err
 	}
-	pool, err := s.candidatesFor(paneID)
+	pool, _, err := s.candidatesFor(paneID)
 	if err != nil {
 		return "", nil, err
 	}

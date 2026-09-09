@@ -708,3 +708,29 @@ func TestPassthroughRefusalDoesNotImpersonateAnAccount(t *testing.T) {
 		t.Fatalf("keyless-account refusal = %q, want it to name that account", rb)
 	}
 }
+
+// A pane with a recorded harness resolves at TIER 2 — harnessPool runs before
+// defaultPool is ever consulted — so an empty Default account says nothing
+// about which account it is on. Deciding "is this the pass-through" from the
+// route in the handler got that backwards and told a pane sitting on a real
+// keyless account to go add one.
+func TestHarnessPaneOnAKeylessAccountIsNotCalledThePassthrough(t *testing.T) {
+	s := configured(t, []Account{
+		{Name: "local", Kind: "anthropic", BaseURL: "http://localhost:11434"},
+	}, "") // no Default account picked: the initial state
+	harnessAt(s, "p1", []string{"anthropic"}, nil)
+	p := mount(s)
+	defer p.Close()
+	body := readBody(t, p.URL, "/llm/pane/p1/v1/models")
+	if !strings.Contains(body, "account local holds no key") {
+		t.Fatalf("refusal = %q, want it to name the account actually serving the pane", body)
+	}
+	if strings.Contains(body, "pass-through") {
+		t.Fatalf("refusal calls a tier-2 pane the pass-through: %q", body)
+	}
+	// And a pane with no harness, same settings, really is on the
+	// pass-through — tier 3 with an empty route.
+	if got := readBody(t, p.URL, "/llm/pane/shell/v1/models"); !strings.Contains(got, "pass-through") {
+		t.Fatalf("tier-3 refusal = %q, want the pass-through wording", got)
+	}
+}

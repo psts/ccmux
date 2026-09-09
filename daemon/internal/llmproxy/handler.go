@@ -50,7 +50,7 @@ func (s *Service) Handler() http.Handler {
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pool, err := s.candidatesFor(r.PathValue("pane"))
+		pool, passthrough, err := s.candidatesFor(r.PathValue("pane"))
 		if err != nil {
 			http.Error(w, "ccmux llm proxy: "+err.Error(), http.StatusBadGateway)
 			return
@@ -62,7 +62,7 @@ func (s *Service) Handler() http.Handler {
 		// process, say). Allowlist the codex provider's own surface instead
 		// of denying known-foreign paths: refusing here fails the misroute
 		// loudly on the first request instead of leaking a token per call.
-		if msg := s.refuse(r.PathValue("pane"), account, r.PathValue("rest")); msg != "" {
+		if msg := s.refuse(r.PathValue("pane"), account, r.PathValue("rest"), passthrough); msg != "" {
 			// Logged as well as answered: nothing else records this refusal
 			// (ModifyResponse only sees requests that reached an upstream),
 			// so the daemon-side trace of a whole failure class was empty.
@@ -99,7 +99,7 @@ func (s *Service) Handler() http.Handler {
 // is advice that cannot work — in the zero-account case there is nothing to
 // pick, and every other keyless account of that kind refuses the same path.
 // So that one names the PATH, which is the fact that identifies it.
-func (s *Service) refuse(paneID string, a Account, rest string) string {
+func (s *Service) refuse(paneID string, a Account, rest string, passthrough bool) string {
 	if _, ok := firstSegment(rest); !ok {
 		return "path /" + rest + " is not a shape this proxy forwards"
 	}
@@ -119,14 +119,17 @@ func (s *Service) refuse(paneID string, a Account, rest string) string {
 	if wrongDialect || a.Kind == "codex" {
 		return s.dialectRefusal(paneID, a)
 	}
-	if s.onPassthrough(paneID) {
+	if passthrough {
 		// The pane is on the BUILT-IN pass-through, which defaultPool
 		// fabricates as {Name: "anthropic"} — a name no settings list holds,
 		// and one a real account may legally take. Naming it as an account
 		// was either meaningless (there is none to open) or a flat
 		// contradiction (a keyed account of that name sitting in settings,
-		// told it holds no key). Same trap as the name test defaultPool
-		// itself refuses to use.
+		// told it holds no key).
+		//
+		// Passed down from where the pool was built, not re-derived here: a
+		// route-based test is wrong for every pane that resolves at tier 2,
+		// which is most of them.
 		return "this pane is on the built-in Anthropic pass-through, which forwards only " +
 			surfaceDescription(a.Kind) + " — /" + rest + " needs a configured account: " +
 			"add one under settings, Accounts and pick it as the Default account."
@@ -134,21 +137,6 @@ func (s *Service) refuse(paneID string, a Account, rest string) string {
 	return "account " + a.Name + " holds no key of its own, so it only ever receives " +
 		surfaceDescription(a.Kind) + " — /" + rest + " is not one of those. " +
 		"Give the account a key to send it anything else."
-}
-
-// onPassthrough reports whether this pane resolves to the built-in
-// pass-through rather than a configured account. Tested on the ROUTE, the way
-// defaultPool decides it, never on the resolved name.
-func (s *Service) onPassthrough(paneID string) bool {
-	routes, err := s.PaneRoutes()
-	if err != nil {
-		return false
-	}
-	if name, ok := routes[paneID]; ok {
-		return name == "" // an override names a real account
-	}
-	route, err := s.Route()
-	return err == nil && route == ""
 }
 
 // surfaceDescription is servesSurface in words, for the refusal above.
