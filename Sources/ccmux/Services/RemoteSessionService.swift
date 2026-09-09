@@ -502,7 +502,17 @@ final class RemoteSessionService: ObservableObject {
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/settings") else {
             throw URLError(.badURL)
         }
-        let (data, _) = try await session.data(from: url)
+        let (data, resp) = try await session.data(from: url)
+        // An error answer is NOT an empty settings blob. Every field decodes
+        // with decodeIfPresent ?? default, so a 503 carrying {"error":…}
+        // parses CLEANLY into zero accounts and zero harnesses — and it also
+        // clears supportsLLM, so the editor showed an empty Accounts tab with
+        // status "" and no way to tell that from a daemon that simply has
+        // none. fetchTabBarSettings reads the SAME endpoint and has always
+        // checked this; this was the one reader that did not.
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
         return try JSONDecoder().decode(DaemonSettings.self, from: data)
     }
 

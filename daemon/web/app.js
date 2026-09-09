@@ -1702,7 +1702,7 @@ function wireLLMSettings() {
   //
   // A failed re-read refuses the save rather than falling back to the stale
   // list: unreadable is not empty, the same rule the daemon applies.
-  async function queueSave(mutate, opts) {
+  async function queueSave(mutate) {
     const next = saving.catch(() => {}).then(async () => {
       const r = await fetch("/v1/settings");
       if (!r.ok) {
@@ -1732,7 +1732,19 @@ function wireLLMSettings() {
         redraw(cfg); // the re-read may have moved things under the rows
         return CANCELLED;
       }
-      return saveAccounts(candidate, opts);
+      try {
+        return await saveAccounts(candidate);
+      } catch (e) {
+        // The PUT was refused, so the daemon still holds what the re-read
+        // above returned and `accounts` already matches it — only the drawn
+        // rows are behind, and they are addressed by INDEX, so leaving them
+        // up made the next ▲ move a different account than the one clicked.
+        // Redrawn from cfg rather than reloaded: a reload writes its own
+        // closing status line, which is what used to wipe the refusal one
+        // fetch later and leave the click reading as a silent no-op.
+        redraw(cfg);
+        throw e;
+      }
     });
     saving = next.catch(() => {}); // a refusal must not wedge the queue
     return next;
@@ -1937,7 +1949,7 @@ function wireLLMSettings() {
         if (at >= 0) candidate[at] = next;
         else candidate.push(next);
         return candidate;
-      }, { rethrow: true });
+      });
       if (gen !== openGeneration) return; // the sheet moved on
       if (result === CANCELLED) {
         $("llm-modal-state").textContent = "Nothing to save.";
@@ -1945,8 +1957,9 @@ function wireLLMSettings() {
       }
       closeModal();
     } catch (e) {
-      // `accounts` is untouched, so the rows still show what the daemon
-      // holds and the sheet stays open on the edit that was refused.
+      // queueSave has already redrawn the rows from its own re-read, so what
+      // is behind the sheet is the daemon's list; the sheet stays open on the
+      // edit that was refused.
       if (gen === openGeneration) {
         $("llm-modal-state").textContent = "Not saved: " + e.message;
       }
@@ -1990,7 +2003,14 @@ function wireLLMSettings() {
 
   async function load() {
     try {
-      const cfg = await (await fetch("/v1/settings")).json();
+      const r = await fetch("/v1/settings");
+      // An error answer is NOT an empty account list. A 503 carries a JSON
+      // {"error":…} body, so parsing it succeeds and llmAccounts is simply
+      // absent — the tab then drew zero rows under the ordinary blurb and
+      // told the user their accounts were gone. queueSave already refuses to
+      // SEND on this; the read has to refuse to believe it.
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const cfg = await r.json();
       statuses = {};
       for (const st of cfg.llmAccountStatus || []) statuses[st.name] = st;
       sidecars = cfg.llmSidecars || {};
@@ -2008,20 +2028,19 @@ function wireLLMSettings() {
   // and saving second is what let a REFUSED edit sit in memory until the next
   // unrelated row click PUT it — silently, and without the key it never
   // carried, so the stored credential went with it.
-  async function saveAccounts(candidate, opts) {
-    try {
-      const cfg = await put({ llmAccounts: candidate.map(({ apiKeySet, ...rest }) => rest) });
-      // Re-seed from the daemon's echo: it normalizes URLs and reports which
-      // accounts hold a key, neither of which this side should guess at.
-      accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
-      renderAccounts();
-      renderRoute(accounts, cfg.llmRoute);
-      statusEl.textContent = "Saved.";
-    } catch (e) {
-      statusEl.textContent = "Not saved: " + e.message;
-      if (opts && opts.rethrow) throw e;
-      load(); // the list now lies — reload truth
-    }
+  //
+  // A refusal is never caught here. Every caller already has a catch that
+  // names what the user just tried ("Not removed:", "Not moved:", the sheet's
+  // own line) and swallowing it here made all three dead code: queueSave
+  // resolved normally, so a refused delete printed nothing at all.
+  async function saveAccounts(candidate) {
+    const cfg = await put({ llmAccounts: candidate.map(({ apiKeySet, ...rest }) => rest) });
+    // Re-seed from the daemon's echo: it normalizes URLs and reports which
+    // accounts hold a key, neither of which this side should guess at.
+    accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
+    renderAccounts();
+    renderRoute(accounts, cfg.llmRoute);
+    statusEl.textContent = "Saved.";
   }
 
   $("open-settings").addEventListener("click", load);
@@ -2345,7 +2364,9 @@ function wireHarnessSettings() {
         .filter((r) => r.querySelector(".hx-order-pick input[value=custom]")?.checked)
         .filter((r) => !JSON.parse(r.dataset.order || "[]").length)
         .map((r) => r.querySelector(".hx-name").value.trim()));
-      const cfg = await (await fetch("/v1/settings")).json();
+      const r = await fetch("/v1/settings");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`); // unreadable is not "no harnesses"
+      const cfg = await r.json();
       accounts = cfg.llmAccounts || []; // before the rows: they render from it
       box.innerHTML = "";
       for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h, wasCustom.has(h.name)));
