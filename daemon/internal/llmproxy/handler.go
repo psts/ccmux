@@ -90,12 +90,6 @@ func (s *Service) Handler() http.Handler {
 	})
 }
 
-// dialectRefusal names the setting the reader has to change. The message
-// used to say "clear the pane's llm route" unconditionally, which is wrong
-// advice for the commonest way to hit this: a codex account chosen as the
-// DEFAULT account, where the pane has no route to clear. Following it changed
-// nothing while every shell pane kept failing, and the actual cause was never
-// named.
 // refuse returns why this account may not serve this request, "" to allow.
 //
 // There are two independent reasons and they need different advice. A DIALECT
@@ -125,9 +119,36 @@ func (s *Service) refuse(paneID string, a Account, rest string) string {
 	if wrongDialect || a.Kind == "codex" {
 		return s.dialectRefusal(paneID, a)
 	}
+	if s.onPassthrough(paneID) {
+		// The pane is on the BUILT-IN pass-through, which defaultPool
+		// fabricates as {Name: "anthropic"} — a name no settings list holds,
+		// and one a real account may legally take. Naming it as an account
+		// was either meaningless (there is none to open) or a flat
+		// contradiction (a keyed account of that name sitting in settings,
+		// told it holds no key). Same trap as the name test defaultPool
+		// itself refuses to use.
+		return "this pane is on the built-in Anthropic pass-through, which forwards only " +
+			surfaceDescription(a.Kind) + " — /" + rest + " needs a configured account: " +
+			"add one under settings, Accounts and pick it as the Default account."
+	}
 	return "account " + a.Name + " holds no key of its own, so it only ever receives " +
 		surfaceDescription(a.Kind) + " — /" + rest + " is not one of those. " +
 		"Give the account a key to send it anything else."
+}
+
+// onPassthrough reports whether this pane resolves to the built-in
+// pass-through rather than a configured account. Tested on the ROUTE, the way
+// defaultPool decides it, never on the resolved name.
+func (s *Service) onPassthrough(paneID string) bool {
+	routes, err := s.PaneRoutes()
+	if err != nil {
+		return false
+	}
+	if name, ok := routes[paneID]; ok {
+		return name == "" // an override names a real account
+	}
+	route, err := s.Route()
+	return err == nil && route == ""
 }
 
 // surfaceDescription is servesSurface in words, for the refusal above.
@@ -138,6 +159,12 @@ func surfaceDescription(kind string) string {
 	return "/v1/messages and /api/hello"
 }
 
+// dialectRefusal names the setting the reader has to change. The message
+// used to say "clear the pane's llm route" unconditionally, which is wrong
+// advice for the commonest way to hit this: a codex account chosen as the
+// DEFAULT account, where the pane has no route to clear. Following it changed
+// nothing while every shell pane kept failing, and the actual cause was never
+// named.
 func (s *Service) dialectRefusal(paneID string, a Account) string {
 	routes, err := s.PaneRoutes()
 	if err != nil {

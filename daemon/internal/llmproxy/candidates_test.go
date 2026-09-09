@@ -659,7 +659,10 @@ func TestOffSurfaceRefusalNamesThePathNotTheSetting(t *testing.T) {
 	if !strings.Contains(body, "v1/models") {
 		t.Fatalf("refusal = %q, want it to name the path", body)
 	}
-	if strings.Contains(body, "Default account") {
+	// The phrasing that cannot be acted on is "pick a DIFFERENT Default
+	// account" when the account is the right kind. Naming the Default account
+	// as the place to add one is the opposite: it is the action that works.
+	if strings.Contains(body, "different Default account") {
 		t.Fatalf("refusal gives advice that cannot fix it: %q", body)
 	}
 	// A codex account still points at the setting: it cannot hold a key, so
@@ -673,5 +676,35 @@ func TestOffSurfaceRefusalNamesThePathNotTheSetting(t *testing.T) {
 	}
 	if strings.Contains(cxBody, "Give the account a key") {
 		t.Fatalf("codex refusal suggests a key, which validateKind refuses: %q", cxBody)
+	}
+}
+
+// The synthetic pass-through is fabricated as {Name:"anthropic"}, a name no
+// settings list holds and one a REAL account may legally take. Naming it as
+// an account was meaningless with none configured, and a flat contradiction
+// when a keyed account of that name is sitting in settings.
+func TestPassthroughRefusalDoesNotImpersonateAnAccount(t *testing.T) {
+	s := configured(t, []Account{
+		{Name: "anthropic", Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "sk-1"},
+	}, "") // empty route: the pane is on the pass-through, not on that account
+	p := mount(s)
+	defer p.Close()
+	body := readBody(t, p.URL, "/llm/pane/p1/v1/models")
+	if strings.Contains(body, "holds no key") {
+		t.Fatalf("refusal claims a keyed account holds no key: %q", body)
+	}
+	if !strings.Contains(body, "pass-through") || !strings.Contains(body, "v1/models") {
+		t.Fatalf("refusal = %q, want it to name the pass-through and the path", body)
+	}
+
+	// A genuine keyless account still gets the wording aimed at it.
+	real := configured(t, []Account{
+		{Name: "local", Kind: "anthropic", BaseURL: "http://localhost:11434"},
+	}, "local")
+	rp := mount(real)
+	defer rp.Close()
+	rb := readBody(t, rp.URL, "/llm/pane/p1/v1/models")
+	if !strings.Contains(rb, "account local holds no key") {
+		t.Fatalf("keyless-account refusal = %q, want it to name that account", rb)
 	}
 }
