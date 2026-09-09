@@ -1627,12 +1627,11 @@ function wireLLMSettings() {
     row.querySelector(".ord-dn").onclick = () => moveAccount(i, 1);
     row.querySelector(".rule-del").onclick = () => {
       if (!confirm(`Remove account "${a.name}"? Its stored key goes with it.`)) return;
-      // Clear the default route in the same write when it names this
-      // account, the way the Mac lens does: otherwise the daemon refuses the
-      // whole save with "llmRoute names no llm account" and the delete looks
-      // broken for a reason the message does not explain.
-      const clearing = routeSel.value === a.name;
-      queueSave((list) => list.filter((x) => x.name !== a.name), { alsoClearRoute: clearing });
+      // No llmRoute is sent: the DAEMON prunes the default route when the
+      // account it names is removed. Deciding that here meant reading this
+      // tab's copy of the field, which could be stale enough to wipe a route
+      // another lens had just set.
+      queueSave((list) => list.filter((x) => x.name !== a.name));
     };
     return row;
   }
@@ -1680,12 +1679,11 @@ function wireLLMSettings() {
   // --- the one-account editor ---
   const modal = () => $("llm-modal");
   const mq = (sel) => modal().querySelector(sel);
-  let editing = -1;
-  // The NAME the sheet was opened on. The index alone was not enough: a
-  // queued delete landing mid-edit re-seeds and re-renders the list, leaving
-  // `editing` pointing at a different account — Save then overwrote THAT one
-  // and orphaned its stored key, while the account being edited went
-  // untouched.
+  // The NAME the sheet was opened on, and the ONLY way it addresses its
+  // account. An index was not enough: a queued delete landing mid-edit
+  // re-seeds and re-renders the list, so the index pointed at a different
+  // account and Save overwrote THAT one, orphaning its stored key, while the
+  // account being edited went untouched. "" means a new account.
   let editingName = "";
   let savingModal = false;
 
@@ -1734,9 +1732,14 @@ function wireLLMSettings() {
 
   function openAccount(i) {
     buildModal();
-    editing = i;
     editingName = (accounts[i] || {}).name || "";
     openGeneration++;
+    // Reset the in-flight guard: the modal is ONE reused element, so closing
+    // it mid-save (backdrop, ✕) would otherwise carry a disabled Save button
+    // into the next account, where the guard returns before writing any
+    // message and the button just stops working.
+    savingModal = false;
+    $("llm-modal-save").disabled = false;
     const a = accounts[i] || {};
     mq(".lm-name").value = a.name || "";
     // Read-only once the account exists, like the agent editor's name field.
@@ -1764,7 +1767,7 @@ function wireLLMSettings() {
     mq(".lm-name").focus();
   }
 
-  function closeModal() { modal().classList.add("hidden"); editing = -1; }
+  function closeModal() { modal().classList.add("hidden"); editingName = ""; }
 
   // Fill the model picker from this account's upstream. An upstream that
   // doesn't answer says why rather than leaving an empty picker that reads
@@ -1814,13 +1817,24 @@ function wireLLMSettings() {
     // this form round-trip a redacted account without wiping its secret.
     const key = mq(".lm-key").value;
     if (key) next.apiKey = key;
-    if (savingModal) return; // a second click would push a second copy
+    if (savingModal) { // a second click would push a second copy
+      $("llm-modal-state").textContent = "Still saving…";
+      return;
+    }
     savingModal = true;
     $("llm-modal-save").disabled = true;
     const wasNamed = editingName;
     try {
       await queueSave((list) => {
         const at = wasNamed ? list.findIndex((x) => x.name === wasNamed) : -1;
+        if (wasNamed && at < 0) {
+          // It was deleted while the sheet was open (a queued delete, another
+          // tab, the Mac lens). Pushing it back would re-create it with no
+          // key — the daemon inherits a stored key BY NAME and that name is
+          // gone — so it would return as a pass-through forwarding every
+          // pane's own login. Fail loudly; the sheet stays open.
+          throw new Error(`"${wasNamed}" was deleted while you had it open — its stored key is gone. Re-add it to set a new one.`);
+        }
         const candidate = list.slice();
         if (at >= 0) candidate[at] = next;
         else candidate.push(next);
@@ -1891,9 +1905,7 @@ function wireLLMSettings() {
   // carried, so the stored credential went with it.
   async function saveAccounts(candidate, opts) {
     try {
-      const body = { llmAccounts: candidate.map(({ apiKeySet, ...rest }) => rest) };
-      if (opts && opts.alsoClearRoute) body.llmRoute = "";
-      const cfg = await put(body);
+      const cfg = await put({ llmAccounts: candidate.map(({ apiKeySet, ...rest }) => rest) });
       // Re-seed from the daemon's echo: it normalizes URLs and reports which
       // accounts hold a key, neither of which this side should guess at.
       accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));

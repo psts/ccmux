@@ -406,3 +406,70 @@ func TestCodexAllowlistRefusesTraversal(t *testing.T) {
 		t.Fatalf("/responsesXYZ = %d, want 502", resp.StatusCode)
 	}
 }
+
+// The messages side was a denylist, so firstSegment's "unparseable" sentinel
+// read as "not /responses" and ALLOWED. Both of these reached the upstream
+// unescaped for it to normalize back into /responses, carrying the pane's own
+// bearer — the traversal leak pointed the other way.
+func TestTraversalOntoTheMessagesSideIsRefused(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, nil, "")
+	s.defaultUpstream = up.URL
+	harnessAt(s, "p1", []string{"codex"}, nil)
+	p := mount(s)
+	defer p.Close()
+
+	for _, path := range []string{
+		"/llm/pane/p1/x/%2e%2e/responses",
+		"/llm/pane/p1/%2fresponses",
+		"/llm/pane/p1/responses",
+	} {
+		got = seen{}
+		if resp := call(t, p.URL, path, "chatgpt-oauth-token"); resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("%s = %d, want 502", path, resp.StatusCode)
+		}
+		if got.auth != "" {
+			t.Fatalf("%s: the pane's bearer reached the upstream: %q", path, got.auth)
+		}
+	}
+}
+
+// /models is the one path both dialects serve, and the codex CLI really asks
+// for it. On a keyless pass-through that forwards the CALLER's credential, so
+// a misrouted codex pane leaked its ChatGPT bearer on the model list even
+// once /responses was refused. A keyed account replaces the credential and
+// keeps the shared path.
+func TestSharedModelsPathIsRefusedOnAKeylessAccount(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, nil, "")
+	s.defaultUpstream = up.URL
+	harnessAt(s, "p1", []string{"codex"}, nil)
+	p := mount(s)
+	defer p.Close()
+	if resp := call(t, p.URL, "/llm/pane/p1/models", "chatgpt-oauth-token"); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("models on a keyless account = %d, want 502", resp.StatusCode)
+	}
+	if got.auth != "" {
+		t.Fatalf("bearer reached the upstream: %q", got.auth)
+	}
+
+	// Keyed: the account's own credential answers, so the shared path stays.
+	keyed := configured(t, []Account{{Name: "org", Kind: "anthropic", BaseURL: up.URL, APIKey: "sk-org"}}, "org")
+	kp := mount(keyed)
+	defer kp.Close()
+	got = seen{}
+	if resp := call(t, kp.URL, "/llm/pane/p2/models", "the-panes-own-login"); resp.StatusCode != 200 {
+		t.Fatalf("models on a keyed account = %d, want 200", resp.StatusCode)
+	}
+	if got.apiKey != "sk-org" || got.auth != "" {
+		t.Fatalf("keyed account sent %q/%q, want its own key and no bearer", got.apiKey, got.auth)
+	}
+	// And the Anthropic surface is untouched by any of this.
+	if resp := call(t, kp.URL, "/llm/pane/p2/v1/messages", "x"); resp.StatusCode != 200 {
+		t.Fatalf("v1/messages = %d, want 200", resp.StatusCode)
+	}
+}

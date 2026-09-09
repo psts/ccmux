@@ -200,16 +200,34 @@ func TestRejectValidation(t *testing.T) {
 	}
 }
 
-// Removing the routed account in the same request must be refused: the
-// proposal is validated as the state it produces.
-func TestRejectOrphanedRoute(t *testing.T) {
+// Removing the routed account PRUNES the default route rather than refusing
+// the save.
+//
+// This reverses the older contract ("the proposal is validated as the state
+// it produces"), deliberately: refusing meant deleting the routed account
+// failed with a message about a field the user never touched, and the lens
+// that compensated by clearing llmRoute itself was guessing from its own
+// possibly-stale copy — which could wipe a route another lens had just set.
+// It also matches what prunePaneRoutes has always done for pane overrides,
+// for the same reason. An explicitly submitted bad route is still refused.
+func TestRemovingTheRoutedAccountPrunesRatherThanRefusing(t *testing.T) {
 	s := New(fakeStore{})
 	accs := []Account{{Name: "work", BaseURL: "http://127.0.0.1"}}
 	route := "work"
 	_ = s.Apply(&accs, &route)
 	empty := []Account{}
-	if msg := s.Reject(&empty, nil); !strings.Contains(msg, "names no llm account") {
-		t.Fatalf("reject = %q, want orphaned-route refusal", msg)
+	if msg := s.Reject(&empty, nil); msg != "" {
+		t.Fatalf("reject = %q, want the removal accepted", msg)
+	}
+	if err := s.Apply(&empty, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Route(); got != "" {
+		t.Fatalf("route = %q, want it pruned with the account", got)
+	}
+	bad := "nope"
+	if msg := s.Reject(&empty, &bad); !strings.Contains(msg, "names no llm account") {
+		t.Fatalf("explicit bad route = %q, want a refusal", msg)
 	}
 }
 

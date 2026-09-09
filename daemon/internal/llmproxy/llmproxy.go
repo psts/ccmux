@@ -252,7 +252,15 @@ func (s *Service) Reject(accs *[]Account, route *string) string {
 	if effRoute != "" {
 		a := findAccount(effAccs, effRoute)
 		if a == nil {
-			return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
+			// A route the CALLER just named must exist. A STORED route left
+			// dangling by an account removal is not the caller's mistake —
+			// Apply prunes it — so refusing here would make deleting the
+			// routed account fail with a message about a field the user
+			// never touched.
+			if route != nil {
+				return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
+			}
+			return ""
 		}
 		// A codex default is allowed now. A pane running a harness routes
 		// through that harness's own account rules, so a codex default no
@@ -437,6 +445,15 @@ func (s *Service) Apply(accs *[]Account, route *string) error {
 		if err := s.prunePaneRoutes(next); err != nil {
 			return err
 		}
+		// Same for the DEFAULT route. Without this, removing the account it
+		// names made Reject refuse the whole save ("llmRoute names no llm
+		// account"), so a delete failed for a reason the message did not
+		// explain — and a lens that cleared the field itself to compensate
+		// was guessing from its own possibly-stale copy, which could wipe a
+		// route another lens had just changed.
+		if err := s.pruneRoute(next); err != nil {
+			return err
+		}
 	}
 	if route != nil {
 		return s.store.SetSetting(settingRoute, strings.TrimSpace(*route))
@@ -458,6 +475,18 @@ func (s *Service) PaneStatus(paneID string) (explicit string, order []string, er
 		return "", nil, err
 	}
 	return routes[paneID], accountNames(pool), nil
+}
+
+// pruneRoute clears the default route when the account it named is gone.
+func (s *Service) pruneRoute(accs []Account) error {
+	route, err := s.Route()
+	if err != nil {
+		return err
+	}
+	if route == "" || findAccount(accs, route) != nil {
+		return nil
+	}
+	return s.store.SetSetting(settingRoute, "")
 }
 
 // prunePaneRoutes drops pane overrides naming accounts that no longer exist.

@@ -92,7 +92,15 @@ func (s *Service) Handler() http.Handler {
 // named.
 func (s *Service) dialectRefusal(paneID string, a Account) string {
 	routes, err := s.PaneRoutes()
-	if err == nil && routes[paneID] != "" {
+	if err != nil {
+		// Folding a read failure into "no pane route" would hand back a
+		// confident instruction to change a setting that is not the cause —
+		// the same defect this function exists to remove, one branch over.
+		log.Printf("llm: pane %s: pane routes unreadable while refusing a request: %v", paneID, err)
+		return "ccmux llm proxy: account " + a.Name + " (" + a.Kind +
+			") does not serve this request; check the pane's llm route and the Default account under settings, Accounts"
+	}
+	if routes[paneID] != "" {
 		return "ccmux llm proxy: this pane is routed to " + a.Kind + " account " + a.Name +
 			", which does not serve this request — clear the pane's llm route"
 	}
@@ -112,29 +120,38 @@ func (s *Service) dialectRefusal(paneID string, a Account) string {
 // carrying a Claude subscription bearer, past the very allowlist that exists
 // to stop it. Matching a whole segment rather than a prefix closes the
 // sibling case ("responsesXYZ") in the same move.
-func firstSegment(rest string) string {
+func firstSegment(rest string) (string, bool) {
 	for _, seg := range strings.Split(rest, "/") {
 		if seg == "." || seg == ".." {
-			return ""
+			return "", false
 		}
 	}
 	head, _, _ := strings.Cut(rest, "/")
-	return head
+	// A leading slash ("%2fresponses" decodes to "/responses") gives an empty
+	// head with no dot segment at all, so emptiness is refused on its own.
+	return head, head != ""
 }
 
 // codexServablePath is the codex CLI provider's own surface — the only paths
 // a codex account forwards (probed against codex-cli 0.149.1: /models and
 // /responses, relative to the provider base URL).
 func codexServablePath(rest string) bool {
-	seg := firstSegment(rest)
-	return seg == "models" || seg == "responses"
+	seg, ok := firstSegment(rest)
+	return ok && (seg == "models" || seg == "responses")
 }
 
-// messagesServablePath is the Anthropic surface. /models is shared: both
-// providers answer it and neither credential means anything special there,
-// so it stays allowed on both rather than being forced to pick a side.
+// messagesServablePath is the Anthropic surface: everything except the codex
+// provider's own /responses.
+//
+// It has to honour firstSegment's SECOND return, not just compare the name.
+// As a bare denylist the unparseable sentinel read as "not responses" and
+// therefore allowed, so "x/%2e%2e/responses" and "%2fresponses" walked
+// through the very guard the codex side had just closed and went out
+// unescaped for the upstream to normalize. Same mechanism as the traversal
+// leak, pointed the other way.
 func messagesServablePath(rest string) bool {
-	return firstSegment(rest) != "responses"
+	seg, ok := firstSegment(rest)
+	return ok && seg != "responses"
 }
 
 // servablePath reports whether an account's upstream answers this path at
@@ -153,7 +170,21 @@ func servablePath(a Account, rest string) bool {
 	if a.Kind == "codex" {
 		return codexServablePath(rest)
 	}
-	return messagesServablePath(rest)
+	if !messagesServablePath(rest) {
+		return false
+	}
+	// /models is the one path BOTH dialects serve, so its shape cannot say
+	// which client sent it — and it is a request the codex CLI really makes.
+	// On a KEYLESS account that is a leak: the pass-through forwards the
+	// caller's own credential, so a misrouted codex pane's ChatGPT bearer
+	// reaches Anthropic on the model-list call even though /responses is now
+	// refused. A keyed account replaces the credential outright and has
+	// nothing of the pane's to leak, so it keeps the shared path.
+	// Anthropic-dialect clients ask for "v1/models", not bare "models".
+	if seg, _ := firstSegment(rest); seg == "models" && a.APIKey == "" {
+		return false
+	}
+	return true
 }
 
 // servableOnly drops pool members that cannot serve this path, keeping the
