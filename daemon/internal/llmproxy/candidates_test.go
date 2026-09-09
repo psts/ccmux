@@ -645,3 +645,33 @@ func TestMeasuredSurfacesStillServe(t *testing.T) {
 		}
 	}
 }
+
+// A path outside a keyless account's surface is a different problem from a
+// dialect mismatch, and it needs different advice: the account is the right
+// kind, so "pick a different Default account" cannot fix it — with no
+// accounts configured there is nothing to pick, and every other keyless
+// account of that kind refuses the same path. Name the path instead.
+func TestOffSurfaceRefusalNamesThePathNotTheSetting(t *testing.T) {
+	s := configured(t, nil, "") // tier-3 keyless pass-through
+	p := mount(s)
+	defer p.Close()
+	body := readBody(t, p.URL, "/llm/pane/p1/v1/models")
+	if !strings.Contains(body, "v1/models") {
+		t.Fatalf("refusal = %q, want it to name the path", body)
+	}
+	if strings.Contains(body, "Default account") {
+		t.Fatalf("refusal gives advice that cannot fix it: %q", body)
+	}
+	// A codex account still points at the setting: it cannot hold a key, so
+	// "give the account a key" would be impossible advice.
+	cx := configured(t, []Account{{Name: "cx", Kind: "codex"}}, "cx")
+	cp := mount(cx)
+	defer cp.Close()
+	cxBody := readBody(t, cp.URL, "/llm/pane/p1/v1/messages")
+	if !strings.Contains(cxBody, "Default account") {
+		t.Fatalf("codex refusal = %q, want it to name the setting", cxBody)
+	}
+	if strings.Contains(cxBody, "Give the account a key") {
+		t.Fatalf("codex refusal suggests a key, which validateKind refuses: %q", cxBody)
+	}
+}

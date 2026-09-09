@@ -62,8 +62,13 @@ func (s *Service) Handler() http.Handler {
 		// process, say). Allowlist the codex provider's own surface instead
 		// of denying known-foreign paths: refusing here fails the misroute
 		// loudly on the first request instead of leaking a token per call.
-		if !s.servablePath(r.PathValue("pane"), account, r.PathValue("rest")) {
-			http.Error(w, s.dialectRefusal(r.PathValue("pane"), account), http.StatusBadGateway)
+		if msg := s.refuse(r.PathValue("pane"), account, r.PathValue("rest")); msg != "" {
+			// Logged as well as answered: nothing else records this refusal
+			// (ModifyResponse only sees requests that reached an upstream),
+			// so the daemon-side trace of a whole failure class was empty.
+			log.Printf("llm: pane %s: refused /%s on %s (%s): %s",
+				r.PathValue("pane"), r.PathValue("rest"), account.Name, account.Kind, msg)
+			http.Error(w, "ccmux llm proxy: "+msg, http.StatusBadGateway)
 			return
 		}
 		info := &reqInfo{
@@ -91,6 +96,48 @@ func (s *Service) Handler() http.Handler {
 // DEFAULT account, where the pane has no route to clear. Following it changed
 // nothing while every shell pane kept failing, and the actual cause was never
 // named.
+// refuse returns why this account may not serve this request, "" to allow.
+//
+// There are two independent reasons and they need different advice. A DIALECT
+// mismatch is fixed by changing which account the pane uses, so the message
+// names that setting. A path outside the account's own surface is not: the
+// account is the right kind, and telling the reader to pick a different one
+// is advice that cannot work — in the zero-account case there is nothing to
+// pick, and every other keyless account of that kind refuses the same path.
+// So that one names the PATH, which is the fact that identifies it.
+func (s *Service) refuse(paneID string, a Account, rest string) string {
+	if _, ok := firstSegment(rest); !ok {
+		return "path /" + rest + " is not a shape this proxy forwards"
+	}
+	if a.APIKey != "" {
+		return ""
+	}
+	want := s.paneDialect(paneID)
+	wrongDialect := want != "" && want != dialectOf(a.Kind)
+	if servesSurface(a.Kind, rest) && !wrongDialect {
+		return ""
+	}
+	// Which advice depends on what is actually wrong. A dialect mismatch is
+	// fixed by changing the account, so it names that setting. So does a
+	// codex account: validateKind REFUSES a key on one, so "give it a key"
+	// would be impossible advice. Everything else is a path the account's own
+	// surface does not carry, and the path is the fact that identifies it.
+	if wrongDialect || a.Kind == "codex" {
+		return s.dialectRefusal(paneID, a)
+	}
+	return "account " + a.Name + " holds no key of its own, so it only ever receives " +
+		surfaceDescription(a.Kind) + " — /" + rest + " is not one of those. " +
+		"Give the account a key to send it anything else."
+}
+
+// surfaceDescription is servesSurface in words, for the refusal above.
+func surfaceDescription(kind string) string {
+	if kind == "codex" {
+		return "/models and /responses"
+	}
+	return "/v1/messages and /api/hello"
+}
+
 func (s *Service) dialectRefusal(paneID string, a Account) string {
 	routes, err := s.PaneRoutes()
 	if err != nil {
@@ -98,14 +145,14 @@ func (s *Service) dialectRefusal(paneID string, a Account) string {
 		// confident instruction to change a setting that is not the cause —
 		// the same defect this function exists to remove, one branch over.
 		log.Printf("llm: pane %s: pane routes unreadable while refusing a request: %v", paneID, err)
-		return "ccmux llm proxy: account " + a.Name + " (" + a.Kind +
+		return "account " + a.Name + " (" + a.Kind +
 			") does not serve this request; check the pane's llm route and the Default account under settings, Accounts"
 	}
 	if routes[paneID] != "" {
-		return "ccmux llm proxy: this pane is routed to " + a.Kind + " account " + a.Name +
+		return "this pane is routed to " + a.Kind + " account " + a.Name +
 			", which does not serve this request — clear the pane's llm route"
 	}
-	return "ccmux llm proxy: the default account " + a.Name + " is a " + a.Kind +
+	return "the default account " + a.Name + " is a " + a.Kind +
 		" account, which does not serve this request — pick a different Default account under settings, Accounts"
 }
 
