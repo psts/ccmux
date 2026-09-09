@@ -1627,18 +1627,36 @@ function wireLLMSettings() {
     row.querySelector(".ord-dn").onclick = () => moveAccount(i, 1);
     row.querySelector(".rule-del").onclick = () => {
       if (!confirm(`Remove account "${a.name}"? Its stored key goes with it.`)) return;
-      saveAccounts(accounts.filter((_, n) => n !== i));
+      queueSave((list) => list.filter((x) => x.name !== a.name));
     };
     return row;
   }
 
+  // Row actions run through queueSave and address accounts by NAME rather
+  // than by the index the row was drawn with. Both matter together: a save is
+  // a round trip, and a second click during one would otherwise build its
+  // change from the pre-save list — deleting two accounts in quick succession
+  // re-added the first, keyless, because the second request still carried it
+  // and the daemon inherits a key only from what it currently stores.
+  let saving = Promise.resolve();
+
+  function queueSave(mutate, opts) {
+    const next = saving.catch(() => {}).then(() => saveAccounts(mutate(accounts.slice()), opts));
+    saving = next.catch(() => {}); // a refusal must not wedge the queue
+    return next;
+  }
+
   // The stored order IS the failover order, so moving a row is a real setting.
   function moveAccount(i, delta) {
-    const j = i + delta;
-    if (j < 0 || j >= accounts.length) return;
-    const next = accounts.slice();
-    [next[i], next[j]] = [next[j], next[i]];
-    saveAccounts(next);
+    const name = (accounts[i] || {}).name;
+    queueSave((list) => {
+      const at = list.findIndex((x) => x.name === name);
+      const to = at + delta;
+      if (at < 0 || to < 0 || to >= list.length) return list;
+      const next = list.slice();
+      [next[at], next[to]] = [next[to], next[at]];
+      return next;
+    });
   }
 
   function renderAccounts() {
@@ -1733,6 +1751,7 @@ function wireLLMSettings() {
       if (generation !== openGeneration) return; // the sheet moved on
       if (!r.ok) {
         const msg = (await r.json().catch(() => ({}))).error || `HTTP ${r.status}`;
+        if (generation !== openGeneration) return; // that await let the sheet move on
         sel.title = "couldn't list models: " + msg;
         sel.options[0].textContent = "models unavailable";
         return;
@@ -1746,6 +1765,9 @@ function wireLLMSettings() {
         sel.appendChild(o);
       }
     } catch (_) {
+      // Guarded like the success paths: a slow REJECTION would otherwise
+      // stamp "models unavailable" over the next account's own list.
+      if (generation !== openGeneration) return;
       sel.options[0].textContent = "models unavailable";
     }
   }
@@ -1764,11 +1786,15 @@ function wireLLMSettings() {
     const key = mq(".lm-key").value;
     if (key) next.apiKey = key;
     else if (accounts[editing]) next.apiKeySet = accounts[editing].apiKeySet;
-    const candidate = accounts.slice();
-    if (editing >= 0 && editing < candidate.length) candidate[editing] = next;
-    else candidate.push(next);
+    const wasNamed = (accounts[editing] || {}).name;
     try {
-      await saveAccounts(candidate, { rethrow: true });
+      await queueSave((list) => {
+        const at = wasNamed ? list.findIndex((x) => x.name === wasNamed) : -1;
+        const candidate = list.slice();
+        if (at >= 0) candidate[at] = next;
+        else candidate.push(next);
+        return candidate;
+      }, { rethrow: true });
       closeModal();
     } catch (e) {
       // `accounts` is untouched, so the rows still show what the daemon
