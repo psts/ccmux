@@ -275,8 +275,15 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 		_ = json.NewDecoder(resp.Body).Decode(&got)
 		return got.Route
 	}
-	if got := routeOf(pane.ID); got != "cx" {
-		t.Fatalf("codex pane route = %q, want cx", got)
+	// The spawn does NOT pin an override: the proxy resolves a harness pane
+	// against that harness's own kinds per request, so pinning one here would
+	// make the first account of the first allowed kind outrank the order the
+	// user set. What must hold is where the pane RESOLVES.
+	if got := routeOf(pane.ID); got != "" {
+		t.Fatalf("codex pane override = %q, want none — pairing resolves per request now", got)
+	}
+	if got := orderOf(t, base, pane.ID); strings.Join(got, ",") != "cx" {
+		t.Fatalf("codex pane order = %v, want [cx]", got)
 	}
 
 	// Dialect guard: a codex pane refuses a non-codex account, and a named
@@ -341,8 +348,14 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 	if code := startIn("codex"); code != 200 {
 		t.Fatalf("start codex in shell pane = %d, want 200", code)
 	}
-	if got := routeOf(shell); got != "cx" {
-		t.Fatalf("pane route after codex start = %q, want cx", got)
+	// Same rule starting a harness INSIDE an existing shell pane: no override
+	// is pinned, and the pane resolves to the codex account because that is
+	// the only kind the codex harness declares.
+	if got := routeOf(shell); got != "" {
+		t.Fatalf("pane override after codex start = %q, want none", got)
+	}
+	if got := orderOf(t, base, shell); strings.Join(got, ",") != "cx" {
+		t.Fatalf("pane order after codex start = %v, want [cx]", got)
 	}
 	waitShell()
 	if code := startIn("noop"); code != 200 {
@@ -351,9 +364,30 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 	if got := routeOf(shell); got != "" {
 		t.Fatalf("shell pane route after noop start = %q, want cleared", got)
 	}
+	// noop declares no kinds, so it must NOT land on the codex account: the
+	// default rule excludes codex from a harness that never asked for it.
+	if got := orderOf(t, base, shell); strings.Join(got, ",") == "cx" {
+		t.Fatalf("noop pane resolved to the codex account: %v", got)
+	}
 	// …and the reverse guard: the pane now runs noop, so a codex account is
 	// refused for it.
 	if r := setRoute(shell, "cx"); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("noop pane routed to codex account = %d, want 400", r.StatusCode)
 	}
+}
+
+// orderOf reads a pane's resolved failover order: who answers now, and who
+// follows when that account hits its limit.
+func orderOf(t *testing.T, base, paneID string) []string {
+	t.Helper()
+	resp, err := http.Get(base + "/v1/panes/" + paneID + "/llm-route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Order []string `json:"order"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	return got.Order
 }

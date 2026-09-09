@@ -75,6 +75,13 @@ struct DaemonSettingsView: View {
         /// order. An ARRAY, not a Set: the order is the whole content here,
         /// which is why the kinds above can stay a Set and this cannot.
         var order: [String]
+        /// Whether the "custom for this harness" radio is on. Held apart from
+        /// `order` being non-empty, which is NOT the same thing: with kinds
+        /// that match no configured account the custom order resolves to
+        /// nothing, and deriving the radio from emptiness would snap it back
+        /// with no explanation instead of showing why the list is empty.
+        /// Not in Snapshot: it is which control is lit, not stored state.
+        var customOrder: Bool
         let source: String
         /// The daemon-resolved values this row started as: an untouched
         /// builtin/detected row is NOT persisted, so it stays live-resolved.
@@ -464,7 +471,8 @@ struct DaemonSettingsView: View {
                 }
                 Button("Add harness") {
                     harnesses.append(EditableHarness(
-                        icon: "", name: "", command: "", autoconfirm: false, kinds: [], order: [], source: "", orig: nil))
+                        icon: "", name: "", command: "", autoconfirm: false, kinds: [], order: [],
+                        customOrder: false, source: "", orig: nil))
                 }
                 .controlSize(.small)
                 if supportsHarnessRules {
@@ -552,7 +560,7 @@ struct DaemonSettingsView: View {
     /// will try them.
     @ViewBuilder
     private func harnessOrderSection(_ harness: Binding<EditableHarness>) -> some View {
-        let custom = !harness.wrappedValue.order.isEmpty
+        let custom = harness.wrappedValue.customOrder
         HStack(spacing: 8) {
             Text("order:")
                 .font(.system(size: 10))
@@ -599,13 +607,21 @@ struct DaemonSettingsView: View {
     }
 
     /// Turning the custom order ON seeds it with what the harness resolves to
-    /// today, so the first move is a change of one position rather than a
-    /// jump from nothing. Turning it OFF clears it, which is what makes the
+    /// today, so the choice freezes the current list rather than starting
+    /// from nothing. Turning it OFF clears it, which is what makes the
     /// account list's order reach this harness again.
+    ///
+    /// The radio's own state is stored, not derived from the order being
+    /// non-empty: a harness whose kinds match no account seeds an EMPTY
+    /// order, and deriving would flip the radio back with no explanation
+    /// instead of showing "no account matches the kinds above". An empty
+    /// custom order still persists as no override, because it resolves
+    /// identically — the same rule the web lens follows.
     private func orderModeBinding(_ harness: Binding<EditableHarness>) -> Binding<Bool> {
         Binding(
-            get: { !harness.wrappedValue.order.isEmpty },
+            get: { harness.wrappedValue.customOrder },
             set: { on in
+                harness.wrappedValue.customOrder = on
                 harness.wrappedValue.order = on ? orderedAccounts(harness.wrappedValue) : []
             })
     }
@@ -838,7 +854,7 @@ struct DaemonSettingsView: View {
             return EditableHarness(
                 icon: snap.icon, name: snap.name, command: snap.command,
                 autoconfirm: snap.autoconfirm, kinds: snap.kinds, order: snap.order,
-                source: h.source, orig: snap)
+                customOrder: !snap.order.isEmpty, source: h.source, orig: snap)
         }
         devDomain = settings.devDomain
         lensHostname = settings.lensHostname

@@ -391,14 +391,15 @@ func (s *Server) pushPromptLater(paneID string, l manager.AgentLaunch) {
 }
 
 // agentRoute picks the instance's llm account: the base's pin when it names
-// one (and the harness may use that kind), else the harness's own pairing.
+// one (and the harness may use that kind), else no override at all — the
+// proxy resolves the pane against the harness's own kinds and order, which
+// is the same answer without freezing today's choice into the pane.
 func (s *Server) agentRoute(d agent.Definition, h harness.Harness) (string, int, string) {
 	if d.Account == "" {
-		route, err := s.llmRouteForHarness(h)
-		if err != nil {
+		if err := s.checkHarnessAccounts(h); err != nil {
 			return "", http.StatusConflict, err.Error()
 		}
-		return route, 0, ""
+		return "", 0, ""
 	}
 	if s.llm == nil {
 		return "", http.StatusServiceUnavailable, "the agent pins an llm account but llm routing is not available on this daemon"

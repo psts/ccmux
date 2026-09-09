@@ -41,6 +41,11 @@ class SplitTreeController: ObservableObject {
     @Published var llmGlobalRoute: String = ""
     /// Per-pane llm overrides by DAEMON pane id (absent = follows global).
     @Published var llmPaneRoutes: [String: String] = [:]
+    /// Each pane's resolved failover order, head first — what the route menu
+    /// shows as "answering now" and "then". Daemon-resolved: it folds the
+    /// pane's harness rules and live account health, neither of which this
+    /// side can see.
+    @Published var llmPaneOrders: [String: [String]] = [:]
     /// Point one hosted pane's llm route at an account by name ("" clears the
     /// override). nil in driver mode, which has no proxy.
     var onSetPaneLLMRoute: ((String, String) -> Void)?

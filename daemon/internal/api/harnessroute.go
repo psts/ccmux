@@ -35,15 +35,14 @@ func (s *Server) startPaneHarness(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	route, err := s.llmRouteForHarness(h)
-	if err != nil {
+	if err := s.checkHarnessAccounts(h); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	if route == "" {
-		s.clearForeignPaneRoute(paneID, h)
-	}
-	if err := s.mgr.StartHarnessInPane(paneID, h, route); err != nil {
+	// An override the starting harness cannot use is cleared rather than left
+	// to fail every request in the pane.
+	s.clearForeignPaneRoute(paneID, h)
+	if err := s.mgr.StartHarnessInPane(paneID, h, ""); err != nil {
 		code := http.StatusInternalServerError
 		if errors.Is(err, manager.ErrPaneBusy) {
 			code = http.StatusConflict
@@ -54,37 +53,45 @@ func (s *Server) startPaneHarness(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"pane": paneID, "harness": h.Name})
 }
 
-// llmRouteForHarness resolves the llm account a harness start must route its
-// pane to ("" = the pane's default routing already works). It reads the
-// harness's resolved AccountKinds (registry defaults fill empty ones, so a
-// user override of the codex command keeps codex's pairing): when the global
-// route's account kind is not among them, the pane is pointed at the first
-// account of an allowed kind before the command types.
-func (s *Server) llmRouteForHarness(h harness.Harness) (string, error) {
+// checkHarnessAccounts refuses a harness start that has nothing to talk to,
+// before the pane exists: starting codex with no ChatGPT account configured
+// should say so, not start and then 502 on the first request.
+//
+// It no longer PINS a pane route the way it did when one global account
+// decided for every pane. The proxy resolves a harness pane against that
+// harness's own kinds and order per request (llmproxy.candidatesFor), so
+// writing an override here would do worse than duplicate it: the override
+// becomes the head of the order, so the first account of the first allowed
+// KIND would silently outrank the order the user actually set.
+func (s *Server) checkHarnessAccounts(h harness.Harness) error {
 	if len(h.AccountKinds) == 0 {
-		return "", nil
+		return nil
 	}
 	if s.llm == nil {
-		return "", fmt.Errorf("the %s harness needs the llm proxy, which is not available on this daemon", h.Name)
+		return fmt.Errorf("the %s harness needs the llm proxy, which is not available on this daemon", h.Name)
 	}
-	globalKind, err := s.globalRouteKind()
+	// The default account counts. With nothing configured at all it is the
+	// direct Anthropic pass-through, which an anthropic-dialect harness can
+	// use perfectly well — demanding a configured account here would refuse
+	// to start opencode on a daemon that needs no accounts to work.
+	defaultKind, err := s.defaultRouteKind()
 	if err != nil {
-		return "", err
+		return err
 	}
-	if kindAllowed(h.AccountKinds, globalKind) {
-		return "", nil
+	if kindAllowed(h.AccountKinds, defaultKind) {
+		return nil
 	}
 	for _, k := range h.AccountKinds {
-		if name, err := s.llm.AccountNameForKind(k); err == nil {
-			return name, nil
+		if _, err := s.llm.AccountNameForKind(k); err == nil {
+			return nil
 		}
 	}
-	return "", fmt.Errorf("the %s harness pairs with %s llm accounts — add one under settings, Accounts", h.Name, strings.Join(h.AccountKinds, " or "))
+	return fmt.Errorf("the %s harness pairs with %s llm accounts — add one under settings, Accounts", h.Name, strings.Join(h.AccountKinds, " or "))
 }
 
-// globalRouteKind is the kind of the account the global route names —
+// defaultRouteKind is the kind of the account the default route names —
 // "anthropic" for the empty route's direct pass-through.
-func (s *Server) globalRouteKind() (string, error) {
+func (s *Server) defaultRouteKind() (string, error) {
 	route, err := s.llm.Route()
 	if err != nil {
 		return "", err

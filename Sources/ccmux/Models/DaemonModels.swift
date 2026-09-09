@@ -96,6 +96,11 @@ struct DaemonSettings: Codable {
     /// Meridian sidecar state per meridian-kind account name (the daemon runs
     /// one Meridian process per such account); absent on older daemons.
     var llmSidecars: [String: DaemonSidecarStatus]
+    /// Per-pane RESOLVED failover order, head first: who answers that pane
+    /// now, then who follows as each hits its limit. Resolved daemon-side
+    /// because a lens cannot compute it — the pane's harness kinds, its
+    /// order, and live account health all feed it.
+    var llmPaneOrders: [String: [String]]
     /// The daemon-resolved harness list (builtin + detected + user entries)
     /// and the per-folder preselect rules.
     var harnesses: [DaemonHarness]
@@ -122,6 +127,7 @@ struct DaemonSettings: Codable {
         llmAccounts = try c.decodeIfPresent([DaemonLLMAccount].self, forKey: .llmAccounts) ?? []
         llmAccountStatus = try c.decodeIfPresent([DaemonLLMAccountStatus].self, forKey: .llmAccountStatus) ?? []
         llmSidecars = try c.decodeIfPresent([String: DaemonSidecarStatus].self, forKey: .llmSidecars) ?? [:]
+        llmPaneOrders = try c.decodeIfPresent([String: [String]].self, forKey: .llmPaneOrders) ?? [:]
         harnesses = try c.decodeIfPresent([DaemonHarness].self, forKey: .harnesses) ?? []
         harnessRules = try c.decodeIfPresent([DaemonHarnessRule].self, forKey: .harnessRules) ?? []
     }

@@ -654,6 +654,11 @@ final class RemoteSessionService: ObservableObject {
         var llmAccounts: [DaemonLLMAccount]?
         var llmRoute: String?
         var llmPaneRoutes: [String: String]?
+        /// Each pane's RESOLVED failover order, head first. Comes resolved
+        /// from the daemon because it is not derivable here: the pane's
+        /// harness kinds, its account order and live account health all feed
+        /// it, and a limited account has already sunk to the back of it.
+        var llmPaneOrders: [String: [String]]?
     }
 
     /// nil on any failure — the pickers simply stay empty rather than
@@ -962,6 +967,7 @@ final class RemoteSessionService: ObservableObject {
                     controller.llmAccounts = (s.llmAccounts ?? []).map(\.name)
                     controller.llmGlobalRoute = s.llmRoute ?? ""
                     controller.llmPaneRoutes = s.llmPaneRoutes ?? [:]
+                    controller.llmPaneOrders = s.llmPaneOrders ?? [:]
                 }
             }
         }
@@ -971,8 +977,12 @@ final class RemoteSessionService: ObservableObject {
                 let err = await self.sendReportingError(
                     "PUT", path: "/v1/panes/\(paneId)/llm-route", body: ["route": route], expect: 200)
                 guard err == nil, let controller else { return }
+                // Setting a route reorders that pane's chain, so re-read it
+                // rather than leave the menu describing the old one.
+                let orders = await self.fetchTabBarSettings()?.llmPaneOrders
                 await MainActor.run {
                     if route.isEmpty { controller.llmPaneRoutes.removeValue(forKey: paneId) } else { controller.llmPaneRoutes[paneId] = route }
+                    if let orders { controller.llmPaneOrders = orders }
                 }
             }
         }

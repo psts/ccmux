@@ -1,6 +1,9 @@
 package llmproxy
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+)
 
 // Candidate resolution: which accounts may answer one pane's request, and in
 // what order. Three tiers, most specific first.
@@ -67,24 +70,78 @@ func (s *Service) harnessOf(paneID string) (kinds, order []string, known bool) {
 	return s.harnessFor(paneID)
 }
 
+// routeState is everything the settings table has to say about routing, read
+// once. Resolution is pure from here on, which is what lets PaneOrders answer
+// for every pane on three reads instead of three per pane.
+type routeState struct {
+	accounts   []Account
+	paneRoutes map[string]string
+	global     string
+}
+
+func (s *Service) readRouteState() (routeState, error) {
+	accs, err := s.Accounts()
+	if err != nil {
+		return routeState{}, err
+	}
+	routes, err := s.PaneRoutes()
+	if err != nil {
+		return routeState{}, err
+	}
+	global, err := s.Route()
+	if err != nil {
+		return routeState{}, err
+	}
+	return routeState{accounts: accs, paneRoutes: routes, global: global}, nil
+}
+
 // candidatesFor builds the ordered pool for one pane. Never empty: the last
 // resort is the default account, which with nothing configured is the direct
 // Anthropic pass-through.
 func (s *Service) candidatesFor(paneID string) ([]Account, error) {
-	accs, err := s.Accounts()
+	st, err := s.readRouteState()
 	if err != nil {
 		return nil, err
 	}
-	pool := s.harnessPool(paneID, accs)
+	return s.candidatesIn(st, paneID)
+}
+
+// PaneOrders resolves many panes against one read of the settings, for the
+// lenses that show a pane's failover chain without asking per pane.
+func (s *Service) PaneOrders(paneIDs []string) (map[string][]string, error) {
+	st, err := s.readRouteState()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(paneIDs))
+	for _, id := range paneIDs {
+		pool, err := s.candidatesIn(st, id)
+		if err != nil {
+			// One pane routed at a deleted account must not blank the chain
+			// for every other pane; that pane simply shows none.
+			continue
+		}
+		names := make([]string, 0, len(pool))
+		for _, a := range pool {
+			names = append(names, a.Name)
+		}
+		out[id] = names
+	}
+	return out, nil
+}
+
+func (s *Service) candidatesIn(st routeState, paneID string) ([]Account, error) {
+	pool := s.harnessPool(paneID, st.accounts)
 	if len(pool) == 0 {
 		// Either no harness declaration to work from, or nothing configured
 		// that it can use. Both mean the same thing to a pane: fall back to
 		// the default account rather than fail.
-		if pool, err = s.defaultPool(paneID, accs); err != nil {
+		var err error
+		if pool, err = s.defaultPool(st, paneID); err != nil {
 			return nil, err
 		}
 	}
-	if head := overrideFor(accs, s.paneOverride(paneID)); head != nil {
+	if head := overrideFor(st.accounts, st.paneRoutes[paneID]); head != nil {
 		pool = headFirst(pool, *head)
 	}
 	return s.health.order(sameDialect(pool)), nil
@@ -115,40 +172,32 @@ func (s *Service) harnessPool(paneID string, accs []Account) []Account {
 // The synthetic pass-through (no route configured) pools with nothing: it
 // forwards the pane's OWN login, so failing it over onto a keyed account
 // would silently change whose credential answers.
-func (s *Service) defaultPool(paneID string, accs []Account) ([]Account, error) {
-	preferred, err := s.resolve(paneID)
-	if err != nil {
-		return nil, err
-	}
-	route, err := s.routeFor(paneID)
-	if err != nil {
-		return nil, err
+func (s *Service) defaultPool(st routeState, paneID string) ([]Account, error) {
+	route := st.global
+	if name, ok := st.paneRoutes[paneID]; ok {
+		route = name
 	}
 	// An empty route is the synthetic pass-through. Tested on the ROUTE and
 	// not on the resolved name, which is "anthropic" and is a name a real
 	// account may legally take — matching on it would pool a pane's own login
 	// with keyed accounts, the one thing this branch exists to prevent.
 	if route == "" {
-		return []Account{preferred}, nil
+		return []Account{{Name: "anthropic", Kind: "anthropic", BaseURL: s.defaultUpstream}}, nil
 	}
-	pool := []Account{preferred}
-	for _, a := range accs {
+	preferred := findAccount(st.accounts, route)
+	if preferred == nil {
+		// A route naming a deleted account fails LOUDLY rather than falling
+		// back: guessing where to send a pane's tokens is worse than saying
+		// the routing is broken. Same rule resolve() states.
+		return nil, fmt.Errorf("llm route %q names no account", route)
+	}
+	pool := []Account{*preferred}
+	for _, a := range st.accounts {
 		if a.Kind == preferred.Kind && a.Name != preferred.Name {
 			pool = append(pool, a)
 		}
 	}
 	return pool, nil
-}
-
-// paneOverride is the pane's explicit route name, "" when it has none. A
-// read failure reports none: candidatesFor already has a pool by this point,
-// and losing an override is better than failing the request outright.
-func (s *Service) paneOverride(paneID string) string {
-	routes, err := s.PaneRoutes()
-	if err != nil {
-		return ""
-	}
-	return routes[paneID]
 }
 
 func overrideFor(accs []Account, name string) *Account {

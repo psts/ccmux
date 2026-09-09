@@ -31,6 +31,8 @@ struct PaneTabBar: View {
     var llmAccounts: [String] = []
     var llmGlobalRoute: String = ""
     var llmPaneRoutes: [String: String] = [:]
+    /// Resolved failover order per pane, head first (see SplitTreeController).
+    var llmPaneOrders: [String: [String]] = [:]
     var onSetPaneLLMRoute: ((String, String) -> Void)?
 
     @EnvironmentObject var dragState: PaneDragState
@@ -244,16 +246,25 @@ struct PaneTabBar: View {
     /// same style the Claude-pane row uses.
     ///
     /// An override is the HEAD of the pane's order, not the whole of it: the
-    /// harness's remaining accounts still follow as failover. This menu shows
-    /// the choice, never the resolved chain — the app reads routes from the
-    /// settings blob rather than calling the pane's own route endpoint, so it
-    /// has no access to which account is answering right now. The web lens
-    /// does show it. Closing that gap needs a per-menu fetch this view has no
-    /// path for today.
+    /// harness's remaining accounts still follow as failover, which is what
+    /// the disabled first rows spell out. The order arrives resolved from the
+    /// daemon (llmPaneOrders): it folds the pane's harness rules and live
+    /// account health, so it names who is answering NOW, not who was
+    /// configured — those differ the moment the first choice hits its limit.
     private func llmRouteMenu(paneId: String) -> some View {
         let current = llmPaneRoutes[paneId] ?? ""
         let fallback = llmGlobalRoute.isEmpty ? "Anthropic direct" : llmGlobalRoute
+        let order = llmPaneOrders[paneId] ?? []
         return Menu("Model Account") {
+            if let now = order.first {
+                Button("now: \(now)") {}
+                    .disabled(true)
+                if order.count > 1 {
+                    Button("then: " + order.dropFirst().joined(separator: " → ")) {}
+                        .disabled(true)
+                }
+                Divider()
+            }
             Button((current.isEmpty ? "✓ " : "") + "Use the harness order (else \(fallback))") {
                 onSetPaneLLMRoute?(paneId, "")
             }

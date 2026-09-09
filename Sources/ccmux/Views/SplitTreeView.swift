@@ -202,6 +202,7 @@ private struct LeafPaneView: View {
                 llmAccounts: controller.llmAccounts,
                 llmGlobalRoute: controller.llmGlobalRoute,
                 llmPaneRoutes: controller.llmPaneRoutes,
+                llmPaneOrders: controller.llmPaneOrders,
                 onSetPaneLLMRoute: controller.onSetPaneLLMRoute
             )
 

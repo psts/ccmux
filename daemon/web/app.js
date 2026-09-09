@@ -1925,14 +1925,18 @@ function wireHarnessSettings() {
       `<label class="hx-confirm"><input type="radio" name="${esc(radioName)}" value="custom"${custom ? " checked" : ""}>custom for this harness</label>` +
       `</div>` +
       `<div class="entry-line hx-order"></div>`;
+    // Checking a kind changes which accounts the order may hold, and the
+    // radio decides whether the list shows at all. Both must redraw BEFORE
+    // the save: rowValue reads the order back off the DOM, so saving first
+    // would send the list as it was — for the radio that means turning
+    // "custom" on and persisting no order at all, and the choice silently
+    // reverting on the next load.
+    for (const el of row.querySelectorAll(".hx-kinds input, .hx-order-pick input")) {
+      el.addEventListener("change", () => renderOrder(row));
+    }
     for (const el of row.querySelectorAll("input")) {
       el.addEventListener("change", save);
       el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
-    }
-    // Checking a kind changes which accounts the order may hold, and the
-    // radio decides whether the list shows at all — both redraw it.
-    for (const el of row.querySelectorAll(".hx-kinds input, .hx-order-pick input")) {
-      el.addEventListener("change", () => renderOrder(row));
     }
     const del = row.querySelector(".rule-del");
     if (del) del.onclick = () => { row.remove(); save(); };
@@ -1955,7 +1959,15 @@ function wireHarnessSettings() {
       return;
     }
     const ordered = orderedFor(kinds, JSON.parse(row.dataset.order || "[]"));
+    // Seed the stored order from what the row resolves to today, so turning
+    // "custom" on freezes the current list (which is the whole point of the
+    // choice) instead of persisting an empty override that reads as "follow
+    // the account order" on the next load.
+    row.dataset.order = JSON.stringify(ordered.map((a) => a.name));
     if (!ordered.length) {
+      // The radio stays on custom and says why. An empty custom order still
+      // persists as no override, because it resolves identically to
+      // following the account order — same rule as the Mac lens.
       listEl.innerHTML = `<span class="hint">no account matches the kinds above</span>`;
       return;
     }
@@ -1996,7 +2008,10 @@ function wireHarnessSettings() {
     // of the field, which is what makes the global order keep reaching this
     // harness as accounts are added and moved.
     if (row.querySelector(".hx-order-pick input[value=custom]").checked) {
-      const order = [...row.querySelectorAll(".hx-order-item")].map((el) => el.dataset.name);
+      // From the row's stored order, not from the painted list: the dataset
+      // is the single record renderOrder and moveInOrder both write, so a
+      // save cannot depend on whether the DOM has been redrawn yet.
+      const order = JSON.parse(row.dataset.order || "[]");
       if (order.length) v.accountOrder = order;
     }
     return v;

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/llmproxy"
@@ -104,5 +105,71 @@ func TestPaneLLMRouteEndpoint(t *testing.T) {
 	r, cleared := putRoute(t, base, pane, "")
 	if r.StatusCode != 200 || cleared.Route != "" || cleared.Effective != "anthropic" {
 		t.Fatalf("clear = %d %+v", r.StatusCode, cleared)
+	}
+}
+
+// The pane order the lenses render comes from the daemon resolved, because
+// nothing in a lens can compute it: the pane's harness kinds, its account
+// order and live account health all feed it. This pins that the settings
+// answer carries it for every live pane, which is what lets the Mac lens show
+// the chain without a fetch per menu.
+func TestSettingsCarriesResolvedPaneOrders(t *testing.T) {
+	mgr, base := harnessStack(t)
+	ws := createWS(t, base)
+
+	put := func(body string) {
+		t.Helper()
+		req, _ := http.NewRequest("PUT", base+"/v1/settings", strings.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("put %s: %v", body, err)
+		}
+		resp.Body.Close()
+	}
+	put(`{"llmAccounts":[
+		{"name":"a","kind":"anthropic","baseURL":"https://api.anthropic.com","apiKey":"k1"},
+		{"name":"b","kind":"anthropic","baseURL":"https://api.anthropic.com","apiKey":"k2"}]}`)
+	// claude's default kinds include anthropic, and this order reverses the
+	// configured one — so the answer proves the harness order is what ran.
+	put(`{"harnesses":[{"name":"claude","command":": claude","accountOrder":["b","a"]}]}`)
+
+	// Spawned through the real path, so the pane records the harness the way
+	// it does in production rather than through a test-only setter.
+	r, err := http.Post(base+"/v1/workspaces/"+ws.ID+"/panes", "application/json",
+		strings.NewReader(`{"harness":"claude","createdBy":"tester"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != 201 {
+		t.Fatalf("spawn claude pane = %d, want 201", r.StatusCode)
+	}
+	var pane struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&pane); err != nil {
+		t.Fatal(err)
+	}
+	paneID := pane.ID
+
+	resp, err := http.Get(base + "/v1/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Orders map[string][]string `json:"llmPaneOrders"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if order := got.Orders[paneID]; strings.Join(order, ",") != "b,a" {
+		t.Fatalf("pane order = %v, want [b a] — the harness's own order", order)
+	}
+	// And a pane with no harness follows the default account, not the
+	// harness order — the two tiers must not bleed into each other.
+	shell := mgr.List()[0].Panes[0].ID
+	if order := got.Orders[shell]; strings.Join(order, ",") == "b,a" {
+		t.Fatalf("shell pane took the claude harness order: %v", order)
 	}
 }

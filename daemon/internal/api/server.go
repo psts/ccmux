@@ -191,8 +191,39 @@ func (s *Server) SetHubURL(f func() string) { s.hubURLFn = f }
 // for good.
 func (s *Server) SetBusResolver(f func(paneID string) (string, string, error)) { s.busResolver = f }
 
-// SetLLMProxy mounts the LLM routing proxy (see llm).
-func (s *Server) SetLLMProxy(svc *llmproxy.Service) { s.llm = svc }
+// SetLLMProxy mounts the LLM routing proxy (see llm) and hands it the
+// pane-to-harness lookup its routing depends on. Wired HERE rather than by
+// the caller because the two halves are not optional to each other: a proxy
+// without this hook silently routes every pane as if it had no harness,
+// which is a whole routing tier quietly missing rather than an error.
+func (s *Server) SetLLMProxy(svc *llmproxy.Service) {
+	s.llm = svc
+	svc.SetPaneHarness(s.paneHarnessRules)
+}
+
+// paneHarnessRules answers the proxy's "what does this pane run, and what may
+// it use". known is false for a pane ccmux did not start under a named
+// harness (a plain shell, a tool the user typed) AND for one whose recorded
+// harness no longer resolves: both leave no declaration to filter accounts
+// by, so the pane follows the default account.
+func (s *Server) paneHarnessRules(paneID string) (kinds, order []string, known bool) {
+	name := s.mgr.HarnessForPane(paneID)
+	if name == "" || s.mgr.Harnesses == nil {
+		return nil, nil, false
+	}
+	h, err := s.mgr.Harnesses.Resolve(name)
+	if err != nil {
+		// An unknown name is ordinary (renamed or removed under a running
+		// pane). An unreadable or corrupt registry is not: it moves every
+		// harness pane onto the default account, a routing change nothing
+		// else would report.
+		if !strings.Contains(err.Error(), "unknown harness") {
+			log.Printf("llm: pane %s: harness %q unreadable, routing as if it had none: %v", paneID, name, err)
+		}
+		return nil, nil, false
+	}
+	return h.AccountKinds, h.AccountOrder, true
+}
 
 // SetLocalGroupsForwarder arms the onward push of this host's local-pane map to
 // the hub (see localGroupsSink). Called on member hosts only.
@@ -539,37 +570,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// alone answer the question you'd read this for: is my lens aliased or not.
 		"identityAliasNames": aliasNames(s.mgr.IdentityAliases()),
 	}
-	if s.llm != nil {
-		// LLM routing: accounts follow the write-only rule above (key presence,
-		// never key values); absent keys mean the proxy isn't mounted. A read
-		// failure is a 503, never an empty list — a blank page the user then
-		// saves would wipe the stored accounts.
-		accs, route, err := s.llm.Snapshot()
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		resp["llmAccounts"] = accs
-		resp["llmRoute"] = route
-		// Live health per account — limits, usage percentages, last seen —
-		// for the Accounts tab. Same read-failure rule as the list itself.
-		sts, err := s.llm.Statuses()
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		resp["llmAccountStatus"] = sts
-		// Per-pane overrides (pane id → account name) so a client can render
-		// every pane's route picker from one fetch instead of N calls.
-		routes, err := s.llm.PaneRoutes()
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		resp["llmPaneRoutes"] = routes
-		if s.sidecars != nil {
-			resp["llmSidecars"] = s.sidecars.Status()
-		}
+	if !s.addLLMSettings(w, resp) {
+		return
 	}
 	if s.mgr.Harnesses != nil {
 		// Resolved list, built-in claude included — what a picker renders.
@@ -932,17 +934,82 @@ func (s *Server) spawnHarnessPane(w http.ResponseWriter, wsID string, req spawnP
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	route, err := s.llmRouteForHarness(h)
-	if err != nil {
+	if err := s.checkHarnessAccounts(h); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	p, err := s.mgr.SpawnHarnessPane(wsID, req.CWD, req.CreatedBy, h, route)
+	p, err := s.mgr.SpawnHarnessPane(wsID, req.CWD, req.CreatedBy, h, "")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// addLLMSettings fills the llm half of the settings answer. Split out of
+// getSettings to keep that handler under the complexity cap, and because it
+// is one subject: accounts, where panes route, and what the proxy has learned
+// about each account. Reports false when it has already written the error.
+func (s *Server) addLLMSettings(w http.ResponseWriter, resp map[string]any) bool {
+	if s.llm == nil {
+		return true
+	}
+	// LLM routing: accounts follow the write-only rule above (key presence,
+	// never key values); absent keys mean the proxy isn't mounted. A read
+	// failure is a 503, never an empty list — a blank page the user then
+	// saves would wipe the stored accounts.
+	accs, route, err := s.llm.Snapshot()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return false
+	}
+	resp["llmAccounts"] = accs
+	resp["llmRoute"] = route
+	// Live health per account — limits, usage percentages, last seen —
+	// for the Accounts tab. Same read-failure rule as the list itself.
+	sts, err := s.llm.Statuses()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return false
+	}
+	resp["llmAccountStatus"] = sts
+	// Per-pane overrides (pane id → account name) so a client can render
+	// every pane's route picker from one fetch instead of N calls.
+	routes, err := s.llm.PaneRoutes()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return false
+	}
+	resp["llmPaneRoutes"] = routes
+	// The RESOLVED order behind each pane, head first: who answers now and
+	// who follows when that account hits its limit. Overrides alone cannot
+	// be turned into this by a client — the harness's kinds and order and
+	// the live health all feed it — so it ships resolved, from one read of
+	// the settings rather than three per pane.
+	//
+	// Best-effort: a failure here drops the chain display, it does not
+	// take the whole settings page down with it.
+	if orders, err := s.llm.PaneOrders(livePaneIDs(s.mgr)); err == nil {
+		resp["llmPaneOrders"] = orders
+	} else {
+		log.Printf("settings: pane llm orders unavailable: %v", err)
+	}
+	if s.sidecars != nil {
+		resp["llmSidecars"] = s.sidecars.Status()
+	}
+	return true
+}
+
+// livePaneIDs is every pane the daemon currently holds, across workspaces —
+// the set a lens can be showing a route menu for.
+func livePaneIDs(mgr *manager.Manager) []string {
+	var ids []string
+	for _, ws := range mgr.List() {
+		for _, p := range ws.Panes {
+			ids = append(ids, p.ID)
+		}
+	}
+	return ids
 }
 
 // killPane force-closes one pane — a hosted tab's ✕ in some lens. 204 whether
