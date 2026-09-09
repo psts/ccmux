@@ -238,14 +238,23 @@ struct PaneTabBar: View {
         }
     }
 
-    /// Which llm account answers this pane: "follow global" (named, so the
-    /// default is legible) or an explicit account. The ✓ marks the current
-    /// choice, same style the Claude-pane row uses.
+    /// Which llm account answers this pane FIRST: no override (the pane
+    /// follows its harness's account order, or the default account when it
+    /// has no harness) or an explicit one. The ✓ marks the current choice,
+    /// same style the Claude-pane row uses.
+    ///
+    /// An override is the HEAD of the pane's order, not the whole of it: the
+    /// harness's remaining accounts still follow as failover. This menu shows
+    /// the choice, never the resolved chain — the app reads routes from the
+    /// settings blob rather than calling the pane's own route endpoint, so it
+    /// has no access to which account is answering right now. The web lens
+    /// does show it. Closing that gap needs a per-menu fetch this view has no
+    /// path for today.
     private func llmRouteMenu(paneId: String) -> some View {
         let current = llmPaneRoutes[paneId] ?? ""
-        let globalName = llmGlobalRoute.isEmpty ? "Anthropic direct" : llmGlobalRoute
+        let fallback = llmGlobalRoute.isEmpty ? "Anthropic direct" : llmGlobalRoute
         return Menu("Model Account") {
-            Button((current.isEmpty ? "✓ " : "") + "Follow global (\(globalName))") {
+            Button((current.isEmpty ? "✓ " : "") + "Use the harness order (else \(fallback))") {
                 onSetPaneLLMRoute?(paneId, "")
             }
             Divider()

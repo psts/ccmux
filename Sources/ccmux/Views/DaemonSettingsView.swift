@@ -71,6 +71,10 @@ struct DaemonSettingsView: View {
         var autoconfirm: Bool
         /// Which llm account kinds this harness may use; empty = its default.
         var kinds: Set<String>
+        /// This harness's own account order; empty = follow the account list's
+        /// order. An ARRAY, not a Set: the order is the whole content here,
+        /// which is why the kinds above can stay a Set and this cannot.
+        var order: [String]
         let source: String
         /// The daemon-resolved values this row started as: an untouched
         /// builtin/detected row is NOT persisted, so it stays live-resolved.
@@ -84,10 +88,11 @@ struct DaemonSettingsView: View {
             var command: String
             var autoconfirm: Bool
             var kinds: Set<String>
+            var order: [String]
         }
 
         var snapshot: Snapshot {
-            Snapshot(icon: icon, name: name, command: command, autoconfirm: autoconfirm, kinds: kinds)
+            Snapshot(icon: icon, name: name, command: command, autoconfirm: autoconfirm, kinds: kinds, order: order)
         }
 
         var untouchedDefault: Bool {
@@ -232,9 +237,9 @@ struct DaemonSettingsView: View {
     private var accountsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Default account (all panes)")
+                Text("Default account (panes ccmux did not start)")
                     .font(.headline)
-                Text("Which account answers a pane with no override of its own. Applies to each pane's next request — no restarts.")
+                Text("Which account answers a pane with no harness of its own — a plain shell, a tool you started by hand. A pane running a harness follows that harness's accounts instead. Applies to each pane's next request — no restarts.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -245,10 +250,10 @@ struct DaemonSettingsView: View {
                     }
                 }
                 .labelsHidden()
-                Text("Accounts")
+                Text("Accounts (top first)")
                     .font(.headline)
                     .padding(.top, 6)
-                Text("Claude accounts hold a token from `claude setup-token` and form a failover pool: when one hits its limit, the proxy switches to the next. Usage updates from live traffic.")
+                Text("This order is the failover order: a harness tries these top-down, skipping the kinds it cannot use, and moves to the next when one hits its limit. A limited account drops to the back on its own. Claude accounts hold a token from `claude setup-token`; usage updates from live traffic.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -308,6 +313,22 @@ struct DaemonSettingsView: View {
                 }
                 .labelsHidden()
                 .frame(width: 110)
+                Button {
+                    moveAccount(account.wrappedValue.id, by: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Try this account earlier")
+                Button {
+                    moveAccount(account.wrappedValue.id, by: 1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Try this account later")
                 Button {
                     if llmRoute == account.wrappedValue.name { llmRoute = "" }
                     accounts.removeAll { $0.id == account.wrappedValue.id }
@@ -443,7 +464,7 @@ struct DaemonSettingsView: View {
                 }
                 Button("Add harness") {
                     harnesses.append(EditableHarness(
-                        icon: "", name: "", command: "", autoconfirm: false, kinds: [], source: "", orig: nil))
+                        icon: "", name: "", command: "", autoconfirm: false, kinds: [], order: [], source: "", orig: nil))
                 }
                 .controlSize(.small)
                 if supportsHarnessRules {
@@ -505,9 +526,127 @@ struct DaemonSettingsView: View {
                 }
             }
             .help("Which llm account kinds this harness can use; none checked = its default")
+            if let warning = dialectWarning(harness.wrappedValue.kinds) {
+                Text(warning)
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            harnessOrderSection(harness)
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+    }
+
+    /// A codex account speaks OpenAI's Responses API; every other kind speaks
+    /// Anthropic's Messages API. Checking both is a warning and not a
+    /// refusal: an unknown harness may genuinely need the override, and the
+    /// daemon holds each pane's failover order to ONE dialect regardless.
+    private func dialectWarning(_ kinds: Set<String>) -> String? {
+        guard kinds.contains("codex"), kinds.contains(where: { $0 != "codex" }) else { return nil }
+        return "codex speaks a different API than the other kinds — a pane will use whichever one answers first and ignore the rest"
+    }
+
+    /// The per-harness account order: off by default (the harness follows the
+    /// account list), on shows the accounts its kinds allow, in the order it
+    /// will try them.
+    @ViewBuilder
+    private func harnessOrderSection(_ harness: Binding<EditableHarness>) -> some View {
+        let custom = !harness.wrappedValue.order.isEmpty
+        HStack(spacing: 8) {
+            Text("order:")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Picker("", selection: orderModeBinding(harness)) {
+                Text("follow the account order").tag(false)
+                Text("custom for this harness").tag(true)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+        }
+        if custom {
+            let ordered = orderedAccounts(harness.wrappedValue)
+            if ordered.isEmpty {
+                Text("no account matches the kinds above")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            } else {
+                // Indices, not `enumerated()`: Swift has no key path to a
+                // tuple element, so `id: \.element` would not compile.
+                ForEach(ordered.indices, id: \.self) { i in
+                    HStack(spacing: 6) {
+                        Text("\(i + 1). \(ordered[i])")
+                            .font(.system(size: 11, design: .monospaced))
+                        Spacer()
+                        Button {
+                            moveHarnessAccount(harness, ordered, i, by: -1)
+                        } label: {
+                            Image(systemName: "chevron.up").foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Try this account earlier")
+                        Button {
+                            moveHarnessAccount(harness, ordered, i, by: 1)
+                        } label: {
+                            Image(systemName: "chevron.down").foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Try this account later")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Turning the custom order ON seeds it with what the harness resolves to
+    /// today, so the first move is a change of one position rather than a
+    /// jump from nothing. Turning it OFF clears it, which is what makes the
+    /// account list's order reach this harness again.
+    private func orderModeBinding(_ harness: Binding<EditableHarness>) -> Binding<Bool> {
+        Binding(
+            get: { !harness.wrappedValue.order.isEmpty },
+            set: { on in
+                harness.wrappedValue.order = on ? orderedAccounts(harness.wrappedValue) : []
+            })
+    }
+
+    /// The accounts this harness may use, in the order it would try them: the
+    /// ones it named first, then the rest as configured. Mirrors the daemon's
+    /// own resolution (llmproxy.inOrder), including dropping a named account
+    /// that no longer exists.
+    private func orderedAccounts(_ harness: EditableHarness) -> [String] {
+        let allowed = accounts
+            .filter { !$0.name.isEmpty && Self.kindAllowed(harness.kinds, $0.kind) }
+            .map(\.name)
+        let named = harness.order.filter(allowed.contains)
+        return named + allowed.filter { !named.contains($0) }
+    }
+
+    /// kindAllowed, mirrored from the daemon (llmproxy.KindAllowed): no kinds
+    /// checked means any kind except the two a harness has to ask for.
+    private static func kindAllowed(_ kinds: Set<String>, _ kind: String) -> Bool {
+        if kinds.isEmpty { return kind != "codex" && kind != "meridian" }
+        return kinds.contains(kind)
+    }
+
+    private func moveHarnessAccount(
+        _ harness: Binding<EditableHarness>, _ ordered: [String], _ i: Int, by delta: Int
+    ) {
+        let j = i + delta
+        guard j >= 0 && j < ordered.count else { return }
+        var next = ordered
+        next.swapAt(i, j)
+        harness.wrappedValue.order = next
+    }
+
+    /// Moves one account in the list, which IS the stored failover order —
+    /// the daemon reads the array's order, so there is no separate weight to
+    /// keep in step. A move off either end is a no-op rather than a wrap.
+    private func moveAccount(_ id: UUID, by delta: Int) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        let j = i + delta
+        guard j >= 0 && j < accounts.count else { return }
+        accounts.swapAt(i, j)
     }
 
     private func kindBinding(_ harness: Binding<EditableHarness>, _ kind: String) -> Binding<Bool> {
@@ -658,6 +797,10 @@ struct DaemonSettingsView: View {
             var out: [String: Any] = ["name": h.name, "icon": h.icon, "command": h.command, "autoconfirm": h.autoconfirm]
             let kinds = Self.accountKindOptions.filter(h.kinds.contains)
             if !kinds.isEmpty { out["accountKinds"] = kinds }
+            // Only a custom order travels: its absence is what keeps the
+            // account list's own order reaching this harness as accounts are
+            // added and moved. Sending [] would pin an empty override.
+            if !h.order.isEmpty { out["accountOrder"] = h.order }
             return out
         }
     }
@@ -691,10 +834,11 @@ struct DaemonSettingsView: View {
         harnesses = settings.harnesses.map { h in
             let snap = EditableHarness.Snapshot(
                 icon: h.icon ?? "", name: h.name, command: h.command ?? "",
-                autoconfirm: h.autoconfirm, kinds: Set(h.accountKinds))
+                autoconfirm: h.autoconfirm, kinds: Set(h.accountKinds), order: h.accountOrder)
             return EditableHarness(
                 icon: snap.icon, name: snap.name, command: snap.command,
-                autoconfirm: snap.autoconfirm, kinds: snap.kinds, source: h.source, orig: snap)
+                autoconfirm: snap.autoconfirm, kinds: snap.kinds, order: snap.order,
+                source: h.source, orig: snap)
         }
         devDomain = settings.devDomain
         lensHostname = settings.lensHostname

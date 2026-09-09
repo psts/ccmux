@@ -578,6 +578,11 @@ struct DaemonHarness: Codable, Identifiable {
     /// Which llm account KINDS this harness can use — stamped resolved by the
     /// daemon (an entry that says nothing gets its name's default).
     var accountKinds: [String]
+    /// This harness's own account order, head first; empty = follow the
+    /// account list's order. Names accounts rather than kinds, so an entry
+    /// naming an account that is gone is skipped by the daemon rather than
+    /// failing the pane.
+    var accountOrder: [String]
     var id: String { name }
 
     init(from decoder: Decoder) throws {
@@ -588,9 +593,12 @@ struct DaemonHarness: Codable, Identifiable {
         autoconfirm = try c.decodeIfPresent(Bool.self, forKey: .autoconfirm) ?? false
         source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
         accountKinds = try c.decodeIfPresent([String].self, forKey: .accountKinds) ?? []
+        accountOrder = try c.decodeIfPresent([String].self, forKey: .accountOrder) ?? []
     }
 
-    private enum CodingKeys: String, CodingKey { case name, icon, command, autoconfirm, source, accountKinds }
+    private enum CodingKeys: String, CodingKey {
+        case name, icon, command, autoconfirm, source, accountKinds, accountOrder
+    }
 }
 
 /// A daemon pane = one tmux window (single tmux pane). `id` is the stable
