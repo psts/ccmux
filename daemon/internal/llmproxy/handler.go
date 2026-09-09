@@ -186,25 +186,53 @@ func (s *Service) paneDialect(paneID string) string {
 // nothing of the pane's to leak, so its upstream owns what it does not
 // recognise.
 func (s *Service) servablePath(paneID string, a Account, rest string) bool {
-	seg, ok := firstSegment(rest)
-	if !ok {
+	if _, ok := firstSegment(rest); !ok {
 		return false
 	}
 	if a.APIKey != "" {
 		return true
 	}
-	if want := s.paneDialect(paneID); want != "" {
-		return want == dialectOf(a.Kind)
+	// Keyless is a pass-through forwarding the CALLER's credential, so it may
+	// only ever be handed its own dialect's surface — as an ALLOWLIST. A
+	// denylist was written three times here and was incomplete every time:
+	// first it missed the mirror direction, then its unparseable sentinel
+	// allowed, then it named only /responses and /models and let
+	// /chat/completions, /completions and /v1/responses through.
+	if !servesSurface(a.Kind, rest) {
+		return false
 	}
-	// Nothing declared to check against, so fall back to the path — and only
-	// to the parts of it that are unambiguous. A codex account serves its own
-	// two roots and nothing else; every other account refuses the codex roots
-	// and the shared /models, which an Anthropic-dialect client never asks
-	// for bare (it asks for v1/models).
-	if a.Kind == "codex" {
-		return seg == "responses" || seg == "models"
+	// And when the pane says what it speaks, the account has to match it.
+	if want := s.paneDialect(paneID); want != "" && want != dialectOf(a.Kind) {
+		return false
 	}
-	return seg != "responses" && seg != "models"
+	return true
+}
+
+// servesSurface reports whether a path is on the named kind's own surface.
+//
+// Measured rather than guessed: 30 days of this daemon's proxy log carried
+// /v1/messages (40496), /api/hello (588, Claude Code's startup probe) and
+// /v1/messages/count_tokens (216) on the Anthropic side, and /models (192)
+// and /responses (75) on the codex side. Nothing else has ever been proxied.
+// A v1-only allowlist would have broken /api/hello; a FIRST-segment one let
+// /v1/responses through, which is why this matches two deep.
+//
+// An unmeasured path on a keyless account fails loudly and says which
+// account refused it. That is the deliberate trade: this list only guards
+// accounts that forward the CALLER's own credential, and a keyed account —
+// which replaces it — is not restricted at all.
+func servesSurface(kind, rest string) bool {
+	one, two := twoSegments(rest)
+	if kind == "codex" {
+		return one == "models" || one == "responses"
+	}
+	return (one == "v1" && two == "messages") || (one == "api" && two == "hello")
+}
+
+func twoSegments(rest string) (string, string) {
+	one, tail, _ := strings.Cut(rest, "/")
+	two, _, _ := strings.Cut(tail, "/")
+	return one, two
 }
 
 // servableOnly drops pool members that cannot serve this path, keeping the

@@ -588,3 +588,60 @@ func TestMixedKindHarnessStillServesTheAnthropicSurface(t *testing.T) {
 		}
 	}
 }
+
+// A mixed declaration says nothing about the dialect, so the pane-dialect
+// check cannot fire — which left the path as the only guard, and as a
+// denylist of two segments it passed every other OpenAI root to a keyless
+// pass-through with the caller's bearer.
+func TestMixedKindPaneCannotReachForeignRootsOnAKeylessAccount(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, nil, "")
+	s.defaultUpstream = up.URL
+	harnessAt(s, "p1", []string{"codex", "anthropic"}, nil)
+	p := mount(s)
+	defer p.Close()
+	for _, path := range []string{
+		"chat/completions", "completions", "v1/responses", "responses", "models",
+		"v1/chat/completions", "backend-api/codex/responses",
+	} {
+		got = seen{}
+		resp := call(t, p.URL, "/llm/pane/p1/"+path, "chatgpt-oauth-token")
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("%s = %d, want 502", path, resp.StatusCode)
+		}
+		if got.auth != "" {
+			t.Fatalf("%s: bearer reached the upstream: %q", path, got.auth)
+		}
+	}
+}
+
+// The surfaces are measured, not guessed: 30 days of this daemon's proxy log
+// carried exactly these. /api/hello is Claude Code's startup probe and a
+// v1-only allowlist would have broken it.
+func TestMeasuredSurfacesStillServe(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, nil, "")
+	s.defaultUpstream = up.URL
+	harnessAt(s, "p1", []string{"anthropic", "claude"}, nil)
+	p := mount(s)
+	defer p.Close()
+	for _, path := range []string{"v1/messages", "v1/messages/count_tokens", "api/hello"} {
+		if resp := call(t, p.URL, "/llm/pane/p1/"+path, "max-oauth"); resp.StatusCode != 200 {
+			t.Fatalf("%s = %d, want 200 — this is real traffic", path, resp.StatusCode)
+		}
+	}
+	// And a real codex pane keeps its own two.
+	cx := configured(t, []Account{{Name: "cx", Kind: "codex", BaseURL: up.URL}}, "cx")
+	harnessAt(cx, "p2", []string{"codex"}, nil)
+	cp := mount(cx)
+	defer cp.Close()
+	for _, path := range []string{"models", "responses"} {
+		if resp := call(t, cp.URL, "/llm/pane/p2/"+path, "tok"); resp.StatusCode != 200 {
+			t.Fatalf("codex %s = %d, want 200", path, resp.StatusCode)
+		}
+	}
+}
