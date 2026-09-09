@@ -148,8 +148,12 @@ func TestStartHarnessInPane(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	// codex is planted as a USER entry, not left to detection: the refused
+	// -start assertion below needs it to resolve on any host, and a detected
+	// entry only exists where the codex CLI happens to be installed. Kinds
+	// are stamped from the name, so the codex pairing survives the override.
 	put, _ := http.NewRequest("PUT", base+"/v1/settings",
-		strings.NewReader(`{"harnesses":[{"name":"sleeper","command":"sleep 5"}]}`))
+		strings.NewReader(`{"harnesses":[{"name":"sleeper","command":"sleep 5"},{"name":"codex","command":": codex"}]}`))
 	if resp, err := http.DefaultClient.Do(put); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("put harnesses: %v %v", err, resp.StatusCode)
 	}

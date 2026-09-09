@@ -1992,12 +1992,18 @@ function wireHarnessSettings() {
     });
   }
 
+  // Swaps two VISIBLE rows inside the row's stored order. It works on the
+  // stored array rather than replacing it with the painted list, because the
+  // painted list is kind-filtered: rebuilding from it would drop the accounts
+  // an unchecked kind has parked, undoing the whole point of parking them.
   function moveInOrder(row, names, i, delta) {
     const j = i + delta;
     if (j < 0 || j >= names.length) return;
-    const next = names.slice();
-    [next[i], next[j]] = [next[j], next[i]];
-    row.dataset.order = JSON.stringify(next);
+    const stored = JSON.parse(row.dataset.order || "[]");
+    const a = stored.indexOf(names[i]), b = stored.indexOf(names[j]);
+    if (a < 0 || b < 0) return; // renderOrder seeds every visible name first
+    [stored[a], stored[b]] = [stored[b], stored[a]];
+    row.dataset.order = JSON.stringify(stored);
     renderOrder(row);
     save();
   }
