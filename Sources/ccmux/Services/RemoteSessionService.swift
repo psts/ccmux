@@ -1268,6 +1268,30 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
+    /// The models one llm account's upstream serves, for the account editor's
+    /// alias-target picker. The daemon proxies the upstream's own /v1/models,
+    /// so a failure here is the upstream's (down, bad key, wrong URL) and its
+    /// reason is worth showing rather than swallowing into an empty picker.
+    func fetchAccountModels(_ name: String) async -> (models: [String], error: String?) {
+        let escaped = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/llm/accounts/\(escaped)/models") else {
+            return ([], "bad daemon URL")
+        }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                struct Err: Decodable { let error: String? }
+                let msg = (try? JSONDecoder().decode(Err.self, from: data))?.error
+                return ([], msg ?? "HTTP \(code)")
+            }
+            struct Body: Decodable { let models: [String]? }
+            return (try JSONDecoder().decode(Body.self, from: data).models ?? [], nil)
+        } catch {
+            return ([], error.localizedDescription)
+        }
+    }
+
     /// Percent-encode an agent name for a path segment; the daemon refuses
     /// anything outside [a-z0-9-] anyway, this just keeps its message readable.
     private func agentPath(_ name: String) -> String {

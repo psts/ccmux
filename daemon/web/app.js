@@ -1595,129 +1595,188 @@ function wireLLMSettings() {
     return "empty = your own login";
   }
 
-  function accountRow(a, st, sc) {
+  // The list is a SUMMARY: what each account is, how it is doing, and where
+  // it sits in the failover order. Everything you set rather than read — URL,
+  // key, aliases, the model map — lives in the modal, because this tab is
+  // read far more often than it is edited and the order arrows are the thing
+  // you reach for.
+  //
+  // `accounts` is the record the rows render from, not the DOM. Reading edits
+  // back out of input fields is what made every keystroke PUT the whole list.
+  let accounts = [];
+  let statuses = {};
+  let sidecars = {};
+
+  function accountRow(a, i) {
     const row = document.createElement("div");
     row.className = "entry-card";
-    const keyHint = keyHintFor(a);
-    const aliases = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
-    // What the picker shows as its current choice: the claude-* rule's target.
-    const claudeTarget = ((a.modelAliases || []).find((x) => x.from === "claude-*") || {}).to || "";
-    const status = [statusLine(st), sidecarLine(a, sc)].filter(Boolean).join(" · ");
-    const urlHint = a.kind === "meridian" ? "base URL (empty = http://127.0.0.1:3456)" : "base URL, e.g. http://localhost:11434";
+    const status = [statusLine(statuses[a.name]), sidecarLine(a, sidecars[a.name])].filter(Boolean).join(" · ");
     row.innerHTML =
       `<div class="entry-line">` +
-      `<input class="setting-input llm-name grow" type="text" spellcheck="false" placeholder="name" value="${esc(a.name || "")}">` +
-      `<select class="setting-input llm-kind">` +
-      accountKinds.map((k) =>
-        `<option value="${k}"${(a.kind || "anthropic") === k ? " selected" : ""}>${k}</option>`).join("") +
-      `</select>` +
+      `<span class="llm-pos">${i + 1}</span>` +
+      `<span class="llm-acct-name grow">${esc(a.name || "(unnamed)")}</span>` +
+      `<span class="llm-kind">${esc(a.kind || "anthropic")}</span>` +
       `<button class="ord-up" type="button" title="Try this account earlier">\u25b2</button>` +
       `<button class="ord-dn" type="button" title="Try this account later">\u25bc</button>` +
+      `<button class="rule-add llm-edit" type="button">Edit</button>` +
       `<button class="rule-del" type="button" title="Remove account">&times;</button>` +
       `</div>` +
-      `<div class="entry-line">` +
-      `<input class="setting-input llm-url grow" type="text" spellcheck="false" placeholder="${esc(urlHint)}" value="${esc(a.baseURL || "")}">` +
-      `</div>` +
-      `<div class="entry-line">` +
-      `<input class="setting-input llm-key grow" type="password" autocomplete="off" placeholder="token / api key: ${esc(keyHint)}">` +
-      `<input class="setting-input llm-aliases grow" type="text" spellcheck="false" placeholder="aliases: claude-haiku-*=qwen3-4b-32k" value="${esc(aliases)}">` +
-      `<select class="setting-input llm-model-pick" title="List the upstream's models; picking one maps every claude-* request to it">` +
-      `<option value="">map claude → …</option>` +
-      (claudeTarget ? `<option value="${esc(claudeTarget)}" selected>${esc(claudeTarget)}</option>` : "") +
-      `</select>` +
-      `</div>` +
       (status ? `<div class="entry-line llm-acct-status">${esc(status)}</div>` : "");
-    for (const el of row.querySelectorAll("input, select:not(.llm-model-pick)")) {
-      el.addEventListener("change", saveAccounts);
-      el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
-    }
-    // Picking a model rewrites the alias field (claude-* rules replaced,
-    // custom rules kept) and saves; the picker keeps showing the choice.
-    row.querySelector(".llm-model-pick").addEventListener("change", (e) => {
-      const model = e.target.value;
-      if (!model) return;
-      const field = row.querySelector(".llm-aliases");
-      const kept = parseAliases(field.value).filter((x) => !x.from.startsWith("claude-"));
-      field.value = kept.concat([{ from: "claude-*", to: model }])
-        .map((x) => `${x.from}=${x.to}`).join(", ");
+    row.querySelector(".llm-edit").onclick = () => openAccount(i);
+    row.querySelector(".ord-up").onclick = () => moveAccount(i, -1);
+    row.querySelector(".ord-dn").onclick = () => moveAccount(i, 1);
+    row.querySelector(".rule-del").onclick = () => {
+      if (!confirm(`Remove account "${a.name}"? Its stored key goes with it.`)) return;
+      accounts.splice(i, 1);
       saveAccounts();
-    });
-    row.querySelector(".rule-del").onclick = () => { row.remove(); saveAccounts(); };
-    // The stored order IS the failover order, so moving a row is a real
-    // setting and saves like any other edit. collectAccounts reads the list
-    // in DOM order, which is what makes moving the node enough.
-    row.querySelector(".ord-up").onclick = () => moveAccount(row, -1);
-    row.querySelector(".ord-dn").onclick = () => moveAccount(row, 1);
+    };
     return row;
   }
 
-  function moveAccount(row, delta) {
-    const sibling = delta < 0 ? row.previousElementSibling : row.nextElementSibling;
-    if (!sibling) return; // already at the end; nothing to save
-    if (delta < 0) box.insertBefore(row, sibling);
-    else box.insertBefore(sibling, row);
+  // The stored order IS the failover order, so moving a row is a real setting.
+  function moveAccount(i, delta) {
+    const j = i + delta;
+    if (j < 0 || j >= accounts.length) return;
+    [accounts[i], accounts[j]] = [accounts[j], accounts[i]];
     saveAccounts();
   }
 
-  // Fill each SAVED account's model picker from its upstream's /v1/models
-  // (Ollama's list of pulled models, OpenRouter's catalog, …). An upstream
-  // that doesn't answer just leaves that picker with its placeholder.
-  async function populateModelPicks() {
-    for (const row of box.querySelectorAll(".entry-card")) {
-      const name = row.querySelector(".llm-name").value.trim();
-      const sel = row.querySelector(".llm-model-pick");
-      if (!name || !sel) continue;
-      try {
-        const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(name)}/models`);
-        if (!r.ok) {
-          // The backend reports WHY (upstream down, bad key, wrong URL) —
-          // an empty picker that hides the reason reads as a broken feature.
-          const msg = (await r.json().catch(() => ({}))).error || `HTTP ${r.status}`;
-          sel.title = "couldn't list models: " + msg;
-          sel.options[0].textContent = "models unavailable";
-          continue;
-        }
-        const have = new Set([...sel.options].map((o) => o.value));
-        for (const m of (await r.json()).models || []) {
-          if (have.has(m)) continue; // the current mapping is already an option
-          const o = document.createElement("option");
-          o.value = m;
-          o.textContent = m;
-          sel.appendChild(o);
-        }
-      } catch (_) { /* placeholder stays */ }
+  function renderAccounts() {
+    box.innerHTML = "";
+    accounts.forEach((a, i) => box.appendChild(accountRow(a, i)));
+  }
+
+  // --- the one-account editor ---
+  const modal = () => $("llm-modal");
+  const mq = (sel) => modal().querySelector(sel);
+  let editing = -1;
+
+  function buildModal() {
+    const m = modal();
+    if (m.dataset.built) return;
+    m.dataset.built = "1";
+    m.querySelector(".llm-modal-body").innerHTML =
+      `<div class="entry-line">` +
+      `<input class="setting-input lm-name grow" type="text" spellcheck="false" placeholder="name">` +
+      `<select class="setting-input lm-kind">` +
+      accountKinds.map((k) => `<option value="${k}">${k}</option>`).join("") +
+      `</select></div>` +
+      `<div class="entry-line"><input class="setting-input lm-url grow" type="text" spellcheck="false" placeholder="base URL"></div>` +
+      `<div class="entry-line"><input class="setting-input lm-key grow" type="password" autocomplete="off" placeholder="token / api key"></div>` +
+      `<div class="entry-line">` +
+      `<input class="setting-input lm-aliases grow" type="text" spellcheck="false" placeholder="aliases: claude-haiku-*=qwen3-4b-32k">` +
+      `<select class="setting-input lm-model-pick" title="List the upstream's models; picking one maps every claude-* request to it">` +
+      `<option value="">map claude → …</option></select>` +
+      `</div>` +
+      `<p class="hint lm-status"></p>`;
+    $("llm-modal-close").onclick = closeModal;
+    m.onclick = (e) => { if (e.target === m) closeModal(); };
+    $("llm-modal-save").onclick = saveModal;
+    // Picking a model rewrites the alias field: claude-* rules replaced,
+    // custom rules kept.
+    mq(".lm-model-pick").addEventListener("change", (e) => {
+      const model = e.target.value;
+      if (!model) return;
+      const field = mq(".lm-aliases");
+      const kept = parseAliases(field.value).filter((x) => !x.from.startsWith("claude-"));
+      field.value = kept.concat([{ from: "claude-*", to: model }])
+        .map((x) => `${x.from}=${x.to}`).join(", ");
+    });
+    mq(".lm-kind").addEventListener("change", () => {
+      mq(".lm-key").placeholder = "token / api key: " + keyHintFor({ kind: mq(".lm-kind").value });
+    });
+  }
+
+  function openAccount(i) {
+    buildModal();
+    editing = i;
+    const a = accounts[i] || {};
+    mq(".lm-name").value = a.name || "";
+    mq(".lm-kind").value = a.kind || "anthropic";
+    mq(".lm-url").value = a.baseURL || "";
+    mq(".lm-url").placeholder = a.kind === "meridian"
+      ? "base URL (empty = http://127.0.0.1:3456)" : "base URL, e.g. http://localhost:11434";
+    mq(".lm-key").value = "";
+    mq(".lm-key").placeholder = "token / api key: " + keyHintFor(a);
+    mq(".lm-aliases").value = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
+    mq(".lm-status").textContent = [statusLine(statuses[a.name]), sidecarLine(a, sidecars[a.name])].filter(Boolean).join(" · ");
+    $("llm-modal-title").textContent = a.name ? "Account · " + a.name : "New account";
+    $("llm-modal-state").textContent = "";
+    modal().classList.remove("hidden");
+    // One upstream, asked when you open it — the list used to ask every
+    // account's upstream on every settings open.
+    fillModelPick(a);
+    mq(".lm-name").focus();
+  }
+
+  function closeModal() { modal().classList.add("hidden"); editing = -1; }
+
+  // Fill the model picker from this account's upstream. An upstream that
+  // doesn't answer says why rather than leaving an empty picker that reads
+  // as a broken feature.
+  async function fillModelPick(a) {
+    const sel = mq(".lm-model-pick");
+    const current = ((a.modelAliases || []).find((x) => x.from === "claude-*") || {}).to || "";
+    sel.innerHTML = `<option value="">map claude → …</option>` +
+      (current ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : "");
+    if (!a.name) return; // unsaved: there is no upstream to ask yet
+    try {
+      const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(a.name)}/models`);
+      if (!r.ok) {
+        const msg = (await r.json().catch(() => ({}))).error || `HTTP ${r.status}`;
+        sel.title = "couldn't list models: " + msg;
+        sel.options[0].textContent = "models unavailable";
+        return;
+      }
+      for (const m of (await r.json()).models || []) {
+        if (m === current) continue;
+        const o = document.createElement("option");
+        o.value = m; o.textContent = m;
+        sel.appendChild(o);
+      }
+    } catch (_) {
+      sel.options[0].textContent = "models unavailable";
     }
   }
 
-  // "from=to, from2=to2" — rows without an '=' are dropped as half-typed.
+  async function saveModal() {
+    const name = mq(".lm-name").value.trim();
+    if (!name) { $("llm-modal-state").textContent = "An account needs a name."; return; }
+    const next = {
+      name,
+      kind: mq(".lm-kind").value,
+      baseURL: mq(".lm-url").value.trim(),
+      modelAliases: parseAliases(mq(".lm-aliases").value),
+    };
+    // Write-only key: an empty box KEEPS the stored one, which is what lets
+    // this form round-trip a redacted account without wiping its secret.
+    const key = mq(".lm-key").value;
+    if (key) next.apiKey = key;
+    else if (accounts[editing]) next.apiKeySet = accounts[editing].apiKeySet;
+    if (editing >= 0 && editing < accounts.length) accounts[editing] = next;
+    else accounts.push(next);
+    try {
+      await saveAccounts({ rethrow: true });
+      closeModal();
+    } catch (e) {
+      $("llm-modal-state").textContent = "Not saved: " + e.message;
+    }
+  }
+
   function parseAliases(text) {
-    return text.split(",").map((s) => s.trim()).filter((s) => s.includes("=")).map((s) => {
-      const i = s.indexOf("=");
-      return { from: s.slice(0, i).trim(), to: s.slice(i + 1).trim() };
+    return text.split(",").map((part) => {
+      const [from, ...rest] = part.split("=");
+      return { from: (from || "").trim(), to: rest.join("=").trim() };
     }).filter((x) => x.from && x.to);
   }
 
-  function collectAccounts() {
-    return [...box.querySelectorAll(".entry-card")].map((row) => ({
-      name: row.querySelector(".llm-name").value.trim(),
-      kind: row.querySelector(".llm-kind").value,
-      baseURL: row.querySelector(".llm-url").value.trim(),
-      apiKey: row.querySelector(".llm-key").value, // empty keeps the stored key
-      modelAliases: parseAliases(row.querySelector(".llm-aliases").value),
-    })).filter((a) => a.name || a.baseURL); // a fully blank editor row isn't an account
-  }
-
-  // The default account answers panes ccmux did not start under a named
-  // harness — a plain shell, a tool the user typed themselves. A pane that
-  // runs a harness follows that harness's own accounts instead, so this
-  // picker no longer decides for everyone.
-  function renderRoute(accounts, route) {
+  function renderRoute(list, route) {
     routeSel.innerHTML = "";
     const direct = document.createElement("option");
-    direct.value = "";
-    direct.textContent = "Anthropic (direct, your Claude login)";
+    direct.value = ""; direct.textContent = "Anthropic (direct, your Claude login)";
     routeSel.appendChild(direct);
-    for (const a of accounts) {
+    for (const a of list) {
+      if (!a.name) continue;
       const o = document.createElement("option");
       o.value = a.name;
       o.textContent = a.name + (a.baseURL ? "  →  " + a.baseURL : "");
@@ -1739,26 +1798,31 @@ function wireLLMSettings() {
   async function load() {
     try {
       const cfg = await (await fetch("/v1/settings")).json();
-      const stByName = {};
-      for (const st of cfg.llmAccountStatus || []) stByName[st.name] = st;
-      box.innerHTML = "";
-      const sidecars = cfg.llmSidecars || {};
-      for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a, stByName[a.name], sidecars[a.name]));
-      renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
-      populateModelPicks(); // fire-and-forget: pickers fill as upstreams answer
+      statuses = {};
+      for (const st of cfg.llmAccountStatus || []) statuses[st.name] = st;
+      sidecars = cfg.llmSidecars || {};
+      accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
+      renderAccounts();
+      renderRoute(accounts, cfg.llmRoute);
       statusEl.textContent = "Order decides who answers first; a limited account drops to the back on its own. Applies to every pane's next request — no restarts.";
     } catch (_) {
       statusEl.textContent = "Couldn't load LLM settings.";
     }
   }
 
-  async function saveAccounts() {
+  async function saveAccounts(opts) {
     try {
-      const cfg = await put({ llmAccounts: collectAccounts() });
-      renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
+      const cfg = await put({ llmAccounts: accounts.map(({ apiKeySet, ...rest }) => rest) });
+      // Re-seed from the daemon's echo: it normalizes URLs and reports which
+      // accounts hold a key, neither of which this side should guess at.
+      accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
+      renderAccounts();
+      renderRoute(accounts, cfg.llmRoute);
       statusEl.textContent = "Saved.";
     } catch (e) {
       statusEl.textContent = "Not saved: " + e.message;
+      if (opts && opts.rethrow) throw e;
+      load(); // the list now lies — reload truth
     }
   }
 
@@ -1774,10 +1838,7 @@ function wireLLMSettings() {
       load(); // the picker now lies — reload truth
     }
   });
-  addBtn.addEventListener("click", () => {
-    box.appendChild(accountRow({}));
-    box.lastChild.querySelector(".llm-name").focus();
-  });
+  addBtn.addEventListener("click", () => openAccount(accounts.length));
 }
 wireLLMSettings();
 

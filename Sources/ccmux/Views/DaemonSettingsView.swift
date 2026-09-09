@@ -32,6 +32,7 @@ struct DaemonSettingsView: View {
     @State private var agents: [DaemonAgent]? = nil
     @State private var agentStatus = ""
     @State private var editingAgent: AgentEditTarget? = nil
+    @State private var editingAccount: AccountEditTarget? = nil
     @State private var supportsLLM = false
     @State private var supportsHarnesses = false
     @State private var supportsHarnessRules = false
@@ -264,17 +265,34 @@ struct DaemonSettingsView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                ForEach($accounts) { $account in
-                    accountCard($account)
+                // Indexed so the row can show its position in the failover
+                // order. Identity is the index, so a reorder redraws both
+                // rows — which is what should happen when they swap.
+                ForEach(accounts.indices, id: \.self) { index in
+                    accountRow(index, accounts[index])
                 }
-                Button("Add account") {
-                    accounts.append(EditableAccount(
-                        name: "", kind: "anthropic", baseURL: "", apiKey: "", apiKeySet: false, aliases: ""))
-                }
-                .controlSize(.small)
+                Button("Add account") { editingAccount = AccountEditTarget(index: accounts.count) }
+                    .controlSize(.small)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .sheet(item: $editingAccount) { target in
+            AccountEditorView(
+                account: target.index < accounts.count ? accounts[target.index] : nil,
+                statusText: target.index < accounts.count
+                    ? [accountStatusText(accounts[target.index].name), sidecarText(accounts[target.index])]
+                        .compactMap { $0 }.joined(separator: " · ")
+                    : ""
+            ) { edited in
+                editingAccount = nil
+                guard let edited else { return } // cancelled
+                if target.index < accounts.count {
+                    accounts[target.index] = edited
+                } else {
+                    accounts.append(edited)
+                }
+            }
         }
     }
 
@@ -305,72 +323,51 @@ struct DaemonSettingsView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func accountCard(_ account: Binding<EditableAccount>) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                TextField("name", text: account.name)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                Picker("", selection: account.kind) {
-                    Text("anthropic").tag("anthropic")
-                    Text("openai").tag("openai")
-                    Text("claude").tag("claude")
-                    Text("codex").tag("codex")
-                    Text("meridian").tag("meridian")
-                }
-                .labelsHidden()
-                .frame(width: 110)
+    /// One account in the list: what it is, how it is doing, and where it
+    /// sits in the failover order. Everything you SET rather than read is in
+    /// the editor sheet — this tab is read far more often than it is edited,
+    /// and the order arrows are what you reach for.
+    private func accountRow(_ index: Int, _ account: EditableAccount) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text("\(index + 1)")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .frame(width: 14, alignment: .trailing)
+                Text(account.name.isEmpty ? "(unnamed)" : account.name)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(account.kind).font(.system(size: 11)).foregroundColor(.secondary)
+                Spacer()
                 Button {
-                    moveAccount(account.wrappedValue.id, by: -1)
+                    moveAccount(account.id, by: -1)
                 } label: {
-                    Image(systemName: "chevron.up")
-                        .foregroundColor(.secondary)
+                    Image(systemName: "chevron.up").foregroundColor(.secondary)
                 }
                 .buttonStyle(.borderless)
                 .help("Try this account earlier")
                 Button {
-                    moveAccount(account.wrappedValue.id, by: 1)
+                    moveAccount(account.id, by: 1)
                 } label: {
-                    Image(systemName: "chevron.down")
-                        .foregroundColor(.secondary)
+                    Image(systemName: "chevron.down").foregroundColor(.secondary)
                 }
                 .buttonStyle(.borderless)
                 .help("Try this account later")
+                Button("Edit") { editingAccount = AccountEditTarget(index: index) }
+                    .controlSize(.small)
                 Button {
-                    if llmRoute == account.wrappedValue.name { llmRoute = "" }
-                    accounts.removeAll { $0.id == account.wrappedValue.id }
+                    if llmRoute == account.name { llmRoute = "" }
+                    accounts.removeAll { $0.id == account.id }
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                    Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
                 }
                 .buttonStyle(.borderless)
                 .help("Remove account")
             }
-            TextField(account.wrappedValue.kind == "meridian" ? "base URL (empty = http://127.0.0.1:3456)" : "base URL, e.g. http://localhost:11434", text: account.baseURL)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-            HStack(spacing: 6) {
-                SecureField(
-                    account.wrappedValue.apiKeySet ? "key set — empty keeps it"
-                        : account.wrappedValue.kind == "claude" ? "paste `claude setup-token` output"
-                        : account.wrappedValue.kind == "meridian" ? "paste `claude setup-token` output (starts the sidecar)"
-                        : "api key (empty = your own login)",
-                    text: account.apiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                TextField("aliases: claude-haiku-*=qwen3-4b-32k", text: account.aliases)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
+            if let status = accountStatusText(account.name) {
+                Text(status).font(.system(size: 11)).foregroundColor(.secondary)
             }
-            if let status = accountStatusText(account.wrappedValue.name) {
-                Text(status)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-            }
-            if let sidecar = sidecarText(account.wrappedValue) {
-                Text(sidecar)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+            if let sidecar = sidecarText(account) {
+                Text(sidecar).font(.system(size: 11)).foregroundColor(.secondary)
             }
         }
         .padding(8)
@@ -839,7 +836,7 @@ struct DaemonSettingsView: View {
     }
 
     /// "from=to, from2=to2" — rows without both sides are dropped as half-typed.
-    private static func parseAliases(_ text: String) -> [[String: String]] {
+    static func parseAliases(_ text: String) -> [[String: String]] {
         text.split(separator: ",").compactMap { part in
             let s = part.trimmingCharacters(in: .whitespaces)
             guard let eq = s.firstIndex(of: "=") else { return nil }
@@ -887,6 +884,13 @@ struct DaemonSettingsView: View {
 
 /// What the agents tab is editing: an existing base, or nil for a new one.
 /// Identifiable so `.sheet(item:)` can present it.
+/// Which account row the editor sheet is open on. An index one past the
+/// end means "new": the sheet hands back an account the list then appends.
+struct AccountEditTarget: Identifiable {
+    let index: Int
+    var id: Int { index }
+}
+
 struct AgentEditTarget: Identifiable {
     let agent: DaemonAgent?
     var id: String { agent?.name ?? "new" }

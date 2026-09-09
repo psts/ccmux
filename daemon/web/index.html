@@ -162,6 +162,19 @@
 
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
+  <div id="llm-modal" class="modal agent-modal hidden">
+    <div class="sheet llm-sheet">
+      <header>
+        <span id="llm-modal-title">Account</span>
+        <button id="llm-modal-close" title="Close">&times;</button>
+      </header>
+      <div class="llm-modal-body"></div>
+      <div class="sheet-actions agent-modal-actions">
+        <span id="llm-modal-state" class="hint"></span>
+        <button id="llm-modal-save" class="primary" type="button">Save</button>
+      </div>
+    </div>
+  </div>
   <div id="agent-modal" class="modal agent-modal hidden">
     <div class="sheet agent-sheet">
       <header>
