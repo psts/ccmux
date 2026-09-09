@@ -60,28 +60,27 @@ func TestTwoMeridianAccountsNeedDistinctPorts(t *testing.T) {
 	}
 }
 
-func TestMeridianDefaultsURLAndAllowsGlobalRoute(t *testing.T) {
+func TestMeridianDefaultsURLAndRefusesGlobalRoute(t *testing.T) {
 	got := merged(nil, []Account{{Name: "m", Kind: KindMeridian, APIKey: "tok"}})
 	if got[0].BaseURL != MeridianUpstream {
 		t.Fatalf("empty URL should default to %s, got %q", MeridianUpstream, got[0].BaseURL)
 	}
-	// A meridian default was refused while every pane followed the global
-	// route; a harness pane now routes through its own declared kinds, and
-	// kindAllowed still keeps meridian away from harnesses that never asked
-	// for it. So the setting itself is no longer the thing to refuse.
+	// Still refused as the default, though the codex ban beside it is gone.
+	// The two are not the same case: a codex default fails loudly on the
+	// first Anthropic-dialect request, while a meridian one would quietly
+	// serve a hand-started claude from inside another Claude Code loop.
 	svc := New(memStore{})
 	accs := []Account{{Name: "m", Kind: KindMeridian, APIKey: "tok"}}
-	for _, route := range []string{"m", ""} {
-		if msg := svc.Reject(&accs, &route); msg != "" {
-			t.Fatalf("meridian route %q should be accepted, got %q", route, msg)
-		}
+	route := "m"
+	msg := svc.Reject(&accs, &route)
+	if !strings.Contains(msg, "never as the default") {
+		t.Fatalf("meridian as the default should be refused, got %q", msg)
 	}
-	if msg := svc.Reject(&accs, ptr("nope")); !strings.Contains(msg, "names no llm account") {
-		t.Fatalf("a default naming nothing should still be refused, got %q", msg)
+	route = ""
+	if msg := svc.Reject(&accs, &route); msg != "" {
+		t.Fatalf("meridian account without a default route should be accepted, got %q", msg)
 	}
 }
-
-func ptr(s string) *string { return &s }
 
 func TestMeridianAuthIsPlaceholderNotToken(t *testing.T) {
 	req, _ := http.NewRequest("POST", "http://x/v1/messages", nil)

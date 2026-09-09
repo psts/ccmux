@@ -233,3 +233,69 @@ func TestReplayRewritesForTheAccountItLandsOn(t *testing.T) {
 		t.Fatalf("second upstream saw %v, want [model-for-b] — the replay carried the first account's rewrite", secondModels)
 	}
 }
+
+// A user account may legally be named "anthropic", which is also the name the
+// synthetic pass-through resolves to. Matching on the name would pool a
+// pane's own login with keyed accounts and bill an API key for traffic the
+// user sent to their subscription.
+func TestPassthroughIsNotConfusedWithAnAccountNamedAnthropic(t *testing.T) {
+	s := configured(t, []Account{
+		{Name: "anthropic", Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k1"},
+		{Name: "work", Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k2"},
+	}, "")
+	if got := poolNames(t, s, "shell-pane"); strings.Join(got, ",") != "anthropic" {
+		t.Fatalf("order = %v, want the pass-through alone", got)
+	}
+}
+
+// A meridian account runs a Claude Code loop of its own, so a pane with no
+// harness must never land on one: the pane's hand-started claude would run
+// inside it. Unlike codex this cannot fail loudly downstream — same dialect,
+// same path — so the refusal has to be at the setting.
+func TestMeridianIsRefusedAsTheDefaultAccount(t *testing.T) {
+	s := New(memStore{})
+	accs := []Account{{Name: "m", Kind: KindMeridian, BaseURL: MeridianUpstream, APIKey: "tok"}}
+	route := "m"
+	if msg := s.Reject(&accs, &route); !strings.Contains(msg, "never as the default") {
+		t.Fatalf("meridian as default = %q, want a refusal", msg)
+	}
+}
+
+// A replay must carry the account it lands on, and NOTHING of the account it
+// came from. A keyless account is the case that proves it: applyAuth is a
+// no-op for one by design, so any credential left on the cloned request would
+// travel to it.
+func TestReplayDoesNotCarryThePreviousAccountsKey(t *testing.T) {
+	var keys []string
+	keyed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer keyed.Close()
+	keyless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("x-api-key")+"|"+r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer keyless.Close()
+
+	s := configured(t, []Account{
+		{Name: "keyed", Kind: "anthropic", BaseURL: keyed.URL, APIKey: "sk-ant-secret"},
+		{Name: "local", Kind: "anthropic", BaseURL: keyless.URL},
+	}, "")
+	harnessAt(s, "p1", []string{"anthropic"}, []string{"keyed", "local"})
+	p := mount(s)
+	defer p.Close()
+
+	call(t, p.URL, "/llm/pane/p1/v1/messages", "the-panes-own-login")
+	if len(keys) != 1 {
+		t.Fatalf("keyless upstream saw %d requests, want the replay", len(keys))
+	}
+	if strings.Contains(keys[0], "sk-ant-secret") {
+		t.Fatalf("replay carried the keyed account's credential: %q", keys[0])
+	}
+	// A keyless account is a pass-through, so what it SHOULD see is the
+	// pane's own login, restored from what the pane sent.
+	if keys[0] != "|Bearer the-panes-own-login" {
+		t.Fatalf("keyless upstream saw %q, want the pane's own bearer", keys[0])
+	}
+}

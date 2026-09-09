@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"strings"
 
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -46,6 +47,16 @@ func paneHarnessLookup(mgr *manager.Manager) llmproxy.PaneHarness {
 		}
 		h, err := mgr.Harnesses.Resolve(name)
 		if err != nil {
+			// An unknown name is ordinary (a harness was renamed or removed
+			// under a running pane) and tier 3 is the right answer for it.
+			// An unreadable or corrupt registry is not ordinary: it silently
+			// moves every harness pane onto the default account, which is a
+			// routing change nothing else would report. Same rule the proxy
+			// states for its own reads — a proxy that guesses where to send
+			// tokens is worse than one that says it cannot tell.
+			if !strings.Contains(err.Error(), "unknown harness") {
+				log.Printf("llm: pane %s: harness %q unreadable, routing as if it had none: %v", paneID, name, err)
+			}
 			return nil, nil, false
 		}
 		return h.AccountKinds, h.AccountOrder, true

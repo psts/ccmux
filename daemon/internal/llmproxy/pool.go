@@ -247,6 +247,7 @@ func replayRequest(req *http.Request, acct Account, info *reqInfo) *http.Request
 		// transforms to a different upstream.
 		rewriteRequest(out, acct)
 	}
+	restoreClientAuth(out, info.clientAuth)
 	applyAuth(out, acct)
 	return out
 }

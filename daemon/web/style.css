@@ -121,6 +121,23 @@ body {
 .hx-confirm { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .hx-kinds { flex-wrap: wrap; }
 .hx-kinds-label { font-size: 11px; color: var(--muted); }
+/* Failover order: the account rows in the Accounts tab and the per-harness
+   list in the Harnesses tab share these arrows. */
+.ord-up, .ord-dn {
+  flex: 0 0 auto; padding: 2px 6px; line-height: 1; font-size: 10px;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); color: var(--muted); cursor: pointer;
+}
+.ord-up:hover, .ord-dn:hover { color: var(--fg); }
+.hx-order { flex-wrap: wrap; gap: 8px; }
+.hx-order-item {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px 2px 8px;
+}
+.hx-order-pick { flex-wrap: wrap; }
+/* The mixed-dialect warning: advisory, so it reads as a note, not an error. */
+.hx-dialect:empty { display: none; }
+.hx-dialect { font-size: 11px; color: var(--warn, #b8860b); }
 .harness-src {
   font-size: 10px; color: var(--muted); border: 1px solid var(--line);
   border-radius: 999px; padding: 1px 7px; white-space: nowrap;

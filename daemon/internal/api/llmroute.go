@@ -104,10 +104,10 @@ func (s *Server) rejectRouteDialect(paneID, route string) string {
 	return fmt.Sprintf("this pane runs %s, which pairs with %s llm accounts — account %q is %s", h, strings.Join(kinds, " or "), route, kind)
 }
 
-// respondPaneLLMRoute is the shared answer shape: the explicit override (""
-// = following the global route), the account actually answering, and the
-// names a picker can offer — from THIS host's accounts, which is what the
-// pane's proxy resolves against.
+// respondPaneLLMRoute is the shared answer shape: the explicit override ("" =
+// no override), the account answering right now, the full resolved failover
+// order behind it, and the names a picker can offer — from THIS host's
+// accounts, which is what the pane's proxy resolves against.
 func (s *Server) respondPaneLLMRoute(w http.ResponseWriter, paneID string) {
 	if s.mgr.WorkspaceForPane(paneID) == "" {
 		writeError(w, http.StatusNotFound, "unknown pane")
@@ -132,7 +132,16 @@ func (s *Server) respondPaneLLMRoute(w http.ResponseWriter, paneID string) {
 			names = append(names, a.Name)
 		}
 	}
+	// The order is what the proxy would actually do next, not what was
+	// configured: a limited account has already sunk to the back of it. A
+	// read failure leaves it empty rather than failing the whole answer —
+	// the menu still works without the chain line.
+	order, err := s.llm.PaneOrder(paneID)
+	if err != nil {
+		order = nil
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pane": paneID, "route": explicit, "effective": effective, "accounts": names,
+		"pane": paneID, "route": explicit, "effective": effective,
+		"accounts": names, "order": order,
 	})
 }

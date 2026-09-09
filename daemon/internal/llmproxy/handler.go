@@ -20,6 +20,13 @@ type reqInfo struct {
 	rest      string
 	body      []byte
 	retryable bool
+	// clientAuth is the credential the PANE sent, captured before any
+	// account's auth replaced it. A replay has to start from this rather
+	// than from whatever the previous account left in the headers: a keyless
+	// account is a pass-through that forwards the pane's own login, and
+	// applyAuth returns early for it, so without this a replay onto a
+	// keyless account would carry the previous account's key to it.
+	clientAuth http.Header
 }
 
 type infoKey struct{}
@@ -58,7 +65,11 @@ func (s *Service) Handler() http.Handler {
 			http.Error(w, "ccmux llm proxy: pane is routed to codex account "+account.Name+", which serves only codex traffic — clear the pane's llm route", http.StatusBadGateway)
 			return
 		}
-		info := &reqInfo{account: account, pool: pool, pane: r.PathValue("pane"), rest: r.PathValue("rest")}
+		info := &reqInfo{
+			account: account, pool: pool,
+			pane: r.PathValue("pane"), rest: r.PathValue("rest"),
+			clientAuth: clientAuth(r.Header),
+		}
 		// Buffer BEFORE the rewrite, so info.body holds what the pane sent
 		// rather than what this account's aliases and compat turned it into.
 		// A replay re-runs the rewrite for whoever it lands on: two accounts
@@ -118,6 +129,34 @@ func rewrite(pr *httputil.ProxyRequest) {
 	pr.SetURL(target)
 	pr.Out.Host = target.Host
 	applyAuth(pr.Out, info.account)
+}
+
+// clientAuth snapshots the credential headers the pane sent, so a failover
+// replay can be built from the pane's own request rather than from the last
+// account's rewritten one.
+func clientAuth(h http.Header) http.Header {
+	out := http.Header{}
+	for _, k := range []string{"Authorization", "x-api-key"} {
+		if v := h.Get(k); v != "" {
+			out.Set(k, v)
+		}
+	}
+	return out
+}
+
+// restoreClientAuth puts the pane's own credential back on a replay before
+// the next account's auth is applied over it. Without it a keyless account
+// (whose applyAuth is a no-op by design) would be handed the previous
+// account's key, and the pass-through would forward neither the pane's
+// credential nor its own.
+func restoreClientAuth(out *http.Request, saved http.Header) {
+	for _, k := range []string{"Authorization", "x-api-key"} {
+		if v := saved.Get(k); v != "" {
+			out.Header.Set(k, v)
+		} else {
+			out.Header.Del(k)
+		}
+	}
 }
 
 // applyAuth swaps the client's credential for the account's. A keyless

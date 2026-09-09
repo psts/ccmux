@@ -120,7 +120,15 @@ func (s *Service) defaultPool(paneID string, accs []Account) ([]Account, error) 
 	if err != nil {
 		return nil, err
 	}
-	if findAccount(accs, preferred.Name) == nil {
+	route, err := s.routeFor(paneID)
+	if err != nil {
+		return nil, err
+	}
+	// An empty route is the synthetic pass-through. Tested on the ROUTE and
+	// not on the resolved name, which is "anthropic" and is a name a real
+	// account may legally take — matching on it would pool a pane's own login
+	// with keyed accounts, the one thing this branch exists to prevent.
+	if route == "" {
 		return []Account{preferred}, nil
 	}
 	pool := []Account{preferred}

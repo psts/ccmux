@@ -1119,8 +1119,13 @@ function renderTabs() {
 }
 
 // Right-click on a pane tab: pick which LLM account answers THIS pane. The
-// choice applies to the pane's next request — no restart. "Global default"
-// clears the override so the pane follows the settings-modal route again.
+// choice applies to the pane's next request — no restart. "Use the harness
+// order" clears the override so the pane falls back to what its harness
+// declares (and, with no harness, to the default account).
+//
+// The header shows the order the proxy would ACTUALLY try, which is not the
+// configured order: an account at its limit has already sunk to the back of
+// it, so a pane answering from the second account says so here.
 async function openPaneLLMMenu(paneId, x, y) {
   let cur;
   try {
@@ -1135,6 +1140,14 @@ async function openPaneLLMMenu(paneId, x, y) {
   line.className = "host-line";
   line.textContent = "LLM route · now: " + cur.effective;
   menu.appendChild(line);
+  const order = cur.order || [];
+  if (order.length > 1) {
+    const chain = document.createElement("div");
+    chain.className = "host-line";
+    chain.textContent = "then: " + order.slice(1).join(" → ");
+    chain.title = "Tried in this order when one hits its limit";
+    menu.appendChild(chain);
+  }
 
   const put = async (route) => {
     const r = await fetch(`/v1/panes/${paneId}/llm-route`, {
@@ -1150,7 +1163,7 @@ async function openPaneLLMMenu(paneId, x, y) {
     b.onclick = () => { closeWsMenu(); put(route); };
     menu.appendChild(b);
   };
-  add("Global default", "", cur.route === "");
+  add("Use the harness order", "", cur.route === "");
   for (const name of cur.accounts || []) add(name, name, cur.route === name);
 
   showMenuAt(menu, x, y);
@@ -1598,6 +1611,8 @@ function wireLLMSettings() {
       accountKinds.map((k) =>
         `<option value="${k}"${(a.kind || "anthropic") === k ? " selected" : ""}>${k}</option>`).join("") +
       `</select>` +
+      `<button class="ord-up" type="button" title="Try this account earlier">\u25b2</button>` +
+      `<button class="ord-dn" type="button" title="Try this account later">\u25bc</button>` +
       `<button class="rule-del" type="button" title="Remove account">&times;</button>` +
       `</div>` +
       `<div class="entry-line">` +
@@ -1628,7 +1643,20 @@ function wireLLMSettings() {
       saveAccounts();
     });
     row.querySelector(".rule-del").onclick = () => { row.remove(); saveAccounts(); };
+    // The stored order IS the failover order, so moving a row is a real
+    // setting and saves like any other edit. collectAccounts reads the list
+    // in DOM order, which is what makes moving the node enough.
+    row.querySelector(".ord-up").onclick = () => moveAccount(row, -1);
+    row.querySelector(".ord-dn").onclick = () => moveAccount(row, 1);
     return row;
+  }
+
+  function moveAccount(row, delta) {
+    const sibling = delta < 0 ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling) return; // already at the end; nothing to save
+    if (delta < 0) box.insertBefore(row, sibling);
+    else box.insertBefore(sibling, row);
+    saveAccounts();
   }
 
   // Fill each SAVED account's model picker from its upstream's /v1/models
@@ -1679,6 +1707,10 @@ function wireLLMSettings() {
     })).filter((a) => a.name || a.baseURL); // a fully blank editor row isn't an account
   }
 
+  // The default account answers panes ccmux did not start under a named
+  // harness — a plain shell, a tool the user typed themselves. A pane that
+  // runs a harness follows that harness's own accounts instead, so this
+  // picker no longer decides for everyone.
   function renderRoute(accounts, route) {
     routeSel.innerHTML = "";
     const direct = document.createElement("option");
@@ -1714,7 +1746,7 @@ function wireLLMSettings() {
       for (const a of cfg.llmAccounts || []) box.appendChild(accountRow(a, stByName[a.name], sidecars[a.name]));
       renderRoute(cfg.llmAccounts || [], cfg.llmRoute);
       populateModelPicks(); // fire-and-forget: pickers fill as upstreams answer
-      statusEl.textContent = "Applies to every pane's next request — no restarts.";
+      statusEl.textContent = "Order decides who answers first; a limited account drops to the back on its own. Applies to every pane's next request — no restarts.";
     } catch (_) {
       statusEl.textContent = "Couldn't load LLM settings.";
     }
@@ -1735,7 +1767,8 @@ function wireLLMSettings() {
     try {
       await put({ llmRoute: routeSel.value });
       routeStateEl.textContent = routeSel.value
-        ? `Routing all panes to ${routeSel.value}.` : "Routing direct to Anthropic.";
+        ? `Panes with no harness of their own use ${routeSel.value}.`
+        : "Panes with no harness of their own go direct to Anthropic.";
     } catch (e) {
       routeStateEl.textContent = "Not saved: " + e.message;
       load(); // the picker now lies — reload truth
@@ -1823,12 +1856,50 @@ function wireHarnessRules(put) {
 function wireHarnessSettings() {
   const box = $("harness-list"), addBtn = $("harness-add"), statusEl = $("harness-state");
   if (!box) return;
+  // The accounts a harness could use, newest load wins. Needed here because
+  // the per-harness order names accounts, and the list it offers must match
+  // what the Accounts tab holds.
+  let accounts = [];
+
+  // kindAllowed, mirrored from the daemon (llmproxy.KindAllowed). Empty means
+  // any kind except the two a harness has to ask for by name.
+  function kindAllowed(kinds, kind) {
+    if (!kinds || !kinds.length) return kind !== "codex" && kind !== "meridian";
+    return kinds.includes(kind);
+  }
+
+  // A codex account speaks OpenAI's Responses API; every other kind speaks
+  // Anthropic's Messages API. A harness that checks both gets a warning, not
+  // a refusal: an unknown plugin may genuinely need the override, and the
+  // proxy holds each pane's failover order to ONE dialect regardless.
+  function dialectWarning(kinds) {
+    const codex = kinds.includes("codex");
+    const other = kinds.some((k) => k !== "codex");
+    return codex && other
+      ? "codex speaks a different API than the other kinds — a pane will use whichever one answers first and ignore the rest"
+      : "";
+  }
+
+  // The accounts this row may use, in the order it would try them: the ones
+  // it named first, then the rest as configured. A named account that no
+  // longer exists is dropped here the same way the proxy drops it.
+  function orderedFor(kinds, order) {
+    const allowed = accounts.filter((a) => kindAllowed(kinds, a.kind));
+    const named = (order || [])
+      .map((n) => allowed.find((a) => a.name === n))
+      .filter(Boolean);
+    return named.concat(allowed.filter((a) => !named.includes(a)));
+  }
 
   function harnessRow(h) {
     const row = document.createElement("div");
     row.className = "entry-card";
     const kindsText = (h.accountKinds || []).join(", ");
-    row.dataset.orig = JSON.stringify({ icon: h.icon || "", name: h.name || "", command: h.command || "", autoconfirm: !!h.autoconfirm, kinds: kindsText });
+    const custom = !!(h.accountOrder || []).length;
+    // Radio groups are keyed by name, so each row needs its own or checking
+    // one harness's radio would clear every other row's.
+    const radioName = `hx-order-${Math.random().toString(36).slice(2)}`;
+    row.dataset.orig = JSON.stringify({ icon: h.icon || "", name: h.name || "", command: h.command || "", autoconfirm: !!h.autoconfirm, kinds: kindsText, order: (h.accountOrder || []).join(", ") });
     row.dataset.source = h.source || "";
     const badge = h.source ? `<span class="harness-src">${esc(h.source)}</span>` : "";
     row.innerHTML =
@@ -1846,14 +1917,69 @@ function wireHarnessSettings() {
       `<span class="hx-kinds-label">accounts:</span>` +
       ["anthropic", "openai", "claude", "codex", "meridian"].map((k) =>
         `<label class="hx-confirm"><input type="checkbox" data-kind="${k}"${(h.accountKinds || []).includes(k) ? " checked" : ""}>${k}</label>`).join("") +
-      `</div>`;
+      `</div>` +
+      `<div class="entry-line hx-dialect hint"></div>` +
+      `<div class="entry-line hx-order-pick">` +
+      `<span class="hx-kinds-label">order:</span>` +
+      `<label class="hx-confirm"><input type="radio" name="${esc(radioName)}" value="global"${custom ? "" : " checked"}>follow the account order</label>` +
+      `<label class="hx-confirm"><input type="radio" name="${esc(radioName)}" value="custom"${custom ? " checked" : ""}>custom for this harness</label>` +
+      `</div>` +
+      `<div class="entry-line hx-order"></div>`;
     for (const el of row.querySelectorAll("input")) {
       el.addEventListener("change", save);
       el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
     }
+    // Checking a kind changes which accounts the order may hold, and the
+    // radio decides whether the list shows at all — both redraw it.
+    for (const el of row.querySelectorAll(".hx-kinds input, .hx-order-pick input")) {
+      el.addEventListener("change", () => renderOrder(row));
+    }
     const del = row.querySelector(".rule-del");
     if (del) del.onclick = () => { row.remove(); save(); };
+    row.dataset.order = JSON.stringify(h.accountOrder || []);
+    renderOrder(row);
     return row;
+  }
+
+  // renderOrder redraws one row's account list from its checked kinds and
+  // its stored order. Held in row.dataset rather than read back off the DOM
+  // so a kind the user unchecks and rechecks does not lose its position.
+  function renderOrder(row) {
+    const listEl = row.querySelector(".hx-order");
+    const warnEl = row.querySelector(".hx-dialect");
+    const kinds = [...row.querySelectorAll(".hx-kinds input:checked")].map((el) => el.dataset.kind);
+    warnEl.textContent = dialectWarning(kinds);
+    const custom = row.querySelector(".hx-order-pick input[value=custom]").checked;
+    if (!custom) {
+      listEl.innerHTML = "";
+      return;
+    }
+    const ordered = orderedFor(kinds, JSON.parse(row.dataset.order || "[]"));
+    if (!ordered.length) {
+      listEl.innerHTML = `<span class="hint">no account matches the kinds above</span>`;
+      return;
+    }
+    listEl.innerHTML = ordered.map((a, i) =>
+      `<span class="hx-order-item" data-name="${esc(a.name)}">` +
+      `${i + 1}. ${esc(a.name)} <span class="llm-kind">${esc(a.kind)}</span>` +
+      `<button class="ord-up" type="button" title="Try this account earlier">\u25b2</button>` +
+      `<button class="ord-dn" type="button" title="Try this account later">\u25bc</button>` +
+      `</span>`).join("");
+    const names = ordered.map((a) => a.name);
+    listEl.querySelectorAll(".hx-order-item").forEach((item, i) => {
+      item.querySelector(".ord-up").onclick = () => moveInOrder(row, names, i, -1);
+      item.querySelector(".ord-dn").onclick = () => moveInOrder(row, names, i, 1);
+    });
+  }
+
+  function moveInOrder(row, names, i, delta) {
+    const j = i + delta;
+    if (j < 0 || j >= names.length) return;
+    const next = names.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    row.dataset.order = JSON.stringify(next);
+    renderOrder(row);
+    save();
   }
 
   function rowValue(row) {
@@ -1866,6 +1992,13 @@ function wireHarnessSettings() {
       autoconfirm: row.querySelector(".hx-confirm input").checked,
     };
     if (kinds.length) v.accountKinds = kinds;
+    // Only a custom order is sent: "follow the account order" is the absence
+    // of the field, which is what makes the global order keep reaching this
+    // harness as accounts are added and moved.
+    if (row.querySelector(".hx-order-pick input[value=custom]").checked) {
+      const order = [...row.querySelectorAll(".hx-order-item")].map((el) => el.dataset.name);
+      if (order.length) v.accountOrder = order;
+    }
     return v;
   }
 
@@ -1875,7 +2008,7 @@ function wireHarnessSettings() {
       const v = rowValue(row);
       if (!v.name && !v.command) continue; // blank editor row
       const untouchedDefault = row.dataset.source &&
-        JSON.stringify({ icon: v.icon, name: v.name, command: v.command, autoconfirm: v.autoconfirm, kinds: (v.accountKinds || []).join(", ") }) === row.dataset.orig;
+        JSON.stringify({ icon: v.icon, name: v.name, command: v.command, autoconfirm: v.autoconfirm, kinds: (v.accountKinds || []).join(", "), order: (v.accountOrder || []).join(", ") }) === row.dataset.orig;
       if (untouchedDefault) continue; // stays live-resolved, not frozen
       out.push(v);
     }
@@ -1897,10 +2030,11 @@ function wireHarnessSettings() {
   async function load() {
     try {
       const cfg = await (await fetch("/v1/settings")).json();
+      accounts = cfg.llmAccounts || []; // before the rows: they render from it
       box.innerHTML = "";
       for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h));
       rules.render((cfg.harnesses || []).map((h) => h.name), cfg.harnessRules || []);
-      statusEl.textContent = "Installed harnesses appear on their own; edit a row to override it.";
+      statusEl.textContent = "Installed harnesses appear on their own; edit a row to override it. A harness tries its accounts top-down and falls through when one hits its limit.";
     } catch (_) {
       statusEl.textContent = "Couldn't load harnesses.";
     }

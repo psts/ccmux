@@ -249,15 +249,29 @@ func (s *Service) Reject(accs *[]Account, route *string) string {
 	if route != nil {
 		effRoute = strings.TrimSpace(*route)
 	}
-	// Any kind may be the default. A pane running a harness routes through
-	// that harness's own account rules and never reads this setting, so a
-	// codex or meridian default no longer breaks every other pane: it decides
-	// only for panes ccmux did not start under a named harness (tier 3 in
-	// candidatesFor). Those still fail loudly rather than quietly when the
-	// dialect does not match what they run — the handler refuses foreign
-	// traffic on a codex account instead of forwarding a credential to it.
-	if effRoute != "" && findAccount(effAccs, effRoute) == nil {
-		return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
+	if effRoute != "" {
+		a := findAccount(effAccs, effRoute)
+		if a == nil {
+			return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
+		}
+		// A codex default is allowed now. A pane running a harness routes
+		// through that harness's own account rules and never reads this
+		// setting, so a codex default no longer breaks every other pane: it
+		// decides only for panes ccmux did not start under a named harness
+		// (tier 3 in candidatesFor), and those fail LOUDLY on it — the
+		// handler refuses Anthropic-dialect traffic on a codex account
+		// rather than forwarding a credential to it.
+		//
+		// Meridian stays refused, and the difference is exactly that
+		// loudness. A meridian account speaks the same dialect on the same
+		// path, so nothing downstream can tell it apart: a hand-started
+		// claude in a shell pane would just quietly run inside the sidecar's
+		// own Claude Code loop, an agent loop under an agent loop. Harnesses
+		// that can ride one say so and get it through KindAllowed; tier 3
+		// has no declaration to check, so the refusal has to live here.
+		if a.Kind == KindMeridian {
+			return fmt.Sprintf("llmRoute %q is a meridian account, which runs a Claude Code loop of its own — a pane with no harness of its own must not ride one, so meridian pairs per harness or per pane, never as the default", effRoute)
+		}
 	}
 	return ""
 }

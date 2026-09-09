@@ -237,3 +237,62 @@ func TestAccountKindsStamping(t *testing.T) {
 		t.Fatalf("reject = %q, want unknown-kind refusal", msg)
 	}
 }
+
+// The account order is the one field whose ORDER is its content, so it gets
+// none of the set-equality collapse the kinds get: a reordering must survive
+// a save, and reversing it must be a different stored value.
+func TestApplyPreservesAccountOrder(t *testing.T) {
+	st := fakeStore{}
+	s := testService(st)
+	save := func(order []string) Harness {
+		t.Helper()
+		if err := s.Apply([]Harness{{Name: "claude", Command: "claude", AccountOrder: order}}); err != nil {
+			t.Fatal(err)
+		}
+		h, err := s.Resolve("claude")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	if got := save([]string{"local", "sub"}); strings.Join(got.AccountOrder, ",") != "local,sub" {
+		t.Fatalf("order = %v, want local,sub", got.AccountOrder)
+	}
+	if got := save([]string{"sub", "local"}); strings.Join(got.AccountOrder, ",") != "sub,local" {
+		t.Fatalf("reversed order was not stored: %v", got.AccountOrder)
+	}
+	// Empty means "follow the configured order" and must not be stored as an
+	// empty list the editors would then round-trip as a real choice.
+	if got := save(nil); len(got.AccountOrder) != 0 {
+		t.Fatalf("empty order = %v, want none", got.AccountOrder)
+	}
+	if strings.Contains(st[settingHarnesses], "accountOrder") {
+		t.Fatalf("an empty order was stored explicitly: %s", st[settingHarnesses])
+	}
+}
+
+func TestRejectAccountOrder(t *testing.T) {
+	s := testService(fakeStore{})
+	cases := []struct {
+		name  string
+		order []string
+		want  string // substring of the refusal, "" = accepted
+	}{
+		{"ordinary", []string{"a", "b"}, ""},
+		{"empty is fine", nil, ""},
+		// A name that matches no account is deliberately NOT refused: names
+		// rot, and the proxy skips a stale entry rather than failing a pane.
+		{"unknown account", []string{"deleted-last-week"}, ""},
+		{"blank entry", []string{"a", "  "}, "empty account name"},
+		{"duplicate", []string{"a", "b", "a"}, "listed twice"},
+	}
+	for _, c := range cases {
+		got := s.Reject([]Harness{{Name: "claude", Command: "claude", AccountOrder: c.order}})
+		if c.want == "" && got != "" {
+			t.Errorf("%s: rejected: %s", c.name, got)
+		}
+		if c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%s: = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
