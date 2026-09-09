@@ -179,9 +179,11 @@ func TestRejectValidation(t *testing.T) {
 		{[]Account{{Name: "a", Kind: "openai", BaseURL: "https://openrouter.ai/api", APIKey: "k"}}, "", ""},
 		// Codex: keyless to chatgpt.com is THE configuration (empty baseURL
 		// defaults there); a key is meaningless and refused; the chatgpt.com
-		// allowance is codex-only, so a Claude login can't be routed at it;
-		// and codex pairing is per pane, so it can never be the global route.
-		{[]Account{{Name: "cx", Kind: "codex"}}, "cx", "never global"},
+		// allowance is codex-only, so a Claude login can't be routed at it.
+		// Any kind may be the default account — a harness pane routes through
+		// its own account rules, so the default decides only for panes with
+		// no recorded harness (see TestCodexAsDefaultAccount).
+		{[]Account{{Name: "cx", Kind: "codex"}}, "cx", ""},
 		{[]Account{{Name: "cx", Kind: "codex", BaseURL: "https://chatgpt.com/backend-api"}}, "", ""},
 		{[]Account{{Name: "cx", Kind: "codex", APIKey: "k"}}, "", "no key"},
 		{[]Account{{Name: "a", Kind: "anthropic", BaseURL: "https://chatgpt.com/backend-api"}}, "", "forwarded"},

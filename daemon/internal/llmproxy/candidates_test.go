@@ -1,0 +1,235 @@
+package llmproxy
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// harnessAt wires a fixed harness declaration for one pane; every other pane
+// reads as having none, which is the tier-3 case.
+func harnessAt(s *Service, pane string, kinds, order []string) {
+	s.SetPaneHarness(func(p string) ([]string, []string, bool) {
+		if p != pane {
+			return nil, nil, false
+		}
+		return kinds, order, true
+	})
+}
+
+func poolNames(t *testing.T, s *Service, pane string) []string {
+	t.Helper()
+	names, err := s.PaneOrder(pane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+func configured(t *testing.T, accs []Account, route string) *Service {
+	t.Helper()
+	s := New(memStore{})
+	if msg := s.Reject(&accs, &route); msg != "" {
+		t.Fatalf("reject: %s", msg)
+	}
+	if err := s.Apply(&accs, &route); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func fourAccounts() []Account {
+	return []Account{
+		{Name: "keyed", Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "sk-1"},
+		{Name: "sub", Kind: "claude", BaseURL: "https://api.anthropic.com", APIKey: "sk-ant-oat01-a"},
+		{Name: "local", Kind: "openai", BaseURL: "http://localhost:11434", APIKey: "k"},
+		{Name: "cx", Kind: "codex"},
+	}
+}
+
+// A harness contributes its declared kinds: accounts of other kinds are not
+// in the pane's order at all.
+func TestHarnessKindsFilterTheOrder(t *testing.T) {
+	s := configured(t, fourAccounts(), "")
+	harnessAt(s, "p1", []string{"anthropic", "claude"}, nil)
+	got := poolNames(t, s, "p1")
+	want := []string{"keyed", "sub"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// With no custom order the accounts follow the order they are configured in,
+// which is what the Accounts tab's up/down arrows write.
+func TestConfiguredOrderIsTheDefaultOrder(t *testing.T) {
+	accs := fourAccounts()
+	accs[0], accs[2] = accs[2], accs[0] // local first now
+	s := configured(t, accs, "")
+	harnessAt(s, "p1", []string{"anthropic", "openai", "claude"}, nil)
+	if got := poolNames(t, s, "p1"); got[0] != "local" {
+		t.Fatalf("order = %v, want the configured order to lead with local", got)
+	}
+}
+
+// A harness's own order wins over the configured one, and an account it does
+// not name still follows as failover rather than being dropped.
+func TestHarnessOrderOverridesConfiguredOrder(t *testing.T) {
+	s := configured(t, fourAccounts(), "")
+	harnessAt(s, "p1", []string{"anthropic", "openai", "claude"}, []string{"local", "sub"})
+	got := poolNames(t, s, "p1")
+	want := []string{"local", "sub", "keyed"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// Account names rot. A harness order naming an account that is gone keeps
+// working, minus that entry.
+func TestDanglingOrderEntryIsSkipped(t *testing.T) {
+	s := configured(t, fourAccounts(), "")
+	harnessAt(s, "p1", []string{"anthropic", "openai"}, []string{"deleted-last-week", "local"})
+	got := poolNames(t, s, "p1")
+	want := []string{"local", "keyed"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// A pane's own override is always tried first, with the harness order behind
+// it as failover.
+func TestPaneOverrideHeadsTheOrder(t *testing.T) {
+	s := configured(t, fourAccounts(), "")
+	harnessAt(s, "p1", []string{"anthropic", "openai", "claude"}, nil)
+	if err := s.SetPaneRoute("p1", "local"); err != nil {
+		t.Fatal(err)
+	}
+	got := poolNames(t, s, "p1")
+	want := []string{"local", "keyed", "sub"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// Tier 3: a pane ccmux did not start under a named harness follows the
+// default account, and fails over only within that account's own kind.
+func TestPaneWithNoHarnessFollowsTheDefaultAccount(t *testing.T) {
+	accs := append(fourAccounts(), Account{Name: "sub2", Kind: "claude", BaseURL: "https://api.anthropic.com", APIKey: "sk-ant-oat01-b"})
+	s := configured(t, accs, "sub")
+	got := poolNames(t, s, "shell-pane")
+	want := []string{"sub", "sub2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// The synthetic pass-through forwards the pane's OWN login, so it must not
+// fail over onto a keyed account: that would silently change whose
+// credential answers.
+func TestPassthroughDefaultPoolsWithNothing(t *testing.T) {
+	s := configured(t, fourAccounts(), "")
+	if got := poolNames(t, s, "shell-pane"); len(got) != 1 || got[0] != "anthropic" {
+		t.Fatalf("order = %v, want the lone synthetic pass-through", got)
+	}
+}
+
+// A codex account may be the default now. A pane with no harness routes to
+// it, and Anthropic-dialect traffic on it is refused rather than forwarded —
+// the guard that keeps a hand-started claude from handing its login to OpenAI.
+func TestCodexAsDefaultAccount(t *testing.T) {
+	s := configured(t, fourAccounts(), "cx")
+	if got := poolNames(t, s, "shell-pane"); len(got) != 1 || got[0] != "cx" {
+		t.Fatalf("order = %v, want cx", got)
+	}
+	p := mount(s)
+	defer p.Close()
+	resp := call(t, p.URL, "/llm/pane/shell-pane/v1/messages", "the-panes-own-login")
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("claude traffic on a codex default = %d, want 502", resp.StatusCode)
+	}
+}
+
+// The kind checkboxes are user-overridable, so a mixed-dialect declaration is
+// possible. The order must still hold one dialect: a Messages request may
+// never be replayed onto a codex upstream.
+func TestMixedDialectDeclarationIsFilteredToTheHead(t *testing.T) {
+	s := configured(t, fourAccounts(), "")
+	harnessAt(s, "p1", []string{"codex", "anthropic"}, []string{"cx", "keyed"})
+	if got := poolNames(t, s, "p1"); strings.Join(got, ",") != "cx" {
+		t.Fatalf("order = %v, want the codex head alone", got)
+	}
+	harnessAt(s, "p1", []string{"codex", "anthropic"}, []string{"keyed", "cx"})
+	if got := poolNames(t, s, "p1"); strings.Join(got, ",") != "keyed" {
+		t.Fatalf("order = %v, want the anthropic head alone", got)
+	}
+}
+
+// A harness whose kinds match nothing configured still gets a working pane:
+// it falls back to the default rather than resolving to an empty order.
+func TestHarnessWithNoUsableAccountFallsBackToDefault(t *testing.T) {
+	s := configured(t, fourAccounts(), "keyed")
+	harnessAt(s, "p1", []string{"meridian"}, nil)
+	if got := poolNames(t, s, "p1"); strings.Join(got, ",") != "keyed" {
+		t.Fatalf("order = %v, want the default account", got)
+	}
+}
+
+// aliasUpstream records the model each request asked for and can answer with
+// a limit, so a failover can be watched from both ends.
+func aliasUpstream(t *testing.T, models *[]string, limit bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		*models = append(*models, req.Model)
+		if limit {
+			w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+}
+
+// The replay must be built for the account it lands on. Two accounts aliasing
+// the same requested model differently is the case that proves it: replaying
+// the first account's rewritten body would ask the second upstream for a
+// model only the first one serves.
+func TestReplayRewritesForTheAccountItLandsOn(t *testing.T) {
+	var firstModels, secondModels []string
+	first := aliasUpstream(t, &firstModels, true)
+	defer first.Close()
+	second := aliasUpstream(t, &secondModels, false)
+	defer second.Close()
+
+	accs := []Account{
+		{Name: "a", Kind: "openai", BaseURL: first.URL, APIKey: "k1",
+			ModelAliases: []ModelAlias{{From: "claude-*", To: "model-for-a"}}},
+		{Name: "b", Kind: "openai", BaseURL: second.URL, APIKey: "k2",
+			ModelAliases: []ModelAlias{{From: "claude-*", To: "model-for-b"}}},
+	}
+	s := configured(t, accs, "")
+	harnessAt(s, "p1", []string{"openai"}, []string{"a", "b"})
+	p := mount(s)
+	defer p.Close()
+
+	req, _ := http.NewRequest("POST", p.URL+"/llm/pane/p1/v1/messages",
+		strings.NewReader(`{"model":"claude-opus-5","messages":[]}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if len(firstModels) != 1 || firstModels[0] != "model-for-a" {
+		t.Fatalf("first upstream saw %v, want [model-for-a]", firstModels)
+	}
+	if len(secondModels) != 1 || secondModels[0] != "model-for-b" {
+		t.Fatalf("second upstream saw %v, want [model-for-b] — the replay carried the first account's rewrite", secondModels)
+	}
+}

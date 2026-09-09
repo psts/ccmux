@@ -1,11 +1,14 @@
-// Claude subscription accounts form a failover pool: each holds a long-lived
-// setup-token (claude setup-token) the proxy injects per request, so WHICH
-// subscription answers is a routing decision, not a pane login. When an
-// account hits its limit the proxy marks it until the reset the response
-// named and re-sends the same request on the next claude account — the pane
-// never sees the 429. Every response also updates the account's health
-// (usage percentages, reset times, last seen), which is what the settings
-// Accounts tab reads.
+// Accounts form a failover pool: when the account answering a pane hits its
+// limit the proxy marks it until the reset the response named and re-sends
+// the same request on the next account in the pane's order — the pane never
+// sees the 429. WHICH accounts are in that order, and in what sequence, is
+// decided in candidates.go; this file is the health tracking and the resend.
+// Claude subscription accounts are the case it was built for (each holds a
+// long-lived setup-token the proxy injects per request, so which
+// subscription answers is a routing decision rather than a pane login), and
+// the mechanism is not specific to them. Every response also updates the
+// account's health (usage percentages, reset times, last seen), which is what
+// the settings Accounts tab reads.
 package llmproxy
 
 import (
@@ -170,34 +173,17 @@ func resetToRFC3339(v string) string {
 	return v
 }
 
-// resolvePool answers who should serve a pane's request, in order: the
-// routed account first, then — only when it is a claude subscription — the
-// other claude accounts as failover, healthiest first.
+// resolvePool answers who should serve a pane's request, in order: the head
+// is tried first and every following account is a failover target. The
+// ordering rules live in candidates.go.
 func (s *Service) resolvePool(paneID string) ([]Account, error) {
-	preferred, err := s.resolve(paneID)
-	if err != nil {
-		return nil, err
-	}
-	if preferred.Kind != "claude" {
-		return []Account{preferred}, nil
-	}
-	accs, err := s.Accounts()
-	if err != nil {
-		return nil, err
-	}
-	pool := []Account{preferred}
-	for _, a := range accs {
-		if a.Kind == "claude" && a.Name != preferred.Name {
-			pool = append(pool, a)
-		}
-	}
-	return s.health.order(pool), nil
+	return s.candidatesFor(paneID)
 }
 
 // poolTransport is the proxy's outbound transport: it sends the request, and
-// when a claude pool account answers with a limit it marks the account and
-// replays the same request on the next one. Replay needs the body the
-// handler buffered; past the buffer cap the request is single-shot.
+// when an account answers with a limit it marks the account and replays the
+// request on the next one, rebuilt for THAT account. Replay needs the body
+// the handler buffered; past the buffer cap the request is single-shot.
 type poolTransport struct{ s *Service }
 
 func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -205,8 +191,14 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if info == nil {
 		return http.DefaultTransport.RoundTrip(req)
 	}
+	// candidatesFor already holds a pool to one dialect, so this is the belt
+	// to that braces: an account is never handed a path its upstream does
+	// not serve, because doing so forwards a credential to it. Dropped here
+	// rather than skipped mid-loop so the last member's own answer is still
+	// what the client gets.
+	pool := servableOnly(info.pool, info.rest, info.pane)
 	attempt := req
-	for i, acct := range info.pool {
+	for i, acct := range pool {
 		if i > 0 {
 			attempt = replayRequest(req, acct, info)
 		}
@@ -215,13 +207,13 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return resp, err
 		}
 		t.s.health.observe(acct.Name, resp)
-		last := i == len(info.pool)-1
+		last := i == len(pool)-1
 		if !info.retryable || last || !limitResponse(resp) {
 			info.account = acct
 			return resp, nil
 		}
 		resp.Body.Close()
-		log.Printf("llm: pane %s account %s is at its limit, retrying on %s", info.pane, acct.Name, info.pool[i+1].Name)
+		log.Printf("llm: pane %s account %s is at its limit, retrying on %s", info.pane, acct.Name, pool[i+1].Name)
 	}
 	// Unreachable: the loop always returns on the last pool entry. An error
 	// beats a fallthrough that would send a second live request.
@@ -249,6 +241,11 @@ func replayRequest(req *http.Request, acct Account, info *reqInfo) *http.Request
 	if info.body != nil {
 		out.Body = io.NopCloser(bytes.NewReader(info.body))
 		out.ContentLength = int64(len(info.body))
+		// info.body is what the PANE sent, so the rewrite has to run again
+		// for this account: its model aliases and its system-turn verdict
+		// are its own. Without this the replay carries the head account's
+		// transforms to a different upstream.
+		rewriteRequest(out, acct)
 	}
 	applyAuth(out, acct)
 	return out

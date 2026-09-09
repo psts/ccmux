@@ -112,6 +112,10 @@ type Service struct {
 	// health is what responses have taught the proxy about each account —
 	// limits, usage, last seen. In-memory; see acctHealth.
 	health *healthState
+	// harnessFor resolves a pane to its harness's account rules; nil until
+	// wired (tests and the bare proxy), which routes every pane as if it had
+	// no recorded harness. See SetPaneHarness.
+	harnessFor PaneHarness
 }
 
 func New(store Store) *Service {
@@ -245,23 +249,15 @@ func (s *Service) Reject(accs *[]Account, route *string) string {
 	if route != nil {
 		effRoute = strings.TrimSpace(*route)
 	}
-	if effRoute != "" {
-		a := findAccount(effAccs, effRoute)
-		if a == nil {
-			return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
-		}
-		// Every pane follows the global route by default, and only codex
-		// panes can use a codex account — those get their route per pane at
-		// harness start, so a codex global route would break everything else.
-		if a.Kind == "codex" {
-			return fmt.Sprintf("llmRoute %q is a codex account, which serves only codex panes — codex pairing is per pane, never global", effRoute)
-		}
-		// Same shape for meridian: Claude Code panes must never ride it (a
-		// second agent loop under the first), so it pairs per pane at
-		// opencode/pi starts and is refused as the default for everyone.
-		if a.Kind == KindMeridian {
-			return fmt.Sprintf("llmRoute %q is a meridian account, which serves opencode and pi panes — meridian pairing is per pane, never global", effRoute)
-		}
+	// Any kind may be the default. A pane running a harness routes through
+	// that harness's own account rules and never reads this setting, so a
+	// codex or meridian default no longer breaks every other pane: it decides
+	// only for panes ccmux did not start under a named harness (tier 3 in
+	// candidatesFor). Those still fail loudly rather than quietly when the
+	// dialect does not match what they run — the handler refuses foreign
+	// traffic on a codex account instead of forwarding a credential to it.
+	if effRoute != "" && findAccount(effAccs, effRoute) == nil {
+		return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
 	}
 	return ""
 }
@@ -434,18 +430,35 @@ func (s *Service) Apply(accs *[]Account, route *string) error {
 }
 
 // PaneStatus reports a pane's routing for the lenses: the explicit override
-// ("" when the pane follows the global route) and the name of the account
-// actually answering right now.
+// ("" when the pane has none) and the name of the account that would answer
+// right now. Effective is the HEAD of the resolved order, health included, so
+// it names the account traffic actually reaches rather than the one that was
+// configured — those differ whenever the first choice is at its limit.
 func (s *Service) PaneStatus(paneID string) (explicit, effective string, err error) {
 	routes, err := s.PaneRoutes()
 	if err != nil {
 		return "", "", err
 	}
-	acct, err := s.resolve(paneID)
+	pool, err := s.candidatesFor(paneID)
 	if err != nil {
 		return "", "", err
 	}
-	return routes[paneID], acct.Name, nil
+	return routes[paneID], pool[0].Name, nil
+}
+
+// PaneOrder is the full resolved order behind a pane, head first — what the
+// lenses show as the failover chain for this pane. Same resolution
+// PaneStatus reports the head of.
+func (s *Service) PaneOrder(paneID string) ([]string, error) {
+	pool, err := s.candidatesFor(paneID)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(pool))
+	for _, a := range pool {
+		names = append(names, a.Name)
+	}
+	return names, nil
 }
 
 // prunePaneRoutes drops pane overrides naming accounts that no longer exist.

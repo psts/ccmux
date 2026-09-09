@@ -60,23 +60,28 @@ func TestTwoMeridianAccountsNeedDistinctPorts(t *testing.T) {
 	}
 }
 
-func TestMeridianDefaultsURLAndRefusesGlobalRoute(t *testing.T) {
+func TestMeridianDefaultsURLAndAllowsGlobalRoute(t *testing.T) {
 	got := merged(nil, []Account{{Name: "m", Kind: KindMeridian, APIKey: "tok"}})
 	if got[0].BaseURL != MeridianUpstream {
 		t.Fatalf("empty URL should default to %s, got %q", MeridianUpstream, got[0].BaseURL)
 	}
+	// A meridian default was refused while every pane followed the global
+	// route; a harness pane now routes through its own declared kinds, and
+	// kindAllowed still keeps meridian away from harnesses that never asked
+	// for it. So the setting itself is no longer the thing to refuse.
 	svc := New(memStore{})
 	accs := []Account{{Name: "m", Kind: KindMeridian, APIKey: "tok"}}
-	route := "m"
-	msg := svc.Reject(&accs, &route)
-	if !strings.Contains(msg, "per pane, never global") {
-		t.Fatalf("meridian as global route should be refused, got %q", msg)
+	for _, route := range []string{"m", ""} {
+		if msg := svc.Reject(&accs, &route); msg != "" {
+			t.Fatalf("meridian route %q should be accepted, got %q", route, msg)
+		}
 	}
-	route = ""
-	if msg := svc.Reject(&accs, &route); msg != "" {
-		t.Fatalf("meridian account without a global route should be accepted, got %q", msg)
+	if msg := svc.Reject(&accs, ptr("nope")); !strings.Contains(msg, "names no llm account") {
+		t.Fatalf("a default naming nothing should still be refused, got %q", msg)
 	}
 }
+
+func ptr(s string) *string { return &s }
 
 func TestMeridianAuthIsPlaceholderNotToken(t *testing.T) {
 	req, _ := http.NewRequest("POST", "http://x/v1/messages", nil)

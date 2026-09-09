@@ -48,6 +48,20 @@ type Harness struct {
 	// spawn pairing, the route guard, and the pane route picker all read
 	// this one declaration.
 	AccountKinds []string `json:"accountKinds,omitempty"`
+	// AccountOrder overrides the configured account order for THIS harness:
+	// the accounts named here are tried in this sequence, and any other
+	// account its kinds allow follows them as configured. Empty means follow
+	// the global order, which is the common case and the default the editors
+	// present.
+	//
+	// Unlike AccountKinds this names accounts rather than kinds, and that is
+	// deliberate rather than an oversight of the rule above: a priority is a
+	// statement about YOUR accounts ("the second subscription before the
+	// local model") that no protocol property can express. Names rot as
+	// accounts are renamed and deleted, so a name matching nothing is
+	// skipped at request time (see llmproxy.inOrder) and shown as missing in
+	// the editors, never a reason to stop answering.
+	AccountOrder []string `json:"accountOrder,omitempty"`
 	// Source labels where a listed entry came from — "builtin", "detected"
 	// (binary found on this host), or "" for a user-configured entry. Stamped
 	// by List for the editors; stripped on Apply.
@@ -241,6 +255,30 @@ func (s *Service) Reject(hs []Harness) string {
 				return fmt.Sprintf("harness %q: unknown account kind %q (anthropic, openai, claude, codex, or meridian)", name, k)
 			}
 		}
+		if msg := rejectOrder(name, h.AccountOrder); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
+// rejectOrder validates one harness's account order. Account NAMES are
+// deliberately not checked against the configured accounts: the registry
+// holds none, and an entry naming an account that is gone is a skip at
+// request time rather than a reason to refuse the whole save (see
+// Harness.AccountOrder). A duplicate IS refused, because it means the editor
+// sent a list whose order cannot be read back unambiguously.
+func rejectOrder(name string, order []string) string {
+	seen := map[string]bool{}
+	for _, a := range order {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			return fmt.Sprintf("harness %q: empty account name in the account order", name)
+		}
+		if seen[a] {
+			return fmt.Sprintf("harness %q: account %q listed twice in the account order", name, a)
+		}
+		seen[a] = true
 	}
 	return ""
 }
@@ -268,6 +306,16 @@ func (s *Service) Apply(hs []Harness) error {
 			kinds = nil
 		}
 		h.AccountKinds = kinds
+		// The order gets no set-equality collapse the way kinds do: there is
+		// no default order to inherit, and an order-blind comparison would
+		// erase the very thing the field records.
+		order := make([]string, 0, len(h.AccountOrder))
+		for _, a := range h.AccountOrder {
+			if a = strings.TrimSpace(a); a != "" {
+				order = append(order, a)
+			}
+		}
+		h.AccountOrder = order
 		next = append(next, h)
 	}
 	b, err := json.Marshal(next)

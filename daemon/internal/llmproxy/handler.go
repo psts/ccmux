@@ -54,15 +54,21 @@ func (s *Service) Handler() http.Handler {
 		// process, say). Allowlist the codex provider's own surface instead
 		// of denying known-foreign paths: refusing here fails the misroute
 		// loudly on the first request instead of leaking a token per call.
-		if account.Kind == "codex" && !codexServablePath(r.PathValue("rest")) {
+		if !servablePath(account, r.PathValue("rest")) {
 			http.Error(w, "ccmux llm proxy: pane is routed to codex account "+account.Name+", which serves only codex traffic — clear the pane's llm route", http.StatusBadGateway)
 			return
 		}
 		info := &reqInfo{account: account, pool: pool, pane: r.PathValue("pane"), rest: r.PathValue("rest")}
-		rewriteRequest(r, account)
+		// Buffer BEFORE the rewrite, so info.body holds what the pane sent
+		// rather than what this account's aliases and compat turned it into.
+		// A replay re-runs the rewrite for whoever it lands on: two accounts
+		// can alias models differently and disagree about system turns, and
+		// replaying account[0]'s body onto account[1] would send the second
+		// upstream a request built for the first.
 		if len(pool) > 1 {
 			bufferForRetry(r, info)
 		}
+		rewriteRequest(r, account)
 		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), infoKey{}, info)))
 	})
 }
@@ -73,6 +79,27 @@ func (s *Service) Handler() http.Handler {
 func codexServablePath(rest string) bool {
 	return rest == "models" || rest == "responses" ||
 		strings.HasPrefix(rest, "models/") || strings.HasPrefix(rest, "responses/")
+}
+
+// servablePath reports whether an account's upstream answers this path at
+// all. Only codex accounts restrict it; every other kind speaks the Anthropic
+// Messages surface, where the upstream owns what it does not recognize.
+func servablePath(a Account, rest string) bool {
+	return a.Kind != "codex" || codexServablePath(rest)
+}
+
+// servableOnly drops pool members that cannot serve this path, keeping the
+// head (the handler has already checked it) so a pool never empties here.
+func servableOnly(pool []Account, rest, pane string) []Account {
+	out := make([]Account, 0, len(pool))
+	for i, a := range pool {
+		if i == 0 || servablePath(a, rest) {
+			out = append(out, a)
+			continue
+		}
+		log.Printf("llm: pane %s: %s dropped from the failover order — it does not serve /%s", pane, a.Name, rest)
+	}
+	return out
 }
 
 // rewrite points the outbound request at the account's upstream: the pane

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/llmproxy"
@@ -62,19 +61,11 @@ func (s *Server) llmAccountModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // kindAllowed is THE compatibility rule, read from a harness's resolved
-// AccountKinds: empty means any kind EXCEPT codex — a codex account's
-// upstream answers only the codex dialect, so it never serves a harness that
-// didn't declare it.
+// AccountKinds. It lives in llmproxy now, because the proxy applies the same
+// rule per request when it builds a pane's failover order; this stays as the
+// name the api layer and its tests use.
 func kindAllowed(kinds []string, kind string) bool {
-	if len(kinds) == 0 {
-		// No declaration means "anything a Claude-dialect harness can use",
-		// which excludes the two per-pane kinds: codex speaks another dialect,
-		// and meridian is a Claude Code loop — a shell pane's hand-started
-		// claude must not ride one (llmproxy.Reject bans it globally for the
-		// same reason). Harnesses that can use meridian say so (harness.go).
-		return kind != "codex" && kind != llmproxy.KindMeridian
-	}
-	return slices.Contains(kinds, kind)
+	return llmproxy.KindAllowed(kinds, kind)
 }
 
 // harnessKinds resolves a harness name's allowed account kinds. nil = no

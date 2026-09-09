@@ -27,3 +27,27 @@ func wireSidecars(ctx context.Context, llmSvc *llmproxy.Service, apiSrv *api.Ser
 	mgr.OpencodePlugin = func() string { return meridian.PluginPath(harness.LookPath) }
 	return sidecars
 }
+
+// paneHarnessLookup answers the proxy's "what does this pane run, and what
+// may it use" question. The proxy resolves routing per request and the
+// manager owns pane state, so this closure is the seam between them rather
+// than an import either way.
+//
+// known is false for a pane ccmux did not start under a named harness (a
+// plain shell, a tool the user typed themselves) AND for one whose recorded
+// harness no longer resolves. Both mean the same thing to routing: there is
+// no declaration to filter accounts by, so the pane follows the default
+// account instead of a harness order it never had.
+func paneHarnessLookup(mgr *manager.Manager) llmproxy.PaneHarness {
+	return func(paneID string) (kinds, order []string, known bool) {
+		name := mgr.HarnessForPane(paneID)
+		if name == "" || mgr.Harnesses == nil {
+			return nil, nil, false
+		}
+		h, err := mgr.Harnesses.Resolve(name)
+		if err != nil {
+			return nil, nil, false
+		}
+		return h.AccountKinds, h.AccountOrder, true
+	}
+}

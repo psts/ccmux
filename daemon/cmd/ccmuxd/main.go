@@ -191,6 +191,7 @@ func runDaemon() {
 	llmSvc := llmproxy.New(st)
 	apiSrv.SetLLMProxy(llmSvc)
 	mgr.PaneLLMRoute = llmSvc.SetPaneRoute
+	llmSvc.SetPaneHarness(paneHarnessLookup(mgr))
 	sidecars := wireSidecars(ctx, llmSvc, apiSrv, mgr)
 	defer sidecars.Stop() // waits for the children: the unit's KillMode=process would not reap them
 	agent.DefaultModel = *agentsModel
