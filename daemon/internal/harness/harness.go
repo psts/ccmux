@@ -44,9 +44,10 @@ type Harness struct {
 	// account names (those rot as accounts come and go). Empty inherits the
 	// registry default for this NAME (see defaultAccountKinds), so a user
 	// override of e.g. the codex command keeps codex's pairing; a name with
-	// no default means any kind except codex (see api.kindAllowed). The
-	// spawn pairing, the route guard, and the pane route picker all read
-	// this one declaration.
+	// no default resolves to any kind EXCEPT codex and meridian, the two a
+	// harness has to ask for by name (llmproxy.KindAllowed is the rule).
+	// The route guard, the pane route picker and the proxy's own per-request
+	// resolution all read this one declaration.
 	AccountKinds []string `json:"accountKinds,omitempty"`
 	// AccountOrder overrides the configured account order for THIS harness:
 	// the accounts named here are tried in this sequence, and any other
@@ -59,8 +60,8 @@ type Harness struct {
 	// statement about YOUR accounts ("the second subscription before the
 	// local model") that no protocol property can express. Names rot as
 	// accounts are renamed and deleted, so a name matching nothing is
-	// skipped at request time (see llmproxy.inOrder) and shown as missing in
-	// the editors, never a reason to stop answering.
+	// silently skipped, both at request time (llmproxy.inOrder) and in the
+	// editors — never a reason to stop answering.
 	AccountOrder []string `json:"accountOrder,omitempty"`
 	// Source labels where a listed entry came from — "builtin", "detected"
 	// (binary found on this host), or "" for a user-configured entry. Stamped
@@ -78,13 +79,14 @@ const settingHarnesses = "harnesses"
 // only a codex account's upstream answers; opencode speaks the Anthropic
 // dialect too but is a third party to Anthropic, so it never gets the raw
 // subscription token (claude kind) — Anthropic refuses it server-side — and
-// spends a subscription only through a meridian sidecar — listed first, so
-// it wins the fallback pairing when the global route is a kind opencode
-// cannot use (a claude or codex account); with an allowed global route the
-// pane follows that route, whatever the order. pi is the same shape. Absent names (custom entries) mean any kind except codex and
-// meridian (see api.kindAllowed): a harness that has not said it can ride a
-// sidecar must not, since a hand-started claude there would run a second
-// agent loop under the first.
+// spends a subscription only through a meridian sidecar. Declaring meridian
+// is what floats a sidecar account to the head of the pane's order
+// (llmproxy.subscriptionFirst); POSITION in this slice is inert, because
+// KindAllowed is a set-membership test. pi is the same shape.
+//
+// Absent names (custom entries) mean any kind except codex and meridian: a
+// harness that has not said it can ride a sidecar must not, since a
+// hand-started claude there would run a second agent loop under the first.
 var defaultAccountKinds = map[string][]string{
 	Builtin:    {"anthropic", "openai", "claude"},
 	"codex":    {"codex"},

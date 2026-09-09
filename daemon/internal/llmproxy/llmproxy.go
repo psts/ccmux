@@ -255,12 +255,13 @@ func (s *Service) Reject(accs *[]Account, route *string) string {
 			return fmt.Sprintf("llmRoute %q names no llm account", effRoute)
 		}
 		// A codex default is allowed now. A pane running a harness routes
-		// through that harness's own account rules and never reads this
-		// setting, so a codex default no longer breaks every other pane: it
-		// decides only for panes ccmux did not start under a named harness
-		// (tier 3 in candidatesFor), and those fail LOUDLY on it — the
-		// handler refuses Anthropic-dialect traffic on a codex account
-		// rather than forwarding a credential to it.
+		// through that harness's own account rules, so a codex default no
+		// longer breaks every other pane: it decides for panes resolved at
+		// TIER 3 — no recorded harness, or a harness whose declared kinds
+		// match nothing configured — and those fail LOUDLY on it, with a
+		// message naming this setting rather than a pane route they do not
+		// have. The handler's dialect guard is what makes that loud, in both
+		// directions.
 		//
 		// Meridian stays refused, and the difference is exactly that
 		// loudness. A meridian account speaks the same dialect on the same
@@ -444,35 +445,19 @@ func (s *Service) Apply(accs *[]Account, route *string) error {
 }
 
 // PaneStatus reports a pane's routing for the lenses: the explicit override
-// ("" when the pane has none) and the name of the account that would answer
-// right now. Effective is the HEAD of the resolved order, health included, so
-// it names the account traffic actually reaches rather than the one that was
+// ("" when the pane has none) and the full resolved order, head first. The
+// head is the account traffic actually reaches rather than the one that was
 // configured — those differ whenever the first choice is at its limit.
-func (s *Service) PaneStatus(paneID string) (explicit, effective string, err error) {
+func (s *Service) PaneStatus(paneID string) (explicit string, order []string, err error) {
 	routes, err := s.PaneRoutes()
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 	pool, err := s.candidatesFor(paneID)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
-	return routes[paneID], pool[0].Name, nil
-}
-
-// PaneOrder is the full resolved order behind a pane, head first — what the
-// lenses show as the failover chain for this pane. Same resolution
-// PaneStatus reports the head of.
-func (s *Service) PaneOrder(paneID string) ([]string, error) {
-	pool, err := s.candidatesFor(paneID)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(pool))
-	for _, a := range pool {
-		names = append(names, a.Name)
-	}
-	return names, nil
+	return routes[paneID], accountNames(pool), nil
 }
 
 // prunePaneRoutes drops pane overrides naming accounts that no longer exist.
@@ -570,41 +555,4 @@ func findAccount(accs []Account, name string) *Account {
 		}
 	}
 	return nil
-}
-
-// resolve picks the account answering for a pane right now: the pane's own
-// override, else the global route, else the Anthropic pass-through. Any
-// failure to read the truth is a loud error, never a silent default: a proxy
-// that guesses where to send tokens is worse than one that refuses.
-func (s *Service) resolve(paneID string) (Account, error) {
-	route, err := s.routeFor(paneID)
-	if err != nil {
-		return Account{}, err
-	}
-	if route == "" {
-		return Account{Name: "anthropic", Kind: "anthropic", BaseURL: s.defaultUpstream}, nil
-	}
-	accs, err := s.Accounts()
-	if err != nil {
-		return Account{}, err
-	}
-	if a := findAccount(accs, route); a != nil {
-		return *a, nil
-	}
-	// SetPaneRoute validation and Apply's prune should make this unreachable;
-	// if the registry was edited out from under us, failing loudly beats
-	// silently burning tokens somewhere else.
-	return Account{}, fmt.Errorf("llm route %q names no account", route)
-}
-
-// routeFor is the route name resolve acts on: pane override beats global.
-func (s *Service) routeFor(paneID string) (string, error) {
-	routes, err := s.PaneRoutes()
-	if err != nil {
-		return "", err
-	}
-	if name, ok := routes[paneID]; ok {
-		return name, nil
-	}
-	return s.Route()
 }

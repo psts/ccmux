@@ -1627,7 +1627,12 @@ function wireLLMSettings() {
     row.querySelector(".ord-dn").onclick = () => moveAccount(i, 1);
     row.querySelector(".rule-del").onclick = () => {
       if (!confirm(`Remove account "${a.name}"? Its stored key goes with it.`)) return;
-      queueSave((list) => list.filter((x) => x.name !== a.name));
+      // Clear the default route in the same write when it names this
+      // account, the way the Mac lens does: otherwise the daemon refuses the
+      // whole save with "llmRoute names no llm account" and the delete looks
+      // broken for a reason the message does not explain.
+      const clearing = routeSel.value === a.name;
+      queueSave((list) => list.filter((x) => x.name !== a.name), { alsoClearRoute: clearing });
     };
     return row;
   }
@@ -1640,8 +1645,16 @@ function wireLLMSettings() {
   // and the daemon inherits a key only from what it currently stores.
   let saving = Promise.resolve();
 
+  // A mutate returning null CANCELS: nothing is sent and nothing is claimed.
+  // Without it, ▲ on the first row PUT the unchanged list and printed
+  // "Saved." — a daemon write and a false confirmation for a click that did
+  // nothing.
   function queueSave(mutate, opts) {
-    const next = saving.catch(() => {}).then(() => saveAccounts(mutate(accounts.slice()), opts));
+    const next = saving.catch(() => {}).then(() => {
+      const candidate = mutate(accounts.slice());
+      if (!candidate) return;
+      return saveAccounts(candidate, opts);
+    });
     saving = next.catch(() => {}); // a refusal must not wedge the queue
     return next;
   }
@@ -1652,7 +1665,7 @@ function wireLLMSettings() {
     queueSave((list) => {
       const at = list.findIndex((x) => x.name === name);
       const to = at + delta;
-      if (at < 0 || to < 0 || to >= list.length) return list;
+      if (at < 0 || to < 0 || to >= list.length) return null; // nothing moved
       const next = list.slice();
       [next[at], next[to]] = [next[to], next[at]];
       return next;
@@ -1668,6 +1681,13 @@ function wireLLMSettings() {
   const modal = () => $("llm-modal");
   const mq = (sel) => modal().querySelector(sel);
   let editing = -1;
+  // The NAME the sheet was opened on. The index alone was not enough: a
+  // queued delete landing mid-edit re-seeds and re-renders the list, leaving
+  // `editing` pointing at a different account — Save then overwrote THAT one
+  // and orphaned its stored key, while the account being edited went
+  // untouched.
+  let editingName = "";
+  let savingModal = false;
 
   function buildModal() {
     const m = modal();
@@ -1715,9 +1735,18 @@ function wireLLMSettings() {
   function openAccount(i) {
     buildModal();
     editing = i;
+    editingName = (accounts[i] || {}).name || "";
     openGeneration++;
     const a = accounts[i] || {};
     mq(".lm-name").value = a.name || "";
+    // Read-only once the account exists, like the agent editor's name field.
+    // A rename sends the new name with an empty key, and the daemon inherits
+    // a stored key BY NAME — so the account silently came back keyless, which
+    // for a localhost or api.anthropic.com base URL turns it into a
+    // pass-through forwarding each pane's own login. Delete and re-add is the
+    // honest way to change a name.
+    mq(".lm-name").readOnly = !!a.name;
+    mq(".lm-name").title = a.name ? "Names are fixed; delete and re-add to rename" : "";
     mq(".lm-kind").value = a.kind || "anthropic";
     mq(".lm-url").value = a.baseURL || "";
     mq(".lm-url").placeholder = a.kind === "meridian"
@@ -1785,8 +1814,10 @@ function wireLLMSettings() {
     // this form round-trip a redacted account without wiping its secret.
     const key = mq(".lm-key").value;
     if (key) next.apiKey = key;
-    else if (accounts[editing]) next.apiKeySet = accounts[editing].apiKeySet;
-    const wasNamed = (accounts[editing] || {}).name;
+    if (savingModal) return; // a second click would push a second copy
+    savingModal = true;
+    $("llm-modal-save").disabled = true;
+    const wasNamed = editingName;
     try {
       await queueSave((list) => {
         const at = wasNamed ? list.findIndex((x) => x.name === wasNamed) : -1;
@@ -1800,6 +1831,9 @@ function wireLLMSettings() {
       // `accounts` is untouched, so the rows still show what the daemon
       // holds and the sheet stays open on the edit that was refused.
       $("llm-modal-state").textContent = "Not saved: " + e.message;
+    } finally {
+      savingModal = false;
+      $("llm-modal-save").disabled = false;
     }
   }
 
@@ -1857,7 +1891,9 @@ function wireLLMSettings() {
   // carried, so the stored credential went with it.
   async function saveAccounts(candidate, opts) {
     try {
-      const cfg = await put({ llmAccounts: candidate.map(({ apiKeySet, ...rest }) => rest) });
+      const body = { llmAccounts: candidate.map(({ apiKeySet, ...rest }) => rest) };
+      if (opts && opts.alsoClearRoute) body.llmRoute = "";
+      const cfg = await put(body);
       // Re-seed from the daemon's echo: it normalizes URLs and reports which
       // accounts hold a key, neither of which this side should guess at.
       accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
@@ -1989,19 +2025,34 @@ function wireHarnessSettings() {
   // The accounts this row may use, in the order it would try them: the ones
   // it named first, then the rest as configured. A named account that no
   // longer exists is dropped here the same way the proxy drops it.
+  //
+  // subscriptionFirst is mirrored, not skipped. Without it this preview said
+  // "1. keyed, 2. sidecar" for opencode while the daemon actually tried the
+  // sidecar first — and because turning "custom" on SEEDS the stored order
+  // from this list, accepting what the editor showed silently demoted the
+  // subscription and moved spend onto a metered key.
   function orderedFor(kinds, order) {
-    const allowed = accounts.filter((a) => kindAllowed(kinds, a.kind));
+    const allowed = subscriptionFirst(accounts.filter((a) => kindAllowed(kinds, a.kind)), kinds);
     const named = (order || [])
       .map((n) => allowed.find((a) => a.name === n))
       .filter(Boolean);
     return named.concat(allowed.filter((a) => !named.includes(a)));
   }
 
-  function harnessRow(h) {
+  // Mirrors llmproxy.subscriptionFirst: a meridian account leads for a
+  // harness that declared meridian, because that sidecar spends a Claude
+  // subscription rather than a metered key.
+  function subscriptionFirst(allowed, kinds) {
+    if (!(kinds || []).includes("meridian")) return allowed;
+    return allowed.filter((a) => a.kind === "meridian")
+      .concat(allowed.filter((a) => a.kind !== "meridian"));
+  }
+
+  function harnessRow(h, keepCustom) {
     const row = document.createElement("div");
     row.className = "entry-card";
     const kindsText = (h.accountKinds || []).join(", ");
-    const custom = !!(h.accountOrder || []).length;
+    const custom = !!(h.accountOrder || []).length || !!keepCustom;
     // Radio groups are keyed by name, so each row needs its own or checking
     // one harness's radio would clear every other row's.
     const radioName = `hx-order-${Math.random().toString(36).slice(2)}`;
@@ -2164,10 +2215,17 @@ function wireHarnessSettings() {
 
   async function load() {
     try {
+      // Which rows had the custom-order radio on. Rebuilding it from
+      // accountOrder being non-empty is the derivation the field exists to
+      // avoid: a harness whose kinds match no account stores an empty order,
+      // so the radio snapped back the moment the user saved.
+      const wasCustom = new Set([...box.querySelectorAll(".entry-card")]
+        .filter((r) => r.querySelector(".hx-order-pick input[value=custom]")?.checked)
+        .map((r) => r.querySelector(".hx-name").value.trim()));
       const cfg = await (await fetch("/v1/settings")).json();
       accounts = cfg.llmAccounts || []; // before the rows: they render from it
       box.innerHTML = "";
-      for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h));
+      for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h, wasCustom.has(h.name)));
       rules.render((cfg.harnesses || []).map((h) => h.name), cfg.harnessRules || []);
       statusEl.textContent = "Installed harnesses appear on their own; edit a row to override it. A harness tries its accounts top-down and falls through when one hits its limit.";
     } catch (_) {
@@ -2188,7 +2246,7 @@ function wireHarnessSettings() {
 
   $("open-settings").addEventListener("click", load);
   addBtn.addEventListener("click", () => {
-    box.appendChild(harnessRow({}));
+    box.appendChild(harnessRow({}, false));
     box.lastChild.querySelector(".hx-name").focus();
   });
 }

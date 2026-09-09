@@ -22,7 +22,7 @@ func harnessAt(s *Service, pane string, kinds, order []string) {
 
 func poolNames(t *testing.T, s *Service, pane string) []string {
 	t.Helper()
-	names, err := s.PaneOrder(pane)
+	_, names, err := s.PaneStatus(pane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +149,29 @@ func TestCodexAsDefaultAccount(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("claude traffic on a codex default = %d, want 502", resp.StatusCode)
 	}
+	// The message has to name the setting to change. It used to say "clear
+	// the pane's llm route" for a pane that has no route to clear, which sent
+	// the reader somewhere that changes nothing.
+	body := readBody(t, p.URL, "/llm/pane/shell-pane/v1/messages")
+	if !strings.Contains(body, "Default account") {
+		t.Fatalf("refusal = %q, want it to name the Default account setting", body)
+	}
+	if strings.Contains(body, "clear the pane") {
+		t.Fatalf("refusal tells the user to clear a route the pane does not have: %q", body)
+	}
+}
+
+// readBody re-issues a call and returns the response text.
+func readBody(t *testing.T, proxyURL, path string) string {
+	t.Helper()
+	req, _ := http.NewRequest("POST", proxyURL+path, strings.NewReader("{}"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
 }
 
 // The kind checkboxes are user-overridable, so a mixed-dialect declaration is
@@ -324,5 +347,62 @@ func TestMeridianLeadsForAHarnessThatDeclaredIt(t *testing.T) {
 	harnessAt(s, "p1", []string{"meridian", "anthropic", "openai"}, []string{"keyed"})
 	if got := poolNames(t, s, "p1"); strings.Join(got, ",") != "keyed,sidecar" {
 		t.Fatalf("explicit order = %v, want the user's order to win", got)
+	}
+}
+
+// The dialect guard has to hold in BOTH directions. A codex pane whose
+// harness matches no codex account falls through to the keyless Anthropic
+// pass-through, and applyAuth is a no-op for a keyless account — so without
+// the reverse half, the pane's own ChatGPT bearer travelled to Anthropic.
+func TestCodexDialectPathIsRefusedOnANonCodexAccount(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, []Account{{Name: "local", Kind: "anthropic", BaseURL: "http://127.0.0.1:1"}}, "")
+	s.defaultUpstream = up.URL
+	// The pane runs codex, but nothing configured serves that kind.
+	harnessAt(s, "p1", []string{"codex"}, nil)
+	p := mount(s)
+	defer p.Close()
+
+	resp := call(t, p.URL, "/llm/pane/p1/responses", "chatgpt-oauth-token")
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("/responses on an anthropic account = %d, want 502", resp.StatusCode)
+	}
+	if got.auth != "" {
+		t.Fatalf("the pane's bearer reached the upstream: %q", got.auth)
+	}
+}
+
+// Go's ServeMux cleans the ESCAPED path, so %2e%2e survives routing and the
+// decoded rest carried the traversal out to the upstream — past the allowlist
+// that exists to keep a Claude bearer off chatgpt.com.
+func TestCodexAllowlistRefusesTraversal(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, []Account{{Name: "cx", Kind: "codex", BaseURL: up.URL}}, "cx")
+	p := mount(s)
+	defer p.Close()
+
+	for _, path := range []string{
+		"/llm/pane/p1/responses/%2e%2e/%2e%2e/v1/messages",
+		"/llm/pane/p1/responses/../v1/messages",
+		"/llm/pane/p1/v1/messages",
+	} {
+		got = seen{}
+		if resp := call(t, p.URL, path, "claude-oauth-token"); resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("%s = %d, want 502", path, resp.StatusCode)
+		}
+		if got.auth != "" {
+			t.Fatalf("%s: bearer reached the upstream: %q", path, got.auth)
+		}
+	}
+	// The real surface still works, and a sibling name is not a prefix match.
+	if resp := call(t, p.URL, "/llm/pane/p1/responses", "tok"); resp.StatusCode != 200 {
+		t.Fatalf("/responses = %d, want 200", resp.StatusCode)
+	}
+	if resp := call(t, p.URL, "/llm/pane/p1/responsesXYZ", "tok"); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("/responsesXYZ = %d, want 502", resp.StatusCode)
 	}
 }

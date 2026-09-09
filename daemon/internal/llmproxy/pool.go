@@ -173,13 +173,6 @@ func resetToRFC3339(v string) string {
 	return v
 }
 
-// resolvePool answers who should serve a pane's request, in order: the head
-// is tried first and every following account is a failover target. The
-// ordering rules live in candidates.go.
-func (s *Service) resolvePool(paneID string) ([]Account, error) {
-	return s.candidatesFor(paneID)
-}
-
 // poolTransport is the proxy's outbound transport: it sends the request, and
 // when an account answers with a limit it marks the account and replays the
 // request on the next one, rebuilt for THAT account. Replay needs the body

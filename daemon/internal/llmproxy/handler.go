@@ -49,7 +49,7 @@ func (s *Service) Handler() http.Handler {
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pool, err := s.resolvePool(r.PathValue("pane"))
+		pool, err := s.candidatesFor(r.PathValue("pane"))
 		if err != nil {
 			http.Error(w, "ccmux llm proxy: "+err.Error(), http.StatusBadGateway)
 			return
@@ -62,7 +62,7 @@ func (s *Service) Handler() http.Handler {
 		// of denying known-foreign paths: refusing here fails the misroute
 		// loudly on the first request instead of leaking a token per call.
 		if !servablePath(account, r.PathValue("rest")) {
-			http.Error(w, "ccmux llm proxy: pane is routed to codex account "+account.Name+", which serves only codex traffic — clear the pane's llm route", http.StatusBadGateway)
+			http.Error(w, s.dialectRefusal(r.PathValue("pane"), account), http.StatusBadGateway)
 			return
 		}
 		info := &reqInfo{
@@ -84,19 +84,76 @@ func (s *Service) Handler() http.Handler {
 	})
 }
 
-// codexServablePath is the codex CLI provider's own surface — the only
-// paths a codex account forwards (probed against codex-cli 0.149.1: /models
-// and /responses, relative to the provider base URL).
+// dialectRefusal names the setting the reader has to change. The message
+// used to say "clear the pane's llm route" unconditionally, which is wrong
+// advice for the commonest way to hit this: a codex account chosen as the
+// DEFAULT account, where the pane has no route to clear. Following it changed
+// nothing while every shell pane kept failing, and the actual cause was never
+// named.
+func (s *Service) dialectRefusal(paneID string, a Account) string {
+	routes, err := s.PaneRoutes()
+	if err == nil && routes[paneID] != "" {
+		return "ccmux llm proxy: this pane is routed to " + a.Kind + " account " + a.Name +
+			", which does not serve this request — clear the pane's llm route"
+	}
+	return "ccmux llm proxy: the default account " + a.Name + " is a " + a.Kind +
+		" account, which does not serve this request — pick a different Default account under settings, Accounts"
+}
+
+// firstSegment is the leading path element of a proxied request, and "" for
+// any path carrying a dot segment.
+//
+// The dot-segment refusal is the load-bearing half. Go's ServeMux cleans the
+// ESCAPED path, so "%2e%2e" survives routing and PathValue hands back a
+// decoded "responses/../v1/messages"; rewrite clears RawPath and "." is not
+// re-escaped, so the traversal went out on the wire for the upstream to
+// normalize. Measured: POST /llm/pane/p1/responses/%2e%2e/%2e%2e/v1/messages
+// reached chatgpt.com as /backend-api/codex/responses/../../v1/messages
+// carrying a Claude subscription bearer, past the very allowlist that exists
+// to stop it. Matching a whole segment rather than a prefix closes the
+// sibling case ("responsesXYZ") in the same move.
+func firstSegment(rest string) string {
+	for _, seg := range strings.Split(rest, "/") {
+		if seg == "." || seg == ".." {
+			return ""
+		}
+	}
+	head, _, _ := strings.Cut(rest, "/")
+	return head
+}
+
+// codexServablePath is the codex CLI provider's own surface — the only paths
+// a codex account forwards (probed against codex-cli 0.149.1: /models and
+// /responses, relative to the provider base URL).
 func codexServablePath(rest string) bool {
-	return rest == "models" || rest == "responses" ||
-		strings.HasPrefix(rest, "models/") || strings.HasPrefix(rest, "responses/")
+	seg := firstSegment(rest)
+	return seg == "models" || seg == "responses"
+}
+
+// messagesServablePath is the Anthropic surface. /models is shared: both
+// providers answer it and neither credential means anything special there,
+// so it stays allowed on both rather than being forced to pick a side.
+func messagesServablePath(rest string) bool {
+	return firstSegment(rest) != "responses"
 }
 
 // servablePath reports whether an account's upstream answers this path at
-// all. Only codex accounts restrict it; every other kind speaks the Anthropic
-// Messages surface, where the upstream owns what it does not recognize.
+// all, in BOTH directions.
+//
+// One direction was missing and it leaked: nothing refused a codex-dialect
+// path on a NON-codex account, so a codex pane that fell through to the
+// keyless Anthropic pass-through (its harness's kinds matching nothing
+// configured, or its codex kind unchecked) forwarded its ChatGPT OAuth
+// bearer to api.anthropic.com untouched — applyAuth returns early for a
+// keyless account, so the pane's own credential travelled. Verified reaching
+// the upstream before this guard was made symmetric. v0.1.55 could not do it
+// only because harness spawn pinned a codex pane route; removing that pin is
+// what exposed it, so the guard has to hold the invariant instead.
 func servablePath(a Account, rest string) bool {
-	return a.Kind != "codex" || codexServablePath(rest)
+	if a.Kind == "codex" {
+		return codexServablePath(rest)
+	}
+	return messagesServablePath(rest)
 }
 
 // servableOnly drops pool members that cannot serve this path, keeping the
@@ -131,12 +188,19 @@ func rewrite(pr *httputil.ProxyRequest) {
 	applyAuth(pr.Out, info.account)
 }
 
+// authHeaders is the credential surface clientAuth captures and
+// restoreClientAuth puts back. ONE list, because the two must stay identical:
+// a header added to the capture and not the restore leaks the previous
+// account's credential on a replay, which is the leak the pair exists to
+// close, and nothing would say so.
+var authHeaders = []string{"Authorization", "x-api-key"}
+
 // clientAuth snapshots the credential headers the pane sent, so a failover
 // replay can be built from the pane's own request rather than from the last
 // account's rewritten one.
 func clientAuth(h http.Header) http.Header {
 	out := http.Header{}
-	for _, k := range []string{"Authorization", "x-api-key"} {
+	for _, k := range authHeaders {
 		if v := h.Get(k); v != "" {
 			out.Set(k, v)
 		}
@@ -150,7 +214,7 @@ func clientAuth(h http.Header) http.Header {
 // account's key, and the pass-through would forward neither the pane's
 // credential nor its own.
 func restoreClientAuth(out *http.Request, saved http.Header) {
-	for _, k := range []string{"Authorization", "x-api-key"} {
+	for _, k := range authHeaders {
 		if v := saved.Get(k); v != "" {
 			out.Header.Set(k, v)
 		} else {

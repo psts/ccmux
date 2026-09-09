@@ -1273,7 +1273,10 @@ final class RemoteSessionService: ObservableObject {
     /// so a failure here is the upstream's (down, bad key, wrong URL) and its
     /// reason is worth showing rather than swallowing into an empty picker.
     func fetchAccountModels(_ name: String) async -> (models: [String], error: String?) {
-        let escaped = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        // urlPathComponentAllowed, not urlPathAllowed: the latter leaves "/"
+        // unescaped, so an account name containing one would build a
+        // different path than the one asked for.
+        let escaped = name.addingPercentEncoding(withAllowedCharacters: .urlPathComponentAllowed) ?? name
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/llm/accounts/\(escaped)/models") else {
             return ([], "bad daemon URL")
         }

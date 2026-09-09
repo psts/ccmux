@@ -2,6 +2,7 @@ package llmproxy
 
 import (
 	"fmt"
+	"log"
 	"slices"
 )
 
@@ -118,16 +119,24 @@ func (s *Service) PaneOrders(paneIDs []string) (map[string][]string, error) {
 		pool, err := s.candidatesIn(st, id)
 		if err != nil {
 			// One pane routed at a deleted account must not blank the chain
-			// for every other pane; that pane simply shows none.
+			// for every other pane. Logged rather than merely skipped: a pane
+			// missing from this map renders in both lenses exactly like a
+			// pane with a one-account chain, so without this line a pane that
+			// will 502 on its next request looks ordinary.
+			log.Printf("llm: pane %s: routing unresolved, no failover chain shown: %v", id, err)
 			continue
 		}
-		names := make([]string, 0, len(pool))
-		for _, a := range pool {
-			names = append(names, a.Name)
-		}
-		out[id] = names
+		out[id] = accountNames(pool)
 	}
 	return out, nil
+}
+
+func accountNames(pool []Account) []string {
+	names := make([]string, 0, len(pool))
+	for _, a := range pool {
+		names = append(names, a.Name)
+	}
+	return names
 }
 
 func (s *Service) candidatesIn(st routeState, paneID string) ([]Account, error) {
@@ -188,7 +197,7 @@ func (s *Service) defaultPool(st routeState, paneID string) ([]Account, error) {
 	if preferred == nil {
 		// A route naming a deleted account fails LOUDLY rather than falling
 		// back: guessing where to send a pane's tokens is worse than saying
-		// the routing is broken. Same rule resolve() states.
+		// the routing is broken.
 		return nil, fmt.Errorf("llm route %q names no account", route)
 	}
 	pool := []Account{*preferred}
@@ -214,9 +223,11 @@ func overrideFor(accs []Account, name string) *Account {
 // general kind priority: the account order is the visible rule and stays the
 // rule. A meridian account is a sidecar that spends a Claude SUBSCRIPTION,
 // and opencode and pi declare it precisely so they spend that rather than a
-// metered key (harness.go's defaultAccountKinds says so, and listed it first
-// for this reason). Ordering those two by the account list alone would move
-// their spend from a subscription to an API key with nothing announcing it.
+// metered key (harness.go's defaultAccountKinds says so). Ordering those two
+// by the account list alone would move their spend from a subscription to an
+// API key with nothing announcing it. The KIND order in that map is inert —
+// KindAllowed is set membership — so this function is the whole effect, and
+// BOTH lenses mirror it when they preview a harness's order.
 //
 // A per-harness account order still wins: inOrder runs after this, so a user
 // who wants the key first says so and gets it.

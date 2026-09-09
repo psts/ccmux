@@ -405,8 +405,10 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 	}
 	// noop declares no kinds, so it must NOT land on the codex account: the
 	// default rule excludes codex from a harness that never asked for it.
-	if got := orderOf(t, base, shell); strings.Join(got, ",") == "cx" {
-		t.Fatalf("noop pane resolved to the codex account: %v", got)
+	// Asserted POSITIVELY — orderOf returns nil on any non-200 or decode
+	// failure, which joins to "" and would have passed the negative form.
+	if got := orderOf(t, base, shell); strings.Join(got, ",") != "local" {
+		t.Fatalf("noop pane order = %v, want the only account its kinds allow", got)
 	}
 	// …and the reverse guard: the pane now runs noop, so a codex account is
 	// refused for it.

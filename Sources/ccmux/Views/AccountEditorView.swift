@@ -16,6 +16,13 @@ struct AccountEditorView: View {
     /// Live health for this account, as the row shows it; nil when it has
     /// never been asked for anything.
     let statusText: String
+    /// Non-empty when editing an existing account, which fixes its name.
+    /// A rename sends the new name with an empty key and the daemon inherits
+    /// a stored key BY NAME, so the account came back keyless — for a
+    /// localhost or api.anthropic.com base URL that turns it into a
+    /// pass-through forwarding each pane's own login. Same rule as the agent
+    /// editor: delete and re-add to rename.
+    let existingName: String
     let onDone: (DaemonSettingsView.EditableAccount?) -> Void
 
     @State private var account: DaemonSettingsView.EditableAccount
@@ -28,6 +35,7 @@ struct AccountEditorView: View {
         onDone: @escaping (DaemonSettingsView.EditableAccount?) -> Void
     ) {
         self.statusText = statusText
+        self.existingName = account?.name ?? ""
         self.onDone = onDone
         _account = State(
             initialValue: account
@@ -43,6 +51,8 @@ struct AccountEditorView: View {
                     HStack(spacing: 6) {
                         TextField("name", text: $account.name)
                             .font(.system(size: 12, design: .monospaced))
+                            .disabled(!existingName.isEmpty)
+                            .help(existingName.isEmpty ? "" : "Names are fixed; delete and re-add to rename")
                         // The one list of kinds this app has; a fifth copy
                         // is how they drift apart.
                         Picker("", selection: $account.kind) {

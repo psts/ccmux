@@ -113,7 +113,10 @@ func (s *Server) respondPaneLLMRoute(w http.ResponseWriter, paneID string) {
 		writeError(w, http.StatusNotFound, "unknown pane")
 		return
 	}
-	explicit, effective, err := s.llm.PaneStatus(paneID)
+	// One resolution, not two: PaneStatus and PaneOrder both call
+	// candidatesFor, which is three settings reads each, and `effective` is
+	// by definition the head of the order.
+	explicit, order, err := s.llm.PaneStatus(paneID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
@@ -133,12 +136,10 @@ func (s *Server) respondPaneLLMRoute(w http.ResponseWriter, paneID string) {
 		}
 	}
 	// The order is what the proxy would actually do next, not what was
-	// configured: a limited account has already sunk to the back of it. A
-	// read failure leaves it empty rather than failing the whole answer —
-	// the menu still works without the chain line.
-	order, err := s.llm.PaneOrder(paneID)
-	if err != nil {
-		order = nil
+	// configured: a limited account has already sunk to the back of it.
+	effective := ""
+	if len(order) > 0 {
+		effective = order[0]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pane": paneID, "route": explicit, "effective": effective,

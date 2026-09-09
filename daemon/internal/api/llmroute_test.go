@@ -169,7 +169,10 @@ func TestSettingsCarriesResolvedPaneOrders(t *testing.T) {
 	// And a pane with no harness follows the default account, not the
 	// harness order — the two tiers must not bleed into each other.
 	shell := mgr.List()[0].Panes[0].ID
-	if order := got.Orders[shell]; strings.Join(order, ",") == "b,a" {
-		t.Fatalf("shell pane took the claude harness order: %v", order)
+	// Asserted POSITIVELY: a negative check here passed on an empty result,
+	// so it stayed green if the field vanished or the endpoint failed — and
+	// it would also have stayed green if tier 3 disappeared entirely.
+	if order := got.Orders[shell]; strings.Join(order, ",") != "anthropic" {
+		t.Fatalf("shell pane order = %v, want the synthetic pass-through", order)
 	}
 }

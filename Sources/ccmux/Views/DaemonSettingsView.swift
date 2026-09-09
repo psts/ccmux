@@ -575,8 +575,10 @@ struct DaemonSettingsView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             } else {
-                // Indices, not `enumerated()`: Swift has no key path to a
-                // tuple element, so `id: \.element` would not compile.
+                // Indices rather than `enumerated()`: the row needs both the
+                // position and the name, and indexing reads plainer than
+                // destructuring a tuple. (`id: \.element` would compile —
+                // the same shape ships in PaneTabBar and SidebarView.)
                 ForEach(ordered.indices, id: \.self) { i in
                     HStack(spacing: 6) {
                         Text("\(i + 1). \(ordered[i])")
@@ -624,14 +626,30 @@ struct DaemonSettingsView: View {
 
     /// The accounts this harness may use, in the order it would try them: the
     /// ones it named first, then the rest as configured. Mirrors the daemon's
-    /// own resolution (llmproxy.inOrder), including dropping a named account
-    /// that no longer exists.
+    /// own resolution — `subscriptionFirst` then `inOrder` — including
+    /// dropping a named account that no longer exists.
+    ///
+    /// The subscriptionFirst half is not optional. Without it this preview
+    /// showed "1. keyed, 2. sidecar" for opencode while the daemon tried the
+    /// sidecar first, and because turning "custom" on SEEDS the stored order
+    /// from this list, accepting what the editor showed silently demoted the
+    /// subscription and moved spend onto a metered key.
     private func orderedAccounts(_ harness: EditableHarness) -> [String] {
-        let allowed = accounts
-            .filter { !$0.name.isEmpty && Self.kindAllowed(harness.kinds, $0.kind) }
-            .map(\.name)
+        let allowed = Self.subscriptionFirst(
+            accounts.filter { !$0.name.isEmpty && Self.kindAllowed(harness.kinds, $0.kind) },
+            harness.kinds)
         let named = harness.order.filter(allowed.contains)
         return named + allowed.filter { !named.contains($0) }
+    }
+
+    /// Mirrors llmproxy.subscriptionFirst: a meridian account leads for a
+    /// harness that declared meridian, because that sidecar spends a Claude
+    /// subscription rather than a metered key.
+    private static func subscriptionFirst(_ allowed: [EditableAccount], _ kinds: Set<String>) -> [String] {
+        let names = allowed.map(\.name)
+        guard kinds.contains("meridian") else { return names }
+        return allowed.filter { $0.kind == "meridian" }.map(\.name)
+            + allowed.filter { $0.kind != "meridian" }.map(\.name)
     }
 
     /// kindAllowed, mirrored from the daemon (llmproxy.KindAllowed): no kinds
@@ -875,6 +893,12 @@ struct DaemonSettingsView: View {
                 apiKey: "", apiKeySet: $0.apiKeySet,
                 aliases: $0.modelAliases.map { "\($0.from)=\($0.to)" }.joined(separator: ", "))
         }
+        // Which rows had the custom-order radio on. apply() runs after every
+        // save, and rebuilding customOrder from order.isEmpty is exactly the
+        // derivation this field exists to avoid: a harness whose kinds match
+        // no account stores an empty order, so the radio snapped back the
+        // moment the user saved.
+        let wasCustom = Set(harnesses.filter(\.customOrder).map(\.name))
         harnesses = settings.harnesses.map { h in
             let snap = EditableHarness.Snapshot(
                 icon: h.icon ?? "", name: h.name, command: h.command ?? "",
@@ -882,7 +906,8 @@ struct DaemonSettingsView: View {
             return EditableHarness(
                 icon: snap.icon, name: snap.name, command: snap.command,
                 autoconfirm: snap.autoconfirm, kinds: snap.kinds, order: snap.order,
-                customOrder: !snap.order.isEmpty, source: h.source, orig: snap)
+                customOrder: !snap.order.isEmpty || wasCustom.contains(h.name),
+                source: h.source, orig: snap)
         }
         devDomain = settings.devDomain
         lensHostname = settings.lensHostname
@@ -896,8 +921,6 @@ struct DaemonSettingsView: View {
     }
 }
 
-/// What the agents tab is editing: an existing base, or nil for a new one.
-/// Identifiable so `.sheet(item:)` can present it.
 /// Which account row the editor sheet is open on. An index one past the
 /// end means "new": the sheet hands back an account the list then appends.
 struct AccountEditTarget: Identifiable {
@@ -905,6 +928,8 @@ struct AccountEditTarget: Identifiable {
     var id: Int { index }
 }
 
+/// What the agents tab is editing: an existing base, or nil for a new one.
+/// Identifiable so `.sheet(item:)` can present it.
 struct AgentEditTarget: Identifiable {
     let agent: DaemonAgent?
     var id: String { agent?.name ?? "new" }
