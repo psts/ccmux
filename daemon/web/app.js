@@ -1128,18 +1128,33 @@ function renderTabs() {
 // it, so a pane answering from the second account says so here.
 async function openPaneLLMMenu(paneId, x, y) {
   let cur;
+  let unresolved = "";
   try {
     const r = await fetch(`/v1/panes/${paneId}/llm-route`);
-    if (!r.ok) return; // proxy not mounted or pane unknown — no menu to offer
-    cur = await r.json();
-  } catch (_) { return; }
+    if (r.status === 404) return; // pane unknown — no menu to offer
+    if (!r.ok) {
+      // The daemon could not resolve this pane's routing, so its next request
+      // will fail. Say so: silently offering no menu made a broken pane look
+      // like one the proxy is not mounted for.
+      unresolved = (await r.text()).trim() || `HTTP ${r.status}`;
+    } else {
+      cur = await r.json();
+    }
+  } catch (e) { unresolved = String(e.message || e); }
 
   const menu = $("ctx-menu");
   menu.innerHTML = "";
   const line = document.createElement("div");
   line.className = "host-line";
-  line.textContent = "LLM route · now: " + cur.effective;
+  line.textContent = unresolved
+    ? "LLM route · unresolved: " + unresolved
+    : "LLM route · now: " + cur.effective;
   menu.appendChild(line);
+  if (unresolved) {
+    // Nothing else is trustworthy on this pane, but clearing its override is
+    // the one action that can repair it, so keep that offered.
+    cur = { route: "not-empty", accounts: [], order: [] };
+  }
   const order = cur.order || [];
   if (order.length > 1) {
     const chain = document.createElement("div");
@@ -1648,10 +1663,17 @@ function wireLLMSettings() {
   // Without it, ▲ on the first row PUT the unchanged list and printed
   // "Saved." — a daemon write and a false confirmation for a click that did
   // nothing.
+  //
+  // A cancelled save resolves with CANCELLED, not undefined, so an awaiting
+  // caller can tell it apart from one that ran. saveModal closes its sheet on
+  // that resolution, and closing it for an edit that was never sent would be
+  // the same false success one layer up.
+  const CANCELLED = Symbol("cancelled");
+
   function queueSave(mutate, opts) {
     const next = saving.catch(() => {}).then(() => {
       const candidate = mutate(accounts.slice());
-      if (!candidate) return;
+      if (!candidate) return CANCELLED;
       return saveAccounts(candidate, opts);
     });
     saving = next.catch(() => {}); // a refusal must not wedge the queue
@@ -1663,8 +1685,14 @@ function wireLLMSettings() {
     const name = (accounts[i] || {}).name;
     queueSave((list) => {
       const at = list.findIndex((x) => x.name === name);
+      if (at < 0) {
+        // The row outlived the account (a queued delete, another lens). Say
+        // so rather than dropping the click: the status line would otherwise
+        // still read "Saved." from the previous save.
+        throw new Error(`"${name}" is no longer in the list.`);
+      }
       const to = at + delta;
-      if (at < 0 || to < 0 || to >= list.length) return null; // nothing moved
+      if (to < 0 || to >= list.length) return null; // already at the end
       const next = list.slice();
       [next[at], next[to]] = [next[to], next[at]];
       return next;
@@ -1825,7 +1853,7 @@ function wireLLMSettings() {
     $("llm-modal-save").disabled = true;
     const wasNamed = editingName;
     try {
-      await queueSave((list) => {
+      const result = await queueSave((list) => {
         const at = wasNamed ? list.findIndex((x) => x.name === wasNamed) : -1;
         if (wasNamed && at < 0) {
           // It was deleted while the sheet was open (a queued delete, another
@@ -1840,6 +1868,10 @@ function wireLLMSettings() {
         else candidate.push(next);
         return candidate;
       }, { rethrow: true });
+      if (result === CANCELLED) {
+        $("llm-modal-state").textContent = "Nothing to save.";
+        return; // the sheet stays open rather than claiming a save happened
+      }
       closeModal();
     } catch (e) {
       // `accounts` is untouched, so the rows still show what the daemon
@@ -2227,12 +2259,18 @@ function wireHarnessSettings() {
 
   async function load() {
     try {
-      // Which rows had the custom-order radio on. Rebuilding it from
-      // accountOrder being non-empty is the derivation the field exists to
-      // avoid: a harness whose kinds match no account stores an empty order,
-      // so the radio snapped back the moment the user saved.
+      // Which rows had the custom-order radio on, and had NOT yet been given
+      // an order to store. Rebuilding the radio from accountOrder being
+      // non-empty is the derivation the field exists to avoid: a harness
+      // whose kinds match no account stores an empty order, so the radio
+      // snapped back the moment the user saved.
+      //
+      // Only rows whose stored order is still empty carry over. Keeping it
+      // for every checked row meant a stale tab resurrected a custom order
+      // another lens had just turned OFF, and the next save wrote it back.
       const wasCustom = new Set([...box.querySelectorAll(".entry-card")]
         .filter((r) => r.querySelector(".hx-order-pick input[value=custom]")?.checked)
+        .filter((r) => !JSON.parse(r.dataset.order || "[]").length)
         .map((r) => r.querySelector(".hx-name").value.trim()));
       const cfg = await (await fetch("/v1/settings")).json();
       accounts = cfg.llmAccounts || []; // before the rows: they render from it

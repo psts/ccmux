@@ -46,6 +46,9 @@ class SplitTreeController: ObservableObject {
     /// pane's harness rules and live account health, neither of which this
     /// side can see.
     @Published var llmPaneOrders: [String: [String]] = [:]
+    /// Panes whose routing the daemon could not resolve, and why. Absent from
+    /// llmPaneOrders alone looks identical to a one-account chain.
+    @Published var llmPaneOrderErrors: [String: String] = [:]
     /// Fires as a route menu opens so the service can re-read the orders.
     var onLLMMenuOpen: ((String) -> Void)?
     /// Point one hosted pane's llm route at an account by name ("" clears the

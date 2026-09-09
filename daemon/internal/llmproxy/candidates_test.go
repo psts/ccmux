@@ -473,3 +473,25 @@ func TestSharedModelsPathIsRefusedOnAKeylessAccount(t *testing.T) {
 		t.Fatalf("v1/messages = %d, want 200", resp.StatusCode)
 	}
 }
+
+// A harness with NO declared kinds is every user-added registry entry, and
+// checkHarnessAccounts returns early for those — so nothing stops one being
+// started on a daemon whose only account is a codex one set as the default.
+// It falls to tier 3, and the request has to fail with advice that points at
+// the setting actually responsible.
+func TestKindlessHarnessOnACodexDefaultFailsWithUsableAdvice(t *testing.T) {
+	s := configured(t, []Account{{Name: "cx", Kind: "codex"}}, "cx")
+	harnessAt(s, "p1", nil, nil) // declared kinds: none
+	if got := poolNames(t, s, "p1"); strings.Join(got, ",") != "cx" {
+		t.Fatalf("order = %v, want the default account", got)
+	}
+	p := mount(s)
+	defer p.Close()
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "tok"); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("= %d, want 502", resp.StatusCode)
+	}
+	body := readBody(t, p.URL, "/llm/pane/p1/v1/messages")
+	if !strings.Contains(body, "Default account") {
+		t.Fatalf("refusal = %q, want it to name the Default account setting", body)
+	}
+}

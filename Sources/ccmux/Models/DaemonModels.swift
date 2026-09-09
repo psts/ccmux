@@ -101,6 +101,11 @@ struct DaemonSettings: Codable {
     /// because a lens cannot compute it — the pane's harness kinds, its
     /// order, and live account health all feed it.
     var llmPaneOrders: [String: [String]]
+    /// Per-pane routing FAILURES, keyed the same way. A pane absent from
+    /// llmPaneOrders alone reads exactly like a pane with a one-account
+    /// chain, so a pane that will fail its next request looked healthy;
+    /// this is what lets the menu say otherwise.
+    var llmPaneOrderErrors: [String: String]
     /// The daemon-resolved harness list (builtin + detected + user entries)
     /// and the per-folder preselect rules.
     var harnesses: [DaemonHarness]
@@ -128,6 +133,7 @@ struct DaemonSettings: Codable {
         llmAccountStatus = try c.decodeIfPresent([DaemonLLMAccountStatus].self, forKey: .llmAccountStatus) ?? []
         llmSidecars = try c.decodeIfPresent([String: DaemonSidecarStatus].self, forKey: .llmSidecars) ?? [:]
         llmPaneOrders = try c.decodeIfPresent([String: [String]].self, forKey: .llmPaneOrders) ?? [:]
+        llmPaneOrderErrors = try c.decodeIfPresent([String: String].self, forKey: .llmPaneOrderErrors) ?? [:]
         harnesses = try c.decodeIfPresent([DaemonHarness].self, forKey: .harnesses) ?? []
         harnessRules = try c.decodeIfPresent([DaemonHarnessRule].self, forKey: .harnessRules) ?? []
     }

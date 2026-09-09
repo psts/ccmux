@@ -893,12 +893,16 @@ struct DaemonSettingsView: View {
                 apiKey: "", apiKeySet: $0.apiKeySet,
                 aliases: $0.modelAliases.map { "\($0.from)=\($0.to)" }.joined(separator: ", "))
         }
-        // Which rows had the custom-order radio on. apply() runs after every
-        // save, and rebuilding customOrder from order.isEmpty is exactly the
-        // derivation this field exists to avoid: a harness whose kinds match
-        // no account stores an empty order, so the radio snapped back the
-        // moment the user saved.
-        let wasCustom = Set(harnesses.filter(\.customOrder).map(\.name))
+        // Which rows had the custom-order radio on and NOTHING stored yet.
+        // apply() runs after every save, and rebuilding customOrder from
+        // order.isEmpty is exactly the derivation this field exists to avoid:
+        // a harness whose kinds match no account stores an empty order, so
+        // the radio snapped back the moment the user saved.
+        //
+        // Narrowed to empty-order rows: carrying it for every checked row
+        // would let a stale window resurrect a custom order another lens had
+        // just turned off.
+        let wasCustom = Set(harnesses.filter { $0.customOrder && $0.order.isEmpty }.map(\.name))
         harnesses = settings.harnesses.map { h in
             let snap = EditableHarness.Snapshot(
                 icon: h.icon ?? "", name: h.name, command: h.command ?? "",

@@ -659,6 +659,8 @@ final class RemoteSessionService: ObservableObject {
         /// harness kinds, its account order and live account health all feed
         /// it, and a limited account has already sunk to the back of it.
         var llmPaneOrders: [String: [String]]?
+        /// Per-pane routing failures; see DaemonSettings.llmPaneOrderErrors.
+        var llmPaneOrderErrors: [String: String]?
     }
 
     /// nil on any failure — the pickers simply stay empty rather than
@@ -968,6 +970,7 @@ final class RemoteSessionService: ObservableObject {
                     controller.llmGlobalRoute = s.llmRoute ?? ""
                     controller.llmPaneRoutes = s.llmPaneRoutes ?? [:]
                     controller.llmPaneOrders = s.llmPaneOrders ?? [:]
+                    controller.llmPaneOrderErrors = s.llmPaneOrderErrors ?? [:]
                 }
             }
         }
@@ -977,9 +980,11 @@ final class RemoteSessionService: ObservableObject {
         // every pane from one read of the settings.
         controller.onLLMMenuOpen = { [weak self, weak controller] _ in
             Task {
-                guard let orders = await self?.fetchTabBarSettings()?.llmPaneOrders,
-                      let controller else { return }
-                await MainActor.run { controller.llmPaneOrders = orders }
+                guard let fresh = await self?.fetchTabBarSettings(), let controller else { return }
+                await MainActor.run {
+                    controller.llmPaneOrders = fresh.llmPaneOrders ?? [:]
+                    controller.llmPaneOrderErrors = fresh.llmPaneOrderErrors ?? [:]
+                }
             }
         }
         controller.onSetPaneLLMRoute = { [weak self, weak controller] paneId, route in
@@ -990,10 +995,11 @@ final class RemoteSessionService: ObservableObject {
                 guard err == nil, let controller else { return }
                 // Setting a route reorders that pane's chain, so re-read it
                 // rather than leave the menu describing the old one.
-                let orders = await self.fetchTabBarSettings()?.llmPaneOrders
+                let fresh = await self.fetchTabBarSettings()
                 await MainActor.run {
                     if route.isEmpty { controller.llmPaneRoutes.removeValue(forKey: paneId) } else { controller.llmPaneRoutes[paneId] = route }
-                    if let orders { controller.llmPaneOrders = orders }
+                    if let orders = fresh?.llmPaneOrders { controller.llmPaneOrders = orders }
+                    if let failures = fresh?.llmPaneOrderErrors { controller.llmPaneOrderErrors = failures }
                 }
             }
         }

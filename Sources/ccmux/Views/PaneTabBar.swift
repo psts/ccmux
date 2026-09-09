@@ -33,6 +33,8 @@ struct PaneTabBar: View {
     var llmPaneRoutes: [String: String] = [:]
     /// Resolved failover order per pane, head first (see SplitTreeController).
     var llmPaneOrders: [String: [String]] = [:]
+    /// Panes whose routing could not be resolved, and why.
+    var llmPaneOrderErrors: [String: String] = [:]
     /// Called as a pane's route menu opens, to re-read that pane's order:
     /// live account health reorders it with nothing here to notice.
     var onLLMMenuOpen: ((String) -> Void)?
@@ -267,7 +269,14 @@ struct PaneTabBar: View {
             Color.clear
                 .frame(height: 0)
                 .onAppear { onLLMMenuOpen?(paneId) }
-            if let now = order.first {
+            if let failure = llmPaneOrderErrors[paneId] {
+                // Said, not omitted: an absent order renders the same as a
+                // one-account chain, so a pane that will fail its next
+                // request looked ordinary.
+                Button("unresolved: \(failure)") {}
+                    .disabled(true)
+                Divider()
+            } else if let now = order.first {
                 Button("now: \(now)") {}
                     .disabled(true)
                 if order.count > 1 {

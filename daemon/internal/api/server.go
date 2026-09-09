@@ -989,8 +989,12 @@ func (s *Server) addLLMSettings(w http.ResponseWriter, resp map[string]any) bool
 	//
 	// Best-effort: a failure here drops the chain display, it does not
 	// take the whole settings page down with it.
-	if orders, err := s.llm.PaneOrders(livePaneIDs(s.mgr)); err == nil {
+	if orders, failures, err := s.llm.PaneOrders(livePaneIDs(s.mgr)); err == nil {
 		resp["llmPaneOrders"] = orders
+		// Shipped alongside so a lens can SAY a pane's routing is broken.
+		// Absent from the order map alone reads identically to a one-account
+		// chain, so such a pane looked healthy until its next request 502'd.
+		resp["llmPaneOrderErrors"] = failures
 	} else {
 		log.Printf("settings: pane llm orders unavailable: %v", err)
 	}

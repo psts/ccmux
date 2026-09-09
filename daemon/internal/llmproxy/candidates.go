@@ -108,27 +108,31 @@ func (s *Service) candidatesFor(paneID string) ([]Account, error) {
 }
 
 // PaneOrders resolves many panes against one read of the settings, for the
-// lenses that show a pane's failover chain without asking per pane.
-func (s *Service) PaneOrders(paneIDs []string) (map[string][]string, error) {
+// lenses that show a pane's failover chain without asking per pane. It
+// returns the orders AND the per-pane failures.
+//
+// The failures are returned, not just logged, because a pane missing from
+// the order map renders in both lenses exactly like a pane with a
+// one-account chain: a pane that will 502 on its next request looked
+// ordinary, and the only record of why was a daemon log neither lens shows.
+// One pane's broken routing must still not blank the chain for the others.
+func (s *Service) PaneOrders(paneIDs []string) (orders map[string][]string, failures map[string]string, err error) {
 	st, err := s.readRouteState()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make(map[string][]string, len(paneIDs))
+	orders = make(map[string][]string, len(paneIDs))
+	failures = map[string]string{}
 	for _, id := range paneIDs {
 		pool, err := s.candidatesIn(st, id)
 		if err != nil {
-			// One pane routed at a deleted account must not blank the chain
-			// for every other pane. Logged rather than merely skipped: a pane
-			// missing from this map renders in both lenses exactly like a
-			// pane with a one-account chain, so without this line a pane that
-			// will 502 on its next request looks ordinary.
-			log.Printf("llm: pane %s: routing unresolved, no failover chain shown: %v", id, err)
+			log.Printf("llm: pane %s: routing unresolved: %v", id, err)
+			failures[id] = err.Error()
 			continue
 		}
-		out[id] = accountNames(pool)
+		orders[id] = accountNames(pool)
 	}
-	return out, nil
+	return orders, failures, nil
 }
 
 func accountNames(pool []Account) []string {
