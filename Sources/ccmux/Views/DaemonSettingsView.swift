@@ -703,10 +703,16 @@ struct DaemonSettingsView: View {
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        // The route is NOT cleared here. The daemon prunes the default route
-        // when the account it names is removed, so deciding it from this
-        // window's copy could wipe a route another lens had just set — the
-        // same reason the web lens stopped doing it.
+        // The route is not CLEARED here — the daemon prunes the default route
+        // when the account it names is removed, and deciding that from this
+        // window's copy could wipe a route another lens had just set.
+        //
+        // It is reverted to what the daemon last reported, so the field goes
+        // unsent (save only sends it when the picker changed) and the prune
+        // path is reached. Without this, picking an account and then removing
+        // it in the same session sent that dead name and 400'd the WHOLE
+        // save, dev hostnames and harnesses included.
+        if llmRoute == account.name { llmRoute = loadedRoute }
         accounts.removeAll { $0.id == account.id }
     }
 

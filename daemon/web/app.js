@@ -1704,8 +1704,20 @@ function wireLLMSettings() {
   // list: unreadable is not empty, the same rule the daemon applies.
   async function queueSave(mutate, opts) {
     const next = saving.catch(() => {}).then(async () => {
-      const cfg = await (await fetch("/v1/settings")).json();
-      accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
+      const r = await fetch("/v1/settings");
+      if (!r.ok) {
+        throw new Error(`settings unreadable (HTTP ${r.status}) — nothing saved`);
+      }
+      const cfg = await r.json();
+      // Unreadable is NOT empty. A 503 carries a JSON {"error":…} body, so
+      // parsing it succeeds and llmAccounts is simply absent — treating that
+      // as an empty list made the next click PUT [] and wipe every account
+      // and its stored key. The daemon refuses to serve an empty list for
+      // exactly this reason; the client has to refuse to send one.
+      if (!Array.isArray(cfg.llmAccounts)) {
+        throw new Error("settings carried no account list — nothing saved");
+      }
+      accounts = cfg.llmAccounts.map((a) => ({ ...a }));
       let candidate;
       try {
         candidate = mutate(accounts.slice());

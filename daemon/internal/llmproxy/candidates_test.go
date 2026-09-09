@@ -560,3 +560,31 @@ func TestKeylessPassthroughRefusesForeignDialectPaths(t *testing.T) {
 		t.Fatalf("pass-through sent %q, want the pane's own login", got.auth)
 	}
 }
+
+// A harness may declare codex ALONGSIDE the Anthropic kinds — both editors
+// offer the kinds as independent checkboxes, and the mixed declaration is a
+// supported pairing. Reading "contains codex" as "speaks the Responses
+// dialect" refused every request such a pane made on a keyless Anthropic
+// account, including the tier-3 pass-through.
+func TestMixedKindHarnessStillServesTheAnthropicSurface(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, nil, "")
+	s.defaultUpstream = up.URL
+	harnessAt(s, "p1", []string{"codex", "anthropic"}, nil)
+	p := mount(s)
+	defer p.Close()
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "max-oauth"); resp.StatusCode != 200 {
+		t.Fatalf("v1/messages on a mixed-kind pane = %d, want 200", resp.StatusCode)
+	}
+	if got.auth != "Bearer max-oauth" {
+		t.Fatalf("pass-through sent %q, want the pane's own login", got.auth)
+	}
+	// The ambiguity does not reopen the shared paths on a keyless account.
+	for _, path := range []string{"responses", "models"} {
+		if resp := call(t, p.URL, "/llm/pane/p1/"+path, "tok"); resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("%s = %d, want 502", path, resp.StatusCode)
+		}
+	}
+}

@@ -153,8 +153,18 @@ func (s *Service) paneDialect(paneID string) string {
 	if !known || len(kinds) == 0 {
 		return ""
 	}
+	// AccountKinds is the set of account kinds a harness MAY talk to, not a
+	// statement of what it speaks, and both editors let a user check codex
+	// alongside the others. So a mixed declaration says nothing about the
+	// dialect: reading "contains codex" as "speaks responses" refused every
+	// request from such a pane on a keyless Anthropic account, including the
+	// tier-3 pass-through, which the repo's own mixed-kind test treats as a
+	// supported pairing. Only a sole declaration is evidence.
+	if len(kinds) == 1 {
+		return dialectOf(kinds[0])
+	}
 	if slices.Contains(kinds, "codex") {
-		return dialectResponses
+		return "" // ambiguous: fall back to the path signal
 	}
 	return dialectMessages
 }
