@@ -23,6 +23,9 @@ struct DaemonSettingsView: View {
     @State private var tailscaleAuthKeySet = false
     @State private var devCertStatus = "unset"
     @State private var llmRoute = ""
+    /// The route as the daemon last reported it, so a save can tell whether
+    /// the user touched the picker.
+    @State private var loadedRoute = ""
     @State private var accounts: [EditableAccount] = []
     /// Live per-account health by name, from GET /v1/settings.
     @State private var accountStatus: [String: DaemonLLMAccountStatus] = [:]
@@ -700,7 +703,10 @@ struct DaemonSettingsView: View {
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        if llmRoute == account.name { llmRoute = "" }
+        // The route is NOT cleared here. The daemon prunes the default route
+        // when the account it names is removed, so deciding it from this
+        // window's copy could wipe a route another lens had just set — the
+        // same reason the web lens stopped doing it.
         accounts.removeAll { $0.id == account.id }
     }
 
@@ -785,12 +791,9 @@ struct DaemonSettingsView: View {
         defer { saving = false }
         status = "Saving…"
         persistIdentity() // app-local; saved even if the daemon rejects the rest
-        // A route pointing at an account that was deleted or renamed in this
-        // editing session falls back to direct — sending the stale name would
-        // 400 the whole save with a message about none of the visible fields.
-        if !llmRoute.isEmpty && !accounts.contains(where: { $0.name == llmRoute }) {
-            llmRoute = ""
-        }
+        // A route naming an account removed in this editing session is left
+        // alone: the daemon prunes it as part of the same write, and the
+        // refusal that used to make this necessary is gone.
         let outgoing = rules.map { DaemonHarnessRule(pathPrefix: $0.pathPrefix, harness: $0.harness) }
         let result = await RemoteSessionService.shared.updateSettings(
             devDomain: devDomain, lensHostname: lensHostname,
@@ -799,7 +802,11 @@ struct DaemonSettingsView: View {
             // Only what the daemon offered: an older daemon silently DROPS
             // unknown llm/harness fields (never a 400), so sending them would
             // fake a save — and this Mac may front several hosts.
-            llmRoute: supportsLLM ? llmRoute : nil,
+            // Sent only when the picker actually changed. Sending it on every
+            // save made this window's copy authoritative, so a stale one
+            // overwrote a default route set anywhere else — and it meant the
+            // daemon's prune path was never reached from here.
+            llmRoute: supportsLLM && llmRoute != loadedRoute ? llmRoute : nil,
             llmAccounts: supportsLLM ? outgoingAccounts() : nil,
             harnesses: supportsHarnesses ? outgoingHarnesses() : nil,
             harnessRules: supportsHarnessRules ? outgoing : nil)
@@ -885,6 +892,7 @@ struct DaemonSettingsView: View {
         supportsHarnesses = settings.supportsHarnesses
         supportsHarnessRules = settings.supportsHarnessRules
         llmRoute = settings.llmRoute
+        loadedRoute = settings.llmRoute
         accountStatus = Dictionary(uniqueKeysWithValues: settings.llmAccountStatus.map { ($0.name, $0) })
         sidecars = settings.llmSidecars
         accounts = settings.llmAccounts.map {

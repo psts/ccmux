@@ -495,3 +495,68 @@ func TestKindlessHarnessOnACodexDefaultFailsWithUsableAdvice(t *testing.T) {
 		t.Fatalf("refusal = %q, want it to name the Default account setting", body)
 	}
 }
+
+// Leak 5: every codex account is keyless by validation, so a keyless-based
+// rule could never fire on the codex side — bare /models served 200 with the
+// caller's bearer reaching chatgpt.com. The guard keys on the PANE's declared
+// dialect now, so this is refused whatever the path.
+func TestCodexAccountRefusesAForeignPaneOnEveryPath(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, []Account{{Name: "cx", Kind: "codex", BaseURL: up.URL}}, "cx")
+	// A pane whose harness speaks the Anthropic dialect, routed at codex.
+	harnessAt(s, "p1", []string{"anthropic", "openai", "claude"}, nil)
+	p := mount(s)
+	defer p.Close()
+	for _, path := range []string{"models", "responses", "v1/messages", "chat/completions"} {
+		got = seen{}
+		resp := call(t, p.URL, "/llm/pane/p1/"+path, "claude-oauth-token")
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("%s = %d, want 502", path, resp.StatusCode)
+		}
+		if got.auth != "" {
+			t.Fatalf("%s: bearer reached the upstream: %q", path, got.auth)
+		}
+	}
+	// A real codex pane still gets its own surface.
+	harnessAt(s, "p2", []string{"codex"}, nil)
+	for _, path := range []string{"models", "responses"} {
+		if resp := call(t, p.URL, "/llm/pane/p2/"+path, "tok"); resp.StatusCode != 200 {
+			t.Fatalf("codex pane %s = %d, want 200", path, resp.StatusCode)
+		}
+	}
+}
+
+// The messages side was a denylist of one lowercase segment, so every other
+// OpenAI root reached a keyless pass-through with the caller's bearer.
+func TestKeylessPassthroughRefusesForeignDialectPaths(t *testing.T) {
+	var got seen
+	up := upstream(t, &got)
+	defer up.Close()
+	s := configured(t, nil, "")
+	s.defaultUpstream = up.URL
+	harnessAt(s, "p1", []string{"codex"}, nil) // codex pane, tier-3 fallback
+	p := mount(s)
+	defer p.Close()
+	for _, path := range []string{"chat/completions", "v1/responses", "completions", "models"} {
+		got = seen{}
+		resp := call(t, p.URL, "/llm/pane/p1/"+path, "chatgpt-oauth-token")
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("%s = %d, want 502", path, resp.StatusCode)
+		}
+		if got.auth != "" {
+			t.Fatalf("%s: bearer reached the upstream: %q", path, got.auth)
+		}
+	}
+	// The pass-through's own reason for existing still works: a Claude pane
+	// forwarding its own login to Anthropic.
+	harnessAt(s, "p2", []string{"anthropic", "claude"}, nil)
+	got = seen{}
+	if resp := call(t, p.URL, "/llm/pane/p2/v1/messages", "max-oauth"); resp.StatusCode != 200 {
+		t.Fatalf("v1/messages = %d, want 200", resp.StatusCode)
+	}
+	if got.auth != "Bearer max-oauth" {
+		t.Fatalf("pass-through sent %q, want the pane's own login", got.auth)
+	}
+}

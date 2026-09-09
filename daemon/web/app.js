@@ -1126,6 +1126,12 @@ function renderTabs() {
 // The header shows the order the proxy would ACTUALLY try, which is not the
 // configured order: an account at its limit has already sunk to the back of
 // it, so a pane answering from the second account says so here.
+// Both lenses say the same thing about a pane whose routing will not resolve;
+// they just learn it differently. This lens re-fetches the pane's own route
+// endpoint on every menu open, so a 503 there IS the failure and carries the
+// reason. The Mac lens has no per-menu fetch, which is why the daemon also
+// ships llmPaneOrderErrors in the settings blob for it to read. Same rule,
+// same words on screen, different transport — not two rules.
 async function openPaneLLMMenu(paneId, x, y) {
   let cur;
   let unresolved = "";
@@ -1136,11 +1142,29 @@ async function openPaneLLMMenu(paneId, x, y) {
       // The daemon could not resolve this pane's routing, so its next request
       // will fail. Say so: silently offering no menu made a broken pane look
       // like one the proxy is not mounted for.
-      unresolved = (await r.text()).trim() || `HTTP ${r.status}`;
+      //
+      // Unwrapped: writeError sends {"error": msg}, so the raw body would put
+      // JSON braces and escaped quotes in a context-menu line — and the Mac
+      // lens prints the bare reason for this same state.
+      const body = (await r.text()).trim();
+      let reason = "";
+      try { reason = (JSON.parse(body) || {}).error || ""; } catch (_) { reason = body; }
+      unresolved = reason || body || `HTTP ${r.status}`;
     } else {
       cur = await r.json();
     }
   } catch (e) { unresolved = String(e.message || e); }
+  if (unresolved) {
+    // Still offer every account, as the Mac lens does for this state: pinning
+    // a working one is how the pane gets repaired, and a menu with no actions
+    // leaves the user nowhere to go. The daemon refuses an incompatible pick
+    // with its own message.
+    let names = [];
+    try {
+      names = ((await (await fetch("/v1/settings")).json()).llmAccounts || []).map((a) => a.name);
+    } catch (_) { /* the header still names the failure */ }
+    cur = { route: "unresolved", accounts: names, order: [] };
+  }
 
   const menu = $("ctx-menu");
   menu.innerHTML = "";
@@ -1150,11 +1174,6 @@ async function openPaneLLMMenu(paneId, x, y) {
     ? "LLM route · unresolved: " + unresolved
     : "LLM route · now: " + cur.effective;
   menu.appendChild(line);
-  if (unresolved) {
-    // Nothing else is trustworthy on this pane, but clearing its override is
-    // the one action that can repair it, so keep that offered.
-    cur = { route: "not-empty", accounts: [], order: [] };
-  }
   const order = cur.order || [];
   if (order.length > 1) {
     const chain = document.createElement("div");
@@ -1646,7 +1665,8 @@ function wireLLMSettings() {
       // account it names is removed. Deciding that here meant reading this
       // tab's copy of the field, which could be stale enough to wipe a route
       // another lens had just set.
-      queueSave((list) => list.filter((x) => x.name !== a.name));
+      queueSave((list) => list.filter((x) => x.name !== a.name))
+        .catch((e) => { statusEl.textContent = "Not removed: " + e.message; });
     };
     return row;
   }
@@ -1670,10 +1690,36 @@ function wireLLMSettings() {
   // the same false success one layer up.
   const CANCELLED = Symbol("cancelled");
 
-  function queueSave(mutate, opts) {
-    const next = saving.catch(() => {}).then(() => {
-      const candidate = mutate(accounts.slice());
-      if (!candidate) return CANCELLED;
+  // The mutate runs against the DAEMON's current list, re-read here, not
+  // against this tab's cached copy.
+  //
+  // The cached copy is only as fresh as this tab's last save, and every save
+  // writes the WHOLE list — so a row action in a stale tab silently undid a
+  // delete made anywhere else, and the resurrected account came back with no
+  // key, because the daemon inherits a stored key by name and that name was
+  // gone. Measured: deleting "doomed" from another client, then clicking ▲ in
+  // this tab, put ["doomed","keep"] back.
+  //
+  // A failed re-read refuses the save rather than falling back to the stale
+  // list: unreadable is not empty, the same rule the daemon applies.
+  async function queueSave(mutate, opts) {
+    const next = saving.catch(() => {}).then(async () => {
+      const cfg = await (await fetch("/v1/settings")).json();
+      accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
+      let candidate;
+      try {
+        candidate = mutate(accounts.slice());
+      } catch (e) {
+        // The re-read is why the mutate could refuse, so show what it read:
+        // leaving the old rows up would keep a row for an account the daemon
+        // no longer has, right next to a message saying it is gone.
+        redraw(cfg);
+        throw e;
+      }
+      if (!candidate) {
+        redraw(cfg); // the re-read may have moved things under the rows
+        return CANCELLED;
+      }
       return saveAccounts(candidate, opts);
     });
     saving = next.catch(() => {}); // a refusal must not wedge the queue
@@ -1683,12 +1729,14 @@ function wireLLMSettings() {
   // The stored order IS the failover order, so moving a row is a real setting.
   function moveAccount(i, delta) {
     const name = (accounts[i] || {}).name;
+    // The rejection has to be caught HERE. queueSave's own handler exists
+    // only to keep the queue moving, so an uncaught throw was swallowed and
+    // the click still read as the previous save's "Saved." — the very defect
+    // the throw was added to remove.
     queueSave((list) => {
       const at = list.findIndex((x) => x.name === name);
       if (at < 0) {
-        // The row outlived the account (a queued delete, another lens). Say
-        // so rather than dropping the click: the status line would otherwise
-        // still read "Saved." from the previous save.
+        // The row outlived the account (a queued delete, another lens).
         throw new Error(`"${name}" is no longer in the list.`);
       }
       const to = at + delta;
@@ -1696,7 +1744,13 @@ function wireLLMSettings() {
       const next = list.slice();
       [next[at], next[to]] = [next[to], next[at]];
       return next;
-    });
+    }).catch((e) => { statusEl.textContent = "Not moved: " + e.message; });
+  }
+
+  // Rows and route select from one settings answer.
+  function redraw(cfg) {
+    renderAccounts();
+    renderRoute(accounts, cfg.llmRoute);
   }
 
   function renderAccounts() {
@@ -1849,6 +1903,10 @@ function wireLLMSettings() {
       $("llm-modal-state").textContent = "Still saving…";
       return;
     }
+    // The sheet this save belongs to. Closing it mid-save and opening another
+    // would otherwise let this save close THAT sheet, discarding a
+    // half-typed account, or write this save's error into its state line.
+    const gen = openGeneration;
     savingModal = true;
     $("llm-modal-save").disabled = true;
     const wasNamed = editingName;
@@ -1868,6 +1926,7 @@ function wireLLMSettings() {
         else candidate.push(next);
         return candidate;
       }, { rethrow: true });
+      if (gen !== openGeneration) return; // the sheet moved on
       if (result === CANCELLED) {
         $("llm-modal-state").textContent = "Nothing to save.";
         return; // the sheet stays open rather than claiming a save happened
@@ -1876,7 +1935,9 @@ function wireLLMSettings() {
     } catch (e) {
       // `accounts` is untouched, so the rows still show what the daemon
       // holds and the sheet stays open on the edit that was refused.
-      $("llm-modal-state").textContent = "Not saved: " + e.message;
+      if (gen === openGeneration) {
+        $("llm-modal-state").textContent = "Not saved: " + e.message;
+      }
     } finally {
       savingModal = false;
       $("llm-modal-save").disabled = false;

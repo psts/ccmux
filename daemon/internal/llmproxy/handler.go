@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -61,7 +62,7 @@ func (s *Service) Handler() http.Handler {
 		// process, say). Allowlist the codex provider's own surface instead
 		// of denying known-foreign paths: refusing here fails the misroute
 		// loudly on the first request instead of leaking a token per call.
-		if !servablePath(account, r.PathValue("rest")) {
+		if !s.servablePath(r.PathValue("pane"), account, r.PathValue("rest")) {
 			http.Error(w, s.dialectRefusal(r.PathValue("pane"), account), http.StatusBadGateway)
 			return
 		}
@@ -132,28 +133,6 @@ func firstSegment(rest string) (string, bool) {
 	return head, head != ""
 }
 
-// codexServablePath is the codex CLI provider's own surface — the only paths
-// a codex account forwards (probed against codex-cli 0.149.1: /models and
-// /responses, relative to the provider base URL).
-func codexServablePath(rest string) bool {
-	seg, ok := firstSegment(rest)
-	return ok && (seg == "models" || seg == "responses")
-}
-
-// messagesServablePath is the Anthropic surface: everything except the codex
-// provider's own /responses.
-//
-// It has to honour firstSegment's SECOND return, not just compare the name.
-// As a bare denylist the unparseable sentinel read as "not responses" and
-// therefore allowed, so "x/%2e%2e/responses" and "%2fresponses" walked
-// through the very guard the codex side had just closed and went out
-// unescaped for the upstream to normalize. Same mechanism as the traversal
-// leak, pointed the other way.
-func messagesServablePath(rest string) bool {
-	seg, ok := firstSegment(rest)
-	return ok && seg != "responses"
-}
-
 // servablePath reports whether an account's upstream answers this path at
 // all, in BOTH directions.
 //
@@ -166,33 +145,64 @@ func messagesServablePath(rest string) bool {
 // the upstream before this guard was made symmetric. v0.1.55 could not do it
 // only because harness spawn pinned a codex pane route; removing that pin is
 // what exposed it, so the guard has to hold the invariant instead.
-func servablePath(a Account, rest string) bool {
+// paneDialect is what the PANE is speaking, taken from its harness's own
+// declaration rather than guessed from the path. "" when there is nothing to
+// go on: no recorded harness, or one that declared no kinds.
+func (s *Service) paneDialect(paneID string) string {
+	kinds, _, known := s.harnessOf(paneID)
+	if !known || len(kinds) == 0 {
+		return ""
+	}
+	if slices.Contains(kinds, "codex") {
+		return dialectResponses
+	}
+	return dialectMessages
+}
+
+// servablePath reports whether this account may serve this pane's request.
+//
+// The axis is the PANE's dialect against the ACCOUNT's, not the path shape
+// and not whether the account holds a key. Both of those were tried and both
+// were wrong in the same way. Path shape cannot say who is asking: /models is
+// served by each side, and the OpenAI surface has more roots than a denylist
+// enumerates (/chat/completions among them). And keyless cannot be the test,
+// because validateKind REFUSES a key on a codex account — every codex account
+// is keyless, so a keyless rule can never fire on that side, which is exactly
+// how the /models leak survived a fix aimed at it.
+//
+// What actually matters: a keyless account is a pass-through that forwards
+// the CALLER's own credential, so it must only ever be handed traffic of its
+// own dialect. A keyed account replaces the credential outright and has
+// nothing of the pane's to leak, so its upstream owns what it does not
+// recognise.
+func (s *Service) servablePath(paneID string, a Account, rest string) bool {
+	seg, ok := firstSegment(rest)
+	if !ok {
+		return false
+	}
+	if a.APIKey != "" {
+		return true
+	}
+	if want := s.paneDialect(paneID); want != "" {
+		return want == dialectOf(a.Kind)
+	}
+	// Nothing declared to check against, so fall back to the path — and only
+	// to the parts of it that are unambiguous. A codex account serves its own
+	// two roots and nothing else; every other account refuses the codex roots
+	// and the shared /models, which an Anthropic-dialect client never asks
+	// for bare (it asks for v1/models).
 	if a.Kind == "codex" {
-		return codexServablePath(rest)
+		return seg == "responses" || seg == "models"
 	}
-	if !messagesServablePath(rest) {
-		return false
-	}
-	// /models is the one path BOTH dialects serve, so its shape cannot say
-	// which client sent it — and it is a request the codex CLI really makes.
-	// On a KEYLESS account that is a leak: the pass-through forwards the
-	// caller's own credential, so a misrouted codex pane's ChatGPT bearer
-	// reaches Anthropic on the model-list call even though /responses is now
-	// refused. A keyed account replaces the credential outright and has
-	// nothing of the pane's to leak, so it keeps the shared path.
-	// Anthropic-dialect clients ask for "v1/models", not bare "models".
-	if seg, _ := firstSegment(rest); seg == "models" && a.APIKey == "" {
-		return false
-	}
-	return true
+	return seg != "responses" && seg != "models"
 }
 
 // servableOnly drops pool members that cannot serve this path, keeping the
 // head (the handler has already checked it) so a pool never empties here.
-func servableOnly(pool []Account, rest, pane string) []Account {
+func (s *Service) servableOnly(pool []Account, rest, pane string) []Account {
 	out := make([]Account, 0, len(pool))
 	for i, a := range pool {
-		if i == 0 || servablePath(a, rest) {
+		if i == 0 || s.servablePath(pane, a, rest) {
 			out = append(out, a)
 			continue
 		}

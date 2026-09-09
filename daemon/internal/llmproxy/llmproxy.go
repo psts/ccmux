@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -486,6 +487,11 @@ func (s *Service) pruneRoute(accs []Account) error {
 	if route == "" || findAccount(accs, route) != nil {
 		return nil
 	}
+	// Logged because it is a change to a setting the user chose, made as a
+	// consequence of a different action. Nothing in the response says the
+	// default route moved, so without this line the only record is the
+	// setting itself, already changed.
+	log.Printf("llm: default route %q cleared: the account it named was removed", route)
 	return s.store.SetSetting(settingRoute, "")
 }
 

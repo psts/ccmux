@@ -189,7 +189,7 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// not serve, because doing so forwards a credential to it. Dropped here
 	// rather than skipped mid-loop so the last member's own answer is still
 	// what the client gets.
-	pool := servableOnly(info.pool, info.rest, info.pane)
+	pool := t.s.servableOnly(info.pool, info.rest, info.pane)
 	attempt := req
 	for i, acct := range pool {
 		if i > 0 {
