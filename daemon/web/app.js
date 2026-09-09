@@ -1960,6 +1960,14 @@ function wireLLMSettings() {
       // queueSave has already redrawn the rows from its own re-read, so what
       // is behind the sheet is the daemon's list; the sheet stays open on the
       // edit that was refused.
+      //
+      // The TAB's line is written unconditionally, the sheet's only while it
+      // is still the same sheet. Writing only into the sheet loses the
+      // refusal twice over: closing it does not bump the generation, so the
+      // message landed in a hidden element, and opening another account
+      // before the PUT settled put it nowhere at all. Either way the edit
+      // was dropped in silence.
+      statusEl.textContent = "Not saved: " + e.message;
       if (gen === openGeneration) {
         $("llm-modal-state").textContent = "Not saved: " + e.message;
       }
@@ -2009,7 +2017,10 @@ function wireLLMSettings() {
       // absent — the tab then drew zero rows under the ordinary blurb and
       // told the user their accounts were gone. queueSave already refuses to
       // SEND on this; the read has to refuse to believe it.
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      // Same shape fillModelPick uses: the daemon's own text when it sent
+      // one, the status code when it did not. Throwing a bare code here threw
+      // the reason away at the only moment anyone wanted it.
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       const cfg = await r.json();
       statuses = {};
       for (const st of cfg.llmAccountStatus || []) statuses[st.name] = st;
@@ -2018,8 +2029,12 @@ function wireLLMSettings() {
       renderAccounts();
       renderRoute(accounts, cfg.llmRoute);
       statusEl.textContent = "Order decides who answers first; a limited account drops to the back on its own. Applies to every pane's next request — no restarts.";
-    } catch (_) {
-      statusEl.textContent = "Couldn't load LLM settings.";
+    } catch (e) {
+      // Mirrored to the console because the daemon does not log a refused
+      // settings read at all: writeError answers JSON and returns. The
+      // harness load below does the same for the same reason.
+      console.error("LLM settings load failed", e);
+      statusEl.textContent = "Couldn't load LLM settings: " + e.message;
     }
   }
 
@@ -2365,15 +2380,17 @@ function wireHarnessSettings() {
         .filter((r) => !JSON.parse(r.dataset.order || "[]").length)
         .map((r) => r.querySelector(".hx-name").value.trim()));
       const r = await fetch("/v1/settings");
-      if (!r.ok) throw new Error(`HTTP ${r.status}`); // unreadable is not "no harnesses"
+      // unreadable is not "no harnesses", and the reason travels with it
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       const cfg = await r.json();
       accounts = cfg.llmAccounts || []; // before the rows: they render from it
       box.innerHTML = "";
       for (const h of cfg.harnesses || []) box.appendChild(harnessRow(h, wasCustom.has(h.name)));
       rules.render((cfg.harnesses || []).map((h) => h.name), cfg.harnessRules || []);
       statusEl.textContent = "Installed harnesses appear on their own; edit a row to override it. A harness tries its accounts top-down and falls through when one hits its limit.";
-    } catch (_) {
-      statusEl.textContent = "Couldn't load harnesses.";
+    } catch (e) {
+      console.error("harness settings load failed", e);
+      statusEl.textContent = "Couldn't load harnesses: " + e.message;
     }
   }
 

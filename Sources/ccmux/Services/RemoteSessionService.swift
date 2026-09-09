@@ -496,6 +496,15 @@ final class RemoteSessionService: ObservableObject {
             "POST", path: base, body: ["path": path, "git": git], expect: 201)
     }
 
+    /// A daemon answer that carried an error instead of what was asked for.
+    /// Deliberately distinct from a transport failure: the daemon is up and
+    /// replying, so the two want different words in front of the user.
+    struct DaemonError: LocalizedError {
+        let status: Int
+        let reason: String
+        var errorDescription: String? { reason.isEmpty ? "HTTP \(status)" : reason }
+    }
+
     /// Fetch the daemon-wide lens settings (identity, dev hostnames, llm
     /// accounts, harnesses + per-folder preselect rules).
     func fetchSettings() async throws -> DaemonSettings {
@@ -505,13 +514,28 @@ final class RemoteSessionService: ObservableObject {
         let (data, resp) = try await session.data(from: url)
         // An error answer is NOT an empty settings blob. Every field decodes
         // with decodeIfPresent ?? default, so a 503 carrying {"error":…}
-        // parses CLEANLY into zero accounts and zero harnesses — and it also
-        // clears supportsLLM, so the editor showed an empty Accounts tab with
-        // status "" and no way to tell that from a daemon that simply has
-        // none. fetchTabBarSettings reads the SAME endpoint and has always
-        // checked this; this was the one reader that did not.
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-            throw URLError(.badServerResponse)
+        // parses CLEANLY into a blank one, and the editor then applied it and
+        // set loaded = true.
+        //
+        // The cost was not a wrong-looking window. supportsLLM and
+        // supportsHarnesses come from key PRESENCE, so those two tabs simply
+        // vanished — but General kept a now-blank devDomain and lensHostname
+        // with Save enabled, and save() sends both unconditionally. One Save
+        // after a 503 wrote the blanks back and the dev hostnames were gone.
+        //
+        // fetchTabBarSettings reads the SAME endpoint and has always checked
+        // this; this was the one reader that did not.
+        //
+        // It throws DaemonError, not URLError: the daemon ANSWERED, so a view
+        // that reports every throw as "couldn't reach ccmuxd" would send the
+        // user to restart a process that is running fine, carrying none of
+        // the reason it just sent.
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else {
+            struct Body: Decodable { let error: String? }
+            throw DaemonError(
+                status: code,
+                reason: (try? JSONDecoder().decode(Body.self, from: data))?.error ?? "")
         }
         return try JSONDecoder().decode(DaemonSettings.self, from: data)
     }

@@ -761,6 +761,11 @@ struct DaemonSettingsView: View {
             if fetched.supported && fetched.error != nil { agentStatus = "✗ Couldn't load agents: \(fetched.error!)" }
             status = ""
             loaded = true
+        } catch let e as RemoteSessionService.DaemonError {
+            // The daemon answered and said no. Reporting that as unreachable
+            // sends the user to restart a healthy process and hides the one
+            // sentence that says what to fix.
+            status = "✗ Couldn't load settings: \(e.localizedDescription)"
         } catch {
             status = "Couldn't reach ccmuxd at \(DaemonConfig.baseURL)"
         }
