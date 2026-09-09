@@ -39,9 +39,6 @@ func (s *Server) startPaneHarness(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	// An override the starting harness cannot use is cleared rather than left
-	// to fail every request in the pane.
-	s.clearForeignPaneRoute(paneID, h)
 	if err := s.mgr.StartHarnessInPane(paneID, h, ""); err != nil {
 		code := http.StatusInternalServerError
 		if errors.Is(err, manager.ErrPaneBusy) {
@@ -50,6 +47,12 @@ func (s *Server) startPaneHarness(w http.ResponseWriter, r *http.Request) {
 		writeError(w, code, err.Error())
 		return
 	}
+	// Only once the start actually happened: a REFUSED start (a busy pane
+	// still running something else) must leave that pane's routing exactly as
+	// it was. Clearing before the busy check would strip the override off a
+	// pane whose harness never changed, and answer 409 while having changed
+	// where its traffic goes.
+	s.clearForeignPaneRoute(paneID, h)
 	writeJSON(w, http.StatusOK, map[string]string{"pane": paneID, "harness": h.Name})
 }
 

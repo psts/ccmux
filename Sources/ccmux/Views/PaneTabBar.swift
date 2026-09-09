@@ -33,6 +33,9 @@ struct PaneTabBar: View {
     var llmPaneRoutes: [String: String] = [:]
     /// Resolved failover order per pane, head first (see SplitTreeController).
     var llmPaneOrders: [String: [String]] = [:]
+    /// Called as a pane's route menu opens, to re-read that pane's order:
+    /// live account health reorders it with nothing here to notice.
+    var onLLMMenuOpen: ((String) -> Void)?
     var onSetPaneLLMRoute: ((String, String) -> Void)?
 
     @EnvironmentObject var dragState: PaneDragState
@@ -251,11 +254,19 @@ struct PaneTabBar: View {
     /// daemon (llmPaneOrders): it folds the pane's harness rules and live
     /// account health, so it names who is answering NOW, not who was
     /// configured — those differ the moment the first choice hits its limit.
+    ///
+    /// Refreshed as the menu opens (onLLMMenuOpen), because those two differ
+    /// on their own: an account reaching its limit reorders the chain with
+    /// nothing here to notice. Until that first answer lands the rows are
+    /// simply absent rather than showing a stale claim.
     private func llmRouteMenu(paneId: String) -> some View {
         let current = llmPaneRoutes[paneId] ?? ""
         let fallback = llmGlobalRoute.isEmpty ? "Anthropic direct" : llmGlobalRoute
         let order = llmPaneOrders[paneId] ?? []
         return Menu("Model Account") {
+            Color.clear
+                .frame(height: 0)
+                .onAppear { onLLMMenuOpen?(paneId) }
             if let now = order.first {
                 Button("now: \(now)") {}
                     .disabled(true)

@@ -161,7 +161,7 @@ func (s *Service) harnessPool(paneID string, accs []Account) []Account {
 			allowed = append(allowed, a)
 		}
 	}
-	return inOrder(allowed, order)
+	return inOrder(subscriptionFirst(allowed, kinds), order)
 }
 
 // defaultPool is tier 3: the default account, then the other accounts of its
@@ -205,6 +205,37 @@ func overrideFor(accs []Account, name string) *Account {
 		return nil
 	}
 	return findAccount(accs, name)
+}
+
+// subscriptionFirst floats meridian accounts to the front for a harness that
+// declared it can use one, keeping everything else in configured order.
+//
+// This is the ONE place a kind outranks the account order, and it is not a
+// general kind priority: the account order is the visible rule and stays the
+// rule. A meridian account is a sidecar that spends a Claude SUBSCRIPTION,
+// and opencode and pi declare it precisely so they spend that rather than a
+// metered key (harness.go's defaultAccountKinds says so, and listed it first
+// for this reason). Ordering those two by the account list alone would move
+// their spend from a subscription to an API key with nothing announcing it.
+//
+// A per-harness account order still wins: inOrder runs after this, so a user
+// who wants the key first says so and gets it.
+func subscriptionFirst(allowed []Account, kinds []string) []Account {
+	if !slices.Contains(kinds, KindMeridian) {
+		return allowed
+	}
+	out := make([]Account, 0, len(allowed))
+	for _, a := range allowed {
+		if a.Kind == KindMeridian {
+			out = append(out, a)
+		}
+	}
+	for _, a := range allowed {
+		if a.Kind != KindMeridian {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // inOrder sorts allowed accounts by a harness's declared order: the named

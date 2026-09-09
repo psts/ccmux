@@ -971,6 +971,17 @@ final class RemoteSessionService: ObservableObject {
                 }
             }
         }
+        // Opening a route menu re-reads the resolved orders: an account
+        // hitting its limit reorders a pane's chain, and nothing else here
+        // would notice. Cheap enough to do per open — the daemon resolves
+        // every pane from one read of the settings.
+        controller.onLLMMenuOpen = { [weak self, weak controller] _ in
+            Task {
+                guard let orders = await self?.fetchTabBarSettings()?.llmPaneOrders,
+                      let controller else { return }
+                await MainActor.run { controller.llmPaneOrders = orders }
+            }
+        }
         controller.onSetPaneLLMRoute = { [weak self, weak controller] paneId, route in
             Task {
                 guard let self else { return }

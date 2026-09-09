@@ -179,6 +179,33 @@ func TestStartHarnessInPane(t *testing.T) {
 		t.Fatalf("start on busy pane = %d, want 409", r.StatusCode)
 	}
 
+	// A REFUSED start must change nothing about the pane's routing. The
+	// harness it would have started can decide an override is foreign to it,
+	// and clearing on the way to a 409 would strip the pin off a pane whose
+	// harness never changed.
+	req, _ := http.NewRequest("PUT", base+"/v1/settings", strings.NewReader(
+		`{"llmAccounts":[{"name":"cx","kind":"codex"},{"name":"k","kind":"anthropic","baseURL":"https://api.anthropic.com","apiKey":"x"}]}`))
+	if resp, err := http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+	}
+	if code := setRouteOn(t, base, pane, "k"); code != 200 {
+		t.Fatalf("planting the override = %d, want 200", code)
+	}
+	r, err := http.Post(base+"/v1/panes/"+pane+"/harness", "application/json",
+		strings.NewReader(`{"harness":"codex"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("codex start on busy pane = %d, want 409", r.StatusCode)
+	}
+	if got := routeAfter(t, base, pane); got != "k" {
+		t.Fatalf("refused start changed the pane route to %q, want it untouched", got)
+	}
+
 	// The pane recorded what it runs, and the recipe revives it.
 	resp, err := http.Get(base + "/v1/workspaces")
 	if err != nil {
@@ -320,9 +347,10 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 	}
 
 	// A codex route left on a pane must be cleared when a NON-codex harness
-	// starts there. Plant it the way it happens for real: start the codex
-	// harness in the shell pane (pairing routes it to cx; the command exits
-	// straight back to the shell), then start noop over it.
+	// starts there. The override is planted EXPLICITLY, the way a user sets
+	// one: a harness start no longer pins a route by itself, so relying on
+	// the start to plant it would leave this assertion passing because
+	// nothing was ever there to clear.
 	shell := ws.Panes[0].ID
 	waitShell := func() {
 		t.Helper()
@@ -357,6 +385,13 @@ func TestCodexHarnessPairsPaneRoute(t *testing.T) {
 	if got := orderOf(t, base, shell); strings.Join(got, ",") != "cx" {
 		t.Fatalf("pane order after codex start = %v, want [cx]", got)
 	}
+	// Now plant the stale override the clear exists to remove.
+	if r := setRouteOn(t, base, shell, "cx"); r != 200 {
+		t.Fatalf("planting the codex override = %d, want 200", r)
+	}
+	if got := routeOf(shell); got != "cx" {
+		t.Fatalf("override not planted: %q", got)
+	}
 	waitShell()
 	if code := startIn("noop"); code != 200 {
 		t.Fatalf("start noop = %d, want 200", code)
@@ -390,4 +425,32 @@ func orderOf(t *testing.T, base, paneID string) []string {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&got)
 	return got.Order
+}
+
+// setRouteOn sets one pane's llm override, returning the status code.
+func setRouteOn(t *testing.T, base, paneID, route string) int {
+	t.Helper()
+	req, _ := http.NewRequest("PUT", base+"/v1/panes/"+paneID+"/llm-route",
+		strings.NewReader(`{"route":"`+route+`"}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+// routeAfter reads one pane's explicit llm override.
+func routeAfter(t *testing.T, base, paneID string) string {
+	t.Helper()
+	resp, err := http.Get(base + "/v1/panes/" + paneID + "/llm-route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Route string `json:"route"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	return got.Route
 }

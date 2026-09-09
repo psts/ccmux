@@ -299,3 +299,30 @@ func TestReplayDoesNotCarryThePreviousAccountsKey(t *testing.T) {
 		t.Fatalf("keyless upstream saw %q, want the pane's own bearer", keys[0])
 	}
 }
+
+// opencode and pi declare meridian so they spend a Claude SUBSCRIPTION
+// through the sidecar rather than a metered key. Ordering them by the account
+// list alone would move that spend to the key with nothing announcing it, so
+// a meridian account leads for a harness that asked for one.
+func TestMeridianLeadsForAHarnessThatDeclaredIt(t *testing.T) {
+	accs := []Account{
+		{Name: "keyed", Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k"},
+		{Name: "sidecar", Kind: KindMeridian, BaseURL: MeridianUpstream, APIKey: "tok"},
+	}
+	s := configured(t, accs, "keyed")
+	harnessAt(s, "p1", []string{"meridian", "anthropic", "openai"}, nil)
+	if got := poolNames(t, s, "p1"); strings.Join(got, ",") != "sidecar,keyed" {
+		t.Fatalf("opencode order = %v, want the sidecar first", got)
+	}
+	// A harness that never asked for meridian cannot reach one at all, and
+	// the account order is untouched for it.
+	harnessAt(s, "p2", []string{"anthropic", "openai"}, nil)
+	if got := poolNames(t, s, "p2"); strings.Join(got, ",") != "keyed" {
+		t.Fatalf("claude order = %v, want the keyed account alone", got)
+	}
+	// And the per-harness order still wins: it is the visible rule.
+	harnessAt(s, "p1", []string{"meridian", "anthropic", "openai"}, []string{"keyed"})
+	if got := poolNames(t, s, "p1"); strings.Join(got, ",") != "keyed,sidecar" {
+		t.Fatalf("explicit order = %v, want the user's order to win", got)
+	}
+}

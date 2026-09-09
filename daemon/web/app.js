@@ -1958,12 +1958,20 @@ function wireHarnessSettings() {
       listEl.innerHTML = "";
       return;
     }
-    const ordered = orderedFor(kinds, JSON.parse(row.dataset.order || "[]"));
+    const stored = JSON.parse(row.dataset.order || "[]");
+    const ordered = orderedFor(kinds, stored);
     // Seed the stored order from what the row resolves to today, so turning
     // "custom" on freezes the current list (which is the whole point of the
     // choice) instead of persisting an empty override that reads as "follow
     // the account order" on the next load.
-    row.dataset.order = JSON.stringify(ordered.map((a) => a.name));
+    //
+    // Names already stored are KEPT at their positions even when the current
+    // kinds filter them out, so unchecking a kind parks its accounts rather
+    // than erasing them: recheck it and the order the user set is still
+    // there. The daemon skips a name its kinds do not allow anyway.
+    const next = stored.slice();
+    for (const a of ordered) if (!next.includes(a.name)) next.push(a.name);
+    row.dataset.order = JSON.stringify(next);
     if (!ordered.length) {
       // The radio stays on custom and says why. An empty custom order still
       // persists as no override, because it resolves identically to
