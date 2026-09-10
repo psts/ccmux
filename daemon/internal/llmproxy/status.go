@@ -61,8 +61,8 @@ func statusRow(a Account, h *acctHealth, now time.Time) AccountStatus {
 		st.State = "limited"
 		st.LimitedUntil = h.limitedUntil.Format(time.RFC3339)
 	// After the quota case on purpose: a limit carries a reset the upstream
-	// named and can stand for days, while unreachable is a 30s guess. When
-	// both hold, the limit is the fact worth showing.
+	// named and can stand for days, while unreachable is a short guess
+	// (unreachableCooldown). When both hold, the limit is worth showing.
 	case now.Before(h.downUntil):
 		st.State = "unreachable"
 		st.LastError = h.lastError

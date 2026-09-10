@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -355,7 +356,7 @@ func TestFailoverOnDeadUpstream(t *testing.T) {
 	if st.State != "unreachable" || st.LastError == "" {
 		t.Fatalf("status a = %+v, want unreachable with the error text", st)
 	}
-	// Sidelined: the second request must not pay the dial timeout again.
+	// Sidelined: the second request must not re-dial the dead upstream.
 	call(t, p.URL, "/llm/pane/p1/v1/messages", "")
 	if hitsB != 2 {
 		t.Fatalf("live upstream hits = %d, want both requests to go straight to it", hitsB)
@@ -409,7 +410,7 @@ func TestFailoverOnUnauthorized(t *testing.T) {
 		t.Fatalf("status a = %+v, want unauthorized", st)
 	}
 	if hitsA != 1 {
-		t.Fatalf("rejecting upstream hits = %d, want 1 then skipped", hitsA)
+		t.Fatalf("rejecting upstream hits = %d, want exactly one attempt", hitsA)
 	}
 }
 
@@ -554,9 +555,10 @@ func TestErrorNamesTheAccountThatFailed(t *testing.T) {
 }
 
 // An upstream that took the request and then dropped the connection may have
-// generated (and billed) a completion. Replaying it would charge a second
-// subscription for one answer, so it passes through and the account is NOT
-// called unreachable: it accepted a connection, so it is not down.
+// generated (and billed) a completion, so it is not replayed. It IS recorded:
+// whether the answer may have been billed decides the replay, not whether the
+// failure is worth showing, and an account whose connections break must not
+// read "active" in the Accounts tab.
 func TestDeliveredRequestIsNotReplayed(t *testing.T) {
 	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -589,8 +591,8 @@ func TestDeliveredRequestIsNotReplayed(t *testing.T) {
 	if hitsB != 0 {
 		t.Fatalf("second account hits = %d, want a possibly-billed request not replayed", hitsB)
 	}
-	if st := statusOf(t, s, "max-a"); st.State == "unreachable" {
-		t.Fatalf("status a = %+v, want an upstream that accepted the connection not called down", st)
+	if st := statusOf(t, s, "max-a"); st.State != "unreachable" {
+		t.Fatalf("status a = %+v, want the broken connection recorded", st)
 	}
 }
 
@@ -616,11 +618,9 @@ func TestUnauthorizedSurfacesWithNoFailover(t *testing.T) {
 	}
 }
 
-// A TLS handshake that fails wrote nothing, so it is safe to replay and the
-// account is genuinely down. Matching dial errors by type missed this whole
-// class: every production upstream is https, so a mistyped scheme or an
-// intercepting proxy pinned a permanently failing account at the head of the
-// order with neither failover nor a mark.
+// A failed TLS handshake wrote nothing, so it fails over and marks. The class
+// it pins is the one error-type matching missed; the argument for why lives on
+// traceDelivery.
 func TestFailoverOnTLSFailure(t *testing.T) {
 	// A plain-HTTP server addressed as https: the handshake fails with
 	// tls.RecordHeaderError, which is not a *net.OpError.
@@ -644,5 +644,64 @@ func TestFailoverOnTLSFailure(t *testing.T) {
 	}
 	if st := statusOf(t, s, "max-a"); st.State != "unreachable" {
 		t.Fatalf("status a = %+v, want unreachable so later requests skip it", st)
+	}
+}
+
+// The cancel guard, pinned properly. TestClientCancelIsNotAnOutage cannot do
+// it: it waits for the upstream handler to run, which means WroteHeaders has
+// already fired, so `delivered` alone satisfies the condition and deleting the
+// context check leaves that test green.
+//
+// The case that needs the check is a cancel landing BEFORE any byte is
+// written. A listener that accepts and then never speaks TLS stalls the
+// handshake, and headers are written only after it completes.
+func TestCancelBeforeDeliveryIsNotAnOutage(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		close(accepted)
+		<-release // hold the handshake open, read nothing, answer nothing
+		conn.Close()
+	}()
+	hitsB := 0
+	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB++
+		w.WriteHeader(200)
+	}))
+	defer upB.Close()
+	s := claudePoolService(t, "https://"+ln.Addr().String(), upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", p.URL+"/llm/pane/p1/v1/messages", strings.NewReader(`{}`))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-accepted // connected, handshake stalled, nothing written
+	cancel()
+	<-done
+	close(release)
+	p.Close() // waits for the proxy's handler goroutine
+
+	for _, name := range []string{"max-a", "max-b"} {
+		if st := statusOf(t, s, name); st.State == "unreachable" {
+			t.Fatalf("status %s = %+v, want a cancel before delivery not recorded as an outage", name, st)
+		}
+	}
+	if hitsB != 0 {
+		t.Fatalf("second account hits = %d, want no replay on a cancelled context", hitsB)
 	}
 }

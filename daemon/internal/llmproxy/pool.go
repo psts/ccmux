@@ -109,8 +109,7 @@ func (h *healthState) observe(name string, resp *http.Response) {
 	a.lastStatus = resp.StatusCode
 	// An upstream that answered is reachable, whatever it answered. That is a
 	// different fact from whether it will SERVE us, which the switch below
-	// decides — clearing this only on a 2xx left an account that came back
-	// with a 404 reading as unreachable for the rest of the cooldown.
+	// decides, so a 404 clears the mark just as a 200 does.
 	a.downUntil = time.Time{}
 	a.lastError = ""
 	captureUtilization(a, resp.Header)
@@ -150,15 +149,24 @@ func (h *healthState) observeError(name string, err error) {
 }
 
 // failoverResponse reports whether another account should be given this
-// request. Quota is the case the pool was built for; 401 joins it because a
-// rejected credential is the ACCOUNT's problem and the next account can serve
-// the same request unchanged.
+// request. Quota is the case the pool was built for.
+//
+// A 401 joins it only for an account holding its OWN credential, where the
+// rejection is the account's problem and the pane's user cannot fix it from
+// there. A keyless account is a pass-through that forwards the PANE's login
+// (applyAuth returns early; restoreClientAuth puts it back), so a 401 on one
+// means the user's own credential just died. Replaying that onto a keyed
+// subscription hides the fact they need to log in again AND bills a different
+// account for the answer, so it surfaces instead.
 //
 // Deliberately NOT 5xx. A 500 can just as easily mean the request itself is
 // broken, and retrying that walks one bad request through every account in
 // the pool, spending each of them to collect the same error.
-func failoverResponse(resp *http.Response) bool {
-	return limitResponse(resp) || resp.StatusCode == http.StatusUnauthorized
+func failoverResponse(resp *http.Response, acct Account) bool {
+	if resp.StatusCode == http.StatusUnauthorized {
+		return acct.APIKey != ""
+	}
+	return limitResponse(resp)
 }
 
 // limitResponse recognizes "this account is out of quota": a plain 429, or
@@ -247,30 +255,30 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	pool := t.s.servableOnly(info.pool, info.rest, info.pane)
 	attempt := req
 	for i, acct := range pool {
+		// One assignment for the whole loop: info.account means "the account
+		// currently being attempted", and upstreamError and ModifyResponse
+		// both read it after RoundTrip returns. Setting it on each return
+		// path instead left the error path free to forget.
+		info.account = acct
 		if i > 0 {
 			attempt = replayRequest(req, acct, info)
 		}
 		sent, wrote := traceDelivery(attempt)
+		started := time.Now()
 		resp, err := http.DefaultTransport.RoundTrip(sent)
 		// Both exhaustion conditions in one place: a request whose body was
 		// too large to buffer cannot be replayed at all, so it is "last" on
 		// the first account no matter how long the pool is.
 		last := !info.retryable || i == len(pool)-1
 		if err != nil {
-			if t.abandonAttempt(acct, sent, err, last, wrote.Load()) {
-				// Same assignment the success path makes, for the same
-				// reason: upstreamError names info.account, and the walk
-				// leaves it on pool[0] otherwise, blaming a healthy account
-				// for the last one's error and printing its address.
-				info.account = acct
+			if t.abandonAttempt(info, acct, sent, err, last, wrote.Load(), started) {
 				return resp, err
 			}
 			log.Printf("llm: pane %s account %s is not answering (%v), retrying on %s", info.pane, acct.Name, err, pool[i+1].Name)
 			continue
 		}
 		t.s.health.observe(acct.Name, resp)
-		if last || !failoverResponse(resp) {
-			info.account = acct
+		if last || !failoverResponse(resp, acct) {
 			return resp, nil
 		}
 		resp.Body.Close()
@@ -290,28 +298,42 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // pool unreachable for the cooldown. upstreamError already treats this as
 // routine and answers nothing.
 //
-// A connection that broke after any request byte reached the wire is not
-// marked and not replayed either — see traceDelivery.
+// A failure is ALWAYS recorded against the account. Whether the request may
+// have been billed decides the replay; it does not decide whether the failure
+// is worth showing. Fusing the two left an account whose connections break
+// reading "active" in both lenses while every request through it 502'd.
 //
-// What remains is a request that never left this machine. That IS marked,
-// before the give-up test, so a dead upstream is sidelined even when there is
-// nobody to fail over to — otherwise it stays at the head of the order and
-// every later request pays for it.
-func (t poolTransport) abandonAttempt(acct Account, attempt *http.Request, err error, last, delivered bool) bool {
-	if attempt.Context().Err() != nil || delivered {
+// The one exception is a cancelled context, which is the PANE hanging up
+// rather than the account failing: replayRequest clones that same context, so
+// a mark here would sideline a wholly healthy pool on one Esc.
+func (t poolTransport) abandonAttempt(info *reqInfo, acct Account, sent *http.Request, err error, last, delivered bool, started time.Time) bool {
+	if ctxErr := sent.Context().Err(); ctxErr != nil {
+		// Logged because nothing else records it: upstreamError returns early
+		// on "context canceled" without writing a line. A pane that hung up
+		// after 2s and an upstream that held the request for 90s arrive here
+		// as the same error and are not the same problem, so the elapsed time
+		// is the part worth keeping.
+		log.Printf("llm: pane %s account %s abandoned after %s (%v)",
+			info.pane, acct.Name, time.Since(started).Round(time.Second), ctxErr)
 		return true
 	}
 	t.s.health.observeError(acct.Name, err)
-	return last
+	return delivered || last
 }
 
-// traceDelivery returns the request to send and a flag reporting whether any
-// of it reached the wire, which is the only safe basis for replaying it on a
-// second account: a completion that was generated was billed, so replaying a
-// request that DID arrive charges two subscriptions for one answer. Go's
-// transport does not auto-retry a POST carrying a body, so a connection that
-// dropped while waiting for the response surfaces here as "EOF" or
-// "connection reset by peer".
+// traceDelivery returns the request to send and a flag reporting whether the
+// transport began writing it onto a connection. That is deliberately weaker
+// than "reached the wire": WroteHeaders fires when the headers go into the
+// connection's bufio.Writer, BEFORE the flush (request.go:733, flush just
+// below it), so the flag is conservative in the safe direction — it can say
+// delivered for a request that never left the buffer, never the reverse.
+//
+// Conservative is what this needs to be, because it gates the replay: a
+// completion that was generated was billed, so replaying a request that DID
+// arrive charges two subscriptions for one answer. Go's transport does not
+// auto-retry a POST carrying a body unless GetBody is set, which bufferForRetry
+// now does, so the buffered-but-unflushed case is retried by the transport
+// itself before it can reach us.
 //
 // This asks the transport rather than reading the error, because the error
 // cannot answer it. Matching "*net.OpError with Op == dial" looked like the
@@ -321,7 +343,6 @@ func (t poolTransport) abandonAttempt(acct Account, attempt *http.Request, err e
 // them a net.OpError. Every production upstream is https, so one mistyped
 // scheme or one intercepting proxy would have pinned a permanently failing
 // account at the head of the order, with neither failover nor a mark.
-// Measured against Go 1.22 for all three shapes.
 //
 // Atomic because the callback runs on the transport's write goroutine, which
 // is not ordered against RoundTrip returning.
@@ -350,8 +371,10 @@ func replayRequest(req *http.Request, acct Account, info *reqInfo) *http.Request
 	out.URL = &u
 	out.Host = target.Host
 	if info.body != nil {
-		out.Body = io.NopCloser(bytes.NewReader(info.body))
-		out.ContentLength = int64(len(info.body))
+		body := info.body
+		out.Body = io.NopCloser(bytes.NewReader(body))
+		out.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+		out.ContentLength = int64(len(body))
 		// info.body is what the PANE sent, so the rewrite has to run again
 		// for this account: its model aliases and its system-turn verdict
 		// are its own. Without this the replay carries the head account's
@@ -379,6 +402,11 @@ func bufferForRetry(r *http.Request, info *reqInfo) {
 	}
 	r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	// GetBody is what lets net/http replay this itself when it wrote nothing
+	// (a keep-alive connection the upstream had already closed). Without it
+	// the transport declines to retry a POST with a body, and the failure
+	// reaches us looking exactly like one that may have been served.
+	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	r.ContentLength = int64(len(body))
 	info.body = body
 	info.retryable = true

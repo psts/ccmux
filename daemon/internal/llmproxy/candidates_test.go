@@ -734,3 +734,65 @@ func TestHarnessPaneOnAKeylessAccountIsNotCalledThePassthrough(t *testing.T) {
 		t.Fatalf("tier-3 refusal = %q, want the pass-through wording", got)
 	}
 }
+
+// A keyless account is a pass-through carrying the PANE's own login, so a 401
+// from one means the user's credential died, not the account's. Replaying it
+// onto the keyed subscription behind it would hide that they need to log in
+// again and bill a different account for the answer.
+func TestKeylessUnauthorizedDoesNotFailOver(t *testing.T) {
+	keyless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer keyless.Close()
+	keyedHits := 0
+	keyed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keyedHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer keyed.Close()
+
+	s := configured(t, []Account{
+		{Name: "local", Kind: "anthropic", BaseURL: keyless.URL},
+		{Name: "keyed", Kind: "anthropic", BaseURL: keyed.URL, APIKey: "sk-ant-secret"},
+	}, "")
+	harnessAt(s, "p1", []string{"anthropic"}, []string{"local", "keyed"})
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "the-panes-dead-login"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want the pane's own rejected login surfaced", resp.StatusCode)
+	}
+	if keyedHits != 0 {
+		t.Fatalf("keyed upstream hits = %d, want the pane's dead login not billed to a subscription", keyedHits)
+	}
+}
+
+// A keyed account's 401 still fails over: that credential is stored in
+// settings and the pane's user cannot fix it from the pane.
+func TestKeyedUnauthorizedStillFailsOver(t *testing.T) {
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer rejecting.Close()
+	nextHits := 0
+	next := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer next.Close()
+
+	s := configured(t, []Account{
+		{Name: "dead", Kind: "anthropic", BaseURL: rejecting.URL, APIKey: "sk-ant-dead"},
+		{Name: "live", Kind: "anthropic", BaseURL: next.URL, APIKey: "sk-ant-live"},
+	}, "")
+	harnessAt(s, "p1", []string{"anthropic"}, []string{"dead", "live"})
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want a stored dead token hidden by failover", resp.StatusCode)
+	}
+	if nextHits != 1 {
+		t.Fatalf("second account hits = %d, want the replay to land", nextHits)
+	}
+}
