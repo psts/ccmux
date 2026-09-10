@@ -705,3 +705,37 @@ func TestCancelBeforeDeliveryIsNotAnOutage(t *testing.T) {
 		t.Fatalf("second account hits = %d, want no replay on a cancelled context", hitsB)
 	}
 }
+
+// A quota rejection carrying 401 must be recorded as a LIMIT, not tested as a
+// credential first. failoverResponse was reordered for exactly this case; its
+// twin in observe was not, so the account was left with no mark at all: still
+// usable, still at the head of the order, burning a round trip per request,
+// and reading "active" in both lenses with the reset the upstream named
+// thrown away.
+func TestQuota401IsRecordedAsALimit(t *testing.T) {
+	h := newHealthState()
+	resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{
+		"Anthropic-Ratelimit-Unified-Status": {"rejected"},
+		"Anthropic-Ratelimit-Unified-Reset":  {strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
+	}}
+	h.observe(Account{Name: "local", Kind: "anthropic"}, resp)
+
+	if h.usable("local") {
+		t.Fatal("an out-of-quota account is still usable, so it stays at the head of the order")
+	}
+	st := statusRow(Account{Name: "local"}, h.get("local"), h.now())
+	if st.State != "limited" || st.LimitedUntil == "" {
+		t.Fatalf("status = %+v, want limited with the reset the upstream named", st)
+	}
+}
+
+// The same ordering must not turn an ordinary rejected credential into a
+// limit: a 401 with no quota header is still a dead key.
+func TestPlain401OnAKeyedAccountIsStillUnauthorized(t *testing.T) {
+	h := newHealthState()
+	h.observe(Account{Name: "keyed", APIKey: "sk-ant-x"},
+		&http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}})
+	if st := statusRow(Account{Name: "keyed"}, h.get("keyed"), h.now()); st.State != "unauthorized" {
+		t.Fatalf("status = %+v, want unauthorized", st)
+	}
+}

@@ -116,6 +116,12 @@ func (h *healthState) observe(acct Account, resp *http.Response) {
 	a.lastError = ""
 	captureUtilization(a, resp.Header)
 	switch {
+	// Quota first, for the reason failoverResponse gives: a limit can arrive
+	// carrying 401, and testing the credential first recorded that as neither
+	// a limit nor a rejection — no mark at all, so an exhausted account stayed
+	// at the head of the order reading "active".
+	case limitResponse(resp):
+		a.limitedUntil = limitResetTime(resp.Header, h.now())
 	case resp.StatusCode == http.StatusUnauthorized:
 		// Only an account holding its own key can have ITS credential
 		// rejected. A keyless account forwards the pane's login, so marking it
@@ -124,8 +130,6 @@ func (h *healthState) observe(acct Account, resp *http.Response) {
 		// billed by the keyed account behind it — the exact outcome
 		// failoverResponse refuses to cause on the first request.
 		a.unauthorized = acct.APIKey != ""
-	case limitResponse(resp):
-		a.limitedUntil = limitResetTime(resp.Header, h.now())
 	case resp.StatusCode < 400:
 		// The upstream accepted this account: whatever we believed is stale.
 		a.unauthorized = false
