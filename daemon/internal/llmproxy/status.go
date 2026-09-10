@@ -68,11 +68,18 @@ func statusRow(a Account, h *acctHealth, now time.Time) AccountStatus {
 	case now.Before(h.downUntil):
 		st.State = "unreachable"
 		st.LastError = h.lastError
-	// Keyed on the LAST status, so it needs no separate flag and clears
-	// itself: the next response that serves sets lastStatus under 400 and
-	// wipes lastError. A transport failure sets lastStatus to 0, so it reads
-	// unreachable above rather than falling in here.
-	case h.lastStatus >= 400:
+	// Both halves, because either alone is wrong. observe clears lastError on
+	// EVERY response and only its default arm sets one, so the pair means
+	// exactly "the latest response was an error no other arm claimed" — which
+	// is the whole condition, and needs no flag of its own.
+	//
+	// On lastStatus alone this arm stole two rows that belong elsewhere: an
+	// account whose quota window lapsed (lastStatus 429, limitedUntil passed)
+	// and a pass-through answering 401 for the PANE's dead login, which is
+	// deliberately not marked. Both then read "failing" with no reason.
+	// On lastError alone it would steal a third: a transport failure sets a
+	// reason and lastStatus 0, and belongs to the unreachable arm above.
+	case h.lastStatus >= 400 && h.lastError != "":
 		st.State = "failing"
 		st.LastError = h.lastError
 	case h.lastSeen.IsZero():

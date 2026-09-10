@@ -846,3 +846,50 @@ func TestFailingDoesNotShadowLimitedOrUnauthorized(t *testing.T) {
 		t.Errorf("keyed 401 status = %q, want unauthorized", st.State)
 	}
 }
+
+// A quota window that lapsed with no traffic since leaves lastStatus 429 and
+// no reason. That is an idle subscription overnight, not a broken account.
+func TestLapsedQuotaReadsActiveNotFailing(t *testing.T) {
+	h := newHealthState()
+	now := time.Now()
+	h.now = func() time.Time { return now }
+	h.observe(Account{Name: "a", APIKey: "sk-ant-x"}, &http.Response{StatusCode: 429, Header: http.Header{
+		"Anthropic-Ratelimit-Unified-Status": {"rejected"},
+		"Anthropic-Ratelimit-Unified-Reset":  {strconv.FormatInt(now.Add(time.Hour).Unix(), 10)},
+	}})
+	if st := statusRow(Account{Name: "a"}, h.get("a"), now); st.State != "limited" {
+		t.Fatalf("during the window = %q, want limited", st.State)
+	}
+	if st := statusRow(Account{Name: "a"}, h.get("a"), now.Add(2*time.Hour)); st.State != "ok" {
+		t.Fatalf("after the window = %+v, want ok", st)
+	}
+}
+
+// A pass-through's 401 is the PANE's login being rejected, so observe leaves
+// the account unmarked on purpose. The row must not call it failing either:
+// nothing is wrong with the account.
+func TestPassthrough401ReadsActiveNotFailing(t *testing.T) {
+	h := newHealthState()
+	h.observe(Account{Name: "p", Kind: "anthropic"}, &http.Response{StatusCode: 401, Header: http.Header{}})
+	if st := statusRow(Account{Name: "p"}, h.get("p"), h.now()); st.State != "ok" {
+		t.Fatalf("status = %+v, want ok: the account's own credential was never rejected", st)
+	}
+}
+
+// A transport failure whose cooldown lapsed with no traffic since sets a
+// reason but no status. It must not read as failing: one blip is not evidence
+// the upstream is still down, and before the failing state existed this row
+// read active. This is the half of the condition that lastError alone loses.
+func TestLapsedOutageReadsActiveNotFailing(t *testing.T) {
+	h := newHealthState()
+	now := time.Now()
+	h.now = func() time.Time { return now }
+	h.observeError("a", errors.New("connection refused"))
+	if st := statusRow(Account{Name: "a"}, h.get("a"), now); st.State != "unreachable" {
+		t.Fatalf("during the cooldown = %q, want unreachable", st.State)
+	}
+	later := now.Add(unreachableCooldown + time.Minute)
+	if st := statusRow(Account{Name: "a"}, h.get("a"), later); st.State != "ok" {
+		t.Fatalf("after the cooldown = %+v, want ok: one blip is not a verdict", st)
+	}
+}
