@@ -29,21 +29,68 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[<>&"']/g,
   (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// A display name for presence; asked once and remembered. Tailscale identity
-// will replace this on the tailnet.
-function getUser() {
-  // Device id, not a person: two lenses under ONE login each hold their own
-  // open flags, so a browser closing a window cannot clear the Mac's. The
-  // label is only for a human reading a stale row and is never matched on.
+// Device id, not a person: two lenses under ONE login each hold their own
+// window open flags, so a browser closing a window cannot clear the Mac's. The
+// label is only for a human reading a stale row and is never matched on.
+//
+// MODULE scope on purpose: fetchWorkspaces, openWindow and closeWindow all use
+// it. Declared inside getUser() it was a ReferenceError from each of them,
+// swallowed by fetchWorkspaces's catch, which left the whole sidebar empty.
+const deviceId = (() => {
   let dev = localStorage.getItem("ccmux-device");
   if (!dev) {
     dev = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random().toString(36).slice(2);
     localStorage.setItem("ccmux-device", dev);
   }
-  const deviceId = dev;
-  // "Patric (web)" reads better than a uuid when you are looking at which lens
-  // is holding a window open. Recomputed rather than stored: the name can change.
-  const deviceLabel = () => (localStorage.getItem("ccmux-user") || "anon") + " (web)";
+  return dev;
+})();
+
+// "Patric (web)" reads better than a uuid when you are looking at which lens is
+// holding a window open. Recomputed rather than stored: the name can change.
+const deviceLabel = () => (localStorage.getItem("ccmux-user") || "anon") + " (web)";
+
+// The windows THIS browser has open — its own truth, the way the Mac has
+// state.json. Without it the lens could only echo the daemon's openHere back,
+// which can never drop a row, so it would have had no repair path at all.
+const OPEN_KEY = "ccmux-open-windows";
+function openHereSet() {
+  try {
+    const v = JSON.parse(localStorage.getItem(OPEN_KEY) || "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch (_) {
+    return []; // corrupt value is the same as none; the next declare rewrites it
+  }
+}
+function rememberOpen(id, open) {
+  const set = new Set(openHereSet());
+  open ? set.add(id) : set.delete(id);
+  localStorage.setItem(OPEN_KEY, JSON.stringify([...set]));
+}
+
+// Declare the whole set this lens has open; the daemon makes THIS DEVICE's rows
+// match. Same rule as the Mac's syncOpenFlags, for the same reason: without an
+// inverse, a flag that was never cleanly closed could never be cleared.
+//
+// Like the Mac, a tab that just disappears sends nothing — the repair happens
+// on the next load, and the daemon's TTL is the backstop for a lens that never
+// comes back.
+let declaredOnce = false;
+async function declareOpenWindows() {
+  try {
+    const r = await fetch("/v1/windows/open-set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device: deviceId, deviceLabel: deviceLabel(), windowIds: openHereSet() }),
+    });
+    if (!r.ok) console.error("open-set failed:", r.status, await r.text());
+  } catch (e) {
+    console.error("open-set failed:", e);
+  }
+}
+
+// A display name for presence; asked once and remembered. Tailscale identity
+// will replace this on the tailnet.
+function getUser() {
   let u = localStorage.getItem("ccmux-user");
   if (!u) {
     u = (prompt("Your name (for presence):", "") || "anon").trim() || "anon";
@@ -79,6 +126,13 @@ async function fetchWorkspaces() {
     // per the daemon) — blanking it would make every window look closed and
     // feed wrong close decisions. Same fallback the Mac lens uses.
     if (winr.ok) state.windows = (await winr.json()) || [];
+    // Declare our set only when the list actually loaded. On a failed read we
+    // know nothing, and an empty declaration means "I have none open", which
+    // the daemon would act on by clearing this device's rows.
+    if (winr.ok && !declaredOnce) {
+      declaredOnce = true;
+      declareOpenWindows();
+    }
   } catch (_) {
     state.workspaces = [];
   }
@@ -256,6 +310,7 @@ async function openWindow(win) {
   try {
     const r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(deviceId)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
     if (!r.ok) { alert("open failed: " + (await r.text())); return; }
+    rememberOpen(win.id, true);
     for (const wsId of win.workspaceIds || []) {
       const ws = state.workspaces.find((w) => w.id === wsId);
       if (ws && ws.status === "cold") {
@@ -275,6 +330,7 @@ async function openWindow(win) {
 // which is the model's own permission).
 async function closeWindow(win) {
   try {
+    rememberOpen(win.id, false);
     const r = await fetch(`/v1/windows/${win.id}/close?device=${encodeURIComponent(deviceId)}`, { method: "POST" });
     if (!r.ok) { alert("close failed: " + (await r.text())); return; }
     const out = await r.json();

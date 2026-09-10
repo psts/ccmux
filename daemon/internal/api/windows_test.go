@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -485,5 +486,37 @@ func TestStaleFlagStopsCountingAsOpen(t *testing.T) {
 	}
 	if logins, _ := s.mgr.WindowOpenLogins("w1"); len(logins) != 0 {
 		t.Fatalf("still open by %v — a machine that never came back holds it forever", logins)
+	}
+}
+
+// brokenDeviceOpens fails ONLY the per-device read, so the sibling window list
+// still succeeds. A closed store cannot express this: it fails the list read
+// first and returns 503 for that reason instead, which is how the earlier
+// version of this test passed without the fix.
+type brokenDeviceOpens struct{ store.Store }
+
+func (brokenDeviceOpens) DeviceWindowOpens(string, string, int64) (map[string]bool, error) {
+	return nil, errors.New("database is locked")
+}
+
+// An unreadable device-open table must not be served as openHere=false. Both
+// lenses list a window as CLOSED on that, and clicking it opens a SECOND window
+// onto a shared one this lens already has — the duplicate-owner state
+// claimHostedWorkspace exists to undo.
+func TestOpenHereReadFailureIsA503(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "openhere.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := NewServer(manager.New(context.Background(), nil, brokenDeviceOpens{Store: st}))
+	s.identity = fakeResolver{login: "patric@x.com", ok: true}
+	hubWire(s, &model.Workspace{ID: "w1"})
+
+	req := httptest.NewRequest("GET", "/v1/windows?device=mac-1", nil)
+	rec := httptest.NewRecorder()
+	s.listWindows(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: a false openHere is worse than no answer", rec.Code)
 	}
 }

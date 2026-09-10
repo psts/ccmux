@@ -140,7 +140,14 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 	}
 	here, err := s.mgr.DeviceOpenWindows(login, r.URL.Query().Get("device"))
 	if err != nil {
+		// Same answer as the list read above, for the same reason: serving
+		// openHere=false on an unreadable table is indistinguishable from
+		// "this lens holds nothing open", and both lenses list a window as
+		// CLOSED on that. Clicking it then opens a second window onto a shared
+		// one this lens already has. A 503 makes them keep their last list.
 		log.Printf("windows: device open set unreadable: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "window state unreadable — retry")
+		return
 	}
 	out := make([]windowResp, 0, len(windows))
 	for _, win := range windows {

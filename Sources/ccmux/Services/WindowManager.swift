@@ -787,6 +787,17 @@ class WindowManager {
     /// running does not age out of its own flags.
     private func syncOpenFlags() {
         let service = RemoteSessionService.shared
+        // An empty shared list means the window read has not SUCCEEDED yet, not
+        // that there is nothing to match against: fetchSharedWindows keeps the
+        // previous list on any failure, and the previous list at launch is
+        // empty. Declaring from it would post an empty set, and open-set is
+        // authoritative — the daemon would clear this device's rows for windows
+        // that are on screen, after which another lens closing one of them
+        // computes last=true and force-archives its live sessions.
+        guard !service.sharedWindows.isEmpty else {
+            NSLog("[ccmux] windows: shared list not loaded yet; skipping open-set")
+            return
+        }
         let ids = windowControllers.compactMap { wc -> String? in
             let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
             return service.sharedWindows.first(where: { Self.sameWindowName($0.name, name) })?.id
