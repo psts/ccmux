@@ -70,11 +70,11 @@ type Account struct {
 	// Anthropic pass-through, and codex accounts riding the harness's own
 	// ChatGPT login. It decides who a 401 belongs to (see failoverResponse).
 	//
-	// Never serialized, and never settable: it is stamped where such an
-	// account is BUILT, not where one is configured. An empty APIKey is not
-	// the same fact — validateKind lets an anthropic or openai account be
-	// keyless while pointing at any upstream it likes, and that upstream's
-	// 401 is the account's problem, not the user's login.
+	// Never serialized, and never settable: it is stamped where the built-in
+	// pass-through is BUILT, since that one is fabricated in candidates.go and
+	// never passes through validation. A CONFIGURED account carries the same
+	// fact in an empty APIKey, which hostPinViolation already confines to the
+	// hosts a pane login may be forwarded to.
 	ForwardsPaneLogin bool `json:"-"`
 }
 

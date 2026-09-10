@@ -760,21 +760,26 @@ func TestPlain401OnAKeyedAccountIsStillUnauthorized(t *testing.T) {
 	}
 }
 
-// The account behind a pass-through is not the one being rejected: a 401 there
-// is the credential the PANE sent. Marking it sidelined a healthy pass-through
-// and, because health is keyed by name, could overwrite a real account that
-// legally shares the fabricated "anthropic" name.
-func TestPassthroughUnauthorizedDoesNotMarkTheAccount(t *testing.T) {
+// A 401 belongs to the account only when the account holds the credential.
+// Keyless means the PANE's credential went on the wire (applyAuth attaches
+// nothing), so marking the account sidelines a healthy pass-through and, since
+// health is keyed by name, can overwrite a real account sharing the fabricated
+// "anthropic" name.
+func TestUnauthorizedIsMarkedOnlyWhereTheCredentialLives(t *testing.T) {
 	h := newHealthState()
-	resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}}
-	h.observe(Account{Name: "anthropic", Kind: "anthropic", ForwardsPaneLogin: true}, resp)
-	if !h.usable("anthropic") {
-		t.Fatal("pass-through sidelined for the pane's own rejected login")
+	resp := func() *http.Response {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}}
 	}
-	// A keyless account that is NOT a pass-through is a configured upstream,
-	// and its 401 is its own.
-	h.observe(Account{Name: "router", Kind: "openai"}, resp)
-	if h.usable("router") {
-		t.Fatal("a configured keyless upstream was not marked on its own 401")
+	h.observe(Account{Name: "synthetic", Kind: "anthropic", ForwardsPaneLogin: true}, resp())
+	h.observe(Account{Name: "keyless", Kind: "anthropic"}, resp())
+	h.observe(Account{Name: "keyed", Kind: "anthropic", APIKey: "sk-ant-x"}, resp())
+
+	for _, name := range []string{"synthetic", "keyless"} {
+		if !h.usable(name) {
+			t.Errorf("%s sidelined for the pane's own rejected login", name)
+		}
+	}
+	if h.usable("keyed") {
+		t.Error("an account whose own key was rejected is still usable")
 	}
 }

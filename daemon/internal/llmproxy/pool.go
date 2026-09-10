@@ -188,13 +188,20 @@ func failoverResponse(resp *http.Response, acct Account) bool {
 // forwardsPaneLogin reports whether a 401 from this account is the PANE's
 // credential being rejected rather than the account's own.
 //
-// Deliberately not "has no API key". validateKind lets an anthropic or openai
-// account be keyless AND point anywhere, so a keyless account at a real
-// upstream that demands auth 401s on every request — its own misconfiguration,
-// which must fail over and be marked. Reading the empty key as "pass-through"
-// left exactly that account unmarked, unfailed-over, and reading "active".
+// An empty APIKey IS that fact, and it is enforced rather than assumed:
+// applyAuth attaches nothing to a keyless account, so restoreClientAuth
+// leaves the pane's own credential on the wire, and hostPinViolation
+// (llmproxy.go, "each pane's own login token would be forwarded to it")
+// refuses to save a keyless account pointing anywhere except
+// api.anthropic.com, chatgpt.com, localhost, or a private IP. There is no
+// keyless account at a third-party upstream to distinguish, because settings
+// will not store one.
+//
+// The ForwardsPaneLogin flag carries the same fact for the SYNTHETIC
+// pass-through, which is fabricated in candidates.go and never passes through
+// validation at all.
 func forwardsPaneLogin(a Account) bool {
-	return a.ForwardsPaneLogin || a.Kind == "codex"
+	return a.APIKey == "" || a.ForwardsPaneLogin
 }
 
 // limitResponse recognizes "this account is out of quota": a plain 429, or

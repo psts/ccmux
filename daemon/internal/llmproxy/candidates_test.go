@@ -735,16 +735,20 @@ func TestHarnessPaneOnAKeylessAccountIsNotCalledThePassthrough(t *testing.T) {
 	}
 }
 
-// A keyless account is NOT automatically a pass-through: validateKind lets an
-// anthropic or openai account be keyless while pointing at any upstream, and
-// such an upstream's 401 is the account's own misconfiguration. It must fail
-// over and be marked, or it sits at the head of the order answering nothing
-// while both lenses call it active.
-func TestKeylessConfiguredUpstreamFailsOverOn401(t *testing.T) {
-	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// A keyless account carries the PANE's own login, so a 401 from one means the
+// user's credential died. Replaying it onto the keyed subscription behind it
+// would hide that they must log in again and bill a different account.
+//
+// This holds for EVERY keyless account, not just the built-in pass-through:
+// hostPinViolation refuses to store a keyless account pointing anywhere but
+// api.anthropic.com, chatgpt.com, localhost or a private IP, precisely because
+// the pane's token is what reaches it. TestKeylessCannotBeSavedAtAThirdParty
+// pins that, and it is the reason this rule keys on the empty API key.
+func TestKeylessUnauthorizedDoesNotFailOver(t *testing.T) {
+	keyless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
-	defer rejecting.Close()
+	defer keyless.Close()
 	keyedHits := 0
 	keyed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyedHits++
@@ -753,21 +757,41 @@ func TestKeylessConfiguredUpstreamFailsOverOn401(t *testing.T) {
 	defer keyed.Close()
 
 	s := configured(t, []Account{
-		{Name: "router", Kind: "openai", BaseURL: rejecting.URL},
+		{Name: "local", Kind: "anthropic", BaseURL: keyless.URL},
 		{Name: "keyed", Kind: "anthropic", BaseURL: keyed.URL, APIKey: "sk-ant-secret"},
 	}, "")
-	harnessAt(s, "p1", []string{"anthropic", "openai"}, []string{"router", "keyed"})
+	harnessAt(s, "p1", []string{"anthropic"}, []string{"local", "keyed"})
 	p := mount(s)
 	defer p.Close()
 
-	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want a misconfigured upstream failed over", resp.StatusCode)
+	for i := 1; i <= 2; i++ {
+		resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "the-panes-dead-login")
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("request %d status = %d, want the rejection to keep surfacing", i, resp.StatusCode)
+		}
+		if keyedHits != 0 {
+			t.Fatalf("request %d billed the subscription %d times for a dead pane login", i, keyedHits)
+		}
 	}
-	if keyedHits != 1 {
-		t.Fatalf("keyed upstream hits = %d, want the replay to land", keyedHits)
+	if st := statusOf(t, s, "local"); st.State == "unauthorized" {
+		t.Fatalf("status local = %+v, want a keyless account not blamed for the pane's credential", st)
 	}
-	if st := statusOf(t, s, "router"); st.State != "unauthorized" {
-		t.Fatalf("status router = %+v, want the account marked for its own rejection", st)
+}
+
+// The fact the rule above rests on. Written as a test because getting it wrong
+// once already shipped a regression: a keyless account cannot be pointed at a
+// third-party upstream, so "keyless" and "forwards the pane's login" are the
+// same set, not merely overlapping ones.
+func TestKeylessCannotBeSavedAtAThirdParty(t *testing.T) {
+	s := New(fakeStore{})
+	accs := []Account{{Name: "router", Kind: "openai", BaseURL: "https://openrouter.ai/api"}}
+	route := "router"
+	if msg := s.Reject(&accs, &route); msg == "" {
+		t.Fatal("a keyless account at a third-party host was accepted; the pane's login would be forwarded to it")
+	}
+	keyed := []Account{{Name: "router", Kind: "openai", BaseURL: "https://openrouter.ai/api", APIKey: "sk-or-x"}}
+	if msg := s.Reject(&keyed, &route); msg != "" {
+		t.Fatalf("the same account WITH a key was refused: %s", msg)
 	}
 }
 
