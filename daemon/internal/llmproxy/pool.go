@@ -1,7 +1,10 @@
 // Accounts form a failover pool: when the account answering a pane hits its
 // limit the proxy marks it until the reset the response named and re-sends
 // the same request on the next account in the pane's order — the pane never
-// sees the 429. WHICH accounts are in that order, and in what sequence, is
+// sees the 429. A rejected credential (401) and an upstream that does not
+// answer at all fail over the same way; a 5xx deliberately does not, because
+// a broken request would otherwise be walked through every account in turn.
+// WHICH accounts are in that order, and in what sequence, is
 // decided in candidates.go; this file is the health tracking and the resend.
 // Claude subscription accounts are the case it was built for (each holds a
 // long-lived setup-token the proxy injects per request, so which
@@ -31,6 +34,14 @@ import (
 // limit.
 type acctHealth struct {
 	limitedUntil time.Time
+	// downUntil sidelines an account whose upstream did not answer at all.
+	// Separate from limitedUntil because the two are different facts with
+	// different lifetimes: a quota limit carries a reset the upstream named
+	// and can last days, an unreachable host is a guess that expires in
+	// seconds. Folding them together would show "out of quota until Sunday"
+	// for a refused connection.
+	downUntil    time.Time
+	lastError    string
 	unauthorized bool
 	lastSeen     time.Time
 	lastStatus   int
@@ -67,7 +78,8 @@ func (h *healthState) usable(name string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	a := h.get(name)
-	return !a.unauthorized && h.now().After(a.limitedUntil)
+	now := h.now()
+	return !a.unauthorized && now.After(a.limitedUntil) && now.After(a.downUntil)
 }
 
 // order returns the pool with unusable accounts moved to the back — they are
@@ -93,6 +105,12 @@ func (h *healthState) observe(name string, resp *http.Response) {
 	a := h.get(name)
 	a.lastSeen = h.now()
 	a.lastStatus = resp.StatusCode
+	// An upstream that answered is reachable, whatever it answered. That is a
+	// different fact from whether it will SERVE us, which the switch below
+	// decides — clearing this only on a 2xx left an account that came back
+	// with a 404 reading as unreachable for the rest of the cooldown.
+	a.downUntil = time.Time{}
+	a.lastError = ""
 	captureUtilization(a, resp.Header)
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -104,6 +122,41 @@ func (h *healthState) observe(name string, resp *http.Response) {
 		a.unauthorized = false
 		a.limitedUntil = time.Time{}
 	}
+}
+
+// unreachableCooldown is how long a transport failure sidelines an account.
+// Long enough that a burst of panes does not each rediscover the same dead
+// upstream, short enough that a blip does not sideline a working primary for
+// the rest of a session.
+const unreachableCooldown = 30 * time.Second
+
+// observeError folds a transport failure into the account's health. It is
+// what observe cannot do: a refused connection or a dial timeout never
+// reached an upstream, so there is no status and no headers to read, and
+// until this existed such an account was never marked at all — every
+// subsequent request picked the same dead upstream first.
+func (h *healthState) observeError(name string, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	a := h.get(name)
+	a.lastSeen = h.now()
+	// The attempt produced no status. Leaving the previous one in place would
+	// show a stale 200 next to a failure.
+	a.lastStatus = 0
+	a.downUntil = h.now().Add(unreachableCooldown)
+	a.lastError = err.Error()
+}
+
+// failoverResponse reports whether another account should be given this
+// request. Quota is the case the pool was built for; 401 joins it because a
+// rejected credential is the ACCOUNT's problem and the next account can serve
+// the same request unchanged.
+//
+// Deliberately NOT 5xx. A 500 can just as easily mean the request itself is
+// broken, and retrying that walks one bad request through every account in
+// the pool, spending each of them to collect the same error.
+func failoverResponse(resp *http.Response) bool {
+	return limitResponse(resp) || resp.StatusCode == http.StatusUnauthorized
 }
 
 // limitResponse recognizes "this account is out of quota": a plain 429, or
@@ -196,21 +249,49 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			attempt = replayRequest(req, acct, info)
 		}
 		resp, err := http.DefaultTransport.RoundTrip(attempt)
+		// Both exhaustion conditions in one place: a request whose body was
+		// too large to buffer cannot be replayed at all, so it is "last" on
+		// the first account no matter how long the pool is.
+		last := !info.retryable || i == len(pool)-1
 		if err != nil {
-			return resp, err
+			if t.abandonAttempt(acct, attempt, err, last) {
+				return resp, err
+			}
+			log.Printf("llm: pane %s account %s is not answering (%v), retrying on %s", info.pane, acct.Name, err, pool[i+1].Name)
+			continue
 		}
 		t.s.health.observe(acct.Name, resp)
-		last := i == len(pool)-1
-		if !info.retryable || last || !limitResponse(resp) {
+		if last || !failoverResponse(resp) {
 			info.account = acct
 			return resp, nil
 		}
 		resp.Body.Close()
-		log.Printf("llm: pane %s account %s is at its limit, retrying on %s", info.pane, acct.Name, pool[i+1].Name)
+		log.Printf("llm: pane %s account %s answered %d, retrying on %s", info.pane, acct.Name, resp.StatusCode, pool[i+1].Name)
 	}
 	// Unreachable: the loop always returns on the last pool entry. An error
 	// beats a fallthrough that would send a second live request.
 	return nil, fmt.Errorf("llm pool for pane %s resolved empty", info.pane)
+}
+
+// abandonAttempt records what a transport failure says about the account and
+// reports whether to give up rather than hand the request to the next one.
+//
+// A cancelled context is the PANE hanging up, not the account failing, and it
+// must not be recorded: replayRequest clones that same context, so the retry
+// would fail instantly on every remaining account and mark a wholly healthy
+// pool unreachable for the cooldown. upstreamError already treats this as
+// routine and answers nothing.
+//
+// Everything else is a dial timeout or a refused connection. That IS marked,
+// before the give-up test, so a dead upstream is sidelined even when there is
+// nobody to fail over to — otherwise it stays at the head of the order and
+// every later request pays for it.
+func (t poolTransport) abandonAttempt(acct Account, attempt *http.Request, err error, last bool) bool {
+	if attempt.Context().Err() != nil {
+		return true
+	}
+	t.s.health.observeError(acct.Name, err)
+	return last
 }
 
 // replayRequest re-aims the original outbound request at another account:

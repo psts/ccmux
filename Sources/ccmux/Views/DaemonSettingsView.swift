@@ -314,13 +314,20 @@ struct DaemonSettingsView: View {
     private func accountStatusText(_ name: String) -> String? {
         guard let st = accountStatus[name] else { return nil }
         var parts: [String] = []
+        var head: String
         switch st.state {
-        case "ok": parts.append("● active")
-        case "limited": parts.append("◐ limited" + (st.limitedUntil.map { " until \($0)" } ?? ""))
-        case "unauthorized": parts.append("✕ credential rejected")
-        case "untried": parts.append("○ no traffic yet")
-        default: parts.append(st.state)
+        case "ok": head = "● active"
+        case "limited": head = "◐ limited" + (st.limitedUntil.map { " until \($0)" } ?? "")
+        case "unauthorized": head = "✕ credential rejected"
+        case "untried": head = "○ no traffic yet"
+        case "unreachable": head = "⚠ not answering"
+        default: head = st.state
         }
+        // The daemon sends lastError only WHILE the account is unreachable,
+        // so there is no stale-text case to guard here. Same rule as the web
+        // lens, which appends it in the same position.
+        if let err = st.lastError, !err.isEmpty { head += " (\(err))" }
+        parts.append(head)
         if st.sessionPct >= 0 { parts.append("session \(Int(st.sessionPct))%") }
         if st.weeklyPct >= 0 { parts.append("week \(Int(st.weeklyPct))%") }
         return parts.joined(separator: " · ")

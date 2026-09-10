@@ -306,9 +306,10 @@ struct DaemonSidecarStatus: Codable {
 }
 
 /// Live health for one LLM account, as the proxy learned it from responses:
-/// state is "ok" | "limited" | "unauthorized" | "untried"; percentages are
-/// -1 until an upstream that reports usage (Anthropic subscriptions) has
-/// answered through the proxy.
+/// state is "ok" | "limited" | "unreachable" | "unauthorized" | "untried";
+/// percentages are -1 until an upstream that reports usage (Anthropic
+/// subscriptions) has answered through the proxy. lastError is set only while
+/// the state is "unreachable" and says how the upstream failed to answer.
 struct DaemonLLMAccountStatus: Codable, Identifiable {
     let name: String
     var state: String
@@ -317,6 +318,7 @@ struct DaemonLLMAccountStatus: Codable, Identifiable {
     var weeklyPct: Double
     var sessionReset: String?
     var weeklyReset: String?
+    var lastError: String?
     var id: String { name }
 
     init(from decoder: Decoder) throws {
@@ -328,6 +330,7 @@ struct DaemonLLMAccountStatus: Codable, Identifiable {
         weeklyPct = try c.decodeIfPresent(Double.self, forKey: .weeklyPct) ?? -1
         sessionReset = try c.decodeIfPresent(String.self, forKey: .sessionReset)
         weeklyReset = try c.decodeIfPresent(String.self, forKey: .weeklyReset)
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
     }
 }
 

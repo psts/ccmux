@@ -10,9 +10,14 @@ type AccountStatus struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	// State: "ok" (usable), "limited" (out of quota until LimitedUntil),
+	// "unreachable" (the upstream did not answer; LastError says how),
 	// "unauthorized" (credential rejected), "untried" (no traffic seen yet).
-	State         string  `json:"state"`
-	LimitedUntil  string  `json:"limitedUntil,omitempty"`
+	State        string `json:"state"`
+	LimitedUntil string `json:"limitedUntil,omitempty"`
+	// LastError is carried only while the account IS unreachable. An account
+	// that has recovered reads as active, and pairing "active" with the text
+	// of an old failure invites reading a healthy account as a broken one.
+	LastError     string  `json:"lastError,omitempty"`
 	SessionPct    float64 `json:"sessionPct"`
 	WeeklyPct     float64 `json:"weeklyPct"`
 	SessionReset  string  `json:"sessionReset,omitempty"`
@@ -55,6 +60,12 @@ func statusRow(a Account, h *acctHealth, now time.Time) AccountStatus {
 	case now.Before(h.limitedUntil):
 		st.State = "limited"
 		st.LimitedUntil = h.limitedUntil.Format(time.RFC3339)
+	// After the quota case on purpose: a limit carries a reset the upstream
+	// named and can stand for days, while unreachable is a 30s guess. When
+	// both hold, the limit is the fact worth showing.
+	case now.Before(h.downUntil):
+		st.State = "unreachable"
+		st.LastError = h.lastError
 	case h.lastSeen.IsZero():
 		st.State = "untried"
 	default:

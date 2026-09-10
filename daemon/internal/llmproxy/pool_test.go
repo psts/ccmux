@@ -1,6 +1,8 @@
 package llmproxy
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -253,9 +255,16 @@ func TestLimitResetTime(t *testing.T) {
 	}
 }
 
-// The 401 lifecycle: a rejected credential passes through to the client,
-// demotes the account for the next request, and a later success through it
-// clears the flag.
+// The 401 lifecycle: a rejected credential fails the request over to the
+// next account, demotes the one that rejected it, and a later success through
+// it clears the flag.
+//
+// This USED to surface the 401 to the pane, on the reasoning that claude has
+// to show the auth error. Reversed deliberately: with a second account
+// configured, a token that expired overnight cost a visible failure in the
+// pane for something the pane's user cannot fix from there, and the Accounts
+// tab already says "credential rejected" against the account itself. With one
+// account there is nothing to fail over to and the 401 still arrives.
 func TestUnauthorizedAccountLifecycle(t *testing.T) {
 	statusA := 401
 	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -271,10 +280,10 @@ func TestUnauthorizedAccountLifecycle(t *testing.T) {
 	p := mount(s)
 	defer p.Close()
 
-	// 401 is not a limit: it surfaces to the client (claude must show the
-	// auth error), but the account is marked.
-	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 401 {
-		t.Fatalf("status = %d, want the 401 surfaced", resp.StatusCode)
+	// The rejection is hidden from the pane by the failover, and recorded
+	// against the account that produced it.
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want the 401 hidden by failover", resp.StatusCode)
 	}
 	sts, _ := s.Statuses()
 	if sts[0].State != "unauthorized" {
@@ -294,5 +303,231 @@ func TestUnauthorizedAccountLifecycle(t *testing.T) {
 	sts, _ = s.Statuses()
 	if sts[0].State != "ok" {
 		t.Fatalf("status a after success = %+v, want ok again", sts[0])
+	}
+}
+
+// deadUpstream is a URL nothing is listening on: a server started so the port
+// is real, then closed so connecting to it is refused. This is the outage
+// case, distinct from an upstream that answers with an error.
+func deadUpstream(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	return url
+}
+
+// statusOf finds one account's row by name; index order is not the point of
+// these tests.
+func statusOf(t *testing.T, s *Service, name string) AccountStatus {
+	t.Helper()
+	sts, err := s.Statuses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range sts {
+		if st.Name == name {
+			return st
+		}
+	}
+	t.Fatalf("no status row for %q", name)
+	return AccountStatus{}
+}
+
+// An upstream that does not answer at all fails over exactly like a limit,
+// and the dead account is sidelined so later requests skip it.
+func TestFailoverOnDeadUpstream(t *testing.T) {
+	dead := deadUpstream(t)
+	hitsB := 0
+	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB++
+		w.WriteHeader(200)
+	}))
+	defer upB.Close()
+	s := claudePoolService(t, dead, upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want the outage hidden by failover", resp.StatusCode)
+	}
+	st := statusOf(t, s, "max-a")
+	if st.State != "unreachable" || st.LastError == "" {
+		t.Fatalf("status a = %+v, want unreachable with the error text", st)
+	}
+	// Sidelined: the second request must not pay the dial timeout again.
+	call(t, p.URL, "/llm/pane/p1/v1/messages", "")
+	if hitsB != 2 {
+		t.Fatalf("live upstream hits = %d, want both requests to go straight to it", hitsB)
+	}
+}
+
+// Nobody to fail over to: the pane gets the error, and the account is STILL
+// marked. Marking only on a successful failover would leave a single-account
+// daemon re-dialing a dead host forever.
+func TestDeadUpstreamMarkedWithNoFailover(t *testing.T) {
+	s := New(fakeStore{})
+	accs := []Account{{Name: "solo", Kind: "claude", BaseURL: deadUpstream(t), APIKey: "sk-ant-oat01-x"}}
+	route := "solo"
+	if err := s.Apply(&accs, &route); err != nil {
+		t.Fatal(err)
+	}
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want the outage surfaced when no account can serve", resp.StatusCode)
+	}
+	if st := statusOf(t, s, "solo"); st.State != "unreachable" {
+		t.Fatalf("status = %+v, want unreachable", st)
+	}
+}
+
+// A rejected credential is the account's problem, not the request's, so the
+// next account gets the same request rather than the pane getting the 401.
+func TestFailoverOnUnauthorized(t *testing.T) {
+	hitsA := 0
+	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsA++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upA.Close()
+	var got seen
+	upB := upstream(t, &got)
+	defer upB.Close()
+	s := claudePoolService(t, upA.URL, upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want the 401 hidden by failover", resp.StatusCode)
+	}
+	if got.auth != "Bearer sk-ant-oat01-bbb" {
+		t.Fatalf("auth on retry = %q, want account B's token", got.auth)
+	}
+	if st := statusOf(t, s, "max-a"); st.State != "unauthorized" {
+		t.Fatalf("status a = %+v, want unauthorized", st)
+	}
+	if hitsA != 1 {
+		t.Fatalf("rejecting upstream hits = %d, want 1 then skipped", hitsA)
+	}
+}
+
+// A 5xx does NOT fail over. It can just as easily mean the request is broken,
+// and retrying that spends every account in the pool to collect one error.
+func TestNoFailoverOnServerError(t *testing.T) {
+	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upA.Close()
+	hitsB := 0
+	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB++
+		w.WriteHeader(200)
+	}))
+	defer upB.Close()
+	s := claudePoolService(t, upA.URL, upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want the 500 passed through", resp.StatusCode)
+	}
+	if hitsB != 0 {
+		t.Fatalf("second account hits = %d, want the 500 not walked through the pool", hitsB)
+	}
+}
+
+// The cooldown is a guess, so a later success has to overrule it — otherwise
+// a recovered host stays sidelined for the rest of the window.
+func TestUnreachableClearsOnSuccess(t *testing.T) {
+	h := newHealthState()
+	h.observeError("a", errors.New("connection refused"))
+	if h.usable("a") {
+		t.Fatal("account usable immediately after a transport failure")
+	}
+	h.observe("a", &http.Response{StatusCode: 200, Header: http.Header{}})
+	if !h.usable("a") {
+		t.Fatal("account still sidelined after a successful response")
+	}
+	if st := statusRow(Account{Name: "a"}, h.get("a"), h.now()); st.State != "ok" || st.LastError != "" {
+		t.Fatalf("status = %+v, want ok with the stale error dropped", st)
+	}
+}
+
+// The cooldown lapses on its own: nothing has to succeed for the account to
+// be tried again, which is what keeps a marked-dead account recoverable when
+// it is the only one configured.
+func TestUnreachableCooldownExpires(t *testing.T) {
+	h := newHealthState()
+	now := time.Now()
+	h.now = func() time.Time { return now }
+	h.observeError("a", errors.New("i/o timeout"))
+	now = now.Add(unreachableCooldown + time.Second)
+	if !h.usable("a") {
+		t.Fatal("account still sidelined after the cooldown lapsed")
+	}
+}
+
+// A pane that hangs up mid-request is not an outage. The outbound context is
+// the inbound one (handler.go), and replayRequest clones it, so treating a
+// cancellation as an account failure marked the WHOLE pool unreachable in one
+// pass and sidelined every healthy account for the cooldown.
+func TestClientCancelIsNotAnOutage(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(200)
+	}))
+	defer upA.Close()
+	hitsB := 0
+	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB++
+		w.WriteHeader(200)
+	}))
+	defer upB.Close()
+	s := claudePoolService(t, upA.URL, upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", p.URL+"/llm/pane/p1/v1/messages", strings.NewReader(`{}`))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-started // the first account has the request and is holding it
+	cancel()
+	<-done
+	close(release)
+	// Close waits for the proxy's own handler goroutine, which is the sync
+	// point: without it the assertions race the transport's error path.
+	p.Close()
+
+	if hitsB != 0 {
+		t.Fatalf("second account hits = %d, want a hang-up not walked through the pool", hitsB)
+	}
+	for _, name := range []string{"max-a", "max-b"} {
+		if st := statusOf(t, s, name); st.State == "unreachable" {
+			t.Fatalf("status %s = %+v, want the pane's own cancellation not recorded as an outage", name, st)
+		}
+	}
+}
+
+// An upstream that answers at all is reachable, whatever it answers: a 404
+// after an outage has to clear the mark, not wait out the cooldown.
+func TestAnyResponseClearsUnreachable(t *testing.T) {
+	h := newHealthState()
+	h.observeError("a", errors.New("connection refused"))
+	h.observe("a", &http.Response{StatusCode: 404, Header: http.Header{}})
+	if !h.usable("a") {
+		t.Fatal("account still sidelined after the upstream answered")
+	}
+	if st := statusRow(Account{Name: "a"}, h.get("a"), h.now()); st.State != "ok" || st.LastError != "" {
+		t.Fatalf("status = %+v, want ok with the stale error dropped", st)
 	}
 }
