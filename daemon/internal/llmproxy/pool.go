@@ -1,9 +1,11 @@
 // Accounts form a failover pool: when the account answering a pane hits its
 // limit the proxy marks it until the reset the response named and re-sends
 // the same request on the next account in the pane's order — the pane never
-// sees the 429. A rejected credential (401) and an upstream that does not
-// answer at all fail over the same way; a 5xx deliberately does not, because
-// a broken request would otherwise be walked through every account in turn.
+// sees the 429. An upstream that does not answer at all fails over the same
+// way, and so does a 401 from an account holding its OWN key; a 401 from a
+// keyless pass-through does not, because that one is the PANE's login being
+// rejected. A 5xx deliberately does not either, because a broken request
+// would otherwise be walked through every account in turn.
 // WHICH accounts are in that order, and in what sequence, is
 // decided in candidates.go; this file is the health tracking and the resend.
 // Claude subscription accounts are the case it was built for (each holds a
@@ -101,10 +103,10 @@ func (h *healthState) order(pool []Account) []Account {
 }
 
 // observe folds one upstream response into the account's health.
-func (h *healthState) observe(name string, resp *http.Response) {
+func (h *healthState) observe(acct Account, resp *http.Response) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	a := h.get(name)
+	a := h.get(acct.Name)
 	a.lastSeen = h.now()
 	a.lastStatus = resp.StatusCode
 	// An upstream that answered is reachable, whatever it answered. That is a
@@ -115,7 +117,13 @@ func (h *healthState) observe(name string, resp *http.Response) {
 	captureUtilization(a, resp.Header)
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
-		a.unauthorized = true
+		// Only an account holding its own key can have ITS credential
+		// rejected. A keyless account forwards the pane's login, so marking it
+		// here sidelined a healthy pass-through: usable() went false with no
+		// expiry, order() sank it, and the very next request was answered and
+		// billed by the keyed account behind it — the exact outcome
+		// failoverResponse refuses to cause on the first request.
+		a.unauthorized = acct.APIKey != ""
 	case limitResponse(resp):
 		a.limitedUntil = limitResetTime(resp.Header, h.now())
 	case resp.StatusCode < 400:
@@ -163,10 +171,16 @@ func (h *healthState) observeError(name string, err error) {
 // broken, and retrying that walks one bad request through every account in
 // the pool, spending each of them to collect the same error.
 func failoverResponse(resp *http.Response, acct Account) bool {
-	if resp.StatusCode == http.StatusUnauthorized {
-		return acct.APIKey != ""
+	// Quota first. limitResponse accepts a "rejected" unified status on ANY
+	// 4xx because the wire format is undocumented, so a limit can arrive
+	// carrying 401 — and a keyless pass-through, which forwards the pane's own
+	// subscription token to Anthropic, is exactly the account that receives
+	// those headers. Testing the 401 first returned false for it and surfaced
+	// a quota rejection as a dead credential.
+	if limitResponse(resp) {
+		return true
 	}
-	return limitResponse(resp)
+	return resp.StatusCode == http.StatusUnauthorized && acct.APIKey != ""
 }
 
 // limitResponse recognizes "this account is out of quota": a plain 429, or
@@ -277,7 +291,7 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			log.Printf("llm: pane %s account %s is not answering (%v), retrying on %s", info.pane, acct.Name, err, pool[i+1].Name)
 			continue
 		}
-		t.s.health.observe(acct.Name, resp)
+		t.s.health.observe(acct, resp)
 		if last || !failoverResponse(resp, acct) {
 			return resp, nil
 		}
@@ -291,12 +305,6 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // abandonAttempt records what a transport failure says about the account and
 // reports whether to give up rather than hand the request to the next one.
-//
-// A cancelled context is the PANE hanging up, not the account failing, and it
-// must not be recorded: replayRequest clones that same context, so the retry
-// would fail instantly on every remaining account and mark a wholly healthy
-// pool unreachable for the cooldown. upstreamError already treats this as
-// routine and answers nothing.
 //
 // A failure is ALWAYS recorded against the account. Whether the request may
 // have been billed decides the replay; it does not decide whether the failure
@@ -371,10 +379,7 @@ func replayRequest(req *http.Request, acct Account, info *reqInfo) *http.Request
 	out.URL = &u
 	out.Host = target.Host
 	if info.body != nil {
-		body := info.body
-		out.Body = io.NopCloser(bytes.NewReader(body))
-		out.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-		out.ContentLength = int64(len(body))
+		restoreBody(out, info.body)
 		// info.body is what the PANE sent, so the rewrite has to run again
 		// for this account: its model aliases and its system-turn verdict
 		// are its own. Without this the replay carries the head account's
@@ -397,17 +402,17 @@ func bufferForRetry(r *http.Request, info *reqInfo) {
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxCompatBody+1))
 	if err != nil || len(body) > maxCompatBody {
+		r.GetBody = nil // a partly-read stream cannot be rewound
 		r.Body = prefixedBody{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
 		return
 	}
 	r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	// GetBody is what lets net/http replay this itself when it wrote nothing
-	// (a keep-alive connection the upstream had already closed). Without it
-	// the transport declines to retry a POST with a body, and the failure
-	// reaches us looking exactly like one that may have been served.
-	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-	r.ContentLength = int64(len(body))
+	// restoreBody rather than a bare assignment: it sets GetBody with the body,
+	// which is what lets net/http replay a request it never flushed (a
+	// keep-alive the upstream had already closed) instead of handing it to us
+	// looking like one that may have been served. rewriteRequest runs after
+	// this and calls restoreBody again, so the two stay in step.
+	restoreBody(r, body)
 	info.body = body
 	info.retryable = true
 }

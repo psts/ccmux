@@ -765,6 +765,51 @@ func TestKeylessUnauthorizedDoesNotFailOver(t *testing.T) {
 	if keyedHits != 0 {
 		t.Fatalf("keyed upstream hits = %d, want the pane's dead login not billed to a subscription", keyedHits)
 	}
+	// The second request is the one that mattered: marking the keyless
+	// account unauthorized sank it in the order, so the pane silently moved
+	// onto the subscription and stopped being told to log in again.
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "the-panes-dead-login"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("second status = %d, want the rejection to keep surfacing", resp.StatusCode)
+	}
+	if keyedHits != 0 {
+		t.Fatalf("keyed upstream hits after two requests = %d, want still 0", keyedHits)
+	}
+	if st := statusOf(t, s, "local"); st.State == "unauthorized" {
+		t.Fatalf("status local = %+v, want a keyless account not blamed for the pane's credential", st)
+	}
+}
+
+// A quota rejection can arrive AS a 401: limitResponse accepts the unified
+// "rejected" status on any 4xx because the wire format is undocumented.
+// Testing the 401 before the quota turned that into a surfaced dead
+// credential for the one account type that receives those headers.
+func TestKeylessQuota401StillFailsOver(t *testing.T) {
+	keyless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer keyless.Close()
+	keyedHits := 0
+	keyed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keyedHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer keyed.Close()
+
+	s := configured(t, []Account{
+		{Name: "local", Kind: "anthropic", BaseURL: keyless.URL},
+		{Name: "keyed", Kind: "anthropic", BaseURL: keyed.URL, APIKey: "sk-ant-secret"},
+	}, "")
+	harnessAt(s, "p1", []string{"anthropic"}, []string{"local", "keyed"})
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "a-live-login"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want a quota rejection to fail over whatever status carried it", resp.StatusCode)
+	}
+	if keyedHits != 1 {
+		t.Fatalf("keyed upstream hits = %d, want the replay to land", keyedHits)
+	}
 }
 
 // A keyed account's 401 still fails over: that credential is stored in

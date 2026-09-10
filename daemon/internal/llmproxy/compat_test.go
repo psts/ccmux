@@ -160,3 +160,38 @@ func TestOversizeBodyForwardedComplete(t *testing.T) {
 		t.Fatalf("upstream received %d of %d bytes — truncated", gotLen, len(body))
 	}
 }
+
+// GetBody has to describe the bytes the request actually carries. The
+// transport's own retry pairs whatever GetBody returns with the request's
+// current ContentLength, so a GetBody left behind by a later rewrite sends
+// pre-rewrite bytes under a post-rewrite length.
+func TestGetBodyTracksTheRewrittenBody(t *testing.T) {
+	raw := []byte(`{"model":"claude-opus-5","messages":[]}`)
+	r, _ := http.NewRequest("POST", "http://x/v1/messages", bytes.NewReader(raw))
+	info := &reqInfo{}
+	bufferForRetry(r, info)
+	if r.GetBody == nil {
+		t.Fatal("buffering left no GetBody, so net/http cannot replay an unflushed request")
+	}
+	rewriteRequest(r, Account{Name: "a", Kind: "anthropic", BaseURL: "http://x",
+		ModelAliases: []ModelAlias{{From: "claude-opus-5", To: "qwen3-4b-32k"}}})
+
+	rc, err := r.GetBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(rc)
+	if int64(len(got)) != r.ContentLength {
+		t.Fatalf("GetBody returns %d bytes, ContentLength says %d — the transport would fail the retry",
+			len(got), r.ContentLength)
+	}
+	if !bytes.Contains(got, []byte("qwen3-4b-32k")) {
+		t.Fatalf("GetBody returned the pre-rewrite body: %s", got)
+	}
+	// Twice, because a retry may rewind more than once.
+	rc2, _ := r.GetBody()
+	again, _ := io.ReadAll(rc2)
+	if !bytes.Equal(got, again) {
+		t.Fatal("GetBody is not repeatable")
+	}
+}

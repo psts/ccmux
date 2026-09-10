@@ -48,6 +48,9 @@ func rewriteRequest(r *http.Request, a Account) {
 		// restoreBody here would truncate — it stamps the length of what we
 		// happened to buffer, turning an oversized request into well-formed
 		// HTTP carrying cut-off JSON the upstream would half-parse.
+		// A partly-read stream cannot be rewound, so it must carry no GetBody:
+		// the transport would replay the buffered head alone as the whole body.
+		r.GetBody = nil
 		r.Body = prefixedBody{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
 		return
 	}
@@ -134,8 +137,16 @@ func aliasMatches(pattern, model string) bool {
 	return pattern == model
 }
 
+// restoreBody puts a fully-buffered body back on the request. GetBody is set
+// HERE, next to Body and ContentLength, because the three have to agree: the
+// transport's own retry pairs whatever GetBody returns with the request's
+// current ContentLength, so a GetBody set once at buffering time and left
+// behind by a later rewrite sends the pre-rewrite bytes under the rewritten
+// length — a hard ContentLength mismatch, or, when the lengths happen to
+// match, the un-aliased model this rewrite existed to replace.
 func restoreBody(r *http.Request, body []byte) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	r.ContentLength = int64(len(body))
 	r.Header.Del("Content-Length")
 }

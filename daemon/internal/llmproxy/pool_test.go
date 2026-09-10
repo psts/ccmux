@@ -447,7 +447,7 @@ func TestUnreachableClearsOnSuccess(t *testing.T) {
 	if h.usable("a") {
 		t.Fatal("account usable immediately after a transport failure")
 	}
-	h.observe("a", &http.Response{StatusCode: 200, Header: http.Header{}})
+	h.observe(Account{Name: "a"}, &http.Response{StatusCode: 200, Header: http.Header{}})
 	if !h.usable("a") {
 		t.Fatal("account still sidelined after a successful response")
 	}
@@ -524,7 +524,7 @@ func TestClientCancelIsNotAnOutage(t *testing.T) {
 func TestAnyResponseClearsUnreachable(t *testing.T) {
 	h := newHealthState()
 	h.observeError("a", errors.New("connection refused"))
-	h.observe("a", &http.Response{StatusCode: 404, Header: http.Header{}})
+	h.observe(Account{Name: "a"}, &http.Response{StatusCode: 404, Header: http.Header{}})
 	if !h.usable("a") {
 		t.Fatal("account still sidelined after the upstream answered")
 	}
