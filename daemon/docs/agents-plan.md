@@ -1046,3 +1046,468 @@ Order chosen so each step is useful on its own and de-risks the next.
 Plan, then implement, per step: each step gets its callers listed and its
 blast radius stated before code, since every one touches shared contracts.
 Step 0 can start now.
+
+---
+
+# Deferred: provider-neutral workflows and model routing (2026-09-10)
+
+Decision: keep opencode on one stable ccmux-routed provider and switch the
+account behind the pane proxy. Do not make users change opencode providers when
+moving between Claude and OpenAI. Ported qa and solo-workflow agents should not
+pin vendor models; they inherit the session's logical model tier instead.
+
+The intended model contract is provider-neutral (`quality`, `balanced`,
+`fast`). Each account maps those tiers to its own models, for example `quality`
+to Opus on Claude and the preferred reasoning model on OpenAI. The existing
+per-account aliases already run after account selection, so the mapping belongs
+there rather than in every skill or subagent.
+
+Current limit: hosted opencode panes expose the proxy as an Anthropic Messages
+provider. Meridian adapts a Claude subscription to that surface, but the proxy
+does not translate Anthropic Messages to native OpenAI Responses. An OpenAI
+switch is seamless today only when its upstream exposes an Anthropic-compatible
+surface. Native OpenAI subscription support needs an equivalent adapter that
+presents the same stable surface to opencode.
+
+## Proposed implementation plan
+
+This stays behind the current task list. Each phase is a separate save point;
+do not start production integration unless the spike passes every hard gate.
+
+### Phase A: dependency decision and isolated spike (45-60 minutes)
+
+Use a pinned CLIProxyAPI release as an external process, not its Go SDK. Run one
+process per OpenAI subscription account with its own loopback port, config,
+random local API key and private auth directory. That keeps account identity,
+quota and failure isolation aligned with ccmux's existing account model.
+
+Before using it, confirm that ChatGPT/Codex subscription OAuth through this
+third-party proxy is acceptable. Record the pinned version, checksum and MIT
+license. Bind it explicitly to `127.0.0.1`; its default must never expose the
+management or model API to the LAN or tailnet.
+
+Spike the full intended path without changing ccmux:
+
+1. Log in with Codex device OAuth and verify one forced token refresh plus three
+   process restarts without another login.
+2. Send an Anthropic Messages request naming a Claude-visible model, map it to
+   the chosen OpenAI model, and receive the expected Anthropic response and
+   effective model on ten consecutive requests.
+3. Exercise streaming text, parallel tool calls and results, reasoning,
+   cancellation, images, non-streaming, token counting and model listing; every
+   case must match the Anthropic contract and leave the next turn usable.
+4. Exercise bad auth, exhausted quota, process death and restart; each must
+   return the expected status and account name without hanging or replaying.
+5. Measure startup time and idle memory for one, five and ten account processes,
+   record the numbers, and agree the host budget before integration.
+6. Confirm OAuth files are owner-only and no token appears in logs, process
+   arguments, environment exposed to panes, or an API response.
+7. On every intended release OS and architecture, verify a pinned adapter
+   artifact exists, its checksum and license can be packaged, and it starts from
+   the same service environment and install path ccmux will use. A Mac must run
+   this check before production integration; signing and notarization must also
+   accept the chosen packaging shape.
+
+Every numbered check is blocking. Hard failures also include any token leak,
+cross-account request, duplicate dispatch, broken tool round trip, invalid
+stream ordering, unsafe file permissions or inability to refresh OAuth. Add or
+explicitly reject `/api/hello`, which CLIProxyAPI does not currently serve, and
+test that decision before the spike can pass.
+
+### Phase B: account kind and proxy contract (60-90 minutes)
+
+Add an `openai-subscription` account kind. It is a Messages-surface account,
+not the existing `codex` kind, because opencode remains on its stable Anthropic
+provider while the sidecar translates to native OpenAI Responses.
+
+Touch `internal/llmproxy` and `internal/harness` to add validation, dialect,
+loopback URL defaults, auth stripping, compatible paths, system-turn handling,
+subscription ordering and cross-kind port collision checks. Keep aliases in
+ccmux so each selected account maps the requested logical tier before the
+request reaches its sidecar. Define deterministic priority between Meridian,
+OpenAI subscriptions and metered API accounts; an explicit harness order must
+always win.
+
+Tests must pin kind validation, route filtering, requested-to-effective model
+mapping, per-account failover aliases, auth isolation, quota status and every
+accepted Messages path. Route only to a sidecar that was ready before dispatch.
+A connection failure after dispatch fails that request loudly rather than
+replaying it: absence of a response does not prove the upstream did no work.
+Existing status-based quota failover remains allowed only before any response
+body is delivered to opencode.
+
+Bind each request to one account and sidecar generation for its full lifetime.
+Changing a pane route affects the next request only. Account edit or deletion
+first removes that generation from new routing. An ordinary edit drains for at
+most 30 seconds, then cancels any hung request and replaces the process. Delete,
+disconnect or credential revocation is a security action: cancel in-flight
+requests and stop the old process immediately rather than preserving access.
+
+### Phase C: sidecar lifecycle and OAuth API (60-90 minutes)
+
+Add `internal/openaisubscription` with a Meridian-style supervisor: one process
+group per account, bounded restart backoff, synchronous stop, readiness probe
+and status that separates process running, port ready, authenticated and quota
+state. Generalize the API's current Meridian-only sidecar interface so account
+save/delete reconciles both supervisors without mixing their credentials.
+
+Add daemon endpoints to begin device login, report its URL/code and state,
+cancel it, disconnect an account and read adapter status. CLIProxyAPI owns the
+OAuth token files; ccmux stores only account metadata and the random local API
+key. Settings save may persist before a process becomes ready, so the account
+must not enter a live route until readiness and auth both pass.
+
+Protect every OAuth endpoint with the daemon's existing authenticated settings
+boundary. Bind each login attempt to one user, host and account; give it a short
+expiry; permit only its owner to poll or cancel it; allow only one live attempt
+per account; redact tokens, local API keys and callback details from responses
+and logs. Create auth directories as `0700` and files as `0600`, then test
+unauthorized poll/cancel, expiry, replacement and daemon restart.
+
+### Phase D: both lenses (45-60 minutes)
+
+Ship the same account kind, Connect/Disconnect flow, device-code state, model
+aliases, readiness, quota and error text in the Mac and web lenses together.
+Show requested logical tier, selected account and effective upstream model so
+seamless routing remains visible when debugging. Make the Mac pane route picker
+filter incompatible accounts like the web route endpoint already does.
+
+Likely consumers are `DaemonModels.swift`, `DaemonSettingsView.swift`,
+`AccountEditorView.swift`, `RemoteSessionService.swift`, `daemon/web/app.js`
+and the settings and route handlers under `internal/api`.
+
+### Phase E: pinned runtime and operations (30-45 minutes)
+
+Choose one release strategy after the spike measures the binary: either bundle
+the pinned CLIProxyAPI binary and license in ccmux archives, or install and
+verify it as an explicit host prerequisite. Do not auto-update it separately
+from ccmux. Update install, upgrade, GoReleaser, service PATH and runbook paths
+only if bundling wins. Add health and version output that makes a mismatched or
+missing adapter clear.
+
+### Phase F: provider-neutral qa and solo-workflow port (75-120 minutes)
+
+Port the Claude plugin content into opencode commands, skills and restricted
+reviewer subagents. Remove every explicit vendor/provider model so subagents
+inherit the session's logical tier. Replace Claude-only namespaced skill calls,
+agent names and hooks with opencode equivalents. Keep `.claude/qa-gates`, the
+signed receipt format and repository review settings unchanged.
+
+Start with check, review, commit, status, push and ship. Add browser smoke and
+automatic post-commit review only after the core workflow is green. Push and
+ship must block on the receipt at the actual Git boundary even though opencode
+has no exact Claude Stop-hook equivalent. Have qa setup install a repository
+`pre-push` hook that validates the outgoing commits and current tree against the
+signed receipt. Never overwrite an unmanaged existing hook: chain through a
+managed dispatcher or fail setup with a clear instruction. Add an opencode
+`tool.execute.before` check as defense in depth, including denial of
+`--no-verify`, but do not call that the boundary. Test direct and scripted
+pushes, tag pushes, workflow pushes, stale receipts, invalid signatures,
+existing-hook chaining and the documented human `--no-verify` escape hatch.
+
+### Phase G: live switch acceptance (30-45 minutes)
+
+In one unchanged opencode conversation, run normal turns and qa reviewer
+subagents on Claude, switch the pane to OpenAI, continue with tools, then switch
+back to Claude. No pane or session restart is allowed. Confirm the next request
+uses the new account, an in-flight request stays on its original account,
+history remains valid, and status in both lenses names the effective model.
+
+Repeat with quota exhaustion and one sidecar crash. Release only if fallback is
+deterministic, no tool call is duplicated and each failure says which account
+or adapter failed.
+
+## Blast radius and verification limits
+
+Consumers of the shared account contract include settings GET/PUT, harness
+defaults and saved overrides, per-pane route menus, agent account pins, proxy
+failover, model listing, sidecar status and both lenses. Unrelated-looking risks
+include old harnesses becoming default-inheriting, stale sidecars remaining
+first in an order, an old key surviving an account-kind change, and service PATH
+differences between systemd and launchd.
+
+Linux can cover Go tests, web syntax and real OpenAI OAuth/proxy behavior, but
+not the Swift build, Swift tests, macOS launchd, signing or notarization. The
+release tag's macOS job must close the build gap, and a Mac must exercise the
+native Connect flow before release. Unit tests cannot prove subscription terms,
+real quota behavior or token refresh; those remain live spike requirements.
+
+## Phase A spike results (run 2026-09-10)
+
+**Verdict: fail. Do not start Phase B or add CLIProxyAPI to production.**
+
+The release artifact passed the core Messages translation cases but initially
+failed owner-only credential creation and token-count consistency. An isolated
+source build and a safer sidecar configuration close both failures, and actual
+OpenCode consumption now passes. Phase A still blocks production integration
+on live exhausted-quota and cross-account behavior, pane-level diagnostics and
+isolation, an accepted host budget, the intended service/install environment,
+and macOS execution/signing/notarization.
+
+### Pinned candidate and host
+
+| Item | Exact result |
+|---|---|
+| Release | CLIProxyAPI `v7.2.156`, published 2026-09-10 02:41:41 UTC |
+| Commit | `d1a024e9400bc65bd78ccd908945cf2eacc2835e`; the `v7.2.156` tag resolves directly to this commit |
+| Binary self-report | `CLIProxyAPI Version: 7.2.156, Commit: d1a024e9, BuiltAt: 2026-09-10T02:42:15Z` |
+| License | MIT; packaged `LICENSE` SHA-256 `879792e89cf1bdd6a8d446033ec87e30496f97dcafc4656dc53f641509b346a6` |
+| Downloaded archive | `CLIProxyAPI_7.2.156_linux_amd64.tar.gz`, SHA-256 `2bf0515e70be3255be4bd13edb352febe7a206c2b823a6b49301d6f37ef40c85`; upstream manifest check passed |
+| Extracted binary | SHA-256 `b3c38219b780233893ac049cd8e40398851448259c285e34adb305809007c35a` |
+| Source snapshot | Commit tarball SHA-256 `8a6af4345af28e7056536023038cf3dbc68df8c87745564dcd326991c7fb95ef` |
+| Remediation build | Same pinned source plus the two changes recorded below; binary SHA-256 `0cce47348b69ced67dc1816835f3b55ba978aa52d8f4665197eb05602e076b92` |
+| Host | `Linux 6.8.0-137-generic #137-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:28:23 UTC 2026 x86_64 GNU/Linux` |
+| Test clients | Bun `1.3.14`; curl `8.5.0-2ubuntu10.13`; ImageMagick `6.9.12-98` |
+
+The upstream checksum manifest also contains every ccmux release target:
+
+| ccmux target | Pinned CLIProxyAPI asset | SHA-256 | Executed here |
+|---|---|---|---|
+| darwin/arm64 | `CLIProxyAPI_7.2.156_darwin_aarch64.tar.gz` | `c41f985edc744a70dc962ec4250889bad02bdd9be816855021d4d0d93ddf4c92` | No |
+| linux/amd64 | `CLIProxyAPI_7.2.156_linux_amd64.tar.gz` | `2bf0515e70be3255be4bd13edb352febe7a206c2b823a6b49301d6f37ef40c85` | Yes |
+| linux/arm64 | `CLIProxyAPI_7.2.156_linux_aarch64.tar.gz` | `c570113560838a1c401b566f34ea6f1fa1c00b7699e515fe1a3e82713459b2b2` | No |
+
+Artifact existence is only the availability part of gate 7. No Mac ran the
+binary, launchd environment or intended install path, and no signing or
+notarization check accepted this packaging shape. The Linux binary ran from
+`/tmp`, not from a future ccmux installation path.
+
+### Exact setup and process commands
+
+Secrets below were random 32-byte values and are intentionally redacted. They
+were stored only in the `0600` config, never in an argument or environment
+variable.
+
+```sh
+install -d -m 700 \
+  /tmp/ccmux-cliproxyapi-v7.2.156 \
+  /tmp/ccmux-cliproxyapi-v7.2.156/auth \
+  /tmp/ccmux-cliproxyapi-v7.2.156/config \
+  /tmp/ccmux-cliproxyapi-v7.2.156/bin \
+  /tmp/ccmux-cliproxyapi-v7.2.156/logs
+curl --fail --location --silent --show-error \
+  --output /tmp/ccmux-cliproxyapi-v7.2.156/CLIProxyAPI_7.2.156_linux_amd64.tar.gz \
+  https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.2.156/CLIProxyAPI_7.2.156_linux_amd64.tar.gz
+curl --fail --location --silent --show-error \
+  --output /tmp/ccmux-cliproxyapi-v7.2.156/checksums.txt \
+  https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.2.156/checksums.txt
+cd /tmp/ccmux-cliproxyapi-v7.2.156
+sha256sum --check --ignore-missing checksums.txt
+tar -xzf CLIProxyAPI_7.2.156_linux_amd64.tar.gz -C bin
+./bin/cli-proxy-api --help
+./bin/cli-proxy-api \
+  -config /tmp/ccmux-cliproxyapi-v7.2.156/config/config.yaml \
+  -local-model
+```
+
+The isolated config set `host: "127.0.0.1"`, port `18317`, the absolute
+isolated auth directory, one random local API key, TLS off, management off,
+pprof off, plugins off, file logging on, usage aggregation off,
+`request-retry: 0`, `max-retry-credentials: 1`, retry wait zero, stream
+bootstrap retries zero and WebSocket authentication on. It mapped `quality`
+to `gpt-5.6-terra`, `balanced` and `claude-sonnet-4-6` to `gpt-5.6-sol`, and
+`fast` to `gpt-5.6-luna`.
+
+Listener checks:
+
+```sh
+ss -ltnp 'sport = :18317'
+curl --noproxy '*' --silent --show-error --max-time 2 \
+  http://192.168.1.232:18317/v1/models
+curl --noproxy '*' --silent --show-error --max-time 2 \
+  http://100.99.239.55:18317/v1/models
+```
+
+`ss` showed only `127.0.0.1:18317`. Both LAN and tailnet addresses refused the
+connection immediately. An unauthenticated loopback model request returned
+401; the random key returned 200.
+
+After explicit user approval, device login used:
+
+```sh
+./bin/cli-proxy-api \
+  -config /tmp/ccmux-cliproxyapi-v7.2.156/config/config.yaml \
+  -codex-device-login -no-browser -local-model
+```
+
+It contacted `https://auth.openai.com/codex/device`, completed once, and wrote
+one Codex credential. The device code, account email, OAuth tokens and all
+local keys are omitted here.
+
+### OAuth and secret handling
+
+- The device implementation talks only to `auth.openai.com`, uses the Codex
+  public client ID, obtains an authorization code and PKCE values through the
+  device flow, then exchanges at the OpenAI token endpoint. Access, refresh and
+  ID tokens are stored as plaintext JSON.
+- Project decision after review: CLIProxyAPI's Codex device OAuth mechanism is
+  acceptable under the applicable OpenAI terms. The proxy already implements
+  that mechanism, and the user explicitly approved using it for this spike.
+  The OAuth policy gate passes. CLIProxyAPI defaults
+  `disable-codex-cloaking` to false, so the test exercised its normal official
+  Codex header behavior rather than a special spike configuration.
+- **Release artifact credential permission failure:** the first OAuth JSON was
+  created as `0664` under this host's service umask because
+  `internal/auth/codex/token.go` used `os.Create`. The remediation build changes
+  `CodexTokenStorage.SaveTokenToFile` to enforce `0700` on the auth directory,
+  open the token with `0600`, and apply `f.Chmod(0600)` when replacing an
+  existing file. Its regression test starts with a `0755` directory and `0664`
+  token, saves, and observes `0700`/`0600`. A fresh live device login with the
+  patched binary also created the directory and OAuth JSON as `0700`/`0600`
+  without a corrective `chmod`.
+- A forced refresh was tested by temporarily enabling loopback management with
+  a second random key and calling
+  `POST /v0/management/auth-files/refresh?all=true`. It returned 200 in 669 ms;
+  SHA-256 fingerprints of both access and refresh tokens changed, and expiry
+  and `last_refresh` advanced without another login. Management was then
+  disabled and returned 404. Merely backdating `expired`, then both `expired`
+  and `last_refresh`, did not cause a refresh within 45 seconds, 30 seconds
+  after one restart, or 35 seconds after another restart. Because the real JWT
+  was still valid, that does not disprove refresh at real expiry; real
+  time-based expiry was not tested.
+- Three explicit post-login restarts needed no login. The verification turns
+  returned `RESTART_1_OK`, `RESTART_2_OK` and `RESTART_3_OK` in 3,711 ms,
+  1,720 ms and 1,342 ms.
+- The final leak scan compared 11 distinct current and rotated OAuth
+  access/refresh/ID-token values plus the local and temporary management keys
+  against `main.log`, process stdout, OAuth stdout, `/proc/<pid>/cmdline`,
+  `/proc/<pid>/environ`, an API response and the config excluding its expected
+  local-key slot. It found zero matches. The isolated auth directory, final
+  auth file and config ended as `0700`, `0600` and `0600`. No ccmux pane was
+  involved, so pane-environment leakage was not exercisable.
+- Logs did expose the account email as part of the generated auth filename.
+  No OAuth token or local key appeared.
+
+### Messages-surface results
+
+Requests were sent directly with Bun `fetch` to `127.0.0.1:18317`. Common
+headers were `content-type: application/json`,
+`anthropic-version: 2023-06-01` and
+`x-api-key: [random-local-key]`.
+
+| Case and exact request shape | Result |
+|---|---|
+| Non-streaming `POST /v1/messages`, model `claude-sonnet-4-6`, `max_tokens: 64`, one user text asking for `TRANSLATION_OK` | 200 in 5,137 ms; Anthropic message shape, effective model `gpt-5.6-sol`, `end_turn`, exact text |
+| Streaming Messages, model `balanced`, `max_tokens: 64`, `stream: true` | 200 in 1,549 ms; `text/event-stream`; exact event order `message_start`, `content_block_start`, two `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`; effective model `gpt-5.6-sol`; exact `STREAM_OK` |
+| Parallel tools `lookup_alpha({"key":"alpha"})` and `lookup_beta({"key":"beta"})` | First response 200 with two unique tool-use IDs and `stop_reason: tool_use`; one follow-up supplied both tool results and returned 200, `TOOLS_OK`, `end_turn` |
+| Reasoning, model `quality`, `thinking: {type:"enabled", budget_tokens:1024}`, `max_tokens: 2048` | 200 in 1,535 ms; effective `gpt-5.6-terra`; a `thinking` block with an opaque signature and empty plaintext, 12 thinking tokens, final `323`; replaying the block in the next turn returned `REASONING_OK` |
+| Client cancellation of a 4,096-token stream | First 285 bytes in 602 ms, then client abort raised `AbortError`; server log duration was also 602 ms; next turn returned `AFTER_CANCEL_OK` in 3,072 ms. Upstream cancellation had no independent trace, so only downstream and process behavior were observed |
+| Logical aliases `quality`, `balanced`, `fast` | All 200; effective models respectively `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna`; exact expected texts; 1,502/1,946/1,682 ms |
+| Ten consecutive non-streaming requests naming Claude-visible `claude-sonnet-4-6` | 10/10 returned 200, effective `gpt-5.6-sol` and exact numbered text; latencies 2,996, 1,847, 2,741, 3,381, 1,495, 2,745, 2,021, 2,249, 2,181 and 1,773 ms |
+| Image input: generated with `convert -size 32x32 xc:red /tmp/ccmux-cliproxyapi-v7.2.156/red.png`, then sent as an Anthropic base64 PNG block | 200, effective `gpt-5.6-sol`, identified `RED`; next turn returned `AFTER_IMAGE_OK`. An earlier copied 1-pixel fixture was rejected 400 as invalid image; replacing the fixture proved that was test data, not the adapter |
+| Explicit `stream: false`, model `fast` | 200 `application/json`, not SSE; effective `gpt-5.6-luna`, exact `NONSTREAM_OK`, `end_turn` |
+| Authenticated `GET /v1/models` | 200 with 13 models. It listed `quality`, `balanced`, `fast`, `claude-sonnet-4-6`, `codex-auto-review`, `gpt-5.3-codex-spark`, `gpt-5.5`, `gpt-6-astra` and five `gpt-image-*` models. The aliased Terra/Sol/Luna originals were hidden |
+| `GET /api/hello`, with and without the local key | 404 both times. Decision: explicitly reject this path and use authenticated `GET /v1/models` as the readiness probe; that probe returned 200 |
+| `POST /v1/messages/count_tokens` versus the identical generated request | **Remediated pass:** the release/default configuration was 306 tokens apart because automatic `image_generation` injection adds 296 opaque upstream input tokens. With `disable-image-generation: "chat"`, six plain, long, history, system and one/two-tool cases differed by -4 to +15 tokens; the 262-token long case counted 268 upstream, a 2.3% difference. This is accepted as non-material estimator overhead |
+
+OpenCode `1.18.30` was then run with isolated HOME/XDG state, `--pure`, an
+inline custom `@ai-sdk/anthropic` provider and model `ccmux-spike/balanced`.
+`opencode run --format json` returned exact text `OPENCODE_OK`; its terminal
+event reported 6,304 input and 8 output tokens. No global or repository
+OpenCode configuration was changed.
+
+### Remediation pass
+
+The second pass rebuilt the exact pinned source rather than changing ccmux.
+Besides the credential-mode fix, `CodexExecutor.CountTokens` now applies the
+same original-request selection, payload configuration, image-tool policy,
+parallel-tool normalization and tool-schema normalization as generation.
+Focused Go tests passed before building the binary.
+
+The decisive count discrepancy was configuration, not prompt tokenization.
+With automatic image generation enabled, plain/long/tool cases counted
+5/262/43 locally but reported 307/564/348 upstream: deltas 302/302/305.
+Disabling automatic injection reduced those same deltas to 6/6/9. The final
+spike configuration uses `disable-image-generation: "chat"` so Messages does
+not silently inject the native image tool while the explicit image endpoints
+remain available. A 32x32 red Anthropic image input still returned exact text
+`RED` through `gpt-5.6-sol`.
+
+The post-remediation leak scan compared all three live OAuth token values
+against the sidecar logs and isolated OpenCode home, config, data, runtime and
+project state. It found zero OAuth-token matches and zero local-key matches.
+
+An isolated front-proxy prototype also attached account
+`quality-openai` to raw quota and transport errors. A simulated exhausted
+upstream returned the original 429 plus `quota_exhausted` and
+`weekly limit reached`; a stopped upstream returned account-named 502 in 1 ms.
+The upstream dispatch counter stayed at one. This proves the intended thin
+ccmux layer can add account context and avoid replay; it does not substitute
+for the still-required live exhausted-account, cross-account and pane tests.
+Neither remediation patch nor the prototype was added to ccmux production
+code.
+
+### Failure and restart behavior
+
+| Case | Exact result |
+|---|---|
+| Wrong local API key | 401 in 1 ms, `{"error":"Invalid API key"}`, no upstream dispatch |
+| Kill sidecar after the first chunk | Initial 200; first 285 bytes at 2,314 ms; socket-close error observed at 2,375 ms; no hang. Restart reached authenticated model readiness in 258 ms and a new request returned `AFTER_DEATH_OK` in 1,717 ms |
+| Invalid access token with valid refresh token | Adapter transparently refreshed and returned 200 in 3,576 ms. This proves recoverable auth, but the client is not told which account refreshed |
+| Invalid access and refresh tokens | 401 in 7,004 ms with Anthropic `authentication_error`; no account name or adapter identity in the body. Restoring the saved credential and restarting recovered in 309 ms |
+| Exhausted subscription quota | **Not tested:** the authorized account was not exhausted, and the spike did not deliberately consume its remaining quota |
+
+The raw sidecar's process-death socket error and irrecoverable-auth body still
+do not identify a ccmux account because CLIProxyAPI does not know that ccmux
+identity. The remediation prototype proves the ccmux-facing layer can add the
+name, preserve raw detail and avoid replay for pre-body quota/transport
+failures. The actual pane path, a mid-stream labelled failure, an exhausted
+subscription and two-account isolation remain unproven.
+
+One useful readiness failure appeared during the scale setup. Port 18318 was
+already occupied by an unrelated loopback Python fixture. CLIProxyAPI printed
+`API server started successfully on: 127.0.0.1:18318` before reporting its bind
+error and exiting. A log match plus an open port can therefore accept the wrong
+process. A future supervisor would have to require the per-account random key
+to succeed on an authenticated semantic probe and confirm its expected model
+aliases; PID existence plus port reachability is insufficient.
+
+### Startup and resource measurements
+
+All scale processes used the same extracted binary, isolated config directory
+and isolated auth directory, distinct loopback ports, file logging off and the
+same current credential. This measures process cost, not cross-account
+isolation.
+
+| Processes | Authenticated readiness | Idle RSS |
+|---|---|---|
+| 1 | 219 ms | 47,104 KiB |
+| 5 | 221 ms for the concurrent batch; individual 172-221 ms | 223,232 KiB total |
+| 10 | 222 ms for the concurrent batch; individual 175-222 ms | 445,440 KiB total |
+
+One active long-stream sample raised the main process from 47,104 KiB to
+56,832 KiB RSS. Idle CPU after startup was 0.0-0.5% per process. Reported VSZ
+was about 3.1 GiB per Go process and is not resident memory. A conservative
+budget if this candidate is reconsidered is 64 MiB idle and 80 MiB active per
+account process: 640/800 MiB for ten. That budget has not been accepted for
+production.
+
+### Blocking disposition
+
+Pass: OAuth policy acceptance, pinned reproducible Linux artifact, MIT license,
+explicit loopback bind, local API authentication, forced refresh, restart
+persistence, translation, stream ordering, parallel tool round trip, opaque
+reasoning round trip, downstream cancellation, aliases, ten-request run, image
+input, non-streaming, token counting with automatic image injection disabled,
+model listing, `/api/hello` rejection, owner-only credentials in the
+remediation build, actual OpenCode consumption and no observed token leakage.
+
+The account-labelled failure prototype passes in isolation. Remaining blocking
+gates: live exhausted subscription quota, mid-stream pane diagnostics,
+duplicate-dispatch proof on the actual path, live cross-account isolation,
+pane-environment leakage, acceptance and packaging of the two downstream
+patches, accepted host budget, Linux arm64 execution, macOS execution, launchd
+path/environment, signing and notarization.
+
+Phase A therefore still fails, but the observed Linux/amd64 protocol defects
+are now closed by small, explicit changes. Keep Meridian as the only production
+subscription adapter until the remaining live, platform and packaging gates
+pass.
+
+State left on the host: all spike, scale and remediation sidecars were stopped,
+then `/tmp/ccmux-cliproxyapi-v7.2.156` and
+`/tmp/ccmux-cliproxyapi-v7.2.156-remediation` were removed, including OAuth
+credentials, random keys, logs, patched source/binary, OpenCode state and
+fixtures. The pre-existing unrelated `cliproxy-mock` process was not touched by
+the spike. No ccmux code, settings, account or pane was changed; this document
+is the only repository file touched.
