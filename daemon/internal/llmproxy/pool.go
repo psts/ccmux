@@ -16,10 +16,12 @@ package llmproxy
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -255,6 +257,11 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		last := !info.retryable || i == len(pool)-1
 		if err != nil {
 			if t.abandonAttempt(acct, attempt, err, last) {
+				// Same assignment the success path makes, for the same
+				// reason: upstreamError names info.account, and the walk
+				// leaves it on pool[0] otherwise, blaming a healthy account
+				// for the last one's error and printing its address.
+				info.account = acct
 				return resp, err
 			}
 			log.Printf("llm: pane %s account %s is not answering (%v), retrying on %s", info.pane, acct.Name, err, pool[i+1].Name)
@@ -282,16 +289,38 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // pool unreachable for the cooldown. upstreamError already treats this as
 // routine and answers nothing.
 //
-// Everything else is a dial timeout or a refused connection. That IS marked,
+// A connection that broke while waiting for the response is not marked and
+// not replayed either — see neverDelivered.
+//
+// What remains is a request that never reached an upstream. That IS marked,
 // before the give-up test, so a dead upstream is sidelined even when there is
 // nobody to fail over to — otherwise it stays at the head of the order and
 // every later request pays for it.
 func (t poolTransport) abandonAttempt(acct Account, attempt *http.Request, err error, last bool) bool {
-	if attempt.Context().Err() != nil {
+	if attempt.Context().Err() != nil || !neverDelivered(err) {
 		return true
 	}
 	t.s.health.observeError(acct.Name, err)
 	return last
+}
+
+// neverDelivered reports whether the request provably never reached the
+// upstream, which is the only state in which handing it to another account is
+// safe.
+//
+// A connection that dropped while WAITING for the response may well have been
+// served, and a completion that was generated was billed. Go's transport does
+// not auto-retry a POST carrying a body, so "EOF" and "connection reset by
+// peer" arrive here looking exactly like a refused dial; replaying those would
+// charge two subscriptions for one answer. That is the same objection the 5xx
+// rule above is built on, and it applies with real money attached.
+//
+// So the test is positive, not a blocklist: a dial that never completed wrote
+// no bytes. Anything else passes through as the 502 it is, unmarked, because
+// an upstream that accepted a connection has not shown itself to be down.
+func neverDelivered(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 // replayRequest re-aims the original outbound request at another account:

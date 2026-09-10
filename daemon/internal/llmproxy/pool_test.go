@@ -531,3 +531,87 @@ func TestAnyResponseClearsUnreachable(t *testing.T) {
 		t.Fatalf("status = %+v, want ok with the stale error dropped", st)
 	}
 }
+
+// The 502 and the log have to name the account that actually failed. The
+// walk leaves info.account on pool[0], so a two-dead-upstream pool used to
+// blame the first account for the last one's error, printing its name beside
+// the OTHER one's address.
+func TestErrorNamesTheAccountThatFailed(t *testing.T) {
+	s := claudePoolService(t, deadUpstream(t), deadUpstream(t))
+	p := mount(s)
+	defer p.Close()
+
+	req, _ := http.NewRequest("POST", p.URL+"/llm/pane/p1/v1/messages", strings.NewReader(`{"model":"claude"}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "max-b") {
+		t.Fatalf("502 body = %q, want the account that actually failed", string(body))
+	}
+}
+
+// An upstream that took the request and then dropped the connection may have
+// generated (and billed) a completion. Replaying it would charge a second
+// subscription for one answer, so it passes through and the account is NOT
+// called unreachable: it accepted a connection, so it is not down.
+func TestDeliveredRequestIsNotReplayed(t *testing.T) {
+	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test upstream cannot hijack")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close() // answer nothing: the client sees EOF
+	}))
+	defer upA.Close()
+	hitsB := 0
+	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB++
+		w.WriteHeader(200)
+	}))
+	defer upB.Close()
+	s := claudePoolService(t, upA.URL, upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want the broken connection surfaced", resp.StatusCode)
+	}
+	if hitsB != 0 {
+		t.Fatalf("second account hits = %d, want a possibly-billed request not replayed", hitsB)
+	}
+	if st := statusOf(t, s, "max-a"); st.State == "unreachable" {
+		t.Fatalf("status a = %+v, want an upstream that accepted the connection not called down", st)
+	}
+}
+
+// The other half of the 401 contract: with nothing to fail over to the
+// rejection still reaches the pane, so a single-account daemon can show the
+// auth error the harness needs.
+func TestUnauthorizedSurfacesWithNoFailover(t *testing.T) {
+	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upA.Close()
+	s := New(fakeStore{})
+	accs := []Account{{Name: "solo", Kind: "claude", BaseURL: upA.URL, APIKey: "sk-ant-oat01-x"}}
+	route := "solo"
+	if err := s.Apply(&accs, &route); err != nil {
+		t.Fatal(err)
+	}
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want the 401 surfaced when no account can serve", resp.StatusCode)
+	}
+}
