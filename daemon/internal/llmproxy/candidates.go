@@ -206,7 +206,7 @@ func (s *Service) defaultPool(st routeState, paneID string) ([]Account, bool, er
 	// account may legally take — matching on it would pool a pane's own login
 	// with keyed accounts, the one thing this branch exists to prevent.
 	if route == "" {
-		return []Account{{Name: "anthropic", Kind: "anthropic", BaseURL: s.defaultUpstream}}, true, nil
+		return []Account{{Name: "anthropic", Kind: "anthropic", BaseURL: s.defaultUpstream, ForwardsPaneLogin: true}}, true, nil
 	}
 	preferred := findAccount(st.accounts, route)
 	if preferred == nil {

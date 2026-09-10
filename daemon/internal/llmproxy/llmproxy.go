@@ -65,6 +65,17 @@ type Account struct {
 	// upstream answer for names it has never heard of — Claude Code's
 	// background calls hardwire haiku model names that 404 on Ollama.
 	ModelAliases []ModelAlias `json:"modelAliases,omitempty"`
+	// ForwardsPaneLogin marks an account whose upstream authenticates the
+	// credential the PANE sent rather than one ccmux holds: the built-in
+	// Anthropic pass-through, and codex accounts riding the harness's own
+	// ChatGPT login. It decides who a 401 belongs to (see failoverResponse).
+	//
+	// Never serialized, and never settable: it is stamped where such an
+	// account is BUILT, not where one is configured. An empty APIKey is not
+	// the same fact — validateKind lets an anthropic or openai account be
+	// keyless while pointing at any upstream it likes, and that upstream's
+	// 401 is the account's problem, not the user's login.
+	ForwardsPaneLogin bool `json:"-"`
 }
 
 // ModelAlias maps one requested model name (or '*'-suffixed prefix) to the

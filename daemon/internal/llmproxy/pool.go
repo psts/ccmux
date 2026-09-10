@@ -123,13 +123,12 @@ func (h *healthState) observe(acct Account, resp *http.Response) {
 	case limitResponse(resp):
 		a.limitedUntil = limitResetTime(resp.Header, h.now())
 	case resp.StatusCode == http.StatusUnauthorized:
-		// Only an account holding its own key can have ITS credential
-		// rejected. A keyless account forwards the pane's login, so marking it
-		// here sidelined a healthy pass-through: usable() went false with no
-		// expiry, order() sank it, and the very next request was answered and
-		// billed by the keyed account behind it — the exact outcome
-		// failoverResponse refuses to cause on the first request.
-		a.unauthorized = acct.APIKey != ""
+		// Only a rejection of the ACCOUNT's own credential belongs to the
+		// account. Marking a pass-through here sidelined a healthy one:
+		// usable() went false with no expiry, order() sank it, and the very
+		// next request was answered and billed by the keyed account behind it
+		// — the outcome failoverResponse refuses to cause on the first one.
+		a.unauthorized = !forwardsPaneLogin(acct)
 	case resp.StatusCode < 400:
 		// The upstream accepted this account: whatever we believed is stale.
 		a.unauthorized = false
@@ -163,13 +162,12 @@ func (h *healthState) observeError(name string, err error) {
 // failoverResponse reports whether another account should be given this
 // request. Quota is the case the pool was built for.
 //
-// A 401 joins it only for an account holding its OWN credential, where the
-// rejection is the account's problem and the pane's user cannot fix it from
-// there. A keyless account is a pass-through that forwards the PANE's login
-// (applyAuth returns early; restoreClientAuth puts it back), so a 401 on one
-// means the user's own credential just died. Replaying that onto a keyed
-// subscription hides the fact they need to log in again AND bills a different
-// account for the answer, so it surfaces instead.
+// A 401 joins it for every account EXCEPT one whose upstream authenticates
+// the credential the pane sent. There the rejection is the user's own login
+// dying, and replaying it onto a keyed subscription hides that they must log
+// in again AND bills a different account for the answer, so it surfaces.
+// Everywhere else the rejection belongs to the account and the pane's user
+// cannot fix it from the pane, so the next account gets the request.
 //
 // Deliberately NOT 5xx. A 500 can just as easily mean the request itself is
 // broken, and retrying that walks one bad request through every account in
@@ -184,7 +182,19 @@ func failoverResponse(resp *http.Response, acct Account) bool {
 	if limitResponse(resp) {
 		return true
 	}
-	return resp.StatusCode == http.StatusUnauthorized && acct.APIKey != ""
+	return resp.StatusCode == http.StatusUnauthorized && !forwardsPaneLogin(acct)
+}
+
+// forwardsPaneLogin reports whether a 401 from this account is the PANE's
+// credential being rejected rather than the account's own.
+//
+// Deliberately not "has no API key". validateKind lets an anthropic or openai
+// account be keyless AND point anywhere, so a keyless account at a real
+// upstream that demands auth 401s on every request — its own misconfiguration,
+// which must fail over and be marked. Reading the empty key as "pass-through"
+// left exactly that account unmarked, unfailed-over, and reading "active".
+func forwardsPaneLogin(a Account) bool {
+	return a.ForwardsPaneLogin || a.Kind == "codex"
 }
 
 // limitResponse recognizes "this account is out of quota": a plain 429, or
@@ -201,6 +211,22 @@ func limitResponse(resp *http.Response) bool {
 // header (unix seconds or RFC3339 — the format is undocumented, accept
 // both), else Retry-After seconds, else a conservative five minutes.
 func limitResetTime(hdr http.Header, now time.Time) time.Time {
+	return floorReset(parseReset(hdr, now), now)
+}
+
+// floorReset keeps a reset from landing in the past. usable() and statusRow
+// both compare limitedUntil against now, so a stale reset — clock skew, a
+// Retry-After of 0, a unix second already gone — is a mark that records
+// nothing at all: the exhausted account stays at the head of the order and
+// reads "active" while every request through it is rejected.
+func floorReset(at, now time.Time) time.Time {
+	if !at.After(now) {
+		return now.Add(unreachableCooldown)
+	}
+	return at
+}
+
+func parseReset(hdr http.Header, now time.Time) time.Time {
 	if v := hdr.Get("anthropic-ratelimit-unified-reset"); v != "" {
 		if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return time.Unix(secs, 0)

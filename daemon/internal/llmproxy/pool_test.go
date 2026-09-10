@@ -249,9 +249,29 @@ func TestLimitResetTime(t *testing.T) {
 		{hdr("Retry-After", "60"), now.Add(60 * time.Second)},
 		{http.Header{}, now.Add(5 * time.Minute)},
 	}
+	// parseReset, not limitResetTime: the first fixture is a real captured
+	// value that happens to equal `now`, and the floor would rewrite it. What
+	// this table pins is the PARSING of the three header shapes.
 	for i, c := range cases {
-		if got := limitResetTime(c.h, now); !got.Equal(c.want) {
+		if got := parseReset(c.h, now); !got.Equal(c.want) {
 			t.Errorf("case %d = %v, want %v", i, got, c.want)
+		}
+	}
+}
+
+// A reset that is not in the future marks nothing: usable() and statusRow both
+// compare against now, so the exhausted account stays at the head of the order
+// and reads "active" while every request through it is rejected.
+func TestResetIsNeverInThePast(t *testing.T) {
+	now := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	hdr := func(k, v string) http.Header { h := http.Header{}; h.Set(k, v); return h }
+	for _, h := range []http.Header{
+		hdr("Retry-After", "0"),
+		hdr("anthropic-ratelimit-unified-reset", strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)),
+		hdr("anthropic-ratelimit-unified-reset", now.Format(time.RFC3339)),
+	} {
+		if got := limitResetTime(h, now); !got.After(now) {
+			t.Errorf("reset from %v = %v, want a mark that outlives now", h, got)
 		}
 	}
 }
@@ -737,5 +757,24 @@ func TestPlain401OnAKeyedAccountIsStillUnauthorized(t *testing.T) {
 		&http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}})
 	if st := statusRow(Account{Name: "keyed"}, h.get("keyed"), h.now()); st.State != "unauthorized" {
 		t.Fatalf("status = %+v, want unauthorized", st)
+	}
+}
+
+// The account behind a pass-through is not the one being rejected: a 401 there
+// is the credential the PANE sent. Marking it sidelined a healthy pass-through
+// and, because health is keyed by name, could overwrite a real account that
+// legally shares the fabricated "anthropic" name.
+func TestPassthroughUnauthorizedDoesNotMarkTheAccount(t *testing.T) {
+	h := newHealthState()
+	resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}}
+	h.observe(Account{Name: "anthropic", Kind: "anthropic", ForwardsPaneLogin: true}, resp)
+	if !h.usable("anthropic") {
+		t.Fatal("pass-through sidelined for the pane's own rejected login")
+	}
+	// A keyless account that is NOT a pass-through is a configured upstream,
+	// and its 401 is its own.
+	h.observe(Account{Name: "router", Kind: "openai"}, resp)
+	if h.usable("router") {
+		t.Fatal("a configured keyless upstream was not marked on its own 401")
 	}
 }

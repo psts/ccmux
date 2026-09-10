@@ -735,15 +735,16 @@ func TestHarnessPaneOnAKeylessAccountIsNotCalledThePassthrough(t *testing.T) {
 	}
 }
 
-// A keyless account is a pass-through carrying the PANE's own login, so a 401
-// from one means the user's credential died, not the account's. Replaying it
-// onto the keyed subscription behind it would hide that they need to log in
-// again and bill a different account for the answer.
-func TestKeylessUnauthorizedDoesNotFailOver(t *testing.T) {
-	keyless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// A keyless account is NOT automatically a pass-through: validateKind lets an
+// anthropic or openai account be keyless while pointing at any upstream, and
+// such an upstream's 401 is the account's own misconfiguration. It must fail
+// over and be marked, or it sits at the head of the order answering nothing
+// while both lenses call it active.
+func TestKeylessConfiguredUpstreamFailsOverOn401(t *testing.T) {
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
-	defer keyless.Close()
+	defer rejecting.Close()
 	keyedHits := 0
 	keyed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyedHits++
@@ -752,30 +753,21 @@ func TestKeylessUnauthorizedDoesNotFailOver(t *testing.T) {
 	defer keyed.Close()
 
 	s := configured(t, []Account{
-		{Name: "local", Kind: "anthropic", BaseURL: keyless.URL},
+		{Name: "router", Kind: "openai", BaseURL: rejecting.URL},
 		{Name: "keyed", Kind: "anthropic", BaseURL: keyed.URL, APIKey: "sk-ant-secret"},
 	}, "")
-	harnessAt(s, "p1", []string{"anthropic"}, []string{"local", "keyed"})
+	harnessAt(s, "p1", []string{"anthropic", "openai"}, []string{"router", "keyed"})
 	p := mount(s)
 	defer p.Close()
 
-	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "the-panes-dead-login"); resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want the pane's own rejected login surfaced", resp.StatusCode)
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want a misconfigured upstream failed over", resp.StatusCode)
 	}
-	if keyedHits != 0 {
-		t.Fatalf("keyed upstream hits = %d, want the pane's dead login not billed to a subscription", keyedHits)
+	if keyedHits != 1 {
+		t.Fatalf("keyed upstream hits = %d, want the replay to land", keyedHits)
 	}
-	// The second request is the one that mattered: marking the keyless
-	// account unauthorized sank it in the order, so the pane silently moved
-	// onto the subscription and stopped being told to log in again.
-	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", "the-panes-dead-login"); resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("second status = %d, want the rejection to keep surfacing", resp.StatusCode)
-	}
-	if keyedHits != 0 {
-		t.Fatalf("keyed upstream hits after two requests = %d, want still 0", keyedHits)
-	}
-	if st := statusOf(t, s, "local"); st.State == "unauthorized" {
-		t.Fatalf("status local = %+v, want a keyless account not blamed for the pane's credential", st)
+	if st := statusOf(t, s, "router"); st.State != "unauthorized" {
+		t.Fatalf("status router = %+v, want the account marked for its own rejection", st)
 	}
 }
 
