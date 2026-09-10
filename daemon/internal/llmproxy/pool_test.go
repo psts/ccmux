@@ -893,3 +893,56 @@ func TestLapsedOutageReadsActiveNotFailing(t *testing.T) {
 		t.Fatalf("after the cooldown = %+v, want ok: one blip is not a verdict", st)
 	}
 }
+
+// The whole state machine in one table: what each condition is called, and
+// whether routing will still dial it. Precedence is the point — every row
+// below sets the fields of the rows above it too, so a reordering of the
+// switch shows up here rather than as a routing change nobody looked at.
+func TestAccountStateAndRoutability(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name     string
+		h        acctHealth
+		want     accountState
+		routable bool
+	}{
+		{"fresh", acctHealth{}, stateUntried, true},
+		{"served", acctHealth{lastSeen: now, lastStatus: 200}, stateOK, true},
+		{"answered an error", acctHealth{lastSeen: now, lastStatus: 502, lastError: "upstream answered 502"}, stateFailing, true},
+		{"did not answer", acctHealth{lastSeen: now, downUntil: now.Add(time.Minute), lastError: "connection refused"}, stateUnreachable, false},
+		{"out of quota", acctHealth{lastSeen: now, lastStatus: 429, limitedUntil: now.Add(time.Hour)}, stateLimited, false},
+		{"credential rejected", acctHealth{lastSeen: now, lastStatus: 401, unauthorized: true}, stateUnauthorized, false},
+		// Precedence, each against everything below it in the list above.
+		{"limited outranks unreachable", acctHealth{lastSeen: now, limitedUntil: now.Add(time.Hour), downUntil: now.Add(time.Minute), lastError: "x"}, stateLimited, false},
+		{"unreachable outranks failing", acctHealth{lastSeen: now, downUntil: now.Add(time.Minute), lastStatus: 502, lastError: "x"}, stateUnreachable, false},
+		{"unauthorized outranks all", acctHealth{lastSeen: now, unauthorized: true, limitedUntil: now.Add(time.Hour), downUntil: now.Add(time.Minute), lastStatus: 502, lastError: "x"}, stateUnauthorized, false},
+		// A lapsed window is not a verdict: both of these read active again.
+		{"quota window passed", acctHealth{lastSeen: now, lastStatus: 429, limitedUntil: now.Add(-time.Minute)}, stateOK, true},
+		{"outage cooldown passed", acctHealth{lastSeen: now, downUntil: now.Add(-time.Minute), lastError: "connection refused"}, stateOK, true},
+	}
+	for _, c := range cases {
+		got := c.h.state(now)
+		if got != c.want {
+			t.Errorf("%s: state = %q, want %q", c.name, got, c.want)
+		}
+		if got.routable() != c.routable {
+			t.Errorf("%s: routable = %v, want %v", c.name, got.routable(), c.routable)
+		}
+	}
+}
+
+// The state strings are a wire contract: both lenses key their labels on
+// these exact values (daemon/web/app.js statusLine, DaemonSettingsView
+// accountStatusText). Renaming one here without both lenses drops that row to
+// its raw string, which no test in either lens would catch.
+func TestStateStringsAreTheWireContract(t *testing.T) {
+	want := map[accountState]string{
+		stateOK: "ok", stateLimited: "limited", stateUnreachable: "unreachable",
+		stateFailing: "failing", stateUnauthorized: "unauthorized", stateUntried: "untried",
+	}
+	for state, s := range want {
+		if string(state) != s {
+			t.Errorf("state %v serializes as %q, want %q — both lenses key on this", state, string(state), s)
+		}
+	}
+}

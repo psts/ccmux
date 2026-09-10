@@ -15,10 +15,10 @@ type AccountStatus struct {
 	// "unauthorized" (credential rejected), "untried" (no traffic seen yet).
 	State        string `json:"state"`
 	LimitedUntil string `json:"limitedUntil,omitempty"`
-	// LastError is carried only while the account is CURRENTLY unreachable or
-	// failing. An account that has recovered reads as active, and pairing
-	// "active" with the text of an old failure invites reading a healthy
-	// account as a broken one.
+	// LastError is carried only in the states that HAVE a current reason,
+	// unreachable and failing. An account that has recovered reads as active,
+	// and pairing "active" with the text of an old failure invites reading a
+	// healthy account as a broken one.
 	LastError     string  `json:"lastError,omitempty"`
 	SessionPct    float64 `json:"sessionPct"`
 	WeeklyPct     float64 `json:"weeklyPct"`
@@ -46,6 +46,10 @@ func (s *Service) Statuses() ([]AccountStatus, error) {
 	return out, nil
 }
 
+// statusRow joins one account with what the proxy learned about it. The STATE
+// is not decided here — acctHealth.state owns that, so routing and this row
+// can never disagree about what an account is. All this adds is the per-state
+// detail the tab shows alongside it.
 func statusRow(a Account, h *acctHealth, now time.Time) AccountStatus {
 	st := AccountStatus{
 		Name: a.Name, Kind: a.Kind,
@@ -56,36 +60,13 @@ func statusRow(a Account, h *acctHealth, now time.Time) AccountStatus {
 	if !h.lastSeen.IsZero() {
 		st.LastSeen = h.lastSeen.Format(time.RFC3339)
 	}
-	switch {
-	case h.unauthorized:
-		st.State = "unauthorized"
-	case now.Before(h.limitedUntil):
-		st.State = "limited"
+	state := h.state(now)
+	st.State = string(state)
+	switch state {
+	case stateLimited:
 		st.LimitedUntil = h.limitedUntil.Format(time.RFC3339)
-	// After the quota case on purpose: a limit carries a reset the upstream
-	// named and can stand for days, while unreachable is a short guess
-	// (unreachableCooldown). When both hold, the limit is worth showing.
-	case now.Before(h.downUntil):
-		st.State = "unreachable"
+	case stateUnreachable, stateFailing:
 		st.LastError = h.lastError
-	// Both halves, because either alone is wrong. observe clears lastError on
-	// EVERY response and only its default arm sets one, so the pair means
-	// exactly "the latest response was an error no other arm claimed" — which
-	// is the whole condition, and needs no flag of its own.
-	//
-	// On lastStatus alone this arm stole two rows that belong elsewhere: an
-	// account whose quota window lapsed (lastStatus 429, limitedUntil passed)
-	// and a pass-through answering 401 for the PANE's dead login, which is
-	// deliberately not marked. Both then read "failing" with no reason.
-	// On lastError alone it would steal a third: a transport failure sets a
-	// reason and lastStatus 0, and belongs to the unreachable arm above.
-	case h.lastStatus >= 400 && h.lastError != "":
-		st.State = "failing"
-		st.LastError = h.lastError
-	case h.lastSeen.IsZero():
-		st.State = "untried"
-	default:
-		st.State = "ok"
 	}
 	return st
 }

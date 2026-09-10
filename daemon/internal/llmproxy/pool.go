@@ -77,13 +77,75 @@ func (h *healthState) get(name string) *acctHealth {
 	return a
 }
 
+// accountState is what the proxy currently believes about one account. It is
+// ONE ordered rule, named once: routing reads it to decide what to try, the
+// settings tab reads it to decide what to show. Those were two encodings of
+// the same facts in two files — a boolean conjunction here and an ordered
+// switch in status.go — with the precedence written down in neither. Three
+// separate bugs came through that seam, each one a change made to half of it.
+type accountState string
+
+const (
+	stateOK           accountState = "ok"
+	stateLimited      accountState = "limited"
+	stateUnreachable  accountState = "unreachable"
+	stateFailing      accountState = "failing"
+	stateUnauthorized accountState = "unauthorized"
+	stateUntried      accountState = "untried"
+)
+
+// state names the account's condition. Order is precedence and it is the
+// whole rule:
+//
+//   - a rejected credential outranks everything: it does not expire on its
+//     own, and nothing else about the account matters while it stands.
+//   - a quota limit outranks an outage: it carries a reset the upstream
+//     named and can stand for days, while unreachable is a short guess.
+//   - failing is last of the bad ones because it is the weakest claim: the
+//     upstream answered, it just did not serve.
+//   - untried is not a verdict, only the absence of one.
+func (a *acctHealth) state(now time.Time) accountState {
+	switch {
+	case a.unauthorized:
+		return stateUnauthorized
+	case now.Before(a.limitedUntil):
+		return stateLimited
+	case now.Before(a.downUntil):
+		return stateUnreachable
+	// Both halves. observe clears lastError on EVERY response and only its
+	// default arm sets one, so the pair means exactly "the latest response was
+	// an error no other arm claimed".
+	//
+	// On lastStatus alone this arm steals two rows that belong above it: an
+	// account whose quota window lapsed (lastStatus 429, limitedUntil passed)
+	// and a pass-through answering 401 for the PANE's dead login, which is
+	// deliberately not marked. On lastError alone it steals a third: a
+	// transport failure sets a reason and lastStatus 0, and one blip is not
+	// evidence the upstream is still down.
+	case a.lastStatus >= 400 && a.lastError != "":
+		return stateFailing
+	case a.lastSeen.IsZero():
+		return stateUntried
+	}
+	return stateOK
+}
+
+// routable reports whether a state is worth dialing.
+//
+// Spelled out rather than derived, because the answer is not "is the state
+// good". failing is ROUTABLE on purpose: a 5xx does not fail over (see
+// failoverResponse) and one 404 is not evidence an account is finished, so
+// that state reports without re-routing. untried is routable for the obvious
+// reason that nothing is known against it yet.
+func (s accountState) routable() bool {
+	return s == stateOK || s == stateUntried || s == stateFailing
+}
+
 // usable reports whether an account is worth trying right now.
 func (h *healthState) usable(name string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	a := h.get(name)
-	now := h.now()
-	return !a.unauthorized && now.After(a.limitedUntil) && now.After(a.downUntil)
+	return h.get(name).state(h.now()).routable()
 }
 
 // order returns the pool with unusable accounts moved to the back — they are
