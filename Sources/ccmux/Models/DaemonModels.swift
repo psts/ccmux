@@ -434,7 +434,14 @@ struct DaemonWindow: Codable, Identifiable {
     var name: String
     var workspaceIds: [String]
     var openBy: [String]
+    /// Anyone with this login has it open, on any lens. Says nothing about
+    /// whether THIS lens is one of them.
     var open: Bool
+    /// This lens holds it open. `open` cannot answer that — it is per-login, so
+    /// a window your phone has open reads open=true here, which is how a window
+    /// with no local counterpart became invisible AND unopenable: too open for
+    /// the Open Window menu, absent from the Restore Window list.
+    var openHere: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -443,6 +450,7 @@ struct DaemonWindow: Codable, Identifiable {
         workspaceIds = try c.decodeIfPresent([String].self, forKey: .workspaceIds) ?? []
         openBy = try c.decodeIfPresent([String].self, forKey: .openBy) ?? []
         open = try c.decodeIfPresent(Bool.self, forKey: .open) ?? false
+        openHere = try c.decodeIfPresent(Bool.self, forKey: .openHere) ?? false
     }
 }
 

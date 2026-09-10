@@ -6,8 +6,11 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // Shared windows (v2): ONE arrangement for everyone. A window is a shared
@@ -87,7 +90,7 @@ func (m *Manager) windowSnapshot() *windowState {
 	}
 	read("windows", func() (err error) { st.names, err = m.store.AllWindows(); return })
 	read("membership", func() (err error) { st.members, err = m.store.WindowMembers(); return })
-	read("open flags", func() (err error) { st.opens, err = m.store.WindowOpens(); return })
+	read("open flags", func() (err error) { st.opens, err = m.store.WindowOpens(staleBefore()); return })
 	if imported, err := m.store.ViewImports(); err != nil {
 		log.Printf("windows: reading import markers failed (%v); skipping legacy import this pass", err)
 		st.imported = nil
@@ -276,6 +279,42 @@ func (m *Manager) SeedWindowMembership(wsID, windowName string) error {
 	return m.AssignWorkspace(wsID, windowName)
 }
 
+// openFlagTTL is how long one lens's open flag stands without being
+// re-asserted. It is a backstop, not the main repair: a lens that comes back
+// clears its OWN leftover rows at launch (ClearStaleWindowOpens), so this only
+// decides how long a machine that never returns keeps a window open — blocking
+// the archive-on-last-close rule and the window's own pruning. A month is
+// deliberately generous: expiry is not destructive on its own, it only changes
+// whether the NEXT close counts as the last one.
+const openFlagTTL = 30 * 24 * time.Hour
+
+func staleBefore() int64 { return time.Now().Add(-openFlagTTL).UnixMilli() }
+
+// DeviceOpenWindows returns the window ids this DEVICE has open, so a lens can
+// reason about its own rows. openBy reports logins, which cannot answer it: two
+// lenses under one login are indistinguishable there, and that is exactly the
+// pair this whole device keying exists to separate.
+func (m *Manager) DeviceOpenWindows(login, device string) (map[string]bool, error) {
+	if m.store == nil || device == "" {
+		return nil, nil
+	}
+	return m.store.DeviceWindowOpens(login, device, staleBefore())
+}
+
+// ClearOwnStaleOpens lets one lens repair its own flags: everything under its
+// device id that is not in keep is dropped. Scoped to that device, so it can
+// never close a window another lens is showing.
+func (m *Manager) ClearOwnStaleOpens(login, device string, keep []string) error {
+	if m.store == nil {
+		return errors.New("no store: windows are not available")
+	}
+	if err := m.store.ClearStaleWindowOpens(login, device, keep); err != nil {
+		return err
+	}
+	m.invalidateWindows()
+	return nil
+}
+
 // SetWindowOpen records one login's open/close of a window. On a close it
 // reports whether that was the LAST opener — the lens then archives the
 // members with force (the agreed model: nobody has it open, the window goes
@@ -286,7 +325,8 @@ func (m *Manager) SeedWindowMembership(wsID, windowName string) error {
 // lens would force-archive sessions out from under whoever still does. The
 // existence check runs BEFORE the write, so an open against a bad id cannot
 // leave a dangling flag behind the error.
-func (m *Manager) SetWindowOpen(login, windowID string, open bool) (last bool, members []string, err error) {
+func (m *Manager) SetWindowOpen(f store.WindowOpenFlag, open bool) (last bool, members []string, err error) {
+	windowID := f.WindowID
 	if m.store == nil {
 		return false, nil, errors.New("no store: windows are not available")
 	}
@@ -297,7 +337,7 @@ func (m *Manager) SetWindowOpen(login, windowID string, open bool) (last bool, m
 	if _, known := names[windowID]; !known {
 		return false, nil, fmt.Errorf("%w: %s", ErrUnknownWindow, windowID)
 	}
-	if err := m.store.SetWindowOpen(login, windowID, open); err != nil {
+	if err := m.store.SetWindowOpen(f, open); err != nil {
 		return false, nil, err
 	}
 	m.invalidateWindows()
@@ -367,7 +407,7 @@ func (m *Manager) WindowsStrict() (members map[string]string, opens map[string]m
 	if members, err = m.store.WindowMembers(); err != nil {
 		return nil, nil, nil, err
 	}
-	if opens, err = m.store.WindowOpens(); err != nil {
+	if opens, err = m.store.WindowOpens(staleBefore()); err != nil {
 		return nil, nil, nil, err
 	}
 	if names, err = m.store.AllWindows(); err != nil {
@@ -416,7 +456,9 @@ func (m *Manager) MigrateViewsToWindows() error {
 					return err
 				}
 			}
-			if err := m.store.SetWindowOpen(login, wid, true); err != nil {
+			if err := m.store.SetWindowOpen(store.WindowOpenFlag{
+				Login: login, WindowID: wid, Label: "before upgrade", Seen: time.Now().UnixMilli(),
+			}, true); err != nil {
 				return err
 			}
 		}

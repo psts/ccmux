@@ -353,6 +353,7 @@ func (s *Server) Handler() http.Handler {
 	// authority. Same for the windows surface below.
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
 	mux.HandleFunc("GET /v1/windows", s.listWindows)
+	mux.HandleFunc("POST /v1/windows/open-set", s.syncWindowOpen)
 	mux.HandleFunc("POST /v1/windows/{id}/open", s.setWindowOpen(true))
 	mux.HandleFunc("POST /v1/windows/{id}/close", s.setWindowOpen(false))
 	mux.HandleFunc("PUT /v1/windows/{id}", s.renameWindow)

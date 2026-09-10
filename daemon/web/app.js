@@ -32,6 +32,18 @@ const esc = (s) => String(s).replace(/[<>&"']/g,
 // A display name for presence; asked once and remembered. Tailscale identity
 // will replace this on the tailnet.
 function getUser() {
+  // Device id, not a person: two lenses under ONE login each hold their own
+  // open flags, so a browser closing a window cannot clear the Mac's. The
+  // label is only for a human reading a stale row and is never matched on.
+  let dev = localStorage.getItem("ccmux-device");
+  if (!dev) {
+    dev = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random().toString(36).slice(2);
+    localStorage.setItem("ccmux-device", dev);
+  }
+  const deviceId = dev;
+  // "Patric (web)" reads better than a uuid when you are looking at which lens
+  // is holding a window open. Recomputed rather than stored: the name can change.
+  const deviceLabel = () => (localStorage.getItem("ccmux-user") || "anon") + " (web)";
   let u = localStorage.getItem("ccmux-user");
   if (!u) {
     u = (prompt("Your name (for presence):", "") || "anon").trim() || "anon";
@@ -56,7 +68,12 @@ function bytesToB64(u8) {
 // --- workspace list ---
 async function fetchWorkspaces() {
   try {
-    const [wr, winr] = await Promise.all([fetch("/v1/workspaces"), fetch("/v1/windows")]);
+    const [wr, winr] = await Promise.all([
+      fetch("/v1/workspaces"),
+      // device= so each window reports openHere: whether THIS lens holds it,
+      // which openBy (per-login) cannot answer.
+      fetch("/v1/windows?device=" + encodeURIComponent(deviceId)),
+    ]);
     state.workspaces = (await wr.json()) || [];
     // Keep the last window list on a failed read (503 = tables unreadable,
     // per the daemon) — blanking it would make every window look closed and
@@ -139,12 +156,14 @@ function renderList() {
   ul.innerHTML = "";
   const grouped = groupedWorkspaces();
   const winByName = new Map(state.windows.map((w) => [w.name.toLowerCase(), w]));
-  const closed = state.windows.filter((w) => !w.open);
+  // openHere, not open: a window another of your lenses holds is not open HERE,
+  // and hiding it left it unreachable from this lens entirely.
+  const closed = state.windows.filter((w) => !w.openHere);
 
   for (const [group, list] of grouped) {
     if (group) {
       const win = winByName.get(group.toLowerCase());
-      if (win && !win.open) continue; // rendered below as a closed-window row
+      if (win && !win.openHere) continue; // rendered below as a closed-window row
       const h = document.createElement("li");
       h.className = "group-hdr";
       h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
@@ -235,7 +254,7 @@ function ownerLabel(ws) {
 // members — opening a sleeping window is how it comes back everywhere.
 async function openWindow(win) {
   try {
-    const r = await fetch(`/v1/windows/${win.id}/open`, { method: "POST" });
+    const r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(deviceId)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
     if (!r.ok) { alert("open failed: " + (await r.text())); return; }
     for (const wsId of win.workspaceIds || []) {
       const ws = state.workspaces.find((w) => w.id === wsId);
@@ -256,7 +275,7 @@ async function openWindow(win) {
 // which is the model's own permission).
 async function closeWindow(win) {
   try {
-    const r = await fetch(`/v1/windows/${win.id}/close`, { method: "POST" });
+    const r = await fetch(`/v1/windows/${win.id}/close?device=${encodeURIComponent(deviceId)}`, { method: "POST" });
     if (!r.ok) { alert("close failed: " + (await r.text())); return; }
     const out = await r.json();
     if (out.last) {

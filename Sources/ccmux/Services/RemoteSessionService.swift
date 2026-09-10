@@ -444,7 +444,8 @@ final class RemoteSessionService: ObservableObject {
     /// The shared window list (GET /v1/windows). A failure keeps the last
     /// list rather than blanking every closed-window row on a blip.
     private func fetchSharedWindows() async -> [DaemonWindow] {
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows") else { return sharedWindows }
+        // device= so each window reports openHere: whether THIS lens holds it.
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows?device=\(DaemonConfig.deviceId)") else { return sharedWindows }
         do {
             let (data, resp) = try await session.data(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return sharedWindows }
@@ -1149,7 +1150,7 @@ final class RemoteSessionService: ObservableObject {
 
     /// Mark the shared window open for this login. Idempotent on the daemon.
     func openSharedWindow(id: String) async {
-        if !(await send("POST", path: "/v1/windows/\(id)/open", body: Data(), expect: 200)) {
+        if !(await send("POST", path: "/v1/windows/\(id)/open?device=\(DaemonConfig.deviceId)&deviceLabel=\(urlEscaped(DaemonConfig.deviceLabel))", body: Data(), expect: 200)) {
             NSLog("[ccmux] windows: open flag for %@ failed; the list will show it closed until the next open", id)
         }
         await refresh()
@@ -1159,12 +1160,38 @@ final class RemoteSessionService: ObservableObject {
     /// that made it nobody's, the window goes to sleep — archive the members
     /// the daemon reported (force: nobody has it open, which is the model's
     /// own permission).
+    /// Declare the WHOLE set of windows this lens has open, so the daemon can
+    /// make this device's rows match — asserting the ones listed and dropping
+    /// the ones not.
+    ///
+    /// This is the repair path. Until it existed a lens could only ever ADD a
+    /// flag: a close that never landed (⌘Q, a crash, an unreachable daemon, a
+    /// window name that no longer matched) left a row nothing could clear, and
+    /// a window nobody had open still counted as open — so it never archived,
+    /// and it never appeared in the Open Window menu either.
+    ///
+    /// Scoped to this device, so declaring the set can never close a window
+    /// another lens is showing.
+    func syncOpenWindows(_ windowIds: [String]) async {
+        struct Body: Encodable {
+            let device: String
+            let deviceLabel: String
+            let windowIds: [String]
+        }
+        guard let data = try? JSONEncoder().encode(
+            Body(device: DaemonConfig.deviceId, deviceLabel: DaemonConfig.deviceLabel, windowIds: windowIds))
+        else { return }
+        if !(await send("POST", path: "/v1/windows/open-set", body: data, expect: 200)) {
+            NSLog("[ccmux] windows: open-set failed; this lens's flags stay as the daemon last saw them")
+        }
+    }
+
     func closeSharedWindow(named name: String) async {
         guard let win = sharedWindows.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
             NSLog("[ccmux] windows: no shared window named %@ to close", name)
             return
         }
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(win.id)/close") else { return }
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows/\(win.id)/close?device=\(DaemonConfig.deviceId)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         do {
@@ -1333,6 +1360,14 @@ final class RemoteSessionService: ObservableObject {
         } catch {
             return ([], error.localizedDescription)
         }
+    }
+
+    /// Percent-encode a QUERY value. urlQueryAllowed leaves "&" and "=" intact,
+    /// which would let a hostname containing either split the query into extra
+    /// parameters, so both are removed.
+    private func urlEscaped(_ value: String) -> String {
+        let allowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+"))
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     /// Percent-encode an agent name for a path segment; the daemon refuses

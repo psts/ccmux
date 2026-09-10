@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/hub"
 	"ccmux.dev/ccmuxd/internal/manager"
@@ -237,7 +238,7 @@ func TestWindows_ArchiveGuard(t *testing.T) {
 	t.Run("open by someone else blocks", func(t *testing.T) {
 		s := fixture(t)
 		wid, _ := s.mgr.WindowByName("CHARTLABS")
-		if _, _, err := s.mgr.SetWindowOpen("dasha@x.com", wid, true); err != nil {
+		if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{Login: "dasha@x.com", WindowID: wid}, true); err != nil {
 			t.Fatal(err)
 		}
 		rec, ran := archive(s, "/v1/workspaces/w1/archive")
@@ -362,5 +363,127 @@ func TestWindows_RenameSharedAndCollision(t *testing.T) {
 	}
 	if rec := rename(alphaID, "beta"); rec.Code != http.StatusConflict {
 		t.Fatalf("colliding rename = %d, want 409", rec.Code)
+	}
+}
+
+// The repair path: a lens declares its whole set, and the daemon makes that
+// DEVICE's rows match — including dropping one it no longer has. Before this a
+// flag could only ever be added, so a close that never landed (quit, crash,
+// unreachable daemon) blocked the archive-on-last-close rule forever.
+func TestOpenSetClearsOnlyItsOwnDeviceRows(t *testing.T) {
+	ws := &model.Workspace{ID: "w1"}
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
+	if rec := putGroupReq(t, s, "w1", "ALPHA"); rec.Code != http.StatusNoContent {
+		t.Fatal(rec.Code)
+	}
+	wid, _ := s.mgr.WindowByName("ALPHA")
+
+	post := func(device string, ids string) *httptest.ResponseRecorder {
+		body := `{"device":"` + device + `","deviceLabel":"` + device + `","windowIds":[` + ids + `]}`
+		req := httptest.NewRequest("POST", "/v1/windows/open-set", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.syncWindowOpen(rec, req)
+		return rec
+	}
+	// Two lenses under ONE login, both holding the window.
+	for _, dev := range []string{"mac-1", "web-1"} {
+		if rec := post(dev, `"`+wid+`"`); rec.Code != http.StatusOK {
+			t.Fatalf("open-set %s = %d: %s", dev, rec.Code, rec.Body.String())
+		}
+	}
+	// The Mac stops reporting it. The web lens still shows it, so it must stay
+	// open — this is the case a login-keyed flag could not express at all.
+	if rec := post("mac-1", ""); rec.Code != http.StatusOK {
+		t.Fatalf("clearing set = %d: %s", rec.Code, rec.Body.String())
+	}
+	logins, grouped := s.mgr.WindowOpenLogins("w1")
+	if !grouped || len(logins) == 0 {
+		t.Fatal("window closed entirely — one lens's set cleared another lens's row")
+	}
+	// And when the last lens drops it, it really is closed.
+	if rec := post("web-1", ""); rec.Code != http.StatusOK {
+		t.Fatalf("second clear = %d", rec.Code)
+	}
+	if logins, _ := s.mgr.WindowOpenLogins("w1"); len(logins) != 0 {
+		t.Fatalf("still open by %v after every lens dropped it", logins)
+	}
+}
+
+// A device is required: without one there is nothing to scope the clear to,
+// and clearing by login would close windows this lens knows nothing about.
+func TestOpenSetRefusesWithoutADevice(t *testing.T) {
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true})
+	req := httptest.NewRequest("POST", "/v1/windows/open-set", strings.NewReader(`{"windowIds":[]}`))
+	rec := httptest.NewRecorder()
+	s.syncWindowOpen(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// openHere is per-DEVICE where open is per-login. Without it a window another
+// of your own lenses held read open=true everywhere, so the lens that did NOT
+// have it showed nothing and its Open Window menu — which lists closed windows
+// — excluded it too. Invisible and unopenable, with no exit from the UI.
+func TestOpenHereIsPerDeviceNotPerLogin(t *testing.T) {
+	ws := &model.Workspace{ID: "w1"}
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
+	if rec := putGroupReq(t, s, "w1", "ALPHA"); rec.Code != http.StatusNoContent {
+		t.Fatal(rec.Code)
+	}
+	wid, _ := s.mgr.WindowByName("ALPHA")
+	// The phone opens it. Same login, different device.
+	if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
+		Login: "patric@x.com", WindowID: wid, Device: "phone-1", Seen: time.Now().UnixMilli(),
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	list := func(device string) []map[string]any {
+		req := httptest.NewRequest("GET", "/v1/windows?device="+device, nil)
+		rec := httptest.NewRecorder()
+		s.listWindows(rec, req)
+		var out []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+		}
+		return out
+	}
+	for _, w := range list("mac-1") {
+		if w["id"] != wid {
+			continue
+		}
+		if w["open"] != true {
+			t.Errorf("open = %v, want true: the login does have it open", w["open"])
+		}
+		if w["openHere"] != false {
+			t.Errorf("openHere = %v on the Mac, want false: the PHONE holds it", w["openHere"])
+		}
+	}
+	for _, w := range list("phone-1") {
+		if w["id"] == wid && w["openHere"] != true {
+			t.Errorf("openHere = %v on the phone, want true", w["openHere"])
+		}
+	}
+}
+
+// A row nobody refreshes stops counting, so a machine that never comes back
+// cannot hold a window open forever — which blocked archive-on-last-close and
+// the window's own pruning.
+func TestStaleFlagStopsCountingAsOpen(t *testing.T) {
+	ws := &model.Workspace{ID: "w1"}
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
+	if rec := putGroupReq(t, s, "w1", "ALPHA"); rec.Code != http.StatusNoContent {
+		t.Fatal(rec.Code)
+	}
+	wid, _ := s.mgr.WindowByName("ALPHA")
+	// A laptop that was switched off two months ago.
+	old := time.Now().Add(-60 * 24 * time.Hour).UnixMilli()
+	if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
+		Login: "dasha@x.com", WindowID: wid, Device: "dasha-laptop", Label: "dasha-mbp", Seen: old,
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if logins, _ := s.mgr.WindowOpenLogins("w1"); len(logins) != 0 {
+		t.Fatalf("still open by %v — a machine that never came back holds it forever", logins)
 	}
 }

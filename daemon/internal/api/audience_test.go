@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // routedFocus is a focusOracle with a scripted driver, for audience tests —
@@ -34,7 +35,7 @@ func TestAlertAudience_Ladder(t *testing.T) {
 		t.Fatal(rec.Code)
 	}
 	wid, _ := s.mgr.WindowByName("CHARTLABS")
-	if _, _, err := s.mgr.SetWindowOpen("patric@x.com", wid, true); err != nil {
+	if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{Login: "patric@x.com", WindowID: wid}, true); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
@@ -55,7 +56,7 @@ func TestAlertAudience_Ladder(t *testing.T) {
 	}
 
 	// No driver, window open by nobody → unbounded (nothing goes silent).
-	if _, _, err := s.mgr.SetWindowOpen("patric@x.com", wid, false); err != nil {
+	if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{Login: "patric@x.com", WindowID: wid}, false); err != nil {
 		t.Fatal(err)
 	}
 	s.focus = routedFocus{}
@@ -80,7 +81,7 @@ func TestAlertsFor_RoutesByAudience(t *testing.T) {
 		t.Fatal(rec.Code)
 	}
 	wid, _ := s.mgr.WindowByName("CHARTLABS")
-	if _, _, err := s.mgr.SetWindowOpen("patric@x.com", wid, true); err != nil {
+	if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{Login: "patric@x.com", WindowID: wid}, true); err != nil {
 		t.Fatal(err)
 	}
 	s.focus = routedFocus{owners: map[string]bool{"patric@x.com": true, "dasha@x.com": true}}

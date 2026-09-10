@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,8 +56,10 @@ type Store interface {
 	SetWindowMember(wsID, windowID string) error
 	RemoveWindowMember(wsID string) error
 	WindowMembers() (map[string]string, error) // ws_id → window id
-	SetWindowOpen(login, windowID string, open bool) error
-	WindowOpens() (map[string]map[string]bool, error) // window id → logins
+	SetWindowOpen(f WindowOpenFlag, open bool) error
+	ClearStaleWindowOpens(login, device string, keep []string) error
+	DeviceWindowOpens(login, device string, staleBefore int64) (map[string]bool, error)
+	WindowOpens(staleBefore int64) (map[string]map[string]bool, error) // window id → logins
 
 	// Push notification subscriptions (transport-generic, keyed by login).
 	SavePushSubscription(*model.PushSubscription) error
@@ -165,7 +168,9 @@ CREATE TABLE IF NOT EXISTS window_members (
   ws_id TEXT PRIMARY KEY, window_id TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS window_open (
-  login TEXT, window_id TEXT, PRIMARY KEY (login, window_id)
+  login TEXT, window_id TEXT, device TEXT DEFAULT '', device_label TEXT DEFAULT '',
+  last_seen INTEGER DEFAULT 0,
+  PRIMARY KEY (login, window_id, device)
 );
 CREATE TABLE IF NOT EXISTS agent_schedules (
   id INTEGER PRIMARY KEY AUTOINCREMENT, window_id TEXT NOT NULL, agent TEXT NOT NULL,
@@ -229,7 +234,7 @@ func Open(path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate panes.harness: %w", err)
 	}
-	if err := migrateAgentColumns(db); err != nil {
+	if err := rebuildingMigrations(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -247,6 +252,73 @@ func Open(path string) (*SQLite, error) {
 	_ = os.Chmod(path+"-wal", 0o600)
 	_ = os.Chmod(path+"-shm", 0o600)
 	return &SQLite{db: db}, nil
+}
+
+// rebuildingMigrations groups the migrations that can FAIL, as against the
+// ADD COLUMN ones above whose errors are deliberately ignored. Grouped so Open
+// has one error path for all of them rather than one apiece.
+func rebuildingMigrations(db *sql.DB) error {
+	if err := migrateAgentColumns(db); err != nil {
+		return err
+	}
+	return migrateWindowOpenDevices(db)
+}
+
+// migrateWindowOpenDevices moves window_open from one row per (login, window)
+// to one per (login, window, device).
+//
+// A rebuild, not an ALTER: the device belongs in the PRIMARY KEY and SQLite
+// cannot add a column to one. Guarded on the column being absent so it runs
+// once, and it is the only destructive-shaped migration in this file — hence
+// the transaction, and hence copying every existing row rather than dropping
+// them. Existing rows keep an empty device (nobody knows which lens set them)
+// and are stamped with NOW, so they behave exactly as before for a full TTL
+// and then drain on their own as lenses re-assert with real device ids.
+func migrateWindowOpenDevices(db *sql.DB) error {
+	var has bool
+	rows, err := db.Query(`PRAGMA table_info(window_open)`)
+	if err != nil {
+		return fmt.Errorf("inspect window_open: %w", err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("inspect window_open: %w", err)
+		}
+		if name == "device" {
+			has = true
+		}
+	}
+	rows.Close()
+	if has {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("migrate window_open: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmts := []string{
+		`CREATE TABLE window_open_v2 (
+  login TEXT, window_id TEXT, device TEXT DEFAULT '', device_label TEXT DEFAULT '',
+  last_seen INTEGER DEFAULT 0,
+  PRIMARY KEY (login, window_id, device)
+)`,
+		`INSERT INTO window_open_v2 (login, window_id, device, device_label, last_seen)
+  SELECT login, window_id, '', 'before upgrade', ` + strconv.FormatInt(time.Now().UnixMilli(), 10) + ` FROM window_open`,
+		`DROP TABLE window_open`,
+		`ALTER TABLE window_open_v2 RENAME TO window_open`,
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("migrate window_open: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // migrateAgentColumns adds panes.agent / panes.agent_version (a pane that is
@@ -519,19 +591,93 @@ func (s *SQLite) WindowMembers() (map[string]string, error) {
 	return s.twoColumnMap(`SELECT ws_id, window_id FROM window_members`)
 }
 
-// SetWindowOpen records (or clears) one login's open flag on a window.
-func (s *SQLite) SetWindowOpen(login, windowID string, open bool) error {
+// WindowOpenFlag is one lens saying it has a window open. Device is the KEY:
+// two lenses under one login (a Mac and a browser) each hold their own row, so
+// one closing cannot clear the other's — that shared row was the whole bug.
+// Label is for humans reading a stale row and is never matched on.
+type WindowOpenFlag struct {
+	Login    string
+	WindowID string
+	Device   string
+	Label    string
+	Seen     int64 // unix millis
+}
+
+// SetWindowOpen records (or clears) one lens's open flag on a window.
+//
+// An empty Device clears EVERY row for that login and window, which is what a
+// lens too old to send one means by "close": it has no way to name a device, so
+// it can only mean all of them. With a device it clears exactly its own.
+func (s *SQLite) SetWindowOpen(f WindowOpenFlag, open bool) error {
 	if !open {
-		_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=?`, login, windowID)
+		if f.Device == "" {
+			_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=?`, f.Login, f.WindowID)
+			return err
+		}
+		_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=? AND device=?`,
+			f.Login, f.WindowID, f.Device)
 		return err
 	}
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO window_open (login, window_id) VALUES (?,?)`, login, windowID)
+	if f.Seen == 0 {
+		f.Seen = time.Now().UnixMilli()
+	}
+	// Upsert rather than INSERT OR IGNORE: re-asserting an existing flag is how
+	// a lens says "still open", and that has to move last_seen or the row ages
+	// out under a lens that never stopped showing it.
+	_, err := s.db.Exec(`
+INSERT INTO window_open (login, window_id, device, device_label, last_seen) VALUES (?,?,?,?,?)
+ON CONFLICT(login, window_id, device) DO UPDATE SET device_label=excluded.device_label, last_seen=excluded.last_seen`,
+		f.Login, f.WindowID, f.Device, f.Label, f.Seen)
 	return err
 }
 
+// ClearStaleWindowOpens drops one device's rows for windows it did NOT report,
+// which is how a lens repairs its own state at launch: it knows exactly which
+// windows it has, and any other row under its device id is a leftover from a
+// close that never landed. Scoped to the caller's own device, so it can never
+// close a window another lens is showing.
+func (s *SQLite) ClearStaleWindowOpens(login, device string, keep []string) error {
+	if device == "" {
+		return nil // a lens that cannot name itself must not delete by guess
+	}
+	q := `DELETE FROM window_open WHERE login=? AND device=?`
+	args := []any{login, device}
+	if len(keep) > 0 {
+		q += ` AND window_id NOT IN (?` + strings.Repeat(",?", len(keep)-1) + `)`
+		for _, id := range keep {
+			args = append(args, id)
+		}
+	}
+	_, err := s.db.Exec(q, args...)
+	return err
+}
+
+// DeviceWindowOpens returns the windows one device has open.
+func (s *SQLite) DeviceWindowOpens(login, device string, staleBefore int64) (map[string]bool, error) {
+	rows, err := s.db.Query(
+		`SELECT window_id FROM window_open WHERE login=? AND device=? AND last_seen >= ?`,
+		login, device, staleBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // WindowOpens returns who has each window open, window id → set of logins.
-func (s *SQLite) WindowOpens() (map[string]map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT window_id, login FROM window_open`)
+// Rows older than staleBefore are ignored: a machine that never came back must
+// not hold a window open forever, blocking both the archive-on-last-close rule
+// and the window's own pruning. Passing 0 disables the cutoff.
+func (s *SQLite) WindowOpens(staleBefore int64) (map[string]map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT window_id, login FROM window_open WHERE last_seen >= ?`, staleBefore)
 	if err != nil {
 		return nil, err
 	}

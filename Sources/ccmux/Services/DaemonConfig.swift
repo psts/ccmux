@@ -55,6 +55,32 @@ enum DaemonConfig {
 
     /// UserDefaults key for the developer identity override (Settings window).
     static let identityKey = "developerIdentity"
+    private static let deviceKey = "lensDeviceId"
+
+    /// Stable per-INSTALL id for this lens. Window open flags are keyed on it,
+    /// so a Mac and a browser under one login each hold their own — one closing
+    /// a window cannot clear the other's, which a login-keyed flag could not
+    /// express at all.
+    ///
+    /// A generated id rather than the hostname: two lenses on one machine share
+    /// a hostname and would collide, and a browser cannot read one anyway, so
+    /// the two lenses could not implement the same rule. The hostname rides
+    /// along as `deviceLabel`, which is only ever displayed.
+    static var deviceId: String {
+        if let existing = UserDefaults.standard.string(forKey: deviceKey), !existing.isEmpty {
+            return existing
+        }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: deviceKey)
+        return fresh
+    }
+
+    /// Human-readable name for this lens, for someone looking at which device
+    /// is holding a window open. Never matched on.
+    static var deviceLabel: String {
+        let host = ProcessInfo.processInfo.hostName
+        return host.isEmpty ? "Mac" : host
+    }
 
     /// The stored developer identity, "" when unset. Always already trimmed —
     /// `setIdentity` is the only writer.

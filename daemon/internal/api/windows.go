@@ -8,9 +8,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // Shared windows on the wire (v2). The daemon a lens talks to (the hub in a
@@ -124,6 +126,11 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		WorkspaceIDs []string `json:"workspaceIds"`
 		OpenBy       []string `json:"openBy"`
 		Open         bool     `json:"open"`
+		// OpenHere is THIS lens's own row, when it names a device. Open is
+		// per-login and so cannot answer it: a window your phone holds open
+		// reads Open=true on your Mac, which is how a window with no local
+		// counterpart became invisible AND unopenable.
+		OpenHere bool `json:"openHere"`
 	}
 	windows, err := s.mgr.WindowsListStrict()
 	if err != nil {
@@ -131,9 +138,14 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "window state unreadable — retry")
 		return
 	}
+	here, err := s.mgr.DeviceOpenWindows(login, r.URL.Query().Get("device"))
+	if err != nil {
+		log.Printf("windows: device open set unreadable: %v", err)
+	}
 	out := make([]windowResp, 0, len(windows))
 	for _, win := range windows {
-		wr := windowResp{ID: win.ID, Name: win.Name, WorkspaceIDs: win.WorkspaceIDs, OpenBy: win.OpenBy}
+		wr := windowResp{ID: win.ID, Name: win.Name, WorkspaceIDs: win.WorkspaceIDs,
+			OpenBy: win.OpenBy, OpenHere: here[win.ID]}
 		for _, l := range win.OpenBy {
 			if l == login {
 				wr.Open = true
@@ -148,10 +160,62 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 // {last, members}: when the caller was the final opener, the LENS archives
 // the members — the agreed model is that a window nobody has open goes to
 // sleep, and the lens already owns the archive loop.
+// syncWindowOpen serves POST /v1/windows/open-set: one lens declaring the
+// WHOLE set of windows it currently has open. The daemon makes that device's
+// rows match — asserting the ones listed, dropping the ones not.
+//
+// This is the repair path, and it is why the flag is keyed by device. Until it
+// existed a lens could only ever ADD flags: a close that never landed (quit,
+// crash, an unreachable daemon, a name that no longer matched) left a row
+// nothing could clear, which blocked the archive-on-last-close rule forever.
+// Scoped to the caller's own device, so declaring your set can never close a
+// window another lens is showing.
+func (s *Server) syncWindowOpen(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Device    string   `json:"device"`
+		Label     string   `json:"deviceLabel"`
+		WindowIDs []string `json:"windowIds"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "body must be {device, deviceLabel, windowIds}")
+		return
+	}
+	if req.Device == "" {
+		// Without a device there is nothing to scope the clear to, and doing it
+		// by login would close windows this lens knows nothing about.
+		writeError(w, http.StatusBadRequest, "device is required: the set is per-lens, not per-login")
+		return
+	}
+	login := s.resolveIdentity(r).Login
+	now := time.Now().UnixMilli()
+	for _, id := range req.WindowIDs {
+		if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
+			Login: login, WindowID: id, Device: req.Device, Label: req.Label, Seen: now,
+		}, true); err != nil {
+			// One bad id must not abandon the rest of the set, and it must not
+			// be fatal: the clear below is the half that repairs state.
+			log.Printf("windows: open-set: %s: %v", id, err)
+		}
+	}
+	if err := s.mgr.ClearOwnStaleOpens(login, req.Device, req.WindowIDs); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "window state unwritable — retry")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) setWindowOpen(open bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		login := s.resolveIdentity(r).Login
-		last, members, err := s.mgr.SetWindowOpen(login, r.PathValue("id"), open)
+		// Device and label come from the lens. A lens that sends neither
+		// behaves exactly as before: one row per login, and a close clears
+		// every row for that login and window.
+		last, members, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
+			Login:    login,
+			WindowID: r.PathValue("id"),
+			Device:   r.URL.Query().Get("device"),
+			Label:    r.URL.Query().Get("deviceLabel"),
+		}, open)
 		if err != nil {
 			// 404 only for what the caller got wrong; a store failure is a
 			// 503, or a lens takes the wrong branch off the status code.

@@ -774,19 +774,35 @@ class WindowManager {
         workspaceManager.scheduleSaveFromWindow()
     }
 
-    /// Every on-screen window whose name matches a shared window should hold
-    /// this login's open flag — having it open IS the flag. Diff-gated on the
-    /// daemon-reported state; the daemon-side write is idempotent.
+    /// Declare the whole set of shared windows this lens has on screen — having
+    /// one open IS the flag. The daemon makes THIS DEVICE's rows match, so the
+    /// call both asserts what is open and clears what is not.
+    ///
+    /// It used to only ever ADD: it opened flags for matching windows and had no
+    /// inverse. Combined with ⌘Q and crashes never sending a close, a flag once
+    /// set could outlive the window forever — blocking archive-on-last-close and
+    /// hiding the window from the Open Window menu, which lists only closed ones.
+    ///
+    /// Sent whenever the set changes, and at least twice a day so a lens left
+    /// running does not age out of its own flags.
     private func syncOpenFlags() {
         let service = RemoteSessionService.shared
-        for wc in windowControllers {
+        let ids = windowControllers.compactMap { wc -> String? in
             let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
-            if let win = service.sharedWindows.first(where: { Self.sameWindowName($0.name, name) }),
-               !win.open {
-                Task { @MainActor in await service.openSharedWindow(id: win.id) }
-            }
+            return service.sharedWindows.first(where: { Self.sameWindowName($0.name, name) })?.id
         }
+        let set = Set(ids)
+        let stale = Date().timeIntervalSince(lastOpenSetSentAt) > 12 * 3600
+        guard set != lastOpenSetSent || stale else { return }
+        lastOpenSetSent = set
+        lastOpenSetSentAt = Date()
+        Task { @MainActor in await service.syncOpenWindows(Array(set)) }
     }
+
+    /// What syncOpenFlags last told the daemon, so an unchanged set is not
+    /// re-sent on every workspace change.
+    private var lastOpenSetSent: Set<String> = []
+    private var lastOpenSetSentAt = Date.distantPast
 
     /// Open a shared window from the closed list: create the Mac window, own
     /// its live members, mark the flag, and wake the cold ones — opening a

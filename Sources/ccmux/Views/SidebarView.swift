@@ -88,10 +88,15 @@ struct SidebarView: View {
             .sorted(by: reposThenAgents)
     }
 
-    /// Shared windows this login has closed — one row each in the Open Window
-    /// menu; opening one brings the same window everyone else sees.
+    /// Shared windows THIS LENS does not have open — one row each in the Open
+    /// Window menu; opening one brings the same window everyone else sees.
+    ///
+    /// Filtered on openHere, not open. On `open` a window another of your lenses
+    /// held was excluded here, so it was invisible on this Mac and absent from
+    /// the menu that could have brought it back — the only exit was clearing the
+    /// flag by hand in the daemon.
     private var closedSharedWindows: [DaemonWindow] {
-        remoteService.sharedWindows.filter { !$0.open }
+        remoteService.sharedWindows.filter { !$0.openHere }
     }
 
     /// "patric" — whose session an ungrouped AVAILABLE row is. Empty when the
