@@ -321,11 +321,12 @@ struct DaemonSettingsView: View {
         case "unauthorized": head = "✕ credential rejected"
         case "untried": head = "○ no traffic yet"
         case "unreachable": head = "⚠ not answering"
+        case "failing": head = "⚠ answering errors"
         default: head = st.state
         }
-        // The daemon sends lastError only WHILE the account is unreachable,
-        // so there is no stale-text case to guard here. Same rule as the web
-        // lens, which appends it in the same position.
+        // The daemon sends lastError only WHILE the account is unreachable or
+        // failing, so there is no stale-text case to guard here. Same rule as
+        // the web lens, which appends it in the same position.
         if let err = st.lastError, !err.isEmpty { head += " (\(err))" }
         parts.append(head)
         if st.sessionPct >= 0 { parts.append("session \(Int(st.sessionPct))%") }

@@ -133,6 +133,15 @@ func (h *healthState) observe(acct Account, resp *http.Response) {
 		// The upstream accepted this account: whatever we believed is stale.
 		a.unauthorized = false
 		a.limitedUntil = time.Time{}
+	default:
+		// Everything else that answered but did not serve: 403, 404, and the
+		// 5xx family. None of them fails over (failoverResponse says why), and
+		// none of them proves the account is finished, so nothing here changes
+		// ROUTING. It is recorded because the alternative was silence: these
+		// took no arm at all, so an account 502ing on every request kept
+		// whatever state it last had, and one that had been sidelined as
+		// unreachable flipped to "active" on its first 502 and stayed there.
+		a.lastError = fmt.Sprintf("upstream answered %d", resp.StatusCode)
 	}
 }
 

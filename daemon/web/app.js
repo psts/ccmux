@@ -1596,16 +1596,16 @@ function wireLLMSettings() {
   if (!routeSel) return;
 
   // One line of live health under an account: reachable, limited (and until
-  // when), token rejected, upstream not answering — plus usage percentages
-  // where the upstream sends them (Anthropic subscriptions: session = 5h
-  // window, week = 7 days).
+  // when), token rejected, upstream not answering, upstream answering errors
+  // — plus usage percentages where the upstream sends them (Anthropic
+  // subscriptions: session = 5h window, week = 7 days).
   function statusLine(st) {
     if (!st) return "";
     const when = (iso) => iso ? new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
-    let s = { ok: "● active", limited: "◐ limited", unauthorized: "✕ credential rejected", untried: "○ no traffic yet", unreachable: "⚠ not answering" }[st.state] || st.state;
+    let s = { ok: "● active", limited: "◐ limited", unauthorized: "✕ credential rejected", untried: "○ no traffic yet", unreachable: "⚠ not answering", failing: "⚠ answering errors" }[st.state] || st.state;
     if (st.state === "limited" && st.limitedUntil) s += " until " + when(st.limitedUntil);
-    // The daemon sends lastError only WHILE the account is unreachable, so
-    // there is no stale-text case to guard here.
+    // The daemon sends lastError only WHILE the account is unreachable or
+    // failing, so there is no stale-text case to guard here.
     if (st.lastError) s += " (" + st.lastError + ")";
     const usage = [];
     if (st.sessionPct >= 0) usage.push(`session ${st.sessionPct}%${st.sessionReset ? " (resets " + when(st.sessionReset) + ")" : ""}`);

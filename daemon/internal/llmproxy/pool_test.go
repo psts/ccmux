@@ -540,7 +540,9 @@ func TestClientCancelIsNotAnOutage(t *testing.T) {
 }
 
 // An upstream that answers at all is reachable, whatever it answers: a 404
-// after an outage has to clear the mark, not wait out the cooldown.
+// after an outage has to lift the ROUTING mark, not wait out the cooldown.
+// What it must not do is read as healthy — reachable and serving are two
+// facts, and the row now says the second one separately.
 func TestAnyResponseClearsUnreachable(t *testing.T) {
 	h := newHealthState()
 	h.observeError("a", errors.New("connection refused"))
@@ -548,8 +550,12 @@ func TestAnyResponseClearsUnreachable(t *testing.T) {
 	if !h.usable("a") {
 		t.Fatal("account still sidelined after the upstream answered")
 	}
-	if st := statusRow(Account{Name: "a"}, h.get("a"), h.now()); st.State != "ok" || st.LastError != "" {
-		t.Fatalf("status = %+v, want ok with the stale error dropped", st)
+	st := statusRow(Account{Name: "a"}, h.get("a"), h.now())
+	if st.State != "failing" {
+		t.Fatalf("status = %+v, want failing: it answered, it did not serve", st)
+	}
+	if st.LastError != "upstream answered 404" {
+		t.Fatalf("reason = %q, want the stale outage text replaced by this one", st.LastError)
 	}
 }
 
@@ -781,5 +787,62 @@ func TestUnauthorizedIsMarkedOnlyWhereTheCredentialLives(t *testing.T) {
 	}
 	if h.usable("keyed") {
 		t.Error("an account whose own key was rejected is still usable")
+	}
+}
+
+// An upstream that answers but does not serve took no switch arm at all, so
+// the account kept whatever state it last had. Worst case: one already
+// sidelined as unreachable flipped to "active" on its first 502 and stayed
+// there while every request failed.
+func TestErrorResponsesReadAsFailingNotActive(t *testing.T) {
+	for _, code := range []int{http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		h := newHealthState()
+		h.observe(Account{Name: "a"}, &http.Response{StatusCode: code, Header: http.Header{}})
+		st := statusRow(Account{Name: "a"}, h.get("a"), h.now())
+		if st.State != "failing" {
+			t.Errorf("status after %d = %q, want failing", code, st.State)
+		}
+		if st.LastError == "" {
+			t.Errorf("status after %d carries no reason", code)
+		}
+	}
+}
+
+// The case the ledger entry actually described: an account marked unreachable
+// whose upstream comes back as a gateway that only ever 502s.
+func TestUnreachableDoesNotBecomeActiveOnA502(t *testing.T) {
+	h := newHealthState()
+	h.observeError("a", errors.New("connection refused"))
+	h.observe(Account{Name: "a"}, &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{}})
+	if st := statusRow(Account{Name: "a"}, h.get("a"), h.now()); st.State == "ok" {
+		t.Fatalf("status = %+v, want the 502 not read as a healthy account", st)
+	}
+}
+
+// Self-healing, and without a flag of its own: the next served response drops
+// lastStatus under 400 and clears the reason.
+func TestFailingClearsOnTheNextGoodResponse(t *testing.T) {
+	h := newHealthState()
+	h.observe(Account{Name: "a"}, &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{}})
+	h.observe(Account{Name: "a"}, &http.Response{StatusCode: 200, Header: http.Header{}})
+	if st := statusRow(Account{Name: "a"}, h.get("a"), h.now()); st.State != "ok" || st.LastError != "" {
+		t.Fatalf("status = %+v, want ok with the stale reason dropped", st)
+	}
+}
+
+// A quota rejection and a rejected credential keep their own labels: the new
+// arm is last for a reason, and neither of those routes through it.
+func TestFailingDoesNotShadowLimitedOrUnauthorized(t *testing.T) {
+	h := newHealthState()
+	h.observe(Account{Name: "q"}, &http.Response{StatusCode: 429, Header: http.Header{
+		"Anthropic-Ratelimit-Unified-Status": {"rejected"},
+		"Anthropic-Ratelimit-Unified-Reset":  {strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
+	}})
+	if st := statusRow(Account{Name: "q"}, h.get("q"), h.now()); st.State != "limited" {
+		t.Errorf("quota status = %q, want limited", st.State)
+	}
+	h.observe(Account{Name: "k", APIKey: "sk-ant-x"}, &http.Response{StatusCode: 401, Header: http.Header{}})
+	if st := statusRow(Account{Name: "k"}, h.get("k"), h.now()); st.State != "unauthorized" {
+		t.Errorf("keyed 401 status = %q, want unauthorized", st.State)
 	}
 }

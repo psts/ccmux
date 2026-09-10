@@ -306,10 +306,12 @@ struct DaemonSidecarStatus: Codable {
 }
 
 /// Live health for one LLM account, as the proxy learned it from responses:
-/// state is "ok" | "limited" | "unreachable" | "unauthorized" | "untried";
+/// state is "ok" | "limited" | "unreachable" | "failing" | "unauthorized" |
+/// "untried";
 /// percentages are -1 until an upstream that reports usage (Anthropic
 /// subscriptions) has answered through the proxy. lastError is set only while
-/// the state is "unreachable" and says how the upstream failed to answer.
+/// the state is "unreachable" or "failing", and says how the upstream failed
+/// to serve the request.
 struct DaemonLLMAccountStatus: Codable, Identifiable {
     let name: String
     var state: String

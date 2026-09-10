@@ -11,12 +11,14 @@ type AccountStatus struct {
 	Kind string `json:"kind"`
 	// State: "ok" (usable), "limited" (out of quota until LimitedUntil),
 	// "unreachable" (the upstream did not answer; LastError says how),
+	// "failing" (it answered, with an error; LastError says which),
 	// "unauthorized" (credential rejected), "untried" (no traffic seen yet).
 	State        string `json:"state"`
 	LimitedUntil string `json:"limitedUntil,omitempty"`
-	// LastError is carried only while the account IS unreachable. An account
-	// that has recovered reads as active, and pairing "active" with the text
-	// of an old failure invites reading a healthy account as a broken one.
+	// LastError is carried only while the account is CURRENTLY unreachable or
+	// failing. An account that has recovered reads as active, and pairing
+	// "active" with the text of an old failure invites reading a healthy
+	// account as a broken one.
 	LastError     string  `json:"lastError,omitempty"`
 	SessionPct    float64 `json:"sessionPct"`
 	WeeklyPct     float64 `json:"weeklyPct"`
@@ -65,6 +67,13 @@ func statusRow(a Account, h *acctHealth, now time.Time) AccountStatus {
 	// (unreachableCooldown). When both hold, the limit is worth showing.
 	case now.Before(h.downUntil):
 		st.State = "unreachable"
+		st.LastError = h.lastError
+	// Keyed on the LAST status, so it needs no separate flag and clears
+	// itself: the next response that serves sets lastStatus under 400 and
+	// wipes lastError. A transport failure sets lastStatus to 0, so it reads
+	// unreachable above rather than falling in here.
+	case h.lastStatus >= 400:
+		st.State = "failing"
 		st.LastError = h.lastError
 	case h.lastSeen.IsZero():
 		st.State = "untried"
