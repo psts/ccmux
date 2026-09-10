@@ -615,3 +615,34 @@ func TestUnauthorizedSurfacesWithNoFailover(t *testing.T) {
 		t.Fatalf("status = %d, want the 401 surfaced when no account can serve", resp.StatusCode)
 	}
 }
+
+// A TLS handshake that fails wrote nothing, so it is safe to replay and the
+// account is genuinely down. Matching dial errors by type missed this whole
+// class: every production upstream is https, so a mistyped scheme or an
+// intercepting proxy pinned a permanently failing account at the head of the
+// order with neither failover nor a mark.
+func TestFailoverOnTLSFailure(t *testing.T) {
+	// A plain-HTTP server addressed as https: the handshake fails with
+	// tls.RecordHeaderError, which is not a *net.OpError.
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer plain.Close()
+	hitsB := 0
+	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB++
+		w.WriteHeader(200)
+	}))
+	defer upB.Close()
+	s := claudePoolService(t, "https://"+strings.TrimPrefix(plain.URL, "http://"), upB.URL)
+	p := mount(s)
+	defer p.Close()
+
+	if resp := call(t, p.URL, "/llm/pane/p1/v1/messages", ""); resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want the handshake failure hidden by failover", resp.StatusCode)
+	}
+	if hitsB != 1 {
+		t.Fatalf("second account hits = %d, want the replay to land", hitsB)
+	}
+	if st := statusOf(t, s, "max-a"); st.State != "unreachable" {
+		t.Fatalf("status a = %+v, want unreachable so later requests skip it", st)
+	}
+}

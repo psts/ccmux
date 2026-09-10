@@ -16,17 +16,17 @@ package llmproxy
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
-	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -250,13 +250,14 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if i > 0 {
 			attempt = replayRequest(req, acct, info)
 		}
-		resp, err := http.DefaultTransport.RoundTrip(attempt)
+		sent, wrote := traceDelivery(attempt)
+		resp, err := http.DefaultTransport.RoundTrip(sent)
 		// Both exhaustion conditions in one place: a request whose body was
 		// too large to buffer cannot be replayed at all, so it is "last" on
 		// the first account no matter how long the pool is.
 		last := !info.retryable || i == len(pool)-1
 		if err != nil {
-			if t.abandonAttempt(acct, attempt, err, last) {
+			if t.abandonAttempt(acct, sent, err, last, wrote.Load()) {
 				// Same assignment the success path makes, for the same
 				// reason: upstreamError names info.account, and the walk
 				// leaves it on pool[0] otherwise, blaming a healthy account
@@ -289,38 +290,45 @@ func (t poolTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // pool unreachable for the cooldown. upstreamError already treats this as
 // routine and answers nothing.
 //
-// A connection that broke while waiting for the response is not marked and
-// not replayed either — see neverDelivered.
+// A connection that broke after any request byte reached the wire is not
+// marked and not replayed either — see traceDelivery.
 //
-// What remains is a request that never reached an upstream. That IS marked,
+// What remains is a request that never left this machine. That IS marked,
 // before the give-up test, so a dead upstream is sidelined even when there is
 // nobody to fail over to — otherwise it stays at the head of the order and
 // every later request pays for it.
-func (t poolTransport) abandonAttempt(acct Account, attempt *http.Request, err error, last bool) bool {
-	if attempt.Context().Err() != nil || !neverDelivered(err) {
+func (t poolTransport) abandonAttempt(acct Account, attempt *http.Request, err error, last, delivered bool) bool {
+	if attempt.Context().Err() != nil || delivered {
 		return true
 	}
 	t.s.health.observeError(acct.Name, err)
 	return last
 }
 
-// neverDelivered reports whether the request provably never reached the
-// upstream, which is the only state in which handing it to another account is
-// safe.
+// traceDelivery returns the request to send and a flag reporting whether any
+// of it reached the wire, which is the only safe basis for replaying it on a
+// second account: a completion that was generated was billed, so replaying a
+// request that DID arrive charges two subscriptions for one answer. Go's
+// transport does not auto-retry a POST carrying a body, so a connection that
+// dropped while waiting for the response surfaces here as "EOF" or
+// "connection reset by peer".
 //
-// A connection that dropped while WAITING for the response may well have been
-// served, and a completion that was generated was billed. Go's transport does
-// not auto-retry a POST carrying a body, so "EOF" and "connection reset by
-// peer" arrive here looking exactly like a refused dial; replaying those would
-// charge two subscriptions for one answer. That is the same objection the 5xx
-// rule above is built on, and it applies with real money attached.
+// This asks the transport rather than reading the error, because the error
+// cannot answer it. Matching "*net.OpError with Op == dial" looked like the
+// same test and was not: a TLS handshake writes nothing either, yet fails as
+// tls.RecordHeaderError ("server gave HTTP response to HTTPS client"), an
+// x509 verification error, or a bare "TLS handshake timeout" string — none of
+// them a net.OpError. Every production upstream is https, so one mistyped
+// scheme or one intercepting proxy would have pinned a permanently failing
+// account at the head of the order, with neither failover nor a mark.
+// Measured against Go 1.22 for all three shapes.
 //
-// So the test is positive, not a blocklist: a dial that never completed wrote
-// no bytes. Anything else passes through as the 502 it is, unmarked, because
-// an upstream that accepted a connection has not shown itself to be down.
-func neverDelivered(err error) bool {
-	var op *net.OpError
-	return errors.As(err, &op) && op.Op == "dial"
+// Atomic because the callback runs on the transport's write goroutine, which
+// is not ordered against RoundTrip returning.
+func traceDelivery(req *http.Request) (*http.Request, *atomic.Bool) {
+	wrote := new(atomic.Bool)
+	trace := &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}
+	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace)), wrote
 }
 
 // replayRequest re-aims the original outbound request at another account:
