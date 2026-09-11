@@ -432,8 +432,13 @@ struct DaemonHostname: Codable, Identifiable, Equatable {
         heldBy = try c.decodeIfPresent(String.self, forKey: .heldBy) ?? ""
     }
 
-    /// Where the name routes right now: livePort when the server moved, else port.
-    var routePort: Int { livePort != 0 ? livePort : port }
+    /// Where the name routes right now, the daemon's RoutePort rule: nowhere
+    /// (0) when another workspace holds the port, livePort when the server
+    /// moved, else port.
+    var routePort: Int {
+        if !heldBy.isEmpty { return 0 }
+        return livePort != 0 ? livePort : port
+    }
 }
 
 /// One per-folder preselect rule: workspaces created under pathPrefix suggest

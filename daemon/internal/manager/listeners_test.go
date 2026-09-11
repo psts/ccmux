@@ -174,8 +174,8 @@ func TestApplyListeners(t *testing.T) {
 
 // TestScanToRouteAndStamp wires the whole path a lens depends on: a scan
 // lands in the workspace, the devhost table source (AllHostnames) follows a
-// bumped server, and the runtime stamp marks the bumped row Listening even
-// when the probe says nothing (the probe dials the configured port).
+// bumped server, and the runtime stamp marks the bumped row Listening from
+// the pane scan alone (the probe stub answers false for every port).
 func TestScanToRouteAndStamp(t *testing.T) {
 	m, st := devhostManager(t)
 	givePanes(t, m, st, "w1", "pane-1")
@@ -194,16 +194,16 @@ func TestScanToRouteAndStamp(t *testing.T) {
 		t.Fatal("a bumped row held by the workspace's own pane must be Listening")
 	}
 	// Listeners() hands out a copy: mutating it must not touch the model.
-	cp := m.Listeners("w1")
-	if len(cp) != 1 || cp[0].Port != 5174 {
-		t.Fatalf("Listeners = %+v", cp)
+	cp, ok := m.Listeners("w1")
+	if !ok || len(cp) != 1 || cp[0].Port != 5174 {
+		t.Fatalf("Listeners = %+v, %v", cp, ok)
 	}
 	cp[0].Port = 1
 	if m.Workspace("w1").Listeners[0].Port != 5174 {
 		t.Fatal("Listeners() returned the live slice, not a copy")
 	}
-	if m.Listeners("nope") != nil {
-		t.Fatal("unknown workspace must yield nil")
+	if ls, ok := m.Listeners("nope"); ok || ls == nil {
+		t.Fatalf("unknown workspace must yield (empty, false), got (%v, %v)", ls, ok)
 	}
 }
 

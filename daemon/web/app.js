@@ -616,6 +616,7 @@ function hostnameWhere(h) {
 let hostnamesWsId = null;
 let hostnamesDetectedCmd = "";
 let hostnamesLiveTimer = null;
+let hostnamesLiveFailed = false;
 
 async function openHostnamesModal(ws) {
   hostnamesWsId = ws.id;
@@ -654,21 +655,23 @@ function prefillHostnameRows(ws, s) {
 // whose repo-detected counterpart moved on gets a one-click way back.
 function applyDevCommandPrefill(ws, s) {
   let cmd = ws.devCommand || "";
-  if (s) {
-    hostnamesDetectedCmd = s.detectedCommand || "";
-    if (!cmd && s.devCommand) {
-      cmd = s.devCommand;
-      $("hostnames-cmd-caption").textContent = `detected from ${s.devCommandSource || "the repo"} — edit to override`;
-      $("hostnames-cmd-caption").classList.remove("hidden");
-    }
-    if (ws.devCommand && s.detectedCommand && s.detectedCommand !== ws.devCommand) {
-      $("hostnames-cmd-detected").textContent = `repo now detects: ${s.detectedCommand}`;
-      $("hostnames-cmd-use").onclick = () => {
-        $("hostnames-cmd").value = s.detectedCommand;
-        $("hostnames-cmd-hint").classList.add("hidden");
-      };
-      $("hostnames-cmd-hint").classList.remove("hidden");
-    }
+  if (!s) {
+    $("hostnames-cmd").value = cmd;
+    return;
+  }
+  hostnamesDetectedCmd = s.detectedCommand || "";
+  if (!cmd && s.devCommand) {
+    cmd = s.devCommand;
+    $("hostnames-cmd-caption").textContent = `detected from ${s.devCommandSource || "the repo"} — edit to override`;
+    $("hostnames-cmd-caption").classList.remove("hidden");
+  }
+  if (ws.devCommand && s.detectedCommand && s.detectedCommand !== ws.devCommand) {
+    $("hostnames-cmd-detected").textContent = `repo now detects: ${s.detectedCommand}`;
+    $("hostnames-cmd-use").onclick = () => {
+      $("hostnames-cmd").value = s.detectedCommand;
+      $("hostnames-cmd-hint").classList.add("hidden");
+    };
+    $("hostnames-cmd-hint").classList.remove("hidden");
   }
   $("hostnames-cmd").value = cmd;
 }
@@ -678,18 +681,13 @@ function applyDevCommandPrefill(ws, s) {
 // up within a few seconds (one daemon scan tick plus one poll).
 function startHostnamesLivePoll(ws) {
   clearInterval(hostnamesLiveTimer);
+  hostnamesLiveFailed = false;
   hostnamesLiveTimer = setInterval(async () => {
     if ($("hostnames-modal").classList.contains("hidden") || hostnamesWsId !== ws.id) {
       clearInterval(hostnamesLiveTimer);
       return;
     }
-    try {
-      const r = await fetch(`/v1/workspaces/${ws.id}/listeners`);
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      renderHostnamesLive((await r.json()).listening || [], ws.name);
-    } catch (e) {
-      renderHostnamesLive(null, ws.name);
-    }
+    renderHostnamesLive(await fetchListeners(ws), ws.name);
   }, 2000);
 }
 
@@ -699,6 +697,22 @@ async function fetchPortSuggestions(wsId) {
   return r.json();
 }
 
+// fetchListeners: the live list, or null when the read failed. Logs once on
+// the way into failure (the poll would otherwise repeat it every 2 s), same
+// rule as the Mac sheet's pollListening.
+async function fetchListeners(ws) {
+  try {
+    const r = await fetch(`/v1/workspaces/${ws.id}/listeners`);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    hostnamesLiveFailed = false;
+    return (await r.json()).listening || [];
+  } catch (e) {
+    if (!hostnamesLiveFailed) console.warn(`hostnames: listener poll failed for ${ws.name}`, e);
+    hostnamesLiveFailed = true;
+    return null;
+  }
+}
+
 // renderHostnamesLive lists the workspace's current listeners: a port a row
 // already names says "mapped", any other gets a "map" button that adds a row.
 // listening=null means the read FAILED — that is not "nothing listens", and
@@ -706,15 +720,8 @@ async function fetchPortSuggestions(wsId) {
 function renderHostnamesLive(listening, wsName) {
   const ul = $("hostnames-live");
   ul.innerHTML = "";
-  if (!listening || !listening.length) {
-    const li = document.createElement("li");
-    li.className = "hn-live-empty";
-    li.textContent = listening
-      ? "nothing yet — start the dev server in a pane and it shows up here"
-      : "could not read listeners from the daemon — is it up?";
-    ul.appendChild(li);
-    return;
-  }
+  if (!listening) return liveEmpty(ul, "could not read listeners from the daemon — is it up?");
+  if (!listening.length) return liveEmpty(ul, "nothing yet — start the dev server in a pane and it shows up here");
   const mapped = new Set([...$("hostnames-rows").children].map((li) => li.querySelector(".hn-port").value.trim()));
   for (const l of listening) {
     const li = document.createElement("li");
@@ -745,6 +752,13 @@ function renderHostnamesLive(listening, wsName) {
     }
     ul.appendChild(li);
   }
+}
+
+function liveEmpty(ul, text) {
+  const li = document.createElement("li");
+  li.className = "hn-live-empty";
+  li.textContent = text;
+  ul.appendChild(li);
 }
 
 // suggestHostnameLabel: the workspace slug for the first row, slug-2… after.

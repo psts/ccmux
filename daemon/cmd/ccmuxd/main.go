@@ -10,8 +10,10 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -675,6 +677,9 @@ func devhostDir() string { return filepath.Join(configDir(), "devhost") }
 func removeComposeOverrides() {
 	dir := filepath.Join(devhostDir(), "compose")
 	if _, err := os.Stat(dir); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("compose overrides at %s not checked (%v) — panes opened before this upgrade may keep old port mappings until restarted", dir, err)
+		}
 		return
 	}
 	if err := os.RemoveAll(dir); err != nil {

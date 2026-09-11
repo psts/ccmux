@@ -103,17 +103,19 @@ func routeSignature(ws *model.Workspace) string {
 // workspaces on the same repo usually share a name), named for display.
 type portOwner struct{ id, name string }
 
-// Listeners returns a copy of what the workspace's panes hold right now
-// (nil for an unknown workspace). The slice is rewritten by the scan loop
-// under m.mu; hand callers a copy, never the live header.
-func (m *Manager) Listeners(wsID string) []model.Listener {
+// Listeners returns a copy of what the workspace's panes hold right now,
+// never nil, and whether the workspace exists at all — one lock for both
+// facts, so a handler need not probe existence separately. The slice is
+// rewritten by the scan loop under m.mu; callers get a copy, never the
+// live header.
+func (m *Manager) Listeners(wsID string) ([]model.Listener, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	e := m.byID[wsID]
 	if e == nil {
-		return nil
+		return []model.Listener{}, false
 	}
-	return append([]model.Listener(nil), e.ws.Listeners...)
+	return append([]model.Listener{}, e.ws.Listeners...), true
 }
 
 // resolveRoutesLocked stamps LivePort/HeldBy on every hostname from the

@@ -221,7 +221,7 @@ func UnmarshalHostnames(raw string) []Hostname {
 	hs := make([]Hostname, len(rows))
 	for i, r := range rows {
 		port := r.Port
-		if port >= legacyAllocBase && port <= legacyAllocMax && r.TargetPort > 0 {
+		if IsLegacyAllocatedPort(port) && r.TargetPort > 0 {
 			port = r.TargetPort
 		}
 		hs[i] = Hostname{Name: r.Name, Port: port}

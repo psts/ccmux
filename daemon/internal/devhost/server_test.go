@@ -157,6 +157,26 @@ func TestHandler_BackendDown(t *testing.T) {
 	}
 }
 
+// TestHandler_HeldRoute: table port 0 means "mapped, but another workspace's
+// pane holds the port" — a 503 that says so, never a dial of :0 (which would
+// read as the runbook's "nothing listening" 502) and never the unknown-host
+// 404 (a zero port must survive the table build).
+func TestHandler_HeldRoute(t *testing.T) {
+	st := &fakeState{domain: "dev.test", hostnames: map[string]int{"app": 0}}
+	s, _ := testServer(t, st)
+	s.Refresh()
+	if port, ok := s.table.Load().Route("app.dev.test"); !ok || port != 0 {
+		t.Fatalf("Route = (%d, %v), want (0, true)", port, ok)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "https://app.dev.test/", nil)
+	req.Host = "app.dev.test"
+	s.Handler(http.NotFoundHandler()).ServeHTTP(rec, req)
+	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "held by another workspace") {
+		t.Fatalf("held route = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRefresh_ModesAndStamping(t *testing.T) {
 	port := freePort(t)
 	st := &fakeState{domain: "dev.test", hostnames: map[string]int{"app": port}}

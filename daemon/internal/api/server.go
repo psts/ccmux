@@ -835,12 +835,13 @@ func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
 	// detectedCommand is detection alone, override ignored — the sheet flags a
 	// stored command whose repo-detected counterpart has since changed.
 	detected, _ := s.mgr.DetectedDevCommand(id)
+	listening, _ := s.mgr.Listeners(id)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"suggestions":      suggestions,
 		"devCommand":       command,
 		"devCommandSource": source,
 		"detectedCommand":  detected,
-		"listening":        s.mgr.Listeners(id),
+		"listening":        listening,
 	})
 }
 
@@ -850,13 +851,10 @@ func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
 // files every tick for data that only changes on a scan.
 func (s *Server) listeners(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if s.mgr.Workspace(id) == nil {
+	ls, ok := s.mgr.Listeners(id)
+	if !ok {
 		writeError(w, http.StatusNotFound, "unknown workspace "+id)
 		return
-	}
-	ls := s.mgr.Listeners(id)
-	if ls == nil {
-		ls = []model.Listener{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"listening": ls})
 }

@@ -230,6 +230,7 @@ struct HostnamesSheetView: View {
     private func prefill() async {
         guard let fetchSuggestions else { return }
         guard let detected = await fetchSuggestions() else {
+            NSLog("hostnames sheet: port-suggestions read failed for %@ (rows and dev command not prefilled)", workspaceName)
             listeningFailed = true
             return
         }

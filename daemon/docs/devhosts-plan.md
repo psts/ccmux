@@ -181,8 +181,9 @@ resolves where each name routes (`resolveRoutes`):
 `model.Hostname` is `{name, port}` persisted; `url`, `listening`, `livePort`,
 `heldBy` are stamped. Rows from the allocation era (port 21000–21999 with a
 `targetPort`) load as their target port (`UnmarshalHostnames`). The Hostnames
-sheet in both lenses lists "Listening now" (polled from `port-suggestions`,
-which carries `listening: [{port, process, paneId}]`) with a Map button, and
+sheet in both lenses lists "Listening now" (read once from `port-suggestions`,
+then polled from `GET /v1/workspaces/{id}/listeners`, the cheap live half;
+both carry `listening: [{port, process, paneId}]`) with a Map button, and
 prefills the dev command with the detected one — saving it unchanged sends ""
 so the workspace keeps following the repo.
 
