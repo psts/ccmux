@@ -31,7 +31,10 @@ const el = () => new Proxy(function () {}, {
   apply: () => el(),
 });
 
-function run({ windowsOk }) {
+// gate lets a test hold a /v1/windows response open, so two reads can be made
+// to resolve OUT OF ORDER — the interleaving that turns a destructive
+// declaration into a deleted flag.
+function run({ windowsOk, openHere = true, gate = null }) {
   const fetched = [];
   const storage = {};
   const ctx = {
@@ -58,10 +61,14 @@ function run({ windowsOk }) {
       if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => [] };
       if (u.startsWith("/v1/windows?")) {
         if (!windowsOk) return { ok: false, status: 503, text: async () => "unreadable" };
-        return { ok: true, status: 200, json: async () => [
-          { id: "win-here", name: "Here", workspaceIds: [], openBy: ["p"], open: true, openHere: true },
-          { id: "win-elsewhere", name: "Elsewhere", workspaceIds: [], openBy: ["p"], open: true, openHere: false },
-        ] };
+        const hold = gate ? gate() : null;
+        return { ok: true, status: 200, json: async () => {
+          if (hold) await hold;
+          return [
+            { id: "win-here", name: "Here", workspaceIds: [], openBy: ["p"], open: true, openHere },
+            { id: "win-elsewhere", name: "Elsewhere", workspaceIds: [], openBy: ["p"], open: true, openHere: false },
+          ];
+        } };
       }
       return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
     },
@@ -107,6 +114,26 @@ function run({ windowsOk }) {
     check("no declaration on an unreadable window list",
       !bad.fetched.some((f) => f.url.includes("open-set")),
       "posted an empty set, which clears this device's rows");
+  }
+
+  // 3. Out-of-order reads must not declare. fetchWorkspaces has no in-flight
+  //    guard and runs from a timer, the firehose and every mutation, so an
+  //    older snapshot can land last. open-set is authoritative: a stale
+  //    declaration DELETES this device's rows for anything it omits, and the
+  //    lens then agrees the window is closed while its sessions keep running.
+  const holds = [];
+  const race = run({ windowsOk: true, gate: () => new Promise((r) => holds.push(r)) });
+  if (typeof race.ctx.fetchWorkspaces === "function") {
+    const first = race.ctx.fetchWorkspaces(); // older read, held
+    await new Promise((r) => setImmediate(r));
+    const second = race.ctx.fetchWorkspaces(); // newer read, held
+    await new Promise((r) => setImmediate(r));
+    holds.reverse().forEach((release) => release()); // newer resolves FIRST
+    await Promise.all([first, second]);
+    await new Promise((r) => setImmediate(r));
+    const sets = race.fetched.filter((f) => f.url.includes("open-set"));
+    check("a stale read does not declare", sets.length <= 1,
+      `${sets.length} declarations from overlapping reads: ${sets.map((s) => s.body).join(" | ")}`);
   }
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);

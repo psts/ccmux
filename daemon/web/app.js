@@ -113,7 +113,18 @@ function bytesToB64(u8) {
 }
 
 // --- workspace list ---
+// Monotonic read counter. fetchWorkspaces runs from a 5s timer, from the
+// firehose, and after every mutation, with no in-flight guard, so two reads
+// overlap routinely and can resolve OUT OF ORDER. That was cosmetic while a
+// late answer only overwrote state.windows; it stopped being cosmetic when
+// every successful read began driving an authoritative open-set, because the
+// daemon deletes every row for this device that the declaration omits. An
+// older snapshot landing last would delete the flag the user just created —
+// and it does not self-correct, since afterwards every poll agrees the window
+// is closed while its sessions keep running.
+let windowsSeq = 0;
 async function fetchWorkspaces() {
+  const seq = ++windowsSeq;
   try {
     const [wr, winr] = await Promise.all([
       fetch("/v1/workspaces"),
@@ -121,15 +132,20 @@ async function fetchWorkspaces() {
       // which openBy (per-login) cannot answer.
       fetch("/v1/windows?device=" + encodeURIComponent(deviceId)),
     ]);
-    state.workspaces = (await wr.json()) || [];
+    // Parse BEFORE the staleness test: the bodies have to be consumed either
+    // way, and the test has to sit as close to the write as possible.
+    const workspaces = (await wr.json()) || [];
     // Keep the last window list on a failed read (503 = tables unreadable,
     // per the daemon) — blanking it would make every window look closed and
     // feed wrong close decisions. Same fallback the Mac lens uses.
-    // Declare only on a read that SUCCEEDED. On a failure we keep the previous
-    // list and know nothing new, and an empty declaration means "I have none
+    const windows = winr.ok ? (await winr.json()) || [] : null;
+    if (seq !== windowsSeq) return; // a newer read has already landed
+    state.workspaces = workspaces;
+    // Declare only from a read that SUCCEEDED and is still the newest. On a
+    // failure we know nothing new, and an empty declaration means "I have none
     // open" — which the daemon acts on by clearing this device's rows.
-    if (winr.ok) {
-      state.windows = (await winr.json()) || [];
+    if (windows) {
+      state.windows = windows;
       declareOpenWindows();
     }
   } catch (_) {
