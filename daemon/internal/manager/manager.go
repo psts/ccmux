@@ -117,11 +117,6 @@ type Manager struct {
 	// Set once at startup. Nil = no dev serving.
 	OnDevhostChange func()
 
-	// DevhostDir is where dev-serving state lives (same dir the devhost server
-	// uses); the compose port-override files go under it. Set once at startup.
-	// Empty = no compose overrides are written.
-	DevhostDir string
-
 	// paneTitleDefaults holds the #{pane_title} values that mean "no program set
 	// a title" (the tmux host's name) — see panetitle.go.
 	paneTitleDefaults map[string]bool
@@ -1155,9 +1150,6 @@ func (m *Manager) paneEnv(ws *model.Workspace, paneID string) map[string]string 
 		for k, v := range m.ExtraPaneEnv(paneID) {
 			env[k] = v
 		}
-	}
-	for k, v := range m.devEnv(ws) {
-		env[k] = v
 	}
 	return env
 }

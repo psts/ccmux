@@ -506,7 +506,10 @@ function openWsMenu(ws, x, y) {
       if (paneRunning) add("Stop Dev Server", () => setDevServer(ws.id, false));
     }
     for (const h of hostnames.filter((h) => h.url)) {
-      add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}`, () => window.open(h.url, "_blank"));
+      // "→ 5174": the server moved and the name follows it. "held by X":
+      // another workspace's pane has this port, so this name cannot answer.
+      const where = h.livePort ? ` → ${h.livePort}` : h.heldBy ? ` (held by ${h.heldBy})` : "";
+      add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}${where}`, () => window.open(h.url, "_blank"));
     }
     sep();
     add("Close Session", () => closeSession(ws.id));
@@ -597,54 +600,125 @@ async function setDevServer(id, start) {
   fetchWorkspaces();
 }
 
-// --- hostnames editor: {name, port} rows + the ▶ dev command. An empty sheet
-// prefills from the daemon's repo-config detection, like the Mac sheet. The
-// port field is blank = "auto": the daemon allocates one from its reserved
-// range on save. A suggestion's detected port becomes the row's targetPort
-// (kept on the row's dataset and round-tripped — dropping it would erase it
-// server-side on every save). Save PUTs and closes only on success; daemon
-// validation errors stay inline. ---
+// Hostnames sheet. Rows are {name, port}: the port is whatever the app binds
+// on its own (its script's -p, its config, the flag the user types). The
+// daemon watches what the workspace's panes listen on and routes each name
+// there, so the sheet shows that live list with a one-click "map". The dev
+// command field is prefilled with the repo-detected command; saving it
+// unchanged sends "" so it keeps following the repo.
 let hostnamesWsId = null;
+let hostnamesDetectedCmd = "";
+let hostnamesLiveTimer = null;
 
 async function openHostnamesModal(ws) {
   hostnamesWsId = ws.id;
+  hostnamesDetectedCmd = "";
   $("hostnames-title").textContent = `Hostnames — ${ws.name}`;
   $("hostnames-error").classList.add("hidden");
+  $("hostnames-cmd-hint").classList.add("hidden");
+  $("hostnames-cmd-caption").classList.add("hidden");
   const rows = $("hostnames-rows");
   rows.innerHTML = "";
-  let mappings = (ws.hostnames || []).map((h) => ({ name: h.name, port: h.port, targetPort: h.targetPort }));
+  let mappings = (ws.hostnames || []).map((h) => ({ name: h.name, port: h.port }));
   let cmd = ws.devCommand || "";
-  $("hostnames-cmd-hint").classList.add("hidden");
+  let live = [];
   try {
-    const s = await (await fetch(`/v1/workspaces/${ws.id}/port-suggestions`)).json();
-    // autoPort=false: a multi-app repo ccmux cannot steer (e.g. a pnpm
-    // monorepo starting two servers) — the detected port must BE the
-    // routing port, so prefill it instead of "auto".
+    const s = await fetchPortSuggestions(ws.id);
     if (!mappings.length) {
-      mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: s.autoPort ? "" : x.port, targetPort: x.port }));
+      mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: x.port }));
     }
-    if (!cmd && s.devCommand) $("hostnames-cmd").placeholder = `dev command — detected: ${s.devCommand}`;
+    hostnamesDetectedCmd = s.detectedCommand || "";
+    if (!cmd && s.devCommand) {
+      cmd = s.devCommand;
+      $("hostnames-cmd-caption").textContent = `detected from ${s.devCommandSource || "the repo"} — edit to override`;
+      $("hostnames-cmd-caption").classList.remove("hidden");
+    }
     // A stored override whose repo-detected counterpart moved on gets a
-    // one-click way back to detection ("" on the daemon = auto-detect).
-    if (cmd && s.detectedCommand && s.detectedCommand !== cmd) {
+    // one-click way back to detection.
+    if (ws.devCommand && s.detectedCommand && s.detectedCommand !== ws.devCommand) {
       $("hostnames-cmd-detected").textContent = `repo now detects: ${s.detectedCommand}`;
       $("hostnames-cmd-use").onclick = () => {
-        $("hostnames-cmd").value = "";
-        $("hostnames-cmd").placeholder = `dev command — detected: ${s.detectedCommand}`;
+        $("hostnames-cmd").value = s.detectedCommand;
         $("hostnames-cmd-hint").classList.add("hidden");
       };
       $("hostnames-cmd-hint").classList.remove("hidden");
     }
+    live = s.listening || [];
   } catch (_) { /* suggestions are best-effort */ }
   if (!mappings.length) mappings = [{ name: "", port: "" }];
-  for (const m of mappings) rows.appendChild(hostnameRow(m.name, m.port, m.targetPort));
+  for (const m of mappings) rows.appendChild(hostnameRow(m.name, m.port));
+  // After the rows: "mapped" vs "map" is judged against them.
+  renderHostnamesLive(live, ws.name);
   $("hostnames-cmd").value = cmd;
   $("hostnames-modal").classList.remove("hidden");
+  // Keep "Listening now" live while the sheet is open — a server started in
+  // a pane shows up here within a scan tick.
+  clearInterval(hostnamesLiveTimer);
+  hostnamesLiveTimer = setInterval(async () => {
+    if ($("hostnames-modal").classList.contains("hidden") || hostnamesWsId !== ws.id) {
+      clearInterval(hostnamesLiveTimer);
+      return;
+    }
+    try { renderHostnamesLive((await fetchPortSuggestions(ws.id)).listening || [], ws.name); } catch (_) {}
+  }, 2000);
 }
 
-function hostnameRow(name, port, targetPort) {
+async function fetchPortSuggestions(wsId) {
+  return (await fetch(`/v1/workspaces/${wsId}/port-suggestions`)).json();
+}
+
+// renderHostnamesLive lists the workspace's current listeners: a port a row
+// already names says "mapped", any other gets a "map" button that adds a row.
+function renderHostnamesLive(listening, wsName) {
+  const ul = $("hostnames-live");
+  ul.innerHTML = "";
+  if (!listening.length) {
+    const li = document.createElement("li");
+    li.className = "hn-live-empty";
+    li.textContent = "nothing yet — start the dev server in a pane and it shows up here";
+    ul.appendChild(li);
+    return;
+  }
+  const mapped = new Set([...$("hostnames-rows").children].map((li) => li.querySelector(".hn-port").value.trim()));
+  for (const l of listening) {
+    const li = document.createElement("li");
+    const port = document.createElement("span");
+    port.className = "hn-live-port";
+    port.textContent = String(l.port);
+    const proc = document.createElement("span");
+    proc.textContent = l.process || "";
+    li.append(port, proc);
+    if (mapped.has(String(l.port))) {
+      const done = document.createElement("span");
+      done.textContent = "mapped";
+      li.appendChild(done);
+    } else {
+      const map = document.createElement("button");
+      map.className = "hn-add";
+      map.type = "button";
+      map.textContent = "map";
+      map.onclick = () => {
+        const rows = $("hostnames-rows");
+        // Replace a lone empty editor row rather than stacking under it.
+        const only = rows.children.length === 1 ? rows.children[0] : null;
+        if (only && !only.querySelector(".hn-name").value && !only.querySelector(".hn-port").value) only.remove();
+        rows.appendChild(hostnameRow(suggestHostnameLabel(wsName, rows.children.length), l.port));
+        renderHostnamesLive(listening, wsName);
+      };
+      li.appendChild(map);
+    }
+    ul.appendChild(li);
+  }
+}
+
+// suggestHostnameLabel: the workspace slug for the first row, slug-2… after.
+function suggestHostnameLabel(wsName, existing) {
+  const slug = (wsName || "app").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "app";
+  return existing ? `${slug}-${existing + 1}` : slug;
+}
+
+function hostnameRow(name, port) {
   const li = document.createElement("li");
-  li.dataset.targetPort = targetPort || "";
   const n = document.createElement("input");
   n.className = "setting-input hn-name";
   n.placeholder = "name";
@@ -652,8 +726,8 @@ function hostnameRow(name, port, targetPort) {
   n.value = name || "";
   const p = document.createElement("input");
   p.className = "setting-input hn-port";
-  p.placeholder = "auto";
-  p.title = "Port — leave blank and ccmux assigns one";
+  p.placeholder = "port";
+  p.title = "The port the app binds on its own";
   p.inputMode = "numeric";
   p.value = port || "";
   const del = document.createElement("button");
@@ -672,20 +746,19 @@ async function saveHostnames() {
     const name = li.querySelector(".hn-name").value.trim();
     const portText = li.querySelector(".hn-port").value.trim();
     if (!name && !portText) continue; // half-empty editor row, not a mapping
-    // Same rule as the Mac sheet: a typo must not silently become "auto"
-    // (port 0 now means "the daemon allocates one").
-    let port = 0;
-    if (portText) {
-      port = /^\d+$/.test(portText) ? parseInt(portText, 10) : 0;
-      if (port < 1 || port > 65535) {
-        err.textContent = `${name || "row"}: port must be 1–65535, or blank for auto`;
-        err.classList.remove("hidden");
-        return;
-      }
+    const port = /^\d+$/.test(portText) ? parseInt(portText, 10) : 0;
+    if (port < 1 || port > 65535) {
+      err.textContent = `${name || "row"}: port must be 1–65535 — the port the app binds itself`;
+      err.classList.remove("hidden");
+      return;
     }
-    hostnames.push({ name, port, targetPort: parseInt(li.dataset.targetPort, 10) || 0 });
+    hostnames.push({ name, port });
   }
-  const body = { hostnames, devCommand: $("hostnames-cmd").value.trim() };
+  // The prefilled detected command, saved untouched, stays "" on the daemon
+  // so it keeps following the repo. Same rule as the Mac sheet.
+  let devCommand = $("hostnames-cmd").value.trim();
+  if (devCommand === hostnamesDetectedCmd) devCommand = "";
+  const body = { hostnames, devCommand };
   const r = await fetch(`/v1/workspaces/${hostnamesWsId}/hostnames`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

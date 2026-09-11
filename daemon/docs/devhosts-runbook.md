@@ -25,7 +25,10 @@ The daemon then does everything else, and re-asserts it on every boot/change:
   first time; Settings shows `pending → ready`). Renewals are automatic; cert
   state lives in `~/Library/Application Support/ccmuxd/devhost/certmagic`.
 - Serves the names by SNI/Host dispatch on the existing ccmuxd tsnet node's
-  :443, reverse-proxying to `127.0.0.1:<port>` on the daemon host.
+  :443, reverse-proxying to `127.0.0.1:<port>` on the daemon host. The port
+  is the one the app binds on its own; the daemon scans `/proc` every 2 s for
+  what each workspace's panes are listening on and follows a server that
+  moved (`livePort`). See "Listener discovery" in devhosts-plan.md.
 
 Notes:
 - The tailnet IP is stable for the node's lifetime; if the node is ever
@@ -83,8 +86,11 @@ re-adopts them without re-registration.
   domain isn't in the Cloudflare account. Fix and Save again (any settings
   save re-reconciles).
 - **URL resolves but 502 "isn't answering"**: the mapping is fine, nothing
-  listens on the port on the daemon host — check the workspace's dev server
-  and that it binds 127.0.0.1 (not only a container-internal interface).
+  listens on the port on the daemon host — open Hostnames… and look at
+  "Listening now": it lists what the workspace's panes actually hold. If the
+  server is there on another port, Map it. If the row says "held by X",
+  another workspace's pane has the port (same repo open twice, one pinned
+  port): change one of them.
 - **Name resolves to nothing off-tailnet**: expected — that's the design.
 - **Who serves what**: `log stream`-free check —
   `curl -s http://127.0.0.1:7900/v1/settings | jq '{devDomain, devCertStatus}'`

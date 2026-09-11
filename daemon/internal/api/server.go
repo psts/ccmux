@@ -821,12 +821,17 @@ func (s *Server) devServer(w http.ResponseWriter, r *http.Request) {
 
 // portSuggestions proposes {name, port, source} rows plus the resolved dev
 // command for the Hostnames sheet, detected from the workspace repo's config
-// files (never executed).
+// files (never executed), and what the workspace's panes are listening on
+// right now — the rows a mapping can be made from with one click.
 func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
 	suggestions, err := s.mgr.PortSuggestions(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	var listening []model.Listener
+	if ws := s.mgr.Workspace(r.PathValue("id")); ws != nil {
+		listening = ws.Listeners
 	}
 	command, source, _ := s.mgr.ResolveDevCommand(r.PathValue("id"))
 	// detectedCommand is detection alone, override ignored — the sheet flags a
@@ -837,10 +842,7 @@ func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
 		"devCommand":       command,
 		"devCommandSource": source,
 		"detectedCommand":  detected,
-		// autoPort tells the sheet whether prefilled rows may leave the port
-		// blank ("auto"): false = multi-app repo whose servers ccmux cannot
-		// steer, so the detected port must BE the routing port.
-		"autoPort": s.mgr.AutoPortWorks(r.PathValue("id")),
+		"listening":        listening,
 	})
 }
 

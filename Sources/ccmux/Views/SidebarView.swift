@@ -814,6 +814,13 @@ struct SidebarView: View {
             && (remoteService.hostnames[id] ?? []).contains { $0.listening }
     }
 
+    /// Suffix after "name : port" for a name that routes elsewhere or cannot answer.
+    private func hostnameWhere(_ h: DaemonHostname) -> String {
+        if h.livePort != 0 { return " → \(h.livePort)" }
+        if !h.heldBy.isEmpty { return " (held by \(h.heldBy))" }
+        return ""
+    }
+
     /// The ▶/■ toggle's intent: ■ (stop) only while devIsAnswering; anything
     /// else — no pane, or a crashed pane — is ▶.
     private func toggleDevServer(_ id: UUID) {
@@ -822,7 +829,9 @@ struct SidebarView: View {
 
     /// One mapped hostname's menu entry: open / copy, with the dev server's
     /// listening state in the icon (filled = answering, dashed = nothing on
-    /// the port yet).
+    /// the port yet). "→ 5174" = the server moved and the name follows it;
+    /// "held by X" = another workspace's pane has the port. Same text as the
+    /// web lens's context menu.
     @ViewBuilder
     private func hostnameMenu(_ hostname: DaemonHostname) -> some View {
         if let url = hostname.url {
@@ -835,7 +844,7 @@ struct SidebarView: View {
                     NSPasteboard.general.setString(url, forType: .string)
                 }
             } label: {
-                Label("\(hostname.name) : \(hostname.port)",
+                Label("\(hostname.name) : \(hostname.port)\(hostnameWhere(hostname))",
                       systemImage: hostname.listening ? "circle.fill" : "circle.dashed")
             }
         }
@@ -1016,6 +1025,14 @@ private struct WorkspaceRow: View {
         return "Start the dev server (spawns a pane)"
     }
 
+    /// Tooltip on a hostname row's dot: where it routes, and why it cannot
+    /// answer when another workspace holds the port.
+    private func hostnameDotHelp(_ h: DaemonHostname) -> String {
+        if !h.heldBy.isEmpty { return "Port \(h.port) is held by workspace \(h.heldBy) — this name cannot answer" }
+        if h.listening { return "Dev server answering on port \(h.routePort)" }
+        return "Nothing listening on port \(h.port)"
+    }
+
     private var status: GitStatusInfo {
         monitor.status
     }
@@ -1044,7 +1061,7 @@ private struct WorkspaceRow: View {
                             Circle()
                                 .fill(hostname.listening ? Color.green : Color.secondary.opacity(0.4))
                                 .frame(width: 5, height: 5)
-                                .help(hostname.listening ? "Dev server answering on port \(hostname.port)" : "Nothing listening on port \(hostname.port)")
+                                .help(hostnameDotHelp(hostname))
                             Text(url.replacingOccurrences(of: "https://", with: ""))
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.secondary)

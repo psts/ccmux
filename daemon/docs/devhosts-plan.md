@@ -150,3 +150,39 @@ for `listening`; click opens the browser, ⌥-click copies.
 
 ≈ 4 h of execution; external waits are cert issuance and the one-time Cloudflare token /
 auth key creation (user step).
+
+## Listener discovery (2026-09-11) — replaces port allocation
+
+The allocation model (daemon picks 21000–21999, injects `PORT`/`CCMUX_DEV_PORT`
+into pane env, rewrites compose published ports through an override file, appends
+`--port` for vite) is gone. It failed on the first real repo: `next dev -p 3003`
+in a script beats any env var, a monorepo runner starts three servers that each
+bind their own port, and a uvicorn typed by hand has no config file at all.
+
+The daemon now never tells a server where to bind. `internal/listeners` reads
+`/proc/net/tcp{,6}` every 2 s, ties each LISTEN socket to its process via
+`/proc/<pid>/fd`, and to a pane via the `CCMUX_PANE_ID` in that process's
+environ (every process a pane's shell starts inherits it). `manager/listeners.go`
+files the result under each workspace (`Workspace.Listeners`, runtime-only) and
+resolves where each name routes (`resolveRoutes`):
+
+- a pane of the workspace holds the row's port → routes there;
+- exactly one unmatched row + exactly one unnamed listener sitting just above
+  the configured port (within 10) → they pair up (`livePort`; vite's "5173 in
+  use, using 5174"). The window keeps a Docker-published mapping from being
+  handed the workspace's unrelated dev server;
+- otherwise the row routes to its port as configured — Docker's published ports
+  are root-owned and invisible to the scan, and a plain TCP probe still stamps
+  `listening` for them; if another workspace's pane holds the port, `heldBy`
+  names it (same repo open twice, one pinned port — not solved, only shown).
+
+`model.Hostname` is `{name, port}` persisted; `url`, `listening`, `livePort`,
+`heldBy` are stamped. Rows from the allocation era (port 21000–21999 with a
+`targetPort`) load as their target port (`UnmarshalHostnames`). The Hostnames
+sheet in both lenses lists "Listening now" (polled from `port-suggestions`,
+which carries `listening: [{port, process, paneId}]`) with a Map button, and
+prefills the dev command with the detected one — saving it unchanged sends ""
+so the workspace keeps following the repo.
+
+Linux only by design: every daemon and dev server runs on the Linux host. A
+host without `/proc` logs "listener discovery off" once and routes blindly.

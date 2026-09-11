@@ -249,6 +249,11 @@ body {
 .hostname-rows .hn-port { width: 76px; flex: 0 0 auto; }
 .hostname-rows .hn-del { background: none; border: none; color: var(--muted); font-size: 14px; cursor: pointer; }
 .hostname-rows .hn-del:hover { color: #e06c75; }
+.hostname-live { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 3px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.hostname-live li { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+.hostname-live .hn-live-port { color: var(--fg); min-width: 44px; }
+.hostname-live .hn-live-empty { font-style: italic; }
+.hn-live-label { margin-top: 6px; }
 .hn-add { align-self: flex-start; background: none; border: none; color: var(--accent); font-size: 11px; padding: 0; cursor: pointer; }
 .sheet-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
 .sheet-actions button {

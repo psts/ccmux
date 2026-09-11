@@ -372,51 +372,68 @@ struct DaemonPortSuggestion: Decodable {
     let source: String
 }
 
+/// One port a workspace's pane is listening on right now (daemon socket scan):
+/// the Hostnames sheet lists these under "Listening now" with a Map button.
+struct DaemonListener: Decodable, Identifiable, Equatable {
+    let port: Int
+    let process: String?
+    let paneId: String?
+
+    var id: Int { port }
+}
+
 /// The full port-suggestions payload: prefill rows plus the resolved dev-server
-/// command (stored override or detection) with its provenance. detectedCommand
-/// is detection alone, override ignored — the sheet flags a stored command
-/// whose repo-detected counterpart has since changed.
+/// command (stored override or detection) with its provenance, and the live
+/// listeners. detectedCommand is detection alone, override ignored — the sheet
+/// flags a stored command whose repo-detected counterpart has since changed.
 struct DaemonSuggestionsResponse: Decodable {
     let suggestions: [DaemonPortSuggestion]?
     let devCommand: String?
     let devCommandSource: String?
     let detectedCommand: String?
-    /// False = multi-app repo ccmux cannot steer onto allocated ports; the
-    /// sheet prefill must keep the detected port as the routing port.
-    let autoPort: Bool?
+    let listening: [DaemonListener]?
 }
 
 /// One dev-hostname mapping: https://<name>.<dev domain or ts.net suffix> on
-/// the tailnet → localhost:<port> on the daemon host. `url`/`listening` are
-/// runtime-only, stamped by the daemon's devhost server. `port` 0 on save
-/// means "the daemon allocates one from its reserved range"; `targetPort` is
-/// the repo-detected port the app would bind on its own and MUST round-trip
-/// on save — the daemon replaces the whole list.
+/// the tailnet → the port the app binds on its own, on the daemon host. The
+/// daemon never tells the server where to listen; it watches what the
+/// workspace's panes listen on and routes there. `url`, `listening`,
+/// `livePort` and `heldBy` are runtime-only, stamped by the daemon:
+/// livePort is where the name actually routes when the server moved ports
+/// (vite's "5173 busy, using 5174"); heldBy names another workspace whose
+/// pane holds this port (the same repo open twice, one pinned port).
 struct DaemonHostname: Codable, Identifiable, Equatable {
     var name: String
     var port: Int
-    var targetPort: Int
     var url: String?
     var listening: Bool
+    var livePort: Int
+    var heldBy: String
 
     var id: String { name }
 
-    init(name: String, port: Int, targetPort: Int = 0, url: String? = nil, listening: Bool = false) {
+    init(name: String, port: Int, url: String? = nil, listening: Bool = false,
+         livePort: Int = 0, heldBy: String = "") {
         self.name = name
         self.port = port
-        self.targetPort = targetPort
         self.url = url
         self.listening = listening
+        self.livePort = livePort
+        self.heldBy = heldBy
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
-        targetPort = try c.decodeIfPresent(Int.self, forKey: .targetPort) ?? 0
         url = try c.decodeIfPresent(String.self, forKey: .url)
         listening = try c.decodeIfPresent(Bool.self, forKey: .listening) ?? false
+        livePort = try c.decodeIfPresent(Int.self, forKey: .livePort) ?? 0
+        heldBy = try c.decodeIfPresent(String.self, forKey: .heldBy) ?? ""
     }
+
+    /// Where the name routes right now: livePort when the server moved, else port.
+    var routePort: Int { livePort != 0 ? livePort : port }
 }
 
 /// One per-folder preselect rule: workspaces created under pathPrefix suggest

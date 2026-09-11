@@ -3,10 +3,6 @@ package manager
 import (
 	"errors"
 	"fmt"
-	"log"
-	"net"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +15,9 @@ import (
 // dev-serving settings. The devhost server reads this state to build its
 // routing table and is poked through OnDevhostChange after every mutation; it
 // stamps the runtime URL/Listening fields back via StampHostnameRuntime.
+// Where a name routes is resolved against what the workspace's panes are
+// listening on right now (listeners.go) — ccmux never tells a dev server
+// where to bind.
 
 const (
 	settingDevDomain        = "dev_domain"
@@ -30,12 +29,6 @@ const (
 // ErrUnknownWorkspace marks lookups of a workspace id the registry doesn't
 // hold, so the API can answer 404 rather than 400.
 var ErrUnknownWorkspace = errors.New("unknown workspace")
-
-// devPortBase..devPortMax is the daemon's reserved dev-port range. Hostnames
-// saved with port 0 get the first free port here, and the daemon is the only
-// allocator in the range, so mapped ports cannot collide with each other —
-// only with a squatter process, which the bind probe in allocateDevPort skips.
-const devPortBase, devPortMax = 21000, 21999
 
 // hostnameLabel is one valid lowercase DNS label (RFC 1123, 63 chars max).
 var hostnameLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -121,9 +114,7 @@ func (m *Manager) notifyDevhost() {
 // SetHostnames replaces a workspace's dev-hostname mappings. Names are
 // normalized to lowercase labels and validated; a name in use by another
 // workspace is rejected — hostnames are one flat tailnet-wide namespace.
-// A row saved with port 0 gets a port allocated from the daemon's reserved
-// range. Persisted, broadcast as workspace-status, and the devhost server is
-// poked.
+// Persisted, broadcast as workspace-status, and the devhost server is poked.
 func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspace, error) {
 	if err := m.validateHostnames(hs); err != nil {
 		return nil, err
@@ -134,139 +125,37 @@ func (m *Manager) SetHostnames(wsID string, hs []model.Hostname) (*model.Workspa
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
 	}
-	backfillTargetPorts(e.ws.Hostnames, hs)
 	if err := m.rejectNameCollisionsLocked(wsID, hs); err != nil {
 		m.mu.Unlock()
 		return nil, err
 	}
-	if err := m.assignPortsLocked(wsID, hs); err != nil {
-		m.mu.Unlock()
-		return nil, err
-	}
 	e.ws.Hostnames = hs
+	m.resolveRoutesLocked()
 	ws := e.ws
 	m.mu.Unlock()
 
 	if err := m.store.SetWorkspaceHostnames(wsID, model.MarshalHostnames(hs)); err != nil {
 		return nil, err
 	}
-	// Refresh the compose port override now, not just at pane creation: live
-	// panes carry a COMPOSE_FILE that points at this path, and their next
-	// `docker compose up` must see the mapping that was just saved.
-	m.refreshComposeOverride(wsID, ws.RepoPath, hs)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	m.notifyDevhost()
 	return ws, nil
 }
 
-// devEnv contributes a pane's dev-port env (nil ws = none). With exactly one
-// hostname mapped AND at most one detected dev app, PORT and CCMUX_DEV_PORT
-// carry the allocated port — so a dev server started by anything in the
-// workspace binds where the hostname routes. Both conditions on purpose: a
-// monorepo runner starting two apps that both read PORT would land them on
-// the same port, whether one hostname is mapped or two. A compose repo
-// additionally gets COMPOSE_FILE pointing at the generated override, which
-// remaps published ports per-service and so handles multi-app itself.
-func (m *Manager) devEnv(ws *model.Workspace) map[string]string {
-	if ws == nil {
-		return nil
-	}
-	m.mu.RLock()
-	hs := append([]model.Hostname(nil), ws.Hostnames...)
-	repo, wsID := ws.RepoPath, ws.ID
-	m.mu.RUnlock()
-	env := map[string]string{}
-	if len(hs) == 1 && hs[0].Port > 0 && singleDevApp(repo) {
-		p := strconv.Itoa(hs[0].Port)
-		env["PORT"], env["CCMUX_DEV_PORT"] = p, p
-	}
-	if cf := m.refreshComposeOverride(wsID, repo, hs); cf != "" {
-		env["COMPOSE_FILE"] = cf
-	}
-	return env
-}
-
-// refreshComposeOverride (re)writes the workspace's compose port-override file
-// and returns the COMPOSE_FILE value panes should carry. "" = no compose
-// remapping applies — and the override file is removed, because live panes'
-// COMPOSE_FILE may still point at the path and a leftover file would keep
-// remapping to retired ports. On any failure (parse, dir, write) the same
-// holds: no override at all beats a wrong or truncated one.
-func (m *Manager) refreshComposeOverride(wsID, repo string, hs []model.Hostname) string {
-	if m.DevhostDir == "" || repo == "" {
-		return ""
-	}
-	path := filepath.Join(m.DevhostDir, "compose", wsID+".yml")
-	remap := map[int]int{}
-	for _, h := range hs {
-		if h.TargetPort > 0 && h.Port > 0 && h.TargetPort != h.Port {
-			remap[h.TargetPort] = h.Port
-		}
-	}
-	files, content, err := portdetect.ComposeOverride(repo, remap)
-	if err != nil {
-		log.Printf("workspace %s: %v — dev hostnames will not remap compose ports", wsID, err)
-	}
-	if err != nil || len(files) == 0 {
-		removeComposeOverride(wsID, path)
-		return ""
-	}
-	if !writeComposeOverride(wsID, path, content) {
-		removeComposeOverride(wsID, path)
-		return ""
-	}
-	return strings.Join(append(files, path), ":")
-}
-
-// writeComposeOverride lands content at path atomically (write-then-rename —
-// a `docker compose up` reading mid-write must never see truncated YAML;
-// refresh runs concurrently from SetHostnames and every pane spawn) and skips
-// the write entirely when the file already holds content.
-func writeComposeOverride(wsID, path, content string) bool {
-	if cur, err := os.ReadFile(path); err == nil && string(cur) == content {
-		return true
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		log.Printf("workspace %s: compose override dir: %v", wsID, err)
-		return false
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		log.Printf("workspace %s: compose override write: %v", wsID, err)
-		return false
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		log.Printf("workspace %s: compose override rename: %v", wsID, err)
-		return false
-	}
-	return true
-}
-
-// removeComposeOverride drops a stale override, loudly on real failure — live
-// panes may still load the path, so a survivor keeps remapping silently.
-func removeComposeOverride(wsID, path string) {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.Printf("workspace %s: stale compose override not removed (%v) — panes with COMPOSE_FILE may keep old port mappings", wsID, err)
-	}
-}
-
 // validateHostnames normalizes and validates the rows of one save: DNS-label
-// names, port ranges (0 = allocate), the reserved lens label, in-request dups.
+// names, port range, the reserved lens label, in-request dups. Runtime fields
+// a client echoed back are cleared — the daemon stamps them.
 func (m *Manager) validateHostnames(hs []model.Hostname) error {
 	for i := range hs {
-		hs[i].Name = strings.ToLower(strings.TrimSpace(hs[i].Name))
-		hs[i].URL, hs[i].Listening = "", false
+		hs[i] = model.Hostname{Name: strings.ToLower(strings.TrimSpace(hs[i].Name)), Port: hs[i].Port}
 		if !hostnameLabel.MatchString(hs[i].Name) {
 			return fmt.Errorf("invalid hostname %q: must be a DNS label (a-z, 0-9, inner hyphens)", hs[i].Name)
 		}
 		if lens := m.LensHostname(); lens != "" && hs[i].Name == lens {
 			return fmt.Errorf("hostname %q is reserved for the ccmux web lens", lens)
 		}
-		if hs[i].Port < 0 || hs[i].Port > 65535 { // 0 = allocate on save
-			return fmt.Errorf("invalid port %d for %q", hs[i].Port, hs[i].Name)
-		}
-		if hs[i].TargetPort < 0 || hs[i].TargetPort > 65535 {
-			return fmt.Errorf("invalid target port %d for %q", hs[i].TargetPort, hs[i].Name)
+		if hs[i].Port < 1 || hs[i].Port > 65535 {
+			return fmt.Errorf("invalid port %d for %q: must be 1-65535", hs[i].Port, hs[i].Name)
 		}
 		for _, prev := range hs[:i] {
 			if prev.Name == hs[i].Name {
@@ -275,29 +164,6 @@ func (m *Manager) validateHostnames(hs []model.Hostname) error {
 		}
 	}
 	return nil
-}
-
-// backfillTargetPorts is the migration step for pre-allocation rows, and is
-// deletable once none remain: blanking the port of such a row is the whole
-// upgrade. The row's old port WAS the detected app port (the old model saved
-// exactly that), so it moves into TargetPort — without it a compose override
-// would not know which published port to remap and the hostname would route
-// to the new port while compose kept the old one. An old port already inside
-// the reserved range is a ccmux allocation, not a natural app port, and is
-// not carried over. Mutates hs in place.
-func backfillTargetPorts(old, hs []model.Hostname) {
-	oldPort := map[string]int{}
-	for _, h := range old {
-		oldPort[h.Name] = h.Port
-	}
-	for i := range hs {
-		if hs[i].Port != 0 || hs[i].TargetPort != 0 {
-			continue
-		}
-		if p := oldPort[hs[i].Name]; p > 0 && (p < devPortBase || p > devPortMax) {
-			hs[i].TargetPort = p
-		}
-	}
 }
 
 // rejectNameCollisionsLocked enforces tailnet-wide name uniqueness against
@@ -320,62 +186,18 @@ func (m *Manager) rejectNameCollisionsLocked(wsID string, hs []model.Hostname) e
 	return nil
 }
 
-// assignPortsLocked fills port-0 rows from the reserved range, avoiding every
-// port any workspace holds or this request names. Mutates hs in place.
-// Called with m.mu held.
-func (m *Manager) assignPortsLocked(wsID string, hs []model.Hostname) error {
-	usedPort := map[int]bool{}
-	for _, other := range m.byID {
-		for _, h := range other.ws.Hostnames {
-			usedPort[h.Port] = true
-		}
-	}
-	for _, h := range hs {
-		if h.Port != 0 {
-			usedPort[h.Port] = true
-		}
-	}
-	for i := range hs {
-		if hs[i].Port != 0 {
-			continue
-		}
-		port, err := allocateDevPort(usedPort)
-		if err != nil {
-			return err
-		}
-		hs[i].Port, usedPort[port] = port, true
-	}
-	return nil
-}
-
-// allocateDevPort picks the first port in the reserved range that no mapping
-// holds and nothing on this host currently listens on (the bind probe skips
-// squatters — a stray process from before the range was reserved). Called with
-// m.mu held; the probe is a local bind+close, microseconds.
-func allocateDevPort(used map[int]bool) (int, error) {
-	for p := devPortBase; p <= devPortMax; p++ {
-		if used[p] {
-			continue
-		}
-		l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
-		if err != nil {
-			continue
-		}
-		l.Close()
-		return p, nil
-	}
-	return 0, fmt.Errorf("no free dev port left in %d-%d", devPortBase, devPortMax)
-}
-
-// AllHostnames snapshots every mapping (name → port) across workspaces — the
-// devhost server's routing-table source.
+// AllHostnames snapshots every mapping (name → the port it routes to right
+// now) across workspaces — the devhost server's routing-table source. Routes
+// are re-resolved against the latest listener scan first, so a server that
+// moved ports is followed on the next table rebuild.
 func (m *Manager) AllHostnames() map[string]int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resolveRoutesLocked()
 	out := map[string]int{}
 	for _, e := range m.byID {
 		for _, h := range e.ws.Hostnames {
-			out[h.Name] = h.Port
+			out[h.Name] = h.RoutePort()
 		}
 	}
 	return out
@@ -396,14 +218,9 @@ func (m *Manager) PortSuggestions(wsID string) ([]portdetect.Suggestion, error) 
 	for name := range m.AllHostnames() {
 		usedName[name] = true
 	}
-	// A detected port is "already mapped" when a row targets it (TargetPort,
-	// the allocated-port model) or routes to it directly (legacy manual rows).
 	usedPort := map[int]bool{}
 	for _, h := range ws.Hostnames {
 		usedPort[h.Port] = true
-		if h.TargetPort != 0 {
-			usedPort[h.TargetPort] = true
-		}
 	}
 
 	slug := model.Slug(ws.RepoPath)
@@ -438,36 +255,6 @@ func suggestionLabel(slug, service string) string {
 		return slug
 	}
 	return slug + "-" + service
-}
-
-// AutoPortWorks reports whether "blank = auto" can actually steer this
-// workspace's dev servers onto allocated ports. Compose-run repos always can
-// (the generated override remaps per service); anything else only when
-// detection finds at most one dev port — several apps under one runner
-// ("pnpm dev" in a monorepo) bind their own configured ports and ignore
-// everything ccmux allocates, so offering auto there breaks the routing.
-func (m *Manager) AutoPortWorks(wsID string) bool {
-	ws := m.Workspace(wsID)
-	if ws == nil {
-		return false
-	}
-	command, _, _ := m.ResolveDevCommand(wsID)
-	if isComposeCommand(command) {
-		return true
-	}
-	return singleDevApp(ws.RepoPath)
-}
-
-// isComposeCommand matches the dev commands the compose override can steer.
-func isComposeCommand(c string) bool {
-	return strings.HasPrefix(c, "docker compose") || strings.HasPrefix(c, "docker-compose")
-}
-
-// singleDevApp reports whether detection finds at most one dev port in the
-// repo — the condition for PORT-env steering to be safe. Two detected apps
-// under one runner would both read the same PORT and collide.
-func singleDevApp(repo string) bool {
-	return len(portdetect.Detect(repo)) <= 1
 }
 
 // SetDevCommand persists the workspace's dev-server command override ("" =
@@ -521,8 +308,9 @@ func (m *Manager) DetectedDevCommand(wsID string) (string, error) {
 }
 
 // devCommandToRun resolves what ▶ actually types: the stored override or
-// detection, refused when neither yields anything, with the port flag added
-// for frameworks that need it. The single source for start and restart.
+// detection, refused when neither yields anything. The single source for
+// start and restart. The command is typed as-is: where the server binds is
+// its own business, discovery finds it (see listeners.go).
 func (m *Manager) devCommandToRun(wsID string) (string, error) {
 	command, _, err := m.ResolveDevCommand(wsID)
 	if err != nil {
@@ -531,7 +319,7 @@ func (m *Manager) devCommandToRun(wsID string) (string, error) {
 	if command == "" {
 		return "", fmt.Errorf("no dev command: none stored and none detected in the repo")
 	}
-	return m.finalDevCommand(wsID, command), nil
+	return command, nil
 }
 
 // StartDevServer spawns the workspace's dev-server pane running the resolved
@@ -558,25 +346,6 @@ func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 	return m.Workspace(wsID), nil
 }
 
-// finalDevCommand appends the port flag frameworks that ignore the PORT env
-// need (vite). Only with one mapped hostname — the same condition under which
-// devEnv injects PORT at pane creation. A pane older than the current mapping
-// may not carry PORT (env freezes at creation); the restart path compensates
-// by prefixing the delivery with an explicit PORT= — see restartDevServer.
-func (m *Manager) finalDevCommand(wsID, command string) string {
-	m.mu.RLock()
-	var repo string
-	var singleHostname bool
-	if e := m.byID[wsID]; e != nil {
-		repo, singleHostname = e.ws.RepoPath, len(e.ws.Hostnames) == 1
-	}
-	m.mu.RUnlock()
-	if !singleHostname || !singleDevApp(repo) {
-		return command
-	}
-	return command + portdetect.PortFlagSuffix(repo, command)
-}
-
 // restartDevServer handles ▶ with a dev pane already present. A server that
 // answers on a mapped port → idempotent no-op, as before. A DEAD server whose
 // pane sits back at a bare shell — the crash case where ▶ used to silently do
@@ -595,26 +364,10 @@ func (m *Manager) restartDevServer(wsID string, pane *model.Pane) (*model.Worksp
 	for _, h := range e.ws.Hostnames {
 		listening = listening || h.Listening
 	}
-	singlePort := 0
-	if len(e.ws.Hostnames) == 1 {
-		singlePort = e.ws.Hostnames[0].Port
-	}
-	repo := e.ws.RepoPath
 	idle := atBareShell(pane)
 	m.mu.RUnlock()
 	if listening || !idle || ctrl == nil {
 		return m.Workspace(wsID), nil
-	}
-	// The pane's env froze at its creation, but the mapping may have changed
-	// since (port reallocated, hostname count now 1). Pinning PORT= onto the
-	// delivered line makes the restarted server bind where the hostname
-	// routes TODAY, whatever the pane was born with. Delivery-only: the
-	// persisted startup command stays clean, and a revive recreates the pane
-	// with fresh env anyway. Same guard as devEnv: never for multi-app repos.
-	envPrefix := ""
-	if singlePort > 0 && singleDevApp(repo) {
-		p := strconv.Itoa(singlePort)
-		envPrefix = "PORT=" + p + " CCMUX_DEV_PORT=" + p + " "
 	}
 	command, err := m.devCommandToRun(wsID)
 	if err != nil {
@@ -626,7 +379,7 @@ func (m *Manager) restartDevServer(wsID string, pane *model.Pane) (*model.Worksp
 	saved := *pane
 	m.mu.Unlock()
 	_ = m.store.SavePane(&saved)
-	m.deliverStartup(ctrl, pane.ID, envPrefix+command, false)
+	m.deliverStartup(ctrl, pane.ID, command, false)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return m.Workspace(wsID), nil
 }
@@ -676,13 +429,22 @@ func (m *Manager) devPane(wsID string) *model.Pane {
 // StampHostnameRuntime fills the runtime URL/Listening fields on every mapping
 // (mirrors the git collector: runtime data lives on the model under m.mu, and a
 // change broadcasts so lenses refetch). urlFor maps a bare name to its https
-// URL under the active serving mode; listeningFor probes a local port.
+// URL under the active serving mode; listeningFor probes a local port. A name
+// is Listening when one of the workspace's own panes holds its route port,
+// else when the probe answers there (Docker-published ports are root-owned
+// and invisible to the pane scan; a plain answer is the best we know).
 func (m *Manager) StampHostnameRuntime(urlFor func(name string) string, listeningFor func(port int) bool) {
 	changed := map[string]bool{}
 	m.mu.Lock()
+	m.resolveRoutesLocked()
 	for id, e := range m.byID {
+		held := map[int]bool{}
+		for _, l := range e.ws.Listeners {
+			held[l.Port] = true
+		}
 		for i, h := range e.ws.Hostnames {
-			url, listening := urlFor(h.Name), listeningFor(h.Port)
+			url := urlFor(h.Name)
+			listening := held[h.RoutePort()] || listeningFor(h.RoutePort())
 			if h.URL != url || h.Listening != listening {
 				e.ws.Hostnames[i].URL, e.ws.Hostnames[i].Listening = url, listening
 				changed[id] = true

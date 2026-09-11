@@ -30,9 +30,8 @@ func TestHostnames_Validation(t *testing.T) {
 		{"bad label uppercase-only symbols", `{"hostnames":[{"name":"app_x","port":3001}]}`, 400},
 		{"bad label leading hyphen", `{"hostnames":[{"name":"-app","port":3001}]}`, 400},
 		{"bad label empty", `{"hostnames":[{"name":"","port":3001}]}`, 400},
-		// Port 0 is valid now — "allocate one" — so the workspace lookup runs
-		// and an unknown id answers 404 like every other valid body.
-		{"port zero means allocate", `{"hostnames":[{"name":"app","port":0}]}`, 404},
+		// The port is the one the app binds itself; nothing allocates one.
+		{"port zero rejected", `{"hostnames":[{"name":"app","port":0}]}`, 400},
 		{"bad port negative", `{"hostnames":[{"name":"app","port":-1}]}`, 400},
 		{"bad port range", `{"hostnames":[{"name":"app","port":70000}]}`, 400},
 		{"dup in request", `{"hostnames":[{"name":"app","port":1},{"name":"APP","port":2}]}`, 400},

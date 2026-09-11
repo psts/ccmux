@@ -102,6 +102,9 @@ type Workspace struct {
 	Owner string `json:"owner,omitempty"`
 	// Hostnames are the workspace's dev-hostname mappings (see model.Hostname).
 	Hostnames []Hostname `json:"hostnames,omitempty"`
+	// Listeners is runtime-only: the ports this workspace's panes hold right
+	// now, from the daemon's socket scan. Never persisted.
+	Listeners []Listener `json:"listeners,omitempty"`
 	// DevCommand starts this workspace's dev server (the ▶ on a hostname row).
 	// Empty = resolve by detection (portdetect.DetectCommand) at start time;
 	// set = the user's explicit override from the Hostnames sheet.
@@ -115,26 +118,55 @@ type Workspace struct {
 }
 
 // Hostname is one dev-hostname mapping: https://<Name>.<suffix> over the
-// tailnet reverse-proxies to 127.0.0.1:Port on the daemon host. Name is the
-// bare DNS label ("chartlabs-app"); the daemon's serving mode picks the suffix
-// (the configured dev domain, else per-hostname tsnet nodes on ts.net). Name,
-// Port and TargetPort are persisted; URL and Listening are runtime-only,
-// stamped by the devhost server (the resolved https URL, and whether the port
-// currently accepts connections).
+// tailnet reverse-proxies to a port on the daemon host. Name is the bare DNS
+// label ("chartlabs-app"); the daemon's serving mode picks the suffix (the
+// configured dev domain, else per-hostname tsnet nodes on ts.net).
 //
-// Port is the routing target and is normally ALLOCATED by the daemon from its
-// reserved range (saved as 0 = "assign one"); a hand-typed port outside the
-// range still routes, for mapping to servers the user runs themselves.
-// TargetPort remembers what the repo's config would bind on its own (the
-// compose published port, the package.json port) — it is how the compose
-// override knows which published port to move onto Port. 0 = none detected.
+// Port is the port the app binds on its own — the `-p 3003` in its dev
+// script, the uvicorn flag the user types, a compose published port. ccmux
+// never tells the app where to listen; it watches what the workspace's panes
+// listen on (see internal/listeners) and routes the name there. Name and
+// Port are persisted; the rest is runtime-only, stamped by the daemon:
+//
+//   - URL: the resolved https URL under the active serving mode.
+//   - Listening: a pane of this workspace holds the port, or something on
+//     the host answers on it (Docker's published ports are root-owned and
+//     cannot be tied to a pane, so a plain answer counts).
+//   - LivePort: where the name actually routes when it differs from Port —
+//     the workspace's only unmapped listener when Port itself is not held
+//     (vite's "5173 busy, using 5174"). 0 = routes to Port.
+//   - HeldBy: the name of ANOTHER workspace whose pane holds Port while this
+//     one does not — the same repo open twice, both pinned to one port.
 type Hostname struct {
-	Name       string `json:"name"`
-	Port       int    `json:"port"`
-	TargetPort int    `json:"targetPort,omitempty"`
-	URL        string `json:"url,omitempty"`
-	Listening  bool   `json:"listening,omitempty"`
+	Name      string `json:"name"`
+	Port      int    `json:"port"`
+	URL       string `json:"url,omitempty"`
+	Listening bool   `json:"listening,omitempty"`
+	LivePort  int    `json:"livePort,omitempty"`
+	HeldBy    string `json:"heldBy,omitempty"`
 }
+
+// Listener is one port a workspace's pane process is listening on right now
+// (runtime-only, from the daemon's socket scan). The Hostnames sheet lists
+// these so a mapping can be made from what is actually running.
+type Listener struct {
+	Port    int    `json:"port"`
+	Process string `json:"process"`
+	PaneID  string `json:"paneId"`
+}
+
+// Routes the name resolves to: LivePort when a listener moved, else Port.
+func (h Hostname) RoutePort() int {
+	if h.LivePort != 0 {
+		return h.LivePort
+	}
+	return h.Port
+}
+
+// Ports the daemon used to allocate for hostnames (v0.1.5x, before listener
+// discovery). A persisted row inside this range with a targetPort is one of
+// those allocations and loads as its target — the port the app binds itself.
+const legacyAllocBase, legacyAllocMax = 21000, 21999
 
 // MarshalHostnames serializes mappings for the registry, keeping only the
 // persisted fields ("" for none — the column default). UnmarshalHostnames is
@@ -145,13 +177,12 @@ func MarshalHostnames(hs []Hostname) string {
 		return ""
 	}
 	type persisted struct {
-		Name       string `json:"name"`
-		Port       int    `json:"port"`
-		TargetPort int    `json:"targetPort,omitempty"`
+		Name string `json:"name"`
+		Port int    `json:"port"`
 	}
 	out := make([]persisted, len(hs))
 	for i, h := range hs {
-		out[i] = persisted{Name: h.Name, Port: h.Port, TargetPort: h.TargetPort}
+		out[i] = persisted{Name: h.Name, Port: h.Port}
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -160,14 +191,27 @@ func MarshalHostnames(hs []Hostname) string {
 	return string(b)
 }
 
-// UnmarshalHostnames parses a registry blob written by MarshalHostnames.
+// UnmarshalHostnames parses a registry blob written by MarshalHostnames,
+// migrating rows from the allocation era (see legacyAllocBase).
 func UnmarshalHostnames(raw string) []Hostname {
 	if raw == "" {
 		return nil
 	}
-	var hs []Hostname
-	if json.Unmarshal([]byte(raw), &hs) != nil {
+	var rows []struct {
+		Name       string `json:"name"`
+		Port       int    `json:"port"`
+		TargetPort int    `json:"targetPort"`
+	}
+	if json.Unmarshal([]byte(raw), &rows) != nil {
 		return nil
+	}
+	hs := make([]Hostname, len(rows))
+	for i, r := range rows {
+		port := r.Port
+		if port >= legacyAllocBase && port <= legacyAllocMax && r.TargetPort > 0 {
+			port = r.TargetPort
+		}
+		hs[i] = Hostname{Name: r.Name, Port: port}
 	}
 	return hs
 }

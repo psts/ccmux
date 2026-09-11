@@ -84,11 +84,18 @@
         <span id="hostnames-title">Hostnames</span>
         <button id="hostnames-close" title="Close">&times;</button>
       </header>
-      <p class="crumb">Dev hostnames served over the tailnet, mapped to local ports.</p>
+      <p class="crumb">Dev hostnames served over the tailnet. Each name routes to the port its app binds on its own — ccmux never tells the server where to listen.</p>
       <ul id="hostnames-rows" class="hostname-rows"></ul>
       <button id="hostnames-add" class="hn-add">+ add mapping</button>
+      <!-- What this workspace's panes are listening on right now (daemon socket
+           scan, refreshed while the sheet is open); "map" adds a row for one. -->
+      <p class="crumb hn-live-label">Listening now</p>
+      <ul id="hostnames-live" class="hostname-live"></ul>
       <input id="hostnames-cmd" class="setting-input" type="text" spellcheck="false"
              autocomplete="off" placeholder="dev command — what ▶ runs">
+      <!-- Where the prefilled command came from; saving it unchanged keeps
+           following the repo instead of freezing today's detection. -->
+      <p id="hostnames-cmd-caption" class="crumb hidden"></p>
       <!-- Shown when a stored command's repo-detected counterpart changed. -->
       <p id="hostnames-cmd-hint" class="crumb hidden">
         <span id="hostnames-cmd-detected"></span>
