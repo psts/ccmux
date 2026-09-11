@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -135,11 +136,11 @@ func TestWindowOpen_MigrationIsIdempotent(t *testing.T) {
 	}
 }
 
-// A close names one device, so it must not disturb another's row — that shared
-// row is the whole reason the device belongs in the key. It DOES clear the
-// login's pre-upgrade row, which no lens can name and which otherwise blocks
-// archive-on-last-close until it ages out.
-func TestWindowOpen_CloseIsScopedToItsDeviceAndSweepsLegacy(t *testing.T) {
+// A close names one device, so it must not disturb any other row — that is the
+// whole reason the device belongs in the key. Including a device=” row, which
+// is what a lens too old to send one writes: deleting that made the close
+// answer last=true and force-archive workspaces the old lens still showed.
+func TestWindowOpen_CloseTouchesOnlyItsOwnDevice(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	writePreDeviceRegistry(t, path, [][2]string{{"patric@x.com", "win-a"}})
 
@@ -150,7 +151,8 @@ func TestWindowOpen_CloseIsScopedToItsDeviceAndSweepsLegacy(t *testing.T) {
 	defer st.Close()
 
 	now := time.Now().UnixMilli()
-	for _, dev := range []string{"mac-1", "web-1"} {
+	// "" is a live lens that predates the device param, not a leftover.
+	for _, dev := range []string{"", "mac-1", "web-1"} {
 		if err := st.SetWindowOpen(WindowOpenFlag{
 			Login: "patric@x.com", WindowID: "win-a", Device: dev, Seen: now,
 		}, true); err != nil {
@@ -177,11 +179,74 @@ func TestWindowOpen_CloseIsScopedToItsDeviceAndSweepsLegacy(t *testing.T) {
 	if web["win-a"] {
 		t.Fatal("the close did not clear its own row")
 	}
-	legacy, err := st.DeviceWindowOpens("patric@x.com", "", 0)
+	old, err := st.DeviceWindowOpens("patric@x.com", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if legacy["win-a"] {
-		t.Fatal("the pre-upgrade row survived a close, so `last` can never come back true")
+	if !old["win-a"] {
+		t.Fatal("the close deleted a lens that sends no device — its live windows would be force-archived")
+	}
+}
+
+// Two daemons opening the same pre-device file at once. The guard narrows the
+// race but does not literally close it — a deferred transaction takes no write
+// lock until its first write — so this measures the outcome rather than
+// assuming it: whoever loses must ERROR, never silently rebuild the table the
+// winner just migrated and collapse every real device id back to ”.
+func TestWindowOpen_ConcurrentOpensDoNotClobber(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "race.db")
+	writePreDeviceRegistry(t, path, [][2]string{{"patric@x.com", "win-a"}})
+
+	var wg sync.WaitGroup
+	opened := make([]*SQLite, 2)
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	for i := range opened {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			opened[i], errs[i] = Open(path)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var live *SQLite
+	for i, st := range opened {
+		if st != nil {
+			defer st.Close()
+			if live == nil {
+				live = st
+			}
+		}
+		if errs[i] != nil {
+			t.Logf("open %d lost the race and errored, which is the safe outcome: %v", i, errs[i])
+		}
+	}
+	if live == nil {
+		t.Fatalf("both opens failed: %v / %v", errs[0], errs[1])
+	}
+	// Whatever the interleaving, the pre-upgrade row must still be there and
+	// the table must be usable — not rebuilt twice into an empty shape.
+	opens, err := live.WindowOpens(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opens["win-a"]["patric@x.com"] {
+		t.Fatalf("the row did not survive concurrent migration: %v", opens)
+	}
+	// And a real device id written afterwards must stick.
+	if err := live.SetWindowOpen(WindowOpenFlag{
+		Login: "patric@x.com", WindowID: "win-a", Device: "mac-1", Seen: time.Now().UnixMilli(),
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	mine, err := live.DeviceWindowOpens("patric@x.com", "mac-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mine["win-a"] {
+		t.Fatal("a real device id did not survive")
 	}
 }

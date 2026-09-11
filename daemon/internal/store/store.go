@@ -274,8 +274,8 @@ func erroringMigrations(db *sql.DB) error {
 // once, and it is the only destructive-shaped migration in this file — hence
 // the transaction, and hence copying every existing row rather than dropping
 // them. Existing rows keep an empty device (nobody knows which lens set them)
-// and are stamped with NOW, so they behave exactly as before for a full TTL
-// and then drain on their own as lenses re-assert with real device ids.
+// and are stamped to expire within a day — see the inline comment on the
+// INSERT for why a full TTL was wrong.
 func migrateWindowOpenDevices(db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -287,8 +287,15 @@ func migrateWindowOpenDevices(db *sql.DB) error {
 	// opening the same file both see no device column, and the second rebuilds
 	// the table the first just migrated — collapsing every real device id back
 	// to ''. The port bind that acts as the single-instance lock happens ~150
-	// lines later in main, so nothing else serialises this. Taking the write
-	// lock first makes the check and the act one step.
+	// lines later in main, so nothing else serialises this.
+	//
+	// This narrows that window rather than closing it: db.Begin() with no
+	// _txlock in the DSN is a DEFERRED transaction, which takes no write lock
+	// until its first write, so the COUNT and the CREATE are not literally one
+	// step. What saves it is that the loser cannot upgrade a stale WAL read
+	// snapshot — it fails SQLITE_BUSY_SNAPSHOT, which busy_timeout does not
+	// retry, so it errors out instead of clobbering. TestWindowOpen_Concurrent
+	// OpensDoNotClobber measures that rather than assuming it.
 	//
 	// COUNT rather than scanning PRAGMA rows: a row-iteration error read as
 	// "column absent" would fall straight into the destructive rebuild, and
@@ -626,16 +633,15 @@ func (s *SQLite) SetWindowOpen(f WindowOpenFlag, open bool) error {
 			_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=?`, f.Login, f.WindowID)
 			return err
 		}
-		// Also clears this login's pre-upgrade row (device=''). Those are
-		// unattributed remnants of the migration that no lens can name, and
-		// nothing else can remove them — ClearStaleWindowOpens refuses an empty
-		// device and the API rejects one. Left alone they keep WindowOpens
-		// reporting the login as an opener, so `last` never comes back true and
-		// archive-on-last-close stays dead for the whole TTL. Clearing them on a
-		// close is exactly the pre-upgrade behaviour: then, any one lens's close
-		// cleared the single shared row.
-		_, err := s.db.Exec(
-			`DELETE FROM window_open WHERE login=? AND window_id=? AND (device=? OR device='')`,
+		// Strictly this device. An earlier version also swept the login's
+		// device='' rows to drain migration remnants, which was wrong: a lens
+		// too old to send a device writes exactly that shape, and api's open/
+		// close still support it. Sweeping deleted a LIVE row belonging to
+		// another lens, so the close answered last=true and force-archived
+		// workspaces that lens still had on screen — and daemon/app version
+		// skew is the normal case during a release. The remnants drain on their
+		// own: migrateWindowOpenDevices stamps them to expire within a day.
+		_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=? AND device=?`,
 			f.Login, f.WindowID, f.Device)
 		return err
 	}

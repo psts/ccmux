@@ -36,7 +36,7 @@ const el = () => new Proxy(function () {}, {
 
 // windowsReply lets a case control each /v1/windows answer in turn, and gate
 // lets it hold one open so two reads can resolve OUT OF ORDER.
-function run({ windowsOk = true, windowsReply = null, gate = null } = {}) {
+function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null } = {}) {
   const fetched = [];
   const storage = {};
   let reads = 0;
@@ -63,8 +63,9 @@ function run({ windowsOk = true, windowsReply = null, gate = null } = {}) {
       fetched.push({ url: u, method: (opts && opts.method) || "GET", body: opts && opts.body });
       if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => [] };
       if (u.startsWith("/v1/windows?")) {
-        if (!windowsOk) return { ok: false, status: 503, text: async () => "unreadable" };
         const n = reads++;
+        const good = windowsOkFor ? windowsOkFor(n) : windowsOk;
+        if (!good) return { ok: false, status: 503, text: async () => "unreadable" };
         const hold = gate ? gate(n) : null;
         return { ok: true, status: 200, json: async () => {
           if (hold) await hold;
@@ -168,14 +169,55 @@ function run({ windowsOk = true, windowsReply = null, gate = null } = {}) {
     slow.evalIn("(state.windows[0] || {}).name") === "Applied",
     "a superseded-but-unlanded read was dropped, so state never updates");
 
-  // 6. A failed window read keeps the previous list rather than blanking it:
+  // 6. A failed window read keeps the PREVIOUS list rather than blanking it:
   //    every window would render as closed and feed wrong close decisions.
-  const bad = run({ windowsOk: false });
+  //
+  //    The first read must succeed, or there is no previous list and the
+  //    assertion is vacuous — an earlier version checked Array.isArray on a
+  //    state that starts as [], so it passed however the code behaved.
+  const bad = run({ windowsOkFor: (n) => n === 0 });
   await bad.ctx.fetchWorkspaces();
   await tick();
-  check("an unreadable window list does not blank state",
-    Array.isArray(bad.evalIn("state.windows")),
-    "state.windows is not an array after a 503");
+  check("the good read landed first", bad.evalIn("(state.windows[0] || {}).name") === "Here");
+  await bad.ctx.fetchWorkspaces();
+  await tick();
+  check("an unreadable window list does not blank the previous one",
+    bad.evalIn("(state.windows[0] || {}).name") === "Here",
+    `state holds ${bad.evalIn("JSON.stringify(state.windows)")}`);
+
+  // 7. openHere falls back to open, for a daemon older than the field. Without
+  //    it a newer lens reads every window as closed and clicking one opens a
+  //    duplicate onto a shared window.
+  const fb = run();
+  check("openHere absent falls back to open", fb.evalIn("openHereOf({ open: true })") === true,
+    "an older daemon's windows would all read as closed here");
+  check("openHere present wins over open", fb.evalIn("openHereOf({ open: true, openHere: false })") === false,
+    "the per-login flag overrode this lens's own");
+
+  // 8. The keep-alive. Every flag expires after the daemon's TTL and the only
+  //    other writers here are the user clicking open or close, so a tab left
+  //    open and in use would age out of its own flags — then render its live
+  //    windows as closed and let another lens force-archive them. It must go
+  //    through the ADDITIVE open route, never a declaration: additive cannot
+  //    retract, so it is harmless against a stale read.
+  const alive = run();
+  await alive.ctx.fetchWorkspaces();
+  await tick();
+  await tick();
+  const keep = alive.fetched.filter((f) => f.method === "POST" && f.url.includes("/open?"));
+  check("a read re-asserts this device's open flags", keep.length === 1,
+    `${keep.length} keep-alive posts`);
+  check("the keep-alive names the device", keep[0] && keep[0].url.includes("device=test-device-uuid"),
+    keep[0] ? keep[0].url : "none");
+  check("the keep-alive never declares", !alive.fetched.some((f) => f.url.includes("open-set")),
+    "a declaration can retract rows; a keep-alive must not be able to");
+  // Once only: a 5s poll must not re-post every tick.
+  await alive.ctx.fetchWorkspaces();
+  await tick();
+  await tick();
+  const again = alive.fetched.filter((f) => f.method === "POST" && f.url.includes("/open?"));
+  check("the keep-alive is rate limited", again.length === 1,
+    `${again.length} posts after a second read — every poll would re-assert`);
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

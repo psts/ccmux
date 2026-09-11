@@ -798,32 +798,35 @@ class WindowManager {
             NSLog("[ccmux] windows: shared list not loaded yet; skipping open-set")
             return
         }
-        // An on-screen window that matches no shared window must STOP the
-        // declaration, not be dropped from it. Under the old add-only sync a
-        // miss meant "no flag added", which was harmless; open-set is
-        // authoritative, so the same miss now RETRACTS the flag for a window
-        // with live sessions — and a name that drifted is the very cause the
-        // close path already fails on.
-        var unmatched: [String] = []
+        // Resolve each on-screen window to its shared id by NAME or by the
+        // workspaces it owns. Name alone was the whole problem: a name that
+        // drifted (renamed from another lens, a rename that has not arrived
+        // here yet) stopped matching, and because open-set is authoritative the
+        // miss RETRACTED the flag for a window with live sessions. Workspace
+        // membership does not drift — ids are ids.
+        //
+        // Aborting the whole declaration on a miss, which is what this did
+        // first, is worse than the bug: a window holding only local workspaces,
+        // or an empty one, can never match anything, so one of those on screen
+        // disabled open-set for the entire lens — no assertions, no repair, and
+        // the daemon believing this Mac holds nothing open.
+        //
+        // A window that matches NEITHER has no shared counterpart and therefore
+        // no row, so omitting it retracts nothing.
         var set = Set<String>()
         for wc in windowControllers {
             let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
-            guard let id = service.sharedWindows.first(where: { Self.sameWindowName($0.name, name) })?.id else {
-                unmatched.append(name)
-                continue
+            let owned = wc.windowContext.ownedWorkspaceIds
+            let match = service.sharedWindows.first { win in
+                Self.sameWindowName(win.name, name)
+                    || win.workspaceIds.contains { owned.contains(RemoteWorkspaceBuilder.workspaceUUID($0)) }
             }
-            set.insert(id)
-        }
-        guard unmatched.isEmpty else {
-            NSLog("[ccmux] windows: %@ match no shared window; skipping open-set rather than retracting their flags",
-                  unmatched.joined(separator: ", "))
-            return
+            if let id = match?.id { set.insert(id) }
         }
         let stale = Date().timeIntervalSince(lastOpenSetSentAt) > 12 * 3600
         guard set != lastOpenSetSent || stale else { return }
-        // Claimed before the call and put back if it fails, so one blip does not
-        // silence the repair path until the set next changes. Same rule as the
-        // web lens's giveBack.
+        // Claimed before the call and put back if it fails, so one blip does
+        // not silence the repair path until the set next changes.
         let prevSet = lastOpenSetSent
         let prevAt = lastOpenSetSentAt
         lastOpenSetSent = set

@@ -1173,9 +1173,9 @@ final class RemoteSessionService: ObservableObject {
     /// Scoped to this device, so declaring the set can never close a window
     /// another lens is showing.
     /// Returns false when the declaration did not land, so the caller can put
-    /// its dedupe key back. Swallowing that meant one failed POST stopped the
+    /// its dedupe key back. Swallowing it meant one failed POST stopped the
     /// repair path for 12 hours, even though syncOpenFlags runs again seconds
-    /// later — the web lens rolls back for exactly this reason.
+    /// later and would otherwise have retried immediately.
     @discardableResult
     func syncOpenWindows(_ windowIds: [String]) async -> Bool {
         struct Body: Encodable {

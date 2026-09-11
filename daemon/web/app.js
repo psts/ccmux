@@ -49,20 +49,54 @@ const deviceId = (() => {
 // holding a window open. Recomputed rather than stored: the name can change.
 const deviceLabel = () => (localStorage.getItem("ccmux-user") || "anon") + " (web)";
 
+// Does THIS lens hold the window open? `openHere` is per-device; `open` is
+// per-login and cannot answer it. The fallback is for a daemon older than the
+// field: without it a newer lens reads every window as closed, renders live
+// windows as closed rows, and clicking one opens a second window onto a shared
+// one. Module scope so the smoke test can assert it directly.
+function openHereOf(w) {
+  return w.openHere ?? w.open;
+}
+
 // This lens does NOT declare an open-set, and that is deliberate.
 //
 // open-set is the repair path: a lens states the whole set it has open and the
 // daemon drops that device's rows for anything omitted. It only repairs when
 // the lens has evidence the daemon lacks. The Mac has that — its on-screen
 // window controllers. A browser has none: what it renders as open IS the
-// daemon's `openHere`, so declaring it back can never omit a row, and the
-// periodic re-send would refresh last_seen forever, which disables the very
-// TTL that is a stranded tab's only cleanup.
+// daemon's `openHere`, so declaring it back can omit nothing and repairs
+// nothing. If you are about to add one, give the lens real evidence first.
 //
-// So a browser's flags change only when the user acts (openWindow/closeWindow,
-// both device-scoped), and a tab that disappears is cleaned up by the TTL. If
-// you are about to add a declaration here, give the lens real evidence first —
-// otherwise it is an echo that makes stranded rows permanent.
+// It DOES send a keep-alive, which is a different thing. Every flag expires
+// after store.OpenFlagTTL, and the only writers here are the user clicking open
+// or close — so a tab left open and in use for longer than that would age out
+// of its own flags, drop out of openBy, render its own live windows as closed,
+// and let another lens compute last=true and force-archive sessions that are on
+// screen. The Mac avoids this with its 12-hour re-send; this is the same rule.
+//
+// It goes through the per-window open route, which is ADDITIVE. That matters:
+// it can never retract a row, so unlike a declaration it is harmless if it
+// races a read or runs on stale state. A stranded tab sends nothing either way,
+// so the TTL still reaches it — that case is untouched.
+let lastKeepAliveAt = 0;
+async function keepOpenFlagsAlive() {
+  if (Date.now() - lastKeepAliveAt < 12 * 3600 * 1000) return;
+  lastKeepAliveAt = Date.now();
+  for (const w of (state.windows || []).filter(openHereOf)) {
+    try {
+      const r = await fetch(
+        `/v1/windows/${w.id}/open?device=${encodeURIComponent(deviceId)}` +
+        `&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
+      if (!r.ok) {
+        lastKeepAliveAt = 0; // released, so the next read retries
+        console.error("open-flag keep-alive failed:", w.id, r.status, await r.text());
+      }
+    } catch (e) {
+      lastKeepAliveAt = 0;
+      console.error("open-flag keep-alive failed:", w.id, e);
+    }
+  }
+}
 
 // A display name for presence; asked once and remembered. Tailscale identity
 // will replace this on the tailnet.
@@ -133,7 +167,10 @@ async function fetchWorkspaces() {
     state.workspaces = workspaces;
     // Keep the previous window list on a failed read rather than blanking it:
     // every window would render as closed and feed wrong close decisions.
-    if (windows) state.windows = windows;
+    if (windows) {
+      state.windows = windows;
+      keepOpenFlagsAlive();
+    }
   } catch (_) {
     state.workspaces = [];
   }
@@ -215,12 +252,12 @@ function renderList() {
   // and hiding it left it unreachable from this lens entirely. ?? open so an
   // older daemon, which omits the field, keeps the previous per-login behavior
   // instead of rendering every open window as closed and dropping its rows.
-  const closed = state.windows.filter((w) => !(w.openHere ?? w.open));
+  const closed = state.windows.filter((w) => !openHereOf(w));
 
   for (const [group, list] of grouped) {
     if (group) {
       const win = winByName.get(group.toLowerCase());
-      if (win && !(win.openHere ?? win.open)) continue; // rendered below as a closed-window row
+      if (win && !openHereOf(win)) continue; // rendered below as a closed-window row
       const h = document.createElement("li");
       h.className = "group-hdr";
       h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +

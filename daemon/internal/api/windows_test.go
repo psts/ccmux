@@ -545,7 +545,8 @@ func TestOpenSetFailsClosedOnAStoreError(t *testing.T) {
 	if err := st.CreateWindow(wid, "ALPHA"); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(manager.New(context.Background(), nil, brokenWindowWrites{Store: st}))
+	var cleared bool
+	s := NewServer(manager.New(context.Background(), nil, brokenWindowWrites{Store: st, cleared: &cleared}))
 	s.identity = fakeResolver{login: "patric@x.com", ok: true}
 
 	req := httptest.NewRequest("POST", "/v1/windows/open-set",
@@ -555,23 +556,25 @@ func TestOpenSetFailsClosedOnAStoreError(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: a half-landed declaration must not clear", rec.Code)
 	}
-	if brokenWindowWrites_cleared {
+	if cleared {
 		t.Fatal("the destructive clear ran after an assert failed")
 	}
 }
 
 // brokenWindowWrites fails the open-flag write while leaving the reads intact,
-// and records whether the clear was reached.
-var brokenWindowWrites_cleared bool
-
-type brokenWindowWrites struct{ store.Store }
+// and records whether the clear was reached. The flag is a field, not a package
+// var: a shared one would leak between tests and survive -count=2.
+type brokenWindowWrites struct {
+	store.Store
+	cleared *bool
+}
 
 func (brokenWindowWrites) SetWindowOpen(store.WindowOpenFlag, bool) error {
 	return errors.New("database is locked")
 }
 
-func (brokenWindowWrites) ClearStaleWindowOpens(string, string, []string) error {
-	brokenWindowWrites_cleared = true
+func (b brokenWindowWrites) ClearStaleWindowOpens(string, string, []string) error {
+	*b.cleared = true
 	return nil
 }
 
@@ -615,5 +618,43 @@ func TestCloseWithDeviceLeavesOtherDevicesOpen(t *testing.T) {
 	}
 	if !mine[wid] {
 		t.Fatal("the browser's close cleared the Mac's row")
+	}
+}
+
+// An id the daemon has never heard of is the CALLER's stale list, not a daemon
+// failure, so it must be skipped without poisoning the declaration. Treating it
+// like a store error gives a lens with one pruned window a permanent 503: the
+// clear never runs, its leftover rows never drop, and archive-on-last-close
+// stays dead — the same failure this endpoint exists to repair, from the other
+// side.
+func TestOpenSetSkipsUnknownIdsAndStillClears(t *testing.T) {
+	ws := &model.Workspace{ID: "w1"}
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
+	if rec := putGroupReq(t, s, "w1", "ALPHA"); rec.Code != http.StatusNoContent {
+		t.Fatal(rec.Code)
+	}
+	wid, _ := s.mgr.WindowByName("ALPHA")
+
+	post := func(ids string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/windows/open-set",
+			strings.NewReader(`{"device":"mac-1","deviceLabel":"mac","windowIds":[`+ids+`]}`))
+		rec := httptest.NewRecorder()
+		s.syncWindowOpen(rec, req)
+		return rec
+	}
+	if rec := post(`"` + wid + `"`); rec.Code != http.StatusOK {
+		t.Fatalf("seeding declaration = %d: %s", rec.Code, rec.Body.String())
+	}
+	// A ghost id alongside nothing else: the real window drops out of the set,
+	// so the clear MUST still run and remove its row.
+	if rec := post(`"ghost"`); rec.Code != http.StatusOK {
+		t.Fatalf("declaration with an unknown id = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	mine, err := s.mgr.DeviceOpenWindows("patric@x.com", "mac-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mine[wid] {
+		t.Fatal("the clear did not run, so this lens can never repair its own rows")
 	}
 }

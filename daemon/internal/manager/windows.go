@@ -456,7 +456,11 @@ func (m *Manager) MigrateViewsToWindows() error {
 				}
 			}
 			if err := m.store.SetWindowOpen(store.WindowOpenFlag{
-				Login: login, WindowID: wid, Label: "before upgrade", Seen: time.Now().UnixMilli(),
+				// Same short expiry as the migration's own rows: these carry no
+				// device either, so no lens can name one to clear it, and a full
+				// TTL would keep `last` from ever coming back true.
+				Login: login, WindowID: wid, Label: "before upgrade",
+				Seen: time.Now().Add(-store.OpenFlagTTL + 24*time.Hour).UnixMilli(),
 			}, true); err != nil {
 				return err
 			}
