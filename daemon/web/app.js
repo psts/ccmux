@@ -122,7 +122,19 @@ function bytesToB64(u8) {
 // older snapshot landing last would delete the flag the user just created —
 // and it does not self-correct, since afterwards every poll agrees the window
 // is closed while its sessions keep running.
+// The watermark is what has APPLIED, not what has been ISSUED. Gating on the
+// newest issued read starves: fetchWorkspaces fires from the timer and from
+// every firehose frame, so whenever latency exceeds the gap between triggers
+// EVERY response is superseded before it resolves and nothing is ever applied
+// — state freezes and, worse, the declaration never runs, so this device's
+// rows age out of the daemon's TTL while the tab is genuinely open. That is
+// the same window-reads-closed, sessions-archived-underneath failure the
+// ordering guard exists to prevent, just reached from the other side.
+//
+// Against the watermark an older response still applies while nothing newer
+// has landed, and is dropped the moment something newer has.
 let windowsSeq = 0;
+let windowsApplied = 0;
 async function fetchWorkspaces() {
   const seq = ++windowsSeq;
   try {
@@ -139,7 +151,8 @@ async function fetchWorkspaces() {
     // per the daemon) — blanking it would make every window look closed and
     // feed wrong close decisions. Same fallback the Mac lens uses.
     const windows = winr.ok ? (await winr.json()) || [] : null;
-    if (seq !== windowsSeq) return; // a newer read has already landed
+    if (seq <= windowsApplied) return; // something newer already landed
+    windowsApplied = seq;
     state.workspaces = workspaces;
     // Declare only from a read that SUCCEEDED and is still the newest. On a
     // failure we know nothing new, and an empty declaration means "I have none

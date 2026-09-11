@@ -136,6 +136,26 @@ function run({ windowsOk, openHere = true, gate = null }) {
       `${sets.length} declarations from overlapping reads: ${sets.map((s) => s.body).join(" | ")}`);
   }
 
+  // 4. The mirror hazard: gating on the newest ISSUED read starves. Reads fire
+  //    from a timer and from every firehose frame, so if latency exceeds the
+  //    gap between triggers every response is superseded before it resolves and
+  //    NOTHING applies — no state, and no declaration, so this device's rows
+  //    age out while the tab is genuinely open.
+  const starve = [];
+  const slow = run({ windowsOk: true, gate: () => new Promise((r) => starve.push(r)) });
+  if (typeof slow.ctx.fetchWorkspaces === "function") {
+    const a = slow.ctx.fetchWorkspaces(); // older read
+    await new Promise((r) => setImmediate(r));
+    slow.ctx.fetchWorkspaces(); // newer read ISSUED but never resolved
+    await new Promise((r) => setImmediate(r));
+    starve[0](); // only the OLDER one comes back
+    await a;
+    await new Promise((r) => setImmediate(r));
+    check("an older read still applies when nothing newer has landed",
+      slow.fetched.some((f) => f.url.includes("open-set")),
+      "no declaration at all: a superseded-but-unlanded read was dropped");
+  }
+
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);
 })();
