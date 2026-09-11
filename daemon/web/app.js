@@ -68,6 +68,15 @@ async function declareOpenWindows() {
   // Re-send on change, and at least twice a day so a tab left open for a month
   // does not age out of its own flags.
   if (key === lastDeclared && Date.now() - lastDeclaredAt < 12 * 3600 * 1000) return;
+  // Claim the key BEFORE awaiting. Recording it after meant two declares
+  // issued from two reads both passed the test while the first was still in
+  // flight, and the daemon took two identical destructive POSTs — observed in
+  // a browser, invisible to a test that awaits each call in turn.
+  const prevKey = lastDeclared;
+  const prevAt = lastDeclaredAt;
+  lastDeclared = key;
+  lastDeclaredAt = Date.now();
+  const giveBack = () => { lastDeclared = prevKey; lastDeclaredAt = prevAt; };
   try {
     const r = await fetch("/v1/windows/open-set", {
       method: "POST",
@@ -75,15 +84,14 @@ async function declareOpenWindows() {
       body: JSON.stringify({ device: deviceId, deviceLabel: deviceLabel(), windowIds: ids }),
     });
     if (!r.ok) {
-      // Not marked as sent: the daemon asks the caller to retry on a 503, and
-      // the next poll is the retry. Recording it would disable the repair path
-      // for the life of the page after one blip.
+      // Released, not kept: the daemon asks the caller to retry on a 503, and
+      // the next poll is that retry. Keeping the claim would disable the
+      // repair path for the life of the page after one blip.
+      giveBack();
       console.error("open-set failed:", r.status, await r.text());
-      return;
     }
-    lastDeclared = key;
-    lastDeclaredAt = Date.now();
   } catch (e) {
+    giveBack();
     console.error("open-set failed:", e);
   }
 }

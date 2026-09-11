@@ -156,6 +156,27 @@ function run({ windowsOk, openHere = true, gate = null }) {
       "no declaration at all: a superseded-but-unlanded read was dropped");
   }
 
+  // 5. Two declares for the SAME set must collapse to one POST. The dedupe
+  //    key has to be claimed before the await: recording it afterwards let two
+  //    declares issued from two reads both pass while the first was in flight,
+  //    and the daemon took two identical destructive POSTs. Found in a browser;
+  //    a test that awaits each call in turn cannot see it.
+  const dup = run({ windowsOk: true });
+  if (typeof dup.ctx.declareOpenWindows === "function") {
+    await dup.ctx.fetchWorkspaces();
+    await new Promise((r) => setImmediate(r));
+    const n = dup.fetched.filter((f) => f.url.includes("open-set")).length;
+    // Both fired without awaiting between them: the in-flight claim is the
+    // only thing that can collapse these.
+    dup.ctx.declareOpenWindows();
+    dup.ctx.declareOpenWindows();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const extra = dup.fetched.filter((f) => f.url.includes("open-set")).length - n;
+    check("an unchanged set is not re-declared concurrently", extra === 0,
+      `${extra} redundant destructive POSTs`);
+  }
+
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);
 })();
