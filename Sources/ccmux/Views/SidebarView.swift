@@ -96,7 +96,7 @@ struct SidebarView: View {
     /// the menu that could have brought it back — the only exit was clearing the
     /// flag by hand in the daemon.
     private var closedSharedWindows: [DaemonWindow] {
-        remoteService.sharedWindows.filter { !$0.openHere }
+        remoteService.sharedWindows.filter { !$0.openHere }  // decodes to `open` on an older daemon
     }
 
     /// "patric" — whose session an ungrouped AVAILABLE row is. Empty when the

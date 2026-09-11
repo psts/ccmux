@@ -450,7 +450,13 @@ struct DaemonWindow: Codable, Identifiable {
         workspaceIds = try c.decodeIfPresent([String].self, forKey: .workspaceIds) ?? []
         openBy = try c.decodeIfPresent([String].self, forKey: .openBy) ?? []
         open = try c.decodeIfPresent(Bool.self, forKey: .open) ?? false
-        openHere = try c.decodeIfPresent(Bool.self, forKey: .openHere) ?? false
+        // Falls back to `open`, never to false. A daemon older than this field
+        // omits it, and `?? false` would tell a NEWER lens that it holds nothing
+        // open — every window would list under Open Window while already on
+        // screen, and clicking one builds a second window onto a shared one.
+        // The Mac app updates independently of the daemon, so that skew is the
+        // normal case during a release, not an edge.
+        openHere = try c.decodeIfPresent(Bool.self, forKey: .openHere) ?? open
     }
 }
 

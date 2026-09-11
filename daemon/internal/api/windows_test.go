@@ -520,3 +520,100 @@ func TestOpenHereReadFailureIsA503(t *testing.T) {
 		t.Fatalf("status = %d, want 503: a false openHere is worse than no answer", rec.Code)
 	}
 }
+
+// A store failure during the asserts must NOT be followed by the destructive
+// clear, and must not be answered 200. Asserting is what earns the right to
+// clear: a declaration that only half landed would delete the rest while the
+// lens is told it succeeded, and the next lens to close then sees no openers,
+// answers last=true, and force-archives sessions that are on screen.
+func TestOpenSetFailsClosedOnAStoreError(t *testing.T) {
+	// A real window, so the id gets PAST the unknown-window check and reaches
+	// the store write. An unknown id is deliberately skippable — it is the
+	// caller's stale list, not a daemon failure — so using one here would pass
+	// for the wrong reason.
+	seed := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, &model.Workspace{ID: "w1"})
+	if rec := putGroupReq(t, seed, "w1", "ALPHA"); rec.Code != http.StatusNoContent {
+		t.Fatal(rec.Code)
+	}
+	wid, _ := seed.mgr.WindowByName("ALPHA")
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "openset.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.CreateWindow(wid, "ALPHA"); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(manager.New(context.Background(), nil, brokenWindowWrites{Store: st}))
+	s.identity = fakeResolver{login: "patric@x.com", ok: true}
+
+	req := httptest.NewRequest("POST", "/v1/windows/open-set",
+		strings.NewReader(`{"device":"mac-1","deviceLabel":"mac","windowIds":["`+wid+`"]}`))
+	rec := httptest.NewRecorder()
+	s.syncWindowOpen(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: a half-landed declaration must not clear", rec.Code)
+	}
+	if brokenWindowWrites_cleared {
+		t.Fatal("the destructive clear ran after an assert failed")
+	}
+}
+
+// brokenWindowWrites fails the open-flag write while leaving the reads intact,
+// and records whether the clear was reached.
+var brokenWindowWrites_cleared bool
+
+type brokenWindowWrites struct{ store.Store }
+
+func (brokenWindowWrites) SetWindowOpen(store.WindowOpenFlag, bool) error {
+	return errors.New("database is locked")
+}
+
+func (brokenWindowWrites) ClearStaleWindowOpens(string, string, []string) error {
+	brokenWindowWrites_cleared = true
+	return nil
+}
+
+// The per-device close, driven through the HTTP handler the lenses actually
+// call. Every other test posts with no query string, which exercises only the
+// legacy wildcard branch — so the central fix of this whole change, that one
+// lens's close cannot clear another's row, had no coverage at the layer where
+// the param is read.
+func TestCloseWithDeviceLeavesOtherDevicesOpen(t *testing.T) {
+	ws := &model.Workspace{ID: "w1"}
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
+	if rec := putGroupReq(t, s, "w1", "ALPHA"); rec.Code != http.StatusNoContent {
+		t.Fatal(rec.Code)
+	}
+	wid, _ := s.mgr.WindowByName("ALPHA")
+
+	post := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, nil)
+		req.SetPathValue("id", wid)
+		rec := httptest.NewRecorder()
+		s.setWindowOpen(strings.Contains(path, "/open"))(rec, req)
+		return rec
+	}
+	for _, dev := range []string{"mac-1", "web-1"} {
+		if rec := post("/v1/windows/" + wid + "/open?device=" + dev + "&deviceLabel=" + dev); rec.Code != http.StatusOK {
+			t.Fatalf("open on %s = %d: %s", dev, rec.Code, rec.Body.String())
+		}
+	}
+	rec := post("/v1/windows/" + wid + "/close?device=web-1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("close = %d: %s", rec.Code, rec.Body.String())
+	}
+	// The Mac still holds it, so this was NOT the last opener. Answering
+	// last:true here is what makes a lens force-archive live sessions.
+	if strings.Contains(rec.Body.String(), `"last":true`) {
+		t.Fatalf("close answered %s — the other device's row was cleared too", rec.Body.String())
+	}
+	mine, err := s.mgr.DeviceOpenWindows("patric@x.com", "mac-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mine[wid] {
+		t.Fatal("the browser's close cleared the Mac's row")
+	}
+}

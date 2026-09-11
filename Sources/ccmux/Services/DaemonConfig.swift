@@ -75,8 +75,9 @@ enum DaemonConfig {
         return fresh
     }
 
-    /// Human-readable name for this lens, for someone looking at which device
-    /// is holding a window open. Never matched on.
+    /// Human-readable name for this lens. Stored on the flag row for someone
+    /// inspecting the registry directly with sqlite3 — no route returns it and
+    /// no lens shows it. Never matched on.
     static var deviceLabel: String {
         let host = ProcessInfo.processInfo.hostName
         return host.isEmpty ? "Mac" : host

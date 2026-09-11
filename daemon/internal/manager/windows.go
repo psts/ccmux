@@ -279,16 +279,15 @@ func (m *Manager) SeedWindowMembership(wsID, windowName string) error {
 	return m.AssignWorkspace(wsID, windowName)
 }
 
-// openFlagTTL is how long one lens's open flag stands without being
+// The TTL lives in the store (store.OpenFlagTTL): the migration stamps rows
+// relative to it. It is how long one lens's open flag stands without being
 // re-asserted. It is a backstop, not the main repair: a lens that comes back
 // clears its OWN leftover rows at launch (ClearStaleWindowOpens), so this only
 // decides how long a machine that never returns keeps a window open — blocking
 // the archive-on-last-close rule and the window's own pruning. A month is
 // deliberately generous: expiry is not destructive on its own, it only changes
 // whether the NEXT close counts as the last one.
-const openFlagTTL = 30 * 24 * time.Hour
-
-func staleBefore() int64 { return time.Now().Add(-openFlagTTL).UnixMilli() }
+func staleBefore() int64 { return time.Now().Add(-store.OpenFlagTTL).UnixMilli() }
 
 // DeviceOpenWindows returns the window ids this DEVICE has open, so a lens can
 // reason about its own rows. openBy reports logins, which cannot answer it: two

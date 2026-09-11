@@ -195,16 +195,34 @@ func (s *Server) syncWindowOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	login := s.resolveIdentity(r).Login
 	now := time.Now().UnixMilli()
+	// An id the daemon has never heard of is the CALLER's problem and is safe to
+	// skip: a lens whose list still holds a window pruned elsewhere is routine.
+	// A store failure is not safe to skip. Asserting is what earns the right to
+	// clear, so if any assert genuinely failed the clear must not run at all —
+	// otherwise a declaration that only half landed deletes the rest, and the
+	// lens is told it succeeded. The next lens to close then sees no openers,
+	// answers last=true, and force-archives sessions that are on screen.
+	var unwritten int
 	for _, id := range req.WindowIDs {
-		if _, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
+		_, _, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
 			Login: login, WindowID: id, Device: req.Device, Label: req.Label, Seen: now,
-		}, true); err != nil {
-			// One bad id must not abandon the rest of the set, and it must not
-			// be fatal: the clear below is the half that repairs state.
-			log.Printf("windows: open-set: %s: %v", id, err)
+		}, true)
+		if err == nil {
+			continue
+		}
+		log.Printf("windows: open-set: %s: %v", id, err)
+		if !errors.Is(err, manager.ErrUnknownWindow) {
+			unwritten++
 		}
 	}
+	if unwritten > 0 {
+		writeError(w, http.StatusServiceUnavailable, "window state unwritable — retry")
+		return
+	}
 	if err := s.mgr.ClearOwnStaleOpens(login, req.Device, req.WindowIDs); err != nil {
+		// Logged as well as answered, the way listWindows does: the wire string
+		// is generic and this is the only record of which store call failed.
+		log.Printf("windows: open-set: clearing %s's stale rows: %v", req.Device, err)
 		writeError(w, http.StatusServiceUnavailable, "window state unwritable — retry")
 		return
 	}
@@ -214,9 +232,11 @@ func (s *Server) syncWindowOpen(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setWindowOpen(open bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		login := s.resolveIdentity(r).Login
-		// Device and label come from the lens. A lens that sends neither
-		// behaves exactly as before: one row per login, and a close clears
-		// every row for that login and window.
+		// Device and label come from the lens. A lens that sends neither keeps
+		// the old row scoping — one row per login, and a close clears every row
+		// for that login and window — but not the old lifetime: every open now
+		// stamps last_seen, and such a lens has no way to re-assert, so a window
+		// it leaves open ages out after the TTL.
 		last, members, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
 			Login:    login,
 			WindowID: r.PathValue("id"),

@@ -234,7 +234,7 @@ func Open(path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate panes.harness: %w", err)
 	}
-	if err := rebuildingMigrations(db); err != nil {
+	if err := erroringMigrations(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -254,10 +254,12 @@ func Open(path string) (*SQLite, error) {
 	return &SQLite{db: db}, nil
 }
 
-// rebuildingMigrations groups the migrations that can FAIL, as against the
-// ADD COLUMN ones above whose errors are deliberately ignored. Grouped so Open
-// has one error path for all of them rather than one apiece.
-func rebuildingMigrations(db *sql.DB) error {
+// erroringMigrations groups the migrations that RETURN an error, as against the
+// best-effort `_, _ = db.Exec` ADD COLUMNs above. Several ALTERs above are
+// strict too and abort Open on their own; the difference here is only that
+// these report through a return value, so Open gets one error path for both
+// rather than one apiece.
+func erroringMigrations(db *sql.DB) error {
 	if err := migrateAgentColumns(db); err != nil {
 		return err
 	}
@@ -275,33 +277,38 @@ func rebuildingMigrations(db *sql.DB) error {
 // and are stamped with NOW, so they behave exactly as before for a full TTL
 // and then drain on their own as lenses re-assert with real device ids.
 func migrateWindowOpenDevices(db *sql.DB) error {
-	var has bool
-	rows, err := db.Query(`PRAGMA table_info(window_open)`)
-	if err != nil {
-		return fmt.Errorf("inspect window_open: %w", err)
-	}
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt any
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			rows.Close()
-			return fmt.Errorf("inspect window_open: %w", err)
-		}
-		if name == "device" {
-			has = true
-		}
-	}
-	rows.Close()
-	if has {
-		return nil
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("migrate window_open: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// The guard runs INSIDE the transaction. Read outside it, two daemons
+	// opening the same file both see no device column, and the second rebuilds
+	// the table the first just migrated — collapsing every real device id back
+	// to ''. The port bind that acts as the single-instance lock happens ~150
+	// lines later in main, so nothing else serialises this. Taking the write
+	// lock first makes the check and the act one step.
+	//
+	// COUNT rather than scanning PRAGMA rows: a row-iteration error read as
+	// "column absent" would fall straight into the destructive rebuild, and
+	// Scan-based loops report that only via rows.Err(), which is easy to omit.
+	var have int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('window_open') WHERE name='device'`).Scan(&have); err != nil {
+		return fmt.Errorf("inspect window_open: %w", err)
+	}
+	if have > 0 {
+		return nil
+	}
+
+	// Pre-upgrade rows are copied, not dropped, so nobody's windows change on
+	// upgrade. They carry device='' because nothing knows which lens set them,
+	// and they are stamped to expire within a day rather than a full TTL: no
+	// lens can name them, so until they age out (or a close sweeps them, see
+	// SetWindowOpen) they keep `last` from ever coming back true, which is
+	// archive-on-last-close silently switched off.
+	expiring := time.Now().Add(-OpenFlagTTL + 24*time.Hour).UnixMilli()
 	stmts := []string{
 		`CREATE TABLE window_open_v2 (
   login TEXT, window_id TEXT, device TEXT DEFAULT '', device_label TEXT DEFAULT '',
@@ -309,7 +316,7 @@ func migrateWindowOpenDevices(db *sql.DB) error {
   PRIMARY KEY (login, window_id, device)
 )`,
 		`INSERT INTO window_open_v2 (login, window_id, device, device_label, last_seen)
-  SELECT login, window_id, '', 'before upgrade', ` + strconv.FormatInt(time.Now().UnixMilli(), 10) + ` FROM window_open`,
+  SELECT login, window_id, '', 'before upgrade', ` + strconv.FormatInt(expiring, 10) + ` FROM window_open`,
 		`DROP TABLE window_open`,
 		`ALTER TABLE window_open_v2 RENAME TO window_open`,
 	}
@@ -591,6 +598,11 @@ func (s *SQLite) WindowMembers() (map[string]string, error) {
 	return s.twoColumnMap(`SELECT ws_id, window_id FROM window_members`)
 }
 
+// OpenFlagTTL is how long one lens's window open flag stands without being
+// re-asserted. It lives here rather than in the manager because the migration
+// below has to stamp rows relative to it, and store cannot import manager.
+const OpenFlagTTL = 30 * 24 * time.Hour
+
 // WindowOpenFlag is one lens saying it has a window open. Device is the KEY:
 // two lenses under one login (a Mac and a browser) each hold their own row, so
 // one closing cannot clear the other's — that shared row was the whole bug.
@@ -614,7 +626,16 @@ func (s *SQLite) SetWindowOpen(f WindowOpenFlag, open bool) error {
 			_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=?`, f.Login, f.WindowID)
 			return err
 		}
-		_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=? AND device=?`,
+		// Also clears this login's pre-upgrade row (device=''). Those are
+		// unattributed remnants of the migration that no lens can name, and
+		// nothing else can remove them — ClearStaleWindowOpens refuses an empty
+		// device and the API rejects one. Left alone they keep WindowOpens
+		// reporting the login as an opener, so `last` never comes back true and
+		// archive-on-last-close stays dead for the whole TTL. Clearing them on a
+		// close is exactly the pre-upgrade behaviour: then, any one lens's close
+		// cleared the single shared row.
+		_, err := s.db.Exec(
+			`DELETE FROM window_open WHERE login=? AND window_id=? AND (device=? OR device='')`,
 			f.Login, f.WindowID, f.Device)
 		return err
 	}

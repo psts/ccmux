@@ -33,9 +33,9 @@ const esc = (s) => String(s).replace(/[<>&"']/g,
 // window open flags, so a browser closing a window cannot clear the Mac's. The
 // label is only for a human reading a stale row and is never matched on.
 //
-// MODULE scope on purpose: fetchWorkspaces, openWindow and closeWindow all use
-// it. Declared inside getUser() it was a ReferenceError from each of them,
-// swallowed by fetchWorkspaces's catch, which left the whole sidebar empty.
+// MODULE scope on purpose: several functions below use it. Declared inside
+// getUser() it was a ReferenceError from each of them, swallowed by
+// fetchWorkspaces's catch, which left the whole sidebar empty.
 const deviceId = (() => {
   let dev = localStorage.getItem("ccmux-device");
   if (!dev) {
@@ -49,52 +49,20 @@ const deviceId = (() => {
 // holding a window open. Recomputed rather than stored: the name can change.
 const deviceLabel = () => (localStorage.getItem("ccmux-user") || "anon") + " (web)";
 
-// Declare the windows this lens has open; the daemon makes THIS DEVICE's rows
-// match. Same rule as the Mac's syncOpenFlags — without an inverse, a flag that
-// was never cleanly closed could never be cleared.
+// This lens does NOT declare an open-set, and that is deliberate.
 //
-// The set is the daemon's own openHere for this device, read moments ago, NOT a
-// remembered list. A browser has no equivalent of the Mac's on-screen window
-// controllers, and a persisted list is not evidence of anything: it never
-// decays, so re-asserting it on load refreshed last_seen forever and the TTL —
-// the one thing that clears a lens that never comes back — could never fire.
-// A live tab re-asserting what it is actually showing is real evidence; a dead
-// tab sends nothing and ages out, which is exactly what should happen.
-let lastDeclared = "";
-let lastDeclaredAt = 0;
-async function declareOpenWindows() {
-  const ids = (state.windows || []).filter((w) => w.openHere).map((w) => w.id).sort();
-  const key = ids.join(",");
-  // Re-send on change, and at least twice a day so a tab left open for a month
-  // does not age out of its own flags.
-  if (key === lastDeclared && Date.now() - lastDeclaredAt < 12 * 3600 * 1000) return;
-  // Claim the key BEFORE awaiting. Recording it after meant two declares
-  // issued from two reads both passed the test while the first was still in
-  // flight, and the daemon took two identical destructive POSTs — observed in
-  // a browser, invisible to a test that awaits each call in turn.
-  const prevKey = lastDeclared;
-  const prevAt = lastDeclaredAt;
-  lastDeclared = key;
-  lastDeclaredAt = Date.now();
-  const giveBack = () => { lastDeclared = prevKey; lastDeclaredAt = prevAt; };
-  try {
-    const r = await fetch("/v1/windows/open-set", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ device: deviceId, deviceLabel: deviceLabel(), windowIds: ids }),
-    });
-    if (!r.ok) {
-      // Released, not kept: the daemon asks the caller to retry on a 503, and
-      // the next poll is that retry. Keeping the claim would disable the
-      // repair path for the life of the page after one blip.
-      giveBack();
-      console.error("open-set failed:", r.status, await r.text());
-    }
-  } catch (e) {
-    giveBack();
-    console.error("open-set failed:", e);
-  }
-}
+// open-set is the repair path: a lens states the whole set it has open and the
+// daemon drops that device's rows for anything omitted. It only repairs when
+// the lens has evidence the daemon lacks. The Mac has that — its on-screen
+// window controllers. A browser has none: what it renders as open IS the
+// daemon's `openHere`, so declaring it back can never omit a row, and the
+// periodic re-send would refresh last_seen forever, which disables the very
+// TTL that is a stranded tab's only cleanup.
+//
+// So a browser's flags change only when the user acts (openWindow/closeWindow,
+// both device-scoped), and a tab that disappears is cleaned up by the TTL. If
+// you are about to add a declaration here, give the lens real evidence first —
+// otherwise it is an echo that makes stranded rows permanent.
 
 // A display name for presence; asked once and remembered. Tailscale identity
 // will replace this on the tailnet.
@@ -125,11 +93,12 @@ function bytesToB64(u8) {
 // firehose, and after every mutation, with no in-flight guard, so two reads
 // overlap routinely and can resolve OUT OF ORDER. That was cosmetic while a
 // late answer only overwrote state.windows; it stopped being cosmetic when
-// every successful read began driving an authoritative open-set, because the
-// daemon deletes every row for this device that the declaration omits. An
-// older snapshot landing last would delete the flag the user just created —
-// and it does not self-correct, since afterwards every poll agrees the window
-// is closed while its sessions keep running.
+// callers await a read and then act on it: createWorkspace and reviveWorkspace
+// attach immediately afterwards and resolve the owning host out of
+// state.workspaces, while creating a workspace publishes workspace-added, whose
+// firehose handler issues a second read. Without ordering, the awaited read is
+// superseded and attach runs against the pre-create list, dialling the hub for
+// a workspace only the owning host serves.
 // The watermark is what has APPLIED, not what has been ISSUED. Gating on the
 // newest issued read starves: fetchWorkspaces fires from the timer and from
 // every firehose frame, so whenever latency exceeds the gap between triggers
@@ -162,13 +131,9 @@ async function fetchWorkspaces() {
     if (seq <= windowsApplied) return; // something newer already landed
     windowsApplied = seq;
     state.workspaces = workspaces;
-    // Declare only from a read that SUCCEEDED and is still the newest. On a
-    // failure we know nothing new, and an empty declaration means "I have none
-    // open" — which the daemon acts on by clearing this device's rows.
-    if (windows) {
-      state.windows = windows;
-      declareOpenWindows();
-    }
+    // Keep the previous window list on a failed read rather than blanking it:
+    // every window would render as closed and feed wrong close decisions.
+    if (windows) state.windows = windows;
   } catch (_) {
     state.workspaces = [];
   }
@@ -247,13 +212,15 @@ function renderList() {
   const grouped = groupedWorkspaces();
   const winByName = new Map(state.windows.map((w) => [w.name.toLowerCase(), w]));
   // openHere, not open: a window another of your lenses holds is not open HERE,
-  // and hiding it left it unreachable from this lens entirely.
-  const closed = state.windows.filter((w) => !w.openHere);
+  // and hiding it left it unreachable from this lens entirely. ?? open so an
+  // older daemon, which omits the field, keeps the previous per-login behavior
+  // instead of rendering every open window as closed and dropping its rows.
+  const closed = state.windows.filter((w) => !(w.openHere ?? w.open));
 
   for (const [group, list] of grouped) {
     if (group) {
       const win = winByName.get(group.toLowerCase());
-      if (win && !win.openHere) continue; // rendered below as a closed-window row
+      if (win && !(win.openHere ?? win.open)) continue; // rendered below as a closed-window row
       const h = document.createElement("li");
       h.className = "group-hdr";
       h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +

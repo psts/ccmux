@@ -1172,7 +1172,12 @@ final class RemoteSessionService: ObservableObject {
     ///
     /// Scoped to this device, so declaring the set can never close a window
     /// another lens is showing.
-    func syncOpenWindows(_ windowIds: [String]) async {
+    /// Returns false when the declaration did not land, so the caller can put
+    /// its dedupe key back. Swallowing that meant one failed POST stopped the
+    /// repair path for 12 hours, even though syncOpenFlags runs again seconds
+    /// later — the web lens rolls back for exactly this reason.
+    @discardableResult
+    func syncOpenWindows(_ windowIds: [String]) async -> Bool {
         struct Body: Encodable {
             let device: String
             let deviceLabel: String
@@ -1180,10 +1185,15 @@ final class RemoteSessionService: ObservableObject {
         }
         guard let data = try? JSONEncoder().encode(
             Body(device: DaemonConfig.deviceId, deviceLabel: DaemonConfig.deviceLabel, windowIds: windowIds))
-        else { return }
+        else {
+            NSLog("[ccmux] windows: open-set body could not be encoded; nothing declared")
+            return false
+        }
         if !(await send("POST", path: "/v1/windows/open-set", body: data, expect: 200)) {
             NSLog("[ccmux] windows: open-set failed; this lens's flags stay as the daemon last saw them")
+            return false
         }
+        return true
     }
 
     func closeSharedWindow(named name: String) async {
@@ -1362,9 +1372,11 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
-    /// Percent-encode a QUERY value. urlQueryAllowed leaves "&" and "=" intact,
-    /// which would let a hostname containing either split the query into extra
-    /// parameters, so both are removed.
+    /// Percent-encode a QUERY value. urlQueryAllowed leaves "&", "=" and "+"
+    /// intact. The first two would let a hostname containing one split the
+    /// query into extra parameters; "+" is different — Go's url.ParseQuery
+    /// decodes it as a space, so a host named "mac+work" would arrive as
+    /// "mac work". All three are removed.
     private func urlEscaped(_ value: String) -> String {
         let allowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+"))
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value

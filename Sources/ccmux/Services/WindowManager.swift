@@ -798,16 +798,42 @@ class WindowManager {
             NSLog("[ccmux] windows: shared list not loaded yet; skipping open-set")
             return
         }
-        let ids = windowControllers.compactMap { wc -> String? in
+        // An on-screen window that matches no shared window must STOP the
+        // declaration, not be dropped from it. Under the old add-only sync a
+        // miss meant "no flag added", which was harmless; open-set is
+        // authoritative, so the same miss now RETRACTS the flag for a window
+        // with live sessions — and a name that drifted is the very cause the
+        // close path already fails on.
+        var unmatched: [String] = []
+        var set = Set<String>()
+        for wc in windowControllers {
             let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
-            return service.sharedWindows.first(where: { Self.sameWindowName($0.name, name) })?.id
+            guard let id = service.sharedWindows.first(where: { Self.sameWindowName($0.name, name) })?.id else {
+                unmatched.append(name)
+                continue
+            }
+            set.insert(id)
         }
-        let set = Set(ids)
+        guard unmatched.isEmpty else {
+            NSLog("[ccmux] windows: %@ match no shared window; skipping open-set rather than retracting their flags",
+                  unmatched.joined(separator: ", "))
+            return
+        }
         let stale = Date().timeIntervalSince(lastOpenSetSentAt) > 12 * 3600
         guard set != lastOpenSetSent || stale else { return }
+        // Claimed before the call and put back if it fails, so one blip does not
+        // silence the repair path until the set next changes. Same rule as the
+        // web lens's giveBack.
+        let prevSet = lastOpenSetSent
+        let prevAt = lastOpenSetSentAt
         lastOpenSetSent = set
         lastOpenSetSentAt = Date()
-        Task { @MainActor in await service.syncOpenWindows(Array(set)) }
+        Task { @MainActor in
+            if await service.syncOpenWindows(Array(set)) == false, self.lastOpenSetSent == set {
+                self.lastOpenSetSent = prevSet
+                self.lastOpenSetSentAt = prevAt
+            }
+        }
     }
 
     /// What syncOpenFlags last told the daemon, so an unchanged set is not

@@ -7,14 +7,17 @@
 // own ReferenceError and blanked the list. Measured: `node --check` passes on
 // that exact mutation; this file fails on it.
 //
-// It is a SMOKE test, not a DOM: the stubs below are the minimum to get app.js
-// evaluated and one code path driven. If app.js starts touching something new at
+// It is a SMOKE test, not a DOM: the stubs are the minimum to get app.js
+// evaluated and a few paths driven. If app.js starts touching something new at
 // load, add a stub rather than deleting the test — the whole value is that it
 // evaluates the real file.
 "use strict";
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+
+// Let pending promises settle. A macrotask, so queued microtasks drain first.
+const tick = () => new Promise((r) => setImmediate(r));
 
 let failures = 0;
 function check(what, cond, detail) {
@@ -31,12 +34,12 @@ const el = () => new Proxy(function () {}, {
   apply: () => el(),
 });
 
-// gate lets a test hold a /v1/windows response open, so two reads can be made
-// to resolve OUT OF ORDER — the interleaving that turns a destructive
-// declaration into a deleted flag.
-function run({ windowsOk, openHere = true, gate = null }) {
+// windowsReply lets a case control each /v1/windows answer in turn, and gate
+// lets it hold one open so two reads can resolve OUT OF ORDER.
+function run({ windowsOk = true, windowsReply = null, gate = null } = {}) {
   const fetched = [];
   const storage = {};
+  let reads = 0;
   const ctx = {
     console: { log() {}, warn() {}, error() {}, info() {} },
     document: new Proxy({}, { get: () => el() }),
@@ -61,13 +64,13 @@ function run({ windowsOk, openHere = true, gate = null }) {
       if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => [] };
       if (u.startsWith("/v1/windows?")) {
         if (!windowsOk) return { ok: false, status: 503, text: async () => "unreadable" };
-        const hold = gate ? gate() : null;
+        const n = reads++;
+        const hold = gate ? gate(n) : null;
         return { ok: true, status: 200, json: async () => {
           if (hold) await hold;
-          return [
-            { id: "win-here", name: "Here", workspaceIds: [], openBy: ["p"], open: true, openHere },
-            { id: "win-elsewhere", name: "Elsewhere", workspaceIds: [], openBy: ["p"], open: true, openHere: false },
-          ];
+          return windowsReply
+            ? windowsReply(n)
+            : [{ id: "win-here", name: "Here", workspaceIds: [], openBy: ["p"], open: true, openHere: true }];
         } };
       }
       return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
@@ -76,106 +79,103 @@ function run({ windowsOk, openHere = true, gate = null }) {
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), ctx, { filename: "app.js" });
-  return { ctx, fetched };
+  // `state` is a top-level const, so it is a lexical binding and never lands on
+  // the context object; only function declarations do. Later scripts in the same
+  // context DO see it.
+  const evalIn = (code) => vm.runInContext(code, ctx);
+  return { ctx, fetched, evalIn };
 }
 
 (async () => {
   // 1. The lens loads and its window path is reachable from module scope. This
   //    is the ReferenceError check: a mis-scoped const makes fetchWorkspaces
   //    throw into its own catch, and nothing below ever runs.
-  const ok = run({ windowsOk: true });
+  const ok = run();
   check("fetchWorkspaces is reachable", typeof ok.ctx.fetchWorkspaces === "function");
-  if (typeof ok.ctx.fetchWorkspaces === "function") {
-    await ok.ctx.fetchWorkspaces();
-    await new Promise((r) => setImmediate(r));
-    const win = ok.fetched.find((f) => f.url.startsWith("/v1/windows?"));
-    check("window list asks for this device", win && win.url.includes("device=test-device-uuid"),
-      win ? win.url : "no /v1/windows call at all");
-    const set = ok.fetched.find((f) => f.url.includes("open-set"));
-    check("declares its open set", !!set);
-    if (set) {
-      const body = JSON.parse(set.body);
-      // Only openHere windows: the per-login `open` is true for both, and
-      // declaring the other one would claim a window this lens does not have.
-      check("declares only openHere windows", JSON.stringify(body.windowIds) === '["win-here"]',
-        set.body);
-      check("carries a device", body.device === "test-device-uuid", set.body);
-      check("carries a readable label", /\(web\)$/.test(body.deviceLabel || ""), set.body);
-    }
+  await ok.ctx.fetchWorkspaces();
+  await tick();
+  const list = ok.fetched.find((f) => f.url.startsWith("/v1/windows?"));
+  check("the window list names this device", list && list.url.includes("device=test-device-uuid"),
+    list ? list.url : "no /v1/windows call at all");
+
+  // 2. This lens must NEVER declare an open-set. What it renders as open IS the
+  //    daemon's own openHere, so a declaration could omit nothing (no repair)
+  //    while its re-sends refreshed last_seen forever — disabling the TTL that
+  //    is a stranded tab's only cleanup. Read the comment in app.js before
+  //    adding one back.
+  check("no open-set declaration", !ok.fetched.some((f) => f.url.includes("open-set")),
+    "the web lens declared a set it cannot evidence");
+
+  // 3. Open and close name the device, so one lens cannot clear another's row.
+  const acted = run();
+  await acted.ctx.fetchWorkspaces();
+  await tick();
+  const win = acted.evalIn("state.windows[0]");
+  await acted.ctx.openWindow(win);
+  await tick();
+  await acted.ctx.closeWindow(win);
+  await tick();
+  for (const verb of ["open", "close"]) {
+    const call = acted.fetched.find((f) => f.method === "POST" && f.url.includes(`/${verb}?`));
+    check(`${verb} names the device`, call && call.url.includes("device=test-device-uuid"),
+      call ? call.url : `no ${verb} POST`);
   }
 
-  // 2. A failed window read declares NOTHING. open-set is authoritative, so an
-  //    empty declaration means "I have none open" and the daemon clears this
-  //    device's rows — for windows still on screen.
-  const bad = run({ windowsOk: false });
-  if (typeof bad.ctx.fetchWorkspaces === "function") {
-    await bad.ctx.fetchWorkspaces();
-    await new Promise((r) => setImmediate(r));
-    check("no declaration on an unreadable window list",
-      !bad.fetched.some((f) => f.url.includes("open-set")),
-      "posted an empty set, which clears this device's rows");
-  }
-
-  // 3. Out-of-order reads must not declare. fetchWorkspaces has no in-flight
-  //    guard and runs from a timer, the firehose and every mutation, so an
-  //    older snapshot can land last. open-set is authoritative: a stale
-  //    declaration DELETES this device's rows for anything it omits, and the
-  //    lens then agrees the window is closed while its sessions keep running.
+  // 4. Out-of-order reads: the OLDER answer must not overwrite the newer one.
+  //    fetchWorkspaces has no in-flight guard and runs from a timer, the
+  //    firehose and every mutation, so a late answer landing last leaves the
+  //    lens showing state the daemon has already moved past — and callers that
+  //    await a read and then attach act on the stale list.
   const holds = [];
-  const race = run({ windowsOk: true, gate: () => new Promise((r) => holds.push(r)) });
-  if (typeof race.ctx.fetchWorkspaces === "function") {
-    const first = race.ctx.fetchWorkspaces(); // older read, held
-    await new Promise((r) => setImmediate(r));
-    const second = race.ctx.fetchWorkspaces(); // newer read, held
-    await new Promise((r) => setImmediate(r));
-    holds.reverse().forEach((release) => release()); // newer resolves FIRST
-    await Promise.all([first, second]);
-    await new Promise((r) => setImmediate(r));
-    const sets = race.fetched.filter((f) => f.url.includes("open-set"));
-    check("a stale read does not declare", sets.length <= 1,
-      `${sets.length} declarations from overlapping reads: ${sets.map((s) => s.body).join(" | ")}`);
-  }
+  const race = run({
+    gate: () => new Promise((r) => holds.push(r)),
+    // The two reads must DIFFER, or the assertion cannot tell which landed.
+    windowsReply: (n) => [{
+      id: "win-here", name: n === 0 ? "Stale" : "Fresh", workspaceIds: [],
+      openBy: ["p"], open: true, openHere: n !== 0,
+    }],
+  });
+  const first = race.ctx.fetchWorkspaces();
+  await tick();
+  const second = race.ctx.fetchWorkspaces();
+  await tick();
+  holds.reverse().forEach((release) => release()); // newer resolves FIRST
+  await Promise.all([first, second]);
+  await tick();
+  check("a stale read does not overwrite a newer one",
+    race.evalIn("state.windows[0].name") === "Fresh",
+    `state holds ${race.evalIn("JSON.stringify(state.windows[0].name)")}`);
 
-  // 4. The mirror hazard: gating on the newest ISSUED read starves. Reads fire
-  //    from a timer and from every firehose frame, so if latency exceeds the
-  //    gap between triggers every response is superseded before it resolves and
-  //    NOTHING applies — no state, and no declaration, so this device's rows
-  //    age out while the tab is genuinely open.
+  // 5. The mirror hazard: gating on the newest ISSUED read starves. Reads fire
+  //    from a timer and from every firehose frame, so if latency exceeds the gap
+  //    between triggers, every response is superseded before it resolves and
+  //    NOTHING is ever applied — the lens silently freezes.
   const starve = [];
-  const slow = run({ windowsOk: true, gate: () => new Promise((r) => starve.push(r)) });
-  if (typeof slow.ctx.fetchWorkspaces === "function") {
-    const a = slow.ctx.fetchWorkspaces(); // older read
-    await new Promise((r) => setImmediate(r));
-    slow.ctx.fetchWorkspaces(); // newer read ISSUED but never resolved
-    await new Promise((r) => setImmediate(r));
-    starve[0](); // only the OLDER one comes back
-    await a;
-    await new Promise((r) => setImmediate(r));
-    check("an older read still applies when nothing newer has landed",
-      slow.fetched.some((f) => f.url.includes("open-set")),
-      "no declaration at all: a superseded-but-unlanded read was dropped");
-  }
+  const slow = run({
+    gate: () => new Promise((r) => starve.push(r)),
+    windowsReply: () => [{
+      id: "win-here", name: "Applied", workspaceIds: [], openBy: ["p"], open: true, openHere: true,
+    }],
+  });
+  const a = slow.ctx.fetchWorkspaces(); // older read
+  await tick();
+  slow.ctx.fetchWorkspaces();           // newer read ISSUED but never resolved
+  await tick();
+  starve[0]();                          // only the OLDER one comes back
+  await a;
+  await tick();
+  check("an older read still applies when nothing newer has landed",
+    slow.evalIn("(state.windows[0] || {}).name") === "Applied",
+    "a superseded-but-unlanded read was dropped, so state never updates");
 
-  // 5. Two declares for the SAME set must collapse to one POST. The dedupe
-  //    key has to be claimed before the await: recording it afterwards let two
-  //    declares issued from two reads both pass while the first was in flight,
-  //    and the daemon took two identical destructive POSTs. Found in a browser;
-  //    a test that awaits each call in turn cannot see it.
-  const dup = run({ windowsOk: true });
-  if (typeof dup.ctx.declareOpenWindows === "function") {
-    await dup.ctx.fetchWorkspaces();
-    await new Promise((r) => setImmediate(r));
-    const n = dup.fetched.filter((f) => f.url.includes("open-set")).length;
-    // Both fired without awaiting between them: the in-flight claim is the
-    // only thing that can collapse these.
-    dup.ctx.declareOpenWindows();
-    dup.ctx.declareOpenWindows();
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
-    const extra = dup.fetched.filter((f) => f.url.includes("open-set")).length - n;
-    check("an unchanged set is not re-declared concurrently", extra === 0,
-      `${extra} redundant destructive POSTs`);
-  }
+  // 6. A failed window read keeps the previous list rather than blanking it:
+  //    every window would render as closed and feed wrong close decisions.
+  const bad = run({ windowsOk: false });
+  await bad.ctx.fetchWorkspaces();
+  await tick();
+  check("an unreadable window list does not blank state",
+    Array.isArray(bad.evalIn("state.windows")),
+    "state.windows is not an array after a 503");
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);
