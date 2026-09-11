@@ -442,17 +442,37 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// The shared window list (GET /v1/windows). A failure keeps the last
-    /// list rather than blanking every closed-window row on a blip.
+    /// list rather than blanking every closed-window row on a blip, and is
+    /// logged on the way INTO failure only — this runs every reconcile, so
+    /// logging each miss would bury the line that explains it. Same rule as
+    /// the web lens's fetchWorkspaces.
     private func fetchSharedWindows() async -> [DaemonWindow] {
         // device= so each window reports openHere: whether THIS lens holds it.
         guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/windows?device=\(DaemonConfig.deviceId)") else { return sharedWindows }
         do {
             let (data, resp) = try await session.data(from: url)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return sharedWindows }
-            return try JSONDecoder().decode([DaemonWindow].self, from: data)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            guard code == 200 else {
+                return keepSharedWindows(after: "HTTP \(code): \(String(data: data, encoding: .utf8) ?? "")")
+            }
+            let list = try JSONDecoder().decode([DaemonWindow].self, from: data)
+            if sharedWindowsFailing { NSLog("[ccmux] windows: list read recovered") }
+            sharedWindowsFailing = false
+            return list
         } catch {
-            return sharedWindows
+            return keepSharedWindows(after: error.localizedDescription)
         }
+    }
+
+    /// Whether the last window read failed, so a persistent failure logs once.
+    private var sharedWindowsFailing = false
+
+    private func keepSharedWindows(after reason: String) -> [DaemonWindow] {
+        if !sharedWindowsFailing {
+            NSLog("[ccmux] windows: list read failed (%@); keeping the previous %d windows", reason, sharedWindows.count)
+        }
+        sharedWindowsFailing = true
+        return sharedWindows
     }
 
     /// Member hosts sorted self-first, for the New-session host picker. Empty in
