@@ -1317,6 +1317,20 @@ final class RemoteSessionService: ObservableObject {
         return try? JSONDecoder().decode(DaemonSuggestionsResponse.self, from: data)
     }
 
+    /// The cheap live half of the suggestions payload: what the workspace's
+    /// panes listen on right now. The Hostnames sheet polls this while open.
+    /// nil = the read failed (daemon down, non-200), which the sheet shows as
+    /// such rather than as "nothing listens".
+    func fetchListeners(_ appId: UUID) async -> [DaemonListener]? {
+        struct Payload: Decodable { let listening: [DaemonListener]? }
+        guard let daemonId = daemonIds[appId],
+              let url = URL(string: "\(DaemonConfig.baseURL)/v1/workspaces/\(daemonId)/listeners"),
+              let (data, resp) = try? await session.data(from: url),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        return payload.listening ?? []
+    }
+
     /// Start/stop the workspace's dev-server pane (the ▶/■ on its hostname
     /// row). The daemon spawns/kills a tmux pane running the resolved command —
     /// the pane itself is the log view. Returns the daemon's error text or nil.

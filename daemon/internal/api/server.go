@@ -359,6 +359,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/windows/{id}", s.renameWindow)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.hostnamesRoute(s.putHostnames))
 	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.scoped(s.portSuggestions))
+	mux.HandleFunc("GET /v1/workspaces/{id}/listeners", s.scoped(s.listeners))
 	mux.HandleFunc("POST /v1/workspaces/{id}/dev-server", s.scoped(s.devServer))
 	mux.HandleFunc("GET /v1/workspaces/{id}/files", s.scoped(s.getFile))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/files", s.scoped(s.putFile))
@@ -824,26 +825,40 @@ func (s *Server) devServer(w http.ResponseWriter, r *http.Request) {
 // files (never executed), and what the workspace's panes are listening on
 // right now — the rows a mapping can be made from with one click.
 func (s *Server) portSuggestions(w http.ResponseWriter, r *http.Request) {
-	suggestions, err := s.mgr.PortSuggestions(r.PathValue("id"))
+	id := r.PathValue("id")
+	suggestions, err := s.mgr.PortSuggestions(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	var listening []model.Listener
-	if ws := s.mgr.Workspace(r.PathValue("id")); ws != nil {
-		listening = ws.Listeners
-	}
-	command, source, _ := s.mgr.ResolveDevCommand(r.PathValue("id"))
+	command, source, _ := s.mgr.ResolveDevCommand(id)
 	// detectedCommand is detection alone, override ignored — the sheet flags a
 	// stored command whose repo-detected counterpart has since changed.
-	detected, _ := s.mgr.DetectedDevCommand(r.PathValue("id"))
+	detected, _ := s.mgr.DetectedDevCommand(id)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"suggestions":      suggestions,
 		"devCommand":       command,
 		"devCommandSource": source,
 		"detectedCommand":  detected,
-		"listening":        listening,
+		"listening":        s.mgr.Listeners(id),
 	})
+}
+
+// listeners is the cheap live half of portSuggestions: what the workspace's
+// panes hold right now, and nothing else. The Hostnames sheet polls this
+// while open — polling port-suggestions would re-parse the repo's config
+// files every tick for data that only changes on a scan.
+func (s *Server) listeners(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.mgr.Workspace(id) == nil {
+		writeError(w, http.StatusNotFound, "unknown workspace "+id)
+		return
+	}
+	ls := s.mgr.Listeners(id)
+	if ls == nil {
+		ls = []model.Listener{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"listening": ls})
 }
 
 type createWorkspaceReq struct {

@@ -88,9 +88,17 @@ re-adopts them without re-registration.
 - **URL resolves but 502 "isn't answering"**: the mapping is fine, nothing
   listens on the port on the daemon host — open Hostnames… and look at
   "Listening now": it lists what the workspace's panes actually hold. If the
-  server is there on another port, Map it. If the row says "held by X",
-  another workspace's pane has the port (same repo open twice, one pinned
-  port): change one of them.
+  server is there on another port, Map it. If the hostname's context-menu
+  entry (or the sidebar dot's tooltip on the Mac) says "held by X", another
+  workspace's pane has the port (same repo open twice, one pinned port): the
+  daemon refuses that route with a 503 rather than serve the other worktree's
+  app. Change one of them.
+- **Upgrading from a release before listener discovery**: the daemon deploys
+  on push, the Mac app only on the release tag — rebuild the Mac app promptly.
+  The old sheet's "leave the port blank" save is rejected by the new daemon
+  (port 0 is no longer "allocate one"). Panes opened before the upgrade may
+  carry a COMPOSE_FILE pointing at an override the daemon deleted at startup;
+  restart such a pane before `docker compose up`.
 - **Name resolves to nothing off-tailnet**: expected — that's the design.
 - **Who serves what**: `log stream`-free check —
   `curl -s http://127.0.0.1:7900/v1/settings | jq '{devDomain, devCertStatus}'`

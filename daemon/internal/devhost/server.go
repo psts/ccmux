@@ -170,9 +170,9 @@ func (s *Server) StartProbe(interval time.Duration) {
 }
 
 // StartDNSHeal re-runs the reconcile so the DNS owner rewrites its wildcard A
-// record every `every`. Refresh is otherwise only called on a settings change,
-// which is why a record another daemon stomped used to stay stomped until
-// someone restarted the owner. Everything Refresh touches is keyed and
+// record every `every`. Refresh is otherwise only called on a settings,
+// hostname or listener change, which is why a record another daemon stomped
+// used to stay stomped until someone restarted the owner. Everything Refresh touches is keyed and
 // idempotent, so a quiet cycle does no work.
 func (s *Server) StartDNSHeal(every time.Duration) {
 	s.mu.Lock()

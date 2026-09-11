@@ -133,10 +133,13 @@ type Workspace struct {
 //     the host answers on it (Docker's published ports are root-owned and
 //     cannot be tied to a pane, so a plain answer counts).
 //   - LivePort: where the name actually routes when it differs from Port —
-//     the workspace's only unmapped listener when Port itself is not held
-//     (vite's "5173 busy, using 5174"). 0 = routes to Port.
+//     the workspace's single unmapped listener, only when it sits just above
+//     Port (vite's "5173 busy, using 5174"; see manager.resolveRoutes).
+//     0 = routes to Port.
 //   - HeldBy: the name of ANOTHER workspace whose pane holds Port while this
-//     one does not — the same repo open twice, both pinned to one port.
+//     one does not — the same repo open twice, both pinned to one port. A
+//     held name routes nowhere (503) and is never Listening: serving the
+//     other workspace's app under this name would be worse than an error.
 type Hostname struct {
 	Name      string `json:"name"`
 	Port      int    `json:"port"`
@@ -155,18 +158,28 @@ type Listener struct {
 	PaneID  string `json:"paneId"`
 }
 
-// Routes the name resolves to: LivePort when a listener moved, else Port.
+// RoutePort is where the name resolves: 0 (nowhere) when another workspace
+// holds the port, LivePort when the server moved, else Port.
 func (h Hostname) RoutePort() int {
+	if h.HeldBy != "" {
+		return 0
+	}
 	if h.LivePort != 0 {
 		return h.LivePort
 	}
 	return h.Port
 }
 
-// Ports the daemon used to allocate for hostnames (v0.1.5x, before listener
-// discovery). A persisted row inside this range with a targetPort is one of
-// those allocations and loads as its target — the port the app binds itself.
+// legacyAllocBase..legacyAllocMax is the range the daemon allocated hostname
+// ports from before listener discovery. A persisted row inside it with a
+// targetPort is one of those allocations and loads as its target — the port
+// the app binds itself.
 const legacyAllocBase, legacyAllocMax = 21000, 21999
+
+// IsLegacyAllocatedPort reports whether port is one the daemon allocated
+// itself under the old model. Nothing binds such a port any more, so a row
+// still pointing at one is dead until the user maps the app's real port.
+func IsLegacyAllocatedPort(port int) bool { return port >= legacyAllocBase && port <= legacyAllocMax }
 
 // MarshalHostnames serializes mappings for the registry, keeping only the
 // persisted fields ("" for none — the column default). UnmarshalHostnames is

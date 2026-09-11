@@ -506,10 +506,7 @@ function openWsMenu(ws, x, y) {
       if (paneRunning) add("Stop Dev Server", () => setDevServer(ws.id, false));
     }
     for (const h of hostnames.filter((h) => h.url)) {
-      // "→ 5174": the server moved and the name follows it. "held by X":
-      // another workspace's pane has this port, so this name cannot answer.
-      const where = h.livePort ? ` → ${h.livePort}` : h.heldBy ? ` (held by ${h.heldBy})` : "";
-      add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}${where}`, () => window.open(h.url, "_blank"));
+      add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}${hostnameWhere(h)}`, () => window.open(h.url, "_blank"));
     }
     sep();
     add("Close Session", () => closeSession(ws.id));
@@ -600,6 +597,16 @@ async function setDevServer(id, start) {
   fetchWorkspaces();
 }
 
+// hostnameWhere: suffix after "name : port" for a name that routes elsewhere
+// or cannot answer. "→ 5174": the server moved and the name follows it.
+// "held by X": another workspace's pane has this port, so the daemon refuses
+// the route. Same text as the Mac lens's hostnameWhere.
+function hostnameWhere(h) {
+  if (h.livePort) return ` → ${h.livePort}`;
+  if (h.heldBy) return ` (held by ${h.heldBy})`;
+  return "";
+}
+
 // Hostnames sheet. Rows are {name, port}: the port is whatever the app binds
 // on its own (its script's -p, its config, the flag the user types). The
 // daemon watches what the workspace's panes listen on and routes each name
@@ -617,24 +624,43 @@ async function openHostnamesModal(ws) {
   $("hostnames-error").classList.add("hidden");
   $("hostnames-cmd-hint").classList.add("hidden");
   $("hostnames-cmd-caption").classList.add("hidden");
-  const rows = $("hostnames-rows");
-  rows.innerHTML = "";
+  $("hostnames-rows").innerHTML = "";
+  let s = null;
+  try { s = await fetchPortSuggestions(ws.id); } catch (e) {
+    console.warn("hostnames: port-suggestions read failed", e);
+  }
+  prefillHostnameRows(ws, s);
+  applyDevCommandPrefill(ws, s);
+  // After the rows: "mapped" vs "map" is judged against them. A failed read
+  // says so rather than claiming nothing listens.
+  renderHostnamesLive(s ? s.listening || [] : null, ws.name);
+  $("hostnames-modal").classList.remove("hidden");
+  startHostnamesLivePoll(ws);
+}
+
+// prefillHostnameRows: stored mappings, else the repo-detected ones, else one
+// empty editor row.
+function prefillHostnameRows(ws, s) {
   let mappings = (ws.hostnames || []).map((h) => ({ name: h.name, port: h.port }));
+  if (!mappings.length && s) {
+    mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: x.port }));
+  }
+  if (!mappings.length) mappings = [{ name: "", port: "" }];
+  for (const m of mappings) $("hostnames-rows").appendChild(hostnameRow(m.name, m.port));
+}
+
+// applyDevCommandPrefill: the stored override, else the detected command as
+// real text with a caption saying where it came from. A stored override
+// whose repo-detected counterpart moved on gets a one-click way back.
+function applyDevCommandPrefill(ws, s) {
   let cmd = ws.devCommand || "";
-  let live = [];
-  try {
-    const s = await fetchPortSuggestions(ws.id);
-    if (!mappings.length) {
-      mappings = (s.suggestions || []).map((x) => ({ name: x.name, port: x.port }));
-    }
+  if (s) {
     hostnamesDetectedCmd = s.detectedCommand || "";
     if (!cmd && s.devCommand) {
       cmd = s.devCommand;
       $("hostnames-cmd-caption").textContent = `detected from ${s.devCommandSource || "the repo"} — edit to override`;
       $("hostnames-cmd-caption").classList.remove("hidden");
     }
-    // A stored override whose repo-detected counterpart moved on gets a
-    // one-click way back to detection.
     if (ws.devCommand && s.detectedCommand && s.detectedCommand !== ws.devCommand) {
       $("hostnames-cmd-detected").textContent = `repo now detects: ${s.detectedCommand}`;
       $("hostnames-cmd-use").onclick = () => {
@@ -643,39 +669,49 @@ async function openHostnamesModal(ws) {
       };
       $("hostnames-cmd-hint").classList.remove("hidden");
     }
-    live = s.listening || [];
-  } catch (_) { /* suggestions are best-effort */ }
-  if (!mappings.length) mappings = [{ name: "", port: "" }];
-  for (const m of mappings) rows.appendChild(hostnameRow(m.name, m.port));
-  // After the rows: "mapped" vs "map" is judged against them.
-  renderHostnamesLive(live, ws.name);
+  }
   $("hostnames-cmd").value = cmd;
-  $("hostnames-modal").classList.remove("hidden");
-  // Keep "Listening now" live while the sheet is open — a server started in
-  // a pane shows up here within a scan tick.
+}
+
+// startHostnamesLivePoll keeps "Listening now" fresh while the sheet is
+// open, from the cheap listeners route — a server started in a pane shows
+// up within a few seconds (one daemon scan tick plus one poll).
+function startHostnamesLivePoll(ws) {
   clearInterval(hostnamesLiveTimer);
   hostnamesLiveTimer = setInterval(async () => {
     if ($("hostnames-modal").classList.contains("hidden") || hostnamesWsId !== ws.id) {
       clearInterval(hostnamesLiveTimer);
       return;
     }
-    try { renderHostnamesLive((await fetchPortSuggestions(ws.id)).listening || [], ws.name); } catch (_) {}
+    try {
+      const r = await fetch(`/v1/workspaces/${ws.id}/listeners`);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      renderHostnamesLive((await r.json()).listening || [], ws.name);
+    } catch (e) {
+      renderHostnamesLive(null, ws.name);
+    }
   }, 2000);
 }
 
 async function fetchPortSuggestions(wsId) {
-  return (await fetch(`/v1/workspaces/${wsId}/port-suggestions`)).json();
+  const r = await fetch(`/v1/workspaces/${wsId}/port-suggestions`);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
 }
 
 // renderHostnamesLive lists the workspace's current listeners: a port a row
 // already names says "mapped", any other gets a "map" button that adds a row.
+// listening=null means the read FAILED — that is not "nothing listens", and
+// the runbook sends people here to diagnose a 502, so say which it is.
 function renderHostnamesLive(listening, wsName) {
   const ul = $("hostnames-live");
   ul.innerHTML = "";
-  if (!listening.length) {
+  if (!listening || !listening.length) {
     const li = document.createElement("li");
     li.className = "hn-live-empty";
-    li.textContent = "nothing yet — start the dev server in a pane and it shows up here";
+    li.textContent = listening
+      ? "nothing yet — start the dev server in a pane and it shows up here"
+      : "could not read listeners from the daemon — is it up?";
     ul.appendChild(li);
     return;
   }

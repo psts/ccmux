@@ -110,3 +110,22 @@ func TestSettings_DevKeys(t *testing.T) {
 // devhost_test.go — populating a manager with workspaces needs the package-
 // internal adopt() path (no tmux). The handler's error mapping and response
 // shape are pinned above.
+
+// TestListeners_UnknownWorkspace pins the live-listeners route's shape on
+// the one path reachable without tmux: an unknown id is a 404 with the
+// standard error body. (A populated workspace needs the manager's internal
+// adopt path; the copy semantics are tested in internal/manager.)
+func TestListeners_UnknownWorkspace(t *testing.T) {
+	s := settingsServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/workspaces/nope/listeners", nil)
+	req.SetPathValue("id", "nope")
+	s.listeners(rec, req)
+	if rec.Code != 404 {
+		t.Fatalf("code = %d, want 404", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["error"] == nil {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}

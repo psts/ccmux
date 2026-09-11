@@ -15,6 +15,9 @@ struct HostnamesSheetView: View {
     /// Detected rows + dev command from the repo's config files; prefilled when
     /// the workspace has nothing stored yet. nil = no detection (tests/previews).
     var fetchSuggestions: (() async -> DaemonSuggestionsResponse?)?
+    /// The cheap live listener read, polled every 2 s while the sheet is
+    /// open. nil result = the read failed. nil closure = no polling (tests).
+    var fetchListeners: (() async -> [DaemonListener]?)?
 
     @State private var rows: [EditableHostname]
     @State private var devCommand: String
@@ -25,6 +28,9 @@ struct HostnamesSheetView: View {
     /// What the workspace's panes listen on right now; refreshed every 2 s
     /// while the sheet is open.
     @State private var listening: [DaemonListener] = []
+    /// The last listener read failed: the sheet must not claim "nothing
+    /// listens" when it simply could not ask.
+    @State private var listeningFailed = false
     /// Non-empty when the stored command's repo-detected counterpart differs —
     /// shows the "use detected" badge under the command field.
     @State private var detectedChanged = ""
@@ -43,11 +49,13 @@ struct HostnamesSheetView: View {
 
     init(workspaceName: String, current: [DaemonHostname], devCommand: String = "",
          onSave: @escaping ([DaemonHostname], String) async -> String?, onCancel: @escaping () -> Void,
-         fetchSuggestions: (() async -> DaemonSuggestionsResponse?)? = nil) {
+         fetchSuggestions: (() async -> DaemonSuggestionsResponse?)? = nil,
+         fetchListeners: (() async -> [DaemonListener]?)? = nil) {
         self.workspaceName = workspaceName
         self.onSave = onSave
         self.onCancel = onCancel
         self.fetchSuggestions = fetchSuggestions
+        self.fetchListeners = fetchListeners
         _rows = State(initialValue: current.map {
             EditableHostname(name: $0.name, port: $0.port == 0 ? "" : String($0.port), url: $0.url)
         })
@@ -157,7 +165,11 @@ struct HostnamesSheetView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Listening now")
                 .font(.system(size: 11, weight: .semibold))
-            if listening.isEmpty {
+            if listeningFailed {
+                Text("could not read listeners from the daemon — is it up?")
+                    .font(.system(size: 10))
+                    .foregroundColor(.orange)
+            } else if listening.isEmpty {
                 Text("nothing yet — start the dev server in a pane and it shows up here")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
@@ -193,12 +205,20 @@ struct HostnamesSheetView: View {
     }
 
     /// Re-reads the live listeners every 2 s while the sheet is open, so a
-    /// server started in a pane shows up without reopening.
+    /// server started in a pane shows up within a few seconds (one daemon
+    /// scan tick plus one poll). Logs once on the way into failure.
     private func pollListening() async {
-        guard let fetchSuggestions else { return }
+        guard let fetchListeners else { return }
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            if let s = await fetchSuggestions() { listening = s.listening ?? [] }
+            if Task.isCancelled { return }
+            if let live = await fetchListeners() {
+                listening = live
+                listeningFailed = false
+            } else {
+                if !listeningFailed { NSLog("hostnames sheet: listener read failed for %@", workspaceName) }
+                listeningFailed = true
+            }
         }
     }
 
@@ -208,7 +228,11 @@ struct HostnamesSheetView: View {
     /// command when nothing is stored; saving it unchanged sends "" so the
     /// workspace keeps following the repo.
     private func prefill() async {
-        guard let fetchSuggestions, let detected = await fetchSuggestions() else { return }
+        guard let fetchSuggestions else { return }
+        guard let detected = await fetchSuggestions() else {
+            listeningFailed = true
+            return
+        }
         listening = detected.listening ?? []
         if rows.isEmpty {
             rows = (detected.suggestions ?? []).map {
@@ -226,7 +250,7 @@ struct HostnamesSheetView: View {
     }
 
     /// Default first-row name: the workspace slug ("ChartLabs" → "chartlabs"),
-    /// the same label the daemon's own suggestions and the web lens use.
+    /// the same rule as the web lens's suggestHostnameLabel.
     private var suggestedName: String {
         let slug = workspaceName.lowercased()
             .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)

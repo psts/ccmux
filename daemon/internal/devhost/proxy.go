@@ -37,6 +37,12 @@ func (s *Server) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if port, ok := s.table.Load().Route(r.Host); ok {
+			// Port 0 = mapped, but another workspace's pane holds the port.
+			// Refuse rather than serve that workspace's app under this name.
+			if port == 0 {
+				http.Error(w, fmt.Sprintf("ccmux devhost: %s is mapped, but its port is held by another workspace's dev server — see the hostname's context menu", r.Host), http.StatusServiceUnavailable)
+				return
+			}
 			proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), portKey{}, port)))
 			return
 		}

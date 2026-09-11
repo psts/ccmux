@@ -158,6 +158,7 @@ func runDaemon() {
 	// live workspace — lenses render it; they can't read the daemon's repos.
 	mgr.StartGitStatus(5 * time.Second)
 	mgr.StartListenerScan(2 * time.Second)
+	removeComposeOverrides()
 
 	// Built before the hooks listener: NewServer wires mgr.Watched, which
 	// ApplyAttention reads on every hook, and a hook can land the moment the
@@ -664,6 +665,24 @@ func defaultTsnetDir() string { return filepath.Join(configDir(), "tsnet") }
 // devhostDir is the devhost server's state dir (certmagic storage, fallback
 // tsnet node state).
 func devhostDir() string { return filepath.Join(configDir(), "devhost") }
+
+// removeComposeOverrides deletes the compose port-override files the
+// allocation model wrote under devhost/compose. Nothing writes or reads them
+// any more, but a pane opened before the upgrade still carries COMPOSE_FILE
+// pointing at one, and a survivor would keep remapping that pane's compose
+// ports onto 21xxx while the hostname routes to the app's real port.
+// Deletable once no such pane can exist.
+func removeComposeOverrides() {
+	dir := filepath.Join(devhostDir(), "compose")
+	if _, err := os.Stat(dir); err != nil {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("compose overrides at %s not removed (%v) — panes opened before this upgrade may keep old port mappings until restarted", dir, err)
+		return
+	}
+	log.Printf("removed retired compose port overrides at %s — panes opened before this upgrade carry a COMPOSE_FILE that no longer exists; restart them before `docker compose up`", dir)
+}
 
 // runtimeDir is the per-user home of the daemon's runtime artifacts (tmux
 // config, hooks socket). Fixed names in the shared /tmp made the daemon

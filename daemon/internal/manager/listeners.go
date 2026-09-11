@@ -3,7 +3,6 @@ package manager
 import (
 	"fmt"
 	"log"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -24,10 +23,12 @@ import (
 func (m *Manager) StartListenerScan(interval time.Duration) {
 	go func() {
 		s := listeners.New()
-		if _, err := s.Scan(); err != nil {
+		found, err := s.Scan()
+		if err != nil {
 			log.Printf("listener discovery off: %v", err)
 			return
 		}
+		m.applyListeners(found)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -67,9 +68,7 @@ func (m *Manager) applyListeners(found []listeners.Listener) {
 		before[id] = routeSignature(e.ws)
 		next := byWS[id]
 		sort.Slice(next, func(i, j int) bool { return next[i].Port < next[j].Port })
-		if !reflect.DeepEqual(e.ws.Listeners, next) {
-			e.ws.Listeners = next
-		}
+		e.ws.Listeners = next
 	}
 	m.resolveRoutesLocked()
 	changed := []string{}
@@ -104,8 +103,22 @@ func routeSignature(ws *model.Workspace) string {
 // workspaces on the same repo usually share a name), named for display.
 type portOwner struct{ id, name string }
 
+// Listeners returns a copy of what the workspace's panes hold right now
+// (nil for an unknown workspace). The slice is rewritten by the scan loop
+// under m.mu; hand callers a copy, never the live header.
+func (m *Manager) Listeners(wsID string) []model.Listener {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e := m.byID[wsID]
+	if e == nil {
+		return nil
+	}
+	return append([]model.Listener(nil), e.ws.Listeners...)
+}
+
 // resolveRoutesLocked stamps LivePort/HeldBy on every hostname from the
-// current listener sets. Called with m.mu held.
+// current listener sets. Called with m.mu held, at the two places the
+// inputs change: a hostname save and a listener scan.
 func (m *Manager) resolveRoutesLocked() {
 	owner := map[int]portOwner{}
 	for _, e := range m.byID {
@@ -133,9 +146,11 @@ const bumpWindow = 10
 //     server auto-bumped ("5173 in use, using 5174"). The window is what
 //     keeps a Docker-published mapping (54321, root-owned, invisible to the
 //     scan) from being handed the workspace's unrelated vite server.
-//   - Otherwise the row routes to its port as configured. If another
-//     workspace's pane holds that port, HeldBy names it — the same repo
-//     open twice with one pinned port.
+//   - Otherwise the row routes to its port as configured — unless another
+//     workspace's pane holds that port, in which case HeldBy names it and
+//     the row routes nowhere (RoutePort 0): the same repo open twice with
+//     one pinned port must not serve the other worktree's app under this
+//     name.
 func resolveRoutes(ws *model.Workspace, owner map[int]portOwner) {
 	held := listenerPorts(ws)
 	named := map[int]bool{}

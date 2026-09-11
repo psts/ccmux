@@ -174,7 +174,9 @@ resolves where each name routes (`resolveRoutes`):
 - otherwise the row routes to its port as configured — Docker's published ports
   are root-owned and invisible to the scan, and a plain TCP probe still stamps
   `listening` for them; if another workspace's pane holds the port, `heldBy`
-  names it (same repo open twice, one pinned port — not solved, only shown).
+  names it, the route is refused (table port 0 → 503) and the row is never
+  `listening` (same repo open twice, one pinned port — not solved, only shown
+  and kept from serving the wrong app).
 
 `model.Hostname` is `{name, port}` persisted; `url`, `listening`, `livePort`,
 `heldBy` are stamped. Rows from the allocation era (port 21000–21999 with a

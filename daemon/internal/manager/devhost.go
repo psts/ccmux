@@ -187,13 +187,12 @@ func (m *Manager) rejectNameCollisionsLocked(wsID string, hs []model.Hostname) e
 }
 
 // AllHostnames snapshots every mapping (name → the port it routes to right
-// now) across workspaces — the devhost server's routing-table source. Routes
-// are re-resolved against the latest listener scan first, so a server that
-// moved ports is followed on the next table rebuild.
+// now, 0 = mapped but refused because another workspace holds the port)
+// across workspaces — the devhost server's routing-table source. Routes are
+// resolved when hostnames or listeners change, so this is a plain read.
 func (m *Manager) AllHostnames() map[string]int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.resolveRoutesLocked()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := map[string]int{}
 	for _, e := range m.byID {
 		for _, h := range e.ws.Hostnames {
@@ -432,19 +431,18 @@ func (m *Manager) devPane(wsID string) *model.Pane {
 // URL under the active serving mode; listeningFor probes a local port. A name
 // is Listening when one of the workspace's own panes holds its route port,
 // else when the probe answers there (Docker-published ports are root-owned
-// and invisible to the pane scan; a plain answer is the best we know).
+// and invisible to the pane scan; a plain answer is the best we know). A
+// held name (RoutePort 0) is never Listening — the probe would only be
+// hearing the other workspace's server.
 func (m *Manager) StampHostnameRuntime(urlFor func(name string) string, listeningFor func(port int) bool) {
 	changed := map[string]bool{}
 	m.mu.Lock()
-	m.resolveRoutesLocked()
 	for id, e := range m.byID {
-		held := map[int]bool{}
-		for _, l := range e.ws.Listeners {
-			held[l.Port] = true
-		}
+		held := listenerPorts(e.ws)
 		for i, h := range e.ws.Hostnames {
 			url := urlFor(h.Name)
-			listening := held[h.RoutePort()] || listeningFor(h.RoutePort())
+			port := h.RoutePort()
+			listening := port != 0 && (held[port] || listeningFor(port))
 			if h.URL != url || h.Listening != listening {
 				e.ws.Hostnames[i].URL, e.ws.Hostnames[i].Listening = url, listening
 				changed[id] = true

@@ -791,6 +791,14 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 			return nil, err
 		}
 		w.Hostnames = model.UnmarshalHostnames(hostnamesJSON)
+		for _, h := range w.Hostnames {
+			// A row the migration could not recover: an old "auto" row saved
+			// with no target port. Say so here, the one place that knows the
+			// workspace name; the row itself just looks unanswered.
+			if model.IsLegacyAllocatedPort(h.Port) {
+				log.Printf("workspace %s: hostname %q still points at ccmux-allocated port %d, which nothing binds any more — open Hostnames… and map the port the app uses", w.Name, h.Name, h.Port)
+			}
+		}
 		byID[w.ID] = w
 		out = append(out, w)
 	}

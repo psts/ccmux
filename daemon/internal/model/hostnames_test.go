@@ -32,4 +32,10 @@ func TestHostname_RoutePort(t *testing.T) {
 	if (Hostname{Port: 5173}).RoutePort() != 5173 || (Hostname{Port: 5173, LivePort: 5174}).RoutePort() != 5174 {
 		t.Fatal("RoutePort must prefer LivePort")
 	}
+	if (Hostname{Port: 3003, HeldBy: "other"}).RoutePort() != 0 {
+		t.Fatal("a held name must route nowhere")
+	}
+	if !IsLegacyAllocatedPort(21000) || !IsLegacyAllocatedPort(21999) || IsLegacyAllocatedPort(20999) || IsLegacyAllocatedPort(3003) {
+		t.Fatal("IsLegacyAllocatedPort bounds")
+	}
 }
