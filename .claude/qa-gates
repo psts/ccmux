@@ -48,6 +48,14 @@ bash .claude/gates/gofmt.sh
 command -v node >/dev/null 2>&1 || { echo "qa-gates: node not installed — cannot syntax-check daemon/web"; exit 1; }
 for f in daemon/web/*.js; do node --check "$f" || exit 1; done
 
+# Web lens smoke test. Added 2026-09-11 because the parse above is not enough:
+# a const declared inside a function and referenced from module scope passes
+# `node --check` and shipped a lens whose sidebar was empty on every load
+# (fetchWorkspaces swallowed its own ReferenceError). This EVALUATES app.js in a
+# stubbed browser and drives one path, so that class fails here instead of in a
+# browser. See daemon/web/smoke_test.js for what it does and does not cover.
+node daemon/web/smoke_test.js || exit 1
+
 # Go complexity, capped at 10, as a ratchet over frozen pre-existing debt.
 # See .claude/gates/gocyclo.sh for why it is a ratchet and not a wall.
 bash .claude/gates/gocyclo.sh

@@ -49,40 +49,40 @@ const deviceId = (() => {
 // holding a window open. Recomputed rather than stored: the name can change.
 const deviceLabel = () => (localStorage.getItem("ccmux-user") || "anon") + " (web)";
 
-// The windows THIS browser has open — its own truth, the way the Mac has
-// state.json. Without it the lens could only echo the daemon's openHere back,
-// which can never drop a row, so it would have had no repair path at all.
-const OPEN_KEY = "ccmux-open-windows";
-function openHereSet() {
-  try {
-    const v = JSON.parse(localStorage.getItem(OPEN_KEY) || "[]");
-    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-  } catch (_) {
-    return []; // corrupt value is the same as none; the next declare rewrites it
-  }
-}
-function rememberOpen(id, open) {
-  const set = new Set(openHereSet());
-  open ? set.add(id) : set.delete(id);
-  localStorage.setItem(OPEN_KEY, JSON.stringify([...set]));
-}
-
-// Declare the whole set this lens has open; the daemon makes THIS DEVICE's rows
-// match. Same rule as the Mac's syncOpenFlags, for the same reason: without an
-// inverse, a flag that was never cleanly closed could never be cleared.
+// Declare the windows this lens has open; the daemon makes THIS DEVICE's rows
+// match. Same rule as the Mac's syncOpenFlags — without an inverse, a flag that
+// was never cleanly closed could never be cleared.
 //
-// Like the Mac, a tab that just disappears sends nothing — the repair happens
-// on the next load, and the daemon's TTL is the backstop for a lens that never
-// comes back.
-let declaredOnce = false;
+// The set is the daemon's own openHere for this device, read moments ago, NOT a
+// remembered list. A browser has no equivalent of the Mac's on-screen window
+// controllers, and a persisted list is not evidence of anything: it never
+// decays, so re-asserting it on load refreshed last_seen forever and the TTL —
+// the one thing that clears a lens that never comes back — could never fire.
+// A live tab re-asserting what it is actually showing is real evidence; a dead
+// tab sends nothing and ages out, which is exactly what should happen.
+let lastDeclared = "";
+let lastDeclaredAt = 0;
 async function declareOpenWindows() {
+  const ids = (state.windows || []).filter((w) => w.openHere).map((w) => w.id).sort();
+  const key = ids.join(",");
+  // Re-send on change, and at least twice a day so a tab left open for a month
+  // does not age out of its own flags.
+  if (key === lastDeclared && Date.now() - lastDeclaredAt < 12 * 3600 * 1000) return;
   try {
     const r = await fetch("/v1/windows/open-set", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ device: deviceId, deviceLabel: deviceLabel(), windowIds: openHereSet() }),
+      body: JSON.stringify({ device: deviceId, deviceLabel: deviceLabel(), windowIds: ids }),
     });
-    if (!r.ok) console.error("open-set failed:", r.status, await r.text());
+    if (!r.ok) {
+      // Not marked as sent: the daemon asks the caller to retry on a 503, and
+      // the next poll is the retry. Recording it would disable the repair path
+      // for the life of the page after one blip.
+      console.error("open-set failed:", r.status, await r.text());
+      return;
+    }
+    lastDeclared = key;
+    lastDeclaredAt = Date.now();
   } catch (e) {
     console.error("open-set failed:", e);
   }
@@ -125,12 +125,11 @@ async function fetchWorkspaces() {
     // Keep the last window list on a failed read (503 = tables unreadable,
     // per the daemon) — blanking it would make every window look closed and
     // feed wrong close decisions. Same fallback the Mac lens uses.
-    if (winr.ok) state.windows = (await winr.json()) || [];
-    // Declare our set only when the list actually loaded. On a failed read we
-    // know nothing, and an empty declaration means "I have none open", which
-    // the daemon would act on by clearing this device's rows.
-    if (winr.ok && !declaredOnce) {
-      declaredOnce = true;
+    // Declare only on a read that SUCCEEDED. On a failure we keep the previous
+    // list and know nothing new, and an empty declaration means "I have none
+    // open" — which the daemon acts on by clearing this device's rows.
+    if (winr.ok) {
+      state.windows = (await winr.json()) || [];
       declareOpenWindows();
     }
   } catch (_) {
@@ -310,7 +309,6 @@ async function openWindow(win) {
   try {
     const r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(deviceId)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
     if (!r.ok) { alert("open failed: " + (await r.text())); return; }
-    rememberOpen(win.id, true);
     for (const wsId of win.workspaceIds || []) {
       const ws = state.workspaces.find((w) => w.id === wsId);
       if (ws && ws.status === "cold") {
@@ -330,7 +328,6 @@ async function openWindow(win) {
 // which is the model's own permission).
 async function closeWindow(win) {
   try {
-    rememberOpen(win.id, false);
     const r = await fetch(`/v1/windows/${win.id}/close?device=${encodeURIComponent(deviceId)}`, { method: "POST" });
     if (!r.ok) { alert("close failed: " + (await r.text())); return; }
     const out = await r.json();
