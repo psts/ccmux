@@ -112,12 +112,17 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   await acted.ctx.fetchWorkspaces();
   await tick();
   const win = acted.evalIn("state.windows[0]");
+  // Only calls made AFTER this point count. The read above already sent a
+  // keep-alive to the same /open route, and a `find` over everything matched
+  // that one instead — so deleting device= from openWindow still passed.
+  const before = acted.fetched.length;
   await acted.ctx.openWindow(win);
   await tick();
   await acted.ctx.closeWindow(win);
   await tick();
+  const acts = acted.fetched.slice(before);
   for (const verb of ["open", "close"]) {
-    const call = acted.fetched.find((f) => f.method === "POST" && f.url.includes(`/${verb}?`));
+    const call = acts.find((f) => f.method === "POST" && f.url.includes(`/${verb}?`));
     check(`${verb} names the device`, call && call.url.includes("device=test-device-uuid"),
       call ? call.url : `no ${verb} POST`);
   }

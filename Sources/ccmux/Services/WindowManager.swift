@@ -811,20 +811,22 @@ class WindowManager {
         // disabled open-set for the entire lens — no assertions, no repair, and
         // the daemon believing this Mac holds nothing open.
         //
-        // A window that matches NEITHER has no shared counterpart and therefore
-        // no row, so omitting it retracts nothing.
-        var set = Set<String>()
-        for wc in windowControllers {
-            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
-            let owned = wc.windowContext.ownedWorkspaceIds
-            let match = service.sharedWindows.first { win in
-                Self.sameWindowName(win.name, name)
-                    || win.workspaceIds.contains { owned.contains(RemoteWorkspaceBuilder.workspaceUUID($0)) }
-            }
-            if let id = match?.id { set.insert(id) }
-        }
+        // A window that matches NEITHER is usually local-only, with no row, so
+        // omitting it retracts nothing. Usually, not always: `closingPlan`
+        // documents detach/move gaps that leave a workspace on screen but out
+        // of `ownedWorkspaceIds`, so the displayed one is folded in here the
+        // same way, and a miss is logged rather than silent — if this ever
+        // does retract a live window, the log is the only trace.
+        let (set, unmatched) = resolveOpenSet(against: service.sharedWindows)
         let stale = Date().timeIntervalSince(lastOpenSetSentAt) > 12 * 3600
         guard set != lastOpenSetSent || stale else { return }
+        // Logged only alongside a send: this runs on every 4s reconcile, and
+        // a local-only window is unmatched every time, so logging before the
+        // guard would repeat forever and bury the one retraction that matters.
+        if !unmatched.isEmpty {
+            NSLog("[ccmux] windows: %@ match no shared window by name or membership; omitted from open-set",
+                  unmatched.joined(separator: ", "))
+        }
         // Claimed before the call and put back if it fails, so one blip does
         // not silence the repair path until the set next changes.
         let prevSet = lastOpenSetSent
@@ -837,6 +839,25 @@ class WindowManager {
                 self.lastOpenSetSentAt = prevAt
             }
         }
+    }
+
+    /// The shared ids of every on-screen window, by name or by membership,
+    /// for `syncOpenFlags` to declare, plus the names of windows matching
+    /// neither. Those are omitted, not fatal; see the comment there for why.
+    private func resolveOpenSet(against shared: [DaemonWindow]) -> (Set<String>, unmatched: [String]) {
+        var set = Set<String>()
+        var unmatched: [String] = []
+        for wc in windowControllers {
+            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
+            var members = wc.windowContext.ownedWorkspaceIds
+            if let displayed = wc.windowContext.displayedWorkspaceId { members.insert(displayed) }
+            let match = shared.first { win in
+                Self.sameWindowName(win.name, name)
+                    || win.workspaceIds.contains { members.contains(RemoteWorkspaceBuilder.workspaceUUID($0)) }
+            }
+            if let id = match?.id { set.insert(id) } else { unmatched.append(name) }
+        }
+        return (set, unmatched)
     }
 
     /// What syncOpenFlags last told the daemon, so an unchanged set is not
