@@ -312,9 +312,9 @@ func migrateWindowOpenDevices(db *sql.DB) error {
 	// Pre-upgrade rows are copied, not dropped, so nobody's windows change on
 	// upgrade. They carry device='' because nothing knows which lens set them,
 	// and they are stamped to expire within a day rather than a full TTL: no
-	// lens can name them, so until they age out (or a close sweeps them, see
-	// SetWindowOpen) they keep `last` from ever coming back true, which is
-	// archive-on-last-close silently switched off.
+	// lens can name them, so until they age out (or a device-less close from
+	// an old lens clears them) they keep `last` from ever coming back true,
+	// which is archive-on-last-close silently switched off.
 	expiring := time.Now().Add(-OpenFlagTTL + 24*time.Hour).UnixMilli()
 	stmts := []string{
 		`CREATE TABLE window_open_v2 (

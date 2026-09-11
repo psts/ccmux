@@ -281,12 +281,14 @@ func (m *Manager) SeedWindowMembership(wsID, windowName string) error {
 
 // The TTL lives in the store (store.OpenFlagTTL): the migration stamps rows
 // relative to it. It is how long one lens's open flag stands without being
-// re-asserted. It is a backstop, not the main repair: a lens that comes back
-// clears its OWN leftover rows at launch (ClearStaleWindowOpens), so this only
-// decides how long a machine that never returns keeps a window open — blocking
-// the archive-on-last-close rule and the window's own pruning. A month is
-// deliberately generous: expiry is not destructive on its own, it only changes
-// whether the NEXT close counts as the last one.
+// re-asserted. For the Mac it is a backstop, not the main repair: that lens
+// clears its OWN leftover rows at launch (ClearStaleWindowOpens), so past that
+// the TTL only decides how long a machine that never returns keeps a window
+// open — blocking the archive-on-last-close rule and the window's own pruning.
+// A browser sends only keep-alives and never declares, so for a stranded tab
+// this IS the repair. A month is deliberately generous: expiry is not
+// destructive on its own, it only changes whether the NEXT close counts as
+// the last one.
 func staleBefore() int64 { return time.Now().Add(-store.OpenFlagTTL).UnixMilli() }
 
 // DeviceOpenWindows returns the window ids this DEVICE has open, so a lens can

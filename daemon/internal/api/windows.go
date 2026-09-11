@@ -163,10 +163,6 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// setWindowOpen serves POST /v1/windows/{id}/open and /close. A close answers
-// {last, members}: when the caller was the final opener, the LENS archives
-// the members — the agreed model is that a window nobody has open goes to
-// sleep, and the lens already owns the archive loop.
 // syncWindowOpen serves POST /v1/windows/open-set: one lens declaring the
 // WHOLE set of windows it currently has open. The daemon makes that device's
 // rows match — asserting the ones listed, dropping the ones not.
@@ -229,6 +225,10 @@ func (s *Server) syncWindowOpen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// setWindowOpen serves POST /v1/windows/{id}/open and /close. A close answers
+// {last, members}: when the caller was the final opener, the LENS archives
+// the members — the agreed model is that a window nobody has open goes to
+// sleep, and the lens already owns the archive loop.
 func (s *Server) setWindowOpen(open bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		login := s.resolveIdentity(r).Login

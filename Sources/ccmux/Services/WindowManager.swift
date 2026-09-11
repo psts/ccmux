@@ -841,9 +841,13 @@ class WindowManager {
         }
     }
 
-    /// The shared ids of every on-screen window, by name or by membership,
-    /// for `syncOpenFlags` to declare, plus the names of windows matching
-    /// neither. Those are omitted, not fatal; see the comment there for why.
+    /// The shared ids of every on-screen window, by name first and by
+    /// membership only for the rest, for `syncOpenFlags` to declare, plus the
+    /// names of windows matching neither. Those are omitted, not fatal; see
+    /// the comment there for why. Name wins because the shared list is in
+    /// daemon order: a window displaying a workspace the daemon groups under
+    /// a DIFFERENT window (the detach/move gap) must still resolve to itself,
+    /// or its own row is retracted while it is on screen.
     private func resolveOpenSet(against shared: [DaemonWindow]) -> (Set<String>, unmatched: [String]) {
         var set = Set<String>()
         var unmatched: [String] = []
@@ -851,10 +855,10 @@ class WindowManager {
             let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
             var members = wc.windowContext.ownedWorkspaceIds
             if let displayed = wc.windowContext.displayedWorkspaceId { members.insert(displayed) }
-            let match = shared.first { win in
-                Self.sameWindowName(win.name, name)
-                    || win.workspaceIds.contains { members.contains(RemoteWorkspaceBuilder.workspaceUUID($0)) }
-            }
+            let match = shared.first { Self.sameWindowName($0.name, name) }
+                ?? shared.first { win in
+                    win.workspaceIds.contains { members.contains(RemoteWorkspaceBuilder.workspaceUUID($0)) }
+                }
             if let id = match?.id { set.insert(id) } else { unmatched.append(name) }
         }
         return (set, unmatched)

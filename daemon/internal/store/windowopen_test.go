@@ -250,3 +250,41 @@ func TestWindowOpen_ConcurrentOpensDoNotClobber(t *testing.T) {
 		t.Fatal("a real device id did not survive")
 	}
 }
+
+// Re-asserting an existing flag must move last_seen. Both keep-alives (the
+// Mac's 12-hourly re-send and the browser's) go through this one clause; if
+// it silently becomes INSERT OR IGNORE, a lens in continuous use ages out of
+// its own flags, and the next close elsewhere force-archives what it shows.
+func TestWindowOpen_ReassertMovesLastSeen(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "fresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	now := time.Now().UnixMilli()
+	flag := WindowOpenFlag{Login: "patric@x.com", WindowID: "win-a", Device: "mac-1"}
+	flag.Seen = now - 2*time.Hour.Milliseconds()
+	if err := st.SetWindowOpen(flag, true); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := now - time.Hour.Milliseconds()
+	before, err := st.DeviceWindowOpens("patric@x.com", "mac-1", cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before["win-a"] {
+		t.Fatal("the first row is not stale yet, so the assertion below cannot tell whether the re-assert moved it")
+	}
+	flag.Seen = now
+	if err := st.SetWindowOpen(flag, true); err != nil {
+		t.Fatal(err)
+	}
+	after, err := st.DeviceWindowOpens("patric@x.com", "mac-1", cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after["win-a"] {
+		t.Fatal("re-asserting an open flag did not move last_seen: keep-alives are no-ops")
+	}
+}

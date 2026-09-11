@@ -137,7 +137,7 @@ function bytesToB64(u8) {
 // newest issued read starves: fetchWorkspaces fires from the timer and from
 // every firehose frame, so whenever latency exceeds the gap between triggers
 // EVERY response is superseded before it resolves and nothing is ever applied
-// — state freezes and, worse, the declaration never runs, so this device's
+// — state freezes and, worse, the keep-alive never runs, so this device's
 // rows age out of the daemon's TTL while the tab is genuinely open. That is
 // the same window-reads-closed, sessions-archived-underneath failure the
 // ordering guard exists to prevent, just reached from the other side.
@@ -146,6 +146,7 @@ function bytesToB64(u8) {
 // has landed, and is dropped the moment something newer has.
 let windowsSeq = 0;
 let windowsApplied = 0;
+let windowsReadFailing = false;
 async function fetchWorkspaces() {
   const seq = ++windowsSeq;
   try {
@@ -160,13 +161,22 @@ async function fetchWorkspaces() {
     const workspaces = (await wr.json()) || [];
     // Keep the last window list on a failed read (503 = tables unreadable,
     // per the daemon) — blanking it would make every window look closed and
-    // feed wrong close decisions. Same fallback the Mac lens uses.
-    const windows = winr.ok ? (await winr.json()) || [] : null;
+    // feed wrong close decisions. Same fallback the Mac lens uses. Logged on
+    // the way INTO failure only: this runs every 5s and on every firehose
+    // frame, so logging each miss would bury the line that explains it.
+    let windows = null;
+    if (winr.ok) {
+      windows = (await winr.json()) || [];
+      if (windowsReadFailing) console.warn("window list read recovered");
+      windowsReadFailing = false;
+    } else {
+      const body = await winr.text();
+      if (!windowsReadFailing) console.error("window list read failed:", winr.status, body);
+      windowsReadFailing = true;
+    }
     if (seq <= windowsApplied) return; // something newer already landed
     windowsApplied = seq;
     state.workspaces = workspaces;
-    // Keep the previous window list on a failed read rather than blanking it:
-    // every window would render as closed and feed wrong close decisions.
     if (windows) {
       state.windows = windows;
       keepOpenFlagsAlive();

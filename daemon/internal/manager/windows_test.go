@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -98,5 +99,39 @@ func TestMigrateViewsToWindows_EmptyIsClean(t *testing.T) {
 	}
 	if n := len(m.Windows()); n != 0 {
 		t.Fatalf("%d windows from an empty migration", n)
+	}
+}
+
+// The v1 import writes open flags with no device, so no current lens can name
+// one to clear it. They must expire within a day, as the store's migration
+// rows do:
+// a full TTL would keep `last` from coming back true for a month on every
+// upgrading install, which is archive-on-last-close switched off.
+func TestMigrateViewsToWindows_OpenFlagsExpireWithinADay(t *testing.T) {
+	m := windowsManager(t)
+	if err := m.store.SetView("patric@x.com", "w1", "CHARTLABS"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MigrateViewsToWindows(); err != nil {
+		t.Fatal(err)
+	}
+	wid, ok := m.WindowByName("CHARTLABS")
+	if !ok {
+		t.Fatal("the migrated window is missing")
+	}
+	live, err := m.store.WindowOpens(staleBefore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live[wid]["patric@x.com"] {
+		t.Fatal("the imported flag is already stale: the window would flip closed on upgrade")
+	}
+	soon := time.Now().Add(25 * time.Hour).Add(-store.OpenFlagTTL).UnixMilli()
+	later, err := m.store.WindowOpens(soon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if later[wid]["patric@x.com"] {
+		t.Fatal("the imported flag outlives a day, so archive-on-last-close stays dead for a month")
 	}
 }

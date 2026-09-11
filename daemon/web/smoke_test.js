@@ -38,10 +38,11 @@ const el = () => new Proxy(function () {}, {
 // lets it hold one open so two reads can resolve OUT OF ORDER.
 function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null } = {}) {
   const fetched = [];
+  const errors = [];
   const storage = {};
   let reads = 0;
   const ctx = {
-    console: { log() {}, warn() {}, error() {}, info() {} },
+    console: { log() {}, warn() {}, error: (...a) => { errors.push(a.map(String).join(" ")); }, info() {} },
     document: new Proxy({}, { get: () => el() }),
     localStorage: {
       getItem: (k) => (k in storage ? storage[k] : null),
@@ -84,7 +85,7 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   // the context object; only function declarations do. Later scripts in the same
   // context DO see it.
   const evalIn = (code) => vm.runInContext(code, ctx);
-  return { ctx, fetched, evalIn };
+  return { ctx, fetched, errors, evalIn };
 }
 
 (async () => {
@@ -189,6 +190,11 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   check("an unreadable window list does not blank the previous one",
     bad.evalIn("(state.windows[0] || {}).name") === "Here",
     `state holds ${bad.evalIn("JSON.stringify(state.windows)")}`);
+  //    And it is LOGGED with the daemon's status and body: a persistent 503
+  //    otherwise leaves a stale list, a clean console, and no keep-alive.
+  check("an unreadable window list is logged with status and body",
+    bad.errors.some((e) => e.includes("503") && e.includes("unreadable")),
+    `console.error calls: ${JSON.stringify(bad.errors)}`);
 
   // 7. openHere falls back to open, for a daemon older than the field. Without
   //    it a newer lens reads every window as closed and clicking one opens a

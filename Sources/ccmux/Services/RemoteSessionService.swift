@@ -1156,10 +1156,6 @@ final class RemoteSessionService: ObservableObject {
         await refresh()
     }
 
-    /// Clear this login's open flag on the shared window named `name`; when
-    /// that made it nobody's, the window goes to sleep — archive the members
-    /// the daemon reported (force: nobody has it open, which is the model's
-    /// own permission).
     /// Declare the WHOLE set of windows this lens has open, so the daemon can
     /// make this device's rows match — asserting the ones listed and dropping
     /// the ones not.
@@ -1196,6 +1192,10 @@ final class RemoteSessionService: ObservableObject {
         return true
     }
 
+    /// Clear this device's open flag on the shared window named `name`; when
+    /// that made it nobody's, the window goes to sleep — archive the members
+    /// the daemon reported (force: nobody has it open, which is the model's
+    /// own permission).
     func closeSharedWindow(named name: String) async {
         guard let win = sharedWindows.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
             NSLog("[ccmux] windows: no shared window named %@ to close", name)
@@ -1601,8 +1601,7 @@ final class RemoteSessionService: ObservableObject {
     }
 
     /// Like `send`, but returns the daemon's `{"error": …}` text instead of a bare
-    /// false. `send` throws the body away, which is how a refused request ends up
-    /// looking like nothing happened at all.
+    /// false, for callers that show the refusal to the user rather than log it.
     private func sendReportingError(
         _ method: String, path: String, body: [String: Any]?, expect: Int
     ) async -> String? {
@@ -1641,8 +1640,17 @@ final class RemoteSessionService: ObservableObject {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         do {
-            let (_, resp) = try await session.data(for: req)
-            return (resp as? HTTPURLResponse)?.statusCode == expect
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            if code != expect {
+                // The status and the daemon's body are the only record of WHY:
+                // a 400 (a body-shape mismatch, normal during a release) and a
+                // 503 (store unwritable) need different fixes and read the
+                // same without this.
+                NSLog("[ccmux] %@ %@ answered %d, wanted %d: %@", method, path, code, expect,
+                      String(data: data, encoding: .utf8) ?? "")
+            }
+            return code == expect
         } catch {
             await MainActor.run { self.lastError = error.localizedDescription }
             return false
