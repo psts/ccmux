@@ -465,6 +465,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Cmd+W closes only the tab you are looking at, the same as its ✕. A hosted
+    /// terminal tab is killed on the daemon (tmux kill-window) and cannot be
+    /// brought back, so the whole-pane close is the wider verb and gets the
+    /// wider chord (Cmd+Option+W). Closing the last tab in a pane closes the
+    /// pane, exactly as the tab ✕ does.
+    @objc private func closeFocusedTab() {
+        guard let ctrl = activeController, let leafId = ctrl.focusedPaneId,
+              let pane = ctrl.tree.findLeaf(id: leafId) else { return }
+        ctrl.closeTab(leafId: leafId, tabId: pane.activeTabId)
+    }
+
     @objc private func closeFocusedPane() {
         guard let ctrl = activeController, let id = ctrl.focusedPaneId else { return }
         ctrl.closePane(id: id)
@@ -554,7 +565,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         fileMenu.addItem(newWindowItem)
 
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Close Pane", action: #selector(closeFocusedPane), keyEquivalent: "w")
+        fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeFocusedTab), keyEquivalent: "w")
+        let closePaneItem = NSMenuItem(title: "Close Pane", action: #selector(closeFocusedPane), keyEquivalent: "w")
+        closePaneItem.keyEquivalentModifierMask = [.command, .option]
+        fileMenu.addItem(closePaneItem)
         fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.close), keyEquivalent: "W")
 
         mainMenu.addItem(viewMenuItem())
