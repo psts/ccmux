@@ -206,3 +206,27 @@ func TestSendChunks_SuccessAndEmpty(t *testing.T) {
 			"is a wasted round trip", err, calls)
 	}
 }
+
+// The alternate flag must never cost the cursor restore: a reply with only x
+// and y is a main-screen pane, not a failed query.
+func TestParseCursorReply(t *testing.T) {
+	cases := []struct {
+		in       string
+		x, y     int
+		alt, err bool
+	}{
+		{"3 7 1", 3, 7, true, false},
+		{"3 7 0", 3, 7, false, false},
+		{"3 7 ", 3, 7, false, false},
+		{"3 7", 3, 7, false, false},
+		{"3", 0, 0, false, true},
+		{"a b 1", 0, 0, false, true},
+		{"", 0, 0, false, true},
+	}
+	for _, tc := range cases {
+		x, y, alt, err := parseCursorReply(tc.in)
+		if (err != nil) != tc.err || x != tc.x || y != tc.y || alt != tc.alt {
+			t.Errorf("parseCursorReply(%q) = %d,%d,%v,%v; want %d,%d,%v,err=%v", tc.in, x, y, alt, err, tc.x, tc.y, tc.alt, tc.err)
+		}
+	}
+}

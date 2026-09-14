@@ -114,37 +114,75 @@ func (c *Controller) OnNotification(kind, rest string) {
 	}
 }
 
-// handleSubscription routes a %subscription-changed line from the title/command
-// format subscriptions (subscribeTitles). Wire format on tmux 3.6b (verified):
-//
-//	name $session @window window-index %pane : value
-//
-// The value may itself contain " : ", so only the first separator splits.
+// handleSubscription routes a %subscription-changed line from the format
+// subscriptions registered in subscribeTitles. Title and command changes become
+// notices for the manager; an alternate-screen change is handled here, because
+// its only consumer is the attached lenses.
 func (c *Controller) handleSubscription(rest string) {
-	parts := strings.SplitN(rest, " : ", 2)
-	if len(parts) != 2 {
-		return
-	}
-	f := strings.Fields(parts[0])
-	if len(f) < 5 {
-		return
-	}
-	var kind string
-	switch f[0] {
-	case "ccmux-title":
-		kind = "pane-title"
-	case "ccmux-cmd":
-		kind = "pane-command"
-	default:
+	name, tmuxPane, value, ok := parseSubscription(rest)
+	if !ok {
 		return
 	}
 	c.mu.RLock()
-	ref := c.byTmuxPane[f[4]]
+	ref := c.byTmuxPane[tmuxPane]
 	c.mu.RUnlock()
 	if ref == nil {
 		return // pane not (yet) registered; a later change re-fires
 	}
-	c.emit(Notice{Kind: kind, PaneID: ref.id, Value: parts[1]})
+	switch name {
+	case "ccmux-title":
+		c.emit(Notice{Kind: "pane-title", PaneID: ref.id, Value: value})
+	case "ccmux-cmd":
+		c.emit(Notice{Kind: "pane-command", PaneID: ref.id, Value: value})
+	case "ccmux-alt":
+		c.alternateScreenChanged(ref, value)
+	}
+}
+
+// parseSubscription splits a %subscription-changed line. Wire format on tmux
+// 3.6b (verified):
+//
+//	name $session @window window-index %pane : value
+//
+// The value may itself contain " : ", so only the first separator splits.
+func parseSubscription(rest string) (name, tmuxPane, value string, ok bool) {
+	parts := strings.SplitN(rest, " : ", 2)
+	if len(parts) != 2 {
+		return "", "", "", false
+	}
+	f := strings.Fields(parts[0])
+	if len(f) < 5 {
+		return "", "", "", false
+	}
+	return f[0], f[4], parts[1], true
+}
+
+// alternateScreenChanged asks every attached lens to repaint a pane that just
+// left its alternate screen (value "0": a fullscreen program such as Claude
+// Code exited or suspended).
+//
+// Why a repaint is needed at all: a lens emulator mirrors the screen switch
+// only if it saw the "enter" sequence go by. A lens seeded by a snapshot while
+// the program was already running (attach, reconnect, resize, lag) holds that
+// program's screen in its MAIN buffer, so the program's later "leave" restores
+// nothing there. tmux restored its own grid correctly, and a fresh capture of
+// it is the one screen every lens agrees on. Entering ("1") needs nothing: the
+// program repaints itself on the alternate screen anyway.
+//
+// Only an on-to-off flip repaints. A bare "0" is not one: tmux pushes a pane's
+// first value whenever it first evaluates the format, which on 3.4 is lazily on
+// the pane's next activity, and on 3.6b also on subscribe. Acting on the value
+// alone repainted every bystander lens on panes that had never left the main
+// screen (three resize tests caught it, 2026-09-14).
+func (c *Controller) alternateScreenChanged(ref *paneRef, value string) {
+	on := value == "1"
+	c.mu.Lock()
+	was := ref.alt
+	ref.alt = on
+	c.mu.Unlock()
+	if was && !on {
+		c.fanout(Event{Kind: "repaint", PaneID: ref.id})
+	}
 }
 
 func (c *Controller) handleWindowClose(window string) {

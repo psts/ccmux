@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 )
@@ -237,44 +238,83 @@ func (c *Client) ResizeWindow(window string, cols, rows int) error {
 // line's column (a staircase). Bytes are otherwise raw (command replies are not
 // octal-escaped).
 //
-// For a visible-screen capture (historyLines == 0) it appends a cursor-restore
-// (CUP) escape: capture-pane emits every pane row including the trailing blank
-// ones, so feeding them leaves the emulator cursor at the bottom of the screen,
-// not where tmux's cursor actually is. The trailing CUP snaps it back so typed
-// input lands at the prompt rather than far below it.
+// A visible-screen capture (historyLines == 0) is CaptureScreen with the
+// alternate-screen flag dropped; see there for the cursor-restore it appends.
 func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
-	args := []string{"capture-pane", "-e", "-p", "-t", pane}
-	if historyLines > 0 {
-		args = append(args, "-S", "-"+strconv.Itoa(historyLines))
+	if historyLines == 0 {
+		rows, _, err := c.CaptureScreen(pane)
+		return rows, err
 	}
-	lines, err := c.Command(args...)
+	lines, err := c.Command("capture-pane", "-e", "-p", "-t", pane, "-S", "-"+strconv.Itoa(historyLines))
 	if err != nil {
 		return nil, err
 	}
-	out := []byte(strings.Join(lines, "\r\n"))
-	if historyLines == 0 {
-		if x, y, err := c.CursorPosition(pane); err == nil {
-			// CUP is 1-indexed; tmux cursor_x/_y are 0-indexed.
-			out = append(out, []byte(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1))...)
-		}
+	return []byte(strings.Join(lines, "\r\n")), nil
+}
+
+// CaptureScreen returns the visible screen with escape sequences preserved, and
+// whether the pane was on its alternate screen (a fullscreen program such as
+// Claude Code, vim or htop) when it was read.
+//
+// It appends a cursor-restore (CUP) escape: capture-pane emits every pane row
+// including the trailing blank ones, so feeding them leaves the emulator cursor
+// at the bottom of the screen, not where tmux's cursor actually is. The trailing
+// CUP snaps it back so typed input lands at the prompt rather than far below it.
+//
+// The rows and the cursor/alternate state are two round-trips, so a program
+// that switches screens between them is reported against the wrong rows. The
+// consumer (a snapshot frame) tolerates that: leaving the alternate screen
+// triggers a fresh capture anyway (session.Controller.alternateScreenChanged).
+// A failed cursor query keeps the old behaviour — rows without a CUP, and the
+// pane reported as on its main screen — but no longer silently: that frame
+// paints a fullscreen program onto the lens's main buffer, which is the very
+// defect the alternate flag exists to prevent, so the log says which pane and
+// why.
+func (c *Client) CaptureScreen(pane string) (rows []byte, alt bool, err error) {
+	lines, err := c.Command("capture-pane", "-e", "-p", "-t", pane)
+	if err != nil {
+		return nil, false, err
 	}
-	return out, nil
+	rows = []byte(strings.Join(lines, "\r\n"))
+	x, y, alt, err := c.CursorPosition(pane)
+	if err != nil {
+		log.Printf("tmux: capture pane %s: %v (snapshot sent without cursor restore, as main screen)", pane, err)
+		return rows, false, nil
+	}
+	// CUP is 1-indexed; tmux cursor_x/_y are 0-indexed.
+	return append(rows, []byte(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1))...), alt, nil
 }
 
 // CursorPosition returns a pane's 0-indexed cursor column (x) and row (y),
-// relative to the top of the visible screen.
-func (c *Client) CursorPosition(pane string) (x, y int, err error) {
-	lines, err := c.Command("display-message", "-p", "-t", pane, "#{cursor_x} #{cursor_y}")
+// relative to the top of the visible screen, and whether the pane is on its
+// alternate screen. One display-message answers all three, so the alternate
+// flag costs a snapshot no extra round-trip.
+func (c *Client) CursorPosition(pane string) (x, y int, alt bool, err error) {
+	lines, err := c.Command("display-message", "-p", "-t", pane, "#{cursor_x} #{cursor_y} #{alternate_on}")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	if len(lines) == 0 {
-		return 0, 0, fmt.Errorf("tmux: empty cursor position for pane %s", pane)
+		return 0, 0, false, fmt.Errorf("tmux: empty cursor position for pane %s", pane)
 	}
-	if _, err := fmt.Sscanf(strings.TrimSpace(lines[0]), "%d %d", &x, &y); err != nil {
-		return 0, 0, fmt.Errorf("tmux: parse cursor position %q: %w", lines[0], err)
+	return parseCursorReply(lines[0])
+}
+
+// parseCursorReply reads "x y alt". The alternate flag is optional: a tmux
+// that renders #{alternate_on} empty must not cost the cursor restore too, so a
+// two-field reply parses as main screen rather than failing the whole query.
+func parseCursorReply(reply string) (x, y int, alt bool, err error) {
+	fields := strings.Fields(reply)
+	if len(fields) < 2 {
+		return 0, 0, false, fmt.Errorf("tmux: parse cursor position %q: want at least x and y", reply)
 	}
-	return x, y, nil
+	if x, err = strconv.Atoi(fields[0]); err != nil {
+		return 0, 0, false, fmt.Errorf("tmux: parse cursor x %q: %w", reply, err)
+	}
+	if y, err = strconv.Atoi(fields[1]); err != nil {
+		return 0, 0, false, fmt.Errorf("tmux: parse cursor y %q: %w", reply, err)
+	}
+	return x, y, len(fields) > 2 && fields[2] == "1", nil
 }
 
 // CapturePlain returns a pane's visible contents as plain text (no escape

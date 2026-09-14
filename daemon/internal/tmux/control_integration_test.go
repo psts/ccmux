@@ -142,7 +142,7 @@ func TestCapturePane_AppendsCursorRestore(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 
-	x, y, err := c.CursorPosition("it")
+	x, y, _, err := c.CursorPosition("it")
 	if err != nil {
 		t.Fatalf("cursor position: %v", err)
 	}
@@ -541,4 +541,57 @@ func TestSendKeysAsync_KeepsSubmissionOrder(t *testing.T) {
 		t.Fatalf("pane received %d bytes, want %d in submission order (first "+
 			"difference decides: keystrokes must arrive as typed)", len(got), len(want))
 	}
+}
+
+// TestCaptureScreen_ReportsAlternateScreen pins the flag a snapshot frame is
+// built from: off for a plain shell, on once a program has switched screens the
+// way a fullscreen one does, off again when it leaves.
+func TestCaptureScreen_ReportsAlternateScreen(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-altcap-itest"
+	tmuxRun(t, socket, "kill-server")
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	if _, alt, err := c.CaptureScreen("it"); err != nil || alt {
+		t.Fatalf("fresh shell: alt=%v err=%v, want off", alt, err)
+	}
+	if err := c.SendKeys("it", []byte("printf '\\033[?1049h'\n")); err != nil {
+		t.Fatalf("send-keys: %v", err)
+	}
+	waitAlternateScreen(t, c, true)
+	if err := c.SendKeys("it", []byte("printf '\\033[?1049l'\n")); err != nil {
+		t.Fatalf("send-keys: %v", err)
+	}
+	waitAlternateScreen(t, c, false)
+}
+
+func waitAlternateScreen(t *testing.T, c *Client, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_, alt, err := c.CaptureScreen("it")
+		if err != nil {
+			t.Fatalf("capture: %v", err)
+		}
+		if alt == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("pane alternate screen never became %v", want)
 }

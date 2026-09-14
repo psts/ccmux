@@ -152,6 +152,43 @@ func sendSnapshots(conn *websocket.Conn, ctrl *session.Controller, ws *model.Wor
 // each client. A lens that also clears just clears twice, which costs nothing.
 const snapshotReset = "\x1b[H\x1b[2J"
 
+// enterAlternateScreen is the switch a fullscreen program (Claude Code, vim,
+// htop) sends before drawing, and undoes on exit; tmux tracks it as
+// #{alternate_on}. A snapshot of a pane in that state starts with it, BEFORE the
+// reset, so the lens emulator ends up where tmux is: main buffer untouched,
+// program screen on the alternate buffer. Without it the program's screen
+// lands on the lens's main buffer, and the program's later "leave" finds no
+// alternate screen to leave — the stale screen stays and the shell prompt is
+// drawn over it wherever the saved cursor was. Leaving also triggers a repaint
+// (session.Controller.alternateScreenChanged), which is what makes the final
+// screen right; this prefix is what keeps the transition from flashing.
+//
+// Order matters for the web lens, which writes the frame as-is: the reset must
+// clear the ALTERNATE buffer, so the switch comes first. The Mac lens clears on
+// its own before painting, so its main buffer is wiped either way and it
+// relies on the repaint alone; a frame it cannot make use of costs it nothing.
+const enterAlternateScreen = "\x1b[?1049h"
+
+// leaveAlternateScreen opens every main-screen snapshot, for the same reason
+// enterAlternateScreen opens the other kind: the frame must describe the whole
+// state, in both directions. The program's own leave sequence rides %output,
+// which is exactly what a lagged subscriber drops (Sub.Drain) and a lens that
+// reconnected never saw, so a lens once switched by a snapshot would otherwise
+// stay on the alternate buffer, painting the shell into a screen with no
+// scrollback. On a lens already on its main buffer it restores a saved cursor
+// and does nothing else; the reset that follows homes and clears anyway.
+const leaveAlternateScreen = "\x1b[?1049l"
+
+// snapshotFrame is the self-describing snapshot: the switch to the buffer the
+// pane is on, then the reset, then the captured rows.
+func snapshotFrame(rows []byte, alt bool) []byte {
+	prefix := leaveAlternateScreen + snapshotReset
+	if alt {
+		prefix = enterAlternateScreen + snapshotReset
+	}
+	return append([]byte(prefix), rows...)
+}
+
 // sendSnapshot seeds (or repaints) one pane.
 //
 // The two failures are not the same kind. A capture that fails is per-pane: the
@@ -163,12 +200,12 @@ const snapshotReset = "\x1b[H\x1b[2J"
 // Both are logged. A dropped repaint leaves a screen that is already wrong, and
 // "the next resize will retry" means the user has to resize again to fix it.
 func sendSnapshot(conn *websocket.Conn, ctrl *session.Controller, paneID string) error {
-	b, err := ctrl.Capture(paneID, 0)
+	rows, alt, err := ctrl.CaptureScreen(paneID)
 	if err != nil {
 		log.Printf("attach: capture pane %s: %v (lens keeps its current screen)", paneID, err)
 		return nil
 	}
-	if err := conn.WriteJSON(wsMsg{T: "snapshot", Pane: paneID, Data: b64(append([]byte(snapshotReset), b...))}); err != nil {
+	if err := conn.WriteJSON(wsMsg{T: "snapshot", Pane: paneID, Data: b64(snapshotFrame(rows, alt))}); err != nil {
 		log.Printf("attach: send snapshot for pane %s: %v", paneID, err)
 		return err
 	}
@@ -191,6 +228,9 @@ func (w *paneWriter) reseed(ev session.Event) error {
 		return err
 	}
 	for _, pe := range pending {
+		if pe.Kind == "repaint" {
+			continue // the reseed above already repainted every pane
+		}
 		if err := w.conn.WriteJSON(frameFor(pe)); err != nil {
 			return err
 		}
@@ -260,10 +300,17 @@ func (w *paneWriter) step(ctx context.Context, ping <-chan time.Time) (done bool
 }
 
 // forward sends one event, or recovers the whole screen when the subscriber has
-// fallen behind.
+// fallen behind. A "repaint" event is not a frame: it is the session asking
+// every lens to capture the pane again (it left its alternate screen), and it
+// goes through the resnapper like a lens's own repaint verb, so a burst of them
+// coalesces and the capture happens once the pane has settled.
 func (w *paneWriter) forward(ev session.Event) error {
 	if w.sub.Lagged() {
 		return w.reseed(ev)
+	}
+	if ev.Kind == "repaint" {
+		w.rs.request(ev.PaneID)
+		return nil
 	}
 	return w.conn.WriteJSON(frameFor(ev))
 }

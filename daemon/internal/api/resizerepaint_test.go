@@ -295,8 +295,8 @@ func TestAPI_SnapshotFrameCarriesItsOwnClear(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode snapshot: %v", err)
 			}
-			if !bytes.HasPrefix(b, []byte(snapshotReset)) {
-				t.Fatalf("snapshot for pane %s does not start with the home+clear reset: %q",
+			if !bytes.HasPrefix(b, []byte(leaveAlternateScreen+snapshotReset)) {
+				t.Fatalf("snapshot for pane %s does not start with the leave+home+clear reset: %q",
 					m.Pane, firstBytes(b))
 			}
 			return

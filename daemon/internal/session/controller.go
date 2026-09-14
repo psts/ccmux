@@ -31,6 +31,7 @@ type Event struct {
 // paneRef binds a stable ccmux pane id to its runtime tmux window/pane ids.
 type paneRef struct {
 	id     string // ccmux uuid
+	alt    bool   // on its alternate screen, per the last #{alternate_on} push (guarded by Controller.mu)
 	window string // @N
 	pane   string // %N
 }
@@ -95,15 +96,22 @@ func Open(ctx context.Context, server *tmux.Server, session, wsID string) (*Cont
 }
 
 // subscribeTitles registers control-mode format subscriptions so tmux pushes a
-// %subscription-changed whenever any pane's title or foreground command changes.
-// Verified on tmux 3.6b: current values arrive immediately on subscribe (seeding
-// adopt/restart) and panes created later report automatically (%* is dynamic).
-// Runs after discover() so the initial burst resolves against registered panes.
+// %subscription-changed whenever any pane's title, foreground command or
+// alternate-screen state changes. Verified on tmux 3.6b: current values arrive
+// immediately on subscribe (seeding adopt/restart) and panes created later
+// report automatically (%* is dynamic). A pane's FIRST alternate_on value can
+// arrive late — tmux 3.4 evaluates it lazily, on the pane's next activity
+// (measured 2026-09-14) — which is why alternateScreenChanged keeps state
+// rather than acting on the value alone. Runs after discover() so the initial
+// burst resolves against registered panes.
 func (c *Controller) subscribeTitles() error {
 	if _, err := c.client.Command("refresh-client", "-B", "ccmux-title:%*:#{pane_title}"); err != nil {
 		return err
 	}
-	_, err := c.client.Command("refresh-client", "-B", "ccmux-cmd:%*:#{pane_current_command}")
+	if _, err := c.client.Command("refresh-client", "-B", "ccmux-cmd:%*:#{pane_current_command}"); err != nil {
+		return err
+	}
+	_, err := c.client.Command("refresh-client", "-B", "ccmux-alt:%*:#{alternate_on}")
 	return err
 }
 
@@ -239,6 +247,17 @@ func (c *Controller) Capture(paneID string, historyLines int) ([]byte, error) {
 		return nil, fmt.Errorf("unknown pane %s", paneID)
 	}
 	return c.client.CapturePane(ref.pane, historyLines)
+}
+
+// CaptureScreen is Capture of the visible screen plus whether the pane is on its
+// alternate screen, for a snapshot frame that has to reproduce that state in the
+// lens (see api.snapshotFrame).
+func (c *Controller) CaptureScreen(paneID string) (rows []byte, alt bool, err error) {
+	ref := c.ref(paneID)
+	if ref == nil {
+		return nil, false, fmt.Errorf("unknown pane %s", paneID)
+	}
+	return c.client.CaptureScreen(ref.pane)
 }
 
 // CaptureText returns a pane's visible contents as plain text (for prompt
