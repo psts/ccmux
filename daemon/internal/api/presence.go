@@ -117,7 +117,24 @@ type DriverStamp struct {
 // DriverLogin returns the canonical login of the workspace's current driver
 // and when they last typed. ok=false when nobody is driving, or the driver has
 // no usable login ("anon" would route every notification to nobody real).
+//
+// A live driver answers first; otherwise the REMEMBERED one (manager.LastDriver)
+// does, so the answer outlives the lens they typed from. Before that fallback,
+// closing a laptop dropped the driver instantly and the repo's alerts widened
+// to everyone holding its window open.
 func (h *presenceHub) DriverLogin(wsID string) (string, int64, bool) {
+	if login, at, ok := h.liveDriver(wsID); ok {
+		return login, at, true
+	}
+	if h.mgr == nil {
+		return "", 0, false
+	}
+	d, ok := h.mgr.LastDriver(wsID)
+	return d.Login, d.At, ok
+}
+
+// liveDriver is the attached client that typed last, with a usable login.
+func (h *presenceHub) liveDriver(wsID string) (string, int64, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	wp := h.byWS[wsID]
@@ -134,9 +151,14 @@ func (h *presenceHub) DriverLogin(wsID string) (string, int64, bool) {
 // AllDriverLogins returns every workspace's current driver — the member half
 // of driver federation (served as GET /v1/presence/drivers).
 func (h *presenceHub) AllDriverLogins() map[string]DriverStamp {
+	out := map[string]DriverStamp{}
+	if h.mgr != nil {
+		for wsID, d := range h.mgr.LastDrivers() {
+			out[wsID] = DriverStamp{Login: d.Login, AtMillis: d.At}
+		}
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := map[string]DriverStamp{}
 	for wsID, wp := range h.byWS {
 		if wp.driver == "" {
 			continue
@@ -281,14 +303,22 @@ func (h *presenceHub) Input(wsID, connID string) {
 		h.mu.Unlock()
 		return
 	}
-	wp.clients[connID].lastInput = time.Now().UnixMilli()
+	now := time.Now().UnixMilli()
+	c := wp.clients[connID]
+	c.lastInput = now
 	changed := wp.driver != connID
 	wp.driver = connID
 	var snap []ClientInfo
 	if changed {
 		snap = h.snapshotLocked(wsID)
 	}
+	login := c.login
 	h.mu.Unlock()
+	// Outside the lock: the manager has its own, and routing must remember
+	// this keystroke after the client is gone (see DriverLogin).
+	if h.mgr != nil {
+		h.mgr.RecordDriver(wsID, login, now)
+	}
 	if changed {
 		h.broadcast(wsID, snap)
 	}

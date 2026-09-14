@@ -45,8 +45,10 @@ type entry struct {
 type Manager struct {
 	server *tmux.Server
 	store  store.Store
-	ctx    context.Context
-	events *firehose
+	// drivers remembers who last typed in each workspace (drivers.go).
+	drivers drivers
+	ctx     context.Context
+	events  *firehose
 
 	// LocalURL is the daemon's own loopback base URL (e.g. http://127.0.0.1:7890),
 	// injected into every hosted pane's env as CCMUX_DAEMON_URL so on-host hooks
@@ -713,6 +715,7 @@ func (m *Manager) KillWorkspace(wsID string) error {
 		log.Printf("windows: removing membership for deleted %s failed (ghost member until removed by hand): %v", wsID, err)
 	}
 	_ = m.store.DeleteWorkspaceViews(wsID)
+	m.ForgetDriver(wsID)
 	m.invalidateWindows()
 	return m.store.DeleteWorkspace(wsID)
 }

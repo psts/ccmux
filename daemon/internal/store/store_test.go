@@ -96,3 +96,44 @@ func findAddress(subs []*model.PushSubscription, id string) string {
 	}
 	return ""
 }
+
+// A workspace's remembered driver is one row that the next keystroke by someone
+// else replaces, and it survives a reopen — that is the whole point: routing
+// must not forget who was working in a repo because the daemon restarted.
+func TestWorkspaceDrivers_ReplaceAndSurviveReopen(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWorkspaceDriver("w1", model.WorkspaceDriver{Login: "dasha@x.com", At: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWorkspaceDriver("w1", model.WorkspaceDriver{Login: "patric@x.com", At: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWorkspaceDriver("w2", model.WorkspaceDriver{Login: "dasha@x.com", At: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWorkspaceDriver("w3", model.WorkspaceDriver{Login: "gone@x.com", At: 40}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteWorkspaceDriver("w3"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	st, err = Open(filepath.Join(dir, "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	got, err := st.WorkspaceDrivers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["w1"] != (model.WorkspaceDriver{Login: "patric@x.com", At: 20}) ||
+		got["w2"] != (model.WorkspaceDriver{Login: "dasha@x.com", At: 30}) {
+		t.Fatalf("drivers after reopen = %+v", got)
+	}
+}

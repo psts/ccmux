@@ -57,6 +57,9 @@ type Store interface {
 	RemoveWindowMember(wsID string) error
 	WindowMembers() (map[string]string, error) // ws_id → window id
 	SetWindowOpen(f WindowOpenFlag, open bool) error
+	SetWorkspaceDriver(wsID string, d model.WorkspaceDriver) error
+	DeleteWorkspaceDriver(wsID string) error
+	WorkspaceDrivers() (map[string]model.WorkspaceDriver, error)
 	ClearStaleWindowOpens(login, device string, keep []string) error
 	DeviceWindowOpens(login, device string, staleBefore int64) (map[string]bool, error)
 	WindowOpens(staleBefore int64) (map[string]map[string]bool, error) // window id → logins
@@ -107,6 +110,9 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   address TEXT, prefs TEXT, created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS push_by_login ON push_subscriptions(login);
+CREATE TABLE IF NOT EXISTS workspace_drivers (
+  ws_id TEXT PRIMARY KEY, login TEXT, at INTEGER
+);
 CREATE TABLE IF NOT EXISTS peer_events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT, from_id TEXT, from_name TEXT, from_summary TEXT, from_cwd TEXT,
@@ -472,6 +478,41 @@ func (s *SQLite) ListPushSubscriptions() ([]*model.PushSubscription, error) {
 			return nil, err
 		}
 		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+// SetWorkspaceDriver remembers who last typed in a workspace. One row per
+// workspace: the previous driver is overwritten, not kept.
+func (s *SQLite) SetWorkspaceDriver(wsID string, d model.WorkspaceDriver) error {
+	_, err := s.db.Exec(`
+INSERT INTO workspace_drivers (ws_id, login, at) VALUES (?,?,?)
+ON CONFLICT(ws_id) DO UPDATE SET login=excluded.login, at=excluded.at`, wsID, d.Login, d.At)
+	return err
+}
+
+// DeleteWorkspaceDriver forgets a workspace's driver: the workspace was
+// removed, or an unidentified typist displaced them.
+func (s *SQLite) DeleteWorkspaceDriver(wsID string) error {
+	_, err := s.db.Exec(`DELETE FROM workspace_drivers WHERE ws_id=?`, wsID)
+	return err
+}
+
+// WorkspaceDrivers returns every remembered driver, keyed by workspace id.
+func (s *SQLite) WorkspaceDrivers() (map[string]model.WorkspaceDriver, error) {
+	rows, err := s.db.Query(`SELECT ws_id, login, at FROM workspace_drivers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]model.WorkspaceDriver{}
+	for rows.Next() {
+		var wsID string
+		var d model.WorkspaceDriver
+		if err := rows.Scan(&wsID, &d.Login, &d.At); err != nil {
+			return nil, err
+		}
+		out[wsID] = d
 	}
 	return out, rows.Err()
 }

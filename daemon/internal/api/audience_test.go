@@ -26,8 +26,9 @@ func (f routedFocus) DriverLogin(string) (string, int64, bool) {
 	return f.driver, f.atMillis, f.driving
 }
 
-// The audience ladder: recent driver alone; else the window's open-holders;
-// else unbounded (everyone — the pre-multi-user behavior).
+// The audience ladder: the last driver alone, however long ago; else the
+// window's open-holders; else unbounded (everyone — the pre-multi-user
+// behavior).
 func TestAlertAudience_Ladder(t *testing.T) {
 	ws := &model.Workspace{ID: "w1"}
 	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, ws)
@@ -47,12 +48,13 @@ func TestAlertAudience_Ladder(t *testing.T) {
 		t.Fatalf("fresh driver: audience = %v bounded=%v, want dasha alone", audience, bounded)
 	}
 
-	// Stale driver → falls to the window's open-holders.
-	stale := time.Now().Add(-driverRecency - time.Minute).UnixMilli()
-	s.focus = routedFocus{driver: "dasha@x.com", atMillis: stale, driving: true}
+	// An old driver is still THE driver: no recency, the repo stays theirs
+	// until someone else types, however long ago the keystroke was.
+	old := time.Now().Add(-48 * time.Hour).UnixMilli()
+	s.focus = routedFocus{driver: "dasha@x.com", atMillis: old, driving: true}
 	audience, bounded = s.alertAudience("w1")
-	if !bounded || !audience["patric@x.com"] || audience["dasha@x.com"] {
-		t.Fatalf("stale driver: audience = %v bounded=%v, want the window holder", audience, bounded)
+	if !bounded || !audience["dasha@x.com"] || audience["patric@x.com"] {
+		t.Fatalf("old driver: audience = %v bounded=%v, want dasha alone", audience, bounded)
 	}
 
 	// No driver, window open by nobody → unbounded (nothing goes silent).

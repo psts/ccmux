@@ -122,3 +122,33 @@ func TestPresence_InputAfterLeaveIsSafe(t *testing.T) {
 			"callback must not steal or clear it", d, ok)
 	}
 }
+
+// Routing remembers the driver after their lens is gone; git attribution does
+// not. DriverLogin is what alertAudience keys on, so a laptop closing must not
+// hand the repo's alerts to whoever else holds its window. Driver (the
+// co-author trailer) stays live-only: nobody gets credited for a commit made
+// after they left.
+func TestPresence_DriverLoginOutlivesTheClient(t *testing.T) {
+	h := newTestHub()
+	dasha := h.Join("ws1", ClientInfo{User: "Dasha"}, "dasha@x.com", "dasha@x.com")
+	h.Input("ws1", dasha)
+	h.Leave("ws1", dasha)
+
+	login, _, ok := h.DriverLogin("ws1")
+	if !ok || login != "dasha@x.com" {
+		t.Fatalf("DriverLogin after leave = %q ok=%v, want dasha remembered", login, ok)
+	}
+	if all := h.AllDriverLogins(); all["ws1"].Login != "dasha@x.com" {
+		t.Fatalf("AllDriverLogins after leave = %+v, want ws1 → dasha", all)
+	}
+	if _, ok := h.Driver("ws1"); ok {
+		t.Fatal("Driver (attribution) must still clear when the client leaves")
+	}
+
+	// A live typist overrides the memory at once.
+	patric := h.Join("ws1", ClientInfo{User: "Patric"}, "patric@x.com", "")
+	h.Input("ws1", patric)
+	if login, _, _ := h.DriverLogin("ws1"); login != "patric@x.com" {
+		t.Fatalf("DriverLogin with a live typist = %q, want patric", login)
+	}
+}

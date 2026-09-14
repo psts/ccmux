@@ -229,6 +229,15 @@ func UnmarshalHostnames(raw string) []Hostname {
 	return hs
 }
 
+// WorkspaceDriver is the last person who typed in a workspace and when. It is
+// what notification routing keys on, so it outlives the lens they typed from:
+// closing a laptop must not hand a repo's alerts to whoever else has its window
+// open. Persisted so a daemon restart does not forget either.
+type WorkspaceDriver struct {
+	Login string
+	At    int64 // unix millis: their latest keystroke while live; after a restart, the one that started their tenure
+}
+
 // PushSubscription is a stored notification target, keyed by tailnet login and
 // kept transport-generic ({transport, address, prefs}) so web push today and
 // APNs/Telegram later share one table. For transport "webpush", Address is the

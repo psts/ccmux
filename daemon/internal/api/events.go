@@ -273,7 +273,7 @@ func (s *Server) alertsFor(reader firehoseReader, wsID string, att model.Attenti
 	if owners[login] {
 		s.clearAlertMiss(login)
 		// Present — but is this THEIR repo? Routing (see alertAudience): the
-		// recent driver alone, else the window's holders, else everyone. A
+		// last driver alone, else the window's holders, else everyone. A
 		// bounded miss is deliberate quiet, not an identity problem, so no
 		// mismatch note.
 		if audience, bounded := s.alertAudience(wsID); bounded && !audience[login] {
