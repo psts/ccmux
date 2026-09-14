@@ -11,6 +11,17 @@
   const PENDING_NAV = "/__ccmux_pending_nav";
   let reg = null;
 
+  // app.js resolves who this lens is before anything sends a presence name;
+  // a deep-link attach from here (navToURL) must wait for the same answer or
+  // it opens the socket under a prompted name while the firehose carries the
+  // vouched one. Only the attach waits: the service worker registration and
+  // the settings sheet need no identity, and holding them behind a slow
+  // daemon left the gear button dead for the whole timeout. Older app.js
+  // exports no promise: nothing to wait for.
+  function identityReady() {
+    return (window.ccmux && window.ccmux.identityReady) || Promise.resolve();
+  }
+
   async function boot() {
     if (swSupported) {
       try {
@@ -30,10 +41,12 @@
   }
 
   // Attach to the workspace named by a deep-link URL (/?ws=<id>).
-  function navToURL(url) {
+  async function navToURL(url) {
     if (!url) return;
     const ws = new URL(url, location.origin).searchParams.get("ws");
-    if (ws && window.ccmux) window.ccmux.attach(ws, null);
+    if (!ws || !window.ccmux) return;
+    await identityReady();
+    window.ccmux.attach(ws, null);
   }
 
   // Notification tap → the SW asks an open window to deep-link (fast path).

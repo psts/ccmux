@@ -11,6 +11,14 @@ struct DaemonSettingsView: View {
     var onDone: (() -> Void)?
 
     @State private var identity = ""
+    /// Who the daemon says we are (GET /v1/whoami); nil until answered or
+    /// when the daemon is too old to say.
+    @State private var whoami: DaemonWhoAmI? = nil
+    /// Set when /v1/whoami could not be asked or answered. Distinct from a
+    /// nil `whoami`: "the daemon did not say" must not render as "the daemon
+    /// says it does not know you" — that sends someone to reconfigure a
+    /// working identity.
+    @State private var whoamiError: String? = nil
     @State private var rules: [EditableRule] = []
     @State private var status = ""
     @State private var saving = false
@@ -161,6 +169,39 @@ struct DaemonSettingsView: View {
             TextField("you@example.com", text: $identity)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
+            Text(whoAmILine)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func loadWhoAmI() async {
+        do {
+            whoami = try await RemoteSessionService.shared.fetchWhoAmI()
+            whoamiError = nil
+        } catch {
+            NSLog("whoami failed: %@", String(describing: error))
+            whoamiError = "Couldn't reach ccmuxd at \(DaemonConfig.baseURL) to check who you are (\(error.localizedDescription))."
+        }
+    }
+
+    /// Mirrors the web lens's line under Notifications: the identity pushes
+    /// and routing key on, so a phone that never buzzes can be checked
+    /// against it.
+    private var whoAmILine: String {
+        if let e = whoamiError { return e }
+        // No answer (daemon too old) and an unvouched answer read the same,
+        // as in the web lens: the daemon has nothing to vouch for.
+        guard let w = whoami, w.vouched else {
+            return "Not identified by Tailscale. The daemon goes by \"\(whoami?.display ?? DaemonConfig.selfUser)\"."
+        }
+        let who = w.display != w.login ? "\(w.display) (\(w.login))" : w.login
+        switch w.source ?? "" {
+        case "tailscale": return "Signed in as \(who) via Tailscale."
+        case "alias": return "Signed in as \(who), by the daemon's identity alias for \"\(w.display)\"."
+        case "owner": return "Signed in as \(who), this machine's owner."
+        default: return "Signed in as \(who)."
         }
     }
 
@@ -761,7 +802,17 @@ struct DaemonSettingsView: View {
     }
 
     private func load() async {
+        // The stored identity first: it is UserDefaults, not the network, and
+        // the field must not sit empty behind a slow daemon (a value typed
+        // into that gap would be overwritten when the wait ended).
         identity = DaemonConfig.identity
+        // Asked on its own, not behind fetchSettings: an unreachable daemon
+        // must render "couldn't ask", and a throw from the settings fetch
+        // would otherwise skip this and leave the false "not identified".
+        // Its own task, concurrent with the settings fetch, and bounded to the
+        // web lens's 3s in fetchWhoAmI, so a hung daemon holds nothing here.
+        // Task {} inherits this view's main-actor context for the @State writes.
+        Task { await loadWhoAmI() }
         do {
             apply(try await RemoteSessionService.shared.fetchSettings())
             let fetched = await RemoteSessionService.shared.fetchAgents()

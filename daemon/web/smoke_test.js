@@ -36,11 +36,22 @@ const el = () => new Proxy(function () {}, {
 
 // windowsReply lets a case control each /v1/windows answer in turn, and gate
 // lets it hold one open so two reads can resolve OUT OF ORDER.
-function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null } = {}) {
+function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null, whoami = null, storage = {},
+  whoamiGate = null, withPush = false, pendingNav = null } = {}) {
   const fetched = [];
   const errors = [];
-  const storage = {};
+  const sockets = [];
+  let swRegistrations = 0;
   let reads = 0;
+  let prompts = 0;
+  // Timers are collected, never fired on their own: a case fires them itself
+  // (fireTimers) to prove a timeout does what it claims.
+  const timers = [];
+  // A fetch that never settles, unless its abort signal fires — the shape of
+  // a half-open connection.
+  const hang = (signal) => new Promise((_, reject) => {
+    if (signal) signal.onabort = () => reject(new Error("aborted"));
+  });
   const ctx = {
     console: { log() {}, warn() {}, error: (...a) => { errors.push(a.map(String).join(" ")); }, info() {} },
     document: new Proxy({}, { get: () => el() }),
@@ -50,12 +61,24 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
       removeItem: (k) => { delete storage[k]; },
     },
     crypto: { randomUUID: () => "test-device-uuid" },
-    location: { href: "http://x/", search: "", pathname: "/", protocol: "http:", host: "x" },
-    navigator: { userAgent: "node", serviceWorker: { register: () => Promise.resolve() } },
-    WebSocket: function () { return el(); },
-    setInterval: () => 0, setTimeout: () => 0, clearInterval() {}, clearTimeout() {},
+    location: { href: "http://x/", origin: "http://x", search: "", pathname: "/", protocol: "http:", host: "x" },
+    navigator: { userAgent: "node", serviceWorker: {
+      register: () => { swRegistrations++; return Promise.resolve({ pushManager: { getSubscription: async () => null } }); },
+      addEventListener() {},
+    } },
+    WebSocket: function (url) { sockets.push(String(url)); return el(); },
+    PushManager: function () {},
+    // xterm.js, for the deep-link attach case: a terminal that accepts anything.
+    Terminal: function () { return el(); },
+    FitAddon: { FitAddon: function () { return el(); } },
+    caches: { open: async () => ({
+      match: async (k) => (pendingNav && k === "/__ccmux_pending_nav" ? { text: async () => pendingNav } : undefined),
+      delete: async () => true,
+    }) },
+    setInterval: () => 0, setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearInterval() {}, clearTimeout() {},
     addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }),
-    prompt: () => "Patric", alert() {}, confirm: () => true,
+    prompt: () => { prompts++; return "Patric"; }, alert() {}, confirm: () => true,
+    AbortController: function () { const s = { onabort: null }; this.signal = s; this.abort = () => { if (s.onabort) s.onabort(); }; },
     Notification: { permission: "default" },
     URLSearchParams, URL, TextEncoder, TextDecoder,
     atob: (x) => x, btoa: (x) => x,
@@ -63,6 +86,12 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
       const u = String(url);
       fetched.push({ url: u, method: (opts && opts.method) || "GET", body: opts && opts.body });
       if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => [] };
+      if (u.startsWith("/v1/whoami")) {
+        if (whoami === "hang") return hang(opts && opts.signal);
+        if (whoami === null) return { ok: false, status: 404, json: async () => ({}) };
+        if (whoamiGate) await whoamiGate;
+        return { ok: true, status: 200, json: async () => whoami };
+      }
       if (u.startsWith("/v1/windows?")) {
         const n = reads++;
         const good = windowsOkFor ? windowsOkFor(n) : windowsOk;
@@ -81,11 +110,13 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), ctx, { filename: "app.js" });
+  if (withPush) vm.runInContext(fs.readFileSync(path.join(__dirname, "push.js"), "utf8"), ctx, { filename: "push.js" });
   // `state` is a top-level const, so it is a lexical binding and never lands on
   // the context object; only function declarations do. Later scripts in the same
   // context DO see it.
   const evalIn = (code) => vm.runInContext(code, ctx);
-  return { ctx, fetched, errors, evalIn };
+  const fireTimers = () => { const due = timers.splice(0); for (const fn of due) fn(); };
+  return { ctx, fetched, errors, evalIn, prompts: () => prompts, fireTimers, sockets, swRegistrations: () => swRegistrations };
 }
 
 (async () => {
@@ -229,6 +260,112 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   const again = alive.fetched.filter((f) => f.method === "POST" && f.url.includes("/open?"));
   check("the keep-alive is rate limited", again.length === 1,
     `${again.length} posts after a second read — every poll would re-assert`);
+
+  // 6. Identity at boot. A vouched /v1/whoami answer IS the presence name and
+  //    the prompt never fires; the call carries the stored name so the daemon's
+  //    alias tier can see it. A daemon too old for the endpoint (404) must not
+  //    stall the boot: hosts and the firehose still come up, and the prompt is
+  //    back to being the only name there is.
+  const vouched = run({
+    whoami: { login: "carol@example.com", display: "Carol", verified: true, vouched: true },
+    storage: { "ccmux-user": "Patric Sandelin" },
+  });
+  await tick();
+  await tick();
+  check("a vouched identity is the presence name", vouched.ctx.getUser() === "Carol",
+    `getUser() = ${vouched.ctx.getUser()}`);
+  check("a vouched lens never prompts", vouched.prompts() === 0, `${vouched.prompts()} prompt(s)`);
+  const who = vouched.fetched.find((f) => f.url.startsWith("/v1/whoami"));
+  check("whoami carries the STORED name for the alias tier", who && who.url.includes("user=Patric%20Sandelin"),
+    who ? who.url : "no whoami call");
+  check("boot proceeded after identity", vouched.fetched.some((f) => f.url.startsWith("/v1/hosts")),
+    "no /v1/hosts call: boot chain did not run");
+
+  // The headline case: a device opening the lens for the FIRST time over the
+  // tailnet — nothing stored, and still no prompt. (The seeded case above
+  // cannot prove that: its prompt branch is unreachable either way.)
+  const fresh = run({ whoami: { login: "carol@example.com", display: "Carol", verified: true, vouched: true, source: "tailscale" } });
+  await tick();
+  await tick();
+  check("a fresh vouched device never prompts", fresh.ctx.getUser() === "Carol" && fresh.prompts() === 0,
+    `getUser() = ${fresh.ctx.getUser()}, ${fresh.prompts()} prompt(s)`);
+  check("the line names Tailscale", fresh.ctx.whoAmILine().includes("via Tailscale"), fresh.ctx.whoAmILine());
+
+  // An alias-vouched identity is not "this machine's owner": the line names
+  // the tier, or it sends a reader to the wrong setting.
+  const aliased = run({ whoami: { login: "sandelin@example.com", display: "Patric Sandelin", verified: false, vouched: true, source: "alias" } });
+  await tick();
+  await tick();
+  check("an alias-vouched line names the alias, not the owner",
+    aliased.ctx.whoAmILine().includes("alias") && !aliased.ctx.whoAmILine().includes("owner"), aliased.ctx.whoAmILine());
+
+  // A notification tap (push.js's stashed deep-link) attaches at boot, and
+  // that attach must carry the vouched name too: it waits for the same
+  // identity promise app.js gates its own boot on. The whoami answer is held
+  // until the test releases it, so the tap has every chance to run first.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const tapped = run({
+    whoami: { login: "carol@example.com", display: "Carol", verified: true, vouched: true, source: "tailscale" },
+    whoamiGate: held, withPush: true, pendingNav: "/?ws=ws-1",
+  });
+  await tick();
+  await tick();
+  check("the deep-link attach waits for identity", tapped.sockets.length === 0,
+    `${tapped.sockets.length} socket(s) opened before whoami answered: ${tapped.sockets.join(", ")}`);
+  release();
+  await tick();
+  await tick();
+  await tick();
+  const attachSock = tapped.sockets.find((u) => u.includes("/v1/attach"));
+  check("the deep-link attach carries the vouched name", attachSock && attachSock.includes("user=Carol"),
+    attachSock || `no attach socket; sockets: ${tapped.sockets.join(", ")}; errors: ${tapped.errors.join(" | ")}`);
+  check("a notification tap never prompts", tapped.prompts() === 0, `${tapped.prompts()} prompt(s)`);
+
+  // A 200 that merely echoes the typed name (the daemon's last tier, vouched
+  // false) is NOT an identity: the prompt still fires and the echo is not
+  // adopted. Dropping the vouched check is what this case fails on.
+  const echo = run({ whoami: { login: "typed", display: "typed", verified: false, vouched: false } });
+  await tick();
+  await tick();
+  check("an unvouched echo still prompts", echo.prompts() === 1 && echo.ctx.getUser() === "Patric",
+    `getUser() = ${echo.ctx.getUser()}, ${echo.prompts()} prompt(s)`);
+
+  // A whoami that never answers must not hold the boot: the timeout aborts
+  // it, hosts and the firehose come up, and the prompt is the name.
+  const hung = run({ whoami: "hang" });
+  await tick();
+  check("boot waits on identity, not past it", !hung.fetched.some((f) => f.url.startsWith("/v1/hosts")),
+    "hosts fetched before whoami settled — the gate is not there");
+  hung.fireTimers();
+  await tick();
+  await tick();
+  check("a hung whoami is abandoned by the timeout", hung.fetched.some((f) => f.url.startsWith("/v1/hosts")),
+    "no /v1/hosts call after the timeout fired: the lens would hang blank");
+  check("a hung whoami falls back to the prompt", hung.ctx.getUser() === "Patric" && hung.prompts() === 1,
+    `getUser() = ${hung.ctx.getUser()}, ${hung.prompts()} prompt(s)`);
+  // "The daemon did not answer" is not "the daemon does not know you": the
+  // line must say the lookup failed, not send a reader to Tailscale settings.
+  check("a failed lookup is reported as such", hung.ctx.whoAmILine().startsWith("Couldn't reach ccmuxd")
+    && !hung.ctx.whoAmILine().includes("Not identified"), hung.ctx.whoAmILine());
+
+  // push.js waits for identity ONLY at the deep-link attach: the service
+  // worker registers and the settings sheet wires while whoami is still out.
+  const slowPush = run({ whoami: "hang", withPush: true });
+  await tick();
+  await tick();
+  check("push.js registers the service worker before identity answers", slowPush.swRegistrations() === 1,
+    `${slowPush.swRegistrations()} registration(s) while whoami hung`);
+
+  const old = run();
+  await tick();
+  await tick();
+  check("an old daemon still boots", old.fetched.some((f) => f.url.startsWith("/v1/hosts")),
+    "no /v1/hosts call after a 404 from whoami");
+  check("an old daemon falls back to the prompt", old.ctx.getUser() === "Patric" && old.prompts() === 1,
+    `getUser() = ${old.ctx.getUser()}, ${old.prompts()} prompt(s)`);
+  const oldLine = old.ctx.whoAmILine();
+  check("a too-old daemon is not an error", oldLine.startsWith("Not identified"), oldLine);
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

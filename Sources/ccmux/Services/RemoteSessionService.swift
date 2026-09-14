@@ -526,6 +526,34 @@ final class RemoteSessionService: ObservableObject {
         var errorDescription: String? { reason.isEmpty ? "HTTP \(status)" : reason }
     }
 
+    /// Who the daemon takes this app for (GET /v1/whoami). Same contract as
+    /// the web lens's boot-time call: over the tailnet the answer is vouched
+    /// and the identity field in settings is informational. nil when the
+    /// daemon predates the route (404): the web lens treats that as "the
+    /// daemon cannot say", not as an error, and so does this. Any other
+    /// non-200 is a DaemonError with the status kept.
+    func fetchWhoAmI() async throws -> DaemonWhoAmI? {
+        // The declared name rides along, as on every attach: the daemon's
+        // alias tier maps it onto a login, and asking as nobody would miss it.
+        var comps = URLComponents(string: "\(DaemonConfig.baseURL)/v1/whoami")
+        comps?.queryItems = [URLQueryItem(name: "user", value: DaemonConfig.selfUser)]
+        guard let url = comps?.url else {
+            throw URLError(.badURL)
+        }
+        // Same bound as the web lens (WHOAMI_TIMEOUT_MS): a half-open
+        // connection must not hold the settings sheet for the session's
+        // default 60s.
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 3
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 404 { return nil }
+        guard http.statusCode == 200 else {
+            throw DaemonError(status: http.statusCode, reason: String(data: data, encoding: .utf8) ?? "")
+        }
+        return try JSONDecoder().decode(DaemonWhoAmI.self, from: data)
+    }
+
     /// Fetch the daemon-wide lens settings (identity, dev hostnames, llm
     /// accounts, harnesses + per-folder preselect rules).
     func fetchSettings() async throws -> DaemonSettings {

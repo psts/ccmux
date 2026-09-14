@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/manager"
@@ -228,5 +229,64 @@ func TestResolveIdentity_UnaliasedNamePassesThrough(t *testing.T) {
 	}
 	if got := s.resolveIdentity(req("127.0.0.1:5000", "?user=dave")).Login; got != "dave" {
 		t.Errorf("login = %q, want the declared name untouched", got)
+	}
+}
+
+// /v1/whoami echoes resolveIdentity for the caller. Over the tailnet the
+// declared ?user= is ignored and the answer is vouched; a bare loopback caller
+// with no owner setting gets its own declared name back, unvouched — the case
+// where the web lens must still ask.
+func TestWhoAmI_ReportsTheResolvedIdentity(t *testing.T) {
+	s := newIdentityServer(t, fakeResolver{login: "carol@example.com", display: "Carol", ok: true})
+	rec := httptest.NewRecorder()
+	s.whoAmI(rec, req("100.64.0.9:5000", "?user=typed"))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"login":"carol@example.com"`, `"display":"Carol"`, `"verified":true`, `"vouched":true`, `"source":"tailscale"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("whoami body %s lacks %s", body, want)
+		}
+	}
+
+	// The declared name matters off the tailnet: an alias maps it onto the
+	// login pushes key on, and the answer is vouched — the lens must not
+	// prompt for a name the daemon already maps.
+	s = newIdentityServer(t, fakeResolver{})
+	if err := s.mgr.SetIdentityAliases(map[string]string{"Patric Sandelin": "sandelin@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	s.whoAmI(rec, req("100.64.0.9:5000", "?user="+url.QueryEscape("Patric Sandelin")))
+	body = rec.Body.String()
+	for _, want := range []string{`"login":"sandelin@example.com"`, `"display":"Patric Sandelin"`, `"vouched":true`, `"verified":false`, `"source":"alias"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("aliased whoami body %s lacks %s", body, want)
+		}
+	}
+
+	s = newIdentityServer(t, fakeResolver{})
+	rec = httptest.NewRecorder()
+	s.whoAmI(rec, req("127.0.0.1:5000", "?user=typed"))
+	body = rec.Body.String()
+	for _, want := range []string{`"login":"typed"`, `"verified":false`, `"vouched":false`, `"source":"declared"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("unvouched whoami body %s lacks %s", body, want)
+		}
+	}
+}
+
+// The route itself, through the mux: both lenses treat a non-200 from
+// /v1/whoami as "daemon too old" and fall back silently, so a dropped or
+// misregistered route would never show up as an error anywhere else.
+func TestWhoAmI_IsRouted(t *testing.T) {
+	s := newIdentityServer(t, fakeResolver{login: "carol@example.com", display: "Carol", ok: true})
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/whoami?user=typed", nil)
+	r.RemoteAddr = "100.64.0.9:5000"
+	s.Handler().ServeHTTP(rec, r)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"login":"carol@example.com"`) {
+		t.Fatalf("GET /v1/whoami = %d %s", rec.Code, rec.Body.String())
 	}
 }

@@ -47,7 +47,7 @@ const deviceId = (() => {
 
 // "Patric (web)" reads better than a uuid when you are looking at which lens is
 // holding a window open. Recomputed rather than stored: the name can change.
-const deviceLabel = () => (localStorage.getItem("ccmux-user") || "anon") + " (web)";
+const deviceLabel = () => (whoami ? (whoami.display || whoami.login) : (localStorage.getItem("ccmux-user") || "anon")) + " (web)";
 
 // Does THIS lens hold the window open? `openHere` is per-device; `open` is
 // per-login and cannot answer it. The fallback is for a daemon older than the
@@ -98,15 +98,90 @@ async function keepOpenFlagsAlive() {
   }
 }
 
-// A display name for presence; asked once and remembered. Tailscale identity
-// will replace this on the tailnet.
+// Who the daemon takes this lens for, from GET /v1/whoami at boot. On the
+// tailnet that is the Tailscale login of the device (an iPhone, a laptop) and
+// it is VOUCHED: routing, suppression and window ownership already keyed on it
+// and ignored whatever name was typed here, so the prompt below was ceremony.
+// Null until the answer arrives, and stays null when the daemon cannot vouch
+// (loopback with no owner setting, a scratch daemon) — then the prompt is
+// still the only name there is.
+let whoami = null;
+// Set when the daemon could not be ASKED (unreachable, timed out, or an error
+// status). Distinct from a null whoami: "the daemon did not say" must not
+// render as "the daemon says it does not know you", which sends a reader to
+// reconfigure a working identity. A 404 is not an error here: the daemon is
+// too old for the route and genuinely has nothing to say.
+let whoamiError = null;
+
+//
+// The stored name rides along (read directly, never via getUser, which would
+// prompt): the daemon's alias tier maps a typed name onto a login, and asking
+// as "anon" would miss it. Bounded by a timeout so a half-open connection
+// cannot hold the whole boot; the boot then proceeds with the prompt.
+const WHOAMI_TIMEOUT_MS = 3000;
+
+async function loadIdentity() {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), WHOAMI_TIMEOUT_MS);
+  try {
+    const declared = localStorage.getItem("ccmux-user") || "";
+    const r = await fetch("/v1/whoami?user=" + encodeURIComponent(declared), { signal: ctl.signal });
+    if (r.status === 404) {
+      console.warn("[ccmux] this daemon has no /v1/whoami; falling back to the name prompt");
+      return;
+    }
+    if (!r.ok) {
+      whoamiError = `Couldn't reach ccmuxd at ${location.host} to check who you are (HTTP ${r.status}).`;
+      console.warn(`[ccmux] whoami answered ${r.status}; falling back to the name prompt`);
+      return;
+    }
+    const id = await r.json();
+    if (id && id.vouched && id.login) whoami = id;
+  } catch (e) {
+    whoamiError = `Couldn't reach ccmuxd at ${location.host} to check who you are (${e && e.name === "AbortError" ? "timed out" : e}).`;
+    console.warn("[ccmux] whoami failed; falling back to the name prompt", e);
+  } finally {
+    clearTimeout(timer);
+    renderWhoAmI();
+  }
+}
+
+// A display name for presence: the vouched identity when the daemon has one,
+// else asked once and remembered. Callers run after boot awaited loadIdentity,
+// so a vouched lens never sees the prompt.
 function getUser() {
+  if (whoami) return whoami.display || whoami.login;
   let u = localStorage.getItem("ccmux-user");
   if (!u) {
     u = (prompt("Your name (for presence):", "") || "anon").trim() || "anon";
     localStorage.setItem("ccmux-user", u);
+    renderWhoAmI(); // the line rendered "anon" before the prompt had an answer
   }
   return u;
+}
+
+// The settings line under Notifications: the same identity pushes are keyed
+// on, so a phone that never buzzes can be checked against it. Names the TIER
+// that keyed the login (whoami.source), because the alias and owner tiers
+// look alike from here and send a reader to different settings.
+function whoAmILine() {
+  if (whoamiError) return whoamiError;
+  if (!whoami) {
+    return `Not identified by Tailscale. Going by the name "${localStorage.getItem("ccmux-user") || "anon"}".`;
+  }
+  const who = whoami.display && whoami.display !== whoami.login
+    ? `${whoami.display} (${whoami.login})` : whoami.login;
+  switch (whoami.source) {
+    case "tailscale": return `Signed in as ${who} via Tailscale.`;
+    case "alias": return `Signed in as ${who}, by the daemon's identity alias for "${whoami.display}".`;
+    case "owner": return `Signed in as ${who}, this machine's owner.`;
+    default: return `Signed in as ${who}.`;
+  }
+}
+
+function renderWhoAmI() {
+  const el = $("whoami");
+  if (el) el.textContent = whoAmILine();
 }
 
 // --- base64 <-> bytes (terminal I/O travels base64 in JSON frames) ---
@@ -2751,7 +2826,12 @@ function bootDeepLink() {
 }
 
 // --- boot ---
-window.ccmux = { attach, getUser }; // push.js deep-links + shares the presence name
+// Identity first: the firehose and a deep-link attach both send the presence
+// name, and on the tailnet that name comes from the daemon, not a prompt.
+// push.js awaits the same promise before its own deep-link attach (a
+// notification tap), which otherwise fires on DOMContentLoaded, ahead of it.
+const identityReady = loadIdentity();
+window.ccmux = { attach, getUser, identityReady }; // push.js deep-links + shares the presence name
 $("new-ws").onclick = newWorkspace;
 $("project-close").onclick = closeProjectModal;
 $("project-folder-mk").onclick = createProjectFolder;
@@ -2768,8 +2848,10 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeWsMen
 $("menu-toggle").onclick = toggleDrawer;
 $("drawer-backdrop").onclick = closeDrawer;
 $("takeover").onclick = takeOver;
-fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-link attach dials direct
-connectFirehose();
+identityReady.then(() => {
+  fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-link attach dials direct
+  connectFirehose();
+});
 setInterval(fetchWorkspaces, 5000); // reflect status/pane-count changes
 
 // --- pane notices: short, self-clearing lines about what just happened in a

@@ -291,6 +291,7 @@ func (s *Server) reconcileSidecars() {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.health)
+	mux.HandleFunc("GET /v1/whoami", s.whoAmI)
 	mux.HandleFunc("GET /v1/hub", s.hubInfo)
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("POST /v1/projects", s.createProject)
