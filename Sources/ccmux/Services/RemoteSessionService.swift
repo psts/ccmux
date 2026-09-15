@@ -547,7 +547,12 @@ final class RemoteSessionService: ObservableObject {
         req.timeoutInterval = 3
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        if http.statusCode == 404 { return nil }
+        if http.statusCode == 404 {
+            // Too old for the route, not an error: nil is that one case, and
+            // the settings line renders it as such rather than as "unknown".
+            NSLog("whoami: this daemon has no /v1/whoami (update ccmuxd)")
+            return nil
+        }
         guard http.statusCode == 200 else {
             throw DaemonError(status: http.statusCode, reason: String(data: data, encoding: .utf8) ?? "")
         }

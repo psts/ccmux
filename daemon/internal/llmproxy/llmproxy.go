@@ -192,8 +192,9 @@ var ErrNoStoredKey = errors.New("holds no stored key")
 
 // AccountKey returns one account's stored credential, unredacted. This is the
 // ONE read that hands the secret back, for the settings editor's reveal
-// button; the api layer gates it on a vouched caller before calling here,
-// and Snapshot stays redacted for everything else.
+// button; the api layer gates it on a WhoIs-verified login or the loopback
+// owner (api.canRevealSecrets) before calling here, and Snapshot stays
+// redacted for everything else.
 func (s *Service) AccountKey(name string) (string, error) {
 	accs, err := s.Accounts()
 	if err != nil {

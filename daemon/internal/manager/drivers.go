@@ -27,10 +27,12 @@ type drivers struct {
 // the daemon cannot name, or a shared machine could never take a repo back.
 //
 // The store is written only when the driver CHANGES — a keystroke per write
-// would be a database hit per key — and after the lock is released: Input
-// runs on the pane's input-drain goroutine, and a busy SQLite must not stall
-// the next keystroke behind it. At is therefore current in memory and, after
-// a restart, the keystroke that STARTED the remembered driver's tenure.
+// would be a database hit per key — and after the lock is released, so other
+// panes' input workers never queue behind a SQLite write. The write itself
+// still runs on this pane's drain worker; it is rare only because it happens
+// on a driver change, not per keystroke. At is therefore current in memory
+// and, after a restart, the keystroke that STARTED the remembered driver's
+// tenure.
 func (m *Manager) RecordDriver(wsID, login string, at int64) {
 	m.drivers.mu.Lock()
 	m.loadDriversLocked()
@@ -42,13 +44,17 @@ func (m *Manager) RecordDriver(wsID, login string, at int64) {
 		delete(m.drivers.byWS, wsID)
 	}
 	m.drivers.mu.Unlock()
-	if m.store == nil || (had && prev.Login == login) || (!had && !usable) {
+	if m.store == nil {
 		return
 	}
+	// Two positive cases; everything else is a no-op. The quiet one is an
+	// anon typist on a workspace nobody is remembered for, which would
+	// otherwise be a DELETE per keystroke.
 	var err error
-	if usable {
+	switch {
+	case usable && (!had || prev.Login != login): // a new person took the repo
 		err = m.store.SetWorkspaceDriver(wsID, model.WorkspaceDriver{Login: login, At: at})
-	} else {
+	case !usable && had: // an unidentified typist displaced them
 		err = m.store.DeleteWorkspaceDriver(wsID)
 	}
 	if err != nil {
@@ -93,8 +99,9 @@ func (m *Manager) LastDrivers() map[string]model.WorkspaceDriver {
 }
 
 // loadDriversLocked seeds the cache from the store once. Lazy rather than in
-// New so the store-less managers tests build stay cheap; a read failure logs
-// and starts empty (routing widens to window holders until someone types).
+// New because New does no store reads today (Start does them) and this keeps
+// it that way; a read failure logs and starts empty (routing widens to window
+// holders until someone types).
 func (m *Manager) loadDriversLocked() {
 	if m.drivers.loaded {
 		return

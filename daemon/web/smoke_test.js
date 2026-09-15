@@ -34,26 +34,49 @@ const el = () => new Proxy(function () {}, {
   apply: () => el(),
 });
 
-// windowsReply lets a case control each /v1/windows answer in turn, and gate
-// lets it hold one open so two reads can resolve OUT OF ORDER.
-function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null, whoami = null, storage = {},
-  whoamiGate = null, withPush = false, pendingNav = null } = {}) {
-  const fetched = [];
-  const errors = [];
-  const sockets = [];
-  let swRegistrations = 0;
-  let reads = 0;
-  let prompts = 0;
-  // Timers are collected, never fired on their own: a case fires them itself
-  // (fireTimers) to prove a timeout does what it claims.
-  const timers = [];
+// The daemon the fake browser talks to. windowsReply lets a case control each
+// /v1/windows answer in turn, and gate lets it hold one open so two reads can
+// resolve OUT OF ORDER. `book` is the bookkeeping the cases read back.
+function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null, whoami = null,
+  whoamiGate = null }, book) {
   // A fetch that never settles, unless its abort signal fires — the shape of
   // a half-open connection.
   const hang = (signal) => new Promise((_, reject) => {
     if (signal) signal.onabort = () => reject(new Error("aborted"));
   });
-  const ctx = {
-    console: { log() {}, warn() {}, error: (...a) => { errors.push(a.map(String).join(" ")); }, info() {} },
+  return async (url, opts) => {
+    const u = String(url);
+    book.fetched.push({ url: u, method: (opts && opts.method) || "GET", body: opts && opts.body });
+    if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => [] };
+    if (u.startsWith("/v1/whoami")) {
+      if (whoami === "hang") return hang(opts && opts.signal);
+      if (whoami === null) return { ok: false, status: 404, json: async () => ({}) };
+      if (whoamiGate) await whoamiGate;
+      return { ok: true, status: 200, json: async () => whoami };
+    }
+    if (u.startsWith("/v1/windows?")) {
+      const n = book.reads++;
+      const good = windowsOkFor ? windowsOkFor(n) : windowsOk;
+      if (!good) return { ok: false, status: 503, text: async () => "unreadable" };
+      const hold = gate ? gate(n) : null;
+      return { ok: true, status: 200, json: async () => {
+        if (hold) await hold;
+        return windowsReply
+          ? windowsReply(n)
+          : [{ id: "win-here", name: "Here", workspaceIds: [], openBy: ["p"], open: true, openHere: true }];
+      } };
+    }
+    return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
+  };
+}
+
+// The fake browser: the minimum globals app.js touches at load. Timers are
+// collected into `book`, never fired on their own: a case fires them itself
+// (fireTimers) to prove a timeout does what it claims.
+function makeContext(opts, book) {
+  const { storage = {}, pendingNav = null } = opts;
+  return {
+    console: { log() {}, warn() {}, error: (...a) => { book.errors.push(a.map(String).join(" ")); }, info() {} },
     document: new Proxy({}, { get: () => el() }),
     localStorage: {
       getItem: (k) => (k in storage ? storage[k] : null),
@@ -63,10 +86,10 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
     crypto: { randomUUID: () => "test-device-uuid" },
     location: { href: "http://x/", origin: "http://x", search: "", pathname: "/", protocol: "http:", host: "x" },
     navigator: { userAgent: "node", serviceWorker: {
-      register: () => { swRegistrations++; return Promise.resolve({ pushManager: { getSubscription: async () => null } }); },
+      register: () => { book.swRegistrations++; return Promise.resolve({ pushManager: { getSubscription: async () => null } }); },
       addEventListener() {},
     } },
-    WebSocket: function (url) { sockets.push(String(url)); return el(); },
+    WebSocket: function (url) { book.sockets.push(String(url)); return el(); },
     PushManager: function () {},
     // xterm.js, for the deep-link attach case: a terminal that accepts anything.
     Terminal: function () { return el(); },
@@ -75,38 +98,23 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
       match: async (k) => (pendingNav && k === "/__ccmux_pending_nav" ? { text: async () => pendingNav } : undefined),
       delete: async () => true,
     }) },
-    setInterval: () => 0, setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearInterval() {}, clearTimeout() {},
+    setInterval: () => 0, setTimeout: (fn) => { book.timers.push(fn); return book.timers.length; }, clearInterval() {}, clearTimeout() {},
     addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }),
-    prompt: () => { prompts++; return "Patric"; }, alert() {}, confirm: () => true,
+    prompt: () => { book.prompts++; return "Patric"; }, alert() {}, confirm: () => true,
     AbortController: function () { const s = { onabort: null }; this.signal = s; this.abort = () => { if (s.onabort) s.onabort(); }; },
     Notification: { permission: "default" },
     URLSearchParams, URL, TextEncoder, TextDecoder,
     atob: (x) => x, btoa: (x) => x,
-    fetch: async (url, opts) => {
-      const u = String(url);
-      fetched.push({ url: u, method: (opts && opts.method) || "GET", body: opts && opts.body });
-      if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => [] };
-      if (u.startsWith("/v1/whoami")) {
-        if (whoami === "hang") return hang(opts && opts.signal);
-        if (whoami === null) return { ok: false, status: 404, json: async () => ({}) };
-        if (whoamiGate) await whoamiGate;
-        return { ok: true, status: 200, json: async () => whoami };
-      }
-      if (u.startsWith("/v1/windows?")) {
-        const n = reads++;
-        const good = windowsOkFor ? windowsOkFor(n) : windowsOk;
-        if (!good) return { ok: false, status: 503, text: async () => "unreadable" };
-        const hold = gate ? gate(n) : null;
-        return { ok: true, status: 200, json: async () => {
-          if (hold) await hold;
-          return windowsReply
-            ? windowsReply(n)
-            : [{ id: "win-here", name: "Here", workspaceIds: [], openBy: ["p"], open: true, openHere: true }];
-        } };
-      }
-      return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
-    },
+    fetch: fakeFetch(opts, book),
   };
+}
+
+// Boots app.js (and push.js when asked) in a fresh fake browser and hands
+// back the handles the cases assert on.
+function run(opts = {}) {
+  const { withPush = false } = opts;
+  const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0 };
+  const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), ctx, { filename: "app.js" });
@@ -115,8 +123,9 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   // the context object; only function declarations do. Later scripts in the same
   // context DO see it.
   const evalIn = (code) => vm.runInContext(code, ctx);
-  const fireTimers = () => { const due = timers.splice(0); for (const fn of due) fn(); };
-  return { ctx, fetched, errors, evalIn, prompts: () => prompts, fireTimers, sockets, swRegistrations: () => swRegistrations };
+  const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
+  return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
+    sockets: book.sockets, swRegistrations: () => book.swRegistrations };
 }
 
 (async () => {
@@ -330,6 +339,34 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   await tick();
   check("an unvouched echo still prompts", echo.prompts() === 1 && echo.ctx.getUser() === "Patric",
     `getUser() = ${echo.ctx.getUser()}, ${echo.prompts()} prompt(s)`);
+  const echoLine = echo.ctx.whoAmILine();
+  check("an unvouched answer reads as unidentified, never as a daemon to update",
+    echoLine.startsWith("Not identified by Tailscale") && !echoLine.includes("update ccmuxd"), echoLine);
+
+  // Copying a revealed key says how it went. Three outcomes: no clipboard API
+  // (a plain-http lens), a refused write, a write that lands. The empty text
+  // is the row the code must not touch: nothing to copy, nothing to say.
+  const clip = run();
+  await tick();
+  const outcomes = [];
+  const state = { textContent: "" };
+  clip.ctx.navigator.clipboard = undefined;
+  await clip.ctx.copyToClipboard("", state);
+  outcomes.push(state.textContent);
+  await clip.ctx.copyToClipboard("sk-ant-x", state);
+  outcomes.push(state.textContent);
+  clip.ctx.navigator.clipboard = { writeText: async () => { throw new Error("denied"); } };
+  await clip.ctx.copyToClipboard("sk-ant-x", state);
+  outcomes.push(state.textContent);
+  let written = "";
+  clip.ctx.navigator.clipboard = { writeText: async (t) => { written = t; } };
+  await clip.ctx.copyToClipboard("sk-ant-x", state);
+  outcomes.push(state.textContent);
+  check("copy: empty text says nothing", outcomes[0] === "", outcomes[0]);
+  check("copy: no clipboard API names https", outcomes[1].startsWith("Copy needs https"), outcomes[1]);
+  check("copy: a refused write carries its reason", outcomes[2].startsWith("Couldn't copy (denied)"), outcomes[2]);
+  check("copy: a landed write confirms and wrote the text", outcomes[3] === "Copied." && written === "sk-ant-x",
+    `${outcomes[3]} / wrote ${JSON.stringify(written)}`);
 
   // A whoami that never answers must not hold the boot: the timeout aborts
   // it, hosts and the firehose come up, and the prompt is the name.
@@ -365,7 +402,9 @@ function run({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate 
   check("an old daemon falls back to the prompt", old.ctx.getUser() === "Patric" && old.prompts() === 1,
     `getUser() = ${old.ctx.getUser()}, ${old.prompts()} prompt(s)`);
   const oldLine = old.ctx.whoAmILine();
-  check("a too-old daemon is not an error", oldLine.startsWith("Not identified"), oldLine);
+  check("a too-old daemon is named as such, not as an error or an unknown caller",
+    oldLine.includes("update ccmuxd") && !oldLine.startsWith("Couldn't reach") && !oldLine.startsWith("Not identified"),
+    oldLine);
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

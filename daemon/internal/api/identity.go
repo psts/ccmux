@@ -19,13 +19,24 @@ type identity struct {
 	// The self-declared ?user= path is never vouched. Weaker than Verified,
 	// which additionally gates git attribution.
 	Vouched bool
-	// Source names the tier that produced Login: "tailscale" (WhoIs), "alias"
-	// (a configured name→login mapping), "owner" (the host-owner setting over
-	// loopback) or "declared" (the caller's own ?user=, nothing vouched). A
-	// lens shows it, because "why does my phone not buzz" is answered by which
-	// tier keyed the login, and the alias and owner tiers look alike otherwise.
-	Source string
+	// Source names the tier that produced Login. A lens shows it, because
+	// "why does my phone not buzz" is answered by which tier keyed the login,
+	// and the alias and owner tiers look alike otherwise. It is also what the
+	// secret-reveal gate keys on (canRevealSecrets), so the vocabulary is a
+	// typed constant rather than a string a display tweak could drift.
+	Source identitySource
 }
+
+// identitySource is the tier that named a caller. The strings cross the wire
+// to both lenses (whoami's "source"), so they are a contract, not labels.
+type identitySource string
+
+const (
+	sourceTailscale identitySource = "tailscale" // WhoIs named the caller
+	sourceAlias     identitySource = "alias"     // a configured name→login mapping
+	sourceOwner     identitySource = "owner"     // the host-owner setting, over loopback only
+	sourceDeclared  identitySource = "declared"  // the caller's own ?user=, nothing vouched
+)
 
 // resolveIdentity determines who is calling. When the daemon runs as its own
 // tsnet node, s.identity is backed by that node's in-process WhoIs, so a lens
@@ -53,7 +64,7 @@ type identity struct {
 // remain WhoIs-vouched only.
 func (s *Server) resolveIdentity(r *http.Request) identity {
 	if login, display, ok := s.identity.Resolve(r.RemoteAddr); ok {
-		return identity{Login: login, Display: orDefault(display, login), Email: login, Verified: true, Vouched: true, Source: "tailscale"}
+		return identity{Login: login, Display: orDefault(display, login), Email: login, Verified: true, Vouched: true, Source: sourceTailscale}
 	}
 	u := orDefault(r.URL.Query().Get("user"), "anon")
 	if login := s.mgr.ResolveAlias(u); login != u {
@@ -61,16 +72,16 @@ func (s *Server) resolveIdentity(r *http.Request) identity {
 		// the blanket owner tier below, which vouches. Leaving this branch
 		// unvouched made configuring an alias worse than not having one (the
 		// reader fell to the global alert rule and received everything).
-		return identity{Login: login, Display: u, Verified: false, Vouched: true, Source: "alias"}
+		return identity{Login: login, Display: u, Verified: false, Vouched: true, Source: sourceAlias}
 	}
 	if owner := s.mgr.Owner(); owner != "" && loopback(r.RemoteAddr) {
 		display := u
 		if display == "anon" {
 			display = owner // nothing was declared; the owner IS the best name we have
 		}
-		return identity{Login: owner, Display: display, Verified: false, Vouched: true, Source: "owner"}
+		return identity{Login: owner, Display: display, Verified: false, Vouched: true, Source: sourceOwner}
 	}
-	return identity{Login: u, Display: u, Verified: false, Source: "declared"}
+	return identity{Login: u, Display: u, Verified: false, Source: sourceDeclared}
 }
 
 // loopback bounds the owner tier to the machine's own keyboard. Without it,

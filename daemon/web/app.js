@@ -47,7 +47,7 @@ const deviceId = (() => {
 
 // "Patric (web)" reads better than a uuid when you are looking at which lens is
 // holding a window open. Recomputed rather than stored: the name can change.
-const deviceLabel = () => (whoami ? (whoami.display || whoami.login) : (localStorage.getItem("ccmux-user") || "anon")) + " (web)";
+const deviceLabel = () => currentName() + " (web)";
 
 // Does THIS lens hold the window open? `openHere` is per-device; `open` is
 // per-login and cannot answer it. The fallback is for a daemon older than the
@@ -112,14 +112,24 @@ let whoami = null;
 // reconfigure a working identity. A 404 is not an error here: the daemon is
 // too old for the route and genuinely has nothing to say.
 let whoamiError = null;
+// Set when the daemon answered 404: too old for the route. Not an error, but
+// not "unknown to the daemon" either — an old daemon still vouches every
+// tailnet request the old way, so the line must not send a reader to
+// reconfigure a working identity.
+let whoamiUnsupported = false;
 
-//
-// The stored name rides along (read directly, never via getUser, which would
-// prompt): the daemon's alias tier maps a typed name onto a login, and asking
-// as "anon" would miss it. Bounded by a timeout so a half-open connection
-// cannot hold the whole boot; the boot then proceeds with the prompt.
+// The name this lens goes by, without ever prompting: the vouched identity,
+// else the stored name, else anon. deviceLabel and whoAmILine read it as is;
+// getUser is the prompting superset, asking only when nothing is stored.
+const currentName = () => (whoami ? (whoami.display || whoami.login) : (localStorage.getItem("ccmux-user") || "anon"));
+
+// Bounds loadIdentity so a half-open connection cannot hold the whole boot.
 const WHOAMI_TIMEOUT_MS = 3000;
 
+// Asks the daemon who it takes this lens for. The stored name rides along
+// (read directly, never via getUser, which would prompt): the daemon's alias
+// tier maps a typed name onto a login, and asking as "anon" would miss it.
+// On a timeout the boot proceeds with the prompt.
 async function loadIdentity() {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), WHOAMI_TIMEOUT_MS);
@@ -127,6 +137,7 @@ async function loadIdentity() {
     const declared = localStorage.getItem("ccmux-user") || "";
     const r = await fetch("/v1/whoami?user=" + encodeURIComponent(declared), { signal: ctl.signal });
     if (r.status === 404) {
+      whoamiUnsupported = true;
       console.warn("[ccmux] this daemon has no /v1/whoami; falling back to the name prompt");
       return;
     }
@@ -150,14 +161,31 @@ async function loadIdentity() {
 // else asked once and remembered. Callers run after boot awaited loadIdentity,
 // so a vouched lens never sees the prompt.
 function getUser() {
-  if (whoami) return whoami.display || whoami.login;
-  let u = localStorage.getItem("ccmux-user");
-  if (!u) {
-    u = (prompt("Your name (for presence):", "") || "anon").trim() || "anon";
-    localStorage.setItem("ccmux-user", u);
-    renderWhoAmI(); // the line rendered "anon" before the prompt had an answer
-  }
+  if (whoami || localStorage.getItem("ccmux-user")) return currentName();
+  const u = (prompt("Your name (for presence):", "") || "anon").trim() || "anon";
+  localStorage.setItem("ccmux-user", u);
+  renderWhoAmI(); // the line rendered "anon" before the prompt had an answer
   return u;
+}
+
+// Copies text and says how it went in `state`. A silent Copy is worse than
+// none: the user just revealed a secret, and a click that copies nothing
+// leaves them pasting whatever was there before. The clipboard API is absent
+// on a plain-http lens and a write can be refused even on https, so both
+// outcomes land in the state line; the text is on screen and selectable
+// either way. Module scope so the smoke test can drive all three outcomes.
+async function copyToClipboard(text, state) {
+  if (!text) return;
+  if (!navigator.clipboard) {
+    state.textContent = "Copy needs https here; select the key and copy it by hand.";
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    state.textContent = "Copied.";
+  } catch (e) {
+    state.textContent = "Couldn't copy (" + (e.message || e) + "); select the key and copy it by hand.";
+  }
 }
 
 // The settings line under Notifications: the same identity pushes are keyed
@@ -166,8 +194,11 @@ function getUser() {
 // look alike from here and send a reader to different settings.
 function whoAmILine() {
   if (whoamiError) return whoamiError;
+  if (whoamiUnsupported) {
+    return `This daemon does not say who you are (no /v1/whoami; update ccmuxd). Going by the name "${currentName()}".`;
+  }
   if (!whoami) {
-    return `Not identified by Tailscale. Going by the name "${localStorage.getItem("ccmux-user") || "anon"}".`;
+    return `Not identified by Tailscale. Going by the name "${currentName()}".`;
   }
   const who = whoami.display && whoami.display !== whoami.login
     ? `${whoami.display} (${whoami.login})` : whoami.login;
@@ -2156,10 +2187,7 @@ function wireLLMSettings() {
       mq(".lm-key").placeholder = "token / api key: " + keyHintFor({ kind: mq(".lm-kind").value });
     });
     mq(".lm-key-show").addEventListener("click", revealKey);
-    mq(".lm-key-copy").addEventListener("click", () => {
-      const v = mq(".lm-key-value").textContent;
-      if (v && navigator.clipboard) navigator.clipboard.writeText(v);
-    });
+    mq(".lm-key-copy").addEventListener("click", () => copyToClipboard(mq(".lm-key-value").textContent, $("llm-modal-state")));
   }
 
   // The stored key, fetched on demand and shown beside the box rather than

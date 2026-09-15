@@ -46,5 +46,5 @@ func (s *Server) llmAccountKey(w http.ResponseWriter, r *http.Request) {
 // verified by WhoIs, or the owner tier (which resolveIdentity already bounds
 // to loopback). Vouched alone is too weak — see llmAccountKey.
 func canRevealSecrets(id identity) bool {
-	return id.Verified || id.Source == "owner"
+	return id.Verified || id.Source == sourceOwner
 }

@@ -69,31 +69,8 @@ struct AccountEditorView: View {
                     }
                     TextField(urlHint, text: $account.baseURL)
                         .font(.system(size: 12, design: .monospaced))
-                    HStack(spacing: 6) {
-                        SecureField(keyHint, text: $account.apiKey)
-                            .font(.system(size: 12, design: .monospaced))
-                        // Only when there is something stored to show; the
-                        // web modal hides its button on the same condition.
-                        if !existingName.isEmpty && account.apiKeySet {
-                            Button("Show") { Task { await revealKey() } }
-                                .help("Fetch the stored key from the daemon. Only a verified tailnet login or this machine's owner may.")
-                        }
-                    }
-                    if let key = revealedKey {
-                        HStack(spacing: 6) {
-                            Text(key)
-                                .font(.system(size: 11, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Button("Copy") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(key, forType: .string)
-                            }
-                        }
-                    }
-                    if !revealNote.isEmpty {
-                        Text(revealNote).font(.system(size: 11)).foregroundColor(.secondary)
-                    }
+                    keyRow
+                    revealedKeyRow
                     HStack(spacing: 6) {
                         TextField("aliases: claude-haiku-*=qwen3-4b-32k", text: $account.aliases)
                             .font(.system(size: 12, design: .monospaced))
@@ -180,6 +157,42 @@ struct AccountEditorView: View {
                     }
                     .joined(separator: ", ")
             })
+    }
+
+    /// The credential box plus Show, which appears only when there is
+    /// something stored to show; the web modal hides its button on the same
+    /// condition.
+    private var keyRow: some View {
+        HStack(spacing: 6) {
+            SecureField(keyHint, text: $account.apiKey)
+                .font(.system(size: 12, design: .monospaced))
+            if !existingName.isEmpty && account.apiKeySet {
+                Button("Show") { Task { await revealKey() } }
+                    .help("Fetch the stored key from the daemon. Only a verified tailnet login or this machine's owner may.")
+            }
+        }
+    }
+
+    /// The fetched key with Copy, or the reveal's status line: shown beside
+    /// the box, never typed into it, so Save still keeps the stored key.
+    @ViewBuilder
+    private var revealedKeyRow: some View {
+        if let key = revealedKey {
+            HStack(spacing: 6) {
+                Text(key)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(key, forType: .string)
+                    revealNote = "Copied." // the web lens confirms too
+                }
+            }
+        }
+        if !revealNote.isEmpty {
+            Text(revealNote).font(.system(size: 11)).foregroundColor(.secondary)
+        }
     }
 
     /// The daemon's reveal answers only a caller it can vouch for; its

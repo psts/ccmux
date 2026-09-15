@@ -11,9 +11,13 @@ struct DaemonSettingsView: View {
     var onDone: (() -> Void)?
 
     @State private var identity = ""
-    /// Who the daemon says we are (GET /v1/whoami); nil until answered or
-    /// when the daemon is too old to say.
+    /// Who the daemon says we are (GET /v1/whoami); nil until answered.
     @State private var whoami: DaemonWhoAmI? = nil
+    /// Set when the daemon answered 404: too old for the route. Its own
+    /// state, as in the web lens (whoamiUnsupported): a nil `whoami` is also
+    /// "not answered yet", and the sheet is on screen while the fetch runs,
+    /// so nil must not read as "update ccmuxd".
+    @State private var whoamiUnsupported = false
     /// Set when /v1/whoami could not be asked or answered. Distinct from a
     /// nil `whoami`: "the daemon did not say" must not render as "the daemon
     /// says it does not know you" — that sends someone to reconfigure a
@@ -178,7 +182,9 @@ struct DaemonSettingsView: View {
 
     private func loadWhoAmI() async {
         do {
-            whoami = try await RemoteSessionService.shared.fetchWhoAmI()
+            let answer = try await RemoteSessionService.shared.fetchWhoAmI()
+            whoami = answer
+            whoamiUnsupported = answer == nil // fetchWhoAmI's nil is exactly the 404
             whoamiError = nil
         } catch {
             NSLog("whoami failed: %@", String(describing: error))
@@ -191,10 +197,15 @@ struct DaemonSettingsView: View {
     /// against it.
     private var whoAmILine: String {
         if let e = whoamiError { return e }
-        // No answer (daemon too old) and an unvouched answer read the same,
-        // as in the web lens: the daemon has nothing to vouch for.
-        guard let w = whoami, w.vouched else {
-            return "Not identified by Tailscale. The daemon goes by \"\(whoami?.display ?? DaemonConfig.selfUser)\"."
+        // A too-old daemon still vouches every tailnet request the old way;
+        // it must not read as "the daemon does not know you". Same states,
+        // same order, as the web lens's whoAmILine.
+        if whoamiUnsupported {
+            return "This daemon does not say who you are (no /v1/whoami; update ccmuxd). The app goes by \"\(DaemonConfig.selfUser)\"."
+        }
+        guard let w = whoami else { return "Checking who you are…" }
+        guard w.vouched else {
+            return "Not identified by Tailscale. The daemon goes by \"\(w.display)\"."
         }
         let who = w.display != w.login ? "\(w.display) (\(w.login))" : w.login
         switch w.source ?? "" {

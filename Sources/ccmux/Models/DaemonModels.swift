@@ -72,7 +72,8 @@ struct DaemonHost: Decodable, Identifiable {
 
 /// GET /v1/whoami — who the daemon takes this app for. `vouched` means the
 /// login is what routing and push suppression key on (Tailscale named this
-/// device, or the daemon's owner setting did); `verified` additionally means
+/// device, a configured identity alias mapped the declared name, or the
+/// daemon's owner setting did over loopback); `verified` additionally means
 /// Tailscale did, which is what git attribution needs.
 struct DaemonWhoAmI: Codable {
     var login: String
@@ -82,7 +83,6 @@ struct DaemonWhoAmI: Codable {
     /// Which tier keyed the login: "tailscale", "alias", "owner" or "declared".
     var source: String?
 }
-
 
 /// Daemon-wide lens settings (GET/PUT /v1/settings): the dev-hostname serving
 /// config, llm accounts, and the harness registry — the single source of what

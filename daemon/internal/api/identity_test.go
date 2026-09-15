@@ -277,9 +277,9 @@ func TestWhoAmI_ReportsTheResolvedIdentity(t *testing.T) {
 	}
 }
 
-// The route itself, through the mux: both lenses treat a non-200 from
-// /v1/whoami as "daemon too old" and fall back silently, so a dropped or
-// misregistered route would never show up as an error anywhere else.
+// The route itself, through the mux: both lenses treat a 404 from /v1/whoami
+// as "daemon too old" and fall back without an error, and a dropped or
+// misregistered route IS a 404, so it would never show up anywhere else.
 func TestWhoAmI_IsRouted(t *testing.T) {
 	s := newIdentityServer(t, fakeResolver{login: "carol@example.com", display: "Carol", ok: true})
 	rec := httptest.NewRecorder()

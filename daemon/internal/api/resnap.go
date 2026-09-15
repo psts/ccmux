@@ -33,9 +33,10 @@ const resizeSettle = 150 * time.Millisecond
 // set absorbs repeats for free, so the channel carries nothing but a one-slot
 // wake-up and no request can be crowded out by another pane's.
 //
-// Threading: the read goroutine calls `request`; the write goroutine, which is
-// the connection's only writer, calls everything else and solely owns the timer.
-// `pending` is shared, so it is behind `mu`.
+// Threading: `request` is called from the read goroutine (a lens's own repaint
+// verb) and from the write goroutine (a session repaint event, see forward);
+// the write goroutine, which is the connection's only writer, calls everything
+// else and solely owns the timer. `pending` is shared, so it is behind `mu`.
 type resnapper struct {
 	wake  chan struct{}
 	timer *time.Timer
