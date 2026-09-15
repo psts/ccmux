@@ -28,6 +28,12 @@ struct AccountEditorView: View {
     @State private var account: DaemonSettingsView.EditableAccount
     @State private var models: [String] = []
     @State private var modelsNote = ""
+    /// The stored key once Show has fetched it; nil until then. Shown beside
+    /// the box, never typed into it: a value in the box would be re-sent as a
+    /// new key on Save, and the box's "empty keeps it" rule is what makes the
+    /// sheet safe to round-trip.
+    @State private var revealedKey: String? = nil
+    @State private var revealNote = ""
 
     init(
         account: DaemonSettingsView.EditableAccount?,
@@ -63,8 +69,31 @@ struct AccountEditorView: View {
                     }
                     TextField(urlHint, text: $account.baseURL)
                         .font(.system(size: 12, design: .monospaced))
-                    SecureField(keyHint, text: $account.apiKey)
-                        .font(.system(size: 12, design: .monospaced))
+                    HStack(spacing: 6) {
+                        SecureField(keyHint, text: $account.apiKey)
+                            .font(.system(size: 12, design: .monospaced))
+                        // Only when there is something stored to show; the
+                        // web modal hides its button on the same condition.
+                        if !existingName.isEmpty && account.apiKeySet {
+                            Button("Show") { Task { await revealKey() } }
+                                .help("Fetch the stored key from the daemon. Only a verified tailnet login or this machine's owner may.")
+                        }
+                    }
+                    if let key = revealedKey {
+                        HStack(spacing: 6) {
+                            Text(key)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(key, forType: .string)
+                            }
+                        }
+                    }
+                    if !revealNote.isEmpty {
+                        Text(revealNote).font(.system(size: 11)).foregroundColor(.secondary)
+                    }
                     HStack(spacing: 6) {
                         TextField("aliases: claude-haiku-*=qwen3-4b-32k", text: $account.aliases)
                             .font(.system(size: 12, design: .monospaced))
@@ -151,6 +180,19 @@ struct AccountEditorView: View {
                     }
                     .joined(separator: ", ")
             })
+    }
+
+    /// The daemon's reveal answers only a caller it can vouch for; its
+    /// refusal is the message worth showing, not a blank line.
+    private func revealKey() async {
+        revealNote = "Fetching key…"
+        let res = await RemoteSessionService.shared.fetchAccountKey(existingName)
+        if let err = res.error {
+            revealNote = err
+            return
+        }
+        revealedKey = res.key
+        revealNote = ""
     }
 
     /// An upstream that doesn't answer says why: an empty picker that hides

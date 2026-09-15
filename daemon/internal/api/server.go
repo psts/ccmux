@@ -431,6 +431,9 @@ func (s *Server) Handler() http.Handler {
 		// What an account's upstream serves — the settings model picker asks
 		// this instead of making the user type model names blind.
 		mux.HandleFunc("GET /v1/llm/accounts/{name}/models", s.llmAccountModels)
+		// The stored key itself, on demand and only to a caller the daemon
+		// can vouch for — the settings read stays redacted (see llmkey.go).
+		mux.HandleFunc("GET /v1/llm/accounts/{name}/key", s.llmAccountKey)
 	}
 	if s.hubBus != nil {
 		// Registered only on a member host with hub discovery armed, so a hub or

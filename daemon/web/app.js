@@ -2129,7 +2129,10 @@ function wireLLMSettings() {
       accountKinds.map((k) => `<option value="${k}">${k}</option>`).join("") +
       `</select></div>` +
       `<div class="entry-line"><input class="setting-input lm-url grow" type="text" spellcheck="false" placeholder="base URL"></div>` +
-      `<div class="entry-line"><input class="setting-input lm-key grow" type="password" autocomplete="off" placeholder="token / api key"></div>` +
+      `<div class="entry-line"><input class="setting-input lm-key grow" type="password" autocomplete="off" placeholder="token / api key">` +
+      `<button class="lm-key-show" type="button" title="Fetch the stored key from the daemon. Only a verified tailnet login or this machine's owner may.">Show</button></div>` +
+      `<div class="entry-line lm-key-shown hidden"><code class="lm-key-value grow"></code>` +
+      `<button class="lm-key-copy" type="button">Copy</button></div>` +
       `<div class="entry-line">` +
       `<input class="setting-input lm-aliases grow" type="text" spellcheck="false" placeholder="aliases: claude-haiku-*=qwen3-4b-32k">` +
       `<select class="setting-input lm-model-pick" title="List the upstream's models; picking one maps every claude-* request to it">` +
@@ -2152,6 +2155,35 @@ function wireLLMSettings() {
     mq(".lm-kind").addEventListener("change", () => {
       mq(".lm-key").placeholder = "token / api key: " + keyHintFor({ kind: mq(".lm-kind").value });
     });
+    mq(".lm-key-show").addEventListener("click", revealKey);
+    mq(".lm-key-copy").addEventListener("click", () => {
+      const v = mq(".lm-key-value").textContent;
+      if (v && navigator.clipboard) navigator.clipboard.writeText(v);
+    });
+  }
+
+  // The stored key, fetched on demand and shown beside the box rather than
+  // typed into it: a value in the box would be re-sent as a new key on Save,
+  // and the box's "empty keeps it" rule is what makes the modal safe to
+  // round-trip. The daemon answers only a caller it can vouch for (a
+  // verified tailnet login, or the owner on loopback), so a refusal is shown
+  // as its reason rather than as a blank.
+  async function revealKey() {
+    const name = editingName, gen = openGeneration;
+    if (!name) return;
+    $("llm-modal-state").textContent = "Fetching key…";
+    try {
+      const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(name)}/key`);
+      const body = await r.json().catch(() => ({}));
+      if (gen !== openGeneration) return; // the sheet moved on to another account
+      if (!r.ok) { $("llm-modal-state").textContent = body.error || `HTTP ${r.status}`; return; }
+      mq(".lm-key-value").textContent = body.apiKey || "";
+      mq(".lm-key-shown").classList.remove("hidden");
+      $("llm-modal-state").textContent = "";
+    } catch (e) {
+      if (gen !== openGeneration) return;
+      $("llm-modal-state").textContent = "couldn't fetch key: " + (e.message || e);
+    }
   }
 
   // Bumped on every open. fillModelPick captures it and drops a response
@@ -2187,6 +2219,11 @@ function wireLLMSettings() {
       ? "base URL (empty = http://127.0.0.1:3456)" : "base URL, e.g. http://localhost:11434";
     mq(".lm-key").value = "";
     mq(".lm-key").placeholder = "token / api key: " + keyHintFor(a);
+    // Show only when there is something stored to show: a new account or a
+    // pass-through has no key, and the daemon would just say so.
+    mq(".lm-key-show").classList.toggle("hidden", !(a.name && a.apiKeySet));
+    mq(".lm-key-shown").classList.add("hidden");
+    mq(".lm-key-value").textContent = "";
     mq(".lm-aliases").value = (a.modelAliases || []).map((x) => `${x.from}=${x.to}`).join(", ");
     mq(".lm-status").textContent = [statusLine(statuses[a.name]), sidecarLine(a, sidecars[a.name])].filter(Boolean).join(" · ");
     $("llm-modal-title").textContent = a.name ? "Account · " + a.name : "New account";

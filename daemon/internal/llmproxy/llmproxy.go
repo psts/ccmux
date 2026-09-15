@@ -185,6 +185,30 @@ func (s *Service) Snapshot() ([]RedactedAccount, string, error) {
 	return out, route, nil
 }
 
+// ErrNoStoredKey marks a reveal of an account that holds no key: a
+// pass-through account forwards each pane's own login and has nothing to
+// show.
+var ErrNoStoredKey = errors.New("holds no stored key")
+
+// AccountKey returns one account's stored credential, unredacted. This is the
+// ONE read that hands the secret back, for the settings editor's reveal
+// button; the api layer gates it on a vouched caller before calling here,
+// and Snapshot stays redacted for everything else.
+func (s *Service) AccountKey(name string) (string, error) {
+	accs, err := s.Accounts()
+	if err != nil {
+		return "", err
+	}
+	a := findAccount(accs, name)
+	if a == nil {
+		return "", fmt.Errorf("account %q %w", name, ErrUnknownAccount)
+	}
+	if a.APIKey == "" {
+		return "", fmt.Errorf("account %q %w", name, ErrNoStoredKey)
+	}
+	return a.APIKey, nil
+}
+
 // PaneRoutes returns the per-pane overrides (paneID → account name). Same
 // unreadable-is-not-empty rule as Accounts.
 func (s *Service) PaneRoutes() (map[string]string, error) {

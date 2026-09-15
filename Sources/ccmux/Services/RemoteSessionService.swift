@@ -1434,6 +1434,31 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
+    /// One llm account's stored credential, unredacted, for the account
+    /// editor's Show button. The daemon hands it back only to a caller it can
+    /// vouch for (a WhoIs-verified tailnet login, or the owner over loopback);
+    /// a refusal carries its reason, which the editor shows instead of a blank.
+    func fetchAccountKey(_ name: String) async -> (key: String?, error: String?) {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        let escaped = name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/llm/accounts/\(escaped)/key") else {
+            return (nil, "bad daemon URL")
+        }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                struct Err: Decodable { let error: String? }
+                let msg = (try? JSONDecoder().decode(Err.self, from: data))?.error
+                return (nil, msg ?? "HTTP \(code)")
+            }
+            struct Body: Decodable { let apiKey: String? }
+            return (try JSONDecoder().decode(Body.self, from: data).apiKey ?? "", nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
     /// Percent-encode a QUERY value. urlQueryAllowed leaves "&", "=" and "+"
     /// intact. The first two would let a hostname containing one split the
     /// query into extra parameters; "+" is different — Go's url.ParseQuery
