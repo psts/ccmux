@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,10 +37,13 @@ func TestOfflineReadsRefuseAHarnessWithNoChat(t *testing.T) {
 }
 
 // installClaudeServeDeps compares the pin with the RESOLVED version in
-// node_modules, before (skip) and after (verify) npm install. That only
-// ever matches an exact version: a range like ^0.3.273 would install on
-// every start and then fail the verify, and no claude agent could start.
-func TestClaudeSDKPinIsAnExactVersion(t *testing.T) {
+// node_modules, before (skip) and after (verify) npm ci. That only ever
+// matches an exact version: a range like ^0.3.273 would install on every
+// start and then fail the verify, and no claude agent could start. And npm
+// ci refuses a lock that disagrees with package.json, so a pin bump that
+// forgets to regenerate the lock would break every claude start: the two
+// embedded files must name the same version.
+func TestClaudeSDKPinIsAnExactVersionAndTheLockAgrees(t *testing.T) {
 	v, err := pinnedSDKVersion()
 	if err != nil {
 		t.Fatal(err)
@@ -49,17 +54,60 @@ func TestClaudeSDKPinIsAnExactVersion(t *testing.T) {
 	if got := installedSDKVersion(t.TempDir()); got != "" {
 		t.Fatalf("no node_modules reads as %q, want empty", got)
 	}
+	body, err := claudeServeFiles.ReadFile("claudeserve/package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock struct {
+		Packages map[string]struct {
+			Version      string            `json:"version"`
+			Dependencies map[string]string `json:"dependencies"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(body, &lock); err != nil {
+		t.Fatal(err)
+	}
+	if got := lock.Packages[""].Dependencies[sdkPackage]; got != v {
+		t.Errorf("the lock's root wants %q, package.json pins %q: regenerate package-lock.json", got, v)
+	}
+	if got := lock.Packages["node_modules/"+sdkPackage].Version; got != v {
+		t.Errorf("the lock resolves %q, package.json pins %q: regenerate package-lock.json", got, v)
+	}
+}
+
+// Every embedded file that is not a test ships, and everything that ships
+// is embedded: the two lists are hand-kept, and a module embedded but left
+// off the shipped list fails at agent start (its import is missing) with
+// every Go test green.
+func TestClaudeServeEmbedAndShippedListsAgree(t *testing.T) {
+	entries, err := claudeServeFiles.ReadDir("claudeserve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var embedded []string
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".test.mjs") {
+			embedded = append(embedded, e.Name())
+		}
+	}
+	slices.Sort(embedded)
+	shipped := slices.Clone(claudeServeShipped)
+	slices.Sort(shipped)
+	if !slices.Equal(embedded, shipped) {
+		t.Errorf("embedded %v, shipped %v", embedded, shipped)
+	}
+	if !slices.Contains(claudeServeShipped, "package-lock.json") {
+		t.Error("the lock ships with the sidecar")
+	}
 }
 
 // The offline reads run the sidecar's sessions/export verbs; a stub script
 // stands in for it. Sessions are filtered to the pane's folder (a session
 // elsewhere is not this agent's, however new) and ordered newest first.
 func TestClaudeOfflineReadsThroughTheSidecar(t *testing.T) {
-	node, err := harness.LookPath("node")
-	if err != nil {
+	if _, err := harness.LookPath("node"); err != nil {
 		t.Skip("node not installed")
 	}
-	_ = node
 	root, dir := t.TempDir(), t.TempDir()
 	script := ClaudeServeScript(root)
 	os.MkdirAll(filepath.Dir(script), 0o755)
@@ -119,7 +167,7 @@ func TestEnsureClaudeServeWritesFilesAndSkipsAnInstalledSDK(t *testing.T) {
 	if script != ClaudeServeScript(st.Root) || node == "" {
 		t.Errorf("script %q node %q", script, node)
 	}
-	for _, name := range []string{"serve.mjs", "agent.mjs", "routes.mjs", "translate.mjs", "package.json"} {
+	for _, name := range claudeServeShipped {
 		if _, err := os.Stat(filepath.Join(st.Root, ClaudeServeDir, name)); err != nil {
 			t.Errorf("%s not written: %v", name, err)
 		}
@@ -129,10 +177,10 @@ func TestEnsureClaudeServeWritesFilesAndSkipsAnInstalledSDK(t *testing.T) {
 	}
 	// An upgraded daemon must land ITS sidecar over whatever an older one
 	// wrote, or the chat drifts from the Go client on exactly the hosts that
-	// already ran an agent. A file nobody ships (the install's own
-	// package-lock) is left alone.
-	lock := filepath.Join(st.Root, ClaudeServeDir, "package-lock.json")
-	os.WriteFile(lock, []byte("{}"), 0o644)
+	// already ran an agent. A file nobody ships (the install's own notes)
+	// is left alone.
+	notes := filepath.Join(st.Root, ClaudeServeDir, "node_modules", ".package-lock.json")
+	os.WriteFile(notes, []byte("{}"), 0o644)
 	for _, name := range claudeServeShipped {
 		os.WriteFile(filepath.Join(st.Root, ClaudeServeDir, name), []byte("// stale sidecar from an older daemon\n"), 0o644)
 	}
@@ -146,10 +194,10 @@ func TestEnsureClaudeServeWritesFilesAndSkipsAnInstalledSDK(t *testing.T) {
 			t.Errorf("%s was not replaced by the embedded copy", name)
 		}
 	}
-	if got, _ := os.ReadFile(lock); string(got) != "{}" {
-		t.Error("the install's own lock file must not be touched")
+	if got, _ := os.ReadFile(notes); string(got) != "{}" {
+		t.Error("the install's own files under node_modules must not be touched")
 	}
-	for _, name := range []string{"translate.test.mjs", "routes.test.mjs", "agent.test.mjs"} {
+	for _, name := range []string{"translate.test.mjs", "routes.test.mjs", "agent.test.mjs", "args.test.mjs"} {
 		if _, err := os.Stat(filepath.Join(st.Root, ClaudeServeDir, name)); err == nil {
 			t.Errorf("%s is a test, not shipped", name)
 		}

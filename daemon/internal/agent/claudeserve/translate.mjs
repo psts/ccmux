@@ -10,8 +10,8 @@
 // tool part it answers, found by its call id.
 
 // sessionInfo is one on-disk conversation as the daemon lists sessions:
-// its title is the SDK's summary (or custom title), its directory the folder
-// it was opened in.
+// its title is the custom title, else the SDK's summary, else the first
+// prompt's first line; its directory is the folder it was opened in.
 export function sessionInfo(s) {
   return {
     id: s.sessionId,
@@ -100,8 +100,8 @@ export class Transcript {
     return [messageEvent(turn), partEvent(part)];
   }
 
-  // apply folds one SDK message in and returns the events it caused; the
-  // idle flag on a result tells the caller the turn ended.
+  // apply folds one SDK message in and returns the events it caused. A
+  // result message is not folded in here: Agent.onResult ends the turn.
   apply(m) {
     switch (m.type) {
       case "stream_event":

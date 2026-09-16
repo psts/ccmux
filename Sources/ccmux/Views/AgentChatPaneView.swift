@@ -175,7 +175,9 @@ struct AgentChatPaneView: View {
                     Text("\(agent) asks to run \(p.summary)").font(.system(size: 11))
                     HStack(spacing: 6) {
                         Button("Allow once") { chat.reply(p, "once") }
-                        Button("Allow always") { chat.reply(p, "always") }
+                        if p.offersAlways {
+                            Button("Allow always") { chat.reply(p, "always") }
+                        }
                         Button("Reject") { chat.reply(p, "reject") }
                     }
                     .font(.system(size: 11))

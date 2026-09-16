@@ -546,9 +546,20 @@ func (c *chatConn) frameFor(kind string, p eventProps) (chatFrame, bool) {
 	case "session.idle":
 		return chatFrame{T: "idle"}, true
 	case "session.error":
-		return chatFrame{T: "error", Error: string(p.Error)}, true
+		return chatFrame{T: "error", Error: errorText(p.Error)}, true
 	}
 	return chatFrame{}, false
+}
+
+// errorText is a session.error's error as the chat shows it: a JSON string
+// (the claude sidecar sends the message itself) without its quotes, anything
+// else (opencode's error object) as its JSON.
+func errorText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
 }
 
 // requestFrame is opencode asking the human something (a permission before

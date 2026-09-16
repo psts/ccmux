@@ -409,9 +409,8 @@ function run(opts = {}) {
   // The has-chat rule is one function in three places (agent.HasChat in Go,
   // AgentPaneRef.hasChat in Swift, hasChat here); the Go side has TestHasChat
   // with this table, and this keeps the web copy from drifting from it.
-  const chat = run();
   const table = { claude: true, opencode: true, pi: false, codex: false, "": false };
-  const drift = Object.entries(table).filter(([h, want]) => chat.ctx.hasChat(h) !== want).map(([h]) => h);
+  const drift = Object.entries(table).filter(([h, want]) => ok.ctx.hasChat(h) !== want).map(([h]) => h);
   check("hasChat matches the daemon's HasChat table", drift.length === 0, `drift on: ${drift.join(", ")}`);
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);

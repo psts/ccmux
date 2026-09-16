@@ -8,8 +8,8 @@ import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAn
 
 export class Agent {
   // o is the parsed command line; deps carries the SDK (query, listSessions,
-  // getSessionMessages) and the process edges (cwd, env, readFile, out, fetch),
-  // so a test can hand in stubs for all of them.
+  // getSessionMessages) and the process edges (cwd, env, readFile, out, err,
+  // fetch), so a test can hand in stubs for all of them.
   constructor(o, deps) {
     this.o = o;
     this.sdk = deps;
@@ -35,6 +35,7 @@ export class Agent {
     this.reqSeq = 0;
     this.daemon = deps.env.CCMUX_DAEMON_URL;
     this.pane = deps.env.CCMUX_PANE_ID;
+    this.signalDown = false; // the last signal failed; said once, not per signal
   }
 
   log(line) {
@@ -42,15 +43,28 @@ export class Agent {
   }
 
   // signal tells the daemon what the agent is doing (see api.agentSignal).
+  // The daemon being away is not the agent's problem, so a failure never
+  // stops the turn; but it is said in the terminal, once per outage, since
+  // a daemon that hears nothing reads a working agent as idle and may end
+  // it, and a needs-input it never hears raises no badge, flash or push
+  // alert (the chat card itself rides the event stream and still shows).
   async signal(state) {
     if (!this.daemon || !this.pane) return;
+    let failure = "";
     try {
-      await this.fetch(`${this.daemon}/v1/panes/${this.pane}/agent-signal`, {
+      const r = await this.fetch(`${this.daemon}/v1/panes/${this.pane}/agent-signal`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ state }),
       });
-    } catch (_) {
-      // The daemon being away is not the agent's problem.
+      if (!r.ok) failure = `HTTP ${r.status}`;
+    } catch (err) {
+      failure = err && err.message ? err.message : String(err);
     }
+    if (!failure) {
+      this.signalDown = false;
+      return;
+    }
+    if (!this.signalDown) this.log(`! daemon signal ${state}: ${failure} (the daemon will read this agent as idle until it answers again)`);
+    this.signalDown = true;
   }
 
   broadcast(ev) {
@@ -249,10 +263,13 @@ export class Agent {
     this.permissions.delete(id);
     // once and always allow (always also writes the SDK's suggested rule when
     // there is one); reject, and anything this code does not know, denies.
-    if (reply === "once") p.resolve({ behavior: "allow" });
-    else if (reply === "always" && p.suggestions.length) p.resolve({ behavior: "allow", updatedPermissions: p.suggestions });
-    else if (reply === "always") p.resolve({ behavior: "allow" });
-    else p.resolve({ behavior: "deny", message: "Denied by the human in the ccmux chat." });
+    if (reply === "once" || reply === "always") {
+      const allow = { behavior: "allow" };
+      if (reply === "always" && p.suggestions.length) allow.updatedPermissions = p.suggestions;
+      p.resolve(allow);
+    } else {
+      p.resolve({ behavior: "deny", message: "Denied by the human in the ccmux chat." });
+    }
     this.broadcast({ type: "permission.replied", properties: { sessionID: this.sid, requestID: id, reply } });
     this.signal("replied");
     return true;

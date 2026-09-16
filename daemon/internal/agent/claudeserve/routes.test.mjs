@@ -128,6 +128,20 @@ test("a body split mid-character across two writes arrives intact", async () => 
   });
 });
 
+test("a body that is not JSON is refused with 400, and the card stays pending", async () => {
+  await withServer(async (agent, call, base) => {
+    const r = await fetch(base + "/permission/per_1/reply", { method: "POST", headers: { "content-type": "application/json" }, body: "{bad" });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /not JSON/);
+    assert.deepEqual(agent.replies, {}, "no reply reached the agent");
+    assert.equal(agent.logged.length, 1);
+    const ok = await call("POST", "/permission/per_1/reply", { reply: "once" });
+    assert.equal(ok.status, 200, "a valid body afterwards still works");
+    const empty = await fetch(base + "/tui/submit-prompt", { method: "POST" });
+    assert.equal(empty.status, 200, "an empty body is still an empty object");
+  });
+});
+
 test("a handler that throws answers 500 and is logged", async () => {
   await withServer(async (agent, call) => {
     agent.sessions = async () => { throw new Error("store gone"); };

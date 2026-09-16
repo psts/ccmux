@@ -23,14 +23,15 @@ import (
 // daemon upgrade's sidecar lands without ceremony), and its one npm
 // dependency installed there once per pinned version.
 
-//go:embed claudeserve/serve.mjs claudeserve/agent.mjs claudeserve/routes.mjs claudeserve/translate.mjs claudeserve/package.json
+//go:embed claudeserve/serve.mjs claudeserve/args.mjs claudeserve/agent.mjs claudeserve/routes.mjs claudeserve/translate.mjs claudeserve/package.json claudeserve/package-lock.json
 var claudeServeFiles embed.FS
 
-// claudeServeShipped is what EnsureClaudeServe writes: the sidecar and its
-// manifest, never the tests.
-var claudeServeShipped = []string{claudeServeFile, "agent.mjs", "routes.mjs", "translate.mjs", "package.json"}
+// claudeServeShipped is what EnsureClaudeServe writes: the sidecar, its
+// manifest and the lock that pins every package the install may fetch (npm
+// ci refuses anything the lock does not name), never the tests.
+var claudeServeShipped = []string{claudeServeFile, "args.mjs", "agent.mjs", "routes.mjs", "translate.mjs", "package.json", "package-lock.json"}
 
-// installTimeout bounds npm install so a stalled registry cannot hold the
+// installTimeout bounds npm ci so a stalled registry cannot hold the
 // install lock, and every claude start behind it, forever.
 const installTimeout = 3 * time.Minute
 
@@ -75,11 +76,13 @@ func (s *Store) EnsureClaudeServe() (script, node string, err error) {
 	if err := installClaudeServeDeps(dir); err != nil {
 		return "", "", err
 	}
-	return filepath.Join(dir, claudeServeFile), node, nil
+	return ClaudeServeScript(s.Root), node, nil
 }
 
-// installClaudeServeDeps runs npm install in dir unless the installed SDK
-// already matches the pinned version in the embedded package.json.
+// installClaudeServeDeps runs npm ci in dir unless the installed SDK
+// already matches the pinned version in the embedded package.json. ci, not
+// install: it takes the shipped lock as the whole truth, integrity hashes
+// included, and refuses to resolve anything the lock does not name.
 func installClaudeServeDeps(dir string) error {
 	want, err := pinnedSDKVersion()
 	if err != nil {
@@ -94,13 +97,13 @@ func installClaudeServeDeps(dir string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, npm, "install", "--no-audit", "--no-fund", "--loglevel=error")
+	cmd := exec.CommandContext(ctx, npm, "ci", "--no-audit", "--no-fund", "--loglevel=error")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("npm install for the claude sidecar in %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("npm ci for the claude sidecar in %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
 	}
 	if got := installedSDKVersion(dir); got != want {
-		return fmt.Errorf("npm install for the claude sidecar left SDK %q, wanted %q", got, want)
+		return fmt.Errorf("npm ci for the claude sidecar left SDK %q, wanted %q", got, want)
 	}
 	return nil
 }

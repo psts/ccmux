@@ -292,9 +292,10 @@ func TestSchedules_TickPushesIntoIdleAndWaitsForBusy(t *testing.T) {
 	}
 }
 
-// The tick against a running instance with no opencode port (a Claude
-// harness): no chat path, so the slot is skipped, not run and not retried.
-func TestSchedules_TickSkipsRunningClaudeInstance(t *testing.T) {
+// The tick against a running instance with no chat port (the fixture's
+// harness, or any harness HasChat does not know): nothing can take the
+// prompt, so the slot is skipped, not run and not retried.
+func TestSchedules_TickSkipsRunningInstanceWithNoChatPort(t *testing.T) {
 	f := newWindowAgentFixture(t, "sleep 4;:")
 	f.srv.SetSchedules(f.st, 6*time.Hour)
 	if code, _ := f.start(t, "x-poster", ""); code != 201 {

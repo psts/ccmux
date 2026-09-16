@@ -342,7 +342,13 @@
     const card = el("div", "ac-perm");
     card.appendChild(el("div", "ac-perm-text", `${cur.agent} asks to run ${req.permission}: ${(req.patterns || []).join(", ") || "(no pattern)"}`));
     const row = el("div", "ac-perm-actions");
-    for (const [label, reply] of [["Allow once", "once"], ["Allow always", "always"], ["Reject", "reject"]]) {
+    // "Allow always" only when the card carries a rule to keep (always is
+    // non-empty); the sidecar leaves it empty when the SDK says the rule
+    // would grant more than this one ask. Same rule in the Mac lens.
+    const choices = [["Allow once", "once"]];
+    if (req.always && req.always.length) choices.push(["Allow always", "always"]);
+    choices.push(["Reject", "reject"]);
+    for (const [label, reply] of choices) {
       const b = el("button", "ac-perm-btn " + reply, label);
       b.onclick = () => send({ t: "permission", id: req.id, reply });
       row.appendChild(b);

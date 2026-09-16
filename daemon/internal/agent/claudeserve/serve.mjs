@@ -24,28 +24,7 @@ import { query, listSessions, getSessionMessages } from "@anthropic-ai/claude-ag
 import { Transcript, sessionInfo } from "./translate.mjs";
 import { createAgentServer } from "./routes.mjs";
 import { Agent } from "./agent.mjs";
-
-function parseArgs(argv) {
-  const o = { addDirs: [], allowed: [], disallowed: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    const v = () => argv[++i];
-    switch (a) {
-      case "--port": o.port = Number(v()); break;
-      case "--agent": o.agent = v(); break;
-      case "--plugin-dir": o.pluginDir = v(); break;
-      case "--system-prompt-file": o.systemPromptFile = v(); break;
-      case "--add-dir": o.addDirs.push(v()); break;
-      case "--model": o.model = v(); break;
-      case "--allowed-tools": o.allowed = v().split(",").filter(Boolean); break;
-      case "--disallowed-tools": o.disallowed = v().split(",").filter(Boolean); break;
-      case "--session": o.session = v(); break;
-      case "--dir": o.dir = v(); break;
-      default: throw new Error("unknown flag " + a);
-    }
-  }
-  return o;
-}
+import { parseArgs } from "./args.mjs";
 
 // --- offline reads: the daemon calls these for an asleep agent ---
 

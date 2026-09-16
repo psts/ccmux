@@ -40,7 +40,12 @@ function makeAgent(opts = {}, script = []) {
   const deps = {
     ...sdk, cwd: "/inst", env: { CCMUX_DAEMON_URL: "http://d", CCMUX_PANE_ID: "p1", ...(opts.env || {}) },
     readFile: () => "# base\n", out: (s) => out.push(s), err: (s) => sdk.err.push(s),
-    fetch: async (url, init) => { signals.push(JSON.parse(init.body).state); return { ok: true }; },
+    fetch: async (url, init) => {
+      signals.push(JSON.parse(init.body).state);
+      if (opts.signalFails) throw new Error("connect ECONNREFUSED");
+      if (opts.signalStatus) return { ok: false, status: opts.signalStatus };
+      return { ok: true };
+    },
   };
   const agent = new Agent({ agent: "probe", addDirs: [], allowed: [], disallowed: [], ...opts }, deps);
   const events = [];
@@ -203,6 +208,23 @@ test("sessions lists the store plus the current one before its first turn, and a
   assert.deepEqual((await fresh.sessions()).map((s) => s.id), [fresh.sid], "a fresh session appears before it is on disk");
   sdk.listFails = true;
   await assert.rejects(() => agent.sessions(), /store locked/);
+});
+
+test("a daemon that refuses or cannot be reached is said once in the terminal, and the turn goes on", async () => {
+  const bad = makeAgent({ signalStatus: 404 });
+  await bad.agent.signal("busy");
+  await bad.agent.signal("idle");
+  const said = bad.out.filter((l) => l.startsWith("! daemon signal"));
+  assert.equal(said.length, 1, "one line per outage, not per signal");
+  assert.match(said[0], /busy: HTTP 404/);
+  const down = makeAgent({ signalFails: true });
+  down.agent.prompt("go");
+  await tick();
+  assert.equal(down.out.filter((l) => l.includes("ECONNREFUSED")).length, 1);
+  assert.equal(down.agent.busy, true, "the turn is not stopped by a deaf daemon");
+  const fine = makeAgent();
+  await fine.agent.signal("busy");
+  assert.equal(fine.out.filter((l) => l.startsWith("! daemon signal")).length, 0);
 });
 
 test("messages for another session on disk go through the store; shutdown ends the streams and signals idle", async () => {

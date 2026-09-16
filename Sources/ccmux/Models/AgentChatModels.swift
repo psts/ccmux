@@ -107,12 +107,18 @@ struct AgentTurnPart: Codable, Identifiable {
     }
 }
 
-/// Opencode asking before a tool runs; replies are once, always or reject.
+/// The agent asking before a tool runs; replies are once, always or reject.
 struct AgentPermission: Codable, Identifiable {
     var id: String
     var sessionID: String?
     var permission: String
     var patterns: [String]?
+    /// The rule "Allow always" would keep; empty means the card offers no
+    /// such choice (the claude sidecar leaves it empty when the SDK says the
+    /// rule would grant more than this one ask). Same rule in the web lens.
+    var always: [String]?
+
+    var offersAlways: Bool { !(always ?? []).isEmpty }
 
     var summary: String {
         let pats = (patterns ?? []).joined(separator: ", ")

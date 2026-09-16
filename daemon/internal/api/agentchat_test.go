@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -57,6 +58,11 @@ func TestAgentChat_LiveThenAsleep(t *testing.T) {
 	hello := readChat(t, conn, "hello")
 	if hello.State != "running" || hello.Session != "ses_1" || hello.Title != "now" || len(hello.Turns) != 3 || len(hello.Permissions) != 1 || hello.Permissions[0].ID != "per_1" {
 		t.Fatalf("live hello: %+v", hello)
+	}
+	// Both lenses offer "Allow always" only when the card carries a rule to
+	// keep, so the field has to survive the trip; the fake sends ["*"].
+	if got := hello.Permissions[0].Always; len(got) != 1 || got[0] != "*" {
+		t.Fatalf("the permission's always must reach the lens: %v", got)
 	}
 	if hello.Turns[0].Role != "session" || hello.Turns[0].Title != "now" || hello.Resume == nil || *hello.Resume {
 		t.Fatalf("history opens with the session marker and carries the base's resume default: %+v %v", hello.Turns[0], hello.Resume)
@@ -195,6 +201,22 @@ func TestAgentChat_HistoryAndResume(t *testing.T) {
 		got := strings.Contains(l.Deliver, "--session ses_last")
 		if got != tc.want || strings.Contains(l.Persist, "--session") {
 			t.Errorf("start=%s resume=%v: deliver %q persist %q", tc.start, tc.resume, l.Deliver, l.Persist)
+		}
+	}
+}
+
+// A session.error carries the message as a JSON string from the claude
+// sidecar and as an object from opencode; the chat shows the string bare
+// and the object as its JSON, never a string wrapped in its own quotes.
+func TestAgentChat_ErrorFrameText(t *testing.T) {
+	for raw, want := range map[string]string{
+		`"rate limited"`: "rate limited",
+		`{"name":"APIError","data":{"message":"boom"}}`: `{"name":"APIError","data":{"message":"boom"}}`,
+		`"say \"hi\""`: `say "hi"`,
+	} {
+		f, ok := (&chatConn{}).frameFor("session.error", eventProps{Error: json.RawMessage(raw)})
+		if !ok || f.T != "error" || f.Error != want {
+			t.Errorf("%s → %+v (ok=%v), want %q", raw, f, ok, want)
 		}
 	}
 }

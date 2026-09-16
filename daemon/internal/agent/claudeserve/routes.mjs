@@ -59,15 +59,18 @@ export const handlers = {
   },
 };
 
+// readJSON is the request body as JSON. A body that is not JSON rejects,
+// its only rejection: read as empty it would turn a permission reply into
+// a silent deny.
 export function readJSON(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let body = "";
     // One decoder across chunks: a multi-byte character split at a chunk
     // boundary would otherwise decode to U+FFFD on both sides.
     req.setEncoding("utf8");
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
-      try { resolve(body ? JSON.parse(body) : {}); } catch (_) { resolve({}); }
+      try { resolve(body ? JSON.parse(body) : {}); } catch (err) { reject(new Error("body is not JSON: " + err.message)); }
     });
   });
 }
@@ -93,7 +96,15 @@ export async function dispatch(agent, req, res) {
   const { key, id } = routeKey(req.method, url.pathname);
   const handler = handlers[key];
   if (!handler) return send(res, 404, { error: "no such route" });
-  const body = req.method === "POST" ? await readJSON(req) : {};
+  let body = {};
+  if (req.method === "POST") {
+    try {
+      body = await readJSON(req);
+    } catch (err) {
+      agent.log("! " + err.message);
+      return send(res, 400, { error: err.message });
+    }
+  }
   const [status, out] = await handler(agent, id, body);
   return send(res, status, out);
 }
