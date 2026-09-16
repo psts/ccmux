@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
+	"log"
 	"net/http"
-	"regexp"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
@@ -24,37 +24,34 @@ import (
 // The id is the five-letter shape the bus's reply matchers accept; the
 // worker is the peer registered on the pane (the shim inside the SDK's
 // Claude child), and a pane without one gets a 404 rather than a card that
-// nobody could answer.
+// nobody could answer. Double-gated like every mutating bus route: loopback
+// AND the pane's own bearer token (CCMUX_PANE_TOKEN in the pane's
+// environment), so no other local process can relay text as this worker.
 func (s *Server) agentAsk(w http.ResponseWriter, r *http.Request) {
-	if !requireLoopback(w, r) {
+	if !requireLoopback(w, r) || !s.peersEnabled(w) {
 		return
 	}
-	var req struct {
-		Kind        string `json:"kind"`
-		ID          string `json:"id"`
-		Tool        string `json:"tool"`
-		Description string `json:"description"`
-		Preview     string `json:"preview"`
-		Text        string `json:"text"`
-	}
-	if !decodeJSON(w, r, &req) {
+	paneID := r.PathValue("id")
+	if bearerToken(r) == "" {
+		writeError(w, http.StatusUnauthorized, "pane token required (CCMUX_PANE_TOKEN in the pane's environment)")
 		return
 	}
-	if !askIDRe.MatchString(req.ID) || (req.Kind != "permission" && req.Kind != "question") {
-		writeError(w, http.StatusBadRequest, `kind must be "permission" or "question", id five lowercase letters without l`)
+	if !s.peersSvc.AuthorizePane(paneID, bearerToken(r)) {
+		writeError(w, http.StatusUnauthorized, "invalid pane token: the daemon's secret changed since this pane started, restart the agent")
 		return
 	}
-	if !s.peersEnabled(w) {
+	req, ok := decodeAsk(w, r)
+	if !ok {
 		return
 	}
-	worker := s.peersSvc.PeerForPane(r.PathValue("id"))
+	worker := s.peersSvc.PeerForPane(paneID)
 	if worker == "" {
 		writeError(w, http.StatusNotFound, "no peer is registered on this pane")
 		return
 	}
 	var n int
 	var err error
-	if req.Kind == "permission" {
+	if req.Kind == peers.AskPermission {
 		n, err = s.peersSvc.PermissionRequest(worker, req.ID, req.Tool, req.Description, req.Preview)
 	} else {
 		n, err = s.peersSvc.QuestionRequest(worker, req.ID, req.Text)
@@ -66,36 +63,70 @@ func (s *Server) agentAsk(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "relayed_to": n})
 }
 
-// askIDRe is the id alphabet the bus's reply matchers accept (permReplyRe,
-// answerReplyRe in peers): five lowercase letters, no l.
-var askIDRe = regexp.MustCompile(`^[a-km-z]{5}$`)
+// askReq is the card the sidecar posts: kind and id always, the tool
+// fields for a permission, text for a question.
+type askReq struct {
+	Kind        string `json:"kind"`
+	ID          string `json:"id"`
+	Tool        string `json:"tool"`
+	Description string `json:"description"`
+	Preview     string `json:"preview"`
+	Text        string `json:"text"`
+}
+
+// decodeAsk reads the card and checks it is one the bus can match; ok=false
+// means the response was already written.
+func decodeAsk(w http.ResponseWriter, r *http.Request) (askReq, bool) {
+	var req askReq
+	if !decodeJSON(w, r, &req) {
+		return req, false
+	}
+	if !peers.ValidAskID(req.ID) || (req.Kind != peers.AskPermission && req.Kind != peers.AskQuestion) {
+		writeError(w, http.StatusBadRequest, `kind must be "permission" or "question", id five lowercase letters without l`)
+		return req, false
+	}
+	return req, true
+}
 
 // replyToAgentPane is the bus's ReplyToPane hook: a delegator's verdict or
 // answer for a card in a pane whose agent takes it through its chat server.
 // A pane without one (a Claude TUI, whose shim resolves its own dialog) is
 // ErrNoPanePush. Both paths list the pending cards first: a card the chat
-// answered already is gone from the list, and the reply is dropped
-// without a word, first answer wins.
+// answered already, or that died with a restarted sidecar, is gone from
+// the list, and the reply is dropped with one log line. First answer wins.
 func (s *Server) replyToAgentPane(paneID string, reply peers.PaneReply) error {
 	p := s.mgr.PaneByID(paneID)
-	if p == nil || agent.ChatPort(p.StartupCommand) == 0 || s.mgr.PaneAtShell(paneID) {
+	if p == nil {
 		return peers.ErrNoPanePush
 	}
-	oc := agent.OpencodeAt(agent.ChatPort(p.StartupCommand))
+	port := agent.ChatPort(p.StartupCommand)
+	if port == 0 || s.mgr.PaneAtShell(paneID) {
+		return peers.ErrNoPanePush
+	}
+	oc := agent.OpencodeAt(port)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if reply.Behavior != "" {
-		return replyPermissionIfPending(ctx, oc, reply)
+	var answered bool
+	var err error
+	switch reply.Kind {
+	case peers.AskPermission:
+		answered, err = replyPermissionIfPending(ctx, oc, reply)
+	default:
+		answered, err = replyQuestionIfPending(ctx, oc, reply)
 	}
-	return replyQuestionIfPending(ctx, oc, reply)
+	if err == nil && !answered {
+		log.Printf("agents: bus reply %s to pane %s: card no longer pending (answered in the chat, or the agent restarted)", reply.RequestID, paneID)
+	}
+	return err
 }
 
 // replyPermissionIfPending answers a pending permission card: allow is
 // "once" (never "always": a delegator approves this run, not a rule).
-func replyPermissionIfPending(ctx context.Context, oc *agent.Opencode, reply peers.PaneReply) error {
+// answered is false when no card with that id is pending.
+func replyPermissionIfPending(ctx context.Context, oc *agent.Opencode, reply peers.PaneReply) (answered bool, err error) {
 	pending, err := oc.Permissions(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, p := range pending {
 		if p.ID != reply.RequestID {
@@ -105,18 +136,19 @@ func replyPermissionIfPending(ctx context.Context, oc *agent.Opencode, reply pee
 		if reply.Behavior == "allow" {
 			answer = "once"
 		}
-		return oc.ReplyPermission(ctx, p.ID, answer)
+		return true, oc.ReplyPermission(ctx, p.ID, answer)
 	}
-	return nil
+	return false, nil
 }
 
 // replyQuestionIfPending answers a pending question card with the one text
 // the bus carries, under every question on the card (the delegator saw
-// them all and answered in one message).
-func replyQuestionIfPending(ctx context.Context, oc *agent.Opencode, reply peers.PaneReply) error {
+// them all and answered in one message). answered is false when no card
+// with that id is pending.
+func replyQuestionIfPending(ctx context.Context, oc *agent.Opencode, reply peers.PaneReply) (answered bool, err error) {
 	pending, err := oc.Questions(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, q := range pending {
 		if q.ID != reply.RequestID {
@@ -126,7 +158,7 @@ func replyQuestionIfPending(ctx context.Context, oc *agent.Opencode, reply peers
 		for i := range answers {
 			answers[i] = []string{reply.Answer}
 		}
-		return oc.ReplyQuestion(ctx, q.ID, answers)
+		return true, oc.ReplyQuestion(ctx, q.ID, answers)
 	}
-	return nil
+	return false, nil
 }

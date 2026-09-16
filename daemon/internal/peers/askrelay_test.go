@@ -1,6 +1,7 @@
 package peers
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -110,8 +111,8 @@ func TestAskReply_ReachesPaneHook(t *testing.T) {
 	svc.Send(SendReq{FromID: roamingDelegator, ToID: roaming, Text: "yes cdefg"})
 
 	want := map[string]PaneReply{
-		"abcde": {RequestID: "abcde", Behavior: "deny"},
-		"bcdef": {RequestID: "bcdef", Answer: "go with tea"},
+		"abcde": {Kind: AskPermission, RequestID: "abcde", Behavior: "deny"},
+		"bcdef": {Kind: AskQuestion, RequestID: "bcdef", Answer: "go with tea"},
 	}
 	for i := 0; i < 2; i++ {
 		select {
@@ -182,5 +183,86 @@ func TestAskReply_WrongVerbLeavesTheAskOpen(t *testing.T) {
 	if len(evs) != 2 || evs[0].Kind != model.PeerEventAnswer || evs[0].RequestID != "abcde" ||
 		evs[1].Kind != model.PeerEventVerdict || evs[1].RequestID != "bcdef" || evs[1].Behavior != "deny" {
 		t.Fatalf("the right verbs after the wrong ones = %+v", evs)
+	}
+}
+
+// A hand-off the chat server did not take (the sidecar was away) opens the
+// ask again, so the delegator's next reply lands instead of being dropped
+// as a duplicate. ErrNoPanePush (no chat server at all) is not a failure,
+// and an ask the hook did answer stays answered.
+func TestAskReply_FailedHandoffReopensTheAsk(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.groups["pane-w"] = "G"
+	hook.groups["pane-d"] = "G"
+	worker := registerPane(svc, "pane-w", "/w/worker").PeerID
+	delegator := registerPane(svc, "pane-d", "/w/delegator").PeerID
+	svc.Send(SendReq{FromID: delegator, ToID: worker, Text: "please do X"})
+	svc.Poll(worker)
+	svc.PermissionRequest(worker, "abcde", "Bash", "x", "{}")
+	svc.PermissionRequest(worker, "bcdef", "Write", "y", "{}")
+	svc.PermissionRequest(worker, "cdefg", "Edit", "z", "{}")
+
+	calls := make(chan PaneReply, 8)
+	svc.ReplyToPane = func(paneID string, reply PaneReply) error {
+		calls <- reply
+		switch reply.RequestID {
+		case "abcde":
+			return errors.New("connect: connection refused")
+		case "bcdef":
+			return ErrNoPanePush
+		}
+		return nil
+	}
+	next := func() PaneReply {
+		select {
+		case r := <-calls:
+			return r
+		case <-time.After(3 * time.Second):
+			t.Fatal("hook not called")
+			return PaneReply{}
+		}
+	}
+	svc.Send(SendReq{FromID: delegator, ToID: worker, Text: "yes abcde"})
+	svc.Send(SendReq{FromID: delegator, ToID: worker, Text: "yes bcdef"})
+	svc.Send(SendReq{FromID: delegator, ToID: worker, Text: "yes cdefg"})
+	for i := 0; i < 3; i++ {
+		next()
+	}
+	waitOpen := func(rid string, want bool) {
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			svc.mu.Lock()
+			open := !svc.perms[rid].resolved
+			svc.mu.Unlock()
+			if open == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("ask %s open=%v, want %v", rid, open, want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitOpen("abcde", true)
+	waitOpen("bcdef", false)
+	waitOpen("cdefg", false)
+
+	// The retry on the failed one goes through as a fresh verdict and
+	// reaches the hook again; retries on the answered ones are dropped.
+	svc.Poll(worker)
+	svc.Send(SendReq{FromID: delegator, ToID: worker, Text: "no abcde"})
+	svc.Send(SendReq{FromID: delegator, ToID: worker, Text: "no bcdef"})
+	svc.Send(SendReq{FromID: delegator, ToID: worker, Text: "no cdefg"})
+	if r := next(); r.RequestID != "abcde" || r.Behavior != "deny" {
+		t.Errorf("retry reached the hook as %+v", r)
+	}
+	select {
+	case r := <-calls:
+		t.Errorf("a retry on an answered ask reached the hook: %+v", r)
+	case <-time.After(100 * time.Millisecond):
+	}
+	evs, _ := svc.Poll(worker)
+	if len(evs) != 1 || evs[0].RequestID != "abcde" || evs[0].Behavior != "deny" {
+		t.Errorf("worker inbox after the retries = %+v, want the one deny for abcde", evs)
 	}
 }

@@ -16,22 +16,32 @@ import (
 func TestAgentAsk_ValidationAndUnknownPane(t *testing.T) {
 	f := newWindowAgentFixture(t, "sleep 1;:")
 	f.srv.EnablePeers(peers.NewService(f.st, f.srv.mgr, testSecret))
-	post := func(remote, body string) (int, string) {
+	post := func(remote, token, body string) (int, string) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/panes/p-unknown/agent-ask", strings.NewReader(body))
 		req.RemoteAddr = remote
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		f.srv.Handler().ServeHTTP(rec, req)
 		return rec.Code, rec.Body.String()
 	}
-	if code, _ := post("10.0.0.9:1234", `{"kind":"permission","id":"abcde"}`); code != 403 {
+	tok := peers.TokenForPane(testSecret, "p-unknown")
+	if code, _ := post("10.0.0.9:1234", tok, `{"kind":"permission","id":"abcde"}`); code != 403 {
 		t.Errorf("non-loopback = %d, want 403", code)
 	}
+	// Loopback is not enough: the pane's own token, not another pane's.
+	for bad, want := range map[string]string{"": "required", peers.TokenForPane(testSecret, "p-other"): "invalid", peers.PanelessToken(testSecret): "invalid"} {
+		if code, msg := post("127.0.0.1:1234", bad, `{"kind":"permission","id":"abcde"}`); code != 401 || !strings.Contains(msg, want) {
+			t.Errorf("token %q = %d %s, want 401 saying %q", bad, code, msg, want)
+		}
+	}
 	for _, body := range []string{`{"kind":"permission","id":"abcdl"}`, `{"kind":"permission","id":"per_1"}`, `{"kind":"dialog","id":"abcde"}`, `{"id":"abcde"}`} {
-		if code, _ := post("127.0.0.1:1234", body); code != 400 {
+		if code, _ := post("127.0.0.1:1234", tok, body); code != 400 {
 			t.Errorf("%s = %d, want 400", body, code)
 		}
 	}
-	if code, msg := post("127.0.0.1:1234", `{"kind":"question","id":"abcde","text":"Pick one."}`); code != 404 || !strings.Contains(msg, "no peer") {
+	if code, msg := post("127.0.0.1:1234", tok, `{"kind":"question","id":"abcde","text":"Pick one."}`); code != 404 || !strings.Contains(msg, "no peer") {
 		t.Errorf("no peer on the pane = %d %s, want 404", code, msg)
 	}
 }
@@ -60,6 +70,7 @@ func TestAgentAsk_RelaysToDelegatorAndAnswersTheCard(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/panes/"+pane.ID+"/agent-ask", strings.NewReader(body))
 		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("Authorization", "Bearer "+workerTok)
 		f.srv.Handler().ServeHTTP(rec, req)
 		return rec.Code, rec.Body.String()
 	}

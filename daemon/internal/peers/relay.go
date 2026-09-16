@@ -19,7 +19,7 @@ import (
 // reached. The broadcast set is computed from the event log (not stored), so
 // it survives daemon and thin-client restarts alike.
 func (s *Service) PermissionRequest(workerID, requestID, toolName, description, inputPreview string) (int, error) {
-	return s.relayAsk(workerID, requestID, askPermission, func(workerName string) string {
+	return s.relayAsk(workerID, requestID, AskPermission, func(workerName string) string {
 		return relayText(workerName, requestID, toolName, description, inputPreview)
 	})
 }
@@ -28,7 +28,7 @@ func (s *Service) PermissionRequest(workerID, requestID, toolName, description, 
 // card as the agent's chat shows it (the questions and their options), and
 // a delegator answers with "answer <id> <text>".
 func (s *Service) QuestionRequest(workerID, requestID, text string) (int, error) {
-	return s.relayAsk(workerID, requestID, askQuestion, func(workerName string) string {
+	return s.relayAsk(workerID, requestID, AskQuestion, func(workerName string) string {
 		return questionRelayText(workerName, requestID, text)
 	})
 }

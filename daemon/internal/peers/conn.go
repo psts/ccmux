@@ -44,9 +44,10 @@ type wireVerdict struct {
 	FromID    string `json:"from_id"`
 }
 
-// wireAnswer is a relayed question's answer. The shim acks it away (a
-// question card lives in the sidecar, which gets the answer through
-// ReplyToPane); it is on the wire so a viewer and the log agree.
+// wireAnswer is a relayed question's answer. The shim acks it away unread
+// (the card lives in the sidecar, which gets the answer through
+// ReplyToPane); the frame exists so the worker's cursor advances past the
+// event and it is never replayed as chat.
 type wireAnswer struct {
 	Type      string `json:"type"`
 	Seq       int64  `json:"seq"`

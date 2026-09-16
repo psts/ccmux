@@ -124,8 +124,8 @@ type Peer struct {
 	ShimVersion string
 }
 
-// permRequest is one outstanding relayed ask. kind is askPermission or
-// askQuestion: each is answered in its own verb, and a reply in the other
+// permRequest is one outstanding relayed ask. kind is AskPermission or
+// AskQuestion: each is answered in its own verb, and a reply in the other
 // verb must not claim it (the card would be dead to the right reply after).
 type permRequest struct {
 	workerID string
@@ -134,9 +134,13 @@ type permRequest struct {
 	at       int64
 }
 
+// AskPermission and AskQuestion are the two kinds of relayed ask: a tool
+// dialog answered "yes <id>"/"no <id>", and a question card answered
+// "answer <id> <text>". The api hands the bus one of these when a chat
+// server raises a card; the bus stores it and matches replies by it.
 const (
-	askPermission = "permission"
-	askQuestion   = "question"
+	AskPermission = "permission"
+	AskQuestion   = "question"
 )
 
 type pendingSpawn struct {

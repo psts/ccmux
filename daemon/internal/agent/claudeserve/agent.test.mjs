@@ -38,14 +38,16 @@ function makeAgent(opts = {}, script = []) {
   const out = [];
   const signals = [];
   const asks = []; // what reached POST .../agent-ask
+  const headers = []; // the headers of every daemon call
   const deps = {
-    ...sdk, cwd: "/inst", env: { CCMUX_DAEMON_URL: "http://d", CCMUX_PANE_ID: "p1", ...(opts.env || {}) },
+    ...sdk, cwd: "/inst", env: { CCMUX_DAEMON_URL: "http://d", CCMUX_PANE_ID: "p1", CCMUX_PANE_TOKEN: "tok-p1", ...(opts.env || {}) },
     readFile: () => "# base\n", out: (s) => out.push(s), err: (s) => sdk.err.push(s),
     fetch: async (url, init) => {
+      headers.push(init.headers);
       if (url.endsWith("/agent-ask")) {
         asks.push(JSON.parse(init.body));
-        if (opts.askStatus) return { ok: false, status: opts.askStatus };
-        return { ok: true };
+        if (opts.askStatus) return { ok: false, status: opts.askStatus, json: async () => ({ error: opts.askStatus === 401 ? "invalid pane token" : "no peer is registered on this pane" }) };
+        return { ok: true, json: async () => ({ ok: true, relayed_to: opts.relayedTo ?? 1 }) };
       }
       assert.equal(url, "http://d/v1/panes/p1/agent-signal");
       signals.push(JSON.parse(init.body).state);
@@ -57,7 +59,7 @@ function makeAgent(opts = {}, script = []) {
   const agent = new Agent({ agent: "probe", addDirs: [], allowed: [], disallowed: [], ...opts }, deps);
   const events = [];
   agent.clients.add({ write: (line) => events.push(JSON.parse(line.slice(6))), end() {} });
-  return { agent, sdk, out, signals, asks, events };
+  return { agent, sdk, out, signals, asks, headers, events };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -336,7 +338,7 @@ test("messages for another session on disk go through the store; shutdown ends t
 
 test("a card carries a five-letter bus id and is relayed to the daemon; a failed relay is said once", async () => {
   for (let i = 0; i < 50; i++) assert.match(askID(), /^[a-km-z]{5}$/);
-  const { agent, asks, events, signals } = makeAgent();
+  const { agent, asks, events, signals, headers, out } = makeAgent();
   const p = agent.canUseTool("Bash", { command: "printf hi" }, { toolUseID: "c1", description: "print a greeting" });
   const q = agent.canUseTool("AskUserQuestion", { questions: [
     { question: "Which tone?", header: "Tone", options: [{ label: "Warm", description: "friendly" }, { label: "Dry" }] },
@@ -352,6 +354,8 @@ test("a card carries a five-letter bus id and is relayed to the daemon; a failed
     { kind: "question", id: ques.id, text: "Tone: Which tone?\n  - Warm: friendly\n  - Dry\nPost now? (one or more)\n  - Yes" },
   ]);
   assert.deepEqual(signals, ["needs-input", "needs-input"], "the relay is not a signal");
+  for (const h of headers) assert.equal(h.authorization, "Bearer tok-p1", "every daemon call carries the pane token");
+  assert.equal(out.filter((l) => l.includes(`card ${perm.id} relayed to 1 peer`)).length, 1);
   // The routes answer by the same id, so a bus reply the daemon hands over lands on the card.
   assert.equal(agent.replyPermission(perm.id, "once"), true);
   assert.equal(agent.replyQuestion(ques.id, [["Dry"], ["Yes"]]), true);
@@ -360,7 +364,11 @@ test("a card carries a five-letter bus id and is relayed to the daemon; a failed
 
   // No daemon in the environment: no relay, no failure said. A daemon that
   // refuses: said once, the card stays up.
-  const alone = makeAgent({ env: { CCMUX_DAEMON_URL: "", CCMUX_PANE_ID: "" } });
+  const nobody = makeAgent({ relayedTo: 0 });
+  nobody.agent.canUseTool("Bash", { command: "ls" }, { toolUseID: "c9" });
+  await tick();
+  assert.equal(nobody.out.filter((l) => l.includes("reached no peer")).length, 1, "a card nobody got is said, not silent");
+  const alone = makeAgent({ env: { CCMUX_DAEMON_URL: "", CCMUX_PANE_ID: "", CCMUX_PANE_TOKEN: "" } });
   alone.agent.canUseTool("Bash", { command: "ls" }, { toolUseID: "c3" });
   await tick();
   assert.deepEqual(alone.asks, []);
@@ -370,6 +378,13 @@ test("a card carries a five-letter bus id and is relayed to the daemon; a failed
   refused.agent.canUseTool("Bash", { command: "pwd" }, { toolUseID: "c5" });
   await tick();
   assert.equal(refused.asks.length, 2);
-  assert.equal(refused.out.filter((l) => l.includes("card relay")).length, 1, "one line per outage");
+  const said = refused.out.filter((l) => l.includes("card relay"));
+  assert.equal(said.length, 1, "one line per outage");
+  assert.match(said[0], /HTTP 404: no peer is registered on this pane/, "the daemon's reason is in the line");
+  assert.match(said[0], /until the daemon answers again/);
+  const stale = makeAgent({ askStatus: 401 });
+  stale.agent.canUseTool("Bash", { command: "ls" }, { toolUseID: "c6" });
+  await tick();
+  assert.match(stale.out.find((l) => l.includes("card relay")), /HTTP 401: invalid pane token \(restart this agent/, "a refused token is not an outage");
   assert.equal(refused.agent.pendingPermissions().length, 2, "the cards stay up in the chat");
 });

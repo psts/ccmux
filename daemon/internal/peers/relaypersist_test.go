@@ -68,10 +68,10 @@ func TestRelayPersist_PermissionRequestSurvivesRestart(t *testing.T) {
 	if pr.resolved {
 		t.Error("an unanswered request came back marked resolved")
 	}
-	if pr.kind != askPermission {
+	if pr.kind != AskPermission {
 		t.Errorf("a restart forgot the permission's kind: %q", pr.kind)
 	}
-	if question == nil || question.kind != askQuestion {
+	if question == nil || question.kind != AskQuestion {
 		t.Errorf("the question card did not survive with its kind: %+v", question)
 	}
 }

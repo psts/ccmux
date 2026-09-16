@@ -44,6 +44,7 @@ export class Agent {
     this.abort = new AbortController();
     this.daemon = deps.env.CCMUX_DAEMON_URL;
     this.pane = deps.env.CCMUX_PANE_ID;
+    this.paneToken = deps.env.CCMUX_PANE_TOKEN || "";
     this.signalDown = false; // the last signal failed; said once, not per signal
     this.askDown = false; // the last card relay failed; same rule
   }
@@ -60,7 +61,7 @@ export class Agent {
   // alert (the chat card itself rides the event stream and still shows).
   async signal(state) {
     if (!this.daemon || !this.pane) return;
-    const failure = await this.post("agent-signal", { state });
+    const { failure } = await this.post("agent-signal", { state });
     if (!failure) {
       this.signalDown = false;
       return;
@@ -75,25 +76,36 @@ export class Agent {
   // failure only costs the relay, and is said once per outage.
   async relayAsk(body) {
     if (!this.daemon || !this.pane) return;
-    const failure = await this.post("agent-ask", body);
+    const { failure, data } = await this.post("agent-ask", body);
     if (!failure) {
       this.askDown = false;
+      const n = Number(data.relayed_to) || 0;
+      this.log(n ? `↔ card ${body.id} relayed to ${n} peer(s) that messaged this agent` : `↔ card ${body.id} reached no peer (none messaged this agent in the last 10 min)`);
       return;
     }
-    if (!this.askDown) this.log(`! card relay to the bus: ${failure} (the card is only in the chat until the daemon answers again)`);
+    // A 401 is the pane's token being refused, which no amount of waiting
+    // fixes; anything else is the daemon being away.
+    const outlook = failure.startsWith("HTTP 401") ? "restart this agent so it gets a fresh token" : "the card is only in the chat until the daemon answers again";
+    if (!this.askDown) this.log(`! card relay to the bus: ${failure} (${outlook})`);
     this.askDown = true;
   }
 
-  // post is one loopback call to the daemon on this pane; "" on success,
-  // else what went wrong.
+  // post is one loopback call to the daemon on this pane, with the pane's
+  // token (the daemon's mutating routes want it). failure is "" on
+  // success, else what went wrong with the daemon's reason when it gave
+  // one; data is the reply body when there was a JSON one.
   async post(route, body) {
+    const headers = { "content-type": "application/json" };
+    if (this.paneToken) headers.authorization = `Bearer ${this.paneToken}`;
     try {
       const r = await this.fetch(`${this.daemon}/v1/panes/${this.pane}/${route}`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        method: "POST", headers, body: JSON.stringify(body),
       });
-      return r.ok ? "" : `HTTP ${r.status}`;
+      const data = (await r.json?.().catch(() => null)) || {};
+      if (r.ok) return { failure: "", data };
+      return { failure: `HTTP ${r.status}${data.error ? ": " + data.error : ""}`, data };
     } catch (err) {
-      return err && err.message ? err.message : String(err);
+      return { failure: err && err.message ? err.message : String(err), data: {} };
     }
   }
 

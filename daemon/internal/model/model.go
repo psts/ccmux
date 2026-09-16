@@ -268,11 +268,11 @@ type PeerEvent struct {
 	// Group is the SENDER's group snapshotted at send time, so group history
 	// (the read-only viewer) survives peers that have since left.
 	Group string `json:"group"`
-	// Text is the raw message text. For verdicts and answers it still holds
-	// the raw reply ("yes abcde", "answer abcde take the second") so viewers
-	// show what was actually said; the structured fields below are what the
-	// worker's client consumes. An answer's text is re-parsed from Text at
-	// the wire, so it needs no column of its own.
+	// Text is the raw message text. For verdicts and answers it holds the
+	// raw reply ("yes abcde", "answer abcde take the second"): the wire and
+	// the pane reply re-parse the answer from it, so an answer needs no
+	// column of its own. The structured fields below are what the worker's
+	// client consumes.
 	Text      string `json:"text"`
 	RequestID string `json:"request_id,omitempty"` // verdicts and answers
 	Behavior  string `json:"behavior,omitempty"`   // verdicts only: "allow" | "deny"
