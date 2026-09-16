@@ -73,7 +73,7 @@ func (s *Store) EnsureClaudeServe() (script, node string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("the claude harness for agents needs node (Node.js 18+) on this host: %w", err)
 	}
-	if err := installClaudeServeDeps(dir); err != nil {
+	if err := installClaudeServeDeps(dir, node); err != nil {
 		return "", "", err
 	}
 	return ClaudeServeScript(s.Root), node, nil
@@ -83,7 +83,14 @@ func (s *Store) EnsureClaudeServe() (script, node string, err error) {
 // already matches the pinned version in the embedded package.json. ci, not
 // install: it takes the shipped lock as the whole truth, integrity hashes
 // included, and refuses to resolve anything the lock does not name.
-func installClaudeServeDeps(dir string) error {
+//
+// npm is a script that starts with "#!/usr/bin/env node", so node's own
+// folder goes on the PATH npm runs with: the daemon runs under systemd with
+// the bare system PATH, where LookPath finds npm in ~/.local/bin but env
+// then cannot find node for it (exit 127, "/usr/bin/env: 'node': No such
+// file or directory"). The meridian package solves the same trap for its
+// own npm-started child.
+func installClaudeServeDeps(dir, node string) error {
 	want, err := pinnedSDKVersion()
 	if err != nil {
 		return err
@@ -99,6 +106,7 @@ func installClaudeServeDeps(dir string) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, npm, "ci", "--no-audit", "--no-fund", "--loglevel=error")
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(node)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("npm ci for the claude sidecar in %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
 	}

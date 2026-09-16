@@ -146,6 +146,36 @@ else { console.error("bad verb " + a[0]); process.exit(2); }
 	}
 }
 
+// npm is "#!/usr/bin/env node": under the daemon's bare PATH, node must be
+// found through the folder of the node the install was given, or npm dies
+// with 127 before it starts. A fake npm that needs node on its PATH stands
+// in for the real one; the test's PATH holds only the fake. A nil return
+// already proves the install left the pinned version (the function checks).
+func TestInstallClaudeServeDepsPutsNodeOnNpmsPath(t *testing.T) {
+	want, err := pinnedSDKVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeDir, npmDir, dir := t.TempDir(), t.TempDir(), t.TempDir()
+	node := filepath.Join(nodeDir, "node")
+	os.WriteFile(node, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	// Absolute /bin/mkdir: the test's PATH has no system folders, on purpose.
+	fakeNpm := `#!/bin/sh
+command -v node >/dev/null 2>&1 || { echo "/usr/bin/env: 'node': No such file or directory" >&2; exit 127; }
+/bin/mkdir -p node_modules/` + sdkPackage + ` && printf '{"version":"` + want + `"}' > node_modules/` + sdkPackage + `/package.json
+`
+	os.WriteFile(filepath.Join(npmDir, "npm"), []byte(fakeNpm), 0o755)
+	t.Setenv("PATH", npmDir) // npm findable, node NOT: the daemon's situation
+	if err := installClaudeServeDeps(dir, node); err != nil {
+		t.Fatalf("npm must run with node's folder on its PATH: %v", err)
+	}
+	// Already installed: npm is not run again, so a broken npm is never seen.
+	os.WriteFile(filepath.Join(npmDir, "npm"), []byte("#!/bin/sh\nexit 9\n"), 0o755)
+	if err := installClaudeServeDeps(dir, node); err != nil {
+		t.Fatalf("a matching install must skip npm: %v", err)
+	}
+}
+
 // EnsureClaudeServe writes the embedded files and skips the install when
 // the pinned SDK is already there; the marker stands in for node_modules.
 func TestEnsureClaudeServeWritesFilesAndSkipsAnInstalledSDK(t *testing.T) {
