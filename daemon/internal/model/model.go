@@ -258,7 +258,7 @@ type PushSubscription struct {
 // acked seq) makes replay-on-subscribe lossless and duplicate-free.
 type PeerEvent struct {
 	Seq         int64  `json:"seq"`
-	Kind        string `json:"kind"` // "message" | "permission_verdict"
+	Kind        string `json:"kind"` // "message" | "permission_verdict" | "question_answer"
 	FromID      string `json:"from_id"`
 	FromName    string `json:"from_name"`
 	FromSummary string `json:"from_summary"`
@@ -268,19 +268,24 @@ type PeerEvent struct {
 	// Group is the SENDER's group snapshotted at send time, so group history
 	// (the read-only viewer) survives peers that have since left.
 	Group string `json:"group"`
-	// Text is the raw message text. For verdicts it still holds the raw reply
-	// ("yes abcde") so viewers show what was actually said; the structured
-	// fields below are what the worker's client consumes.
+	// Text is the raw message text. For verdicts and answers it still holds
+	// the raw reply ("yes abcde", "answer abcde take the second") so viewers
+	// show what was actually said; the structured fields below are what the
+	// worker's client consumes. An answer's text is re-parsed from Text at
+	// the wire, so it needs no column of its own.
 	Text      string `json:"text"`
-	RequestID string `json:"request_id,omitempty"` // verdicts only
+	RequestID string `json:"request_id,omitempty"` // verdicts and answers
 	Behavior  string `json:"behavior,omitempty"`   // verdicts only: "allow" | "deny"
 	SentAt    int64  `json:"sent_at"`              // unix millis
 }
 
-// PeerEventMessage and PeerEventVerdict are the two PeerEvent kinds.
+// PeerEventMessage, PeerEventVerdict and PeerEventAnswer are the PeerEvent
+// kinds: chat, a delegator's yes/no on a relayed permission card, and a
+// delegator's text for a relayed question card.
 const (
 	PeerEventMessage = "message"
 	PeerEventVerdict = "permission_verdict"
+	PeerEventAnswer  = "question_answer"
 )
 
 // Pane is one terminal (a tmux window with a single pane).

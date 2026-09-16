@@ -55,6 +55,18 @@ export function questionRequest(id, sessionID, input, callID) {
   return { id, sessionID, questions, tool: { messageID: "", callID: callID || "" } };
 }
 
+// questionCardText renders a question request the way the bus relays it to
+// a delegating peer: each question with its header and options, one per
+// line, so the peer can answer in plain words.
+export function questionCardText(request) {
+  const lines = [];
+  for (const q of request.questions || []) {
+    lines.push((q.header ? q.header + ": " : "") + q.question + (q.multiple ? " (one or more)" : ""));
+    for (const o of q.options || []) lines.push("  - " + o.label + (o.description ? ": " + o.description : ""));
+  }
+  return lines.join("\n");
+}
+
 // questionAnswers turns the chat's reply (one list of labels per question)
 // into the answers map the tool expects back in its input.
 export function questionAnswers(input, answers) {

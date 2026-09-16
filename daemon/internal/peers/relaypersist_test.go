@@ -46,6 +46,9 @@ func TestRelayPersist_PermissionRequestSurvivesRestart(t *testing.T) {
 	if n, err := svc.PermissionRequest(worker.PeerID, "abcde", "Bash", "rm -rf", "rm -rf /tmp/x"); err != nil || n != 1 {
 		t.Fatalf("PermissionRequest = (%d, %v), want (1, nil)", n, err)
 	}
+	if n, err := svc.QuestionRequest(worker.PeerID, "bcdef", "Pick one."); err != nil || n != 1 {
+		t.Fatalf("QuestionRequest = (%d, %v), want (1, nil)", n, err)
+	}
 
 	// Daemon restart.
 	fresh, _ := rebuild()
@@ -54,7 +57,7 @@ func TestRelayPersist_PermissionRequestSurvivesRestart(t *testing.T) {
 	registerPane(fresh, "pane-boss", "/repo")
 
 	fresh.mu.Lock()
-	pr := fresh.perms["abcde"]
+	pr, question := fresh.perms["abcde"], fresh.perms["bcdef"]
 	fresh.mu.Unlock()
 	if pr == nil {
 		t.Fatal("the outstanding permission request did not survive the restart")
@@ -64,6 +67,12 @@ func TestRelayPersist_PermissionRequestSurvivesRestart(t *testing.T) {
 	}
 	if pr.resolved {
 		t.Error("an unanswered request came back marked resolved")
+	}
+	if pr.kind != askPermission {
+		t.Errorf("a restart forgot the permission's kind: %q", pr.kind)
+	}
+	if question == nil || question.kind != askQuestion {
+		t.Errorf("the question card did not survive with its kind: %+v", question)
 	}
 }
 

@@ -3,7 +3,7 @@
 // signals the daemon gets, and how a failed query ends.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Agent } from "./agent.mjs";
+import { Agent, askID } from "./agent.mjs";
 
 // stubSDK records what the agent asks of it. query() returns an object the
 // agent iterates: it yields the scripted messages, then waits until the test
@@ -37,10 +37,17 @@ function makeAgent(opts = {}, script = []) {
   const sdk = stubSDK(script);
   const out = [];
   const signals = [];
+  const asks = []; // what reached POST .../agent-ask
   const deps = {
     ...sdk, cwd: "/inst", env: { CCMUX_DAEMON_URL: "http://d", CCMUX_PANE_ID: "p1", ...(opts.env || {}) },
     readFile: () => "# base\n", out: (s) => out.push(s), err: (s) => sdk.err.push(s),
     fetch: async (url, init) => {
+      if (url.endsWith("/agent-ask")) {
+        asks.push(JSON.parse(init.body));
+        if (opts.askStatus) return { ok: false, status: opts.askStatus };
+        return { ok: true };
+      }
+      assert.equal(url, "http://d/v1/panes/p1/agent-signal");
       signals.push(JSON.parse(init.body).state);
       if (opts.signalFails) throw new Error("connect ECONNREFUSED");
       if (opts.signalStatus) return { ok: false, status: opts.signalStatus };
@@ -50,7 +57,7 @@ function makeAgent(opts = {}, script = []) {
   const agent = new Agent({ agent: "probe", addDirs: [], allowed: [], disallowed: [], ...opts }, deps);
   const events = [];
   agent.clients.add({ write: (line) => events.push(JSON.parse(line.slice(6))), end() {} });
-  return { agent, sdk, out, signals, events };
+  return { agent, sdk, out, signals, asks, events };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -325,4 +332,44 @@ test("messages for another session on disk go through the store; shutdown ends t
   assert.equal(ended, 1);
   assert.deepEqual(signals, ["idle"]);
   assert.ok(agent.abort.signal.aborted);
+});
+
+test("a card carries a five-letter bus id and is relayed to the daemon; a failed relay is said once", async () => {
+  for (let i = 0; i < 50; i++) assert.match(askID(), /^[a-km-z]{5}$/);
+  const { agent, asks, events, signals } = makeAgent();
+  const p = agent.canUseTool("Bash", { command: "printf hi" }, { toolUseID: "c1", description: "print a greeting" });
+  const q = agent.canUseTool("AskUserQuestion", { questions: [
+    { question: "Which tone?", header: "Tone", options: [{ label: "Warm", description: "friendly" }, { label: "Dry" }] },
+    { question: "Post now?", header: "", options: [{ label: "Yes" }], multiSelect: true },
+  ] }, { toolUseID: "c2" });
+  await tick();
+  const [perm, ques] = events.filter((e) => e.type.endsWith(".asked")).map((e) => e.properties);
+  assert.match(perm.id, /^[a-km-z]{5}$/);
+  assert.match(ques.id, /^[a-km-z]{5}$/);
+  assert.notEqual(perm.id, ques.id);
+  assert.deepEqual(asks, [
+    { kind: "permission", id: perm.id, tool: "Bash", description: "print a greeting", preview: "printf hi" },
+    { kind: "question", id: ques.id, text: "Tone: Which tone?\n  - Warm: friendly\n  - Dry\nPost now? (one or more)\n  - Yes" },
+  ]);
+  assert.deepEqual(signals, ["needs-input", "needs-input"], "the relay is not a signal");
+  // The routes answer by the same id, so a bus reply the daemon hands over lands on the card.
+  assert.equal(agent.replyPermission(perm.id, "once"), true);
+  assert.equal(agent.replyQuestion(ques.id, [["Dry"], ["Yes"]]), true);
+  assert.equal((await p).behavior, "allow");
+  assert.deepEqual((await q).updatedInput.answers, { "Which tone?": "Dry", "Post now?": ["Yes"] });
+
+  // No daemon in the environment: no relay, no failure said. A daemon that
+  // refuses: said once, the card stays up.
+  const alone = makeAgent({ env: { CCMUX_DAEMON_URL: "", CCMUX_PANE_ID: "" } });
+  alone.agent.canUseTool("Bash", { command: "ls" }, { toolUseID: "c3" });
+  await tick();
+  assert.deepEqual(alone.asks, []);
+  assert.deepEqual(alone.out.filter((l) => l.includes("card relay")), []);
+  const refused = makeAgent({ askStatus: 404 });
+  refused.agent.canUseTool("Bash", { command: "ls" }, { toolUseID: "c4" });
+  refused.agent.canUseTool("Bash", { command: "pwd" }, { toolUseID: "c5" });
+  await tick();
+  assert.equal(refused.asks.length, 2);
+  assert.equal(refused.out.filter((l) => l.includes("card relay")).length, 1, "one line per outage");
+  assert.equal(refused.agent.pendingPermissions().length, 2, "the cards stay up in the chat");
 });

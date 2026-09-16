@@ -18,6 +18,31 @@ import (
 // falls through as a normal message instead of silently vanishing.
 var permReplyRe = regexp.MustCompile(`(?i)^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$`)
 
+// answerReplyRe matches a delegator's answer to a relayed question card:
+// "answer abcde <text>", the text running to the end (newlines included).
+// Same id alphabet and the same outstanding-only rule as permReplyRe.
+var answerReplyRe = regexp.MustCompile(`(?is)^\s*answer\s+([a-km-z]{5})\s+(\S.*)$`)
+
+// AnswerText is the answer inside an "answer <id> <text>" reply, trimmed;
+// "" when text is not one. The wire and the pane reply both read it from
+// the raw message, so an answer needs no column of its own.
+func AnswerText(text string) string {
+	m := answerReplyRe.FindStringSubmatch(text)
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSpace(m[2])
+}
+
+// PaneReply is what ReplyToPane hands a pane's chat server: a verdict
+// (Behavior "allow" or "deny") or an answer (Behavior "", Answer the text)
+// for the card with RequestID.
+type PaneReply struct {
+	RequestID string
+	Behavior  string
+	Answer    string
+}
+
 // SendReq mirrors the send_message tool's arguments.
 type SendReq struct {
 	FromID string `json:"from_id"`
@@ -67,6 +92,9 @@ func (s *Service) Send(req SendReq) SendResp {
 	}
 
 	if handled, resp := s.tryVerdictLocked(sender, target, senderGroup, req.Text); handled {
+		return resp
+	}
+	if handled, resp := s.tryAnswerLocked(sender, target, senderGroup, req.Text); handled {
 		return resp
 	}
 	// A message that crossed a group boundary opens the return path, so the
@@ -136,30 +164,77 @@ func (s *Service) tryVerdictLocked(sender, target *Peer, group, text string) (bo
 	if m == nil {
 		return false, SendResp{}
 	}
-	rid := strings.ToLower(m[2])
-	pr := s.perms[rid]
-	if pr == nil || pr.workerID != target.ID {
-		return false, SendResp{} // not an outstanding request → normal message
+	pr, done := s.claimAskLocked(strings.ToLower(m[2]), target, askPermission)
+	if pr == nil {
+		return false, SendResp{} // not an outstanding permission → normal message
 	}
-	if pr.resolved {
+	if done {
 		return true, SendResp{OK: true}
 	}
-	pr.resolved = true
-	// Persist the resolution before delivering: a restart between the two would
-	// otherwise let a second verdict for the same dialog through.
-	_ = s.st.SavePermRequest(rid, pr.workerID, true, pr.at)
 	behavior := "deny"
 	if strings.HasPrefix(strings.ToLower(m[1]), "y") {
 		behavior = "allow"
 	}
 	ev := s.eventFromLocked(sender, target, group, text)
-	ev.Kind = model.PeerEventVerdict
-	ev.RequestID = rid
-	ev.Behavior = behavior
-	if err := s.deliverLocked(ev); err != nil {
-		return true, SendResp{Error: err.Error()}
+	ev.Kind, ev.RequestID, ev.Behavior = model.PeerEventVerdict, strings.ToLower(m[2]), behavior
+	return true, s.deliverAskReplyLocked(ev, target, PaneReply{RequestID: ev.RequestID, Behavior: behavior})
+}
+
+// tryAnswerLocked is tryVerdictLocked for "answer <id> <text>": a
+// question_answer event for the worker, first answer wins.
+func (s *Service) tryAnswerLocked(sender, target *Peer, group, text string) (bool, SendResp) {
+	m := answerReplyRe.FindStringSubmatch(text)
+	if m == nil {
+		return false, SendResp{}
 	}
-	return true, SendResp{OK: true}
+	pr, done := s.claimAskLocked(strings.ToLower(m[1]), target, askQuestion)
+	if pr == nil {
+		return false, SendResp{} // not an outstanding question → normal message
+	}
+	if done {
+		return true, SendResp{OK: true}
+	}
+	ev := s.eventFromLocked(sender, target, group, text)
+	ev.Kind, ev.RequestID = model.PeerEventAnswer, strings.ToLower(m[1])
+	return true, s.deliverAskReplyLocked(ev, target, PaneReply{RequestID: ev.RequestID, Answer: strings.TrimSpace(m[2])})
+}
+
+// claimAskLocked resolves the outstanding ask rid of kind want for target:
+// nil when there is none (the reply is a normal message, and a permission's
+// id in the answer verb, or a question's in the yes/no verb, is exactly
+// that: the ask stays open for the right verb); done when it was answered
+// before (first wins, this one is dropped). Persisted before delivery: a
+// restart between the two would otherwise let a second reply through.
+func (s *Service) claimAskLocked(rid string, target *Peer, want string) (pr *permRequest, done bool) {
+	pr = s.perms[rid]
+	if pr == nil || pr.workerID != target.ID || pr.kind != want {
+		return nil, false
+	}
+	if pr.resolved {
+		return pr, true
+	}
+	pr.resolved = true
+	_ = s.st.SavePermRequest(rid, pr.workerID, pr.kind, true, pr.at)
+	return pr, false
+}
+
+// deliverAskReplyLocked logs and pushes the reply event to the worker, and
+// hands it to the worker's pane when the api wired one: an agent behind a
+// chat server (the claude sidecar) answers its own card from it, its shim
+// only acks the event. Off the lock and best-effort, like a pane push.
+func (s *Service) deliverAskReplyLocked(ev *model.PeerEvent, target *Peer, reply PaneReply) SendResp {
+	if err := s.deliverLocked(ev); err != nil {
+		return SendResp{Error: err.Error()}
+	}
+	if s.ReplyToPane != nil && target.PaneID != "" {
+		paneID := target.PaneID
+		go func() {
+			if err := s.ReplyToPane(paneID, reply); err != nil && !errors.Is(err, ErrNoPanePush) {
+				log.Printf("peers: reply %s to pane %s skipped: %v", reply.RequestID, paneID, err)
+			}
+		}()
+	}
+	return SendResp{OK: true}
 }
 
 // eventFromLocked snapshots the sender's display fields and the group into a

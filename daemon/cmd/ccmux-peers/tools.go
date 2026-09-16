@@ -29,6 +29,8 @@ When a peer asks you to do work, acknowledge the request, do the work, and then 
 
 PERMISSION RELAY: If you receive a message starting with "[claude-peers permission relay]", another peer needs your approval to run a tool. The relay is broadcast to everyone who has messaged that peer recently — so it might be for work YOU delegated, or it might be for work someone else delegated. ONLY respond yes/no if you actually asked that peer to do the work in question. If you didn't delegate it, ignore the relay completely (don't send anything back). To approve work you delegated: call send_message back to that peer with the message field set to exactly "yes <request_id>" (e.g. "yes abcde"). To deny: "no <request_id>". The reply must contain only those two tokens — no greeting, no explanation. The request_id is the five lowercase letters in the relay message.
 
+QUESTION RELAY: If you receive a message starting with "[claude-peers question relay]", another peer is asking a question (its AskUserQuestion) and the same rule applies: ONLY answer if you delegated that work; otherwise ignore it. To answer: call send_message back to that peer with the message field set to "answer <request_id> <your answer>" — the id, then your answer in plain words (an option's label, or your own text; several questions on one card get one answer covering them all). The first answer the peer gets, from you or from its human, is the one that counts.
+
 DELEGATION TASKS: If a message starts with "[claude-peers delegation task tsk_xxxxxxxx]", you are the worker on a tracked delegation. Call update_task(task_id, status="acked") immediately, "working" when you start, and close it with status="completed" plus a result summary (or "failed" and why). Your updates reach the delegator automatically — do not also send a separate completion message. When YOU need a peer to do work whose completion you must know about, use delegate instead of send_message; you will receive "[claude-peers task update]" messages as the worker reports, and check_messages lists your open delegations. Task update messages are status notifications, not conversation: read them, act if the result requires it, and do NOT send a reply unless something is wrong. A delegator may close its own task with update_task(status="failed") to cancel it.
 
 Available tools:
@@ -377,7 +379,8 @@ func (a *app) toolCheckMessages() any {
 		if a.alreadyShown(ev.Seq) {
 			continue
 		}
-		if ev.Type == "permission_verdict" {
+		switch ev.Type {
+		case "permission_verdict":
 			// A verdict that arrived while the push channel was down still
 			// resolves the dialog — emit it, don't render it as chat.
 			if a.mcp.Notify("notifications/claude/channel/permission", map[string]any{
@@ -385,10 +388,14 @@ func (a *app) toolCheckMessages() any {
 			}) == nil {
 				a.markShown(ev.Seq, epoch)
 			}
-			continue
+		case "message":
+			a.markShown(ev.Seq, epoch)
+			lines = append(lines, fmt.Sprintf("From %s (%s):\n%s", orID(ev.FromName, ev.FromID), ev.SentAt, ev.Text))
+		default:
+			// A question_answer (the daemon hands it to the agent's chat server
+			// itself) or a newer kind: acked, never shown as chat.
+			a.markShown(ev.Seq, epoch)
 		}
-		a.markShown(ev.Seq, epoch)
-		lines = append(lines, fmt.Sprintf("From %s (%s):\n%s", orID(ev.FromName, ev.FromID), ev.SentAt, ev.Text))
 	}
 	body := "No new messages."
 	if len(lines) > 0 {

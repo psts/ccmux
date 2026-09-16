@@ -44,6 +44,17 @@ type wireVerdict struct {
 	FromID    string `json:"from_id"`
 }
 
+// wireAnswer is a relayed question's answer. The shim acks it away (a
+// question card lives in the sidecar, which gets the answer through
+// ReplyToPane); it is on the wire so a viewer and the log agree.
+type wireAnswer struct {
+	Type      string `json:"type"`
+	Seq       int64  `json:"seq"`
+	RequestID string `json:"request_id"`
+	Answer    string `json:"answer"`
+	FromID    string `json:"from_id"`
+}
+
 // ackFrame is the only client→server frame: a cumulative ack, sent after the
 // MCP notification for that event was emitted.
 type ackFrame struct {
@@ -56,9 +67,13 @@ type ackFrame struct {
 func WireFrame(ev *model.PeerEvent) any { return peerFrame(ev) }
 
 func peerFrame(ev *model.PeerEvent) any {
-	if ev.Kind == model.PeerEventVerdict {
+	switch ev.Kind {
+	case model.PeerEventVerdict:
 		return wireVerdict{Type: "permission_verdict", Seq: ev.Seq,
 			RequestID: ev.RequestID, Behavior: ev.Behavior, FromID: ev.FromID}
+	case model.PeerEventAnswer:
+		return wireAnswer{Type: "question_answer", Seq: ev.Seq,
+			RequestID: ev.RequestID, Answer: AnswerText(ev.Text), FromID: ev.FromID}
 	}
 	return messageFrame(ev)
 }

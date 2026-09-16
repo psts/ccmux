@@ -55,7 +55,7 @@ func TestMCP_InitializeDeclaresChannelCapabilities(t *testing.T) {
 		t.Fatalf(`serverInfo.name = %v, want "claude-peers" (baked into the launch flag)`, info["name"])
 	}
 	instr := result["instructions"].(string)
-	for _, marker := range []string{"[claude-peers permission relay]", "send_message", "Do NOT use the built-in SendMessage"} {
+	for _, marker := range []string{"[claude-peers permission relay]", "[claude-peers question relay]", `"answer <request_id> <your answer>"`, "send_message", "Do NOT use the built-in SendMessage"} {
 		if !strings.Contains(instr, marker) {
 			t.Fatalf("instructions missing %q", marker)
 		}

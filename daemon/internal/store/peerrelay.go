@@ -9,40 +9,42 @@
 // across projects when it tried to answer. Neither failure looked like a restart.
 package store
 
-// PermRequest is one outstanding tool-approval relay.
+// PermRequest is one outstanding relayed ask: a tool-approval dialog
+// (Kind "permission") or a question card (Kind "question").
 type PermRequest struct {
 	WorkerID  string
+	Kind      string
 	Resolved  bool
 	CreatedAt int64
 }
 
 // SavePermRequest records or updates an outstanding request. requestID is stored
 // as given; the caller owns case normalisation (the service lowercases).
-func (s *SQLite) SavePermRequest(requestID, workerID string, resolved bool, createdAt int64) error {
+func (s *SQLite) SavePermRequest(requestID, workerID, kind string, resolved bool, createdAt int64) error {
 	_, err := s.db.Exec(`
-INSERT INTO peer_perm_requests (request_id,worker_id,resolved,created_at) VALUES (?,?,?,?)
-ON CONFLICT(request_id) DO UPDATE SET worker_id=excluded.worker_id,
+INSERT INTO peer_perm_requests (request_id,worker_id,kind,resolved,created_at) VALUES (?,?,?,?,?)
+ON CONFLICT(request_id) DO UPDATE SET worker_id=excluded.worker_id, kind=excluded.kind,
   resolved=excluded.resolved, created_at=excluded.created_at`,
-		requestID, workerID, boolToInt(resolved), createdAt)
+		requestID, workerID, kind, boolToInt(resolved), createdAt)
 	return err
 }
 
 // LoadPermRequests returns every stored request keyed by request id.
 func (s *SQLite) LoadPermRequests() (map[string]PermRequest, error) {
-	rows, err := s.db.Query(`SELECT request_id,worker_id,resolved,created_at FROM peer_perm_requests`)
+	rows, err := s.db.Query(`SELECT request_id,worker_id,kind,resolved,created_at FROM peer_perm_requests`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string]PermRequest{}
 	for rows.Next() {
-		var id, worker string
+		var id, worker, kind string
 		var resolved int
 		var created int64
-		if err := rows.Scan(&id, &worker, &resolved, &created); err != nil {
+		if err := rows.Scan(&id, &worker, &kind, &resolved, &created); err != nil {
 			return nil, err
 		}
-		out[id] = PermRequest{WorkerID: worker, Resolved: resolved != 0, CreatedAt: created}
+		out[id] = PermRequest{WorkerID: worker, Kind: kind, Resolved: resolved != 0, CreatedAt: created}
 	}
 	return out, rows.Err()
 }

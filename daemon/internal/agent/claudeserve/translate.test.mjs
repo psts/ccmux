@@ -1,7 +1,7 @@
 // node --test translate.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Transcript, sessionInfo, questionRequest, questionAnswers, permissionPattern } from "./translate.mjs";
+import { Transcript, sessionInfo, questionRequest, questionAnswers, permissionPattern, questionCardText } from "./translate.mjs";
 
 const now = () => 1000;
 
@@ -78,4 +78,13 @@ test("sessions, questions and permission patterns map onto the chat's shapes", (
   assert.deepEqual(questionAnswers(input, [[], ["B"]]), { "Which?": ["B"] });
   assert.equal(permissionPattern("Bash", { command: "git status" }), "git status");
   assert.equal(permissionPattern("Odd", { a: 1 }), '{"a":1}');
+});
+
+test("a question card renders for the bus as lines a peer can answer in words", () => {
+  const req = questionRequest("abcde", "s1", { questions: [
+    { question: "Which tone?", header: "Tone", options: [{ label: "Warm", description: "friendly" }, { label: "Dry" }] },
+    { question: "Post now?", options: [{ label: "Yes" }], multiSelect: true },
+  ] }, "c1");
+  assert.equal(questionCardText(req), "Tone: Which tone?\n  - Warm: friendly\n  - Dry\nPost now? (one or more)\n  - Yes");
+  assert.equal(questionCardText({ questions: [] }), "");
 });

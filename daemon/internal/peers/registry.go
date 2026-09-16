@@ -403,6 +403,20 @@ func (s *Service) substrateAliveLocked(p *Peer) bool {
 	return syscall.Kill(p.PID, 0) == nil
 }
 
+// PeerForPane is the id of the present peer registered on paneID, "" when
+// none is: how the api finds the worker behind a pane whose chat server
+// raised a card.
+func (s *Service) PeerForPane(paneID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, p := range s.peers {
+		if p.PaneID == paneID && s.presentLocked(p) {
+			return id
+		}
+	}
+	return ""
+}
+
 // remoteLocked reports a pane-less peer living on ANOTHER host — the hub's view
 // of a plain-terminal session on a member. Its pid indexes a process table this
 // process cannot see, so kill(0) here is not a liveness test but a coin flip

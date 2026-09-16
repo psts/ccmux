@@ -56,7 +56,7 @@ type Store interface {
 	// Relay state that outlives the daemon: a permission dialog can sit open for
 	// hours and a reply grant lasts two, so holding either only in memory meant a
 	// restart silently broke a conversation already under way.
-	SavePermRequest(requestID, workerID string, resolved bool, createdAt int64) error
+	SavePermRequest(requestID, workerID, kind string, resolved bool, createdAt int64) error
 	LoadPermRequests() (map[string]store.PermRequest, error)
 	DeletePermRequest(requestID string) error
 	PrunePermRequests(beforeMillis int64) error
@@ -124,11 +124,20 @@ type Peer struct {
 	ShimVersion string
 }
 
+// permRequest is one outstanding relayed ask. kind is askPermission or
+// askQuestion: each is answered in its own verb, and a reply in the other
+// verb must not claim it (the card would be dead to the right reply after).
 type permRequest struct {
 	workerID string
+	kind     string
 	resolved bool
 	at       int64
 }
+
+const (
+	askPermission = "permission"
+	askQuestion   = "question"
+)
 
 type pendingSpawn struct {
 	name     string
@@ -173,6 +182,11 @@ type Service struct {
 	// WakePane starts the asleep agent instance in paneID with text as its
 	// first prompt — what a message to a sleeping agent means.
 	WakePane func(paneID, text string) error
+	// ReplyToPane hands a delegator's verdict or answer to the pane whose
+	// agent raised the card, when that agent takes it through a chat server
+	// (the claude sidecar) rather than through its shim. Wired by the api;
+	// nil, or ErrNoPanePush from it, means the pane has no such server.
+	ReplyToPane func(paneID string, reply PaneReply) error
 
 	// SpawnTimeout is how long a spawned teammate has to register before its
 	// requester gets an "unreachable" notice. Exported for tests.
@@ -418,7 +432,7 @@ func (s *Service) loadRelayState() {
 			if pr.CreatedAt < permCutoff {
 				continue // expired while the daemon was down
 			}
-			s.perms[id] = &permRequest{workerID: pr.WorkerID, resolved: pr.Resolved, at: pr.CreatedAt}
+			s.perms[id] = &permRequest{workerID: pr.WorkerID, kind: pr.Kind, resolved: pr.Resolved, at: pr.CreatedAt}
 		}
 	}
 	if gerr == nil {

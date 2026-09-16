@@ -3,8 +3,18 @@
 // routes (routes.mjs). The SDK and the process edges come in through the
 // constructor, so agent.test.mjs runs this class against stubs without the
 // SDK installed; serve.mjs is the only file that imports the real one.
-import { randomUUID } from "node:crypto";
-import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAnswers } from "./translate.mjs";
+import { randomUUID, randomInt } from "node:crypto";
+import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAnswers, questionCardText } from "./translate.mjs";
+
+// askID is a card's id: five lowercase letters without l, the shape the
+// bus's reply matchers accept ("yes abcde", "answer abcde ..."), so the
+// same id names the card in the chat and on the bus.
+const askAlphabet = "abcdefghijkmnopqrstuvwxyz";
+export function askID() {
+  let id = "";
+  for (let i = 0; i < 5; i++) id += askAlphabet[randomInt(askAlphabet.length)];
+  return id;
+}
 
 export class Agent {
   // o is the parsed command line; deps carries the SDK (query, listSessions,
@@ -32,10 +42,10 @@ export class Agent {
     this.busy = false;
     this.interrupting = false;
     this.abort = new AbortController();
-    this.reqSeq = 0;
     this.daemon = deps.env.CCMUX_DAEMON_URL;
     this.pane = deps.env.CCMUX_PANE_ID;
     this.signalDown = false; // the last signal failed; said once, not per signal
+    this.askDown = false; // the last card relay failed; same rule
   }
 
   log(line) {
@@ -50,21 +60,41 @@ export class Agent {
   // alert (the chat card itself rides the event stream and still shows).
   async signal(state) {
     if (!this.daemon || !this.pane) return;
-    let failure = "";
-    try {
-      const r = await this.fetch(`${this.daemon}/v1/panes/${this.pane}/agent-signal`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ state }),
-      });
-      if (!r.ok) failure = `HTTP ${r.status}`;
-    } catch (err) {
-      failure = err && err.message ? err.message : String(err);
-    }
+    const failure = await this.post("agent-signal", { state });
     if (!failure) {
       this.signalDown = false;
       return;
     }
     if (!this.signalDown) this.log(`! daemon signal ${state}: ${failure} (the daemon will read this agent as idle until it answers again)`);
     this.signalDown = true;
+  }
+
+  // relayAsk hands a card to the daemon (api.agentAsk), which relays it over
+  // the bus to whoever delegated to this agent; their reply comes back to the
+  // card through the routes. The card is up in the chat either way, so a
+  // failure only costs the relay, and is said once per outage.
+  async relayAsk(body) {
+    if (!this.daemon || !this.pane) return;
+    const failure = await this.post("agent-ask", body);
+    if (!failure) {
+      this.askDown = false;
+      return;
+    }
+    if (!this.askDown) this.log(`! card relay to the bus: ${failure} (the card is only in the chat until the daemon answers again)`);
+    this.askDown = true;
+  }
+
+  // post is one loopback call to the daemon on this pane; "" on success,
+  // else what went wrong.
+  async post(route, body) {
+    try {
+      const r = await this.fetch(`${this.daemon}/v1/panes/${this.pane}/${route}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      return r.ok ? "" : `HTTP ${r.status}`;
+    } catch (err) {
+      return err && err.message ? err.message : String(err);
+    }
   }
 
   broadcast(ev) {
@@ -250,7 +280,7 @@ export class Agent {
   // the chat, or a question card for AskUserQuestion, answered by a human.
   canUseTool(name, input, extra) {
     if (name === "AskUserQuestion") return this.askQuestion(input, extra);
-    const id = "per_" + ++this.reqSeq;
+    const id = askID();
     // The SDK's suggestions are the rule "always" would write; when it says
     // that rule would grant more than this one ask, "always" is not offered.
     const suggestions = extra.suppressAlwaysAllowRule ? [] : extra.suggestions || [];
@@ -265,6 +295,7 @@ export class Agent {
       this.permissions.set(id, { request, resolve, suggestions });
       this.broadcast({ type: "permission.asked", properties: request });
       this.signal("needs-input");
+      this.relayAsk({ kind: "permission", id, tool: name, description: extra.description || extra.title || request.patterns[0], preview: request.patterns[0] });
       extra.signal?.addEventListener("abort", () => this.replyPermission(id, "reject"), { once: true });
     });
   }
@@ -296,13 +327,14 @@ export class Agent {
   }
 
   askQuestion(input, extra) {
-    const id = "que_" + ++this.reqSeq;
+    const id = askID();
     const request = questionRequest(id, this.sid, input, extra.toolUseID);
     this.log(`? ${request.questions.map((q) => q.question).join(" / ")}`);
     return new Promise((resolve) => {
       this.questions.set(id, { request, resolve, input });
       this.broadcast({ type: "question.asked", properties: request });
       this.signal("needs-input");
+      this.relayAsk({ kind: "question", id, text: questionCardText(request) });
       extra.signal?.addEventListener("abort", () => this.rejectQuestion(id), { once: true });
     });
   }

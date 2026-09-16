@@ -47,6 +47,7 @@ func (s *Server) wirePeersAgents() {
 	s.peersSvc.IsAgent = s.isAgent
 	s.peersSvc.StartAgent = s.startAgentForPeer
 	s.peersSvc.WakePane = s.wakePane
+	s.peersSvc.ReplyToPane = s.replyToAgentPane
 	s.peersSvc.PushToPane = func(paneID, text string) error {
 		err := s.mgr.PushToAgentPane(paneID, text)
 		switch {

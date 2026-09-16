@@ -38,6 +38,10 @@ type FakeOpencode struct {
 	aborts  int
 	replies map[string]string
 	answers map[string][][]string
+	// extraPermissions and extraQuestions are cards a test raised (AskPermission,
+	// AskQuestion), listed after the fixed per_1 / que_1.
+	extraPermissions string
+	extraQuestions   string
 	// Events is fed by the test: each string is one SSE data payload.
 	Events   chan string
 	Server   *httptest.Server
@@ -91,7 +95,9 @@ func (f *FakeOpencode) sessionRoutes(mux *http.ServeMux) {
 // requestRoutes: permission and question listing and replies.
 func (f *FakeOpencode) requestRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /permission", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"id":"per_1","sessionID":"ses_1","permission":"bash","patterns":["ls *"],"metadata":{},"always":["*"]}]`)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		fmt.Fprint(w, `[{"id":"per_1","sessionID":"ses_1","permission":"bash","patterns":["ls *"],"metadata":{},"always":["*"]}`+f.extraPermissions+`]`)
 	})
 	mux.HandleFunc("POST /permission/{id}/reply", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Reply string }
@@ -102,7 +108,9 @@ func (f *FakeOpencode) requestRoutes(mux *http.ServeMux) {
 		w.WriteHeader(200)
 	})
 	mux.HandleFunc("GET /question", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"Pick one.","header":"Demo","options":[{"label":"Tea","description":"calm"},{"label":"Coffee","description":"alert"}]}]}]`)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		fmt.Fprint(w, `[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"Pick one.","header":"Demo","options":[{"label":"Tea","description":"calm"},{"label":"Coffee","description":"alert"}]}]}`+f.extraQuestions+`]`)
 	})
 	mux.HandleFunc("POST /question/{id}/reply", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -161,6 +169,28 @@ func (f *FakeOpencode) Recorded() (prompts []string, aborts int, replies map[str
 		replies[k] = v
 	}
 	return append([]string(nil), f.prompts...), f.aborts, replies
+}
+
+// AskPermission lists one more pending permission card with the given id.
+func (f *FakeOpencode) AskPermission(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.extraPermissions += `,{"id":"` + id + `","sessionID":"ses_1","permission":"bash","patterns":["printf *"],"metadata":{},"always":[]}`
+}
+
+// AskQuestion lists one more pending question card with the given id and
+// that many questions on it.
+func (f *FakeOpencode) AskQuestion(id string, questions int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	qs := ""
+	for i := 0; i < questions; i++ {
+		if i > 0 {
+			qs += ","
+		}
+		qs += fmt.Sprintf(`{"question":"Q%d?","header":"H%d","options":[{"label":"A","description":""}]}`, i+1, i+1)
+	}
+	f.extraQuestions += `,{"id":"` + id + `","sessionID":"ses_1","questions":[` + qs + `]}`
 }
 
 // Answers is what the client answered per question request (nil = rejected).
