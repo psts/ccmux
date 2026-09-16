@@ -1563,6 +1563,10 @@ function settingsURLFor(ws) {
   return ws && ws.repoPath ? `${base}?repoPath=${encodeURIComponent(ws.repoPath)}` : base;
 }
 
+// hasChat: the harnesses whose agent instances serve a chat (daemon:
+// agent.HasChat). Keep the three copies identical.
+function hasChat(harness) { return harness === "opencode" || harness === "claude"; }
+
 // --- harness bar: shown when the ACTIVE pane sits at a bare shell with no
 // harness recorded — the empty-new-workspace flow, and any shell tab. The
 // folder rule only PRESELECTS (highlighted); nothing ever auto-starts. ---
@@ -1574,9 +1578,10 @@ async function updateHarnessBar() {
   // harness recorded but exited (its shell is back) = "Restart:".
   if (p && p.agent) {
     setHarnessBar(false);
-    // The chat rides opencode's server; an agent on another harness (claude)
-    // keeps its terminal, which is where that harness talks.
-    if (p.harness === "opencode") window.ccmuxAgentChat.show(p, state.workspaces.find((w) => w.id === state.wsId));
+    // The chat rides the instance's server: opencode's own, or the claude
+    // sidecar's. Same rule as agent.HasChat in the daemon and the Mac's
+    // PaneContentView; a harness without one keeps its terminal.
+    if (hasChat(p.harness)) window.ccmuxAgentChat.show(p, state.workspaces.find((w) => w.id === state.wsId));
     else window.ccmuxAgentChat.hide();
     return;
   }

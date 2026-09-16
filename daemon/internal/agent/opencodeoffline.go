@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/harness"
@@ -16,9 +15,9 @@ import (
 // The offline reads: opencode's own CLI answers from its store without a
 // server, which is how a chat view shows an asleep agent's history.
 
-// OfflineSessions lists the sessions opened in dir (an instance folder),
-// newest first, through `opencode session list --format json`.
-func OfflineSessions(ctx context.Context, dir string) ([]OpencodeSession, error) {
+// opencodeOfflineSessions lists the sessions opened in dir (an instance
+// folder), newest first, through `opencode session list --format json`.
+func opencodeOfflineSessions(ctx context.Context, dir string) ([]OpencodeSession, error) {
 	out, err := runOpencode(ctx, "session", "list", "--format", "json")
 	if err != nil {
 		return nil, err
@@ -33,12 +32,13 @@ func OfflineSessions(ctx context.Context, dir string) ([]OpencodeSession, error)
 			mine = append(mine, s)
 		}
 	}
-	sort.SliceStable(mine, func(i, j int) bool { return mine[i].Updated > mine[j].Updated })
+	sortNewestFirst(mine)
 	return mine, nil
 }
 
-// OfflineTranscript is one session's conversation through `opencode export`.
-func OfflineTranscript(ctx context.Context, sessionID string) ([]Turn, error) {
+// opencodeOfflineTranscript is one session's conversation through
+// `opencode export`.
+func opencodeOfflineTranscript(ctx context.Context, sessionID string) ([]Turn, error) {
 	out, err := runOpencode(ctx, "export", sessionID)
 	if err != nil {
 		return nil, err

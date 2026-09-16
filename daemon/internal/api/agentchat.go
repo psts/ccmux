@@ -14,16 +14,19 @@ import (
 	"ccmux.dev/ccmuxd/internal/model"
 )
 
-// The agent chat view. An agent pane's terminal shows opencode's TUI; the
-// chat view shows the same conversation as a transcript with a prompt box,
-// so a human never has to work the TUI. The daemon is the one reader of
-// opencode's server (history, prompts, aborts, permission replies, the event
-// stream) and hands both lenses one normalized shape (agent.Turn).
+// The agent chat view. An agent pane's terminal shows its harness (opencode's
+// TUI, the claude sidecar's log); the chat view shows the same conversation
+// as a transcript with a prompt box, so a human never has to work the
+// terminal. The daemon is the one reader of the instance's chat server
+// (history, prompts, aborts, permission replies, the event stream) — opencode
+// serves that itself, claude through claudeserve/serve.mjs, both in the same
+// shape (agent.Opencode is the client for either) — and hands both lenses one
+// normalized transcript (agent.Turn).
 //
-// States: "asleep" (the pane is at its shell; history comes from opencode's
-// store through its CLI, a prompt wakes the agent with that text),
-// "starting" (woken, server not up yet), "running" (live: prompts go to the
-// server, events stream back).
+// States: "asleep" (the pane is at its shell; history comes from the
+// harness's store, a prompt wakes the agent with that text), "starting"
+// (woken, server not up yet), "running" (live: prompts go to the server,
+// events stream back).
 
 // chatFrame is the envelope both ways on /v1/panes/{id}/agent/ws and the
 // body of GET /v1/panes/{id}/agent (a hello without the socket).
@@ -66,27 +69,28 @@ type chatFrame struct {
 // one scroll, newest last, each behind a session marker.
 const historySessions = 4
 
-// chatConn is one lens's chat socket on one agent pane. paneID, agent and
-// cwd never change for a pane, so every goroutine reads them freely; oc,
-// sid and starting are the live state, under mu.
+// chatConn is one lens's chat socket on one agent pane. paneID, agent,
+// harness and cwd never change for a pane, so every goroutine reads them
+// freely; oc, sid and starting are the live state, under mu.
 type chatConn struct {
-	s      *Server
-	paneID string
-	agent  string
-	cwd    string
-	out    chan chatFrame
-	wake   chan wakeReq
-	cancel context.CancelFunc
-	mu     sync.Mutex
-	oc     *agent.Opencode // live client, nil while asleep
-	sid    string
+	s       *Server
+	paneID  string
+	agent   string
+	harness string
+	cwd     string
+	out     chan chatFrame
+	wake    chan wakeReq
+	cancel  context.CancelFunc
+	mu      sync.Mutex
+	oc      *agent.Opencode // live client, nil while asleep
+	sid     string
 	// starting is set from the wake until the server answers: a prompt in
 	// that window is refused with a note rather than queued into nothing.
 	starting bool
 }
 
 func newChatConn(s *Server, p *model.Pane, cancel context.CancelFunc) *chatConn {
-	return &chatConn{s: s, paneID: p.ID, agent: p.Agent, cwd: p.CWD, out: make(chan chatFrame, 64), wake: make(chan wakeReq, 1), cancel: cancel}
+	return &chatConn{s: s, paneID: p.ID, agent: p.Agent, harness: p.Harness, cwd: p.CWD, out: make(chan chatFrame, 64), wake: make(chan wakeReq, 1), cancel: cancel}
 }
 
 // paneAgentHistory: GET /v1/panes/{id}/agent → the hello frame: state,
@@ -104,7 +108,7 @@ func (s *Server) paneAgentHistory(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// The server answers but its history does not: say so rather
 			// than call a running agent asleep.
-			writeError(w, http.StatusBadGateway, "opencode: "+err.Error())
+			writeError(w, http.StatusBadGateway, "agent server: "+err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, hello)
@@ -257,15 +261,15 @@ func (c *chatConn) run(ctx context.Context) {
 	}
 }
 
-// liveClient is the pane's server when the agent is running: an opencode
-// port on its startup line, a foreground that is not the shell, and a
-// server that answers.
+// liveClient is the pane's chat server when the agent is running: a port
+// on its startup line, a foreground that is not the shell, and a server
+// that answers.
 func (c *chatConn) liveClient(ctx context.Context) *agent.Opencode {
 	p := c.s.mgr.PaneByID(c.paneID)
 	if p == nil {
 		return nil
 	}
-	port := agent.OpencodePort(p.StartupCommand)
+	port := agent.ChatPort(p.StartupCommand)
 	if port == 0 || c.s.mgr.PaneAtShell(p.ID) {
 		return nil
 	}
@@ -416,12 +420,11 @@ func (c *chatConn) liveHello(ctx context.Context, oc *agent.Opencode) (chatFrame
 }
 
 // asleepHello is the last few conversations opened in the instance folder,
-// from opencode's store, the newest as the current session; empty when it
-// has none, or when opencode's CLI cannot answer (said in Error, not
-// hidden).
+// from the harness's store, the newest as the current session; empty when
+// it has none, or when the store cannot answer (said in Error, not hidden).
 func (c *chatConn) asleepHello(ctx context.Context) chatFrame {
 	hello := chatFrame{T: "hello", Agent: c.agent, State: "asleep", Turns: []agent.Turn{}, Resume: c.resumeDefault()}
-	sessions, err := c.s.offlineSessions(ctx, c.cwd)
+	sessions, err := c.s.offlineSessions(ctx, c.harness, c.cwd)
 	if err != nil {
 		hello.Error = err.Error()
 		return hello
@@ -430,7 +433,9 @@ func (c *chatConn) asleepHello(ctx context.Context) chatFrame {
 		return hello
 	}
 	hello.Session, hello.Title = sessions[0].ID, sessions[0].Title
-	if hello.Turns, err = history(sessions, func(id string) ([]agent.Turn, error) { return c.s.offlineTranscript(ctx, id) }); err != nil {
+	if hello.Turns, err = history(sessions, func(id string) ([]agent.Turn, error) {
+		return c.s.offlineTranscript(ctx, c.harness, c.cwd, id)
+	}); err != nil {
 		hello.Error, hello.Turns = err.Error(), []agent.Turn{}
 	}
 	return hello
@@ -483,8 +488,9 @@ func history(newestFirst []agent.OpencodeSession, fetch func(id string) ([]agent
 	return turns, nil
 }
 
-// eventProps is the union of what the chat view reads from opencode's
-// events; each kind fills its own fields.
+// eventProps is the union of what the chat view reads from the server's
+// events (opencode's event names, which the claude sidecar shares); each
+// kind fills its own fields.
 type eventProps struct {
 	SessionID string          `json:"sessionID"`
 	Info      json.RawMessage `json:"info"`

@@ -286,7 +286,7 @@ func (s *Server) agentDefinition(name string) (agent.Definition, int, string) {
 // message explaining why not. The shared folder rides along as one more
 // --add-dir, and its .env plus the instance's own are loaded at start by
 // ccmuxd env-exec (instance last, so it wins). wsID is the instance's existing session when
-// it has one (its opencode port is reused), "" for a fresh add.
+// it has one (its chat port is reused), "" for a fresh add.
 func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []string, shared, wsID, prompt string, resume *bool) (manager.AgentLaunch, int, string) {
 	if s.mgr.Harnesses == nil {
 		return manager.AgentLaunch{}, http.StatusServiceUnavailable, agentsUnavailable
@@ -316,31 +316,50 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 		envFiles = append(envFiles, filepath.Join(shared, agent.EnvFile))
 	}
 	envFiles = append(envFiles, filepath.Join(dir, agent.EnvFile))
-	session, err := s.resumeSession(d, h, dir, resume)
-	if err != nil {
+	// The sidecar first: resumeSession reads history through it, so on a
+	// fresh host a "continue" start would otherwise refuse before the
+	// sidecar ever landed.
+	opts := agent.LaunchOpts{Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port}
+	if opts.Serve, opts.Node, status, msg = s.sidecarFor(h); msg != "" {
+		return manager.AgentLaunch{}, status, msg
+	}
+	if opts.Session, err = s.resumeSession(d, h, dir, resume); err != nil {
 		return manager.AgentLaunch{}, http.StatusBadGateway, err.Error()
 	}
-	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), agent.LaunchOpts{
-		Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port, Session: session,
-	})
+	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), opts)
 	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route, Prompt: prompt, Port: port}, 0, ""
 }
 
-// resumeSession is the opencode session this start continues: the
-// instance's newest, when the caller asked to resume or (asked nothing)
-// the base says start: continue; "" for a fresh conversation, for other
-// harnesses, and for an instance with no session yet.
+// sidecarFor is the claude sidecar for a claude start, nothing for another
+// harness. The sidecar and its SDK land under the agents root at every
+// start (a version bump installs once); a host without node or npm gets
+// that said here, not a pane that dies on its first line.
+func (s *Server) sidecarFor(h harness.Harness) (serve, node string, status int, msg string) {
+	if h.Name != harness.Builtin {
+		return "", "", 0, ""
+	}
+	serve, node, err := s.ensureSidecar()
+	if err != nil {
+		return "", "", http.StatusServiceUnavailable, err.Error()
+	}
+	return serve, node, 0, ""
+}
+
+// resumeSession is the session this start continues: the instance's
+// newest, when the caller asked to resume or (asked nothing) the base says
+// start: continue; "" for a fresh conversation, for a harness with no chat,
+// and for an instance with no session yet.
 func (s *Server) resumeSession(d agent.Definition, h harness.Harness, dir string, resume *bool) (string, error) {
 	want := d.Start == "continue"
 	if resume != nil {
 		want = *resume
 	}
-	if !want || h.Name != "opencode" {
+	if !want || !agent.HasChat(h.Name) {
 		return "", nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	sessions, err := s.offlineSessions(ctx, dir)
+	sessions, err := s.offlineSessions(ctx, h.Name, dir)
 	if err != nil {
 		// Asked to continue and unable to find what: refuse rather than
 		// start a fresh conversation the caller did not ask for.
@@ -352,28 +371,29 @@ func (s *Server) resumeSession(d agent.Definition, h harness.Harness, dir string
 	return sessions[0].ID, nil
 }
 
-// agentPort is the opencode server port for an instance: the one its pane
-// was started with before (read back from the persisted command, so a wake
-// keeps the address), else a fresh free port. 0 for other harnesses.
+// agentPort is the chat server port for an instance: the one its pane was
+// started with before (read back from the persisted command, so a wake
+// keeps the address), else a fresh free port. 0 for a harness with no chat.
 func (s *Server) agentPort(wsID, name string, h harness.Harness) (int, int, string) {
-	if h.Name != "opencode" {
+	if !agent.HasChat(h.Name) {
 		return 0, 0, ""
 	}
 	if p := s.mgr.AgentPane(wsID, name); p != nil {
-		if port := agent.OpencodePort(p.StartupCommand); port != 0 {
+		if port := agent.ChatPort(p.StartupCommand); port != 0 {
 			return port, 0, ""
 		}
 	}
 	port, err := agent.FreePort()
 	if err != nil {
-		return 0, http.StatusInternalServerError, "no free port for the opencode server: " + err.Error()
+		return 0, http.StatusInternalServerError, "no free port for the agent's chat server: " + err.Error()
 	}
 	return port, 0, ""
 }
 
-// pushPromptLater delivers an opencode instance's first message through its
-// server once it is up. Runs off the request: the pane is already live and
-// the human sees the TUI come up; a push failure is logged, not a 5xx.
+// pushPromptLater delivers a chat-serving instance's first message through
+// its server once it is up. Runs off the request: the pane is already live
+// and the human sees the harness come up; a push failure is logged, not a
+// 5xx.
 func (s *Server) pushPromptLater(paneID string, l manager.AgentLaunch) {
 	if l.Port == 0 || l.Prompt == "" {
 		return

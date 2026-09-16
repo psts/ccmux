@@ -38,10 +38,11 @@ func (m *Manager) PushLocked(paneID string, fn func() error) error {
 	return fn()
 }
 
-// PushToAgentPane types a bus message into an opencode agent instance through
-// its TUI server; the peers bus calls it for every delivered message and it
-// declines panes that are not opencode instances (those get channel pushes
-// or poll). Synchronous with a bound: the caller runs it off the bus lock.
+// PushToAgentPane hands a bus message to an agent instance through its chat
+// server (opencode's TUI server, the claude sidecar); the peers bus calls it
+// for every delivered message and it declines panes with no chat port
+// (those get channel pushes or poll). Synchronous with a bound: the caller
+// runs it off the bus lock.
 func (m *Manager) PushToAgentPane(paneID, text string) error {
 	m.mu.RLock()
 	_, p := m.findPaneLocked(paneID)
@@ -54,9 +55,9 @@ func (m *Manager) PushToAgentPane(paneID, text string) error {
 	if p == nil || name == "" {
 		return ErrNotAgentPane
 	}
-	port := agent.OpencodePort(startup)
+	port := agent.ChatPort(startup)
 	if port == 0 {
-		return ErrNotAgentPane // a Claude instance: channel push, not TUI
+		return ErrNotAgentPane // no chat port: channel push or poll instead
 	}
 	if asleep {
 		return ErrAgentAsleep // a wake, not a push, is the answer

@@ -103,7 +103,7 @@ func TestOfflineSessionsFiltersByDirectory(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	mine, err := OfflineSessions(ctx, "/nowhere/at/all")
+	mine, err := OfflineSessions(ctx, "opencode", "", "/nowhere/at/all")
 	if err != nil || len(mine) != 0 {
 		t.Fatalf("a folder with no sessions lists none: %v %v", mine, err)
 	}

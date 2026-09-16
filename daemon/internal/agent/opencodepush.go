@@ -12,11 +12,13 @@ import (
 	"time"
 )
 
-// opencode's TUI serves its HTTP API on --port; that is how a prompt reaches
-// a running instance from outside the terminal. --prompt on the command line
-// only prefills the input (seen live: the session was created and
-// nothing was sent), so the daemon types the launch line and then pushes the
-// first message through the API. The same path carries peer messages later.
+// A chat-serving instance listens on --port: opencode's TUI serves its HTTP
+// API there, and the claude sidecar (claudeserve/serve.mjs) serves the same
+// subset. That is how a prompt reaches a running instance from outside the
+// terminal. opencode's --prompt on the command line only prefills the input
+// (seen live: the session was created and nothing was sent), so the daemon
+// types the launch line and then pushes the first message through the API.
+// The same path carries peer messages later.
 
 var portFlag = regexp.MustCompile(`--port (\d+)`)
 
@@ -30,9 +32,10 @@ func FreePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// OpencodePort reads the --port an instance was started with back out of its
-// persisted startup command; 0 when it has none (not an opencode instance).
-func OpencodePort(startupCommand string) int {
+// ChatPort reads the --port an instance was started with back out of its
+// persisted startup command; 0 when it has none, which means no chat: a
+// harness the daemon cannot talk to from outside its terminal.
+func ChatPort(startupCommand string) int {
 	m := portFlag.FindStringSubmatch(startupCommand)
 	if m == nil {
 		return 0

@@ -1,5 +1,5 @@
 // Agent chat view: an agent pane's conversation as a transcript with a
-// prompt box, shown in place of its terminal. The daemon reads opencode's
+// prompt box, shown in place of its terminal. The daemon reads the instance's
 // server and hands this one normalized stream (/v1/panes/{id}/agent/ws:
 // hello, turn, part, delta, idle, permission, state, error); typing into an
 // asleep agent wakes it with the text. The raw terminal stays one click

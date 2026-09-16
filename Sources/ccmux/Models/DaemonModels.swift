@@ -691,7 +691,7 @@ struct DaemonPane: Codable, Identifiable {
     var agent: String
     var agentVersion: String
     /// The harness the pane runs ("" = a plain shell pane); an agent pane
-    /// shows the chat view only on opencode, whose server the chat rides.
+    /// shows the chat view when its harness serves one (AgentPaneRef.hasChat).
     var harness: String
 
     init(from decoder: Decoder) throws {

@@ -25,10 +25,18 @@ func TestAgentChat_LiveThenAsleep(t *testing.T) {
 	// The harness line carries opencode's --port the way a real launch does;
 	// sleep is the foreground so the pane is not at its shell.
 	f := newWindowAgentFixture(t, "sleep 4;: --port "+strconv.Itoa(oc.Port()))
-	f.srv.offlineSessions = func(context.Context, string) ([]agent.OpencodeSession, error) {
+	// The offline reads are keyed on the pane's harness and folder; the
+	// stubs record what they were handed so the asleep hello can be checked
+	// against the pane, not just against the canned answer.
+	var offlineHarness, offlineDir string
+	f.srv.offlineSessions = func(_ context.Context, harnessName, dir string) ([]agent.OpencodeSession, error) {
+		offlineHarness, offlineDir = harnessName, dir
 		return []agent.OpencodeSession{{ID: "ses_off", Title: "from the store"}}, nil
 	}
-	f.srv.offlineTranscript = func(context.Context, string) ([]agent.Turn, error) {
+	f.srv.offlineTranscript = func(_ context.Context, harnessName, dir, _ string) ([]agent.Turn, error) {
+		if harnessName != offlineHarness || dir != offlineDir {
+			return nil, fmt.Errorf("transcript read for %s in %s, sessions were read for %s in %s", harnessName, dir, offlineHarness, offlineDir)
+		}
 		return []agent.Turn{{ID: "m", Role: "user", Parts: []agent.TurnPart{{Type: "text", Text: "earlier"}}}}, nil
 	}
 	code, pane := f.start(t, "x-poster", "")
@@ -98,6 +106,9 @@ func TestAgentChat_LiveThenAsleep(t *testing.T) {
 	if asleep.State != "asleep" || asleep.Session != "ses_off" || len(asleep.Turns) != 2 || asleep.Turns[0].Role != "session" || asleep.Turns[1].Parts[0].Text != "earlier" {
 		t.Fatalf("asleep hello: %+v", asleep)
 	}
+	if offlineHarness != pane.Harness || offlineHarness == "" || offlineDir != pane.CWD {
+		t.Fatalf("offline reads were keyed on %q in %q, pane is %q in %q", offlineHarness, offlineDir, pane.Harness, pane.CWD)
+	}
 	// A prompt while asleep wakes the agent with it: starting, then live again.
 	yes := true
 	conn.WriteJSON(chatFrame{T: "prompt", Text: "wake up", Resume: &yes})
@@ -161,7 +172,7 @@ func TestAgentChat_HistoryAndResume(t *testing.T) {
 	}
 
 	f := newWindowAgentFixture(t, "sleep 1;:")
-	f.srv.offlineSessions = func(context.Context, string) ([]agent.OpencodeSession, error) {
+	f.srv.offlineSessions = func(context.Context, string, string) ([]agent.OpencodeSession, error) {
 		return []agent.OpencodeSession{{ID: "ses_last"}}, nil
 	}
 	f.put(t, "/v1/settings", `{"harnesses":[{"name":"opencode","icon":"·","command":"sleep 1;:"}]}`, 200)

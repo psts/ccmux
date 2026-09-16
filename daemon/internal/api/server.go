@@ -139,9 +139,14 @@ type Server struct {
 	// goroutines that outlive the test. See keepalive.go.
 	ka keepalive
 	// offlineSessions/offlineTranscript read an asleep agent's history from
-	// opencode's store (its CLI); tests substitute canned answers.
-	offlineSessions   func(ctx context.Context, dir string) ([]agent.OpencodeSession, error)
-	offlineTranscript func(ctx context.Context, sessionID string) ([]agent.Turn, error)
+	// its harness's store (opencode's CLI, the claude sidecar); tests
+	// substitute canned answers.
+	offlineSessions   func(ctx context.Context, harnessName, dir string) ([]agent.OpencodeSession, error)
+	offlineTranscript func(ctx context.Context, harnessName, dir, sessionID string) ([]agent.Turn, error)
+	// ensureSidecar lands the claude sidecar under the agents root and names
+	// its script and node (Store.EnsureClaudeServe); tests substitute one
+	// that needs neither node nor npm.
+	ensureSidecar func() (script, node string, err error)
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -149,19 +154,45 @@ func NewServer(mgr *manager.Manager) *Server {
 	// Attaches go direct to the owning host, so its own hub knows who is
 	// looking; no federation needed for the "already watching" rule.
 	mgr.Watched = presence.Watched
-	return &Server{
-		mgr:               mgr,
-		presence:          presence,
-		focus:             presence,
-		ka:                defaultKeepalive(),
-		offlineSessions:   agent.OfflineSessions,
-		offlineTranscript: agent.OfflineTranscript,
-		identity:          tailnet.NewResolver(),
-		spawnUpgrade:      realSpawnUpgrade,
+	s := &Server{
+		mgr:          mgr,
+		presence:     presence,
+		focus:        presence,
+		ka:           defaultKeepalive(),
+		identity:     tailnet.NewResolver(),
+		spawnUpgrade: realSpawnUpgrade,
 		// Same-origin default; the web lens is served from this daemon, and
 		// tailnet identity gates access. Loosened checks come with auth.
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 	}
+	s.offlineSessions = s.offlineSessionsFor
+	s.offlineTranscript = s.offlineTranscriptFor
+	s.ensureSidecar = s.ensureSidecarFor
+	return s
+}
+
+func (s *Server) ensureSidecarFor() (string, string, error) {
+	if s.agents == nil {
+		return "", "", errors.New(agentsUnavailable)
+	}
+	return s.agents.EnsureClaudeServe()
+}
+
+// agentsRoot is the agents folder the claude sidecar lives under; "" until
+// SetAgents, when the offline reads fail with a clear message instead.
+func (s *Server) agentsRoot() string {
+	if s.agents == nil {
+		return ""
+	}
+	return s.agents.Root
+}
+
+func (s *Server) offlineSessionsFor(ctx context.Context, harnessName, dir string) ([]agent.OpencodeSession, error) {
+	return agent.OfflineSessions(ctx, harnessName, s.agentsRoot(), dir)
+}
+
+func (s *Server) offlineTranscriptFor(ctx context.Context, harnessName, dir, sessionID string) ([]agent.Turn, error) {
+	return agent.OfflineTranscript(ctx, harnessName, s.agentsRoot(), dir, sessionID)
 }
 
 // SetIdentityResolver swaps the identity backend. main injects a tsnet

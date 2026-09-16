@@ -140,7 +140,7 @@ func (f *windowAgentFixture) list(t *testing.T) agentInstance {
 
 // agentPane is what the add/wake route answers with.
 type agentPane struct {
-	ID, WorkspaceID, CWD, StartupCommand, Agent, AgentVersion string
+	ID, WorkspaceID, CWD, StartupCommand, Agent, AgentVersion, Harness string
 }
 
 func (f *windowAgentFixture) start(t *testing.T, name, prompt string) (int, agentPane) {

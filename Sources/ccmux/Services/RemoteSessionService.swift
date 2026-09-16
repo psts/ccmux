@@ -1755,4 +1755,11 @@ struct AgentPaneRef: Equatable {
     let agent: String
     let harness: String
     let wsOrigin: String
+
+    /// The harnesses whose agent instances serve a chat (opencode's own
+    /// server, the claude sidecar). Same rule as agent.HasChat in the daemon
+    /// and hasChat in the web lens; keep the three copies identical.
+    static func hasChat(_ harness: String) -> Bool {
+        harness == "opencode" || harness == "claude"
+    }
 }

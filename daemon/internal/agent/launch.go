@@ -26,10 +26,12 @@ type Launch struct {
 // shim registers under the agent's name instead of the folder's. The rest
 // is per harness:
 //
-//   - claude: the base rides in as a plugin and an appended system prompt,
-//     the window's project folders (dirs) are reachable through --add-dir,
-//     the prompt is positional after "--" (the channels flag is variadic and
-//     would swallow it);
+//   - claude: the sidecar (claudeserve/serve.mjs, on the Claude Agent SDK)
+//     runs the session and serves the chat on --port, like opencode; the
+//     base rides in as a plugin and an appended system prompt, the window's
+//     project folders (dirs) are reachable through --add-dir, and the prompt
+//     travels over the port afterwards. The harness's own command line is
+//     not used: the SDK brings its own Claude Code;
 //   - opencode: the instance's opencode.jsonc (WriteInstanceConfig) already
 //     carries instructions, permissions and MCP, so only --agent and the
 //     server --port remain; the prompt travels over that port afterwards;
@@ -40,15 +42,16 @@ func LaunchCommand(d Definition, h harness.Harness, baseDir string, o LaunchOpts
 	var persist, deliver string
 	switch h.Name {
 	case harness.Builtin:
-		persist = prefix + claudeFlags(d, h.Command, baseDir, o.Dirs)
+		persist = prefix + claudeServeLine(d, baseDir, o)
 		deliver = persist
-		if o.Prompt != "" {
-			deliver += " -- " + shellQuote(o.Prompt)
+		if o.Session != "" {
+			// Resume rides on the typed line only, as for opencode.
+			deliver += " --session " + shellQuote(o.Session)
 		}
 	case "opencode":
 		// The prompt is NOT on this line: --prompt only prefills the TUI. The
 		// caller pushes it through the server on --port (PushPrompt), which
-		// is why the port is persisted: a wake reads it back (OpencodePort).
+		// is why the port is persisted: a wake reads it back (ChatPort).
 		persist = prefix + h.Command + " --agent " + shellQuote(d.Name) + " --port " + strconv.Itoa(o.Port)
 		if d.Model != "" {
 			persist += " --model " + shellQuote(d.Model)
@@ -71,14 +74,17 @@ func LaunchCommand(d Definition, h harness.Harness, baseDir string, o LaunchOpts
 
 // LaunchOpts is what one start adds to the base: the window's folders
 // (--add-dir for claude), the env files to load, the first prompt, the
-// opencode server port, and the opencode session to continue ("" starts a
-// fresh conversation).
+// chat server port, the session to continue ("" starts a fresh
+// conversation), and for claude the sidecar script and the node to run it
+// (Store.EnsureClaudeServe).
 type LaunchOpts struct {
 	Dirs     []string
 	EnvFiles []string
 	Prompt   string
 	Port     int
 	Session  string
+	Serve    string
+	Node     string
 }
 
 // envPrefix puts ccmuxd's env-exec verb ahead of the harness line with the
@@ -98,13 +104,20 @@ func envPrefix(files []string) string {
 	return strings.Join(parts, " ") + " -- "
 }
 
-func claudeFlags(d Definition, cmd, baseDir string, dirs []string) string {
-	parts := []string{cmd,
-		"--name", shellQuote(d.Name),
-		"--plugin-dir", shellQuote(baseDir),
-		"--append-system-prompt-file", shellQuote(filepath.Join(baseDir, fileAgents)),
+// claudeServeLine starts the sidecar for base d: node, the script, then the
+// flags serve.mjs reads. --port is what ChatPort reads back on a wake.
+func claudeServeLine(d Definition, baseDir string, o LaunchOpts) string {
+	node := o.Node
+	if node == "" {
+		node = "node"
 	}
-	for _, dir := range dirs {
+	parts := []string{shellQuote(node), shellQuote(o.Serve), "serve",
+		"--port", strconv.Itoa(o.Port),
+		"--agent", shellQuote(d.Name),
+		"--plugin-dir", shellQuote(baseDir),
+		"--system-prompt-file", shellQuote(filepath.Join(baseDir, fileAgents)),
+	}
+	for _, dir := range o.Dirs {
 		parts = append(parts, "--add-dir", shellQuote(dir))
 	}
 	for _, dir := range d.AddDirs {
@@ -123,9 +136,10 @@ var claudeTools = map[string][]string{
 }
 
 // claudePermissionFlags translates Permissions for the claude harness: deny →
-// --disallowedTools, allow → --allowedTools, ask → nothing (the default
-// prompt), and each BashAllow pattern → an allowed Bash(pattern). opencode
-// gets the same gates through its config (opencodePermission).
+// --disallowed-tools, allow → --allowed-tools, ask → nothing (the chat's
+// permission card), and each BashAllow pattern → an allowed Bash(pattern).
+// The sidecar hands them to the SDK as allowedTools/disallowedTools.
+// opencode gets the same gates through its config (opencodePermission).
 func claudePermissionFlags(p Permissions) []string {
 	var allow, deny []string
 	for gate, v := range map[string]string{"read": p.Read, "edit": p.Edit, "bash": p.Bash, "webfetch": p.Webfetch} {
@@ -143,10 +157,10 @@ func claudePermissionFlags(p Permissions) []string {
 	sort.Strings(deny)
 	var out []string
 	if len(allow) > 0 {
-		out = append(out, "--allowedTools", shellQuote(strings.Join(allow, ",")))
+		out = append(out, "--allowed-tools", shellQuote(strings.Join(allow, ",")))
 	}
 	if len(deny) > 0 {
-		out = append(out, "--disallowedTools", shellQuote(strings.Join(deny, ",")))
+		out = append(out, "--disallowed-tools", shellQuote(strings.Join(deny, ",")))
 	}
 	return out
 }

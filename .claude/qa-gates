@@ -48,6 +48,15 @@ bash .claude/gates/gofmt.sh
 command -v node >/dev/null 2>&1 || { echo "qa-gates: node not installed — cannot syntax-check daemon/web"; exit 1; }
 for f in daemon/web/*.js; do node --check "$f" || exit 1; done
 
+# The claude agent sidecar (daemon/internal/agent/claudeserve/, Node ESM, embedded in
+# the daemon). Added 2026-09-16 with the sidecar itself: parse every module, and run
+# the tests of its three SDK-free halves (the translator, the HTTP routes, and the
+# agent with the SDK injected) with node --test. They import no npm package, so no
+# node_modules is needed here; serve.mjs, the entry point that imports the SDK, is
+# parse-checked only.
+for f in daemon/internal/agent/claudeserve/*.mjs; do node --check "$f" || exit 1; done
+node --test daemon/internal/agent/claudeserve/translate.test.mjs daemon/internal/agent/claudeserve/routes.test.mjs daemon/internal/agent/claudeserve/agent.test.mjs || exit 1
+
 # Web lens smoke test. Added 2026-09-11 because the parse above is not enough:
 # a const declared inside a function and referenced from module scope passes
 # `node --check` and shipped a lens whose sidebar was empty on every load

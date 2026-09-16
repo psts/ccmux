@@ -21,9 +21,9 @@ type fireAction int
 
 const (
 	fireStart fireAction = iota // asleep or absent: start it with the prompt as first line
-	firePush                    // running opencode, idle: push into its TUI
+	firePush                    // running with a chat port, idle: push into it
 	fireWait                    // running and busy: try next tick
-	fireSkip                    // running Claude harness: no chat path, skip this slot
+	fireSkip                    // running with no chat port: nothing can take a prompt, skip this slot
 )
 
 func (s *Server) fireDueSchedules() {
@@ -67,7 +67,7 @@ func (s *Server) fireSchedule(sc store.AgentSchedule, now time.Time) {
 	text := fmt.Sprintf("[ccmux schedule #%d, %s] %s", sc.ID, sc.Cron, sc.Prompt)
 	action, paneID := s.decideFire(win, d)
 	if action == fireSkip {
-		log.Printf("agent %s in %s: schedule #%d due while a Claude-harness instance runs; no chat path, skipping to %s", sc.Agent, win.Name, sc.ID, nextRunText(next))
+		log.Printf("agent %s in %s: schedule #%d due while an instance with no chat port runs; skipping to %s", sc.Agent, win.Name, sc.ID, nextRunText(next))
 		s.markRun(sc, 0, next)
 		return
 	}
@@ -162,15 +162,15 @@ func (s *Server) dropOrphan(sc store.AgentSchedule, what string) {
 }
 
 // decideFire reads the instance's state: not running means start it with
-// the prompt; running opencode means push when idle and wait when busy;
-// running Claude has no chat path and is skipped.
+// the prompt; running with a chat port (opencode, the claude sidecar) means
+// push when idle and wait when busy; running without one is skipped.
 func (s *Server) decideFire(win manager.WindowInfo, d agent.Definition) (fireAction, string) {
 	inst := s.instanceOf(win, d)
 	if inst.State != "running" {
 		return fireStart, ""
 	}
 	p := s.mgr.AgentPane(inst.Workspace, d.Name)
-	if p == nil || agent.OpencodePort(p.StartupCommand) == 0 {
+	if p == nil || agent.ChatPort(p.StartupCommand) == 0 {
 		return fireSkip, ""
 	}
 	if s.mgr.AgentBusy(p.ID) {

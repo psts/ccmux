@@ -24,9 +24,10 @@ struct PaneContentView: View {
                 // Hosted pane: attach to the daemon over WebSocket instead of spawning
                 // a local process. The local driver path below is untouched. An
                 // agent instance's pane shows its chat view, terminal behind a toggle.
-                // Only on opencode: the chat rides its server, and an agent
-                // on another harness keeps its terminal, same as the web lens.
-                if let ref = service.agentPanes[hostedPaneId], ref.harness == "opencode" {
+                // Only where the instance serves one (opencode's own server, the
+                // claude sidecar): same rule as agent.HasChat in the daemon and
+                // hasChat in the web lens; any other harness keeps its terminal.
+                if let ref = service.agentPanes[hostedPaneId], AgentPaneRef.hasChat(ref.harness) {
                     AgentPaneView(tabId: config.id, paneId: hostedPaneId, workingDirectory: config.workingDirectory,
                                   agent: ref.agent, wsOrigin: ref.wsOrigin)
                 } else {

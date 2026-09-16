@@ -12,10 +12,10 @@ import (
 )
 
 func TestOpencodePortParse(t *testing.T) {
-	if p := OpencodePort("CLAUDE_PEERS_NAME=x opencode --agent x --port 41234"); p != 41234 {
+	if p := ChatPort("CLAUDE_PEERS_NAME=x opencode --agent x --port 41234"); p != 41234 {
 		t.Fatalf("got %d", p)
 	}
-	if p := OpencodePort("claude --name x"); p != 0 {
+	if p := ChatPort("claude --name x"); p != 0 {
 		t.Fatalf("non-opencode should be 0, got %d", p)
 	}
 }
