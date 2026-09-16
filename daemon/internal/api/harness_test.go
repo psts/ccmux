@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,9 @@ func harnessStackServer(t *testing.T) (*Server, *manager.Manager, string, *store
 	srv.SetLLMProxy(llm)
 	mgr.PaneLLMRoute = llm.SetPaneRoute
 	srv.SetAgents(agent.NewStore(t.TempDir()+"/agents"), 6)
+	// A claude start marks its folder trusted in the user's Claude Code
+	// config; a test must never write into the developer's real one.
+	srv.claudeConfig = filepath.Join(t.TempDir(), ".claude.json")
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	return srv, mgr, hs.URL, st

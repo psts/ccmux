@@ -147,6 +147,11 @@ type Server struct {
 	// its script and node (Store.EnsureClaudeServe); tests substitute one
 	// that needs neither node nor npm.
 	ensureSidecar func() (script, node string, err error)
+	// claudeConfig is the user's ~/.claude.json, where a claude start marks
+	// its instance folder trusted (agent.ApproveClaudeProject); tests point
+	// it at a temp file. "" when home is unknown, and then a claude start
+	// says so rather than writing into the working directory.
+	claudeConfig string
 }
 
 func NewServer(mgr *manager.Manager) *Server {
@@ -168,6 +173,11 @@ func NewServer(mgr *manager.Manager) *Server {
 	s.offlineSessions = s.offlineSessionsFor
 	s.offlineTranscript = s.offlineTranscriptFor
 	s.ensureSidecar = s.ensureSidecarFor
+	if path, err := agent.ClaudeConfigPath(); err == nil {
+		s.claudeConfig = path
+	} else {
+		log.Printf("claude config: home unknown, claude agents cannot be marked trusted: %v", err)
+	}
 	return s
 }
 

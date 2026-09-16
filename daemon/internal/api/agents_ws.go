@@ -320,7 +320,7 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 	// fresh host a "continue" start would otherwise refuse before the
 	// sidecar ever landed.
 	opts := agent.LaunchOpts{Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port}
-	if opts.Serve, opts.Node, status, msg = s.sidecarFor(h); msg != "" {
+	if opts.Serve, opts.Node, status, msg = s.sidecarFor(h, dir); msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}
 	if opts.Session, err = s.resumeSession(d, h, dir, resume); err != nil {
@@ -333,13 +333,19 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 // sidecarFor is the claude sidecar for a claude start, nothing for another
 // harness. The sidecar and its SDK land under the agents root at every
 // start (a version bump installs once); a host without node or npm gets
-// that said here, not a pane that dies on its first line.
-func (s *Server) sidecarFor(h harness.Harness) (serve, node string, status int, msg string) {
+// that said here, not a pane that dies on its first line. The instance
+// folder dir is also marked trusted with external includes approved in the
+// user's Claude Code config: the headless session asks nobody and would
+// otherwise drop the instance's @-imports without a word.
+func (s *Server) sidecarFor(h harness.Harness, dir string) (serve, node string, status int, msg string) {
 	if h.Name != harness.Builtin {
 		return "", "", 0, ""
 	}
 	serve, node, err := s.ensureSidecar()
 	if err != nil {
+		return "", "", http.StatusServiceUnavailable, err.Error()
+	}
+	if err := agent.ApproveClaudeProject(s.claudeConfig, dir); err != nil {
 		return "", "", http.StatusServiceUnavailable, err.Error()
 	}
 	return serve, node, 0, ""
