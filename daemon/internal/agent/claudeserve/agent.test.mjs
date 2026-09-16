@@ -126,6 +126,78 @@ test("the session can be started before any prompt, idle, and the first prompt t
   assert.deepEqual(signals, ["busy"]);
 });
 
+test("a session that dies at boot, before any prompt, shows the failure and the next prompt starts under a fresh id", async () => {
+  const { agent, sdk, events, signals, out } = makeAgent({}, [new Error("Claude Code process exited with code 1")]);
+  const first = agent.sid;
+  agent.ensureQuery();
+  await tick();
+  const msgs = agent.transcript.messages();
+  assert.equal(msgs.length, 1, "the failure has a turn of its own");
+  assert.equal(msgs[0].info.role, "assistant");
+  assert.equal(msgs[0].info.error.data.message, "Claude Code process exited with code 1");
+  assert.deepEqual(events.map((e) => e.type), ["message.updated", "session.error", "session.idle", "session.created"]);
+  assert.ok(out.includes("! Claude Code process exited with code 1\n"));
+  assert.deepEqual(signals, [], "no turn was running, so no busy or idle was signalled");
+  assert.equal(agent.q, null);
+  assert.equal(agent.feed, null);
+  assert.notEqual(agent.sid, first, "the id that may already be taken on disk is not reused");
+  assert.equal(agent.transcript.sessionID, agent.sid);
+  assert.equal(events[3].properties.info.id, agent.sid, "the chat is told which conversation to follow");
+  agent.prompt("hello");
+  assert.equal(sdk.queries.length, 2);
+  assert.equal(sdk.queries[1].options.sessionId, agent.sid, "started fresh under the new id, not resumed");
+  assert.equal(sdk.queries[1].options.resume, undefined);
+});
+
+test("a session that took a prompt but died before replying shows the failure after the prompt", async () => {
+  const { agent, sdk } = makeAgent({}, [new Error("auth failed")]);
+  const first = agent.sid;
+  agent.prompt("hello");
+  await tick();
+  const msgs = agent.transcript.messages();
+  assert.deepEqual(msgs.map((m) => m.info.role), ["user", "assistant"]);
+  assert.equal(msgs[1].info.error.data.message, "auth failed");
+  assert.notEqual(agent.sid, first, "nothing replied, so the next start gets a fresh id");
+  agent.prompt("again");
+  assert.equal(sdk.queries[1].options.sessionId, agent.sid);
+});
+
+test("a session that replied and then died while idle keeps that reply clean and is continued", async () => {
+  const { agent, sdk } = makeAgent({}, [
+    { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "done" }] } },
+    { type: "result", subtype: "success", is_error: false },
+    new Error("Claude Code process exited with code 1"),
+  ]);
+  const sid = agent.sid;
+  agent.prompt("go");
+  await tick();
+  const msgs = agent.transcript.messages();
+  assert.deepEqual(msgs.map((m) => m.info.role), ["user", "assistant", "assistant"]);
+  assert.equal(msgs[1].info.error, undefined, "the reply that finished is not the one that failed");
+  assert.equal(msgs[2].info.error.data.message, "Claude Code process exited with code 1");
+  assert.equal(agent.sid, sid, "a conversation with a reply on disk keeps its id");
+  agent.prompt("more");
+  assert.equal(sdk.queries[1].options.resume, sid, "and is continued");
+});
+
+test("a resumed session that dies at boot leaves the earlier conversation's replies alone", async () => {
+  const { agent, sdk } = makeAgent({ session: "ses-old" }, [new Error("auth failed")]);
+  sdk.stored["ses-old"] = [
+    { type: "user", uuid: "u1", message: { role: "user", content: "earlier" } },
+    { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "fine yesterday" }] } },
+  ];
+  await agent.preload();
+  agent.ensureQuery();
+  await tick();
+  const msgs = agent.transcript.messages();
+  assert.equal(msgs.length, 3);
+  assert.equal(msgs[1].info.error, undefined, "yesterday's reply is not the one that failed");
+  assert.equal(msgs[2].info.error.data.message, "auth failed");
+  assert.equal(agent.sid, "ses-old", "a conversation on disk keeps its id");
+  agent.prompt("again");
+  assert.equal(sdk.queries[1].options.resume, "ses-old", "a conversation that exists on disk is still continued");
+});
+
 test("a prompt starts the query, feeds it, and signals busy; the result signals idle", async () => {
   const { agent, sdk, signals, events, out } = makeAgent({ systemPromptFile: "/base/AGENTS.md", model: "opus", allowed: ["Read"] });
   agent.prompt("hello");

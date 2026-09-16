@@ -112,11 +112,11 @@ export class Agent {
     return opts;
   }
 
-  // ensureQuery has the SDK session running. Called at start, not only at
-  // the first prompt: the peers shim lives inside the Claude child, so the
-  // agent is on the bus (reachable by name, able to send) exactly while
-  // that child runs. A session that ended (an error) is started again by
-  // the next prompt.
+  // ensureQuery has the SDK session running; a session that ended (an
+  // error) is started again by the next prompt, continuing the conversation
+  // when a reply of it is on disk (resume) and under a fresh id otherwise:
+  // Claude refuses a fresh start under an id that already exists on disk,
+  // and a resume of one that was never written.
   ensureQuery() {
     if (this.q) return;
     this.feed = { inbox: [], wake: null, dead: false };
@@ -125,7 +125,7 @@ export class Agent {
   }
 
   // pump reads the SDK stream until it ends; the next prompt starts a new
-  // query that resumes the same session.
+  // query (see ensureQuery for which conversation it continues).
   async pump() {
     const q = this.q;
     const feed = this.feed;
@@ -135,7 +135,11 @@ export class Agent {
       if (!this.abort.signal.aborted) {
         const text = err && err.message ? err.message : String(err);
         this.log("! " + text);
-        this.emit(this.transcript.finishTurn(text));
+        // The failure lands on the reply that was being written, when there
+        // is one; otherwise (died at boot, died before replying, died while
+        // idle) on a turn of its own, never on a reply that finished.
+        const mid = this.busy && this.transcript.currentAssistant();
+        this.emit(mid ? this.transcript.finishTurn(text) : this.transcript.errorTurn(text));
         this.broadcast({ type: "session.error", properties: { sessionID: this.sid, error: text } });
         this.broadcast({ type: "session.idle", properties: { sessionID: this.sid } });
       }
@@ -148,12 +152,23 @@ export class Agent {
       if (feed.wake) feed.wake();
       if (this.feed === feed) this.feed = null;
       this.interrupting = false;
-      this.resume = true;
+      if (!this.abort.signal.aborted && !this.resume) this.rotateSession();
       this.setBusy(false);
     }
   }
 
+  // rotateSession gives the next start a fresh conversation id: nothing of
+  // this one reached disk worth continuing, and the id itself may already be
+  // taken there. The chat is told (session.created), and follows.
+  rotateSession() {
+    this.sid = randomUUID();
+    this.transcript.sessionID = this.sid;
+    this.log(`⚙ next start opens a new conversation (${this.sid.slice(0, 8)})`);
+    this.broadcast({ type: "session.created", properties: { info: { id: this.sid, directory: this.cwd } } });
+  }
+
   onMessage(m) {
+    if (m.type === "assistant") this.resume = true; // a reply is on disk: this conversation can be continued
     if (m.type === "system" && m.subtype === "init") {
       const mcp = (m.mcp_servers || []).map((x) => `${x.name} ${x.status}`).join(", ");
       this.log(`⚙ ${this.o.agent} on ${m.model} (session ${this.sid.slice(0, 8)})${mcp ? " · mcp: " + mcp : ""}`);

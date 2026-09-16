@@ -238,6 +238,16 @@ export class Transcript {
     return [messageEvent(turn)];
   }
 
+  // errorTurn is a failure with no turn of its own to land on (the session
+  // died before any prompt): a new assistant turn that only carries the
+  // error, so the chat shows it instead of an empty "running" transcript,
+  // and no earlier turn is marked as the one that failed.
+  errorTurn(error) {
+    const turn = this.ensureTurn("err_" + this.nextID(), "assistant");
+    turn.info.error = { name: "error", data: { message: error } };
+    return [messageEvent(turn)];
+  }
+
   ensureTurn(id, role) {
     let turn = this.byID.get(id);
     if (turn) return turn;

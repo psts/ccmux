@@ -55,6 +55,16 @@ test("an interrupted or failed turn carries its error on the assistant turn", ()
   const evs = t.finishTurn("rate limited");
   assert.equal(evs[0].properties.info.error.data.message, "rate limited");
   assert.equal(t.finishTurn("again").length, 0, "one error per turn");
+  assert.equal(new Transcript("s4", now).finishTurn("boot").length, 0, "nothing to land on: no turn is invented here");
+});
+
+test("a failure with no turn to land on gets an assistant turn of its own", () => {
+  const boot = new Transcript("s5", now);
+  const [ev] = boot.errorTurn("exited with code 1");
+  assert.equal(ev.type, "message.updated");
+  assert.equal(ev.properties.info.role, "assistant");
+  assert.equal(boot.messages()[0].info.error.data.message, "exited with code 1");
+  assert.deepEqual(boot.messages()[0].parts, []);
 });
 
 test("sessions, questions and permission patterns map onto the chat's shapes", () => {
