@@ -111,6 +111,21 @@ test("questions: an answer goes back as the tool's answers map, a rejection deni
   assert.deepEqual(events.map((e) => e.type), ["question.asked", "question.replied", "question.asked", "question.rejected"]);
 });
 
+test("the session can be started before any prompt, idle, and the first prompt then feeds it", async () => {
+  const { agent, sdk, signals } = makeAgent();
+  agent.ensureQuery();
+  await tick();
+  assert.equal(sdk.queries.length, 1, "the Claude child exists before a prompt");
+  assert.deepEqual(sdk.queries[0].sent, [], "nothing was sent");
+  assert.equal(agent.busy, false);
+  assert.deepEqual(signals, [], "an idle start signals nothing");
+  agent.prompt("hello");
+  await tick();
+  assert.equal(sdk.queries.length, 1, "the same session takes the prompt");
+  assert.deepEqual(sdk.queries[0].sent.map((m) => m.message.content), ["hello"]);
+  assert.deepEqual(signals, ["busy"]);
+});
+
 test("a prompt starts the query, feeds it, and signals busy; the result signals idle", async () => {
   const { agent, sdk, signals, events, out } = makeAgent({ systemPromptFile: "/base/AGENTS.md", model: "opus", allowed: ["Read"] });
   agent.prompt("hello");

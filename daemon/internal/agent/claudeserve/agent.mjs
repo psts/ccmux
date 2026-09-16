@@ -112,6 +112,11 @@ export class Agent {
     return opts;
   }
 
+  // ensureQuery has the SDK session running. Called at start, not only at
+  // the first prompt: the peers shim lives inside the Claude child, so the
+  // agent is on the bus (reachable by name, able to send) exactly while
+  // that child runs. A session that ended (an error) is started again by
+  // the next prompt.
   ensureQuery() {
     if (this.q) return;
     this.feed = { inbox: [], wake: null, dead: false };

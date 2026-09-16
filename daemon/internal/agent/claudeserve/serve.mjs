@@ -55,6 +55,9 @@ async function cmdServe(o) {
     out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s),
   });
   await agent.preload();
+  // The Claude child (and the peers shim inside it) comes up now, so the
+  // agent is on the bus from its first second, not from its first prompt.
+  agent.ensureQuery();
   const server = createAgentServer(agent);
   server.listen(o.port, "127.0.0.1", () => agent.log(`⚙ ${o.agent || "agent"} · chat on port ${o.port} · type here or in the chat · ctrl-d ends the session`));
   const rl = createInterface({ input: process.stdin, terminal: false });
