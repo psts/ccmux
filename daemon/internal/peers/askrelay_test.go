@@ -266,3 +266,79 @@ func TestAskReply_FailedHandoffReopensTheAsk(t *testing.T) {
 		t.Errorf("worker inbox after the retries = %+v, want the one deny for abcde", evs)
 	}
 }
+
+// A delegator whose only message is older than the recent-sender window
+// still hears the card, on the strength of the open delegation: a long task
+// raises its card long after the delegating message. Closing the task ends
+// that, and a plain sender past the window is not reached either.
+func TestAskRelay_OpenDelegationOutlivesRecentWindow(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.groups["pane-w"] = "G"
+	hook.groups["pane-d"] = "G"
+	hook.groups["pane-s"] = "G"
+	worker := registerPane(svc, "pane-w", "/w/worker").PeerID
+	delegator := registerPane(svc, "pane-d", "/w/delegator").PeerID
+	sender := registerPane(svc, "pane-s", "/w/sender").PeerID
+	base := time.Now()
+	svc.Now = func() time.Time { return base }
+	taskID := svc.Delegate(DelegateReq{FromID: delegator, ToID: worker, Text: "long job"}).TaskID
+	if taskID == "" {
+		t.Fatal("delegate failed")
+	}
+	svc.Send(SendReq{FromID: sender, ToID: worker, Text: "hi"})
+	// The worker hands out more sub-tasks than any listing cap and leaves
+	// them open: its own outgoing work must not crowd its delegator out.
+	for i := 0; i < 25; i++ {
+		svc.Now = func() time.Time { return base.Add(time.Duration(i+1) * time.Second) }
+		if r := svc.Delegate(DelegateReq{FromID: worker, ToID: sender, Text: "sub"}); r.TaskID == "" {
+			t.Fatalf("sub-delegate %d failed: %+v", i, r)
+		}
+	}
+	svc.Poll(worker)
+	svc.Poll(delegator)
+	svc.Poll(sender)
+
+	svc.Now = func() time.Time { return base.Add(recentSenderWindow + time.Hour) }
+	relayed, err := svc.PermissionRequest(worker, "abcde", "Bash", "run it", "rm x")
+	if err != nil || relayed != 1 {
+		t.Fatalf("relayed = %d (%v), want 1 (the delegator only)", relayed, err)
+	}
+	if evs, _ := svc.Poll(delegator); len(evs) != 1 || !strings.HasPrefix(evs[0].Text, "[claude-peers permission relay]") {
+		t.Fatalf("delegator inbox = %+v, want the relay", evs)
+	}
+	if evs, _ := svc.Poll(sender); len(evs) != 0 {
+		t.Fatalf("sender past the window got %+v, want nothing", evs)
+	}
+
+	if resp := svc.UpdateTask(TaskUpdateReq{PeerID: worker, TaskID: taskID, Status: "completed", Result: "done"}); !resp.OK {
+		t.Fatalf("close task: %+v", resp)
+	}
+	if relayed, err = svc.PermissionRequest(worker, "bcdef", "Bash", "run it", "rm y"); err != nil || relayed != 0 {
+		t.Fatalf("after close relayed = %d (%v), want 0", relayed, err)
+	}
+}
+
+// Inside the window the delegator is a recent sender AND an open delegator:
+// it hears the card once, not twice. A second answer would be swallowed as
+// a duplicate, so a doubled relay would cost the delegator a wasted turn.
+func TestAskRelay_DelegatorInWindowHeardOnce(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.groups["pane-w"] = "G"
+	hook.groups["pane-d"] = "G"
+	worker := registerPane(svc, "pane-w", "/w/worker").PeerID
+	delegator := registerPane(svc, "pane-d", "/w/delegator").PeerID
+	if r := svc.Delegate(DelegateReq{FromID: delegator, ToID: worker, Text: "quick job"}); r.TaskID == "" {
+		t.Fatalf("delegate failed: %+v", r)
+	}
+	svc.Poll(worker)
+	svc.Poll(delegator)
+
+	relayed, err := svc.PermissionRequest(worker, "abcde", "Bash", "run it", "ls")
+	if err != nil || relayed != 1 {
+		t.Fatalf("relayed = %d (%v), want exactly 1", relayed, err)
+	}
+	evs, _ := svc.Poll(delegator)
+	if len(evs) != 1 || !strings.HasPrefix(evs[0].Text, "[claude-peers permission relay]") {
+		t.Fatalf("delegator inbox = %+v, want one relay", evs)
+	}
+}

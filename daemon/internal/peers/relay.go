@@ -2,7 +2,10 @@
 // chat-served agent raises a permission or question card, the request fans
 // out (as normal peer messages; the permission wording preserved verbatim
 // from the old claude-peers server — sessions are trained on it) to everyone
-// who messaged the worker in the last ten minutes. A delegator's "yes <id>"
+// who messaged the worker in the last ten minutes AND to every peer with an
+// open delegation to it, however old: a long task raises its card an hour
+// after the delegating message, and the delegator is exactly who can answer
+// it. A delegator's "yes <id>"
 // or "answer <id> <text>" reply comes back through Send, where the verdict
 // and answer matchers convert it into a structured event for the worker and,
 // for a pane with a chat server, into a reply on its card. The local dialog
@@ -15,9 +18,9 @@ import (
 )
 
 // PermissionRequest records an outstanding tool-approval request for a worker
-// and relays it to the worker's recent senders. Returns how many peers it
-// reached. The broadcast set is computed from the event log (not stored), so
-// it survives daemon and thin-client restarts alike.
+// and relays it to the worker's card recipients (askRecipientsLocked). Returns
+// how many peers it reached. The recipient set is read from the database, not
+// held in memory, so it survives daemon and thin-client restarts alike.
 func (s *Service) PermissionRequest(workerID, requestID, toolName, description, inputPreview string) (int, error) {
 	return s.relayAsk(workerID, requestID, AskPermission, func(workerName string) string {
 		return relayText(workerName, requestID, toolName, description, inputPreview)
@@ -34,7 +37,7 @@ func (s *Service) QuestionRequest(workerID, requestID, text string) (int, error)
 }
 
 // relayAsk records the ask of that kind under requestID and fans text
-// (rendered with the worker's name) to the worker's recent senders.
+// (rendered with the worker's name) to the worker's card recipients.
 func (s *Service) relayAsk(workerID, requestID, kind string, text func(workerName string) string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -52,16 +55,16 @@ func (s *Service) relayAsk(workerID, requestID, kind string, text func(workerNam
 	// and arrived at the worker as ordinary chat while it waited.
 	_ = s.st.SavePermRequest(rid, pr.workerID, pr.kind, pr.resolved, pr.at)
 
-	senders, err := s.st.RecentPeerSenders(workerID, s.Now().Add(-recentSenderWindow).UnixMilli())
+	recipients, err := s.askRecipientsLocked(workerID)
 	if err != nil {
 		return 0, err
 	}
 	group := s.groupOfLocked(worker)
 	body := text(worker.Name)
 	relayed := 0
-	for _, sid := range senders {
-		target := s.peers[sid]
-		if target == nil || sid == workerID {
+	for _, id := range recipients {
+		target := s.peers[id]
+		if target == nil || id == workerID {
 			continue
 		}
 		if s.deliverLocked(s.eventFromLocked(worker, target, group, body)) == nil {
@@ -69,6 +72,32 @@ func (s *Service) relayAsk(workerID, requestID, kind string, text func(workerNam
 		}
 	}
 	return relayed, nil
+}
+
+// askRecipientsLocked is who hears a worker's card: its recent senders (the
+// old rule, computed from the event log so it survives restarts) plus the
+// delegator of every open task on it, which has no age limit because the
+// task is open for as long as the work is. Each id once.
+func (s *Service) askRecipientsLocked(workerID string) ([]string, error) {
+	out, err := s.st.RecentPeerSenders(workerID, s.Now().Add(-recentSenderWindow).UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	delegators, err := s.st.OpenDelegatorsOf(workerID)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(out))
+	for _, id := range out {
+		seen[id] = true
+	}
+	for _, id := range delegators {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // relayText is the exact wording the old server.ts broadcast — recipients'

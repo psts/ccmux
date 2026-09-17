@@ -61,6 +61,15 @@ func TestPeerTasks_OpenListAndPrune(t *testing.T) {
 		t.Fatalf("open for w1 = %+v", open)
 	}
 
+	// Delegators of w1: d1 through its open task only. The closed task from
+	// d1, w1's own outgoing task, and x->y do not count.
+	if got, err := st.OpenDelegatorsOf("w1"); err != nil || len(got) != 1 || got[0] != "d1" {
+		t.Fatalf("delegators of w1 = %v (%v), want [d1]", got, err)
+	}
+	if got, _ := st.OpenDelegatorsOf("d1"); len(got) != 0 {
+		t.Fatalf("delegators of d1 = %v, want none (w1's task to d1 is failed)", got)
+	}
+
 	// Prune removes only TERMINAL tasks older than the cutoff. The stale open
 	// task must survive: unanswered delegations staying visible is the point.
 	if err := st.PrunePeerTasks(500); err != nil {

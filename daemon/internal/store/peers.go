@@ -119,10 +119,16 @@ func (s *SQLite) DeletePeerState(peerID string) error {
 // sinceMillis — the permission-relay broadcast set, computed instead of stored
 // so it survives daemon and client restarts alike.
 func (s *SQLite) RecentPeerSenders(toID string, sinceMillis int64) ([]string, error) {
-	rows, err := s.db.Query(`
+	return s.queryIDs(`
 SELECT DISTINCT from_id FROM peer_events
 WHERE to_id=? AND kind=? AND sent_at>? AND from_id!=''`,
 		toID, model.PeerEventMessage, sinceMillis)
+}
+
+// queryIDs runs a query whose rows are one string column each and returns
+// them in order.
+func (s *SQLite) queryIDs(query string, args ...any) ([]string, error) {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}

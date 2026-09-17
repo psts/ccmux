@@ -77,6 +77,16 @@ ORDER BY updated_at DESC LIMIT ?`, peerID, peerID, limit)
 	return out, rows.Err()
 }
 
+// OpenDelegatorsOf lists the distinct peers with a non-terminal delegation
+// TO workerID, the card relay's standing recipients. No cap and no
+// direction mix: the worker's own outgoing tasks are not in the answer, so
+// a busy worker cannot crowd its delegator out.
+func (s *SQLite) OpenDelegatorsOf(workerID string) ([]string, error) {
+	return s.queryIDs(`
+SELECT DISTINCT from_id FROM peer_tasks
+WHERE to_id=? AND status NOT IN ('completed','failed')`, workerID)
+}
+
 // DeletePeerTask removes one task (delegation rollback when delivery failed —
 // no message went out, so there is nothing to report against).
 func (s *SQLite) DeletePeerTask(taskID string) error {
