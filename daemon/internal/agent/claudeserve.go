@@ -23,13 +23,13 @@ import (
 // daemon upgrade's sidecar lands without ceremony), and its one npm
 // dependency installed there once per pinned version.
 
-//go:embed claudeserve/serve.mjs claudeserve/args.mjs claudeserve/agent.mjs claudeserve/routes.mjs claudeserve/translate.mjs claudeserve/package.json claudeserve/package-lock.json
+//go:embed claudeserve/serve.mjs claudeserve/args.mjs claudeserve/agent.mjs claudeserve/routes.mjs claudeserve/translate.mjs claudeserve/mcp.mjs claudeserve/package.json claudeserve/package-lock.json
 var claudeServeFiles embed.FS
 
 // claudeServeShipped is what EnsureClaudeServe writes: the sidecar, its
 // manifest and the lock that pins every package the install may fetch (npm
 // ci refuses anything the lock does not name), never the tests.
-var claudeServeShipped = []string{claudeServeFile, "args.mjs", "agent.mjs", "routes.mjs", "translate.mjs", "package.json", "package-lock.json"}
+var claudeServeShipped = []string{claudeServeFile, "args.mjs", "agent.mjs", "routes.mjs", "translate.mjs", "mcp.mjs", "package.json", "package-lock.json"}
 
 // installTimeout bounds npm ci so a stalled registry cannot hold the
 // install lock, and every claude start behind it, forever.

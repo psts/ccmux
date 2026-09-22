@@ -234,13 +234,23 @@ struct DaemonSkill: Decodable, Identifiable {
     var id: String { name }
 }
 
-/// An MCP server in a base (GET /v1/agents/{name}/mcp).
+/// An MCP server in a base (GET /v1/agents/{name}/mcp): a local one has a
+/// command, a remote one a url (type http or sse) and optional headers.
 struct DaemonMCPServer: Decodable, Identifiable {
     let name: String
-    let command: String
+    let command: String?
     let args: [String]?
     let env: [String: String]?
+    let type: String?
+    let url: String?
+    let headers: [String: String]?
     var id: String { name }
+    /// What the row shows under the name: the url for a remote server, the
+    /// command line for a local one. Same rule as agentmodal.js mcpRow.
+    var summary: String {
+        if let url { return "\(type ?? "http") \(url)" }
+        return ([command ?? ""] + (args ?? [])).joined(separator: " ")
+    }
 }
 
 /// One window a base is deployed to (GET /v1/agents/{name}/instances).

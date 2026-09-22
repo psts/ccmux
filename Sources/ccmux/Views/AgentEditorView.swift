@@ -208,8 +208,9 @@ struct AgentEditorView: View {
                     HStack(alignment: .top, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(sv.name).font(.system(size: 12, weight: .semibold))
-                            Text(([sv.command] + (sv.args ?? [])).joined(separator: " ")).font(.system(size: 11)).foregroundColor(.secondary)
+                            Text(sv.summary).font(.system(size: 11)).foregroundColor(.secondary)
                             if let env = sv.env, !env.isEmpty { Text("env: " + env.keys.sorted().joined(separator: ", ")).font(.system(size: 10)).foregroundColor(.secondary) }
+                            if let headers = sv.headers, !headers.isEmpty { Text("headers: " + headers.keys.sorted().joined(separator: ", ")).font(.system(size: 10)).foregroundColor(.secondary) }
                         }
                         Spacer()
                         Button("Remove") {
@@ -221,7 +222,7 @@ struct AgentEditorView: View {
                 TextEditor(text: $mcpSnippet).font(.system(size: 11, design: .monospaced)).frame(minHeight: 60).border(Color.white.opacity(0.12))
                 HStack {
                     Button("Add servers") { Task { await addMCP() } }.controlSize(.small).disabled(mcpSnippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Text(mcpStatus.isEmpty ? "Paste the snippet from the server's readme: {\"mcpServers\": {...}}" : mcpStatus).font(.system(size: 11)).foregroundColor(.secondary)
+                    Text(mcpStatus.isEmpty ? "Paste the snippet from the server's readme: {\"mcpServers\": {...}}, or a remote one: {\"name\": {\"type\": \"http\", \"url\": \"${MY_URL}\"}}" : mcpStatus).font(.system(size: 11)).foregroundColor(.secondary)
                 }
             }
         }

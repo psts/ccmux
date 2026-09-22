@@ -10,6 +10,7 @@ test("the full launch line the daemon writes parses into the sidecar's options",
     "--port", "41235", "--agent", "kb-writer",
     "--plugin-dir", "/home/u/.ccmux/agents/kb-writer",
     "--system-prompt-file", "/home/u/.ccmux/agents/kb-writer/AGENTS.md",
+    "--mcp-file", "/home/u/.ccmux/agents/kb-writer/mcp.json",
     "--add-dir", "/repo", "--add-dir", "/repo2", "--add-dir", "/srv/kb",
     "--model", "opus",
     "--allowed-tools", "Bash(git log *),Glob,Grep,Read",
@@ -20,6 +21,7 @@ test("the full launch line the daemon writes parses into the sidecar's options",
   assert.equal(o.agent, "kb-writer");
   assert.equal(o.pluginDir, "/home/u/.ccmux/agents/kb-writer");
   assert.equal(o.systemPromptFile, "/home/u/.ccmux/agents/kb-writer/AGENTS.md");
+  assert.equal(o.mcpFile, "/home/u/.ccmux/agents/kb-writer/mcp.json");
   assert.deepEqual(o.addDirs, ["/repo", "/repo2", "/srv/kb"]);
   assert.equal(o.model, "opus");
   assert.deepEqual(o.allowed, ["Bash(git log *)", "Glob", "Grep", "Read"]);

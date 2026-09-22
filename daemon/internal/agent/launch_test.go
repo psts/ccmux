@@ -30,6 +30,7 @@ func TestLaunchCommandClaude(t *testing.T) {
 		"CLAUDE_PEERS_NAME=kb-writer /usr/bin/node /home/u/.ccmux/agents/.ccmux/claude-serve/serve.mjs serve --port 41235",
 		"--agent kb-writer", "--plugin-dir /home/u/.ccmux/agents/kb-writer",
 		"--system-prompt-file /home/u/.ccmux/agents/kb-writer/AGENTS.md",
+		"--mcp-file /home/u/.ccmux/agents/kb-writer/mcp.json",
 		"--add-dir /repo --add-dir /repo2 --add-dir /srv/kb", "--model opus",
 	} {
 		if !strings.Contains(l.Persist, want) {

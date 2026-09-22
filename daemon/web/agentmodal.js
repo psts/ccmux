@@ -35,7 +35,7 @@
         `<p class="hint am-skills-state"></p>`) +
       section("MCP servers",
         `<div class="am-mcp rules-list"></div>` +
-        `<textarea class="setting-input am-mcp-paste" rows="3" spellcheck="false" placeholder='Paste the snippet from the server&#39;s readme: {"mcpServers": {"name": {"command": "...", "args": [...]}}}'></textarea>` +
+        `<textarea class="setting-input am-mcp-paste" rows="3" spellcheck="false" placeholder='Paste the snippet from the server&#39;s readme: {"mcpServers": {"name": {"command": "...", "args": [...]}}} or a remote one: {"name": {"type": "http", "url": "\${MY_URL}"}}'></textarea>` +
         `<div class="entry-line"><button class="rule-add am-mcp-add" type="button">Add servers</button><span class="hint am-mcp-state"></span></div>`) +
       section("opencode plugins", `<textarea class="setting-input am-plugins" rows="2" spellcheck="false" placeholder="plugin packages, one per line"></textarea>`) +
       section("Lifecycle",
@@ -243,9 +243,13 @@
     const line = el("div", "entry-line");
     const text = el("div", "grow");
     text.appendChild(el("div", "am-row-title", sv.name));
-    text.appendChild(el("div", "am-row-sub", [sv.command].concat(sv.args || []).join(" ")));
+    // A remote server shows its url, a local one its command line, then
+    // the names (never the values) of its env and headers.
+    text.appendChild(el("div", "am-row-sub", sv.url ? `${sv.type || "http"} ${sv.url}` : [sv.command].concat(sv.args || []).join(" ")));
     const envs = Object.keys(sv.env || {});
     if (envs.length) text.appendChild(el("div", "am-row-src", "env: " + envs.join(", ")));
+    const hdrs = Object.keys(sv.headers || {});
+    if (hdrs.length) text.appendChild(el("div", "am-row-src", "headers: " + hdrs.join(", ")));
     line.appendChild(text);
     const del = el("button", "rule-del", "×");
     del.title = "Remove server";

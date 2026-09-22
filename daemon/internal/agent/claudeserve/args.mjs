@@ -6,7 +6,7 @@
 // the same lines. No SDK import.
 //
 //   serve   --port N --agent NAME --plugin-dir DIR --system-prompt-file FILE
-//           [--add-dir DIR]... [--model M] [--allowed-tools a,b]
+//           --mcp-file FILE [--add-dir DIR]... [--model M] [--allowed-tools a,b]
 //           [--disallowed-tools c] [--session ID]
 //   sessions --dir DIR
 //   export   --dir DIR --session ID
@@ -19,6 +19,7 @@ const flags = {
   "--agent": (o, v) => { o.agent = v; },
   "--plugin-dir": (o, v) => { o.pluginDir = v; },
   "--system-prompt-file": (o, v) => { o.systemPromptFile = v; },
+  "--mcp-file": (o, v) => { o.mcpFile = v; },
   "--add-dir": (o, v) => { o.addDirs.push(v); },
   "--model": (o, v) => { o.model = v; },
   "--allowed-tools": (o, v) => { o.allowed = list(v); },

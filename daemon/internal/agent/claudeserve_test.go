@@ -233,3 +233,34 @@ func TestEnsureClaudeServeWritesFilesAndSkipsAnInstalledSDK(t *testing.T) {
 		}
 	}
 }
+
+// Every module a shipped sidecar file imports is itself shipped: a new
+// module added to the source tree but not to claudeServeShipped (and the
+// embed beside it) passes node --check and node --test against the tree
+// and then fails every claude start with ERR_MODULE_NOT_FOUND in the
+// extracted folder. The test files import the modules too but are not
+// shipped, which is the row this must not flag.
+func TestClaudeServeShipsEveryImportedModule(t *testing.T) {
+	shipped := map[string]bool{}
+	for _, name := range claudeServeShipped {
+		shipped[name] = true
+	}
+	localImport := regexp.MustCompile(`from "\./([^"/]+\.mjs)"`)
+	for _, name := range claudeServeShipped {
+		if strings.HasSuffix(name, ".test.mjs") {
+			t.Errorf("%s is a test file and must not ship", name)
+		}
+		if !strings.HasSuffix(name, ".mjs") {
+			continue
+		}
+		src, err := claudeServeFiles.ReadFile("claudeserve/" + name)
+		if err != nil {
+			t.Fatalf("%s is shipped but not embedded: %v", name, err)
+		}
+		for _, m := range localImport.FindAllStringSubmatch(string(src), -1) {
+			if !shipped[m[1]] {
+				t.Errorf("%s imports ./%s, which is not in claudeServeShipped", name, m[1])
+			}
+		}
+	}
+}

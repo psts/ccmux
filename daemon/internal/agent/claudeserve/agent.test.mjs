@@ -41,7 +41,7 @@ function makeAgent(opts = {}, script = []) {
   const headers = []; // the headers of every daemon call
   const deps = {
     ...sdk, cwd: "/inst", env: { CCMUX_DAEMON_URL: "http://d", CCMUX_PANE_ID: "p1", CCMUX_PANE_TOKEN: "tok-p1", ...(opts.env || {}) },
-    readFile: () => "# base\n", out: (s) => out.push(s), err: (s) => sdk.err.push(s),
+    readFile: opts.readFile || (() => "# base\n"), out: (s) => out.push(s), err: (s) => sdk.err.push(s),
     fetch: async (url, init) => {
       headers.push(init.headers);
       if (url.endsWith("/agent-ask")) {
@@ -216,7 +216,8 @@ test("a prompt starts the query, feeds it, and signals busy; the result signals 
   assert.equal(q.options.resume, undefined, "a fresh start pins a new id");
   assert.equal(q.options.systemPrompt.append, "# base\n");
   assert.equal(q.options.model, "opus");
-  assert.deepEqual(q.options.allowedTools, ["Read"]);
+  assert.deepEqual(q.options.allowedTools, ["Read", "mcp__claude-peers"], "the peers shim's tools never raise a card");
+  assert.equal(q.options.mcpServers, undefined, "no mcp file, no servers option");
   assert.equal(q.options.disallowedTools, undefined, "an empty deny list is not sent");
   await tick();
   assert.equal(q.sent[0].message.content, "hello");
@@ -387,4 +388,29 @@ test("a card carries a five-letter bus id and is relayed to the daemon; a failed
   await tick();
   assert.match(stale.out.find((l) => l.includes("card relay")), /HTTP 401: invalid pane token \(restart this agent/, "a refused token is not an outage");
   assert.equal(refused.agent.pendingPermissions().length, 2, "the cards stay up in the chat");
+});
+
+test("the base's mcp.json reaches the SDK as servers, expanded from the environment, with their tools allowed", () => {
+  const files = {
+    "/base/AGENTS.md": "# base\n",
+    "/base/mcp.json": JSON.stringify({ door: { type: "http", url: "${X_MCP_URL}" }, kb: { command: "kb-mcp" } }),
+  };
+  const readFile = (p) => { if (files[p] === undefined) { const e = new Error("ENOENT"); e.code = "ENOENT"; throw e; } return files[p]; };
+  const { agent, sdk } = makeAgent({ systemPromptFile: "/base/AGENTS.md", mcpFile: "/base/mcp.json", allowed: ["Read"], readFile, env: { X_MCP_URL: "http://door/mcp" } });
+  agent.prompt("hi");
+  const o = sdk.queries[0].options;
+  assert.deepEqual(o.mcpServers, { door: { type: "http", url: "http://door/mcp" }, kb: { type: "stdio", command: "kb-mcp", args: [] } });
+  assert.deepEqual(o.allowedTools, ["Read", "mcp__claude-peers", "mcp__door", "mcp__kb"]);
+
+  // A base without the file: no servers, the peers rule still there.
+  const bare = makeAgent({ mcpFile: "/base/none.json", readFile }).agent;
+  assert.deepEqual(bare.mcp, { servers: {}, allow: ["mcp__claude-peers"], unresolved: {} });
+  // A reference the .env does not set is said in the terminal at start.
+  const { out: out2 } = makeAgent({ mcpFile: "/base/mcp.json", readFile, env: {} });
+  assert.ok(out2.some((l) => l.includes("! mcp door: ${X_MCP_URL} not set")), out2.join(""));
+  // A file that does not parse ends the start, like an unreadable AGENTS.md;
+  // so does one that cannot be read for any reason but absence.
+  assert.throws(() => makeAgent({ mcpFile: "/base/bad.json", readFile: () => "{nope" }), SyntaxError);
+  const denied = () => { const e = new Error("EACCES: permission denied"); e.code = "EACCES"; throw e; };
+  assert.throws(() => makeAgent({ mcpFile: "/base/mcp.json", readFile: denied }), /EACCES/);
 });

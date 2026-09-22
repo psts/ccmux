@@ -28,9 +28,11 @@ type Launch struct {
 //
 //   - claude: the sidecar (claudeserve/serve.mjs, on the Claude Agent SDK)
 //     runs the session and serves the chat on --port, like opencode; the
-//     base rides in as a plugin and an appended system prompt, the window's
-//     project folders (dirs) are reachable through --add-dir, and the prompt
-//     travels over the port afterwards. The harness's own command line is
+//     base rides in as a plugin and an appended system prompt, its MCP
+//     servers through --mcp-file (the sidecar maps the neutral shape onto
+//     the SDK's and allows their tools), the window's project folders
+//     (dirs) are reachable through --add-dir, and the prompt travels over
+//     the port afterwards. The harness's own command line is
 //     not used: the SDK brings its own Claude Code;
 //   - opencode: the instance's opencode.jsonc (WriteInstanceConfig) already
 //     carries instructions, permissions and MCP, so only --agent and the
@@ -116,6 +118,7 @@ func claudeServeLine(d Definition, baseDir string, o LaunchOpts) string {
 		"--agent", shellQuote(d.Name),
 		"--plugin-dir", shellQuote(baseDir),
 		"--system-prompt-file", shellQuote(filepath.Join(baseDir, fileAgents)),
+		"--mcp-file", shellQuote(filepath.Join(baseDir, fileMCP)),
 	}
 	for _, dir := range o.Dirs {
 		parts = append(parts, "--add-dir", shellQuote(dir))

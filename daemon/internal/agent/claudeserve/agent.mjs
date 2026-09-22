@@ -5,6 +5,7 @@
 // SDK installed; serve.mjs is the only file that imports the real one.
 import { randomUUID, randomInt } from "node:crypto";
 import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAnswers, questionCardText } from "./translate.mjs";
+import { mcpFromNeutral } from "./mcp.mjs";
 
 // askID is a card's id: five lowercase letters without l, the shape the
 // bus's reply matchers accept ("yes abcde", "answer abcde ..."), so the
@@ -14,6 +15,17 @@ export function askID() {
   let id = "";
   for (let i = 0; i < 5; i++) id += askAlphabet[randomInt(askAlphabet.length)];
   return id;
+}
+
+// readIfPresent reads a base file that may not exist yet (a hand-made base
+// without mcp.json); any other failure is the start's to show.
+function readIfPresent(readFile, path) {
+  try {
+    return readFile(path, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return "";
+    throw err;
+  }
 }
 
 export class Agent {
@@ -32,6 +44,14 @@ export class Agent {
     // before it listens (the pane drops to its shell, read as asleep)
     // rather than failing a prompt and leaving the pane busy for good.
     this.systemPrompt = o.systemPromptFile ? deps.readFile(o.systemPromptFile, "utf8") : "";
+    // The base's MCP servers, same rule: read once, fail the start when the
+    // file is unreadable. A base without the file has no servers.
+    this.mcp = mcpFromNeutral(o.mcpFile ? readIfPresent(deps.readFile, o.mcpFile) : "", deps.env);
+    // Said at start: the SDK's init line reports only "failed" for a server
+    // whose url or token came out of an unset variable.
+    for (const [name, vars] of Object.entries(this.mcp.unresolved)) {
+      this.log(`! mcp ${name}: ${vars.map((v) => "${" + v + "}").join(", ")} not set in this instance's environment (.env)`);
+    }
     this.transcript = new Transcript(this.sid);
     this.clients = new Set();
     this.permissions = new Map(); // id → {request, resolve}
@@ -80,7 +100,7 @@ export class Agent {
     if (!failure) {
       this.askDown = false;
       const n = Number(data.relayed_to) || 0;
-      this.log(n ? `↔ card ${body.id} relayed to ${n} peer(s) that messaged this agent` : `↔ card ${body.id} reached no peer (none messaged this agent in the last 10 min)`);
+      this.log(n ? `↔ card ${body.id} relayed to ${n} peer(s) that delegated to or messaged this agent` : `↔ card ${body.id} reached no peer (no open delegation, and nobody messaged this agent in the last 10 min)`);
       return;
     }
     // A 401 is the pane's token being refused, which no amount of waiting
@@ -149,7 +169,10 @@ export class Agent {
     if (o.pluginDir) opts.plugins = [{ type: "local", path: o.pluginDir }];
     if (this.systemPrompt) opts.systemPrompt = { type: "preset", preset: "claude_code", append: this.systemPrompt };
     if (o.model) opts.model = o.model;
-    if (o.allowed.length) opts.allowedTools = o.allowed;
+    if (Object.keys(this.mcp.servers).length) opts.mcpServers = this.mcp.servers;
+    // The base's gates, then every MCP server's tools and the peers shim's:
+    // the base chose those servers, so a card for their tools asks nothing.
+    opts.allowedTools = o.allowed.concat(this.mcp.allow);
     if (o.disallowed.length) opts.disallowedTools = o.disallowed;
     return opts;
   }

@@ -27,7 +27,8 @@ func TestOpencodeInstanceConfig(t *testing.T) {
 	d := withDefaults(Definition{Name: "x-poster", Description: "Posts X threads.",
 		Permissions: Permissions{Bash: "ask", BashAllow: []string{"git log *"}}})
 	body, err := OpencodeInstanceConfig(d, "/base/x-poster", map[string]mcpEntry{
-		"x": {Command: "x-mcp", Args: []string{"--live"}, Env: map[string]string{"X_TOKEN": "${X_TOKEN}"}},
+		"x":    {Command: "x-mcp", Args: []string{"--live", "--token", "${X_TOKEN}"}, Env: map[string]string{"X_TOKEN": "${X_TOKEN}"}},
+		"door": {Type: "http", URL: "${X_MCP_URL}", Headers: map[string]string{"authorization": "Bearer ${X_MCP_TOKEN}", "x-plain": "v", "odd": "${NOT_A_REF:-d}"}},
 	}, []string{"/root/.ccmux/ccmux-opencode.ts"}, "anthropic/claude-sonnet-5")
 	if err != nil {
 		t.Fatal(err)
@@ -57,11 +58,21 @@ func TestOpencodeInstanceConfig(t *testing.T) {
 		t.Errorf("plugin list %v", pl)
 	}
 	x := mcp["x"].(map[string]any)
-	if cmd := x["command"].([]any); len(cmd) != 2 || cmd[0] != "x-mcp" || cmd[1] != "--live" {
-		t.Errorf("mcp command %v", cmd)
+	if cmd := x["command"].([]any); len(cmd) != 4 || cmd[0] != "x-mcp" || cmd[1] != "--live" || cmd[3] != "{env:X_TOKEN}" {
+		t.Errorf("mcp command %v (a ${VAR} in an arg is rewritten like one in env)", cmd)
 	}
-	if x["environment"].(map[string]any)["X_TOKEN"] != "${X_TOKEN}" {
-		t.Error("mcp env not carried")
+	// opencode's loader fills {env:VAR}, never ${VAR}: every reference is
+	// rewritten; plain text and a non-reference pass through as written.
+	if x["environment"].(map[string]any)["X_TOKEN"] != "{env:X_TOKEN}" {
+		t.Errorf("mcp env not in opencode's form: %v", x["environment"])
+	}
+	door := mcp["door"].(map[string]any)
+	hdrs := door["headers"].(map[string]any)
+	if door["type"] != "remote" || door["url"] != "{env:X_MCP_URL}" || hdrs["authorization"] != "Bearer {env:X_MCP_TOKEN}" || hdrs["x-plain"] != "v" || hdrs["odd"] != "${NOT_A_REF:-d}" {
+		t.Errorf("remote server rendered as %v", door)
+	}
+	if _, has := door["command"]; has {
+		t.Error("a remote server must not carry a command")
 	}
 	ag := cfg["agent"].(map[string]any)["x-poster"].(map[string]any)
 	perm := ag["permission"].(map[string]any)

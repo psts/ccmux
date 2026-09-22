@@ -10,17 +10,19 @@ import (
 )
 
 // MCP servers live in the base's mcp.json in the neutral shape
-// { "<name>": { "command", "args", "env" } }. They arrive as the JSON
-// snippet every server's readme ships, pasted into the lens: either that
-// shape, or the common { "mcpServers": { ... } } wrapper.
+// { "<name>": { "command", "args", "env" } } for a local server and
+// { "<name>": { "type": "http", "url", "headers" } } for a remote one. They
+// arrive as the JSON snippet every server's readme ships, pasted into the
+// lens: either that shape, or the common { "mcpServers": { ... } } wrapper.
 
-// MCPServer is one server as the lenses list it; Env holds names AND values
-// as written, so a pasted snippet with a literal key is shown as such.
+// MCPServer is one server as the lenses list it: the file entry plus its
+// name. Env and Headers carry values, not just names, so the listing is
+// the file as written (a literal secret pasted into a base is visible over
+// the API; the lenses show only the names). The entry is embedded, not
+// copied, so a field added to the file shape reaches the lenses by itself.
 type MCPServer struct {
-	Name    string            `json:"name"`
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	Name string `json:"name"`
+	mcpEntry
 }
 
 // MCPServers lists the base's servers, by name.
@@ -34,7 +36,7 @@ func (s *Store) MCPServers(agentName string) ([]MCPServer, error) {
 	}
 	out := []MCPServer{}
 	for name, e := range m {
-		out = append(out, MCPServer{Name: name, Command: e.Command, Args: e.Args, Env: e.Env})
+		out = append(out, MCPServer{Name: name, mcpEntry: e})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -91,7 +93,7 @@ func (s *Store) writeMCP(agentName string, m map[string]mcpEntry, note string) e
 }
 
 // parseMCPSnippet accepts { "mcpServers": {...} } or the bare map, and
-// refuses anything without a command per server.
+// refuses a server that names neither a command nor a url, or both.
 func parseMCPSnippet(snippet []byte) (map[string]mcpEntry, error) {
 	var wrapped struct {
 		Servers map[string]mcpEntry `json:"mcpServers"`
@@ -110,11 +112,27 @@ func parseMCPSnippet(snippet []byte) (map[string]mcpEntry, error) {
 	return checkMCP(bare)
 }
 
+// remoteTypes are the transports a url entry may name; "" becomes "http".
+var remoteTypes = map[string]bool{"http": true, "sse": true}
+
+// checkMCP validates every server and normalizes its type: a command is a
+// local server and carries no type (so existing files stay as written), a
+// url is remote and gets "http" unless it says "sse".
 func checkMCP(m map[string]mcpEntry) (map[string]mcpEntry, error) {
 	for name, e := range m {
-		if name == "" || e.Command == "" {
-			return nil, fmt.Errorf("server %q needs a command", name)
+		switch {
+		case name == "" || (e.Command == "" && e.URL == ""):
+			return nil, fmt.Errorf("server %q needs a command or a url", name)
+		case e.Command != "" && e.URL != "":
+			return nil, fmt.Errorf("server %q: a command or a url, not both", name)
+		case e.Command != "":
+			e.Type = ""
+		case e.Type == "":
+			e.Type = "http"
+		case !remoteTypes[e.Type]:
+			return nil, fmt.Errorf("server %q: type %q is not http or sse", name, e.Type)
 		}
+		m[name] = e
 	}
 	return m, nil
 }
