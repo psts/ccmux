@@ -1209,6 +1209,22 @@ final class RemoteSessionService: ObservableObject {
         await refresh()
     }
 
+    /// Record the size this Mac has a shared window at, for whoever next opens
+    /// it without a size of their own. Best effort: a miss only means that
+    /// person starts from an older size. It is not retried until the size
+    /// changes again (an older daemon answers every try with 405), and `send`
+    /// logs a wrong status but not a network failure.
+    func setSharedWindowSize(id: String, size: CGSize) async {
+        struct Body: Encodable {
+            let width: Int
+            let height: Int
+        }
+        guard let data = try? JSONEncoder().encode(
+            Body(width: Int(size.width.rounded()), height: Int(size.height.rounded())))
+        else { return }
+        _ = await send("PUT", path: "/v1/windows/\(id)/size", body: data, expect: 204)
+    }
+
     /// Declare the WHOLE set of windows this lens has open, so the daemon can
     /// make this device's rows match — asserting the ones listed and dropping
     /// the ones not.

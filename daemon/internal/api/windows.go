@@ -131,6 +131,9 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		// reads Open=true on your Mac, which is how a window with no local
 		// counterpart became invisible AND unopenable.
 		OpenHere bool `json:"openHere"`
+		// The size a Mac last had the window at; absent when nobody has.
+		Width  int `json:"width,omitempty"`
+		Height int `json:"height,omitempty"`
 	}
 	windows, err := s.mgr.WindowsListStrict()
 	if err != nil {
@@ -149,10 +152,12 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "window state unreadable — retry")
 		return
 	}
+	sizes := s.mgr.WindowSizes()
 	out := make([]windowResp, 0, len(windows))
 	for _, win := range windows {
+		size := sizes[win.ID]
 		wr := windowResp{ID: win.ID, Name: win.Name, WorkspaceIDs: win.WorkspaceIDs,
-			OpenBy: win.OpenBy, OpenHere: here[win.ID]}
+			OpenBy: win.OpenBy, OpenHere: here[win.ID], Width: size.Width, Height: size.Height}
 		for _, l := range win.OpenBy {
 			if l == login {
 				wr.Open = true
@@ -277,6 +282,26 @@ func (s *Server) renameWindow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// setWindowSize serves PUT /v1/windows/{id}/size: the size a Mac last had
+// the window at, shared like the window itself.
+func (s *Server) setWindowSize(w http.ResponseWriter, r *http.Request) {
+	var req store.WindowSize
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	err := s.mgr.SetWindowSize(r.PathValue("id"), req)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, manager.ErrUnknownWindow):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, manager.ErrBadWindowSize):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	}
 }
 
 // archiveGuard fronts archive and delete: stopping a session is global, so it

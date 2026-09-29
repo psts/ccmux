@@ -63,6 +63,10 @@ type Store interface {
 	ClearStaleWindowOpens(login, device string, keep []string) error
 	DeviceWindowOpens(login, device string, staleBefore int64) (map[string]bool, error)
 	WindowOpens(staleBefore int64) (map[string]map[string]bool, error) // window id → logins
+	// The last size a Mac had each shared window at. Reports whether the
+	// window exists: a size for an unknown id lands nowhere.
+	SetWindowSize(id string, size WindowSize) (bool, error)
+	WindowSizes() (map[string]WindowSize, error) // window id → size
 
 	// Push notification subscriptions (transport-generic, keyed by login).
 	SavePushSubscription(*model.PushSubscription) error
@@ -170,6 +174,9 @@ CREATE TABLE IF NOT EXISTS windows (
   id TEXT PRIMARY KEY, name TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS windows_by_name ON windows(lower(name));
+CREATE TABLE IF NOT EXISTS window_sizes (
+  window_id TEXT PRIMARY KEY, width INTEGER NOT NULL, height INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS window_members (
   ws_id TEXT PRIMARY KEY, window_id TEXT NOT NULL
 );
@@ -614,7 +621,7 @@ func (s *SQLite) RenameWindow(id, name string) error {
 	return err
 }
 
-// DeleteWindow removes a window entity plus its membership and open flags.
+// DeleteWindow removes a window entity plus its membership, open flags and size.
 func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_members WHERE window_id=?`, id); err != nil {
 		return err
@@ -622,13 +629,60 @@ func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_open WHERE window_id=?`, id); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM windows WHERE id=?`, id)
+	// The window before its size: a SetWindowSize landing between the two
+	// then either finds no window, or writes a row the second delete takes.
+	if _, err := s.db.Exec(`DELETE FROM windows WHERE id=?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM window_sizes WHERE window_id=?`, id)
 	return err
 }
 
 // AllWindows returns every shared window, id → name.
 func (s *SQLite) AllWindows() (map[string]string, error) {
 	return s.twoColumnMap(`SELECT id, name FROM windows`)
+}
+
+// WindowSize is a shared window's size in points, as a Mac last had it. Only
+// the size is shared: where a window sits depends on the screen it is on.
+type WindowSize struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+// SetWindowSize upserts a window's size, only while the window exists. The
+// check and the write are one statement, and DeleteWindow removes the window
+// before its size, so a size racing a delete cannot leave a row behind.
+func (s *SQLite) SetWindowSize(id string, size WindowSize) (bool, error) {
+	res, err := s.db.Exec(`
+INSERT INTO window_sizes (window_id, width, height)
+SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM windows WHERE id=?)
+ON CONFLICT(window_id) DO UPDATE SET width=excluded.width, height=excluded.height`,
+		id, size.Width, size.Height, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// WindowSizes returns every stored window size, id → size.
+func (s *SQLite) WindowSizes() (map[string]WindowSize, error) {
+	rows, err := s.db.Query(`SELECT window_id, width, height FROM window_sizes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]WindowSize{}
+	for rows.Next() {
+		var id string
+		var size WindowSize
+		if err := rows.Scan(&id, &size.Width, &size.Height); err != nil {
+			return nil, err
+		}
+		out[id] = size
+	}
+	return out, rows.Err()
 }
 
 // SetWindowMember places a workspace in a window (at most one: upsert).

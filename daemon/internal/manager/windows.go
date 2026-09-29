@@ -28,6 +28,7 @@ import (
 var (
 	ErrUnknownWindow = errors.New("unknown window")
 	ErrNameTaken     = errors.New("window name already taken")
+	ErrBadWindowSize = errors.New("window size out of range")
 )
 
 // WindowInfo is one shared window as lenses see it (GET /v1/windows).
@@ -384,6 +385,48 @@ func (m *Manager) RenameSharedWindow(id, name string) error {
 	m.invalidateWindows()
 	m.events.publish(Event{Kind: "workspace-status"})
 	return nil
+}
+
+// maxWindowSide bounds a stored size well past any real screen. Every Mac
+// fits a window to its own screen anyway; this keeps nonsense out of the row.
+const maxWindowSide = 20000
+
+func validWindowSide(n int) bool { return n > 0 && n <= maxWindowSide }
+
+// SetWindowSize records the size a Mac last had a shared window at, which is
+// where the next Mac to open it without a size of its own starts. Nothing is
+// published: the size matters only when a window next opens, and a
+// workspace-status event makes every lens refetch everything.
+func (m *Manager) SetWindowSize(id string, size store.WindowSize) error {
+	if m.store == nil {
+		return errors.New("no store: windows are not available")
+	}
+	if !validWindowSide(size.Width) || !validWindowSide(size.Height) {
+		return fmt.Errorf("%w: %dx%d", ErrBadWindowSize, size.Width, size.Height)
+	}
+	ok, err := m.store.SetWindowSize(id, size)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrUnknownWindow, id)
+	}
+	return nil
+}
+
+// WindowSizes returns every shared window's stored size. Best effort, unlike
+// the strict list it rides along with: a size only picks where a window
+// opens, so an unreadable table serves no sizes rather than failing the list.
+func (m *Manager) WindowSizes() map[string]store.WindowSize {
+	if m.store == nil {
+		return map[string]store.WindowSize{}
+	}
+	sizes, err := m.store.WindowSizes()
+	if err != nil {
+		log.Printf("windows: reading sizes failed (%v); serving without", err)
+		return map[string]store.WindowSize{}
+	}
+	return sizes
 }
 
 // WindowsListStrict is Windows over strict reads: the list the lenses act on

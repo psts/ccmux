@@ -488,6 +488,10 @@ struct DaemonWindow: Codable, Identifiable {
     /// with no local counterpart became invisible AND unopenable: too open for
     /// the Open Window menu, absent from the Restore Window list.
     var openHere: Bool
+    /// The size a Mac last had this window at, in points; absent when nobody
+    /// has, or from a daemon older than sizes. Read through `sharedSize`.
+    var width: Double?
+    var height: Double?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -503,6 +507,8 @@ struct DaemonWindow: Codable, Identifiable {
         // The Mac app updates independently of the daemon, so that skew is the
         // normal case during a release, not an edge.
         openHere = try c.decodeIfPresent(Bool.self, forKey: .openHere) ?? open
+        width = try c.decodeIfPresent(Double.self, forKey: .width)
+        height = try c.decodeIfPresent(Double.self, forKey: .height)
     }
 }
 

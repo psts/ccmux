@@ -22,6 +22,12 @@ class WindowContext: ObservableObject {
     /// Persisted via WindowDescriptor; only consulted for the current window's
     /// own rows (other windows render collapsed regardless).
     @Published var collapsedWorkspaceIds: Set<UUID> = []
+    /// The daemon id of the shared window this is, stamped only when it was
+    /// opened from the shared list. Other windows are matched by name or
+    /// sessions each time, never stamped: a detached window matches its old
+    /// window by sessions until the daemon catches up, and a stamp would keep
+    /// that mistake. Only sizes use it; see WindowSizing.sharedWindowId.
+    var sharedWindowId: String?
     weak var workspaceManager: WorkspaceManager?
 
     struct WindowGroup: Identifiable, Equatable {
@@ -61,6 +67,11 @@ class WindowManager {
     /// Ordered when the user navigates to the target Space.
     private var pendingSpaceWindows: [size_t: [WorkspaceWindowController]] = [:]
     private var spaceChangeObserver: NSObjectProtocol?
+
+    /// Shared-window sizes: where one opens, and publishing where one settles.
+    let sizer = SharedWindowSizer { id, size in
+        Task { await RemoteSessionService.shared.setSharedWindowSize(id: id, size: size) }
+    }
 
     // Local-pane→window map sync state (see syncLocalPaneGroups).
     private var localGroupsTimer: Timer?
@@ -749,7 +760,10 @@ class WindowManager {
     /// deduped to exactly one.
     func adoptOrphanHostedWorkspaces() {
         guard pendingHostedCreates == 0 else { return } // a local create is claiming; don't race it
-        defer { syncOpenFlags() }
+        defer {
+            syncOpenFlags()
+            publishSharedWindowSizes()
+        }
         guard let resolved = Self.reconcileHostedOwnership(
             workspaceIds: RemoteSessionService.shared.workspaces.map(\.id),
             groups: RemoteSessionService.shared.groups,
@@ -876,8 +890,10 @@ class WindowManager {
         let service = RemoteSessionService.shared
         let memberIds = win.workspaceIds.map { RemoteWorkspaceBuilder.workspaceUUID($0) }
         let live = memberIds.filter { service.isHosted($0) }
-        let wc = createWindow(displayingWorkspace: live.first, name: win.name)
+        let wc = createWindow(displayingWorkspace: live.first, frame: openingFrame(for: win), name: win.name)
         wc.windowContext.ownedWorkspaceIds = Set(live)
+        wc.windowContext.sharedWindowId = win.id
+        if let size = wc.window?.frame.size { sizer.opened(win.id, at: size) }
         Task { @MainActor in
             await service.openSharedWindow(id: win.id)
             for daemonId in win.workspaceIds
@@ -888,6 +904,32 @@ class WindowManager {
             }
         }
         refreshOtherWindowIds()
+    }
+
+    /// Where a shared window opens (the rule is in WindowSizing), on the screen
+    /// of the window the user picked it from.
+    private func openingFrame(for win: DaemonWindow) -> WindowFrame? {
+        guard let visible = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame else { return nil }
+        let f = sizer.openingFrame(for: win, in: visible, minSize: WorkspaceWindowController.minimumSize)
+        return WindowFrame(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height)
+    }
+
+    /// A window's size settled. If it is a shared window, remember the size
+    /// here and tell the daemon, for whoever opens it next without a size of
+    /// their own.
+    func sharedWindowSizeSettled(_ wc: WorkspaceWindowController) {
+        guard let window = wc.window,
+              let id = WindowSizing.sharedWindowId(
+                for: wc.windowContext, shared: RemoteSessionService.shared.sharedWindows)
+        else { return }
+        sizer.settled(id, size: window.frame.size, fullScreen: window.styleMask.contains(.fullScreen))
+    }
+
+    /// Every reconcile: a window already open at launch has never resized, so
+    /// without this pass its size would not reach the daemon until it did.
+    private func publishSharedWindowSizes() {
+        guard !RemoteSessionService.shared.sharedWindows.isEmpty else { return }
+        for wc in windowControllers { sharedWindowSizeSettled(wc) }
     }
 
     /// The one rule for "does this group name mean this window": case-

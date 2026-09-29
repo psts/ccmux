@@ -8,6 +8,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let windowContext: WindowContext
     let windowId: UUID
     let peerMessagesController = PeerMessagesController()
+    static let minimumSize = NSSize(width: 600, height: 400)
+    /// Reports the size once resizing stops, not on every frame of a drag.
+    private let sizeSettle = Debouncer(delay: 1)
 
     init(
         workspaceManager: WorkspaceManager,
@@ -31,13 +34,23 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         )
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.minSize = NSSize(width: 600, height: 400)
+        window.minSize = WorkspaceWindowController.minimumSize
         window.appearance = NSAppearance(named: .darkAqua)
 
         super.init(window: window)
         window.delegate = self
 
         setupSplitView()
+        // Windows opened without a saved frame came up at the 600x400 minimum,
+        // most likely because handing the window its split view controller
+        // fits it to the split view's own size. Set a normal size after that;
+        // a caller with a saved frame sets its own right after init.
+        if let visible = NSScreen.main?.visibleFrame {
+            window.setFrame(
+                WindowSizing.centeredFrame(
+                    WindowSizing.standard, in: visible, minSize: WorkspaceWindowController.minimumSize),
+                display: false)
+        }
         updateWindowTitle()
     }
 
@@ -273,6 +286,10 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) {
         workspaceManager.scheduleSaveFromWindow()
+        sizeSettle.call { [weak self] in
+            guard let self else { return }
+            self.windowManager?.sharedWindowSizeSettled(self)
+        }
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -281,6 +298,10 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         peerMessagesController.dismiss()
+        // The size it closes at is this Mac's size for it next time. Taken now:
+        // the close below drops the window from the list the reconcile walks.
+        sizeSettle.cancel()
+        windowManager?.sharedWindowSizeSettled(self)
         windowManager?.windowWillClose(self)
     }
 

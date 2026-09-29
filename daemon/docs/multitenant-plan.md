@@ -283,7 +283,9 @@ archive — exactly pre-multi-user behavior, generalized.
   by name, creating the window if new; empty removes it. Old lenses keep working.
 - **New surface:** `GET /v1/windows` → `[{id, name, open, openBy, workspaceIds}]`
   (open = for the caller); `POST /v1/windows/{id}/open` and `/close`;
-  `PUT /v1/windows/{id}` renames. Close reports `{last: true, members: [...]}` when
+  `PUT /v1/windows/{id}` renames; `PUT /v1/windows/{id}/size` `{width, height}`
+  records the size a Mac last had it at, which the list then carries as optional
+  `width`/`height` (size only, never position: that depends on the screen). Close reports `{last: true, members: [...]}` when
   the caller was the final opener — the LENS then archives the members through the
   existing guarded archive route (keeps the daemon handler simple and reuses the
   Mac's existing close loop).
