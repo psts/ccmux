@@ -877,20 +877,20 @@ struct SidebarView: View {
 // MARK: - Attention Row Background
 
 /// Row background for a sidebar workspace. Layers the existing selection highlight
-/// with an attention signal: a pulsing orange tint + left accent bar when Claude
-/// `needsInput`, a steady soft-green tint when a turn is `done`. Idle rows render
-/// exactly as before. Observes the per-workspace `ClaudeAttentionMonitor` so it
-/// repaints when the state changes.
+/// with an attention signal: a blinking tint + left accent bar, orange when
+/// Claude `needsInput`, green when a turn is `done`, until the workspace is
+/// looked at on some lens. Idle rows render exactly as before. Observes the
+/// per-workspace `ClaudeAttentionMonitor` so it repaints when the state changes.
+///
+/// One workspace can be several List rows: an expanded DisclosureGroup puts its
+/// label and its dashboard in rows of their own, each with its own copy of this
+/// background. So the blink is read off the wall clock (`attentionGlow`), not
+/// kept per copy. A per-copy repeating animation started whenever that copy
+/// appeared, and the name drifted out of step with the dashboard under it.
 private struct AttentionRowBackground: View {
     @ObservedObject var monitor: ClaudeAttentionMonitor
     let isDisplayed: Bool
     let onTap: () -> Void
-
-    /// Drives the pulse oscillation; flipped once when entering a flashing state
-    /// so the repeating animation interpolates the tint/accent opacity back and
-    /// forth. Both states blink — orange for needs-input, green for done — and
-    /// keep blinking until the workspace is looked at on some lens.
-    @State private var pulse = false
 
     /// Reduce Motion (System Settings > Accessibility) turns the blink into a
     /// steady tint, matching the web lens's prefers-reduced-motion guard.
@@ -901,58 +901,63 @@ private struct AttentionRowBackground: View {
     var body: some View {
         ZStack(alignment: .leading) {
             isDisplayed ? Color.white.opacity(0.15) : Color.clear
+            if monitor.state != .none && !reduceMotion {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                    AttentionTint(state: monitor.state, glow: attentionGlow(at: context.date))
+                }
+            } else {
+                // Reduce Motion holds the bright end as a steady tint.
+                AttentionTint(state: monitor.state, glow: 1)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+    }
+}
+
+/// How lit the attention blink is at `date`: 0 at the dim end, 1 at the bright
+/// end, one dim-bright-dim cycle every 1.4s, eased at both ends. Every row reads
+/// the same clock, so all blinking rows stay in step however late each appeared.
+func attentionGlow(at date: Date) -> Double {
+    let period = 1.4
+    let phase = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
+    return (1 - cos(2 * .pi * phase)) / 2
+}
+
+/// The attention tint and left accent bar, `glow` of the way from dim to bright.
+private struct AttentionTint: View {
+    let state: AttentionState
+    let glow: Double
+
+    var body: some View {
+        ZStack(alignment: .leading) {
             tintColor
-            if monitor.state != .none {
+            if state != .none {
                 Rectangle()
                     .fill(accentColor)
                     .frame(width: 3)
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
-        .onAppear { syncPulse() }
-        .onChange(of: monitor.state) { _, _ in syncPulse() }
-        .animation(pulseAnimation, value: pulse)
     }
-
-    /// Whether the row blinks: something to show, and motion allowed.
-    private var flashing: Bool { monitor.state != .none && !reduceMotion }
-
-    private func syncPulse() {
-        guard flashing else { pulse = false; return }
-        guard pulse else { pulse = true; return }
-        // Already flashing in the other colour (a permission answered elsewhere,
-        // then a Stop: needsInput -> done). `pulse` is true on both sides, so
-        // nothing would re-trigger the animation and the row would sit at the
-        // bright end. Drop and re-raise the flag so the oscillation restarts.
-        pulse = false
-        DispatchQueue.main.async { self.pulse = true }
-    }
-
-    private var pulseAnimation: Animation {
-        flashing
-            ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
-            : .easeOut(duration: 0.25)
-    }
-
-    /// The bright end of the blink. With Reduce Motion the row holds it as a
-    /// steady tint rather than sitting at the dim trough.
-    private var lit: Bool { pulse || reduceMotion }
 
     private var tintColor: Color {
-        switch monitor.state {
-        case .needsInput: return Color.orange.opacity(lit ? 0.30 : 0.05)
-        case .done: return Color.green.opacity(lit ? 0.28 : 0.06)
+        switch state {
+        case .needsInput: return Color.orange.opacity(mix(0.05, 0.30))
+        case .done: return Color.green.opacity(mix(0.06, 0.28))
         case .none: return Color.clear
         }
     }
 
     private var accentColor: Color {
-        switch monitor.state {
-        case .needsInput: return Color.orange.opacity(lit ? 0.95 : 0.45)
-        case .done: return Color.green.opacity(lit ? 0.95 : 0.45)
+        switch state {
+        case .needsInput: return Color.orange.opacity(mix(0.45, 0.95))
+        case .done: return Color.green.opacity(mix(0.45, 0.95))
         case .none: return Color.clear
         }
+    }
+
+    private func mix(_ dim: Double, _ bright: Double) -> Double {
+        dim + (bright - dim) * glow
     }
 }
 

@@ -27,8 +27,8 @@ final class ClaudeAttentionMonitor: ObservableObject {
     /// Shared placeholder for sidebar rows whose workspace has no monitor yet.
     static let empty = ClaudeAttentionMonitor()
 
-    /// Set a new state; `.none` clears. Publishes only on a real change so the
-    /// pulse animation is not restarted by a repeated hook.
+    /// Set a new state; `.none` clears. Publishes only on a real change so a
+    /// repeated hook does not repaint the sidebar.
     func set(_ newState: AttentionState) {
         if state != newState { state = newState }
     }
