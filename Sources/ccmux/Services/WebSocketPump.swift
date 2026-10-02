@@ -57,6 +57,14 @@ final class WebSocketPump {
     private let pingEvery: TimeInterval
     private let pongWithin: TimeInterval
 
+    /// The largest frame `receive` will take. URLSession's default is 1 MiB,
+    /// and a frame over it fails the receive, so the pump reconnects, gets the
+    /// same frame, and fails again forever. An agent chat's hello carries its
+    /// last few conversations in one frame and passed 1 MiB on a busy agent
+    /// (radar at 1.28 MB, 2026-10-02): the Mac chat sat at "reconnecting"
+    /// while the browser, which has no such cap, showed it fine.
+    static let maxMessageBytes = 64 * 1024 * 1024
+
     init(
         label: String,
         pingEvery: TimeInterval = 25,
@@ -163,6 +171,7 @@ final class WebSocketPump {
         set(attempts == 0 ? .connecting : .reconnecting)
 
         let task = session.webSocketTask(with: url)
+        task.maximumMessageSize = Self.maxMessageBytes
         self.task = task
         task.resume()
         startTimer()
