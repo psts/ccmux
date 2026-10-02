@@ -19,9 +19,32 @@
   // so an empty result after this is not evidence of silence and must not be
   // drawn as "no messages".
   let busUnknown = false;
+  // Bumped by every open, close and history read. A read that lands after any
+  // of them writes nothing: a slow answer never fills a panel reopened since
+  // (on another group or the same one), and an older read never overwrites a
+  // newer one.
+  let readGen = 0;
+  // The pending redial after a drop. Cleared by close() and open(): a timer
+  // left from an earlier open would otherwise dial for the next one, before
+  // its first read is in (and after a failed one, when no stream may open).
+  let redialTimer = null;
+  // Whether a history read has succeeded since this open. Before one, a
+  // failed read is the panel's error, shown plainly, and the stream is never
+  // opened (the Mac shows its error banner and does not listen); after one,
+  // it is a possible gap, noted above the list.
+  let loaded = false;
+  // How many messages a history read asks for, in both lenses (the Mac's
+  // PeerMessage.historyLimit): a read that comes back this full may not reach
+  // back to what is on screen.
+  const HISTORY_LIMIT = 200;
 
   async function open(g) {
     group = g;
+    clearTimeout(redialTimer);
+    redialTimer = null;
+    readGen++;
+    loaded = false;
+    note("");
     $("peers-title").textContent = "Messages — " + g.toUpperCase();
     $("peers-modal").classList.remove("hidden");
     $("peers-status").textContent = "Loading…";
@@ -46,8 +69,9 @@
       console.warn("peers: could not ask which bus to read:", e);
     }
     if (group !== g) return; // closed or reopened while we asked
-    refresh();
-    connect();
+    // History first, then the stream, as on the Mac: a first read that fails
+    // stays the panel's error, with no live rows arriving to hide it.
+    if (await refresh()) connect();
   }
 
   const auth = () => (viewer.token ? { Authorization: "Bearer " + viewer.token } : {});
@@ -60,36 +84,66 @@
     return "The peers bus answered HTTP " + status + ".";
   }
 
+  // A failure says which kind it is, in the Mac lens's words: no answer, a
+  // refusal, or an answer this page cannot read (the two are out of step).
   async function readJSON(path) {
-    const r = await fetch(viewer.bus + path, { headers: auth() });
+    let r;
+    try { r = await fetch(viewer.bus + path, { headers: auth() }); } catch (e) {
+      throw new Error("Cannot reach ccmuxd at " + location.host, { cause: e });
+    }
     if (!r.ok) throw new Error(refusal(r.status));
-    return r.json();
+    try { return await r.json(); } catch (e) {
+      throw new Error("ccmuxd answered, but this page can't read the reply; the page and the daemon may be out of step", { cause: e });
+    }
   }
 
   function close() {
     group = null;
+    clearTimeout(redialTimer);
+    redialTimer = null;
+    readGen++;
     if (sock) { sock.close(); sock = null; }
     $("peers-modal").classList.add("hidden");
   }
 
+  // A failed read: the list may be missing what was sent while the stream was
+  // down. Its own line, not peers-status, because a live message hides
+  // peers-status and says nothing about the gap. Cleared by the next good read.
+  // The Mac lens shows the same note (PeerMessagesState.historyNote).
+  function note(text) {
+    $("peers-note").textContent = text;
+    $("peers-note").classList.toggle("hidden", !text);
+  }
+
   async function refresh() {
     if (!group) return;
+    const gen = ++readGen;
     const q = "group=" + encodeURIComponent(group);
     let msgs = [], peers = [];
     try {
       [msgs, peers] = await Promise.all([
-        readJSON("/v1/peers/messages?" + q + "&limit=200"),
+        readJSON("/v1/peers/messages?" + q + "&limit=" + HISTORY_LIMIT),
         readJSON("/v1/peers?" + q),
       ]);
     } catch (e) {
-      $("peers-status").textContent = e.message;
-      $("peers-status").classList.remove("hidden");
+      if (gen !== readGen) return;
+      console.warn("peers: history read failed:", e, e.cause);
+      if (!loaded) {
+        // Nothing retries a failed open (no stream, so no hello), so say the
+        // way out, as the Mac's banner does.
+        $("peers-status").textContent = e.message + " Close and reopen to try again.";
+        $("peers-status").classList.remove("hidden");
+      } else {
+        note("Couldn't read back the history (" + e.message + "). Messages sent while disconnected may be missing; reopen to reload.");
+      }
       return;
     }
+    if (gen !== readGen) return; // closed, reopened or read again meanwhile
+    loaded = true;
+    note("");
     renderPeers(peers || []);
+    mergeRows(msgs || []);
     const box = $("peers-msgs");
-    box.innerHTML = "";
-    for (const m of msgs || []) box.appendChild(msgRow(m));
     // Rows on screen do not make an unconfirmed bus confirmed: a member host's
     // local registry usually holds stale pre-federation history, which would
     // otherwise render as the hub's with no caveat at all. So the hedge is
@@ -97,13 +151,37 @@
     if (busUnknown) {
       $("peers-status").textContent = "Couldn't confirm which bus to read — this may not be the whole picture.";
       $("peers-status").classList.remove("hidden");
-    } else if ((msgs || []).length === 0) {
+    } else if (box.children.length === 0) {
       $("peers-status").textContent = "No messages yet.";
       $("peers-status").classList.remove("hidden");
     } else {
       $("peers-status").classList.add("hidden");
     }
     box.scrollTop = box.scrollHeight;
+    return true;
+  }
+
+  // History merged into the rows on screen by message number (history's id is
+  // the seq a live frame carries): a message that arrived live while the read
+  // was in flight is neither lost nor doubled. A row on screen older than the
+  // history stays, unless the read came back full: then more may have been
+  // sent than it covers, and keeping those rows would draw an unmarked hole
+  // between them and the history, so the list becomes what a fresh open
+  // shows. Rows with no number keep their order at the end. The Mac lens
+  // merges the same way (PeerMessage.merged).
+  function mergeRows(msgs) {
+    const box = $("peers-msgs");
+    const floor = msgs.length >= HISTORY_LIMIT ? Math.min(...msgs.map((m) => m.id)) : 0;
+    const bySeq = new Map();
+    const loose = [];
+    for (const el of box.children) {
+      const seq = Number(el.dataset.seq);
+      if (!(seq > 0)) loose.push(el);
+      else if (seq >= floor) bySeq.set(seq, el);
+    }
+    for (const m of msgs) bySeq.set(m.id, msgRow(m));
+    const rows = [...bySeq.entries()].sort((a, b) => a[0] - b[0]).map((e) => e[1]);
+    box.replaceChildren(...rows, ...loose);
   }
 
   function connect() {
@@ -121,9 +199,16 @@
     ws.onmessage = (ev) => {
       let m;
       try { m = JSON.parse(ev.data); } catch (_) { return; }
+      // Every hello reads history back and merges it in. The hello is written
+      // only after the listener is registered, and the daemon saves a message
+      // before it broadcasts it, so nothing falls between that read and the
+      // live stream: not what a drop skipped, not what was sent while the
+      // panel opened. The Mac lens does the same (PeerMessagesState.readBack).
+      if (m.type === "hello") { refresh(); return; }
       if (m.type !== "message") return;
-      $("peers-status").classList.add("hidden");
       const box = $("peers-msgs");
+      if (m.seq && box.querySelector(`[data-seq="${m.seq}"]`)) return; // read back before its live copy landed
+      $("peers-status").classList.add("hidden");
       const follow = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
       box.appendChild(msgRow(m));
       if (follow) box.scrollTop = box.scrollHeight;
@@ -131,7 +216,7 @@
     ws.onclose = () => {
       if (ws !== sock) return; // superseded or modal closed
       sock = null;
-      setTimeout(() => { if (group) connect(); }, 2000);
+      redialTimer = setTimeout(() => { redialTimer = null; if (group) connect(); }, 2000);
     };
     sock = ws;
   }
@@ -152,6 +237,7 @@
   function msgRow(m) {
     const div = document.createElement("div");
     div.className = "peer-msg";
+    div.dataset.seq = String(m.seq ?? m.id ?? ""); // live frames carry seq, history rows id: the same number
     div.innerHTML =
       `<div class="pm-head">` +
       `<span class="pm-time">${esc(fmtTime(m.sent_at))}</span>` +

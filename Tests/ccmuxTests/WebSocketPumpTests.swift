@@ -51,6 +51,20 @@ final class WebSocketPumpTests: XCTestCase {
         wait(for: [reachedClosed], timeout: 2.0)
     }
 
+    /// The request-built pump (a socket that needs headers, the peer listener)
+    /// takes the same nil path as a URL one: `.closed`, not a spinner.
+    func testNilRequestReportsClosed() {
+        let pump = WebSocketPump.requesting(label: "test-nil-request") { nil }
+        let reachedClosed = expectation(description: "pump reports .closed")
+        pump.onState = { state in
+            if state == .closed { reachedClosed.fulfill() }
+        }
+
+        pump.connect()
+
+        wait(for: [reachedClosed], timeout: 2.0)
+    }
+
     /// disconnect() on a pump that never connected must be safe and must not
     /// report anything but closed. Teardown runs this path whenever a workspace is
     /// removed before its socket came up.

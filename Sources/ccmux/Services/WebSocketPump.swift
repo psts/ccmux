@@ -27,7 +27,7 @@ final class WebSocketPump {
     var onState: ((DaemonConnectionState) -> Void)?
 
     private let session: URLSession
-    private let makeURL: () -> URL?
+    private let makeRequest: () -> URLRequest?
     private let label: String
 
     /// Everything below is confined to this queue. It previously lived across two
@@ -65,16 +65,38 @@ final class WebSocketPump {
     /// while the browser, which has no such cap, showed it fine.
     static let maxMessageBytes = 64 * 1024 * 1024
 
-    init(
+    static let defaultPingEvery: TimeInterval = 25
+    static let defaultPongWithin: TimeInterval = 20
+
+    convenience init(
         label: String,
-        pingEvery: TimeInterval = 25,
-        pongWithin: TimeInterval = 20,
+        pingEvery: TimeInterval = WebSocketPump.defaultPingEvery,
+        pongWithin: TimeInterval = WebSocketPump.defaultPongWithin,
         makeURL: @escaping () -> URL?
+    ) {
+        self.init(label: label, pingEvery: pingEvery, pongWithin: pongWithin,
+                  makeRequest: { makeURL().map { URLRequest(url: $0) } })
+    }
+
+    /// A pump for a socket that needs headers on the upgrade (a bearer token),
+    /// built from a whole request. A factory, not a second public init: two
+    /// inits that differ only in their trailing closure's type make every
+    /// existing `WebSocketPump(label:) { ... }` call ambiguous.
+    static func requesting(label: String, makeRequest: @escaping () -> URLRequest?) -> WebSocketPump {
+        WebSocketPump(label: label, pingEvery: defaultPingEvery, pongWithin: defaultPongWithin,
+                      makeRequest: makeRequest)
+    }
+
+    private init(
+        label: String,
+        pingEvery: TimeInterval,
+        pongWithin: TimeInterval,
+        makeRequest: @escaping () -> URLRequest?
     ) {
         self.label = label
         self.pingEvery = pingEvery
         self.pongWithin = pongWithin
-        self.makeURL = makeURL
+        self.makeRequest = makeRequest
         self.session = URLSession(configuration: .default)
         self.queue = DispatchQueue(label: "ccmux.wspump.\(label)")
     }
@@ -154,7 +176,7 @@ final class WebSocketPump {
 
     private func open() {
         guard !closed else { return }
-        guard let url = makeURL() else {
+        guard let request = makeRequest() else {
             // A nil URL is a misconfigured origin, not a transient fault, so there
             // is nothing to retry. Say so and land on .closed: returning quietly
             // left the pump dead forever while the UI, which starts at .connecting,
@@ -170,7 +192,7 @@ final class WebSocketPump {
                      // its presence entry, which keeps suppressing phone pushes
         set(attempts == 0 ? .connecting : .reconnecting)
 
-        let task = session.webSocketTask(with: url)
+        let task = session.webSocketTask(with: request)
         task.maximumMessageSize = Self.maxMessageBytes
         self.task = task
         task.resume()

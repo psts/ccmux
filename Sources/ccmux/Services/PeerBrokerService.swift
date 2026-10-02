@@ -139,10 +139,17 @@ class PeerBrokerService {
         }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        guard let (data, resp) = try? await URLSession.shared.data(for: req) else {
-            NSLog("[ccmux peers] could not reach ccmuxd to ask which bus to read")
+        let answer: (Data, URLResponse)
+        do {
+            answer = try await URLSession.shared.data(for: req)
+        } catch {
+            // A close mid-ask cancels it; that is not a failure to report.
+            if (error as? URLError)?.code != .cancelled, !(error is CancellationError) {
+                NSLog("[ccmux peers] could not reach ccmuxd to ask which bus to read: %@", "\(error)")
+            }
             return false
         }
+        let (data, resp) = answer
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401 { cachedToken = nil }
         guard status == 200 else {
@@ -227,50 +234,19 @@ class PeerBrokerService {
         return try JSONDecoder().decode([PeerInfo].self, from: data)
     }
 
-    func connectWebSocket(group: String) -> (stream: AsyncStream<PeerWSMessage>, cancel: () -> Void) {
-        var components = URLComponents(string: "\(wsBusURL)/v1/peers/ws")!
+    /// The upgrade request for the bus's read-only listen stream of one group,
+    /// with the viewer credential when there is one. Built once per overlay
+    /// open from the bus the last refreshBus found; the caller's pump redials
+    /// this same request, so a reconnect stays on that bus, as the web lens does.
+    func listenRequest(group: String) -> URLRequest? {
+        guard var components = URLComponents(string: "\(wsBusURL)/v1/peers/ws") else { return nil }
         components.queryItems = [
             URLQueryItem(name: "mode", value: "listen"),
             URLQueryItem(name: "group", value: group),
         ]
-
-        var request = URLRequest(url: components.url!)
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
         authorize(&request)
-        let task = URLSession.shared.webSocketTask(with: request)
-        task.resume()
-
-        let stream = AsyncStream<PeerWSMessage> { continuation in
-            func receiveNext() {
-                task.receive { result in
-                    switch result {
-                    case .success(let message):
-                        switch message {
-                        case .string(let text):
-                            if let data = text.data(using: .utf8),
-                               let wsMessage = try? JSONDecoder().decode(PeerWSMessage.self, from: data) {
-                                continuation.yield(wsMessage)
-                            }
-                        case .data(let data):
-                            if let wsMessage = try? JSONDecoder().decode(PeerWSMessage.self, from: data) {
-                                continuation.yield(wsMessage)
-                            }
-                        @unknown default:
-                            break
-                        }
-                        receiveNext()
-                    case .failure:
-                        continuation.finish()
-                    }
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel(with: .goingAway, reason: nil)
-            }
-
-            receiveNext()
-        }
-
-        return (stream: stream, cancel: { task.cancel(with: .goingAway, reason: nil) })
+        return request
     }
 }

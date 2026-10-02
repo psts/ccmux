@@ -59,6 +59,7 @@ struct PeerMessagesOverlayView: View {
                 Divider().background(Color.white.opacity(0.1))
             }
 
+            historyCaveat
             messagesBody
         }
         .frame(minWidth: 360, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
@@ -122,6 +123,21 @@ struct PeerMessagesOverlayView: View {
     private var busCaveat: some View {
         if state.busUnconfirmed {
             Text(Self.unconfirmedBus)
+                .font(.system(size: 10))
+                .foregroundColor(.orange.opacity(0.9))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.08))
+        }
+    }
+
+    /// A failed read-back after a reconnect: the list may have a hole. Above
+    /// every state of the body, since an empty list is no exception to it.
+    @ViewBuilder
+    private var historyCaveat: some View {
+        if let note = state.historyNote {
+            Text(note)
                 .font(.system(size: 10))
                 .foregroundColor(.orange.opacity(0.9))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -221,7 +237,9 @@ struct PeerMessagesOverlayView: View {
                 .font(.system(size: 11))
                 .foregroundColor(.orange.opacity(0.8))
                 .multilineTextAlignment(.center)
-            Text("Sessions appear here once they register on the bus this daemon points at.")
+            // Nothing retries a failed open, so the way out is the only promise
+            // worth making (peers.js says the same).
+            Text("Close and reopen to try again.")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

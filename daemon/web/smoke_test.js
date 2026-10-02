@@ -128,6 +128,176 @@ function run(opts = {}) {
     sockets: book.sockets, swRegistrations: () => book.swRegistrations };
 }
 
+// --- peers.js: the message panel's history merge (PeerMessage.merged and
+// liveRow on the Mac, whose tests run only on a Mac). Its own tiny DOM: rows
+// need children, dataset and replaceChildren, which the permissive Proxy above
+// cannot answer.
+class PeersClassList {
+  constructor() { this.s = new Set(["hidden"]); }
+  add(c) { this.s.add(c); }
+  remove(c) { this.s.delete(c); }
+  toggle(c, force) { if (force === undefined ? !this.s.has(c) : force) this.s.add(c); else this.s.delete(c); }
+  contains(c) { return this.s.has(c); }
+}
+
+class PeersEl {
+  constructor() {
+    Object.assign(this, { dataset: {}, classList: new PeersClassList(), children: [], textContent: "",
+      className: "", title: "", scrollTop: 0, clientHeight: 0, scrollHeight: 0, html: "" });
+  }
+  set innerHTML(v) { this.html = v; if (v === "") this.children = []; }
+  get innerHTML() { return this.html; }
+  appendChild(c) { this.children.push(c); return c; }
+  replaceChildren(...cs) { this.children = cs; }
+  querySelector(sel) {
+    const m = /data-seq="(\d+)"/.exec(sel);
+    return (m && this.children.find((c) => c.dataset.seq === m[1])) || null;
+  }
+}
+
+// One panel against a fake bus: `replies` answers history reads in turn (a
+// `gate` holds one open, `fail` refuses it), and the socket is driven by hand.
+function runPeers() {
+  const els = {};
+  const sockets = [];
+  const timers = [];
+  const replies = [];
+  const warns = [];
+  class FakeWS { constructor(url) { this.url = url; sockets.push(this); } close() { this.closed = true; } }
+  const history = async () => {
+    const r = replies.shift() || { msgs: [] };
+    if (r.gate) await r.gate;
+    if (r.unreachable) throw new TypeError("Failed to fetch");
+    if (r.fail) return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => r.msgs };
+  };
+  const ctx = {
+    console: { ...console, warn: (...a) => warns.push(a) },
+    location: { protocol: "http:", host: "lens" },
+    setTimeout: (f) => { timers.push(f); return f; },
+    clearTimeout: (f) => { const i = timers.indexOf(f); if (i >= 0) timers.splice(i, 1); },
+    WebSocket: FakeWS,
+    document: { getElementById: (id) => els[id] || (els[id] = new PeersEl()), createElement: () => new PeersEl() },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u === "/v1/peers/viewer") return { ok: true, status: 200, json: async () => ({ bus: "", token: "" }) };
+      if (u.startsWith("/v1/peers/messages")) return history();
+      return { ok: true, status: 200, json: async () => [] };
+    },
+  };
+  ctx.window = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "peers.js"), "utf8"), ctx, { filename: "peers.js" });
+  const sock = () => sockets[sockets.length - 1];
+  return {
+    replies, timers,
+    open: (g) => ctx.ccmuxPeers.open(g),
+    close: () => els["peers-close"].onclick(),
+    hello: () => sock().onmessage({ data: '{"type":"hello"}' }),
+    live: (seq) => sock().onmessage({ data: JSON.stringify({ type: "message", seq, from_id: "a", to_id: "b", text: "m" + seq, sent_at: "" }) }),
+    drop: () => sock().onclose(),
+    rows: () => els["peers-msgs"].children.map((c) => Number(c.dataset.seq)),
+    sockets: () => sockets.length,
+    warns,
+    status: () => els["peers-status"],
+    note: () => els["peers-note"],
+  };
+}
+
+const peersHist = (...ids) => ids.map((id) => ({ id, from_id: "a", to_id: "b", text: "m" + id, sent_at: "" }));
+const held = () => { let release; const gate = new Promise((r) => { release = r; }); return { gate, release }; };
+const settle = async () => { for (let i = 0; i < 6; i++) await tick(); };
+
+// Every hello reads history back and merges it into the rows on screen by
+// message number; these are the races that merge exists for.
+async function peersMergeCases() {
+  const p = runPeers();
+  p.replies.push({ msgs: peersHist(1, 2) });
+  p.open("g");
+  await settle();
+  check("peers: the open reads history", p.rows().join() === "1,2", p.rows().join());
+  // The read-back is held while live 4 lands; it then brings 3.
+  const h = held();
+  p.replies.push({ msgs: peersHist(1, 2, 3), gate: h.gate });
+  p.hello();
+  p.live(4);
+  h.release();
+  await settle();
+  check("peers: a read-back keeps a live row that landed while it was out", p.rows().join() === "1,2,3,4", p.rows().join());
+  p.live(3);
+  check("peers: a live copy of a row already read back is not drawn twice", p.rows().join() === "1,2,3,4", p.rows().join());
+
+  // Drop, redial, and a read-back that fails: the list stays, a note says why.
+  p.drop();
+  p.timers.shift()();
+  p.replies.push({ fail: true });
+  p.hello();
+  await settle();
+  check("peers: a failed read-back keeps the list", p.rows().join() === "1,2,3,4", p.rows().join());
+  check("peers: a failed read-back says the list may have a hole",
+    !p.note().classList.contains("hidden") && p.note().textContent.includes("may be missing"), p.note().textContent);
+
+  // A good read clears the note; one that comes back full leaves no unmarked
+  // hole between it and the older rows on screen, yet still keeps a live row
+  // that landed while it was out (what tells this rule from a plain replace).
+  const full = held();
+  p.replies.push({ msgs: peersHist(...Array.from({ length: 200 }, (_, i) => 1001 + i)), gate: full.gate });
+  p.hello();
+  p.live(1201);
+  full.release();
+  await settle();
+  check("peers: a good read clears the note", p.note().classList.contains("hidden"), p.note().textContent);
+  const r = p.rows();
+  check("peers: a full read drops the rows older than it and keeps the newer live one",
+    r[0] === 1001 && r[r.length - 1] === 1201 && r.length === 201, `first ${r[0]}, last ${r[r.length - 1]}, ${r.length} rows`);
+}
+
+async function peersFailureCases() {
+  // A read that lands after a close and reopen writes nothing.
+  const s = runPeers();
+  const stale = held();
+  s.replies.push({ msgs: peersHist(50), gate: stale.gate });
+  s.open("g");
+  await settle();
+  s.close();
+  s.replies.push({ msgs: peersHist(60) });
+  s.open("g");
+  await settle();
+  stale.release();
+  await settle();
+  check("peers: a read from before a reopen writes nothing", s.rows().join() === "60", s.rows().join());
+
+  // A redial pending from before a close does not dial for the next open.
+  s.drop();
+  s.close();
+  s.open("g");
+  await settle();
+  check("peers: a close cancels the pending redial", s.timers.length === 0, `${s.timers.length} timer(s) left`);
+
+  // A first read that fails is the panel's error, as on the Mac, not a gap.
+  const f = runPeers();
+  f.replies.push({ fail: true });
+  f.open("g");
+  await settle();
+  check("peers: a failed first read shows the refusal",
+    !f.status().classList.contains("hidden") && f.status().textContent.includes("can't reach the hub"), f.status().textContent);
+  check("peers: a failed first read is not called a gap", f.note().classList.contains("hidden"), f.note().textContent);
+  check("peers: a failed first read says how to retry", f.status().textContent.endsWith("Close and reopen to try again."), f.status().textContent);
+  // As on the Mac, no stream after a failed open: live rows would hide the
+  // error and pass for the whole history.
+  check("peers: a failed first read opens no live stream", f.sockets() === 0, `${f.sockets()} socket(s)`);
+
+  // No answer at all is named as such, not as the browser's own words.
+  const u = runPeers();
+  u.replies.push({ unreachable: true });
+  u.open("g");
+  await settle();
+  check("peers: an unreachable daemon is named", u.status().textContent.startsWith("Cannot reach ccmuxd"), u.status().textContent);
+  // The browser's own error is logged, not dropped with the friendlier text.
+  check("peers: a failed read logs its cause", u.warns.some((a) => a.some((x) => x && String(x.cause).includes("Failed to fetch"))),
+    `${u.warns.length} warning(s)`);
+}
+
 (async () => {
   // 1. The lens loads and its window path is reachable from module scope. This
   //    is the ReferenceError check: a mis-scoped const makes fetchWorkspaces
@@ -412,6 +582,9 @@ function run(opts = {}) {
   const table = { claude: true, opencode: true, pi: false, codex: false, "": false };
   const drift = Object.entries(table).filter(([h, want]) => ok.ctx.hasChat(h) !== want).map(([h]) => h);
   check("hasChat matches the daemon's HasChat table", drift.length === 0, `drift on: ${drift.join(", ")}`);
+
+  await peersMergeCases();
+  await peersFailureCases();
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

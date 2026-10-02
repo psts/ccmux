@@ -217,6 +217,14 @@ func TestPeersAPI_ListenerStreamAndHistory(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// A hello first, before any message: it is what tells a lens the stream is
+	// live on a quiet group (the Mac's socket pump counts a connection as up
+	// only once a frame arrives), and it is written only after the listener is
+	// registered, so a send after it cannot be missed.
+	if hello := readFrame(t, conn); hello["type"] != "hello" {
+		t.Fatalf("first listener frame = %v, want a hello", hello)
+	}
+
 	if resp := postJSON(t, ts.URL+"/v1/peers/send", token, map[string]any{
 		"from_id": a, "to_id": b, "text": "visible to viewers"}); resp.StatusCode != 200 {
 		t.Fatalf("send = %d", resp.StatusCode)
@@ -238,5 +246,11 @@ func TestPeersAPI_ListenerStreamAndHistory(t *testing.T) {
 	}
 	if len(msgs) != 1 || msgs[0]["text"] != "visible to viewers" || msgs[0]["from_id"] != a {
 		t.Fatalf("history = %+v", msgs)
+	}
+	// Both lenses merge a history read into the live rows by this number, so a
+	// message's history id and its live seq must be the same: if they ever
+	// differ, every hello shows every message twice.
+	if frame["seq"] == nil || frame["seq"] != msgs[0]["id"] {
+		t.Errorf("live seq %v, history id %v: the lenses' merge needs them equal", frame["seq"], msgs[0]["id"])
 	}
 }

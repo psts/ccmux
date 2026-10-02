@@ -230,10 +230,18 @@ func (l *listenConn) close() {
 	})
 }
 
+// listenHello opens every listener stream. A quiet group can go hours with no
+// message, and the Mac lens's socket pump counts a connection as up only once
+// a frame arrives; lenses skip any frame that is not a "message".
+var listenHello = []byte(`{"type":"hello"}`)
+
 // AttachListener streams every delivered event in a group to a read-only
-// viewer socket. Blocks until the connection dies.
+// viewer socket, after a hello. Blocks until the connection dies.
 func (s *Service) AttachListener(group string, ws *websocket.Conn) {
 	l := &listenConn{group: group, ws: ws, out: make(chan []byte, outBuffer), done: make(chan struct{})}
+	// Queued before the listener is registered, so it goes out ahead of any
+	// message, and a client that has read it knows no later send is missed.
+	l.out <- listenHello
 	s.mu.Lock()
 	s.listeners[l] = struct{}{}
 	s.mu.Unlock()
