@@ -216,7 +216,10 @@ reject). Asleep, the transcript comes from opencode's store through its
 CLI (`session list`, `export`), and a prompt wakes the agent with that
 text. The transcript is the agent's last four conversations in one scroll,
 oldest first, each behind a session marker (a role "session" turn), so a
-woken agent's earlier work stays above the fresh conversation. Asleep, the
+woken agent's earlier work stays above the fresh conversation. It is capped
+at 8 MB (2026-10-02): over that, the oldest turns go and a divider says
+"Older messages not shown", so the hello fits in the Mac lens's frame cap
+and both lenses show the same cut. Asleep, the
 prompt box offers "Continue previous conversation": on, the launch adds
 `--session <newest>` on the typed line (never the persisted one); the
 base's `start` is the default, and bus wakes follow it. One normalized shape, `agent.Turn`, in `internal/agent/transcript.go`;

@@ -470,7 +470,8 @@ func sessionsIn(sessions []agent.OpencodeSession, dir string) []agent.OpencodeSe
 
 // history is the last historySessions conversations in one scroll, oldest
 // first, each behind its marker, so a woken agent's earlier work stays on
-// screen above the fresh conversation.
+// screen above the fresh conversation. Capped at historyBudget bytes, oldest
+// turns dropped first (see capHistory).
 func history(newestFirst []agent.OpencodeSession, fetch func(id string) ([]agent.Turn, error)) ([]agent.Turn, error) {
 	if len(newestFirst) > historySessions {
 		newestFirst = newestFirst[:historySessions]
@@ -485,7 +486,7 @@ func history(newestFirst []agent.OpencodeSession, fetch func(id string) ([]agent
 		turns = append(turns, agent.SessionMarker(s))
 		turns = append(turns, got...)
 	}
-	return turns, nil
+	return capHistory(turns, historyBudget), nil
 }
 
 // eventProps is the union of what the chat view reads from the server's
