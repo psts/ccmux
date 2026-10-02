@@ -139,9 +139,9 @@ class PeerBrokerService {
         }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let answer: (Data, URLResponse)
+        let reply: (Data, URLResponse)
         do {
-            answer = try await URLSession.shared.data(for: req)
+            reply = try await URLSession.shared.data(for: req)
         } catch {
             // A close mid-ask cancels it; that is not a failure to report.
             if (error as? URLError)?.code != .cancelled, !(error is CancellationError) {
@@ -149,7 +149,7 @@ class PeerBrokerService {
             }
             return false
         }
-        let (data, resp) = answer
+        let (data, resp) = reply
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401 { cachedToken = nil }
         guard status == 200 else {
