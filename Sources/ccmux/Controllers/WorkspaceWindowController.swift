@@ -60,7 +60,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func updateWindowTitle() {
-        if let wsId = windowContext.displayedWorkspaceId,
+        if windowContext.showingBoard {
+            window?.title = "Attention"
+        } else if let wsId = windowContext.displayedWorkspaceId,
            let ws = workspaceManager.workspaces.first(where: { $0.id == wsId })
             ?? RemoteSessionService.shared.workspaces.first(where: { $0.id == wsId }) {
             window?.title = ws.name
@@ -89,8 +91,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                     guard let newId = await RemoteSessionService.shared.createWorkspace(
                         host: host, name: project.name, repoPath: project.path, startupCommand: commandOverride),
                         let self else { return }
-                    self.windowContext.displayedWorkspaceId = newId
-                    self.updateWindowTitle()
+                    self.display(workspace: newId)
                     self.windowManager?.claimHostedWorkspace(newId, into: self)
                 }
             },
@@ -175,6 +176,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             },
             onOpenSharedWindow: { [weak self] win in
                 self?.windowManager?.openSharedWindow(win)
+            },
+            onShowBoard: { [weak self] in
+                self?.showAttentionBoard()
             }
         )
         let sidebarHosting = NSHostingController(rootView: sidebarView)
@@ -274,9 +278,8 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
             // Show the new workspace in this window and claim ownership
             if let newId = self.workspaceManager.workspaces.last?.id {
-                self.windowContext.displayedWorkspaceId = newId
                 self.windowContext.ownedWorkspaceIds.insert(newId)
-                self.updateWindowTitle()
+                self.display(workspace: newId)
                 self.windowManager?.refreshOtherWindowIds()
             }
         }
@@ -306,8 +309,11 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        // Update global activeWorkspaceId for menu actions
-        if let wsId = windowContext.displayedWorkspaceId {
+        // Update global activeWorkspaceId for menu actions. The attention board
+        // shows no one workspace, so becoming key sees nothing there.
+        if windowContext.showingBoard {
+            RemoteSessionService.shared.syncFocusFrames()
+        } else if let wsId = windowContext.displayedWorkspaceId {
             workspaceManager.activeWorkspaceId = wsId
             // Returning focus to a window counts as "seeing" the workspace it shows —
             // clear any attention flash so a Cmd-Tab back stops the pulse.
@@ -336,8 +342,27 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         peerMessagesController.toggle(group: group, relativeTo: window)
     }
 
+    /// Menu actions (split, close pane…) act on the displayed workspace; with
+    /// the attention board up there is none on screen to act on.
     var activeController: SplitTreeController? {
-        windowContext.displayedController
+        windowContext.showingBoard ? nil : windowContext.displayedController
+    }
+
+    /// Show a workspace in this window. Leaves the attention board if it is up,
+    /// so the workspace is on screen rather than behind it: every explicit
+    /// "show this" (sidebar, notification, new session, script) comes here.
+    func display(workspace id: UUID) {
+        windowContext.showingBoard = false
+        windowContext.displayedWorkspaceId = id
+        updateWindowTitle()
+    }
+
+    /// Put this window's attention board up. The daemon hears at once that
+    /// this window is no longer looking at its workspace (presence stays).
+    func showAttentionBoard() {
+        windowContext.showingBoard = true
+        updateWindowTitle()
+        RemoteSessionService.shared.syncFocusFrames()
     }
 }
 
@@ -350,7 +375,9 @@ struct MainContentView: View {
     @ObservedObject var remoteService: RemoteSessionService
 
     var body: some View {
-        if let controller = windowContext.displayedController {
+        if windowContext.showingBoard {
+            AttentionBoardView(windowContext: windowContext)
+        } else if let controller = windowContext.displayedController {
             SplitTreeView(controller: controller)
                 .id(windowContext.displayedWorkspaceId)
         } else {

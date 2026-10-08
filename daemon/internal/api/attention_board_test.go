@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
@@ -97,6 +98,15 @@ func TestAPI_BoardActsOnOnePaneAndWatchesNothing(t *testing.T) {
 	if got := paneAttention(mgr, ws.ID); got[pane0] != model.AttentionNeedsInput || got[pane1] != model.AttentionDone {
 		t.Fatalf("claims retired with only the board open: %v", got)
 	}
+	// The hello a lens gets on (re)connect seeds its board: it carries each
+	// claim's reason and start, as the live frames do.
+	hello := helloEntries(mgr)
+	if e := hello[pane0]; e.Reason != model.ReasonPermission || e.Since == 0 {
+		t.Fatalf("hello entry for the blocked pane = %+v, want permission with a start", e)
+	}
+	if e := hello[pane1]; e.Reason != model.ReasonFinished || e.Since == 0 {
+		t.Fatalf("hello entry for the finished pane = %+v, want finished with a start", e)
+	}
 
 	if err := board.WriteJSON(wsMsg{T: "acted", Pane: pane0}); err != nil {
 		t.Fatalf("acted: %v", err)
@@ -106,6 +116,18 @@ func TestAPI_BoardActsOnOnePaneAndWatchesNothing(t *testing.T) {
 	if got := paneAttention(mgr, ws.ID)[pane1]; got != model.AttentionDone {
 		t.Fatalf("the other pane = %q, want its claim left standing", got)
 	}
+	// A retired claim reaches the hello with no reason and no start.
+	if e := helloEntries(mgr)[pane0]; e.State != model.AttentionIdle || e.Reason != model.ReasonNone || e.Since != 0 {
+		t.Fatalf("hello entry after acted = %+v, want idle with no claim", e)
+	}
+}
+
+func helloEntries(mgr *manager.Manager) map[string]attnEntry {
+	out := map[string]attnEntry{}
+	for _, e := range currentAttention(mgr) {
+		out[e.Pane] = e
+	}
+	return out
 }
 
 func paneAttention(mgr *manager.Manager, wsID string) map[string]model.Attention {
@@ -119,4 +141,17 @@ func paneAttention(mgr *manager.Manager, wsID string) map[string]model.Attention
 		}
 	}
 	return out
+}
+
+// The board's agent preview asks for the last few turns only.
+func TestTailTurns(t *testing.T) {
+	hello := chatFrame{T: "hello", Turns: []agent.Turn{{ID: "1"}, {ID: "2"}, {ID: "3"}}}
+	if got := tailTurns(hello, 2).Turns; len(got) != 2 || got[0].ID != "2" || got[1].ID != "3" {
+		t.Fatalf("tail 2 = %+v", got)
+	}
+	for _, n := range []int{0, -1, 5} {
+		if got := tailTurns(hello, n).Turns; len(got) != 3 {
+			t.Fatalf("tail %d kept %d turns, want all 3", n, len(got))
+		}
+	}
 }

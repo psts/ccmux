@@ -607,3 +607,50 @@ body {
 /* Sidebar: an agent session is one line (app.js isAgentWs). */
 .ws .exp.none { visibility: hidden; }
 .ws .agent-tag { font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: .04em; opacity: .8; }
+
+/* attention board (board.js): one window's waiting panes as tiles. Same layout
+   rules as the Mac app's AttentionBoardView. The lens's one live view (terminal,
+   chat) lives in #main while parked and moves into the active tile's body. */
+#app.board-mode #tabs, #app.board-mode #pane-add, #app.board-mode #presence { display: none; }
+#app.board-mode #main > #terminal, #app.board-mode #main > #agent-chat, #app.board-mode #main > #agent-chat-bar,
+#app.board-mode #main > #harness-bar, #app.board-mode #main > #pane-notice { display: none !important; }
+.board { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6px 8px; gap: 6px; }
+.board-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.board-title { font-weight: 600; margin-right: 6px; }
+.board-more { color: var(--muted); }
+.board-chip, .board-next, .board-acts button {
+  background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
+  font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer;
+}
+.board-chip.blocked { border-color: var(--needs); color: var(--needs); }
+.board-next { margin-left: auto; }
+.board-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.board-grid { flex: 1; min-height: 0; display: grid; gap: 6px; grid-auto-rows: minmax(0, 1fr); }
+.board-tile {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg2); overflow: hidden;
+}
+.board-tile.blocked { box-shadow: inset 3px 0 0 var(--needs); }
+.board-tile.turn { box-shadow: inset 3px 0 0 var(--done); }
+.board-tile.active { border-color: var(--accent); }
+.board-tile.handled { opacity: .5; }
+.board-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.board-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-tile.blocked .board-why { color: var(--needs); }
+.board-tile.turn .board-why { color: var(--done); }
+.board-wait { color: var(--muted); }
+.board-acts { margin-left: auto; display: flex; gap: 4px; flex: 0 0 auto; }
+.board-body { flex: 1; min-height: 0; display: flex; flex-direction: column; cursor: pointer; }
+.board-tile.active .board-body { cursor: auto; }
+.board-tile.active #terminal { padding: 4px; }
+.board-preview {
+  flex: 1; min-height: 0; margin: 0; padding: 6px 8px; overflow: auto;
+  white-space: pre-wrap; font: 12px/1.35 -apple-system, "SF Pro Text", sans-serif; color: var(--fg);
+}
+.board-preview.screen { white-space: pre; overflow: hidden; font-family: Menlo, Monaco, "SF Mono", monospace; line-height: 1.2; }
+.ws.board-row .board-icon { width: 14px; text-align: center; color: var(--muted); }
+.ws.board-row.waiting .board-icon, .ws.board-row.waiting .name { color: var(--needs); }
+.ws.board-row .board-count {
+  margin-left: auto; background: var(--needs); color: #1c1e22; border-radius: 8px;
+  font-size: 10px; font-weight: 700; padding: 0 6px;
+}

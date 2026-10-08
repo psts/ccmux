@@ -74,4 +74,12 @@ final class WatchedWorkspaceTests: XCTestCase {
             ), "active=\(active) onSpace=\(onSpace) showsTarget=\(showsTarget) must not suppress")
         }
     }
+
+    /// The attention board shows a window's waiting panes without looking at
+    /// any one workspace: the one still displayed behind it is not on screen.
+    func testTheBoardHidesTheDisplayedWorkspace() {
+        XCTAssertNil(WindowManager.onScreen(displayed: target, showingBoard: true))
+        XCTAssertEqual(WindowManager.onScreen(displayed: target, showingBoard: false), target)
+        XCTAssertNil(WindowManager.onScreen(displayed: nil, showingBoard: false))
+    }
 }

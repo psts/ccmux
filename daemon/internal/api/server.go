@@ -1145,8 +1145,11 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 // paneSnapshot returns a pane's current screen as escape-preserving bytes
 // (base64 in "data"), the same seed an attach delivers — for a lens that wants a
 // preview without opening an attach WebSocket. An optional ?history=N prepends N
-// lines of scrollback. 404 if the pane is unknown; 409 if its workspace is cold
-// (no live tmux to capture).
+// lines of scrollback. ?plain=1 returns the visible screen as plain text instead,
+// which is what the attention board's shrunk tiles draw: no emulator, and no
+// resize of the shared pane. "cols"/"rows" are the pane's size, so a lens can
+// scale the text to its tile. 404 if the pane is unknown; 409 if its workspace
+// is cold (no live tmux to capture).
 func (s *Server) paneSnapshot(w http.ResponseWriter, r *http.Request) {
 	paneID := r.PathValue("id")
 	wsID := s.mgr.WorkspaceForPane(paneID)
@@ -1165,12 +1168,20 @@ func (s *Server) paneSnapshot(w http.ResponseWriter, r *http.Request) {
 			history = n
 		}
 	}
-	b, err := ctrl.Capture(paneID, history)
+	capture := func() ([]byte, error) { return ctrl.Capture(paneID, history) }
+	if r.URL.Query().Get("plain") == "1" {
+		capture = func() ([]byte, error) { return ctrl.CaptureText(paneID) }
+	}
+	b, err := capture()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"pane": paneID, "data": b64(b)})
+	out := map[string]any{"pane": paneID, "data": b64(b)}
+	if p := s.mgr.PaneByID(paneID); p != nil {
+		out["cols"], out["rows"] = p.Cols, p.Rows
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // paneDriver reports the human currently driving a pane's workspace, for the git

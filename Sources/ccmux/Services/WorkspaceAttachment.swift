@@ -97,6 +97,16 @@ final class WorkspaceAttachment {
         attach.send(.focus(pane: paneId, present: present))
     }
 
+    /// The attention board's "acted" for one pane of this workspace, sent on
+    /// this attachment because the daemon takes it only on the attach socket
+    /// of the pane's workspace. False, and nothing sent, while not connected.
+    @discardableResult
+    func sendBoardCommand(_ command: DaemonCommand) -> Bool {
+        guard connectionState == .connected else { return false }
+        attach.send(command)
+        return true
+    }
+
     /// Reconcile per-pane controllers after a daemon-side pane change, keeping the
     /// WS connection up: pre-create controllers for new panes (same warm-start as
     /// init — the attach streams every pane of the workspace, so a new pane's first

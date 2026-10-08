@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -94,12 +95,15 @@ func newChatConn(s *Server, p *model.Pane, cancel context.CancelFunc) *chatConn 
 }
 
 // paneAgentHistory: GET /v1/panes/{id}/agent → the hello frame: state,
-// session and transcript, for a lens that wants a one-shot read.
+// session and transcript, for a lens that wants a one-shot read. ?tail=N
+// keeps only the last N turns, for the attention board's tile preview, which
+// has room for the agent's last word and the card it is waiting on.
 func (s *Server) paneAgentHistory(w http.ResponseWriter, r *http.Request) {
 	p := s.agentPaneOr404(w, r)
 	if p == nil {
 		return
 	}
+	tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	c := newChatConn(s, p, cancel)
@@ -111,10 +115,18 @@ func (s *Server) paneAgentHistory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "agent server: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, hello)
+		writeJSON(w, http.StatusOK, tailTurns(hello, tail))
 		return
 	}
-	writeJSON(w, http.StatusOK, c.asleepHello(ctx))
+	writeJSON(w, http.StatusOK, tailTurns(c.asleepHello(ctx), tail))
+}
+
+// tailTurns keeps a hello's last n turns; n <= 0 keeps them all.
+func tailTurns(hello chatFrame, n int) chatFrame {
+	if n > 0 && len(hello.Turns) > n {
+		hello.Turns = hello.Turns[len(hello.Turns)-n:]
+	}
+	return hello
 }
 
 // paneAgentChat: GET /v1/panes/{id}/agent/ws upgrades to the chat socket.

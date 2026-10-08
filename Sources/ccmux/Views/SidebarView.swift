@@ -23,6 +23,8 @@ struct SidebarView: View {
     /// Open a shared window this login has closed (v2): the same window
     /// everyone else sees, brought on screen here and woken if asleep.
     var onOpenSharedWindow: ((DaemonWindow) -> Void)?
+    /// Put this window's attention board up (its "Attention" row).
+    var onShowBoard: (() -> Void)?
     /// Daemon-wide health. Defaulted to the shared instance so no call site has
     /// to thread it through.
     @ObservedObject var health: DaemonHealthService = .shared
@@ -149,6 +151,17 @@ struct SidebarView: View {
                 // for its first workspace — hidden sections would leave no
                 // droppable pixel for it anywhere in the app.
                 Section {
+                    // The window's attention board: every pane here waiting
+                    // on a human. Only where there is a hosted session to
+                    // wait; same row as the web lens's boardRow.
+                    if windowContext.ownedWorkspaceIds.contains(where: { remoteService.isHosted($0) }) {
+                        AttentionBoardRow(
+                            members: windowContext.ownedWorkspaceIds,
+                            isActive: windowContext.showingBoard,
+                            onSelect: { onShowBoard?() }
+                        )
+                        .listRowBackground(windowContext.showingBoard ? Color.accentColor.opacity(0.18) : Color.clear)
+                    }
                     ForEach(thisWindowWorkspaces) { workspace in
                         Group {
                             if workspace.mode == .hosted {
@@ -427,7 +440,8 @@ struct SidebarView: View {
     /// daemon's host and hosted panes are terminal-only.
     @ViewBuilder
     private func hostedRow(_ workspace: Workspace, dimmed: Bool) -> some View {
-        let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
+        // Behind the attention board the displayed workspace is not on show.
+        let isDisplayed = workspace.id == windowContext.displayedWorkspaceId && !windowContext.showingBoard
         Group {
             if remoteService.agentWorkspaces[workspace.id] != nil {
                 AgentWorkspaceRow(
@@ -477,7 +491,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func localRow(_ workspace: Workspace) -> some View {
-        let isDisplayed = workspace.id == windowContext.displayedWorkspaceId
+        let isDisplayed = workspace.id == windowContext.displayedWorkspaceId && !windowContext.showingBoard
         WorkspaceRow(
             workspace: workspace,
             monitor: manager.monitors[workspace.id] ?? GitStatusMonitor.empty,

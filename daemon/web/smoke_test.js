@@ -28,8 +28,10 @@ function check(what, cond, detail) {
 
 // A permissive element: every property access returns another one, so app.js can
 // chain DOM calls at load without the test modelling any of it.
+// A size read (clientWidth and the like) coerces to 0.
 const el = () => new Proxy(function () {}, {
-  get: (_t, k) => (k === "children" || k === "childNodes" ? [] : k === "length" ? 0 : el()),
+  get: (_t, k) => (k === Symbol.toPrimitive ? () => 0
+    : k === "children" || k === "childNodes" ? [] : k === "length" ? 0 : el()),
   set: () => true,
   apply: () => el(),
 });
@@ -112,13 +114,17 @@ function makeContext(opts, book) {
 // Boots app.js (and push.js when asked) in a fresh fake browser and hands
 // back the handles the cases assert on.
 function run(opts = {}) {
-  const { withPush = false } = opts;
+  const { withPush = false, withBoard = false } = opts;
   const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0 };
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), ctx, { filename: "app.js" });
   if (withPush) vm.runInContext(fs.readFileSync(path.join(__dirname, "push.js"), "utf8"), ctx, { filename: "push.js" });
+  // board.js runs after agentchat.js on the page and leans on it; same here.
+  for (const f of withBoard ? ["agentchat.js", "board.js"] : []) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), ctx, { filename: f });
+  }
   // `state` is a top-level const, so it is a lexical binding and never lands on
   // the context object; only function declarations do. Later scripts in the same
   // context DO see it.
@@ -126,6 +132,131 @@ function run(opts = {}) {
   const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
   return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
     sockets: book.sockets, swRegistrations: () => book.swRegistrations };
+}
+
+// --- board.js: the attention board's rules. The Mac app's AttentionBoard
+// has the same rules and its tests run only on a Mac, so the table lives in
+// both places; keep them saying the same thing.
+async function boardCases() {
+  const b = run({ withBoard: true });
+  await tick();
+  const R = b.ctx.ccmuxBoard.rules;
+  const c = (pane, state, reason, since, name) => ({ pane, state, reason, since, name: name || pane });
+  const turn = c("turn", "done", "finished", 100);
+  const perm = c("perm", "needs_input", "permission", 300);
+  const old = c("old", "needs_input", "", 0);
+  const nudge = c("nudge", "needs_input", "finished", 50);
+  const order = [turn, perm, old, nudge].sort(R.claimOrder).map((x) => x.pane);
+  check("board: blocked first, then the longest wait", order.join() === "old,perm,nudge,turn", order.join());
+  check("board: a needs_input with no reason is blocked", R.isBlocked(old) && !R.isBlocked(nudge));
+  check("board: one tile on a phone, four on a laptop, six on a big screen",
+    R.capFor(390) === 1 && R.capFor(1100) === 4 && R.capFor(1600) === 6);
+
+  const snoozed = new Map();
+  const free = R.layout([turn, perm, old], { cap: 2, active: null, prevVisible: [], snoozed, now: 1 });
+  check("board: the cap splits tiles from the strip",
+    free.visible.map((x) => x.pane).join() === "old,perm" && free.waiting.map((x) => x.pane).join() === "turn");
+
+  const arrival = c("new", "needs_input", "question", 5);
+  const frozen = R.layout([turn, perm, arrival], { cap: 2, active: "perm", prevVisible: free.visible, snoozed, now: 1 });
+  check("board: an active tile freezes the set; arrivals wait, a claim dealt with elsewhere stays marked",
+    frozen.visible.map((x) => x.pane + (x.handled ? "!" : "")).join() === "old!,perm" &&
+    frozen.waiting.map((x) => x.pane).join() === "new,turn", JSON.stringify(frozen));
+
+  snoozed.set("perm", { since: 300, until: 1000 });
+  const later = R.layout([perm], { cap: 4, active: null, prevVisible: [], snoozed, now: 10 });
+  const renewed = R.layout([c("perm", "needs_input", "permission", 400)], { cap: 4, active: null, prevVisible: [], snoozed, now: 10 });
+  const expired = R.layout([perm], { cap: 4, active: null, prevVisible: [], snoozed, now: 2000 });
+  check("board: not now hides a claim until it changes or 30 minutes pass",
+    later.visible.length === 0 && renewed.visible.length === 1 && expired.visible.length === 1);
+
+  // The count the sidebar row shows comes from the firehose's claims, for the
+  // window's own live panes only.
+  b.evalIn(`state.workspaces = [
+    { id: "w1", name: "app", group: "ChartLabs", status: "live", panes: [{ id: "p1" }, { id: "p2" }] },
+    { id: "w2", name: "x-post", group: "ChartLabs", status: "live", panes: [{ id: "p3", agent: "x-post", harness: "claude" }] },
+    { id: "w3", name: "other", group: "Elsewhere", status: "live", panes: [{ id: "p4" }] },
+  ];
+  noteAttention("w1", "p1", "needs_input", "permission", 10);
+  noteAttention("w1", "p2", "running", "", 0);
+  noteAttention("w2", "p3", "done", "finished", 20);
+  noteAttention("w3", "p4", "done", "finished", 30);
+  noteAttention("w1", "gone", "done", "finished", 5);`);
+  check("board: the row counts the window's waiting panes", b.ctx.ccmuxBoard.count("ChartLabs") === 2,
+    String(b.ctx.ccmuxBoard.count("ChartLabs")));
+  check("board: a firehose claim keeps its reason and start",
+    b.evalIn(`state.claims.w1.p1.reason === "permission" && state.claims.w1.p1.since === 10`));
+
+  // Switching tiles: the same steps as the Mac's AttentionBoardModelTests.
+  const s = run({ withBoard: true });
+  await tick();
+  s.evalIn(`state.workspaces = ["a", "b", "c", "d", "e"].map((n) => (
+    { id: "w" + n, name: n, group: "W", status: "live", panes: [{ id: n }] }));
+  ["a", "b", "c", "d"].forEach((n, i) => noteAttention("w" + n, n, "needs_input", "permission", 10 + i));`);
+  // A laptop-wide main area: four tiles, as in the Mac test.
+  const wide = new Proxy(function () {}, { get: (_t, k) => (k === "clientWidth" ? 1100 : el()[k]), set: () => true, apply: () => el() });
+  const page = s.ctx.document;
+  const looks = { getElementById: (id) => (id === "main" ? wide : el()), visibilityState: "visible", hasFocus: () => true };
+  s.ctx.document = new Proxy({}, { get: (_t, k) => (k in looks ? looks[k] : page[k]) });
+  const B = s.ctx.ccmuxBoard;
+  B.open("W");
+  B.activate("a");
+
+  // A tile is not a look at its workspace: the attach keeps the claim, and
+  // focus names no pane, from a screen that is visible and focused. Off the
+  // board the same lens does name the pane it shows.
+  check("board: opening a tile keeps its claim", s.evalIn(`(state.attn.wa || {}).a === "needs_input"`));
+  const lastFocus = () => s.evalIn(`(() => {
+    const sent = [];
+    state.conn = { readyState: 1, send: (f) => sent.push(JSON.parse(f)) };
+    state.paneId = "a";
+    reportFocus();
+    return sent.pop();
+  })()`);
+  const onBoard = lastFocus();
+  check("board: a tile reports presence and names no pane", onBoard.pane === "" && onBoard.present === true, JSON.stringify(onBoard));
+  s.evalIn(`state.board = ""`);
+  const offBoard = lastFocus();
+  check("board: off the board the lens names the pane it shows", offBoard.pane === "a", JSON.stringify(offBoard));
+  s.evalIn(`state.board = "W"; state.conn = null`);
+
+  s.evalIn(`noteAttention("we", "e", "needs_input", "permission", 1)`);
+  B.refresh();
+  const held = B.peek();
+  check("board: an arrival while a tile is active waits in the strip",
+    held.visible.join() === "a,b,c,d" && held.waiting.join() === "e", JSON.stringify(held));
+  // Moving on sends "acted" on the active tile's open socket; a recorder
+  // stands in for it. With no open socket nothing is sent.
+  const sent = [];
+  s.ctx.boardSent = sent;
+  const liveSocket = (pane) =>
+    s.evalIn(`state.conn = { readyState: 1, send: (f) => boardSent.push(JSON.parse(f)), close() {} }; state.paneId = "${pane}"`);
+  const claimOf = (pane) => s.evalIn(`state.claims["w${pane}"]["${pane}"].state`);
+  liveSocket("a");
+  B.activate("d");
+  B.refresh();
+  const switched = B.peek();
+  check("board: switching tiles moves on from the old one without re-sorting",
+    switched.active === "d" && switched.visible.join() === "a!,b,c,d" && sent.map((f) => f.t + ":" + f.pane).join() === "acted:a",
+    JSON.stringify({ switched, sent }));
+  B.activate("a");
+  check("board: a handled tile can still be opened", B.peek().active === "a", JSON.stringify(B.peek()));
+
+  B.activate("b");
+  liveSocket("b");
+  B.next();
+  check("board: Next sends acted for the tile left and retires it here",
+    sent.map((f) => f.pane).join() === "a,b" && claimOf("b") === "idle", JSON.stringify(sent));
+  const leaving = B.peek().active;
+  s.evalIn(`state.conn = null`);
+  B.next();
+  check("board: with no open socket, moving on sends nothing and the claim stays",
+    sent.length === 2 && claimOf(leaving) === "needs_input", `${leaving}: ${JSON.stringify(sent)}`);
+  const parked = B.peek().active;
+  liveSocket(parked);
+  B.snooze({ pane: parked, since: s.evalIn(`state.claims["w${parked}"]["${parked}"].since`) });
+  check("board: Not now on the active tile is not dealing with it",
+    sent.length === 2 && B.peek().active === null && claimOf(parked) === "needs_input", `${parked}: ${JSON.stringify(sent)}`);
 }
 
 // --- peers.js: the message panel's history merge (PeerMessage.merged and
@@ -585,6 +716,7 @@ async function peersFailureCases() {
 
   await peersMergeCases();
   await peersFailureCases();
+  await boardCases();
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

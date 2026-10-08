@@ -44,4 +44,22 @@ func TestAPI_PaneSnapshot(t *testing.T) {
 	if !strings.Contains(string(raw), "SNAPSHOT_MARKER_31") {
 		t.Fatalf("snapshot did not reflect the current screen (marker missing)")
 	}
+
+	// ?plain=1 is the attention board's preview: the same screen as text, with
+	// no escape sequences, and the pane's size to scale it by.
+	code, body = getJSON(t, base+"/v1/panes/"+pane0+"/snapshot?plain=1")
+	if code != http.StatusOK {
+		t.Fatalf("plain snapshot status = %d, want 200", code)
+	}
+	plainStr, _ := body["data"].(string)
+	plain, err := base64.StdEncoding.DecodeString(plainStr)
+	if err != nil {
+		t.Fatalf("plain snapshot data not base64: %v", err)
+	}
+	if !strings.Contains(string(plain), "SNAPSHOT_MARKER_31") || strings.Contains(string(plain), "\x1b") {
+		t.Fatalf("plain snapshot = %q, want the marker and no escapes", plain)
+	}
+	if cols, _ := body["cols"].(float64); cols <= 0 {
+		t.Fatalf("plain snapshot cols = %v, want the pane's width", body["cols"])
+	}
 }

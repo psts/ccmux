@@ -37,8 +37,7 @@ class ActivateWorkspaceCommand: NSScriptCommand {
         }
 
         // Switch that window to display this workspace
-        ownerWc.windowContext.displayedWorkspaceId = workspace.id
-        ownerWc.updateWindowTitle()
+        ownerWc.display(workspace: workspace.id)
 
         // Bring the window to front (switches Spaces automatically)
         if let window = ownerWc.window {

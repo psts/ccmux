@@ -328,6 +328,29 @@ final class RemoteSessionService: ObservableObject {
         if state == .none || isWatched(appId) { monitor.clear() } else { monitor.set(state) }
     }
 
+    // MARK: - Attention board
+
+    /// The board's "done with this tile": tell the daemon, through the
+    /// attachment carrying the pane. Once it has gone out the claim is dropped
+    /// here at once, so moving on never leaves the old tile behind waiting for
+    /// the idle to come back. A connection that is not up sends nothing and the
+    /// claim stays, the tile still there to be dealt with. Same rule as the web
+    /// lens's sendActed.
+    func boardActed(paneId: String) {
+        guard let attachment = attachments.values.first(where: { $0.hasPane(paneId) }),
+              attachment.sendBoardCommand(.acted(pane: paneId)) else {
+            NSLog("[ccmux board] not connected to pane %@; its tile stays until it can be retired", paneId)
+            return
+        }
+        markIdleLocally(paneId: paneId)
+    }
+
+    /// Takes a claim down here ahead of the daemon's own idle, which follows.
+    private func markIdleLocally(paneId: String) {
+        guard let ws = paneAttention.first(where: { $0.value[paneId] != nil })?.key else { return }
+        applyAttention(DaemonAttentionEntry(workspace: ws, pane: paneId, state: .idle), notify: false)
+    }
+
     /// Retained attention minus the workspaces the daemon no longer lists live
     /// and the panes they no longer list, so a closed pane's stale claim keeps
     /// no row lit and no tile on the board. A pane-signature rebuild keeps it.

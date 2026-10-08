@@ -18,6 +18,8 @@ const state = {
   fit: null,
   firehose: null,    // global /v1/events WS (sidebar attention, all workspaces)
   attn: {},          // wsId -> { paneId -> attentionState } from the firehose
+  claims: {},        // wsId -> { paneId -> {state, reason, since} }: the same, with why and since when (board.js)
+  board: "",         // the window whose attention board is on show, "" when none (board.js)
   tabDrag: null,     // pane id of the tab being dragged along the strip, else null
   paneCols: 0,       // authoritative width of the current pane (from the daemon)
   gitOpen: {},       // wsId -> true when the row's changed-files list is expanded
@@ -292,6 +294,7 @@ async function fetchWorkspaces() {
   }
   syncPaneTitles();
   renderList();
+  if (window.ccmuxBoard) window.ccmuxBoard.refresh();
 }
 
 // fetchHosts loads the federation registry (hub mode). 404/empty in single-host
@@ -401,6 +404,7 @@ function renderList() {
         };
       }
       ul.appendChild(h);
+      if (win) ul.appendChild(boardRow(group));
     } else if (grouped.length > 1 || closed.length) {
       // Header only when there is something to separate from: a deployment
       // where nothing is grouped keeps its plain flat list.
@@ -431,6 +435,29 @@ function renderList() {
       ul.appendChild(li);
     }
   }
+}
+
+// boardRow is an open window's "Attention" entry: the count of its panes
+// waiting on a human, and the way into the attention board (board.js). Same
+// row, same count rule as the Mac sidebar's.
+function boardRow(group) {
+  const n = window.ccmuxBoard ? window.ccmuxBoard.count(group) : 0;
+  const li = document.createElement("li");
+  li.className = "ws board-row" + (state.board === group ? " active" : "") + (n ? " waiting" : "");
+  li.innerHTML = `<div class="ws-row"><span class="board-icon">◎</span>` +
+    `<span class="name">Attention</span>` + (n ? `<span class="board-count">${n}</span>` : "") + `</div>`;
+  li.onclick = () => window.ccmuxBoard && window.ccmuxBoard.open(group);
+  return li;
+}
+
+// openWorkspace is every explicit "show this session" (sidebar, menus, a new
+// or revived session, a deep link): it leaves the attention board first, which
+// attach alone does not, because the board's active tile attaches through it
+// too. Re-attaches of the session on show (tabs, take over, a reconnect) stay
+// on attach. The Mac app's WorkspaceWindowController.display is the same rule.
+function openWorkspace(wsId, wantPane) {
+  if (window.ccmuxBoard) window.ccmuxBoard.close();
+  return attach(wsId, wantPane);
 }
 
 // groupedWorkspaces buckets by the shared window name: named windows
@@ -527,7 +554,7 @@ function wsBadges(ws, agent, cold, running, label) {
 }
 
 function wsRow(ws) {
-  const active = ws.id === state.wsId;
+  const active = ws.id === state.wsId && !state.board;
   const agent = isAgentWs(ws);
   // Suppress the flash on the workspace you're already watching (mirrors the
   // native "clear on watch"); other rows flash live from the firehose and stop
@@ -549,7 +576,7 @@ function wsRow(ws) {
     `</div>` +
     (open && !agent ? gitDetail(ws) : "");
   // A cold session has nothing to attach to — clicking revives it in place.
-  li.onclick = cold ? () => reviveWorkspace(ws.id) : () => attach(ws.id, null);
+  li.onclick = cold ? () => reviveWorkspace(ws.id) : () => openWorkspace(ws.id, null);
   if (!agent) li.querySelector(".exp").onclick = (e) => {
     e.stopPropagation();
     state.gitOpen[ws.id] = !open;
@@ -666,7 +693,7 @@ async function appendWindowAgentEntries(menu, slot, win) {
     // No stand-in glyph for an icon-less base (same rule as the session name).
     const title = a.icon ? `${a.icon} ${a.name}` : a.name;
     if (a.state === "running") {
-      add(`● ${title} — open`, () => attach(a.workspace, a.pane));
+      add(`● ${title} — open`, () => openWorkspace(a.workspace, a.pane));
       add(`■ ${title} — sleep`, () => sleepAgent(win.id, a.name));
       continue;
     }
@@ -676,7 +703,7 @@ async function appendWindowAgentEntries(menu, slot, win) {
       const text = prompt(`Message ${a.name} (empty = just start it):`, "");
       if (text === null) return;
       const p = await wakeAgent(win.id, a.name, text.trim());
-      if (p && p.id) attach(p.workspaceId, p.id);
+      if (p && p.id) openWorkspace(p.workspaceId, p.id);
     });
   }
 }
@@ -935,7 +962,7 @@ async function reviveWorkspace(id) {
   const r = await fetch(`/v1/workspaces/${id}/revive`, { method: "POST" });
   if (!r.ok) { alert("revive failed: " + (await r.text())); return; }
   await fetchWorkspaces();
-  attach(id, null);
+  openWorkspace(id, null);
 }
 
 // putGroup writes YOUR view row: which of your windows the session sits in.
@@ -1161,9 +1188,13 @@ function onActivity() {
 // buried or backgrounded. A visible-but-unfocused tab still counts as present:
 // the person is at the machine, which is what the daemon needs to know before it
 // decides whether to alert here or buzz their phone.
+//
+// The attention board never names a pane: a tile on show is not a look at its
+// workspace, or every claim would retire the moment it reached the board. It
+// still reports presence. Tiles leave by "acted" instead (board.js).
 function reportFocus() {
   const visible = document.visibilityState === "visible";
-  const watching = visible && document.hasFocus();
+  const watching = visible && document.hasFocus() && !state.board;
   send({ t: "focus", pane: watching ? state.paneId : "", present: visible });
 }
 
@@ -1230,7 +1261,7 @@ async function attach(wsId, wantPane) {
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = wsId;
   state.wantPane = wantPane;
-  delete state.attn[wsId]; // opening it marks its attention seen
+  if (!state.board) delete state.attn[wsId]; // opening it marks its attention seen; a board tile does not
   $("empty").style.display = "none";
   $("harness-bar").classList.add("hidden"); // re-derived from the next hello
   ensureTerm();
@@ -1759,6 +1790,9 @@ function connectFirehose() {
     `${proto}://${location.host}/v1/events?user=${encodeURIComponent(getUser())}&device=web`
   );
   fh.onmessage = onFirehose;
+  // Presence lives per connection on the daemon, so a fresh stream starts
+  // as nobody-at-a-screen: the attention board says it again (board.js).
+  fh.onopen = () => { if (window.ccmuxBoard) window.ccmuxBoard.reportPresence(); };
   fh.onclose = () => { state.firehose = null; setTimeout(connectFirehose, 2000); };
   state.firehose = fh;
 }
@@ -1768,9 +1802,10 @@ function onFirehose(ev) {
   try { m = JSON.parse(ev.data); } catch (_) { return; }
   if (m.t === "hello") {
     state.attn = {};
-    for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state);
+    state.claims = {};
+    for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state, e.reason, e.since);
   } else if (m.t === "attention") {
-    noteAttention(m.workspace, m.pane, m.state);
+    noteAttention(m.workspace, m.pane, m.state, m.reason, m.since);
   } else if (m.t === "workspace-added" || m.t === "workspace-removed" || m.t === "workspace-status" || m.t === "workspace-git") {
     fetchWorkspaces(); // a workspace changed elsewhere — refresh now, don't wait for the poll
     return;
@@ -1778,11 +1813,15 @@ function onFirehose(ev) {
     return;
   }
   renderList();
+  if (window.ccmuxBoard) window.ccmuxBoard.refresh();
 }
 
-function noteAttention(wsId, paneId, stateStr) {
+// noteAttention records one pane's attention: the bare state the sidebar
+// flash reads, and the claim (why, since when) the attention board sorts by.
+function noteAttention(wsId, paneId, stateStr, reason, since) {
   if (!wsId || !paneId) return;
   (state.attn[wsId] || (state.attn[wsId] = {}))[paneId] = stateStr;
+  (state.claims[wsId] || (state.claims[wsId] = {}))[paneId] = { state: stateStr, reason: reason || "", since: since || 0 };
 }
 
 // --- new workspace: browse the daemon's projects root and pick a folder. The
@@ -1938,7 +1977,7 @@ async function createWorkspace(p) {
   if (!r.ok) { alert("create failed: " + (await r.text())); return; }
   const ws = await r.json();
   await fetchWorkspaces();
-  attach(ws.id, null);
+  openWorkspace(ws.id, null);
 }
 
 // --- settings: LLM routing. Accounts are places pane LLM traffic can go
@@ -2943,7 +2982,7 @@ wireSettingsTabs();
 // surface the session list (the flyout drawer on mobile) instead of a dead end.
 function bootDeepLink() {
   const ws = new URLSearchParams(location.search).get("ws");
-  if (ws) attach(ws, null);
+  if (ws) openWorkspace(ws, null);
   else openDrawer();
 }
 
@@ -2953,7 +2992,7 @@ function bootDeepLink() {
 // push.js awaits the same promise before its own deep-link attach (a
 // notification tap), which otherwise fires on DOMContentLoaded, ahead of it.
 const identityReady = loadIdentity();
-window.ccmux = { attach, getUser, identityReady }; // push.js deep-links + shares the presence name
+window.ccmux = { attach: openWorkspace, getUser, identityReady }; // push.js deep-links + shares the presence name
 $("new-ws").onclick = newWorkspace;
 $("project-close").onclick = closeProjectModal;
 $("project-folder-mk").onclick = createProjectFolder;

@@ -4,6 +4,11 @@ import Combine
 /// Per-window state binding — each window creates one and passes it to its views.
 class WindowContext: ObservableObject {
     @Published var displayedWorkspaceId: UUID?
+    /// The window shows its attention board (AttentionBoardView) in place of
+    /// the displayed workspace, which stays set for when the board closes.
+    /// While it is up nothing here counts as watched: a tile on show is not a
+    /// look at its workspace (see isWatching).
+    @Published var showingBoard = false
     /// IDs of workspaces that belong to OTHER windows, grouped by window
     @Published var otherWindowWorkspaceIds: Set<UUID> = []
     /// IDs of workspaces that belong to THIS window (displayed + previously selected here)
@@ -198,9 +203,9 @@ class WindowManager {
 
         // Check if another window owns this workspace
         if let ownerWc = windowOwning(workspaceId: id), ownerWc !== requestingController {
-            // Switch that window to display the clicked workspace
-            ownerWc.windowContext.displayedWorkspaceId = id
-            ownerWc.updateWindowTitle()
+            // Switch that window to display the clicked workspace (leaving its
+            // attention board, if up; this window's board stays as it was)
+            ownerWc.display(workspace: id)
             // Bring that window to front — macOS switches to its Space automatically
             if let window = ownerWc.window {
                 NSApp.activate(ignoringOtherApps: true)
@@ -211,9 +216,8 @@ class WindowManager {
         }
 
         // Switch the requesting window and claim ownership
-        requestingController.windowContext.displayedWorkspaceId = id
         requestingController.windowContext.ownedWorkspaceIds.insert(id)
-        requestingController.updateWindowTitle()
+        requestingController.display(workspace: id)
 
         // Update global activeWorkspaceId for compatibility
         workspaceManager.activeWorkspaceId = id
@@ -428,9 +432,8 @@ class WindowManager {
         }
 
         // Switch target window to display and own this workspace
-        targetController.windowContext.displayedWorkspaceId = id
         targetController.windowContext.ownedWorkspaceIds.insert(id)
-        targetController.updateWindowTitle()
+        targetController.display(workspace: id)
         // A move is an EXPLICIT user action, so it pushes the shared membership
         // (v2: the one place besides create/revive/rename that writes it). The
         // optimistic note keeps the reconcile that runs before the daemon's ack
@@ -582,9 +585,17 @@ class WindowManager {
         return Self.watched(
             appActive: NSApp.isActive,
             keyWindowOnActiveSpace: keyWindow.isOnActiveSpace,
-            displayedByKeyWindow: wc.windowContext.displayedWorkspaceId,
+            displayedByKeyWindow: Self.onScreen(displayed: wc.windowContext.displayedWorkspaceId,
+                                                showingBoard: wc.windowContext.showingBoard),
             target: id
         )
+    }
+
+    /// The workspace a window actually has on screen. Behind the attention
+    /// board it has none: a tile on show is not a look at its workspace, or
+    /// every claim would retire the moment it reached the board.
+    static func onScreen(displayed: UUID?, showingBoard: Bool) -> UUID? {
+        showingBoard ? nil : displayed
     }
 
     /// The rule itself, lifted clear of AppKit state so it can be tested.

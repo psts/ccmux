@@ -239,8 +239,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let wm = windowManager else { return }
         NSApp.activate(ignoringOtherApps: true)
         if let wc = wm.windowDisplaying(workspaceId: id) ?? wm.windowOwning(workspaceId: id) {
-            wc.windowContext.displayedWorkspaceId = id
-            wc.updateWindowTitle()
+            wc.display(workspace: id)
             wc.window?.makeKeyAndOrderFront(nil)
         } else if let wc = wm.windowControllers.first {
             wm.selectWorkspace(id: id, from: wc)
