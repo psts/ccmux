@@ -411,6 +411,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/paste", s.scoped(s.pasteImage))
 	mux.HandleFunc("POST /v1/panes/{id}/harness", s.scoped(s.startPaneHarness))
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.scoped(s.paneSnapshot))
+	mux.HandleFunc("POST /v1/panes/{id}/resize", s.scoped(s.paneResize))
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.scoped(s.paneDriver))
 	mux.HandleFunc("GET /v1/panes/{id}/agent", s.scoped(s.paneAgentHistory))
 	mux.HandleFunc("GET /v1/panes/{id}/agent/ws", s.paneAgentChat)
@@ -1182,6 +1183,43 @@ func (s *Server) paneSnapshot(w http.ResponseWriter, r *http.Request) {
 		out["cols"], out["rows"] = p.Cols, p.Rows
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// paneResize sets a pane's size with no attach socket: the attention board
+// sizes each passive tile's pane to the tile, the way a lens sizes a pane to
+// its screen. The same entry as an attach resize (Manager.ResizePane), so the
+// size is bounded, persisted and broadcast as pane-size to every attached lens.
+// 404 if the pane is unknown, 409 if its workspace is cold, 400 for a size tmux
+// will not take.
+func (s *Server) paneResize(w http.ResponseWriter, r *http.Request) {
+	paneID := r.PathValue("id")
+	wsID := s.mgr.WorkspaceForPane(paneID)
+	if wsID == "" {
+		writeError(w, http.StatusNotFound, "unknown pane")
+		return
+	}
+	if s.mgr.Controller(wsID) == nil {
+		writeError(w, http.StatusConflict, "workspace not live")
+		return
+	}
+	var req struct {
+		Cols int `json:"cols"`
+		Rows int `json:"rows"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	changed, err := s.mgr.ResizePane(paneID, req.Cols, req.Rows)
+	switch {
+	case errors.Is(err, manager.ErrBadPaneSize):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
+		log.Printf("resize pane %s to %dx%d over REST: %v", paneID, req.Cols, req.Rows, err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pane": paneID, "cols": req.Cols, "rows": req.Rows, "changed": changed})
 }
 
 // paneDriver reports the human currently driving a pane's workspace, for the git

@@ -257,6 +257,49 @@ async function boardCases() {
   B.snooze({ pane: parked, since: s.evalIn(`state.claims["w${parked}"]["${parked}"].since`) });
   check("board: Not now on the active tile is not dealing with it",
     sent.length === 2 && B.peek().active === null && claimOf(parked) === "needs_input", `${parked}: ${JSON.stringify(sent)}`);
+
+  // Sizing: the same table as the Mac's testAScreenTileHoldsItsPaneAtTheBoardsTextSize.
+  const cell = { w: 7.2, h: 14.4 };
+  const g = R.tileGrid(634, 350, cell);
+  check("board: a screen tile holds its pane at the board's text size",
+    g && g.cols === 88 && g.rows === 24 && R.tileGrid(140, 350, cell) === null, JSON.stringify(g));
+  const f = (cols, rows) => Math.round(R.fontFor(634, 350, cols, rows, cell) * 100) / 100;
+  check("board: a pane bigger than its tile shrinks to show whole, never below 4",
+    f(88, 24) === 12 && f(176, 24) === 6 && f(88, 48) === 6.08 && R.fontFor(100, 100, 400, 100, cell) === 4,
+    [f(88, 24), f(176, 24), f(88, 48)].join());
+
+  // And the Mac's testATileSizesItsPaneOncePerSize. The fake page cannot
+  // measure a font, so the cell is the 0.6em fallback: 7.2 x 14.4.
+  const z = run({ withBoard: true });
+  await tick();
+  z.evalIn(`state.workspaces = [
+    { id: "wz", name: "z", group: "Z", status: "live", panes: [{ id: "z" }] },
+    { id: "wq", name: "q", group: "Z", status: "live", panes: [{ id: "q", agent: "q", harness: "claude" }] },
+  ];
+  noteAttention("wz", "z", "needs_input", "permission", 1);
+  noteAttention("wq", "q", "needs_input", "permission", 2);`);
+  const zPage = z.ctx.document;
+  z.ctx.document = new Proxy({}, { get: (_t, k) => (k in looks ? looks[k] : zPage[k]) });
+  const Z = z.ctx.ccmuxBoard;
+  Z.open("Z");
+  const resizes = () => z.fetched.filter((x) => x.method === "POST" && x.url.endsWith("/resize"))
+    .map((x) => x.url.split("/")[3] + " " + JSON.parse(x.body).cols + "x" + JSON.parse(x.body).rows);
+  Z.sizePane("z", 634, 350);
+  Z.sizePane("z", 634, 350); // the next paint, same tile
+  Z.sizePane("q", 634, 350); // a chat has no screen to size
+  Z.sizePane("z", 900, 350); // the tile grew
+  await tick();
+  check("board: a tile sizes its pane once per size, and a chat tile not at all",
+    resizes().join() === "z 88x24,z 125x24", resizes().join());
+  const okFetch = z.ctx.fetch;
+  z.ctx.fetch = async (u, o) => { z.fetched.push({ url: String(u), method: o.method, body: o.body }); return { ok: false, status: 500 }; };
+  Z.sizePane("z", 634, 350);
+  await tick();
+  Z.sizePane("z", 634, 350);
+  await tick();
+  z.ctx.fetch = okFetch;
+  check("board: a size that did not take is sent again on the next paint",
+    resizes().join() === "z 88x24,z 125x24,z 88x24,z 88x24", resizes().join());
 }
 
 // --- peers.js: the message panel's history merge (PeerMessage.merged and

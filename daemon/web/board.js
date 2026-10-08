@@ -5,7 +5,9 @@
 // are the same rules, kept in the same words in both lenses.
 //
 // A passive tile is a picture: the pane's screen as plain text, or an agent's
-// last word, fetched over REST. It never resizes the shared pane. Clicking a
+// last word, fetched over REST. A screen tile sizes its pane to the tile, so
+// the text reads at a terminal's size however many tiles share the board; the
+// workspace takes its own size back when it shows the pane again. Clicking a
 // tile makes it ACTIVE: the lens's one live view (terminal or chat) moves
 // into it and attaches, which takes over the pane's size like any lens that
 // starts typing. Moving on from an active tile (another tile, Next, or Done)
@@ -36,6 +38,32 @@
   function capFor(width) { return width < 700 ? 1 : width < 1300 ? 4 : 6; }
 
   function columnsFor(n) { return n <= 1 ? 1 : n <= 4 ? 2 : 3; }
+
+  // A screen tile draws its text at the size the Mac's terminal does (12pt
+  // Monaco). cell is one character's box at that size, measured in the
+  // tile's font.
+  const TILE_FONT = 12;
+  // .board-preview's padding, both sides together (style.css).
+  const PREVIEW_PAD_W = 16, PREVIEW_PAD_H = 12;
+
+  // tileGrid: the pane size that fills a tile's text area at TILE_FONT, or
+  // null for a tile too small to drive a pane to: a crushed pane is worse
+  // than small text (app.js's MIN_COLS).
+  function tileGrid(width, height, cell) {
+    if (!(cell.w > 0 && cell.h > 0)) return null;
+    const cols = Math.floor(width / cell.w), rows = Math.floor(height / cell.h);
+    return cols >= 20 && rows >= 5 ? { cols, rows } : null;
+  }
+
+  // fontFor: the text size that shows a cols x rows screen whole in a tile:
+  // TILE_FONT when the pane is the tile's size, smaller when another lens has
+  // it bigger, never below 4.
+  function fontFor(width, height, cols, rows, cell) {
+    if (!(cols > 0 && cell.w > 0 && cell.h > 0)) return TILE_FONT;
+    const across = width / (cols * cell.w);
+    const down = rows > 0 ? height / (rows * cell.h) : 1;
+    return Math.max(4, TILE_FONT * Math.min(1, across, down));
+  }
 
   // "Not now" hides a claim for 30 minutes, or until it changes: a new start
   // time is a new claim and comes straight back.
@@ -83,8 +111,9 @@
     visible: [],        // the claims on show, in order
     waiting: [],
     snoozed: new Map(), // pane -> {since, until}
-    previews: new Map(), // pane -> {key, text, cols}
+    previews: new Map(), // pane -> {key, text, cols, rows}
     fetching: new Set(), // panes with a preview read in flight
+    sized: new Map(),   // pane -> "COLSxROWS" its tile last sent it
     timer: null,
     gridKey: "",        // the tiles last drawn: their panes and the active one
   };
@@ -140,6 +169,7 @@
     state.board = "";
     board.visible = [];
     board.gridKey = "";
+    board.sized.clear();
     document.getElementById("app").classList.remove("board-mode");
     $("board").classList.add("hidden");
     $("board").innerHTML = "";
@@ -396,7 +426,7 @@
 
   function terminalPreview(body) {
     const text = new TextDecoder().decode(b64ToBytes(body.data || "")).replace(/\s+$/, "");
-    return { text, cols: body.cols || 80 };
+    return { text, cols: body.cols || 80, rows: body.rows || 0 };
   }
 
   // The agent's last word (its tail) and the card it is waiting on, as
@@ -413,7 +443,9 @@
     return { text: text.trim(), cols: 0 };
   }
 
-  // A terminal picture is scaled so the pane's full width fits the tile.
+  // A terminal picture is drawn at TILE_FONT once its pane fits the tile,
+  // smaller while another lens has the pane bigger (fontFor). Painting is
+  // also when a tile learns its size, so it sizes its pane here.
   function paintPreview(pane, p) {
     const tile = $("board").querySelector(`.board-tile[data-pane="${pane}"]`);
     const pre = tile && tile.querySelector(".board-preview");
@@ -421,12 +453,58 @@
     pre.textContent = p.text || " ";
     pre.classList.toggle("screen", p.cols > 0);
     if (p.cols > 0) {
-      const width = pre.clientWidth || tile.clientWidth;
-      pre.style.fontSize = Math.max(4, Math.min(13, width / (p.cols * 0.6))) + "px";
+      const w = pre.clientWidth - PREVIEW_PAD_W, h = pre.clientHeight - PREVIEW_PAD_H;
+      pre.style.fontSize = fontFor(w, h, p.cols, p.rows, cell()) + "px";
+      sizePane(pane, w, h);
     } else {
       pre.style.fontSize = "";
       pre.scrollTop = pre.scrollHeight;
     }
+  }
+
+  // One character's box at TILE_FONT in .board-preview.screen's font and
+  // line height (style.css). Measured once; 0.6em wide if it cannot be.
+  let cellAt = null;
+  function cell() {
+    if (cellAt) return cellAt;
+    let w = 0;
+    try {
+      const ctx = document.createElement("canvas").getContext("2d");
+      ctx.font = `${TILE_FONT}px Menlo, Monaco, "SF Mono", monospace`;
+      w = ctx.measureText("M".repeat(10)).width / 10;
+    } catch (e) {
+      console.debug("board: could not measure the screen font", e);
+    }
+    cellAt = { w: w > 0 ? w : TILE_FONT * 0.6, h: TILE_FONT * 1.2 };
+    return cellAt;
+  }
+
+  // sizePane sizes a screen tile's pane to its text area at TILE_FONT, as a
+  // lens sizes a pane to its screen. Once per tile size, not every tick, so
+  // if another lens takes the pane over the tile scales its text down rather
+  // than fight back. Leaving the board gives the pane back: a workspace
+  // re-asserts its own size when it shows the pane. A failed send is
+  // forgotten, so the next paint tries again. Same rule as the Mac's tileArea.
+  function sizePane(pane, w, h) {
+    const c = board.visible.find((x) => x.pane === pane);
+    const grid = tileGrid(w, h, cell());
+    if (!c || c.chat || pane === board.active || !grid) return;
+    const key = grid.cols + "x" + grid.rows;
+    if (board.sized.get(pane) === key) return;
+    board.sized.set(pane, key);
+    fetch(`/v1/panes/${pane}/resize`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(grid),
+    }).then((r) => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      // The pane redraws at its new size; read it again once it has.
+      setTimeout(() => {
+        const now = board.visible.find((x) => x.pane === pane);
+        if (now && pane !== board.active) fetchPreview(now);
+      }, 400);
+    }).catch((e) => {
+      console.warn("board: could not size pane", pane, "to", key, "- its tile scales instead", e);
+      if (board.sized.get(pane) === key) board.sized.delete(pane);
+    });
   }
 
   // --- keyboard: Ctrl/Cmd+Enter is Next, caught before the terminal sees
@@ -447,9 +525,9 @@
     open, close, refresh, count, isOpen: () => !!board.win, window: () => board.win,
     reportPresence: () => { if (board.win) reportBoardPresence(); },
     // exposed for smoke_test.js
-    activate, snooze, next,
+    activate, snooze, next, sizePane,
     peek: () => ({ active: board.active, waiting: board.waiting.map((c) => c.pane),
       visible: board.visible.map((c) => c.pane + (c.handled ? "!" : "")) }),
-    rules: { isBlocked, claimOrder, capFor, columnsFor, snoozedNow, layout },
+    rules: { isBlocked, claimOrder, capFor, columnsFor, snoozedNow, layout, tileGrid, fontFor },
   };
 })();

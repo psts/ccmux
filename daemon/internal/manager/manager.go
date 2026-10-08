@@ -1052,10 +1052,14 @@ func (m *Manager) ResizePane(paneID string, cols, rows int) (changed bool, err e
 // differs; the limit is stated in terms of the call this path actually makes.)
 func validPaneSize(paneID string, cols, rows int) error {
 	if cols <= 0 || rows <= 0 || cols > maxCols || rows > maxRows {
-		return fmt.Errorf("pane %s: size %dx%d out of range", paneID, cols, rows)
+		return fmt.Errorf("pane %s: size %dx%d: %w", paneID, cols, rows, ErrBadPaneSize)
 	}
 	return nil
 }
+
+// ErrBadPaneSize is a size the caller got wrong (400), as against tmux or the
+// store failing (5xx).
+var ErrBadPaneSize = errors.New("pane size out of range")
 
 // commitPaneSize records an applied size and tells the other lenses about it.
 //

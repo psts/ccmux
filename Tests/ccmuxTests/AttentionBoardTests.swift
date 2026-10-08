@@ -54,6 +54,18 @@ final class AttentionBoardTests: XCTestCase {
         XCTAssertEqual(renewed.visible.count, 1)
         XCTAssertEqual(expired.visible.count, 1)
     }
+
+    func testAScreenTileHoldsItsPaneAtTheBoardsTextSize() {
+        let cell = BoardCell(width: 7.2, height: 14.4)
+        XCTAssertEqual(AttentionBoard.grid(width: 634, height: 350, cell: cell), BoardGrid(cols: 88, rows: 24))
+        XCTAssertNil(AttentionBoard.grid(width: 140, height: 350, cell: cell), "too narrow to drive a pane to")
+        XCTAssertEqual(AttentionBoard.font(width: 634, height: 350, cols: 88, rows: 24, cell: cell), 12)
+        XCTAssertEqual(AttentionBoard.font(width: 634, height: 350, cols: 176, rows: 24, cell: cell), 6.0, accuracy: 0.01,
+                       "a pane another lens made wider shrinks to fit across")
+        XCTAssertEqual(AttentionBoard.font(width: 634, height: 350, cols: 88, rows: 48, cell: cell), 6.08, accuracy: 0.01,
+                       "a taller one shrinks so its bottom line shows")
+        XCTAssertEqual(AttentionBoard.font(width: 100, height: 100, cols: 400, rows: 100, cell: cell), 4)
+    }
 }
 
 /// The board's tile switching, driven through the model with its daemon
@@ -117,5 +129,43 @@ final class AttentionBoardModelTests: XCTestCase {
         model.activate("snz-2")
         model.next()
         XCTAssertEqual(acted, ["snz-2"])
+    }
+
+    /// A screen tile sizes its pane once per tile size, not on every paint,
+    /// and a chat tile has no screen to size. Same steps as the web lens's.
+    func testATileSizesItsPaneOncePerSize() {
+        let chat = BoardClaim(pane: "sz-chat", state: .needsInput, reason: "permission", since: 11,
+                              name: "sz-chat", chat: true, workingDirectory: "/")
+        var sent: [String] = []
+        let model = AttentionBoardModel()
+        model.claimsFor = { _ in [self.claim("sz-1", 10), chat] }
+        model.cell = BoardCell(width: 7.2, height: 14.4)
+        model.resizeSink = { pane, grid, _ in sent.append("\(pane) \(grid.cols)x\(grid.rows)") }
+        model.refresh()
+
+        model.tileArea("sz-1", width: 634, height: 350)
+        model.tileArea("sz-1", width: 634, height: 350) // the next paint, same tile
+        model.tileArea("sz-chat", width: 634, height: 350)
+        model.tileArea("sz-1", width: 900, height: 350) // the tile grew
+        XCTAssertEqual(sent, ["sz-1 88x24", "sz-1 125x24"])
+    }
+
+    /// A size that did not take is sent again on the next tick, with no new
+    /// area from the tile. The web lens's smoke test checks the same.
+    func testAFailedSizeIsSentAgainOnTheNextTick() async throws {
+        var sent = 0
+        let model = AttentionBoardModel()
+        model.claimsFor = { _ in [self.claim("sz-2", 10)] }
+        model.cell = BoardCell(width: 7.2, height: 14.4)
+        model.resizeSink = { _, _, done in
+            sent += 1
+            done(false)
+        }
+        model.refresh()
+
+        model.tileArea("sz-2", width: 634, height: 350)
+        try await Task.sleep(nanoseconds: 100_000_000) // the failure lands
+        model.retrySizing()
+        XCTAssertEqual(sent, 2)
     }
 }

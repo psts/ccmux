@@ -643,6 +643,8 @@ body {
 .board-body { flex: 1; min-height: 0; display: flex; flex-direction: column; cursor: pointer; }
 .board-tile.active .board-body { cursor: auto; }
 .board-tile.active #terminal { padding: 4px; }
+/* board.js sizes a screen tile's pane from this padding (PREVIEW_PAD_*) and
+   measures its cell in the .screen font below: change them together. */
 .board-preview {
   flex: 1; min-height: 0; margin: 0; padding: 6px 8px; overflow: auto;
   white-space: pre-wrap; font: 12px/1.35 -apple-system, "SF Pro Text", sans-serif; color: var(--fg);

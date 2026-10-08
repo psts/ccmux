@@ -5,10 +5,12 @@ import SwiftUI
 /// feature with the same rules (AttentionBoard).
 ///
 /// A passive tile is a picture: the pane's screen as text, or an agent's last
-/// word, read over REST. It never resizes the shared pane. Clicking a tile
-/// makes it ACTIVE: it hosts the live terminal or chat, which takes over the
-/// pane's size like any lens that starts typing. Moving on from it (another
-/// tile, Next, Done) tells the daemon "acted", which retires that claim.
+/// word, read over REST. A screen tile sizes its pane to the tile, so the text
+/// reads at a terminal's size however many tiles share the board; the
+/// workspace takes its own size back when it shows the pane again. Clicking a
+/// tile makes it ACTIVE: it hosts the live terminal or chat, which takes over
+/// the pane's size like any lens that starts typing. Moving on from it
+/// (another tile, Next, Done) tells the daemon "acted", which retires that claim.
 struct AttentionBoardView: View {
     @ObservedObject var windowContext: WindowContext
     @StateObject private var model: AttentionBoardModel
@@ -107,7 +109,9 @@ struct AttentionBoardView: View {
             if isActive {
                 liveView(c)
             } else {
-                BoardPreviewView(preview: model.previews[c.pane])
+                BoardPreviewView(preview: model.previews[c.pane], cell: model.cell) { area in
+                    model.tileArea(c.pane, width: area.width, height: area.height)
+                }
                     .contentShape(Rectangle())
                     .onTapGesture { model.activate(c.pane) }
             }
@@ -154,29 +158,42 @@ struct AttentionBoardView: View {
     }
 }
 
-/// A passive tile's picture. A screen is drawn monospaced and scaled so the
-/// pane's whole width fits the tile; an agent's last word is plain text.
+/// A passive tile's picture. A screen is drawn monospaced at the board's text
+/// size once its pane fits the tile, smaller while another lens has the pane
+/// bigger (AttentionBoard.font); an agent's last word is plain text. The
+/// text area's size goes to `onArea`, which sizes the pane to it.
 private struct BoardPreviewView: View {
     let preview: BoardPreview?
+    let cell: BoardCell
+    let onArea: (CGSize) -> Void
 
     var body: some View {
         GeometryReader { geo in
-            if let preview, preview.cols > 0 {
-                let size = max(4, min(13, geo.size.width / (CGFloat(preview.cols) * 0.6)))
-                Text(preview.text)
-                    .font(.system(size: size, design: .monospaced))
-                    .fixedSize(horizontal: true, vertical: true)
-                    .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-                    .padding(6)
-                    .clipped()
-            } else {
-                Text(preview?.text ?? "…")
-                    .font(.system(size: 12))
-                    .frame(width: max(0, geo.size.width - 16), height: max(0, geo.size.height - 12),
-                           alignment: .bottomLeading)
-                    .padding(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
-                    .clipped()
-            }
+            let area = CGSize(width: max(0, geo.size.width - 12), height: max(0, geo.size.height - 12))
+            picture(area)
+                .onAppear { onArea(area) }
+                .onChange(of: area) { onArea(area) }
+        }
+    }
+
+    @ViewBuilder
+    private func picture(_ area: CGSize) -> some View {
+        if let preview, preview.cols > 0 {
+            let size = AttentionBoard.font(width: area.width, height: area.height,
+                                           cols: preview.cols, rows: preview.rows, cell: cell)
+            Text(preview.text)
+                .font(.custom(BoardPaneSizer.fontName, fixedSize: size))
+                .fixedSize(horizontal: true, vertical: true)
+                .frame(width: area.width, height: area.height, alignment: .topLeading)
+                .clipped()
+                .padding(6)
+        } else {
+            // area is 6 in from each side; an agent's words sit 8 in from the sides.
+            Text(preview?.text ?? "…")
+                .font(.system(size: 12))
+                .frame(width: max(0, area.width - 4), height: area.height, alignment: .bottomLeading)
+                .padding(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
+                .clipped()
         }
     }
 }

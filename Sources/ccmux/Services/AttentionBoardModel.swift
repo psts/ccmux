@@ -19,8 +19,9 @@ struct BoardPreview: Equatable {
     /// The claim this was read for; an agent is re-read only when it changes.
     var key = ""
     var text: String
-    /// The pane's width for a screen picture (scaled to fit), 0 for an agent.
+    /// The pane's size for a screen picture (scaled to fit), 0 for an agent.
     var cols: Int
+    var rows = 0
 }
 
 /// One window's attention board: which tiles are on show, which one is
@@ -39,12 +40,23 @@ final class AttentionBoardModel: ObservableObject {
     /// app; a test swaps both to drive the board without a daemon.
     var claimsFor: (Set<UUID>) -> [BoardClaim] = { RemoteSessionService.shared.boardClaims(members: $0) }
     var actedSink: (String) -> Void = { RemoteSessionService.shared.boardActed(paneId: $0) }
+    /// Where a screen tile's pane size goes, and whether it took. A test
+    /// swaps it, and the cell, to check the rule without a daemon.
+    var resizeSink: (String, BoardGrid, @escaping (Bool) -> Void) -> Void = { pane, grid, done in
+        Task { done(await BoardPaneSizer.resize(paneId: pane, grid: grid)) }
+    }
+    var cell = BoardPaneSizer.cell
 
     private let service = RemoteSessionService.shared
     private var timer: Timer?
     private var subscriptions: Set<AnyCancellable> = []
     private var fetching: Set<String> = []
     private var tabIds: [String: UUID] = [:]
+    /// The size each screen tile last sent its pane.
+    private var sized: [String: BoardGrid] = [:]
+    /// Each tile's last reported text area, so a size that did not take can
+    /// be sent again on a tick, not only when the tile changes size.
+    private var areas: [String: (width: Double, height: Double)] = [:]
 
     func start() {
         guard timer == nil else { return }
@@ -66,6 +78,8 @@ final class AttentionBoardModel: ObservableObject {
         timer?.invalidate()
         timer = nil
         subscriptions.removeAll()
+        sized.removeAll()
+        areas.removeAll()
         deactivate(acted: true)
     }
 
@@ -138,10 +152,52 @@ final class AttentionBoardModel: ObservableObject {
         return id
     }
 
+    // MARK: - Sizing
+
+    /// A screen tile's text area showed or changed size: size its pane to it
+    /// at the board's text size, as a lens sizes a pane to its screen. Once
+    /// per tile size, not every tick, so if another lens takes the pane over
+    /// the tile scales its text down rather than fight back. Leaving the board
+    /// gives the pane back: a workspace re-asserts its own size when it shows
+    /// the pane. A failed send is forgotten, so the next tick tries again
+    /// (retrySizing). Same rule as the web lens's sizePane.
+    func tileArea(_ pane: String, width: Double, height: Double) {
+        areas[pane] = (width, height)
+        guard pane != active, let c = visible.first(where: { $0.pane == pane }), !c.chat,
+              let grid = AttentionBoard.grid(width: width, height: height, cell: cell),
+              sized[pane] != grid else { return }
+        sized[pane] = grid
+        resizeSink(pane, grid) { [weak self] ok in
+            Task { @MainActor in self?.resized(pane, grid, ok: ok) }
+        }
+    }
+
+    /// The pane redraws at its new size; read it again once it has, rather
+    /// than show the old picture until the next tick.
+    private func resized(_ pane: String, _ grid: BoardGrid, ok: Bool) {
+        guard ok else {
+            if sized[pane] == grid { sized[pane] = nil }
+            return
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            self?.fetchPreviews()
+        }
+    }
+
+    /// Tiles whose last size did not take, sized again. Run every tick, as
+    /// the web lens re-runs sizePane on every paint.
+    func retrySizing() {
+        for (pane, area) in areas where sized[pane] == nil {
+            tileArea(pane, width: area.width, height: area.height)
+        }
+    }
+
     // MARK: - Previews
 
     private func tick() {
         refresh()
+        retrySizing()
         fetchPreviews()
         if Date().timeIntervalSince(clock) >= 30 { clock = Date() }
     }
@@ -177,12 +233,12 @@ enum BoardPreviewReader {
     }
 
     static func screenPreview(_ data: Data) -> BoardPreview? {
-        struct Snapshot: Decodable { let data: String; let cols: Int? }
+        struct Snapshot: Decodable { let data: String; let cols: Int?; let rows: Int? }
         guard let snap = try? JSONDecoder().decode(Snapshot.self, from: data),
               let raw = Data(base64Encoded: snap.data) else { return nil }
         let text = String(decoding: raw, as: UTF8.self)
             .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
-        return BoardPreview(text: text, cols: snap.cols ?? 80)
+        return BoardPreview(text: text, cols: snap.cols ?? 80, rows: snap.rows ?? 0)
     }
 
     /// The agent's last word (its tail, as the web lens shows it) and the
@@ -199,6 +255,37 @@ enum BoardPreviewReader {
             text += "\n\n? " + ask.questions.map(\.question).joined(separator: " / ")
         }
         return BoardPreview(text: text.trimmingCharacters(in: .whitespacesAndNewlines), cols: 0)
+    }
+}
+
+/// Sizes a screen tile's pane: POST /v1/panes/{id}/resize, the same resize a
+/// lens sends over its attach socket, for a tile that has none.
+enum BoardPaneSizer {
+    /// The terminal's font (RemoteTermController), so a tile reads like the
+    /// pane it opens into.
+    static let fontName = "Monaco"
+
+    /// One character at the board's text size, in the font BoardPreviewView
+    /// draws a screen with.
+    static let cell: BoardCell = {
+        let mono = NSFont(name: BoardPaneSizer.fontName, size: AttentionBoard.tileFont)
+            ?? NSFont.monospacedSystemFont(ofSize: AttentionBoard.tileFont, weight: .regular)
+        let width = ("M" as NSString).size(withAttributes: [.font: mono]).width
+        return BoardCell(width: Double(width), height: Double(NSLayoutManager().defaultLineHeight(for: mono)))
+    }()
+
+    static func resize(paneId: String, grid: BoardGrid) async -> Bool {
+        guard let url = URL(string: DaemonConfig.baseURL + "/v1/panes/\(paneId)/resize") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["cols": grid.cols, "rows": grid.rows])
+        guard let (_, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            NSLog("[ccmux board] could not size pane %@ to %dx%d; its tile scales instead", paneId, grid.cols, grid.rows)
+            return false
+        }
+        return true
     }
 }
 

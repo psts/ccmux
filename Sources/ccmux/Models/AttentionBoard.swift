@@ -40,8 +40,22 @@ struct BoardSnooze: Equatable {
     let until: Date
 }
 
+/// A pane size in characters: what a screen tile holds at the board's text size.
+struct BoardGrid: Equatable {
+    let cols: Int
+    let rows: Int
+}
+
+/// One character's box at AttentionBoard.tileFont, measured by each lens in
+/// the font it draws a screen tile with.
+struct BoardCell: Equatable {
+    let width: Double
+    let height: Double
+}
+
 /// The attention board's rules: which claims get a tile, in what order, how
-/// many, and when the set holds still. The web lens's board.js holds the same
+/// many, when the set holds still, and what size a screen tile's pane and
+/// text are. The web lens's board.js holds the same
 /// rules in the same words; its smoke_test.js and AttentionBoardTests check
 /// the same table, so change both together.
 enum AttentionBoard {
@@ -63,6 +77,29 @@ enum AttentionBoard {
 
     static func columns(for count: Int) -> Int {
         count <= 1 ? 1 : count <= 4 ? 2 : 3
+    }
+
+    /// A screen tile draws its text at the size the terminal does
+    /// (RemoteTermController: 12pt Monaco).
+    static let tileFont = 12.0
+
+    /// The pane size that fills a tile's text area at tileFont, or nil for a
+    /// tile too small to drive a pane to: a crushed pane is worse than small
+    /// text (the web lens's MIN_COLS).
+    static func grid(width: Double, height: Double, cell: BoardCell) -> BoardGrid? {
+        guard cell.width > 0, cell.height > 0 else { return nil }
+        let cols = Int(width / cell.width), rows = Int(height / cell.height)
+        return cols >= 20 && rows >= 5 ? BoardGrid(cols: cols, rows: rows) : nil
+    }
+
+    /// The text size that shows a cols x rows screen whole in a tile: tileFont
+    /// when the pane is the tile's size, smaller when another lens has it
+    /// bigger, never below 4.
+    static func font(width: Double, height: Double, cols: Int, rows: Int, cell: BoardCell) -> Double {
+        guard cols > 0, cell.width > 0, cell.height > 0 else { return tileFont }
+        let across = width / (Double(cols) * cell.width)
+        let down = rows > 0 ? height / (Double(rows) * cell.height) : 1
+        return max(4, tileFont * min(1, across, down))
     }
 
     static func isSnoozed(_ c: BoardClaim, in snoozes: [String: BoardSnooze], now: Date) -> Bool {
