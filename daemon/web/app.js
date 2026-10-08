@@ -1144,7 +1144,7 @@ function wsAttention(ws) {
 function ensureTerm() {
   if (state.term) return;
   state.term = new Terminal({
-    fontSize: 13,
+    fontSize: 12, // the Mac terminal's size (RemoteTermController), and the board's tiles
     fontFamily: 'Menlo, Monaco, "SF Mono", monospace',
     cursorBlink: true,
     scrollback: 5000,
