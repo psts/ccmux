@@ -16,7 +16,7 @@
 //   serve.mjs export --dir DIR --session ID      one conversation, JSON
 //
 // The daemon's pane identity (CCMUX_DAEMON_URL, CCMUX_PANE_ID) comes from the
-// pane environment, like the opencode plugin's; busy/idle/needs-input signals
+// pane environment, like the opencode plugin's; busy/idle/permission/question signals
 // go there so the tab badge, the sidebar flash and the lifecycle clock work.
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";

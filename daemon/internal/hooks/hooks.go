@@ -22,7 +22,7 @@ import (
 // for the lenses, and a session-lifecycle signal for the peers bus.
 type Router interface {
 	ResolvePane(paneID, cwd string) string
-	ApplyAttention(paneID string, att model.Attention)
+	ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason)
 	ApplySession(paneID, sessionID string, sig model.SessionSignal)
 }
 
@@ -221,7 +221,7 @@ func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
 		l.trace(msg, hooktrace.Line{Decision: "unresolved", Detail: "no pane matches this pane id or cwd"})
 		return
 	}
-	l.router.ApplyAttention(paneID, att)
+	l.router.ApplyAttention(paneID, att, claimReason(msg.Type, msg.NotificationType))
 	// Whether the human is being asked for something is what lets a later hold
 	// tell a stale flag from a live one. Recorded after the apply, so the
 	// tracker only ever learns about attention a pane actually took on.
@@ -327,6 +327,22 @@ func outcome(eventType, notificationType string) (model.Attention, bool) {
 	default:
 		return "", false
 	}
+}
+
+// claimReason says why a hook claims the human, for the attention board's
+// order: blocked (permission, question) before your-turn (finished). It is
+// read only alongside a claiming value from outcome; the manager drops it
+// from anything else, so a held Stop rewritten to idle carries none.
+func claimReason(eventType, notificationType string) model.AttentionReason {
+	switch {
+	case eventType == "permission_request", notificationType == "permission_prompt":
+		return model.ReasonPermission
+	case eventType == "ask_user_question", notificationType == "elicitation_dialog":
+		return model.ReasonQuestion
+	case endsTurn(eventType, notificationType):
+		return model.ReasonFinished
+	}
+	return model.ReasonNone
 }
 
 // sessionOutcome maps a hook event to what it proves about the pane's Claude

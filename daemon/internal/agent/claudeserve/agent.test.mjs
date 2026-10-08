@@ -354,7 +354,7 @@ test("a card carries a five-letter bus id and is relayed to the daemon; a failed
     { kind: "permission", id: perm.id, tool: "Bash", description: "print a greeting", preview: "printf hi" },
     { kind: "question", id: ques.id, text: "Tone: Which tone?\n  - Warm: friendly\n  - Dry\nPost now? (one or more)\n  - Yes" },
   ]);
-  assert.deepEqual(signals, ["needs-input", "needs-input"], "the relay is not a signal");
+  assert.deepEqual(signals, ["permission", "question"], "the relay is not a signal");
   for (const h of headers) assert.equal(h.authorization, "Bearer tok-p1", "every daemon call carries the pane token");
   assert.equal(out.filter((l) => l.includes(`card ${perm.id} relayed to 1 peer`)).length, 1);
   // The routes answer by the same id, so a bus reply the daemon hands over lands on the card.

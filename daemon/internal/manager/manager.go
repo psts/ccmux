@@ -887,26 +887,26 @@ func (m *Manager) markHostedClaude(paneID string) {
 // change to every lens attached to its workspace. For an agent pane the
 // Claude reading of busy (claudeBusy) is noted alongside; a harness that
 // reports its own busy flag uses ApplyAgentSignal instead.
-func (m *Manager) ApplyAttention(paneID string, att model.Attention) {
-	m.applyAttention(paneID, att, nil)
+func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason) {
+	m.applyAttention(paneID, att, reason, nil)
 }
 
 // ApplyAgentSignal is ApplyAttention for a harness that reports its own
 // busy/idle reading (the opencode plugin): attention and activity land in
 // one call, so no tick can read the pane between two writes. False when
 // the pane is unknown.
-func (m *Manager) ApplyAgentSignal(paneID string, att model.Attention, busy bool) bool {
-	return m.applyAttention(paneID, att, &busy)
+func (m *Manager) ApplyAgentSignal(paneID string, att model.Attention, reason model.AttentionReason, busy bool) bool {
+	return m.applyAttention(paneID, att, reason, &busy)
 }
 
-func (m *Manager) applyAttention(paneID string, att model.Attention, busy *bool) bool {
+func (m *Manager) applyAttention(paneID string, att model.Attention, reason model.AttentionReason, busy *bool) bool {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil {
 		m.mu.Unlock()
 		return false
 	}
-	p.Attention = att
+	setClaim(p, att, reason, nowMillis())
 	ctrl := e.ctrl
 	wsID := e.ws.ID
 	saved := *p
@@ -919,17 +919,34 @@ func (m *Manager) applyAttention(paneID string, att model.Attention, busy *bool)
 		m.activity.note(paneID, claudeBusy(att), time.Now())
 	}
 
-	if ctrl != nil {
-		ctrl.Broadcast(session.Event{Kind: "attention", PaneID: paneID, Attention: att})
-	}
-	// Fan the same change out globally so sidebar lenses flash without holding a
-	// per-workspace attach WebSocket.
-	m.events.publish(Event{Kind: "attention", WorkspaceID: wsID, PaneID: paneID, Attention: att})
+	m.publishAttention(ctrl, wsID, saved)
 	_ = m.store.SavePane(&saved)
 	// Then, if someone is already looking, take the flash straight back
 	// (attention_seen.go). After the broadcast, so pushes still see the hook.
 	m.retireIfWatched(wsID, att)
 	return true
+}
+
+// setClaim writes a pane's attention together with the claim it makes (why,
+// and since when). A value that claims nothing carries no reason, whatever
+// the caller passed: a hold rewriting a Stop to idle is not "finished".
+func setClaim(p *model.Pane, att model.Attention, reason model.AttentionReason, now int64) {
+	if !att.Claims() {
+		reason = model.ReasonNone
+	}
+	p.AttentionSince = model.NextClaimSince(*p, att, reason, now)
+	p.Attention, p.AttentionReason = att, reason
+}
+
+// publishAttention fans a pane's attention out to the lenses attached to its
+// workspace, and globally on the firehose so sidebar lenses and the attention
+// board see it without holding a per-workspace attach WebSocket.
+func (m *Manager) publishAttention(ctrl *session.Controller, wsID string, p model.Pane) {
+	if ctrl != nil {
+		ctrl.Broadcast(session.Event{Kind: "attention", PaneID: p.ID, Attention: p.Attention})
+	}
+	m.events.publish(Event{Kind: "attention", WorkspaceID: wsID, PaneID: p.ID,
+		Attention: p.Attention, Reason: p.AttentionReason, Since: p.AttentionSince})
 }
 
 func (m *Manager) findPaneLocked(paneID string) (*entry, *model.Pane) {

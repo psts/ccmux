@@ -90,7 +90,7 @@ func TestApplyAttention_WatchedWorkspaceIsRetiredAfterTheHookGoesOut(t *testing.
 	watched := true
 	m.Watched = func(wsID string) bool { return wsID == "ws" && watched }
 
-	m.ApplyAttention("idle", model.AttentionDone)
+	m.ApplyAttention("idle", model.AttentionDone, model.ReasonFinished)
 	if got := m.byID["ws"].ws.Panes[2].Attention; got != model.AttentionIdle {
 		t.Fatalf("watched done stored as %q, want idle", got)
 	}
@@ -103,13 +103,13 @@ func TestApplyAttention_WatchedWorkspaceIsRetiredAfterTheHookGoesOut(t *testing.
 		t.Fatalf("last frame %+v, want the retire to idle", last)
 	}
 
-	m.ApplyAttention("done", model.AttentionDone) // an agent pane
+	m.ApplyAttention("done", model.AttentionDone, model.ReasonFinished) // an agent pane
 	if act, ok := m.activity.get("done"); !ok || act.busy {
 		t.Fatalf("lifecycle read the shown value, not the hook: %+v ok=%v", act, ok)
 	}
 
 	watched = false
-	m.ApplyAttention("idle", model.AttentionNeedsInput)
+	m.ApplyAttention("idle", model.AttentionNeedsInput, model.ReasonPermission)
 	if got := m.byID["ws"].ws.Panes[2].Attention; got != model.AttentionNeedsInput {
 		t.Fatalf("unwatched needs_input stored as %q", got)
 	}
@@ -117,8 +117,79 @@ func TestApplyAttention_WatchedWorkspaceIsRetiredAfterTheHookGoesOut(t *testing.
 
 func TestApplyAttention_NoWatcherWiredShowsEverything(t *testing.T) {
 	m, _ := seenManager(t)
-	m.ApplyAttention("idle", model.AttentionDone)
+	m.ApplyAttention("idle", model.AttentionDone, model.ReasonFinished)
 	if got := m.byID["ws"].ws.Panes[2].Attention; got != model.AttentionDone {
 		t.Fatalf("with Watched nil, done stored as %q", got)
+	}
+}
+
+// A claim is stored with its reason and start, and the firehose carries both;
+// the start survives the idle reminder that follows a Stop, and a value that
+// claims nothing drops the reason whatever the caller passed.
+func TestApplyAttention_StampsTheClaim(t *testing.T) {
+	m, ch := seenManager(t)
+	pane := func() *model.Pane { return m.byID["ws"].ws.Panes[2] }
+
+	m.ApplyAttention("idle", model.AttentionDone, model.ReasonFinished)
+	since := pane().AttentionSince
+	if pane().AttentionReason != model.ReasonFinished || since == 0 {
+		t.Fatalf("after Stop: %+v", *pane())
+	}
+	ev := drain(ch)[0]
+	if ev.Reason != model.ReasonFinished || ev.Since != since {
+		t.Fatalf("firehose event %+v, want the claim alongside", ev)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	m.ApplyAttention("idle", model.AttentionNeedsInput, model.ReasonFinished)
+	if pane().AttentionSince != since {
+		t.Fatalf("idle reminder restarted the wait: %d, want %d", pane().AttentionSince, since)
+	}
+
+	m.ApplyAttention("idle", model.AttentionIdle, model.ReasonFinished)
+	if p := pane(); p.AttentionReason != model.ReasonNone || p.AttentionSince != 0 {
+		t.Fatalf("idle kept a claim: %+v", *p)
+	}
+}
+
+// The board's "done with this tile" retires that one pane and leaves the
+// workspace's other claims standing, unlike a look (MarkSeen).
+func TestMarkActed_RetiresOnePane(t *testing.T) {
+	m, ch := seenManager(t)
+	m.ApplyAttention("needs", model.AttentionNeedsInput, model.ReasonPermission)
+	drain(ch)
+
+	m.MarkActed("ws", "needs")
+
+	want := map[string]model.Attention{
+		"done": model.AttentionDone, "needs": model.AttentionIdle,
+		"idle": model.AttentionIdle, "running": model.AttentionRunning,
+	}
+	for _, p := range m.byID["ws"].ws.Panes {
+		if p.Attention != want[p.ID] {
+			t.Errorf("pane %s = %q, want %q", p.ID, p.Attention, want[p.ID])
+		}
+	}
+	if p := m.byID["ws"].ws.Panes[1]; p.AttentionReason != model.ReasonNone || p.AttentionSince != 0 {
+		t.Errorf("acted pane kept its claim: %+v", *p)
+	}
+	evs := drain(ch)
+	if len(evs) != 1 || evs[0].PaneID != "needs" || evs[0].Attention != model.AttentionIdle {
+		t.Fatalf("events %+v, want one idle for the acted pane", evs)
+	}
+}
+
+// An empty pane, an unknown one, or one that claims nothing retires nothing.
+func TestMarkActed_NothingToRetireIsQuiet(t *testing.T) {
+	m, ch := seenManager(t)
+	m.MarkActed("ws", "")
+	m.MarkActed("ws", "nope")
+	m.MarkActed("ws", "running")
+	m.MarkActed("other", "done")
+	if evs := drain(ch); len(evs) != 0 {
+		t.Fatalf("events: %+v", evs)
+	}
+	if got := m.byID["ws"].ws.Panes[0].Attention; got != model.AttentionDone {
+		t.Fatalf("done pane = %q, want untouched", got)
 	}
 }

@@ -56,6 +56,7 @@ type mockRouter struct {
 	// event rather than only dropping it, so "what did the pane end up
 	// showing" needs the sequence, not just a count.
 	atts     []model.Attention
+	reasons  []model.AttentionReason
 	calls    int
 	gotSig   model.SessionSignal
 	gotSess  string
@@ -73,11 +74,12 @@ func (r *mockRouter) ResolvePane(paneID, cwd string) string {
 	}
 	return ""
 }
-func (r *mockRouter) ApplyAttention(paneID string, att model.Attention) {
+func (r *mockRouter) ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.gotPane, r.gotAtt, r.calls = paneID, att, r.calls+1
 	r.atts = append(r.atts, att)
+	r.reasons = append(r.reasons, reason)
 }
 
 // applied reports whether any attention in the sequence matches.
@@ -116,6 +118,37 @@ func TestListener_RoutesMessage(t *testing.T) {
 	defer r.mu.Unlock()
 	if r.gotPane != "pane-xyz" || r.gotAtt != model.AttentionNeedsInput {
 		t.Fatalf("got (%q,%q), want (pane-xyz, needs_input)", r.gotPane, r.gotAtt)
+	}
+	if r.reasons[0] != model.ReasonPermission {
+		t.Fatalf("reason %q, want permission", r.reasons[0])
+	}
+}
+
+// claimReason sorts the attention board: blocked before your-turn. Every hook
+// that claims the human (see outcome) has a reason, and the ones that do not
+// claim have none.
+func TestClaimReason(t *testing.T) {
+	cases := []struct {
+		typ, notif string
+		want       model.AttentionReason
+	}{
+		{"permission_request", "", model.ReasonPermission},
+		{"notification", "permission_prompt", model.ReasonPermission},
+		{"ask_user_question", "", model.ReasonQuestion},
+		{"notification", "elicitation_dialog", model.ReasonQuestion},
+		{"stop", "", model.ReasonFinished},
+		{"notification", "idle_prompt", model.ReasonFinished},
+		{"user_prompt_submit", "", model.ReasonNone},
+		{"session_end", "", model.ReasonNone},
+	}
+	for _, c := range cases {
+		if got := claimReason(c.typ, c.notif); got != c.want {
+			t.Errorf("claimReason(%q,%q) = %q, want %q", c.typ, c.notif, got, c.want)
+		}
+		att, ok := outcome(c.typ, c.notif)
+		if claims := ok && att.Claims(); claims != (c.want != model.ReasonNone) {
+			t.Errorf("%s/%s: claims=%v but reason %q", c.typ, c.notif, claims, c.want)
+		}
 	}
 }
 

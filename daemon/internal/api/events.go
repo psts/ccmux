@@ -29,13 +29,21 @@ type firehoseMsg struct {
 	// how the Mac app and the push notifier drifted apart twice.
 	Alert     bool        `json:"alert,omitempty"`
 	Attention []attnEntry `json:"attention,omitempty"` // hello only
+	// Reason and Since describe the claim an attention frame makes (why, and
+	// since when in unix ms), which the attention board sorts by. Absent when
+	// the state claims nothing. Modelled here, not only passed through: a hub
+	// re-encodes every relayed attention frame into this struct.
+	Reason model.AttentionReason `json:"reason,omitempty"`
+	Since  int64                 `json:"since,omitempty"`
 }
 
 // attnEntry is one pane's current attention in the hello snapshot.
 type attnEntry struct {
-	Workspace string          `json:"workspace"`
-	Pane      string          `json:"pane"`
-	State     model.Attention `json:"state"`
+	Workspace string                `json:"workspace"`
+	Pane      string                `json:"pane"`
+	State     model.Attention       `json:"state"`
+	Reason    model.AttentionReason `json:"reason,omitempty"`
+	Since     int64                 `json:"since,omitempty"`
 }
 
 // events upgrades to a WebSocket and streams global attention changes for every
@@ -110,7 +118,8 @@ func currentAttention(mgr *manager.Manager) []attnEntry {
 			continue
 		}
 		for _, p := range ws.Panes {
-			out = append(out, attnEntry{Workspace: ws.ID, Pane: p.ID, State: p.Attention})
+			out = append(out, attnEntry{Workspace: ws.ID, Pane: p.ID, State: p.Attention,
+				Reason: p.AttentionReason, Since: p.AttentionSince})
 		}
 	}
 	return out
@@ -227,6 +236,7 @@ func (s *Server) firehoseFrame(ev manager.Event, reader firehoseReader) firehose
 	case "attention":
 		return firehoseMsg{
 			T: "attention", Workspace: ev.WorkspaceID, Pane: ev.PaneID, State: ev.Attention,
+			Reason: ev.Reason, Since: ev.Since,
 			Alert: s.alertsFor(reader, ev.WorkspaceID, ev.Attention),
 		}
 	default:

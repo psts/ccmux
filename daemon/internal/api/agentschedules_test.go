@@ -281,7 +281,7 @@ func TestSchedules_TickPushesIntoIdleAndWaitsForBusy(t *testing.T) {
 	}
 
 	// Busy: the row waits, nothing is pushed, nothing is stamped.
-	f.srv.mgr.ApplyAgentSignal(pane.ID, model.AttentionRunning, true)
+	f.srv.mgr.ApplyAgentSignal(pane.ID, model.AttentionRunning, model.ReasonNone, true)
 	waiting, _ := f.st.AddAgentSchedule(store.AgentSchedule{WindowID: f.winID, Agent: "x-poster", Cron: "@hourly", Prompt: "later", NextRunAt: now.Add(-time.Second).UnixMilli()})
 	f.srv.fireDueSchedules()
 	if prompts, _, _ := oc.Recorded(); len(prompts) != 1 {

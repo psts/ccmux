@@ -329,7 +329,7 @@ export class Agent {
     return new Promise((resolve) => {
       this.permissions.set(id, { request, resolve, suggestions });
       this.broadcast({ type: "permission.asked", properties: request });
-      this.signal("needs-input");
+      this.signal("permission");
       this.relayAsk({ kind: "permission", id, tool: name, description: extra.description || extra.title || request.patterns[0], preview: request.patterns[0] });
       extra.signal?.addEventListener("abort", () => this.replyPermission(id, "reject"), { once: true });
     });
@@ -368,7 +368,7 @@ export class Agent {
     return new Promise((resolve) => {
       this.questions.set(id, { request, resolve, input });
       this.broadcast({ type: "question.asked", properties: request });
-      this.signal("needs-input");
+      this.signal("question");
       this.relayAsk({ kind: "question", id, text: questionCardText(request) });
       extra.signal?.addEventListener("abort", () => this.rejectQuestion(id), { once: true });
     });

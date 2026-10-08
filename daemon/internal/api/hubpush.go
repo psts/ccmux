@@ -370,5 +370,6 @@ func attentionEventFromFrame(raw []byte) (manager.Event, bool) {
 	if json.Unmarshal(raw, &m) != nil || m.T != "attention" {
 		return manager.Event{}, false
 	}
-	return manager.Event{Kind: "attention", WorkspaceID: m.Workspace, PaneID: m.Pane, Attention: m.State}, true
+	return manager.Event{Kind: "attention", WorkspaceID: m.Workspace, PaneID: m.Pane, Attention: m.State,
+		Reason: m.Reason, Since: m.Since}, true
 }

@@ -23,6 +23,10 @@ type Event struct {
 	WorkspaceID string
 	PaneID      string          // set for "attention"
 	Attention   model.Attention // set for "attention"
+	// Reason and Since describe the claim an "attention" makes (model.Pane's
+	// AttentionReason and AttentionSince); empty when it claims nothing.
+	Reason model.AttentionReason
+	Since  int64
 }
 
 // firehose is a non-blocking pub/sub hub for global Events. It mirrors the

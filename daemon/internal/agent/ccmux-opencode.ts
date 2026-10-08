@@ -21,7 +21,7 @@ export const CcmuxPlugin: Plugin = async () => {
   const daemon = process.env.CCMUX_DAEMON_URL
   const pane = process.env.CCMUX_PANE_ID
   if (!daemon || !pane) return {}
-  const signal = async (state: "busy" | "idle" | "needs-input" | "replied") => {
+  const signal = async (state: "busy" | "idle" | "permission" | "question" | "replied") => {
     try {
       await fetch(`${daemon}/v1/panes/${pane}/agent-signal`, {
         method: "POST",
@@ -56,8 +56,10 @@ export const CcmuxPlugin: Plugin = async () => {
           break
         case "permission.asked": // opencode ≥ 1.18 (v2 events)
         case "permission.updated": // older event name, kept so both work
+          await signal("permission")
+          break
         case "question.asked":
-          await signal("needs-input")
+          await signal("question")
           break
         case "permission.replied":
         case "question.replied":

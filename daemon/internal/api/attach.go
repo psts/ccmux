@@ -462,6 +462,11 @@ func (s *Server) readLoop(cancel context.CancelFunc, conn *websocket.Conn, ctrl 
 			rs.request(msg.Pane)
 		case "focus":
 			s.applyFocus(wsID, connID, msg)
+		case "acted":
+			// The attention board's "done with this tile": the human clicked
+			// into this pane and has moved on. Retires that one pane only
+			// (manager.MarkActed), never the workspace a focus would.
+			s.mgr.MarkActed(wsID, msg.Pane)
 		}
 	}
 }

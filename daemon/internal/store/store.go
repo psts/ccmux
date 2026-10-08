@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS panes (
   status TEXT, attention TEXT, is_dev INTEGER DEFAULT 0,
   dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0,
   cols INTEGER DEFAULT 0, rows INTEGER DEFAULT 0, harness TEXT DEFAULT '',
-  agent TEXT DEFAULT '', agent_version TEXT DEFAULT '', position INTEGER DEFAULT 0
+  agent TEXT DEFAULT '', agent_version TEXT DEFAULT '', position INTEGER DEFAULT 0,
+  attention_reason TEXT DEFAULT '', attention_since INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -280,7 +281,24 @@ func erroringMigrations(db *sql.DB) error {
 	if err := migrateAgentColumns(db); err != nil {
 		return err
 	}
+	if err := migrateAttentionClaim(db); err != nil {
+		return err
+	}
 	return migrateWindowOpenDevices(db)
+}
+
+// migrateAttentionClaim adds why and since when to a pane's attention, the
+// attention board's order. Strict like cols/rows: the widened SELECT needs
+// both. An existing needs_input row reads as a claim with no reason and no
+// start, which the board shows as blocked; the next hook restamps it.
+func migrateAttentionClaim(db *sql.DB) error {
+	for _, col := range []string{"attention_reason TEXT DEFAULT ''", "attention_since INTEGER DEFAULT 0"} {
+		_, err := db.Exec(`ALTER TABLE panes ADD COLUMN ` + col)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate panes.%s: %w", strings.Fields(col)[0], err)
+		}
+	}
+	return nil
 }
 
 // migrateWindowOpenDevices moves window_open from one row per (login, window)
@@ -402,13 +420,14 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo_path=excluded.repo_path,
 // position (tab order) through UpdatePanePositions, for the same reason.
 func (s *SQLite) SavePane(p *model.Pane) error {
 	_, err := s.db.Exec(`
-INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version,position)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO panes (id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version,position,attention_reason,attention_since)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET title=excluded.title, cwd=excluded.cwd,
   startup_command=excluded.startup_command, status=excluded.status, attention=excluded.attention,
   is_dev=excluded.is_dev, dormant=excluded.dormant, hosted_claude=excluded.hosted_claude,
-  harness=excluded.harness, agent=excluded.agent, agent_version=excluded.agent_version`,
-		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows, p.Harness, p.Agent, p.AgentVersion, p.Position)
+  harness=excluded.harness, agent=excluded.agent, agent_version=excluded.agent_version,
+  attention_reason=excluded.attention_reason, attention_since=excluded.attention_since`,
+		p.ID, p.WorkspaceID, p.Title, p.CWD, p.StartupCommand, p.CreatedBy, p.CreatedAt, p.Status, p.Attention, p.DevServer, p.Dormant, p.HostedClaude, p.Cols, p.Rows, p.Harness, p.Agent, p.AgentVersion, p.Position, p.AttentionReason, p.AttentionSince)
 	return err
 }
 
@@ -909,14 +928,14 @@ func (s *SQLite) Load() ([]*model.Workspace, error) {
 }
 
 func (s *SQLite) attachPanes(byID map[string]*model.Workspace) error {
-	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version,position FROM panes ORDER BY position, created_at`)
+	rows, err := s.db.Query(`SELECT id,workspace_id,title,cwd,startup_command,created_by,created_at,status,attention,is_dev,dormant,hosted_claude,cols,rows,harness,agent,agent_version,position,attention_reason,attention_since FROM panes ORDER BY position, created_at`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		p := &model.Pane{}
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows, &p.Harness, &p.Agent, &p.AgentVersion, &p.Position); err != nil {
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Title, &p.CWD, &p.StartupCommand, &p.CreatedBy, &p.CreatedAt, &p.Status, &p.Attention, &p.DevServer, &p.Dormant, &p.HostedClaude, &p.Cols, &p.Rows, &p.Harness, &p.Agent, &p.AgentVersion, &p.Position, &p.AttentionReason, &p.AttentionSince); err != nil {
 			return err
 		}
 		if w := byID[p.WorkspaceID]; w != nil {

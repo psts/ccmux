@@ -616,7 +616,7 @@ func TestAPI_FocusRetiresTheFlashEverywhere(t *testing.T) {
 	}
 
 	// Nobody is looking yet, so the finish flashes.
-	mgr.ApplyAttention(pane0, model.AttentionDone)
+	mgr.ApplyAttention(pane0, model.AttentionDone, model.ReasonFinished)
 	waitAttention(t, other, pane0, model.AttentionDone)
 
 	// A pane still named from a locked screen is not a look: nothing retires.
@@ -635,7 +635,7 @@ func TestAPI_FocusRetiresTheFlashEverywhere(t *testing.T) {
 
 	// And while the first lens keeps looking, a new finish is taken back at
 	// once: the hook's frame still goes out (pushes read it), idle follows.
-	mgr.ApplyAttention(pane0, model.AttentionDone)
+	mgr.ApplyAttention(pane0, model.AttentionDone, model.ReasonFinished)
 	waitAttention(t, other, pane0, model.AttentionDone)
 	waitAttention(t, other, pane0, model.AttentionIdle)
 }

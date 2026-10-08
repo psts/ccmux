@@ -79,3 +79,41 @@ func TestLegacyAgentPanesBecomePlainOnOpen(t *testing.T) {
 		}
 	}
 }
+
+// A pane's claim (why and since when) survives a reopen, and the strict
+// migration tolerates running again on a registry that already has it.
+func TestAttentionClaimPersistsAcrossReopen(t *testing.T) {
+	path := t.TempDir() + "/reg.db"
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveWorkspace(&model.Workspace{ID: "w1", Name: "p", RepoPath: "/r"}); err != nil {
+		t.Fatal(err)
+	}
+	p := &model.Pane{ID: "p1", WorkspaceID: "w1", Attention: model.AttentionNeedsInput,
+		AttentionReason: model.ReasonQuestion, AttentionSince: 1234}
+	if err := s.SavePane(p); err != nil {
+		t.Fatal(err)
+	}
+	// An update writes the claim too, not only the first insert.
+	p.AttentionReason, p.AttentionSince = model.ReasonPermission, 5678
+	if err := s.SavePane(p); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	wss, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := wss[0].Panes[0]
+	if got.AttentionReason != model.ReasonPermission || got.AttentionSince != 5678 {
+		t.Fatalf("pane after reopen: %+v", got)
+	}
+}

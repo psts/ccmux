@@ -68,6 +68,41 @@ const (
 	AttentionDone       Attention = "done"        // finished a task
 )
 
+// Claims reports whether an attention value asks something of a human. running
+// and idle are ambient; done and needs_input are what a flash, a push and the
+// attention board are about.
+func (a Attention) Claims() bool {
+	return a == AttentionDone || a == AttentionNeedsInput
+}
+
+// AttentionReason says why a pane claims a human, which the attention board
+// sorts by: a pane that cannot go on (permission, question) comes before one
+// that is only waiting for its next instruction (finished). "" on a pane that
+// claims nothing, and on a needs_input from a harness too old to say which.
+type AttentionReason string
+
+const (
+	ReasonNone       AttentionReason = ""
+	ReasonPermission AttentionReason = "permission" // wants to run something
+	ReasonQuestion   AttentionReason = "question"   // asked the human a question
+	ReasonFinished   AttentionReason = "finished"   // turn over, your move
+)
+
+// NextClaimSince is when a pane's claim on a human began, for the board's
+// oldest-first order: kept while the same claim carries on (a Stop and then
+// Claude's idle reminder a minute later are one wait, not two), restarted at
+// now for a new one, and zero once the pane claims nothing.
+func NextClaimSince(prev Pane, att Attention, reason AttentionReason, now int64) int64 {
+	switch {
+	case !att.Claims():
+		return 0
+	case prev.Attention.Claims() && prev.AttentionReason == reason && prev.AttentionSince != 0:
+		return prev.AttentionSince
+	default:
+		return now
+	}
+}
+
 // Workspace is a project working context: one tmux session, N panes.
 type Workspace struct {
 	ID            string  `json:"id"`
@@ -316,6 +351,11 @@ type Pane struct {
 	Position  int       `json:"position"`
 	Status    Status    `json:"status"`
 	Attention Attention `json:"attention"`
+	// AttentionReason and AttentionSince describe the claim Attention makes
+	// (see NextClaimSince): why, and since when in unix milliseconds. Both
+	// empty when the pane claims nothing.
+	AttentionReason AttentionReason `json:"attentionReason,omitempty"`
+	AttentionSince  int64           `json:"attentionSince,omitempty"`
 	// DevServer marks the workspace's dev-server pane (spawned by ▶, killed by
 	// ■). Its presence is the "running" signal lenses render.
 	DevServer bool `json:"devServer,omitempty"`

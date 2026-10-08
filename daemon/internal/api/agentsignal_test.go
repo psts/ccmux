@@ -29,19 +29,20 @@ func TestAgentSignal_ValidationAndUnknownPane(t *testing.T) {
 }
 
 func TestAgentSignal_OutcomeTable(t *testing.T) {
-	for state, want := range map[string]struct {
-		att  model.Attention
-		busy bool
-	}{
-		"busy": {model.AttentionRunning, true}, "idle": {model.AttentionDone, false},
-		"needs-input": {model.AttentionNeedsInput, true}, "replied": {model.AttentionRunning, true},
+	for state, want := range map[string]agentSignalOutcome{
+		"busy":        {model.AttentionRunning, model.ReasonNone, true},
+		"idle":        {model.AttentionDone, model.ReasonFinished, false},
+		"permission":  {model.AttentionNeedsInput, model.ReasonPermission, true},
+		"question":    {model.AttentionNeedsInput, model.ReasonQuestion, true},
+		"needs-input": {model.AttentionNeedsInput, model.ReasonNone, true},
+		"replied":     {model.AttentionRunning, model.ReasonNone, true},
 	} {
-		att, busy, ok := agentSignalOutcome(state)
-		if !ok || att != want.att || busy != want.busy {
-			t.Errorf("%s = %s, %v, %v; want %s, %v", state, att, busy, ok, want.att, want.busy)
+		got, ok := agentSignals[state]
+		if !ok || got != want {
+			t.Errorf("%s = %+v, %v; want %+v", state, got, ok, want)
 		}
 	}
-	if _, _, ok := agentSignalOutcome("sleepy"); ok {
+	if _, ok := agentSignals["sleepy"]; ok {
 		t.Error("unknown state accepted")
 	}
 }
