@@ -92,9 +92,14 @@ final class RemoteSessionService: ObservableObject {
     /// One global firehose (`/v1/events`) drives the sidebar attention flash for
     /// every hosted workspace, attached or not — the single hosted-attention source.
     private let events = DaemonEventsClient()
-    /// Latest firehose attention per daemon workspace id, retained so a workspace
-    /// that materializes (or rebuilds) after its attention arrived still flashes.
-    private var latestAttention: [String: DaemonAttention] = [:]
+    /// Latest firehose attention per PANE (see PaneClaimStore). Retained so a
+    /// workspace that materializes (or rebuilds) after its attention arrived
+    /// still flashes; the attention board is built from it.
+    let claims = PaneClaimStore()
+    private var paneAttention: [String: [String: DaemonAttentionEntry]] {
+        get { claims.byWorkspace }
+        set { claims.byWorkspace = newValue }
+    }
 
     // Layout-blob sync (Phase 7): each hosted workspace's split arrangement is
     // versioned by the daemon; we restore it on build and PUT real edits back.
@@ -248,9 +253,13 @@ final class RemoteSessionService: ObservableObject {
     private func handleFirehose(_ event: DaemonFirehoseEvent) {
         switch event {
         case .hello(let entries):
-            for e in entries { applyAttention(daemonWsId: e.workspace, state: e.state, notify: false) }
-        case .attention(let workspace, _, let state, let alert):
-            applyAttention(daemonWsId: workspace, state: state, notify: alert)
+            // A snapshot of every live pane: replace, so a pane that changed
+            // while the socket was down does not keep its old claim.
+            paneAttention = Dictionary(grouping: entries, by: \.workspace)
+                .mapValues { Dictionary($0.map { ($0.pane, $0) }, uniquingKeysWith: { _, last in last }) }
+            for daemonWsId in daemonIds.values { refreshFlash(daemonWsId: daemonWsId) }
+        case .attention(let entry, let alert):
+            applyAttention(entry, notify: alert)
         case .workspaceChanged:
             // A workspace appeared/vanished/changed live↔cold elsewhere — pick it up
             // now rather than at the next poll.
@@ -290,17 +299,47 @@ final class RemoteSessionService: ObservableObject {
     /// to decide for itself here and drifted from the daemon twice — most recently
     /// alerting on every `done` long after the daemon had stopped pushing on them,
     /// which turned one burst of background agents into an alert per agent.
-    private func applyAttention(daemonWsId: String, state: DaemonAttention, notify: Bool) {
-        latestAttention[daemonWsId] = state
-        let appId = RemoteWorkspaceBuilder.workspaceUUID(daemonWsId)
-        guard let monitor = attentionMonitors[appId] else { return }
-        let appState = state.appAttentionState
-        guard appState != .none else { monitor.clear(); return }
-        if isWatched(appId) { monitor.clear(); return }
-        monitor.set(appState)
+    private func applyAttention(_ entry: DaemonAttentionEntry, notify: Bool) {
+        paneAttention[entry.workspace, default: [:]][entry.pane] = entry
+        refreshFlash(daemonWsId: entry.workspace)
+        let appId = RemoteWorkspaceBuilder.workspaceUUID(entry.workspace)
+        let appState = entry.state.appAttentionState
+        guard appState != .none, attentionMonitors[appId] != nil, !isWatched(appId) else { return }
         if notify, let ws = workspaces.first(where: { $0.id == appId }) {
             onAttention?(ws, appState)
         }
+    }
+
+    /// The row signal for one workspace, rolled up from its panes the way the
+    /// web lens's `wsAttention` does: needs_input beats done, and only panes
+    /// the workspace still lists count.
+    static func rollup(_ panes: [String: DaemonAttentionEntry]?) -> AttentionState {
+        let states = (panes ?? [:]).values.map { $0.state.appAttentionState }
+        if states.contains(.needsInput) { return .needsInput }
+        return states.contains(.done) ? .done : .none
+    }
+
+    /// Put a workspace's sidebar flash in line with its panes. Watching it
+    /// clears the flash, as before; the daemon retires the claims themselves.
+    private func refreshFlash(daemonWsId: String) {
+        let appId = RemoteWorkspaceBuilder.workspaceUUID(daemonWsId)
+        guard let monitor = attentionMonitors[appId] else { return }
+        let state = Self.rollup(paneAttention[daemonWsId])
+        if state == .none || isWatched(appId) { monitor.clear() } else { monitor.set(state) }
+    }
+
+    /// Retained attention minus the workspaces the daemon no longer lists live
+    /// and the panes they no longer list, so a closed pane's stale claim keeps
+    /// no row lit and no tile on the board. A pane-signature rebuild keeps it.
+    static func prunedAttention(_ current: [String: [String: DaemonAttentionEntry]],
+                                live: [DaemonWorkspace]) -> [String: [String: DaemonAttentionEntry]] {
+        var out: [String: [String: DaemonAttentionEntry]] = [:]
+        for dw in live {
+            guard let panes = current[dw.id] else { continue }
+            let listed = Set(dw.panes.map(\.id))
+            out[dw.id] = panes.filter { listed.contains($0.key) }
+        }
+        return out
     }
 
     // MARK: - View access
@@ -920,8 +959,11 @@ final class RemoteSessionService: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         // Prune retained attention for workspaces the daemon no longer lists live,
         // while keeping it across a mere pane-signature rebuild (still live).
-        let liveDaemonIds = Set(live.map { $0.id })
-        latestAttention = latestAttention.filter { liveDaemonIds.contains($0.key) }
+        let pruned = Self.prunedAttention(paneAttention, live: live)
+        if pruned != paneAttention {
+            paneAttention = pruned
+            for dw in live { refreshFlash(daemonWsId: dw.id) }
+        }
         let liveIds = Set(live.map { RemoteWorkspaceBuilder.workspaceUUID($0.id) })
         for appId in Array(attachments.keys) where !liveIds.contains(appId) {
             removeWorkspace(appId)
@@ -1033,8 +1075,9 @@ final class RemoteSessionService: ObservableObject {
         // Re-seed the flash from the firehose's retained state, so a workspace that
         // materializes (or rebuilds on a pane change) after its attention arrived
         // still shows it. Visual only — no notification when merely (re)building.
-        if let retained = latestAttention[dw.id], retained.appAttentionState != .none, !isWatched(appId) {
-            monitor.set(retained.appAttentionState)
+        let retained = Self.rollup(paneAttention[dw.id])
+        if retained != .none, !isWatched(appId) {
+            monitor.set(retained)
         }
         let controller = SplitTreeController(workingDirectory: dw.repoPath)
         controller.tree = tree
@@ -1805,4 +1848,17 @@ struct AgentPaneRef: Equatable {
     static func hasChat(_ harness: String) -> Bool {
         harness == "opencode" || harness == "claude"
     }
+}
+
+/// Every hosted pane's attention, grouped by daemon workspace id (workspace →
+/// pane → entry), as the firehose last reported it. Per pane, like the web
+/// lens's `state.claims`: one pane going idle must not wipe another pane's
+/// needs_input, which one value per workspace did.
+///
+/// Its own observable rather than a published field of RemoteSessionService:
+/// a frame arrives for any pane anywhere in the fleet, and every terminal view
+/// observes the service, so each frame would redraw them all. Only the
+/// attention board and its sidebar row observe this.
+final class PaneClaimStore: ObservableObject {
+    @Published var byWorkspace: [String: [String: DaemonAttentionEntry]] = [:]
 }

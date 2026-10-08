@@ -914,21 +914,48 @@ struct DaemonFirehoseFrame: Decodable {
     /// opposed to only a sidebar flash. Absent on older daemons, which is why it
     /// is optional and defaults to false — an old daemon simply never alerts.
     let alert: Bool?
+    /// Why the pane claims a human, and since when (unix ms): the attention
+    /// board's order. Absent on older daemons and on states that claim nothing.
+    let reason: String?
+    let since: Int64?
 }
 
-/// One pane's current attention in the firehose `hello` snapshot.
-struct DaemonAttentionEntry: Decodable {
+/// One pane's attention: an entry of the firehose `hello` snapshot, or the
+/// payload of a live `attention` frame. `reason` is "permission", "question",
+/// "finished" or "" (claims nothing, or an agent too old to say which), and
+/// `since` is when the claim began in unix ms, 0 when unknown.
+struct DaemonAttentionEntry: Decodable, Equatable {
     let workspace: String
     let pane: String
     let state: DaemonAttention
+    let reason: String
+    let since: Int64
 
-    private enum CodingKeys: String, CodingKey { case workspace, pane, state }
+    private enum CodingKeys: String, CodingKey { case workspace, pane, state, reason, since }
+
+    init(workspace: String, pane: String, state: DaemonAttention, reason: String = "", since: Int64 = 0) {
+        self.workspace = workspace
+        self.pane = pane
+        self.state = state
+        self.reason = reason
+        self.since = since
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         workspace = try c.decodeIfPresent(String.self, forKey: .workspace) ?? ""
         pane = try c.decodeIfPresent(String.self, forKey: .pane) ?? ""
         state = try c.decodeIfPresent(DaemonAttention.self, forKey: .state) ?? .unknown
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        since = try c.decodeIfPresent(Int64.self, forKey: .since) ?? 0
+    }
+
+    /// Whether the pane is blocked on the human (a permission or a question)
+    /// rather than waiting for its next instruction. A needs_input with no
+    /// reason comes from an agent that predates reasons, and every such signal
+    /// was a permission or a question.
+    var isBlocked: Bool {
+        state == .needsInput && reason != "finished"
     }
 }
 
@@ -937,7 +964,7 @@ struct DaemonAttentionEntry: Decodable {
 /// lens can flash the right sidebar row without being attached to it.
 enum DaemonFirehoseEvent {
     case hello(entries: [DaemonAttentionEntry])
-    case attention(workspace: String, pane: String, state: DaemonAttention, alert: Bool)
+    case attention(DaemonAttentionEntry, alert: Bool)
     /// A workspace was added/removed or changed live↔cold — the lens re-fetches the
     /// list instead of waiting for its poll.
     case workspaceChanged(kind: String, workspace: String)
@@ -948,8 +975,10 @@ enum DaemonFirehoseEvent {
         case "hello":
             self = .hello(entries: frame.attention ?? [])
         case "attention":
-            self = .attention(workspace: frame.workspace ?? "", pane: frame.pane ?? "",
-                              state: frame.state ?? .unknown, alert: frame.alert ?? false)
+            let entry = DaemonAttentionEntry(
+                workspace: frame.workspace ?? "", pane: frame.pane ?? "", state: frame.state ?? .unknown,
+                reason: frame.reason ?? "", since: frame.since ?? 0)
+            self = .attention(entry, alert: frame.alert ?? false)
         case "workspace-added", "workspace-removed", "workspace-status", "workspace-git":
             self = .workspaceChanged(kind: frame.t, workspace: frame.workspace ?? "")
         default:
@@ -983,6 +1012,10 @@ enum DaemonCommand: Equatable {
     /// forever. Older daemons ignore the frame (unknown `t` falls through their
     /// read switch), which degrades to the pre-repaint behaviour.
     case repaint(pane: String)
+    /// The attention board's "done with this tile": the human clicked into this
+    /// pane's tile and moved on, so the daemon retires its claim, for this pane
+    /// only (a focus would retire the whole workspace). Older daemons ignore it.
+    case acted(pane: String)
 
     func jsonData() -> Data? {
         var obj: [String: Any]
@@ -995,6 +1028,8 @@ enum DaemonCommand: Equatable {
             obj = ["t": "focus", "pane": pane, "present": present]
         case .repaint(let pane):
             obj = ["t": "repaint", "pane": pane]
+        case .acted(let pane):
+            obj = ["t": "acted", "pane": pane]
         }
         return try? JSONSerialization.data(withJSONObject: obj)
     }

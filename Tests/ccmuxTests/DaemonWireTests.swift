@@ -278,12 +278,34 @@ final class DaemonWireTests: XCTestCase {
 
     func testFirehoseAttentionCarriesWorkspace() {
         let text = #"{"t":"attention","workspace":"ws-9","pane":"p3","state":"needs_input"}"#
-        guard case .attention(let workspace, let pane, let state, _)? = DaemonFirehoseEvent.decode(text: text) else {
+        guard case .attention(let entry, _)? = DaemonFirehoseEvent.decode(text: text) else {
             return XCTFail("expected attention")
         }
-        XCTAssertEqual(workspace, "ws-9")
-        XCTAssertEqual(pane, "p3")
-        XCTAssertEqual(state, .needsInput)
+        XCTAssertEqual(entry.workspace, "ws-9")
+        XCTAssertEqual(entry.pane, "p3")
+        XCTAssertEqual(entry.state, .needsInput)
+        XCTAssertEqual(entry.reason, "", "an older daemon sends no reason")
+        XCTAssertEqual(entry.since, 0)
+        XCTAssertTrue(entry.isBlocked, "a needs_input with no reason was a permission or a question")
+    }
+
+    /// The claim (why, since when) rides the live frame and the hello entries;
+    /// the attention board sorts by it.
+    func testFirehoseAttentionCarriesTheClaim() {
+        let text = #"{"t":"attention","workspace":"w","pane":"p","state":"needs_input","reason":"finished","since":1700000000123}"#
+        guard case .attention(let entry, _)? = DaemonFirehoseEvent.decode(text: text) else {
+            return XCTFail("expected attention")
+        }
+        XCTAssertEqual(entry.reason, "finished")
+        XCTAssertEqual(entry.since, 1700000000123)
+        XCTAssertFalse(entry.isBlocked, "Claude's idle reminder is your turn, not a block")
+
+        let hello = #"{"t":"hello","attention":[{"workspace":"w","pane":"p","state":"done","reason":"finished","since":5}]}"#
+        guard case .hello(let entries)? = DaemonFirehoseEvent.decode(text: hello) else {
+            return XCTFail("expected hello")
+        }
+        XCTAssertEqual(entries.first?.reason, "finished")
+        XCTAssertEqual(entries.first?.since, 5)
     }
 
     func testFirehoseWorkspaceLifecycleDecodes() {
@@ -354,6 +376,17 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertEqual(obj.count, 2, "repaint is pane-only; stray fields invite contract drift")
     }
 
+    /// The board's "done with this tile" names exactly one pane. The daemon
+    /// matches `t == "acted"`; anything else falls through its read switch.
+    func testActedCommandEncodes() throws {
+        let obj = try XCTUnwrap(DaemonCommand.acted(pane: "p5").jsonData().flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        })
+        XCTAssertEqual(obj["t"] as? String, "acted")
+        XCTAssertEqual(obj["pane"] as? String, "p5")
+        XCTAssertEqual(obj.count, 2)
+    }
+
     /// Presence must be sent even when it is false and no pane is focused. The
     /// daemon reads an absent `present` as "this lens is too old to know" and falls
     /// back to treating a focused pane as presence — so omitting it here would
@@ -378,7 +411,7 @@ final class DaemonWireTests: XCTestCase {
 final class FirehoseAlertFlagTests: XCTestCase {
     func testAlertFlagIsDecoded() {
         let text = #"{"t":"attention","workspace":"w1","pane":"p1","state":"needs_input","alert":true}"#
-        guard case .attention(_, _, _, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
+        guard case .attention(_, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
             return XCTFail("did not decode as an attention event")
         }
         XCTAssertTrue(alert, "the daemon asked for an alert and the app must carry it through")
@@ -388,7 +421,7 @@ final class FirehoseAlertFlagTests: XCTestCase {
     /// not alert" rather than crashing or defaulting to noisy.
     func testMissingAlertFlagDefaultsToSilent() {
         let text = #"{"t":"attention","workspace":"w1","pane":"p1","state":"needs_input"}"#
-        guard case .attention(_, _, _, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
+        guard case .attention(_, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
             return XCTFail("an attention frame without the flag must still decode")
         }
         XCTAssertFalse(alert, "an absent flag means an older daemon; stay quiet rather than guess")
@@ -396,7 +429,7 @@ final class FirehoseAlertFlagTests: XCTestCase {
 
     func testAlertFalseIsRespected() {
         let text = #"{"t":"attention","workspace":"w1","pane":"p1","state":"needs_input","alert":false}"#
-        guard case .attention(_, _, _, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
+        guard case .attention(_, let alert)? = DaemonFirehoseEvent.decode(text: text) else {
             return XCTFail("did not decode as an attention event")
         }
         XCTAssertFalse(alert)
