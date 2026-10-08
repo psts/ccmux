@@ -2000,6 +2000,10 @@ function wireLLMSettings() {
   // back out of input fields is what made every keystroke PUT the whole list.
   let accounts = [];
   let statuses = {};
+  // Accounts with a Check in flight. Kept here, not on the button, because
+  // any redraw rebuilds every row: a button-only flag came back enabled and
+  // let a second probe of the same account start mid-check.
+  const checking = new Set();
   let sidecars = {};
 
   function accountRow(a, i) {
@@ -2013,10 +2017,13 @@ function wireLLMSettings() {
       `<span class="llm-kind">${esc(a.kind || "anthropic")}</span>` +
       `<button class="ord-up" type="button" title="Try this account earlier">\u25b2</button>` +
       `<button class="ord-dn" type="button" title="Try this account later">\u25bc</button>` +
+      (checkable(a) ? `<button class="rule-add llm-check" type="button" title="Ask Anthropic for this account's usage now. A limit that lifted early (a manual reset) frees the account at once."${checking.has(a.name) ? " disabled" : ""}>${checking.has(a.name) ? "Checking…" : "Check"}</button>` : "") +
       `<button class="rule-add llm-edit" type="button">Edit</button>` +
       `<button class="rule-del" type="button" title="Remove account">&times;</button>` +
       `</div>` +
       (status ? `<div class="entry-line llm-acct-status">${esc(status)}</div>` : "");
+    const checkBtn = row.querySelector(".llm-check");
+    if (checkBtn) checkBtn.onclick = () => checkAccount(a.name);
     row.querySelector(".llm-edit").onclick = () => openAccount(i);
     row.querySelector(".ord-up").onclick = () => moveAccount(i, -1);
     row.querySelector(".ord-dn").onclick = () => moveAccount(i, 1);
@@ -2030,6 +2037,38 @@ function wireLLMSettings() {
         .catch((e) => { statusEl.textContent = "Not removed: " + e.message; });
     };
     return row;
+  }
+
+  // Only a claude account holding its own setup-token reports quota, and the
+  // daemon's own row is what says so (llmproxy/probe.go checkable): an
+  // account it has no row for is one it would not know the name of. Same
+  // rule as the Mac's checkable().
+  function checkable(a) {
+    const st = statuses[a.name];
+    return !!st && st.kind === "claude" && st.credentialSet;
+  }
+
+  // "Check" asks the daemon to probe one account upstream now. A served answer
+  // clears a stale limit in the proxy itself, so routing frees the account on
+  // the next request; the reply is that account's fresh row, swapped in alone
+  // so nothing else on the tab is re-read. A reply that was not about quota
+  // records nothing daemon-side and is shown as its reason.
+  async function checkAccount(name) {
+    if (checking.has(name)) return;
+    checking.add(name);
+    renderAccounts();
+    try {
+      const r = await fetch(`/v1/llm/accounts/${encodeURIComponent(name)}/check`, { method: "POST" });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      statuses[name] = body;
+      statusEl.textContent = `Checked ${name}: ${statusLine(body)}`;
+    } catch (e) {
+      statusEl.textContent = `Check of ${name} failed: ${e.message || e}`;
+    } finally {
+      checking.delete(name);
+    }
+    renderAccounts();
   }
 
   // Row actions run through queueSave and address accounts by NAME rather
@@ -2133,7 +2172,19 @@ function wireLLMSettings() {
   }
 
   // Rows and route select from one settings answer.
+  // The status rows from a settings read or a save's echo. Both carry them
+  // (the PUT answers with the GET body), and the Check button is decided from
+  // them, so a path that re-seeds `accounts` without these left a newly saved
+  // claude account with no button and a former one with a button the daemon
+  // then refused. An answer without the field leaves the last rows standing.
+  function seedStatuses(cfg) {
+    if (!Array.isArray(cfg.llmAccountStatus)) return;
+    statuses = {};
+    for (const st of cfg.llmAccountStatus) statuses[st.name] = st;
+  }
+
   function redraw(cfg) {
+    seedStatuses(cfg);
     renderAccounts();
     renderRoute(accounts, cfg.llmRoute);
   }
@@ -2418,7 +2469,7 @@ function wireLLMSettings() {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       const cfg = await r.json();
       statuses = {};
-      for (const st of cfg.llmAccountStatus || []) statuses[st.name] = st;
+      seedStatuses(cfg);
       sidecars = cfg.llmSidecars || {};
       accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
       renderAccounts();
@@ -2448,6 +2499,7 @@ function wireLLMSettings() {
     // Re-seed from the daemon's echo: it normalizes URLs and reports which
     // accounts hold a key, neither of which this side should guess at.
     accounts = (cfg.llmAccounts || []).map((a) => ({ ...a }));
+    seedStatuses(cfg);
     renderAccounts();
     renderRoute(accounts, cfg.llmRoute);
     statusEl.textContent = "Saved.";

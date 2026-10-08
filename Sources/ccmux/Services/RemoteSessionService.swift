@@ -1455,6 +1455,33 @@ final class RemoteSessionService: ObservableObject {
         }
     }
 
+    /// Ask the daemon to probe one claude account's quota upstream now. A
+    /// served answer clears a stale limit daemon-side, so routing frees the
+    /// account at once; the reply is that account's fresh status row. An
+    /// answer that was not about quota records nothing there and comes back
+    /// as its reason.
+    func checkAccount(_ name: String) async -> (status: DaemonLLMAccountStatus?, error: String?) {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        let escaped = name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/llm/accounts/\(escaped)/check") else {
+            return (nil, "bad daemon URL")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                struct Err: Decodable { let error: String? }
+                let msg = (try? JSONDecoder().decode(Err.self, from: data))?.error
+                return (nil, msg ?? "HTTP \(code)")
+            }
+            return (try JSONDecoder().decode(DaemonLLMAccountStatus.self, from: data), nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
     /// One llm account's stored credential, unredacted, for the account
     /// editor's Show button. The daemon hands it back only to a caller it can
     /// vouch for (a WhoIs-verified tailnet login, or the owner over loopback);

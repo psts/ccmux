@@ -41,6 +41,8 @@ struct DaemonSettingsView: View {
     @State private var accounts: [EditableAccount] = []
     /// Live per-account health by name, from GET /v1/settings.
     @State private var accountStatus: [String: DaemonLLMAccountStatus] = [:]
+    /// Accounts with a Check in flight, so each button shows its own progress.
+    @State private var checkingAccounts: Set<String> = []
     @State private var sidecars: [String: DaemonSidecarStatus] = [:]
     @State private var harnesses: [EditableHarness] = []
     /// Base agents from GET /v1/agents; nil = this daemon has no agents support.
@@ -386,6 +388,30 @@ struct DaemonSettingsView: View {
         return parts.joined(separator: " · ")
     }
 
+    /// Only a claude account holding its own setup-token reports quota, and
+    /// the daemon's own row is what says so: an account added or renamed here
+    /// and not yet saved has no row, and the daemon would not know its name.
+    /// Same rule as the web lens's checkable().
+    private func checkable(_ name: String) -> Bool {
+        guard let st = accountStatus[name] else { return false }
+        return st.kind == "claude" && st.credentialSet
+    }
+
+    /// Probe one account upstream now. The reply is that account's fresh row,
+    /// swapped in alone: reloading the whole settings would wipe moves and
+    /// removals not yet saved.
+    private func checkAccount(_ name: String) async {
+        checkingAccounts.insert(name)
+        defer { checkingAccounts.remove(name) }
+        let result = await RemoteSessionService.shared.checkAccount(name)
+        if let st = result.status {
+            accountStatus[name] = st
+            status = "Checked \(name): " + (accountStatusText(name) ?? st.state)
+        } else {
+            status = "✗ Check of \(name) failed: \(result.error ?? "no answer")"
+        }
+    }
+
     /// One account in the list: what it is, how it is doing, and where it
     /// sits in the failover order. Everything you SET rather than read is in
     /// the editor sheet — this tab is read far more often than it is edited,
@@ -415,6 +441,14 @@ struct DaemonSettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Try this account later")
+                if checkable(account.name) {
+                    Button(checkingAccounts.contains(account.name) ? "Checking…" : "Check") {
+                        Task { await checkAccount(account.name) }
+                    }
+                    .controlSize(.small)
+                    .disabled(checkingAccounts.contains(account.name))
+                    .help("Ask Anthropic for this account's usage now. A limit that lifted early (a manual reset) frees the account at once.")
+                }
                 Button("Edit") { editingAccount = AccountEditTarget(index: index) }
                     .controlSize(.small)
                 Button {

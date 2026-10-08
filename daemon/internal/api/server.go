@@ -474,6 +474,9 @@ func (s *Server) Handler() http.Handler {
 		// What an account's upstream serves — the settings model picker asks
 		// this instead of making the user type model names blind.
 		mux.HandleFunc("GET /v1/llm/accounts/{name}/models", s.llmAccountModels)
+		// Ask one claude account's quota upstream now, for a limit that lifted
+		// early (a manual reset). Spends a one-token request (llmproxy/probe.go).
+		mux.HandleFunc("POST /v1/llm/accounts/{name}/check", s.llmAccountCheck)
 		// The stored key itself, on demand and only to a WhoIs-verified login
 		// or the loopback owner — the settings read stays redacted (llmkey.go).
 		mux.HandleFunc("GET /v1/llm/accounts/{name}/key", s.llmAccountKey)

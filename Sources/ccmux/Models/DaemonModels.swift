@@ -338,6 +338,11 @@ struct DaemonSidecarStatus: Codable {
 /// to serve the request.
 struct DaemonLLMAccountStatus: Codable, Identifiable {
     let name: String
+    /// The SAVED account's kind and whether it holds its own credential:
+    /// together they say whether "Check" applies (a claude account with a
+    /// setup-token), from the daemon's record rather than an unsaved edit.
+    var kind: String
+    var credentialSet: Bool
     var state: String
     var limitedUntil: String?
     var sessionPct: Double
@@ -350,6 +355,8 @@ struct DaemonLLMAccountStatus: Codable, Identifiable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        credentialSet = try c.decodeIfPresent(Bool.self, forKey: .credentialSet) ?? false
         state = try c.decodeIfPresent(String.self, forKey: .state) ?? "untried"
         limitedUntil = try c.decodeIfPresent(String.self, forKey: .limitedUntil)
         sessionPct = try c.decodeIfPresent(Double.self, forKey: .sessionPct) ?? -1

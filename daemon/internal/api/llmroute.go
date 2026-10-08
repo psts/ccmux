@@ -60,6 +60,27 @@ func (s *Server) llmAccountModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
+// llmAccountCheck asks Anthropic about one claude account now and answers with
+// its status row as that reply left it: the Accounts tab's "Check now", for a
+// limit lifted before the reset the proxy recorded. An unknown account is a
+// 404, one that cannot be checked a 400, and an upstream that did not answer
+// about quota a 502 carrying what it said.
+func (s *Server) llmAccountCheck(w http.ResponseWriter, r *http.Request) {
+	st, err := s.llm.CheckAccount(r.Context(), r.PathValue("name"))
+	if err != nil {
+		code := http.StatusBadGateway
+		switch {
+		case errors.Is(err, llmproxy.ErrUnknownAccount):
+			code = http.StatusNotFound
+		case errors.Is(err, llmproxy.ErrNotCheckable):
+			code = http.StatusBadRequest
+		}
+		writeError(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 // kindAllowed is THE compatibility rule, read from a harness's resolved
 // AccountKinds. It lives in llmproxy now, because the proxy applies the same
 // rule per request when it builds a pane's failover order; this stays as the
