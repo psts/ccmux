@@ -65,6 +65,14 @@
     return Math.max(4, TILE_FONT * Math.min(1, across, down));
   }
 
+  // sizeOutcome: a resize's HTTP status (0: no answer) as "sized", "refused"
+  // or "failed". A 4xx is the daemon saying no for good (an unknown pane, an
+  // older host without the route, a degraded one): asking again every tick
+  // would only fill the log. A 5xx or no answer may pass.
+  function sizeOutcome(status) {
+    return status === 200 ? "sized" : status >= 400 && status < 500 ? "refused" : "failed";
+  }
+
   // "Not now" hides a claim for 30 minutes, or until it changes: a new start
   // time is a new claim and comes straight back.
   function snoozedNow(snoozed, c, now) {
@@ -282,6 +290,7 @@
     });
     board.visible = out.visible;
     board.waiting = out.waiting;
+    forgetSizes();
     if (gridKey() !== board.gridKey) { render(); return; }
     const strip = $("board").querySelector(".board-strip");
     if (strip) strip.replaceWith(stripEl());
@@ -483,8 +492,9 @@
   // lens sizes a pane to its screen. Once per tile size, not every tick, so
   // if another lens takes the pane over the tile scales its text down rather
   // than fight back. Leaving the board gives the pane back: a workspace
-  // re-asserts its own size when it shows the pane. A failed send is
-  // forgotten, so the next paint tries again. Same rule as the Mac's tileArea.
+  // re-asserts its own size when it shows the pane. A send that failed is
+  // forgotten, so the next paint tries again; one the daemon refused stands
+  // (sizeOutcome). Same rule as the Mac's tileArea.
   function sizePane(pane, w, h) {
     const c = board.visible.find((x) => x.pane === pane);
     const grid = tileGrid(w, h, cell());
@@ -494,17 +504,34 @@
     board.sized.set(pane, key);
     fetch(`/v1/panes/${pane}/resize`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(grid),
-    }).then((r) => {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      // The pane redraws at its new size; read it again once it has.
-      setTimeout(() => {
-        const now = board.visible.find((x) => x.pane === pane);
-        if (now && pane !== board.active) fetchPreview(now);
-      }, 400);
-    }).catch((e) => {
-      console.warn("board: could not size pane", pane, "to", key, "- its tile scales instead", e);
-      if (board.sized.get(pane) === key) board.sized.delete(pane);
-    });
+    }).then(async (r) => {
+      if (r.ok) return reread(pane);
+      // The daemon's {"error": …} says which: an unknown pane, a host to upgrade, tmux.
+      const why = await r.text().catch(() => "");
+      notSized(pane, key, sizeOutcome(r.status), `HTTP ${r.status} ${why.trim()}`);
+    }).catch((e) => notSized(pane, key, "failed", String(e)));
+  }
+
+  // The pane redraws at its new size; read it again once it has, rather than
+  // show the old picture until the next tick.
+  function reread(pane) {
+    setTimeout(() => {
+      const now = board.visible.find((x) => x.pane === pane);
+      if (now && pane !== board.active) fetchPreview(now);
+    }, 400);
+  }
+
+  function notSized(pane, key, outcome, why) {
+    console.warn("board: could not size pane", pane, "to", key, "-", why, "- its tile scales instead");
+    if (outcome === "failed" && board.sized.get(pane) === key) board.sized.delete(pane);
+  }
+
+  // A tile that left the board forgets its size, so a new claim on its pane
+  // sizes it again, whatever another lens did with it meanwhile. Same rule as
+  // the Mac's forgetSizes.
+  function forgetSizes() {
+    const shown = new Set(board.visible.map((c) => c.pane));
+    for (const pane of board.sized.keys()) if (!shown.has(pane)) board.sized.delete(pane);
   }
 
   // --- keyboard: Ctrl/Cmd+Enter is Next, caught before the terminal sees
@@ -528,6 +555,6 @@
     activate, snooze, next, sizePane,
     peek: () => ({ active: board.active, waiting: board.waiting.map((c) => c.pane),
       visible: board.visible.map((c) => c.pane + (c.handled ? "!" : "")) }),
-    rules: { isBlocked, claimOrder, capFor, columnsFor, snoozedNow, layout, tileGrid, fontFor },
+    rules: { isBlocked, claimOrder, capFor, columnsFor, snoozedNow, layout, tileGrid, fontFor, sizeOutcome },
   };
 })();

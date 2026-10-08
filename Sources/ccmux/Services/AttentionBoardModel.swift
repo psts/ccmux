@@ -40,9 +40,9 @@ final class AttentionBoardModel: ObservableObject {
     /// app; a test swaps both to drive the board without a daemon.
     var claimsFor: (Set<UUID>) -> [BoardClaim] = { RemoteSessionService.shared.boardClaims(members: $0) }
     var actedSink: (String) -> Void = { RemoteSessionService.shared.boardActed(paneId: $0) }
-    /// Where a screen tile's pane size goes, and whether it took. A test
-    /// swaps it, and the cell, to check the rule without a daemon.
-    var resizeSink: (String, BoardGrid, @escaping (Bool) -> Void) -> Void = { pane, grid, done in
+    /// Where a screen tile's pane size goes, and how it went. A test swaps
+    /// it, and the cell, to check the rule without a daemon.
+    var resizeSink: (String, BoardGrid, @escaping (BoardSizeOutcome) -> Void) -> Void = { pane, grid, done in
         Task { done(await BoardPaneSizer.resize(paneId: pane, grid: grid)) }
     }
     var cell = BoardPaneSizer.cell
@@ -89,6 +89,7 @@ final class AttentionBoardModel: ObservableObject {
                                         snoozes: BoardSnoozes.shared.byPane, now: Date())
         if out.visible != visible { visible = out.visible }
         if out.waiting != waiting { waiting = out.waiting }
+        forgetSizes()
     }
 
     // MARK: - Active tile
@@ -159,30 +160,43 @@ final class AttentionBoardModel: ObservableObject {
     /// per tile size, not every tick, so if another lens takes the pane over
     /// the tile scales its text down rather than fight back. Leaving the board
     /// gives the pane back: a workspace re-asserts its own size when it shows
-    /// the pane. A failed send is forgotten, so the next tick tries again
-    /// (retrySizing). Same rule as the web lens's sizePane.
+    /// the pane. A send that failed is forgotten, so the next tick tries again
+    /// (retrySizing); one the daemon refused stands (sizeOutcome). Same rule
+    /// as the web lens's sizePane.
     func tileArea(_ pane: String, width: Double, height: Double) {
         areas[pane] = (width, height)
         guard pane != active, let c = visible.first(where: { $0.pane == pane }), !c.chat,
               let grid = AttentionBoard.grid(width: width, height: height, cell: cell),
               sized[pane] != grid else { return }
         sized[pane] = grid
-        resizeSink(pane, grid) { [weak self] ok in
-            Task { @MainActor in self?.resized(pane, grid, ok: ok) }
+        resizeSink(pane, grid) { [weak self] outcome in
+            Task { @MainActor in self?.resized(pane, grid, outcome) }
         }
     }
 
-    /// The pane redraws at its new size; read it again once it has, rather
-    /// than show the old picture until the next tick.
-    private func resized(_ pane: String, _ grid: BoardGrid, ok: Bool) {
-        guard ok else {
+    /// Sized: the pane redraws at its new size, so read it again once it has,
+    /// rather than show the old picture until the next tick.
+    private func resized(_ pane: String, _ grid: BoardGrid, _ outcome: BoardSizeOutcome) {
+        switch outcome {
+        case .sized:
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                self?.fetchPreviews()
+            }
+        case .failed:
             if sized[pane] == grid { sized[pane] = nil }
-            return
+        case .refused:
+            break
         }
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            self?.fetchPreviews()
-        }
+    }
+
+    /// A tile that left the board forgets its size and area, so a new claim on
+    /// its pane sizes it again, whatever another lens did with it meanwhile.
+    /// Same rule as the web lens's forgetSizes.
+    private func forgetSizes() {
+        let shown = Set(visible.map(\.pane))
+        sized = sized.filter { shown.contains($0.key) }
+        areas = areas.filter { shown.contains($0.key) }
     }
 
     /// Tiles whose last size did not take, sized again. Run every tick, as
@@ -274,18 +288,28 @@ enum BoardPaneSizer {
         return BoardCell(width: Double(width), height: Double(NSLayoutManager().defaultLineHeight(for: mono)))
     }()
 
-    static func resize(paneId: String, grid: BoardGrid) async -> Bool {
-        guard let url = URL(string: DaemonConfig.baseURL + "/v1/panes/\(paneId)/resize") else { return false }
+    static func resize(paneId: String, grid: BoardGrid) async -> BoardSizeOutcome {
+        guard let url = URL(string: DaemonConfig.baseURL + "/v1/panes/\(paneId)/resize") else { return .refused }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["cols": grid.cols, "rows": grid.rows])
-        guard let (_, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200 else {
-            NSLog("[ccmux board] could not size pane %@ to %dx%d; its tile scales instead", paneId, grid.cols, grid.rows)
-            return false
+        let reply: (Data, URLResponse)
+        do {
+            reply = try await URLSession.shared.data(for: req)
+        } catch {
+            NSLog("[ccmux board] could not size pane %@ to %dx%d: %@; its tile scales instead",
+                  paneId, grid.cols, grid.rows, error.localizedDescription)
+            return .failed
         }
-        return true
+        let status = (reply.1 as? HTTPURLResponse)?.statusCode ?? 0
+        let outcome = AttentionBoard.sizeOutcome(status: status)
+        if outcome != .sized {
+            // The daemon's {"error": …} says which: an unknown pane, a host to upgrade, tmux.
+            NSLog("[ccmux board] could not size pane %@ to %dx%d: HTTP %d %@; its tile scales instead",
+                  paneId, grid.cols, grid.rows, status, String(decoding: reply.0.prefix(200), as: UTF8.self))
+        }
+        return outcome
     }
 }
 

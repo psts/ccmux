@@ -53,6 +53,12 @@ struct BoardCell: Equatable {
     let height: Double
 }
 
+/// How a tile's resize went. A refusal stands until the tile changes size; a
+/// failure is sent again on the next tick.
+enum BoardSizeOutcome: Equatable {
+    case sized, refused, failed
+}
+
 /// The attention board's rules: which claims get a tile, in what order, how
 /// many, when the set holds still, and what size a screen tile's pane and
 /// text are. The web lens's board.js holds the same
@@ -100,6 +106,14 @@ enum AttentionBoard {
         let across = width / (Double(cols) * cell.width)
         let down = rows > 0 ? height / (Double(rows) * cell.height) : 1
         return max(4, tileFont * min(1, across, down))
+    }
+
+    /// A resize's HTTP status (0: no answer) as an outcome. A 4xx is the
+    /// daemon saying no for good (an unknown pane, an older host without the
+    /// route, a degraded one): asking again every tick would only fill the
+    /// log. A 5xx or no answer may pass.
+    static func sizeOutcome(status: Int) -> BoardSizeOutcome {
+        status == 200 ? .sized : (400..<500).contains(status) ? .refused : .failed
     }
 
     static func isSnoozed(_ c: BoardClaim, in snoozes: [String: BoardSnooze], now: Date) -> Bool {

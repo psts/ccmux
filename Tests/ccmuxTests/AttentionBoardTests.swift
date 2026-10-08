@@ -66,6 +66,14 @@ final class AttentionBoardTests: XCTestCase {
                        "a taller one shrinks so its bottom line shows")
         XCTAssertEqual(AttentionBoard.font(width: 100, height: 100, cols: 400, rows: 100, cell: cell), 4)
     }
+
+    func testARefusedSizeStandsAndAFailedOneIsTriedAgain() {
+        XCTAssertEqual(AttentionBoard.sizeOutcome(status: 200), .sized)
+        XCTAssertEqual(AttentionBoard.sizeOutcome(status: 404), .refused, "an older host without the route")
+        XCTAssertEqual(AttentionBoard.sizeOutcome(status: 409), .refused, "a degraded host")
+        XCTAssertEqual(AttentionBoard.sizeOutcome(status: 500), .failed)
+        XCTAssertEqual(AttentionBoard.sizeOutcome(status: 0), .failed, "no answer")
+    }
 }
 
 /// The board's tile switching, driven through the model with its daemon
@@ -150,22 +158,63 @@ final class AttentionBoardModelTests: XCTestCase {
         XCTAssertEqual(sent, ["sz-1 88x24", "sz-1 125x24"])
     }
 
-    /// A size that did not take is sent again on the next tick, with no new
-    /// area from the tile. The web lens's smoke test checks the same.
+    /// A size that failed is sent again on the next tick, with no new area
+    /// from the tile; one the daemon refused is not; and an open tile is
+    /// never sized from behind the person typing in it. The web lens's smoke
+    /// test checks the same.
     func testAFailedSizeIsSentAgainOnTheNextTick() async throws {
         var sent = 0
+        var outcome = BoardSizeOutcome.failed
         let model = AttentionBoardModel()
         model.claimsFor = { _ in [self.claim("sz-2", 10)] }
         model.cell = BoardCell(width: 7.2, height: 14.4)
         model.resizeSink = { _, _, done in
             sent += 1
-            done(false)
+            done(outcome)
         }
         model.refresh()
 
         model.tileArea("sz-2", width: 634, height: 350)
         try await Task.sleep(nanoseconds: 100_000_000) // the failure lands
         model.retrySizing()
+        XCTAssertEqual(sent, 2, "a failure is sent again")
+
+        outcome = .refused
+        try await Task.sleep(nanoseconds: 100_000_000) // the second failure lands
+        model.retrySizing()
+        XCTAssertEqual(sent, 3)
+        try await Task.sleep(nanoseconds: 100_000_000) // the refusal lands
+        model.retrySizing()
+        XCTAssertEqual(sent, 3, "a refusal stands")
+
+        model.tileArea("sz-2", width: 900, height: 350) // the tile grew
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sent, 4)
+        outcome = .failed
+        model.tileArea("sz-2", width: 634, height: 350)
+        try await Task.sleep(nanoseconds: 100_000_000) // a failure, so it is owed a retry
+        model.activate("sz-2")
+        model.retrySizing()
+        XCTAssertEqual(sent, 5, "the open tile is not sized")
+    }
+
+    /// A tile that leaves the board forgets its size: when its pane claims
+    /// again, it is sized again, whatever another lens did with it meanwhile.
+    func testATileThatComesBackIsSizedAgain() {
+        var claims = [claim("sz-3", 10)]
+        var sent = 0
+        let model = AttentionBoardModel()
+        model.claimsFor = { _ in claims }
+        model.cell = BoardCell(width: 7.2, height: 14.4)
+        model.resizeSink = { _, _, _ in sent += 1 }
+        model.refresh()
+
+        model.tileArea("sz-3", width: 634, height: 350)
+        claims = [] // dealt with
+        model.refresh()
+        claims = [claim("sz-3", 20)] // asks again
+        model.refresh()
+        model.tileArea("sz-3", width: 634, height: 350)
         XCTAssertEqual(sent, 2)
     }
 }

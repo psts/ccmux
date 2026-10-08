@@ -292,14 +292,46 @@ async function boardCases() {
   check("board: a tile sizes its pane once per size, and a chat tile not at all",
     resizes().join() === "z 88x24,z 125x24", resizes().join());
   const okFetch = z.ctx.fetch;
-  z.ctx.fetch = async (u, o) => { z.fetched.push({ url: String(u), method: o.method, body: o.body }); return { ok: false, status: 500 }; };
+  const answering = (status) => async (u, o) => {
+    z.fetched.push({ url: String(u), method: o.method, body: o.body });
+    return { ok: false, status, text: async () => `{"error":"no ${status}"}` };
+  };
+  z.ctx.fetch = answering(500);
   Z.sizePane("z", 634, 350);
   await tick();
   Z.sizePane("z", 634, 350);
   await tick();
-  z.ctx.fetch = okFetch;
-  check("board: a size that did not take is sent again on the next paint",
+  check("board: a size that failed is sent again on the next paint",
     resizes().join() === "z 88x24,z 125x24,z 88x24,z 88x24", resizes().join());
+  check("board: a 4xx is a refusal that stands, a 5xx or no answer is tried again",
+    R.sizeOutcome(200) === "sized" && R.sizeOutcome(404) === "refused" && R.sizeOutcome(409) === "refused" &&
+    R.sizeOutcome(500) === "failed" && R.sizeOutcome(0) === "failed");
+  z.ctx.fetch = answering(404); // an older host without the route
+  Z.sizePane("z", 634, 350);
+  await tick();
+  Z.sizePane("z", 634, 350);
+  await tick();
+  check("board: a size the daemon refused is not sent again",
+    resizes().length === 5, resizes().join());
+  z.ctx.fetch = okFetch;
+
+  // A tile that leaves the board forgets its size; so does a closed board.
+  // Either way the next showing sizes the pane again, whatever another lens
+  // did with it meanwhile. The Mac's testATileThatComesBackIsSizedAgain.
+  Z.sizePane("z", 900, 350);
+  z.evalIn(`noteAttention("wz", "z", "idle", "", 0)`);
+  Z.refresh();
+  z.evalIn(`noteAttention("wz", "z", "needs_input", "permission", 5)`);
+  Z.refresh();
+  Z.sizePane("z", 900, 350);
+  await tick();
+  check("board: a tile that comes back is sized again", resizes().slice(5).join() === "z 125x24,z 125x24",
+    resizes().join());
+  Z.close();
+  Z.open("Z");
+  Z.sizePane("z", 900, 350);
+  await tick();
+  check("board: a reopened board sizes its panes again", resizes().length === 8, resizes().join());
 }
 
 // --- peers.js: the message panel's history merge (PeerMessage.merged and

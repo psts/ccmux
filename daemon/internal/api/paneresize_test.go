@@ -47,10 +47,10 @@ func TestAPI_PaneResizeOverREST(t *testing.T) {
 		body any
 		want int
 	}{
-		"zero size":    {pane0, map[string]int{"cols": 0, "rows": 22}, http.StatusBadRequest},
-		"too big":      {pane0, map[string]int{"cols": 20000, "rows": 22}, http.StatusBadRequest},
-		"not json":     {pane0, "81x22", http.StatusBadRequest},
-		"unknown pane": {"nope", map[string]int{"cols": 81, "rows": 22}, http.StatusNotFound},
+		"zero size":     {pane0, map[string]int{"cols": 0, "rows": 22}, http.StatusBadRequest},
+		"too big":       {pane0, map[string]int{"cols": 20000, "rows": 22}, http.StatusBadRequest},
+		"not an object": {pane0, "81x22", http.StatusBadRequest},
+		"unknown pane":  {"nope", map[string]int{"cols": 81, "rows": 22}, http.StatusNotFound},
 	} {
 		if got := postJSON(t, base+"/v1/panes/"+c.pane+"/resize", "", c.body).StatusCode; got != c.want {
 			t.Errorf("%s: resize = %d, want %d", name, got, c.want)
