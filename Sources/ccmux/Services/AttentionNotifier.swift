@@ -13,21 +13,25 @@ final class AttentionNotifier {
 
     /// Whether a state is worth an alert, as opposed to just a sidebar flash.
     ///
-    /// Only `needsInput` is. `done` comes from the Stop hook alone, and Stop fires
+    /// `needsInput` is, and so is any flash still showing when Claude Code's idle
+    /// reminder re-sends it (`remind`). A `done` on its own is not: it comes from
+    /// the Stop hook alone, and Stop fires
     /// when Claude finishes *responding*, not when the work is finished: a turn
     /// routinely carries on afterwards, and a session whose background agents keep
     /// reporting back produces a Stop for each one. The signal that really means
     /// "finished, nothing more coming" is Claude Code's own `idle_prompt`, which
-    /// arrives 60s after the last Stop, resets on every new one, and maps to
-    /// `needsInput` — so it alerts through here, but only while the row's flash
-    /// is still showing: a look within the minute retires both.
+    /// arrives 60s after the last Stop and resets on every new one. It leaves a
+    /// done row green and alerts for it here, but only while the row's flash is
+    /// still showing: a look within the minute retires both.
     ///
     /// This lives on the notifier rather than at the call sites because there are
     /// two of them — the local hook listener and the hosted firehose — and they
     /// have already drifted apart once. `post` enforces it, so neither can alert
     /// on a state this returns false for. The daemon's `notifyState` is the same
     /// rule for web push.
-    static func alerts(_ state: AttentionState) -> Bool { state == .needsInput }
+    static func alerts(_ state: AttentionState, remind: Bool = false) -> Bool {
+        state == .needsInput || (remind && state != .none)
+    }
 
     /// Notifications only work from the `.app` bundle (needs a CFBundleIdentifier).
     private var isAvailable: Bool { Bundle.main.bundleIdentifier != nil }
@@ -39,8 +43,8 @@ final class AttentionNotifier {
         }
     }
 
-    func post(for workspace: Workspace, state: AttentionState) {
-        guard isAvailable, Self.alerts(state) else { return }
+    func post(for workspace: Workspace, state: AttentionState, remind: Bool = false) {
+        guard isAvailable, Self.alerts(state, remind: remind) else { return }
 
         let content = UNMutableNotificationContent()
         switch state {

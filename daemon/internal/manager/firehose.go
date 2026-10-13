@@ -27,6 +27,10 @@ type Event struct {
 	// AttentionReason and AttentionSince); empty when it claims nothing.
 	Reason model.AttentionReason
 	Since  int64
+	// Remind marks an "attention" that changes nothing on screen: the claim
+	// already showing, sent again because Claude Code's idle reminder says the
+	// turn really ended. It is what makes a done claim alert (notifyState).
+	Remind bool
 }
 
 // firehose is a non-blocking pub/sub hub for global Events. It mirrors the

@@ -888,18 +888,28 @@ func (m *Manager) markHostedClaude(paneID string) {
 // Claude reading of busy (claudeBusy) is noted alongside; a harness that
 // reports its own busy flag uses ApplyAgentSignal instead.
 func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason) {
-	m.applyAttention(paneID, att, reason, nil, false)
+	m.applyAttention(paneID, att, reason, nil)
 }
 
-// EscalateAttention is ApplyAttention for a hook that can only add to a
-// claim already standing, never start one: Claude Code's idle reminder, sent
-// 60s after the turn ended or after a /clear. It lands only while the pane
-// still claims the human, and reports whether it did. A pane that has gone
-// idle since (someone looked, or nothing ever finished) stays idle, so the
-// reminder cannot flash a row a second time. Checked under the same lock as
-// the write, so a look that lands at the same moment cannot be undone.
-func (m *Manager) EscalateAttention(paneID string, att model.Attention, reason model.AttentionReason) bool {
-	return m.applyAttention(paneID, att, reason, nil, true)
+// Remind is Claude Code's idle reminder, sent 60s after the turn ended or
+// after a /clear. It changes nothing a lens shows: a green row stays green.
+// It re-sends the claim a pane still makes, marked Remind, so the alert that
+// waits for the turn to really end can go out (notifyState). A pane that
+// claims nothing (someone looked, or nothing ever finished) gets nothing, and
+// false says so. Nothing is stored, and the per-workspace attach sockets get
+// no frame: they would only redraw what they already show.
+func (m *Manager) Remind(paneID string) bool {
+	m.mu.Lock()
+	e, p := m.findPaneLocked(paneID)
+	if p == nil || !p.Attention.Claims() {
+		m.mu.Unlock()
+		return false
+	}
+	wsID, saved := e.ws.ID, *p
+	m.mu.Unlock()
+	m.events.publish(Event{Kind: "attention", WorkspaceID: wsID, PaneID: saved.ID,
+		Attention: saved.Attention, Reason: saved.AttentionReason, Since: saved.AttentionSince, Remind: true})
+	return true
 }
 
 // ApplyAgentSignal is ApplyAttention for a harness that reports its own
@@ -907,13 +917,13 @@ func (m *Manager) EscalateAttention(paneID string, att model.Attention, reason m
 // one call, so no tick can read the pane between two writes. False when
 // the pane is unknown.
 func (m *Manager) ApplyAgentSignal(paneID string, att model.Attention, reason model.AttentionReason, busy bool) bool {
-	return m.applyAttention(paneID, att, reason, &busy, false)
+	return m.applyAttention(paneID, att, reason, &busy)
 }
 
-func (m *Manager) applyAttention(paneID string, att model.Attention, reason model.AttentionReason, busy *bool, onlyClaimed bool) bool {
+func (m *Manager) applyAttention(paneID string, att model.Attention, reason model.AttentionReason, busy *bool) bool {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
-	if p == nil || (onlyClaimed && !p.Attention.Claims()) {
+	if p == nil {
 		m.mu.Unlock()
 		return false
 	}

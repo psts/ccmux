@@ -23,9 +23,9 @@ import (
 type Router interface {
 	ResolvePane(paneID, cwd string) string
 	ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason)
-	// EscalateAttention applies only while the pane still claims the human,
-	// and reports whether it did (see isReminder).
-	EscalateAttention(paneID string, att model.Attention, reason model.AttentionReason) bool
+	// Remind re-sends the claim a pane still shows as an alert, changing
+	// nothing on screen; false when it shows none (see isReminder).
+	Remind(paneID string) bool
 	ApplySession(paneID, sessionID string, sig model.SessionSignal)
 }
 
@@ -213,11 +213,11 @@ func endsTurn(eventType, notificationType string) bool {
 
 // isReminder reports Claude Code's idle reminder: idle_prompt, sent 60s after
 // the last Stop, and 60s after a /clear where nothing finished at all. It is
-// how a finished turn becomes a push (notifyState), so it still raises a flash
-// that is showing. It must never start one: applied unconditionally, it lit up
-// every row a minute after the human had already looked at it, and every fresh
-// /clear. Measured on one day's trace: 56 of 56 came 61s after a Stop, 9 of 9
-// came 60s after a session_start.
+// how a finished turn becomes a push (notifyState), and nothing more: it
+// changes no row. Applied as needs_input, it lit up every row a minute after
+// the human had already looked at it, every fresh /clear, and turned a
+// finished row from done to needs input. Measured on one day's trace: 56 of
+// 56 came 61s after a Stop, 9 of 9 came 60s after a session_start.
 func isReminder(eventType, notificationType string) bool {
 	return eventType == "notification" && notificationType == "idle_prompt"
 }
@@ -234,11 +234,13 @@ func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
 		l.trace(msg, hooktrace.Line{Decision: "unresolved", Detail: "no pane matches this pane id or cwd"})
 		return
 	}
-	if !l.apply(msg, paneID, att) {
-		l.trace(msg, hooktrace.Line{Decision: "reminder-dropped", Resolved: paneID, Attention: string(att),
-			Detail: "idle_prompt only raises a flash still showing; this pane was seen, never flagged, or is gone"})
+	// A held reminder is a plain idle (holdWhileWorking); a live one is only
+	// an alert.
+	if isReminder(msg.Type, msg.NotificationType) && att.Claims() {
+		l.remind(msg, paneID)
 		return
 	}
+	l.router.ApplyAttention(paneID, att, claimReason(msg.Type, msg.NotificationType))
 	// Whether the human is being asked for something is what lets a later hold
 	// tell a stale flag from a live one. Recorded after the apply, so the
 	// tracker only ever learns about attention a pane actually took on.
@@ -246,15 +248,17 @@ func (l *Listener) applyAttention(msg hookMsg, att model.Attention) {
 	l.trace(msg, hooktrace.Line{Decision: "attention", Resolved: paneID, Attention: string(att)})
 }
 
-// apply hands the attention to the router, the idle reminder through the
-// conditional path. False when the reminder found nothing standing to raise.
-func (l *Listener) apply(msg hookMsg, paneID string, att model.Attention) bool {
-	reason := claimReason(msg.Type, msg.NotificationType)
-	if isReminder(msg.Type, msg.NotificationType) {
-		return l.router.EscalateAttention(paneID, att, reason)
+// remind turns the idle reminder into an alert for whatever the pane still
+// shows. It notes no prompt for the hold: the reminder says the turn ended,
+// which the Stop before it already recorded.
+func (l *Listener) remind(msg hookMsg, paneID string) {
+	if !l.router.Remind(paneID) {
+		l.trace(msg, hooktrace.Line{Decision: "reminder-dropped", Resolved: paneID,
+			Detail: "idle_prompt only alerts for a flash still showing; this pane was seen, never flagged, or is gone"})
+		return
 	}
-	l.router.ApplyAttention(paneID, att, reason)
-	return true
+	l.trace(msg, hooktrace.Line{Decision: "reminded", Resolved: paneID,
+		Detail: "the flash still showing alerts; nothing on screen changes"})
 }
 
 // holdWhileWorking rewrites a turn-ending claim made while subagents are still

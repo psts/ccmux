@@ -66,10 +66,10 @@ type pushPayload struct {
 	State string `json:"state"` // attention state
 }
 
-// notifyState reports whether an attention transition is worth a push.
+// notifyState reports whether an attention event is worth a push: needs_input,
+// or any claim the idle reminder re-sends (remind).
 //
-// Only needs_input is. done is deliberately excluded, even though it still
-// flashes the lens: done comes from the Stop hook alone, and Stop fires whenever
+// A done on its own is deliberately excluded, even though it flashes the lens: done comes from the Stop hook alone, and Stop fires whenever
 // Claude finishes *responding*, not when the work is finished. Measured over a
 // day, 8 of 57 Stops were followed by another Stop in the same prompt — the turn
 // carried on, sometimes spawning five more agents half a minute later, and
@@ -77,14 +77,14 @@ type pushPayload struct {
 //
 // The signal that does mean "finished, and nothing more is coming" is Claude
 // Code's own idle_prompt, which arrives 60s after the last Stop and resets on
-// every new one. It maps to needs_input, so it still pushes here, but only on a
-// pane whose flash is still showing (hooks.isReminder): a look within the
-// minute retires the flash and with it the push. That costs a
+// every new one. The manager re-sends the claim still showing with remind set,
+// and changes nothing on screen (Manager.Remind): a pane seen within the
+// minute claims nothing, so it gets no reminder and no push. That costs a
 // minute of latency on a completion alert, which is invisible: respond inside
 // the minute and no alert is wanted, and if you are away a minute does not
 // matter. Flashing eagerly while pushing conservatively is the whole split.
-func notifyState(att model.Attention) bool {
-	return att == model.AttentionNeedsInput
+func notifyState(att model.Attention, remind bool) bool {
+	return att == model.AttentionNeedsInput || (remind && att.Claims())
 }
 
 // noPushReason explains a skipped push in the trace. done is worth its own
@@ -106,8 +106,8 @@ func noPushReason(att model.Attention) string {
 // subscription's stored login — so the trace records both sides of the comparison
 // rather than only its result. A phone that buzzes while its owner is at a screen
 // is almost always those two strings disagreeing, and no other log shows it.
-func (n *notifier) onAttention(ctx context.Context, wsID string, att model.Attention) {
-	if !notifyState(att) {
+func (n *notifier) onAttention(ctx context.Context, wsID string, att model.Attention, remind bool) {
+	if !notifyState(att, remind) {
 		n.trace(wsID, att, hooktrace.Line{Decision: "no-push", Detail: noPushReason(att)})
 		return
 	}
@@ -205,7 +205,7 @@ func (n *notifier) run(ctx context.Context, ch <-chan manager.Event) {
 				return
 			}
 			if ev.Kind == "attention" {
-				go n.onAttention(ctx, ev.WorkspaceID, ev.Attention)
+				go n.onAttention(ctx, ev.WorkspaceID, ev.Attention, ev.Remind)
 			}
 		}
 	}

@@ -115,7 +115,8 @@ final class RemoteSessionService: ObservableObject {
     /// At-the-Mac detection (screen unlocked, no screensaver, displays awake).
     private let presenceMonitor = PresenceMonitor()
     /// Fired for a needs-input/done transition on an unwatched hosted workspace.
-    var onAttention: ((Workspace, AttentionState) -> Void)?
+    /// The Bool is the daemon's remind (see `DaemonFirehoseEvent.attention`).
+    var onAttention: ((Workspace, AttentionState, Bool) -> Void)?
     /// A clicked file link (absolute local path) in a hosted pane, surfaced to the app.
     var onFileLink: ((UUID, String) -> Void)?
     /// Fired after each reconcile — the window layer adopts hosted workspaces that
@@ -258,8 +259,8 @@ final class RemoteSessionService: ObservableObject {
             paneAttention = Dictionary(grouping: entries, by: \.workspace)
                 .mapValues { Dictionary($0.map { ($0.pane, $0) }, uniquingKeysWith: { _, last in last }) }
             for daemonWsId in daemonIds.values { refreshFlash(daemonWsId: daemonWsId) }
-        case .attention(let entry, let alert):
-            applyAttention(entry, notify: alert)
+        case .attention(let entry, let alert, let remind):
+            applyAttention(entry, notify: alert, remind: remind)
         case .workspaceChanged:
             // A workspace appeared/vanished/changed live↔cold elsewhere — pick it up
             // now rather than at the next poll.
@@ -299,14 +300,16 @@ final class RemoteSessionService: ObservableObject {
     /// to decide for itself here and drifted from the daemon twice — most recently
     /// alerting on every `done` long after the daemon had stopped pushing on them,
     /// which turned one burst of background agents into an alert per agent.
-    private func applyAttention(_ entry: DaemonAttentionEntry, notify: Bool) {
+    /// `remind` is the idle reminder re-sending a claim already showing; it
+    /// redraws nothing and is what lets a done row alert.
+    private func applyAttention(_ entry: DaemonAttentionEntry, notify: Bool, remind: Bool = false) {
         paneAttention[entry.workspace, default: [:]][entry.pane] = entry
         refreshFlash(daemonWsId: entry.workspace)
         let appId = RemoteWorkspaceBuilder.workspaceUUID(entry.workspace)
         let appState = entry.state.appAttentionState
         guard appState != .none, attentionMonitors[appId] != nil, !isWatched(appId) else { return }
         if notify, let ws = workspaces.first(where: { $0.id == appId }) {
-            onAttention?(ws, appState)
+            onAttention?(ws, appState, remind)
         }
     }
 

@@ -166,11 +166,9 @@ final class ClaudeHookListener {
             // claiming the wrong thing. Held before the monitor is touched, so
             // the sidebar does not flash either.
             if heldForSubagents(type: type, obj: obj, ctx: ctx) { return }
-            // The idle reminder raises a flash still showing; it never starts one.
-            if Self.dropsReminder(forEvent: type, notificationType: obj["notification_type"] as? String,
-                                  current: monitor.state) {
-                HookTrace.write(decision: "reminder-dropped", fields: ctx.merging(
-                    ["detail": "idle_prompt only raises a flash still showing; this workspace was seen or never flagged"]) { _, new in new })
+            // The idle reminder changes no row; it only alerts for the flash still showing.
+            if Self.isReminder(forEvent: type, notificationType: obj["notification_type"] as? String) {
+                remind(workspace: workspace, monitor: monitor, ctx: ctx)
                 return
             }
             // Suppress when you're already watching this workspace — nothing to flag.
@@ -193,6 +191,22 @@ final class ClaudeHookListener {
             notifier.post(for: workspace, state: newState)
             HookTrace.write(decision: "posted", fields: ctx)
         }
+    }
+
+    /// Claude Code's idle reminder: leave the row as it is, and alert for what it
+    /// still shows. A row seen since, or a fresh /clear, shows nothing and gets
+    /// nothing. Same rule as the daemon's `Manager.Remind`.
+    private func remind(workspace: Workspace, monitor: ClaudeAttentionMonitor, ctx: [String: String]) {
+        let watching = windowManager?.isWatching(workspace.id) ?? false
+        let showing = monitor.state
+        guard !watching, AttentionNotifier.alerts(showing, remind: true) else {
+            HookTrace.write(decision: "reminder-dropped", fields: ctx.merging(
+                ["detail": "idle_prompt only alerts for a flash still showing; this workspace was seen or never flagged"]) { _, new in new })
+            return
+        }
+        notifier.post(for: workspace, state: showing, remind: true)
+        HookTrace.write(decision: "reminded", fields: ctx.merging(
+            ["detail": "the flash still showing alerts; nothing on screen changes"]) { _, new in new })
     }
 
     // MARK: - Background agents
@@ -293,12 +307,5 @@ final class ClaudeHookListener {
     /// `isReminder` (daemon/internal/hooks/hooks.go).
     static func isReminder(forEvent type: String, notificationType: String?) -> Bool {
         type == "notification" && notificationType == "idle_prompt"
-    }
-
-    /// Whether to drop the idle reminder: it may raise a flash still showing (done
-    /// to needs input, which is what posts the alert) but must never start one,
-    /// or a row you already looked at, or a fresh /clear, flashes a minute later.
-    static func dropsReminder(forEvent type: String, notificationType: String?, current: AttentionState) -> Bool {
-        isReminder(forEvent: type, notificationType: notificationType) && current == .none
     }
 }

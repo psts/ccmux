@@ -1805,7 +1805,12 @@ function onFirehose(ev) {
     state.claims = {};
     for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state, e.reason, e.since);
   } else if (m.t === "attention") {
+    // A reminder re-sends a claim already showing so the daemon can push it.
+    // Redrawing for it would restart every row's pulse, so only a lens that
+    // missed the claim redraws.
+    const was = (state.attn[m.workspace] || {})[m.pane];
     noteAttention(m.workspace, m.pane, m.state, m.reason, m.since);
+    if (m.remind && was === m.state) return;
   } else if (m.t === "workspace-added" || m.t === "workspace-removed" || m.t === "workspace-status" || m.t === "workspace-git") {
     fetchWorkspaces(); // a workspace changed elsewhere — refresh now, don't wait for the poll
     return;

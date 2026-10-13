@@ -90,16 +90,16 @@ func TestAlertsFor_RoutesByAudience(t *testing.T) {
 
 	patric := firehoseReader{login: "patric@x.com", identified: true}
 	dasha := firehoseReader{login: "dasha@x.com", identified: true}
-	if !s.alertsFor(patric, "w1", model.AttentionNeedsInput) {
+	if !s.alertsFor(patric, "w1", model.AttentionNeedsInput, false) {
 		t.Error("the window holder must be alerted")
 	}
-	if s.alertsFor(dasha, "w1", model.AttentionNeedsInput) {
+	if s.alertsFor(dasha, "w1", model.AttentionNeedsInput, false) {
 		t.Error("a present reader without the window open must NOT be alerted")
 	}
 	if len(s.alertMissed) != 0 {
 		t.Errorf("routing quiet must not be reported as an identity mismatch: %v", s.alertMissed)
 	}
-	if !s.alertsFor(firehoseReader{}, "w1", model.AttentionNeedsInput) {
+	if !s.alertsFor(firehoseReader{}, "w1", model.AttentionNeedsInput, false) {
 		t.Error("an unidentified reader keeps the old anybody-present rule")
 	}
 }

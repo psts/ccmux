@@ -17,26 +17,30 @@ func TestFirehoseFrame_AlertNeedsBothWorthinessAndPresence(t *testing.T) {
 	cases := []struct {
 		name    string
 		att     model.Attention
+		remind  bool
 		present map[string]bool
 		want    bool
 	}{
-		{"needs input, reader is present", model.AttentionNeedsInput, map[string]bool{"dev": true}, true},
-		{"needs input, nobody present", model.AttentionNeedsInput, nil, false},
-		{"done never alerts, even present", model.AttentionDone, map[string]bool{"dev": true}, false},
-		{"idle is ambient", model.AttentionIdle, map[string]bool{"dev": true}, false},
-		{"running is ambient", model.AttentionRunning, map[string]bool{"dev": true}, false},
+		{"needs input, reader is present", model.AttentionNeedsInput, false, map[string]bool{"dev": true}, true},
+		{"needs input, nobody present", model.AttentionNeedsInput, false, nil, false},
+		{"done alone never alerts, even present", model.AttentionDone, false, map[string]bool{"dev": true}, false},
+		{"reminded done alerts", model.AttentionDone, true, map[string]bool{"dev": true}, true},
+		{"reminded done, nobody present", model.AttentionDone, true, nil, false},
+		{"idle is ambient", model.AttentionIdle, false, map[string]bool{"dev": true}, false},
+		{"reminded idle is still ambient", model.AttentionIdle, true, map[string]bool{"dev": true}, false},
+		{"running is ambient", model.AttentionRunning, false, map[string]bool{"dev": true}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			p := presenceWithFocus(c.present)
 			s := &Server{presence: p, focus: p}
 			frame := s.firehoseFrame(manager.Event{
-				Kind: "attention", WorkspaceID: "ws1", PaneID: "p1", Attention: c.att,
+				Kind: "attention", WorkspaceID: "ws1", PaneID: "p1", Attention: c.att, Remind: c.remind,
 			}, named("dev"))
 			if frame.Alert != c.want {
 				t.Errorf("alert = %v, want %v", frame.Alert, c.want)
 			}
-			if frame.State != c.att || frame.Workspace != "ws1" {
+			if frame.State != c.att || frame.Workspace != "ws1" || frame.Remind != c.remind {
 				t.Errorf("frame lost its payload: %+v", frame)
 			}
 		})
@@ -168,7 +172,7 @@ func TestAlertsFor_LoopbackMacStillAlertsWhilePresenceIsUnderAnotherLogin(t *tes
 	s := &Server{presence: present, focus: present}
 
 	loopback := firehoseReader{login: "Patric Sandelin", identified: false}
-	if !s.alertsFor(loopback, "w1", model.AttentionNeedsInput) {
+	if !s.alertsFor(loopback, "w1", model.AttentionNeedsInput, false) {
 		t.Error("an unverified lens must fall back to the global rule, not fail closed")
 	}
 }

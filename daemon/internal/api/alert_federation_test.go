@@ -83,3 +83,20 @@ func TestRestampAlert_AppliesTheWholeRuleNotJustPresence(t *testing.T) {
 		t.Error("done flashes the lens but never alerts, however many people are watching")
 	}
 }
+
+// A member's reminder crosses the hub: the hub re-encodes the frame, so a
+// remind it did not model would be dropped there and a finished task on a
+// member host would never alert at a Mac attached to the hub.
+func TestRestampAlert_RelaysAReminder(t *testing.T) {
+	p := presenceWithFocus(map[string]bool{"dev": true})
+	s := &Server{presence: p, focus: p}
+
+	out := s.restampAlert([]byte(`{"t":"attention","workspace":"ws1","pane":"p1","state":"done","remind":true}`), named("dev"))
+	var frame firehoseMsg
+	if err := json.Unmarshal(out, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if !frame.Remind || !frame.Alert || frame.State != model.AttentionDone {
+		t.Errorf("reminder lost at the hub: %s", out)
+	}
+}

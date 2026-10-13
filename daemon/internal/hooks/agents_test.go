@@ -20,8 +20,8 @@ func TestRoute_IdleReminderIsHeldWhileAgentsRun(t *testing.T) {
 	l.route(hookMsg{Type: "stop", SessionID: "s1", PaneID: "pane-1", CWD: "/repo"})
 	l.route(hookMsg{Type: "notification", NotificationType: "idle_prompt", SessionID: "s1", PaneID: "pane-1", CWD: "/repo"})
 
-	if r.applied(model.AttentionNeedsInput) || r.applied(model.AttentionDone) {
-		t.Fatalf("pane was told the turn ended while 2 subagents were running: %v", r.atts)
+	if r.applied(model.AttentionNeedsInput) || r.applied(model.AttentionDone) || len(r.reminds) != 0 {
+		t.Fatalf("pane was told the turn ended while 2 subagents were running: %v reminds %v", r.atts, r.reminds)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -83,8 +83,8 @@ func TestRoute_HoldIsScopedToItsSession(t *testing.T) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.calls != 1 || r.gotAtt != model.AttentionNeedsInput || r.gotPane != "pane-2" {
-		t.Fatalf("got %d×%q on %q; s2 has no agents and must alert normally", r.calls, r.gotAtt, r.gotPane)
+	if len(r.reminds) != 1 || r.reminds[0] != "pane-2" {
+		t.Fatalf("reminds %v; s2 has no agents and must alert normally", r.reminds)
 	}
 }
 
@@ -102,8 +102,8 @@ func TestRouteTrace_HoldWithoutASessionIsRecorded(t *testing.T) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.gotAtt != model.AttentionNeedsInput {
-		t.Errorf("attention = %q; an uncheckable hook must not be silently held", r.gotAtt)
+	if len(r.reminds) != 1 {
+		t.Errorf("reminds %v; an uncheckable hook must not be silently held", r.reminds)
 	}
 }
 
@@ -130,8 +130,8 @@ func TestRouteTrace_ExpiredAgentIsRecorded(t *testing.T) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.gotAtt != model.AttentionNeedsInput {
-		t.Errorf("attention = %q; past the TTL the alert must land", r.gotAtt)
+	if len(r.reminds) != 1 {
+		t.Errorf("reminds %v; past the TTL the alert must land", r.reminds)
 	}
 }
 
@@ -165,8 +165,8 @@ func TestRoute_IdleReminderLandsOnceAgentsFinish(t *testing.T) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.calls != 1 || r.gotAtt != model.AttentionNeedsInput {
-		t.Fatalf("got %d×%q, want 1×needs_input once no agent is running", r.calls, r.gotAtt)
+	if r.calls != 0 || len(r.reminds) != 1 {
+		t.Fatalf("atts %v reminds %v, want one reminder and no attention once no agent is running", r.atts, r.reminds)
 	}
 }
 
@@ -183,8 +183,8 @@ func TestRoute_InnerLoopStopDoesNotFreeTheAgent(t *testing.T) {
 	}
 	l.route(hookMsg{Type: "notification", NotificationType: "idle_prompt", SessionID: "s1", PaneID: "pane-1", CWD: "/repo"})
 
-	if r.applied(model.AttentionNeedsInput) {
-		t.Fatalf("stops for ids that never started freed the real agent: %v", r.atts)
+	if r.applied(model.AttentionNeedsInput) || len(r.reminds) != 0 {
+		t.Fatalf("stops for ids that never started freed the real agent: %v reminds %v", r.atts, r.reminds)
 	}
 }
 

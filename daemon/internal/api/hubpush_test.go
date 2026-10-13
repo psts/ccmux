@@ -42,6 +42,12 @@ func TestAttentionEventFromFrame(t *testing.T) {
 	if !ok || ev.Kind != "attention" || ev.WorkspaceID != "w1" || ev.PaneID != "p1" || ev.Attention != model.AttentionNeedsInput {
 		t.Fatalf("event = %+v ok=%v", ev, ok)
 	}
+	// A member's reminder is what pushes a finished task, so it must survive
+	// the hop to the hub's notifier.
+	ev, ok = attentionEventFromFrame([]byte(`{"t":"attention","workspace":"w1","pane":"p1","state":"done","remind":true}`))
+	if !ok || ev.Attention != model.AttentionDone || !ev.Remind {
+		t.Fatalf("reminder event = %+v ok=%v", ev, ok)
+	}
 	if _, ok := attentionEventFromFrame([]byte(`{"t":"hello","attention":[]}`)); ok {
 		t.Error("a hello frame must not convert to an attention event")
 	}

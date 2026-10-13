@@ -236,8 +236,11 @@ func TestNotifyScript_IdleReminderIsHeldEndToEnd(t *testing.T) {
 	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.sigCalls > 0 })
 	time.Sleep(200 * time.Millisecond)
 
-	if r.applied(model.AttentionNeedsInput) || r.applied(model.AttentionDone) {
-		t.Fatalf("pane was told the turn ended while two Explore agents were running: %v", r.atts)
+	r.mu.Lock()
+	reminds := len(r.reminds)
+	r.mu.Unlock()
+	if r.applied(model.AttentionNeedsInput) || r.applied(model.AttentionDone) || reminds != 0 {
+		t.Fatalf("pane was told the turn ended while two Explore agents were running: %v, %d reminds", r.atts, reminds)
 	}
 }
 

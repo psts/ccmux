@@ -55,7 +55,7 @@ func TestNotifierTrace_SentLineNamesTheFocusedLogins(t *testing.T) {
 	// login. Plain map equality never matches them.
 	focus := fakeFocus{"Dev Eloper": true}
 
-	newNotifier(&fakeSender{}, store, focus).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	newNotifier(&fakeSender{}, store, focus).onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 
 	sent := linesWith(read(), "sent")
 	if len(sent) != 1 {
@@ -79,7 +79,7 @@ func TestNotifierTrace_SuppressedLineNamesTheMatch(t *testing.T) {
 	}}
 	focus := fakeFocus{"dev@example.com": true}
 
-	newNotifier(&fakeSender{}, store, focus).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	newNotifier(&fakeSender{}, store, focus).onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 
 	got := linesWith(read(), "suppressed")
 	if len(got) != 1 {
@@ -108,7 +108,7 @@ func TestNotifierTrace_SilentBranchesGiveAReason(t *testing.T) {
 			read := traceTo(t)
 			store := &fakeStore{subs: tc.subs}
 
-			newNotifier(&fakeSender{}, store, fakeFocus{}).onAttention(context.Background(), "ws1", tc.att)
+			newNotifier(&fakeSender{}, store, fakeFocus{}).onAttention(context.Background(), "ws1", tc.att, false)
 
 			got := linesWith(read(), "no-push")
 			if len(got) != 1 {
@@ -128,7 +128,7 @@ func TestNotifierTrace_PrunedSubscriptionIsRecorded(t *testing.T) {
 		{ID: "gone", Login: "x", Address: `{"endpoint":"gone"}`},
 	}}
 
-	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 
 	if got := linesWith(read(), "pruned"); len(got) != 1 {
 		t.Fatalf("want 1 pruned line, got %d", len(got))

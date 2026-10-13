@@ -194,34 +194,41 @@ func TestMarkActed_NothingToRetireIsQuiet(t *testing.T) {
 	}
 }
 
-// The idle reminder raises a claim already standing and starts none: a pane
-// seen since its Stop, or one that never finished anything (a fresh /clear),
-// stays idle and nothing goes out.
-func TestEscalateAttention_OnlyRaisesAStandingClaim(t *testing.T) {
+// The idle reminder changes nothing on screen: it re-sends the claim still
+// showing, marked Remind, so a done row stays done and can alert. A pane seen
+// since its Stop, or one that never finished anything (a fresh /clear),
+// claims nothing and gets nothing.
+func TestRemind_ResendsTheStandingClaimAndStoresNothing(t *testing.T) {
 	m, ch := seenManager(t)
+	m.ApplyAttention("done", model.AttentionDone, model.ReasonFinished)
+	before := *m.byID["ws"].ws.Panes[0]
+	drain(ch)
 
 	for _, id := range []string{"idle", "running", "nope"} {
-		if m.EscalateAttention(id, model.AttentionNeedsInput, model.ReasonFinished) {
-			t.Errorf("pane %s: escalated a pane that claims nothing", id)
+		if m.Remind(id) {
+			t.Errorf("pane %s: reminded a pane that claims nothing", id)
 		}
 	}
 	if evs := drain(ch); len(evs) != 0 {
 		t.Fatalf("events for a refused reminder: %+v", evs)
 	}
 
-	if !m.EscalateAttention("done", model.AttentionNeedsInput, model.ReasonFinished) {
+	if !m.Remind("done") {
 		t.Fatal("a done pane still showing must take the reminder")
 	}
-	if got := m.byID["ws"].ws.Panes[0].Attention; got != model.AttentionNeedsInput {
-		t.Fatalf("done pane = %q, want needs_input", got)
+	if after := *m.byID["ws"].ws.Panes[0]; after != before {
+		t.Fatalf("reminder changed the pane: %+v, was %+v", after, before)
 	}
-	if evs := drain(ch); len(evs) != 1 || evs[0].Attention != model.AttentionNeedsInput {
-		t.Fatalf("events %+v, want the raised claim once", evs)
+	evs := drain(ch)
+	want := Event{Kind: "attention", WorkspaceID: "ws", PaneID: "done", Attention: model.AttentionDone,
+		Reason: model.ReasonFinished, Since: before.AttentionSince, Remind: true}
+	if len(evs) != 1 || evs[0] != want {
+		t.Fatalf("events %+v, want %+v", evs, want)
 	}
 
 	m.MarkSeen("ws")
 	drain(ch)
-	if m.EscalateAttention("done", model.AttentionNeedsInput, model.ReasonFinished) {
-		t.Fatal("a reminder after a look flashed the pane again")
+	if m.Remind("done") {
+		t.Fatal("a reminder after a look alerted again")
 	}
 }

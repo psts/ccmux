@@ -35,6 +35,10 @@ type firehoseMsg struct {
 	// re-encodes every relayed attention frame into this struct.
 	Reason model.AttentionReason `json:"reason,omitempty"`
 	Since  int64                 `json:"since,omitempty"`
+	// Remind marks the claim already showing, re-sent by the idle reminder so
+	// it can alert (manager.Event.Remind). A lens redraws nothing for it. On
+	// the wire so a hub can push and stamp alert for a member's reminder.
+	Remind bool `json:"remind,omitempty"`
 }
 
 // attnEntry is one pane's current attention in the hello snapshot.
@@ -236,8 +240,8 @@ func (s *Server) firehoseFrame(ev manager.Event, reader firehoseReader) firehose
 	case "attention":
 		return firehoseMsg{
 			T: "attention", Workspace: ev.WorkspaceID, Pane: ev.PaneID, State: ev.Attention,
-			Reason: ev.Reason, Since: ev.Since,
-			Alert: s.alertsFor(reader, ev.WorkspaceID, ev.Attention),
+			Reason: ev.Reason, Since: ev.Since, Remind: ev.Remind,
+			Alert: s.alertsFor(reader, ev.WorkspaceID, ev.Attention, ev.Remind),
 		}
 	default:
 		return firehoseMsg{T: ev.Kind, Workspace: ev.WorkspaceID}
@@ -259,8 +263,8 @@ func (s *Server) firehoseFrame(ev manager.Event, reader firehoseReader) firehose
 // screen and it does not belong to whichever machine owns the pane that spoke.
 // Reading only the local hub made a Linux session's "needs input" arrive at a Mac
 // as a silent sidebar flash.
-func (s *Server) alertsFor(reader firehoseReader, wsID string, att model.Attention) bool {
-	if !notifyState(att) {
+func (s *Server) alertsFor(reader firehoseReader, wsID string, att model.Attention, remind bool) bool {
+	if !notifyState(att, remind) {
 		return false
 	}
 	owners := s.focus.ActiveOwners()

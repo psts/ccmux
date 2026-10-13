@@ -171,8 +171,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 .compactMap { $0.windowContext.displayedWorkspaceId }
                 .filter { RemoteSessionService.shared.isHosted($0) && wm.isWatching($0) })
         }
-        service.onAttention = { [weak self] workspace, state in
-            self?.attentionNotifier.post(for: workspace, state: state)
+        service.onAttention = { [weak self] workspace, state, remind in
+            self?.attentionNotifier.post(for: workspace, state: state, remind: remind)
         }
         // Hosted workspaces sit in the same sidebar window groups as local ones:
         // adopt newly appeared ones (created by another lens) into a window, and

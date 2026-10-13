@@ -918,6 +918,9 @@ struct DaemonFirehoseFrame: Decodable {
     /// board's order. Absent on older daemons and on states that claim nothing.
     let reason: String?
     let since: Int64?
+    /// The claim already showing, re-sent by Claude Code's idle reminder so it
+    /// can alert (a done row stays done). Absent on older daemons.
+    let remind: Bool?
 }
 
 /// One pane's attention: an entry of the firehose `hello` snapshot, or the
@@ -964,7 +967,9 @@ struct DaemonAttentionEntry: Decodable, Equatable {
 /// lens can flash the right sidebar row without being attached to it.
 enum DaemonFirehoseEvent {
     case hello(entries: [DaemonAttentionEntry])
-    case attention(DaemonAttentionEntry, alert: Bool)
+    /// `remind` marks the claim already showing, re-sent so it can alert: it
+    /// changes nothing on screen, and lets `AttentionNotifier` post a done.
+    case attention(DaemonAttentionEntry, alert: Bool, remind: Bool)
     /// A workspace was added/removed or changed live↔cold — the lens re-fetches the
     /// list instead of waiting for its poll.
     case workspaceChanged(kind: String, workspace: String)
@@ -978,7 +983,7 @@ enum DaemonFirehoseEvent {
             let entry = DaemonAttentionEntry(
                 workspace: frame.workspace ?? "", pane: frame.pane ?? "", state: frame.state ?? .unknown,
                 reason: frame.reason ?? "", since: frame.since ?? 0)
-            self = .attention(entry, alert: frame.alert ?? false)
+            self = .attention(entry, alert: frame.alert ?? false, remind: frame.remind ?? false)
         case "workspace-added", "workspace-removed", "workspace-status", "workspace-git":
             self = .workspaceChanged(kind: frame.t, workspace: frame.workspace ?? "")
         default:

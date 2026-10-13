@@ -371,5 +371,5 @@ func attentionEventFromFrame(raw []byte) (manager.Event, bool) {
 		return manager.Event{}, false
 	}
 	return manager.Event{Kind: "attention", WorkspaceID: m.Workspace, PaneID: m.Pane, Attention: m.State,
-		Reason: m.Reason, Since: m.Since}, true
+		Reason: m.Reason, Since: m.Since, Remind: m.Remind}, true
 }

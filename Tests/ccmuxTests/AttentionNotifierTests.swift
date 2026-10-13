@@ -16,11 +16,22 @@ final class AttentionNotifierTests: XCTestCase {
     }
 
     /// The signal that really means "finished, nothing more coming" is Claude
-    /// Code's idle_prompt, which maps to needsInput. That has to keep alerting or
-    /// nothing ever notifies.
+    /// Code's idle_prompt. It leaves a done row green and re-sends it as a
+    /// reminder, which has to alert or a finished task never notifies.
+    func testRemindedDoneAlerts() {
+        XCTAssertTrue(AttentionNotifier.alerts(.done, remind: true),
+                      "the idle reminder carries the completion alert on the done still showing")
+    }
+
+    /// A row seen since, or a fresh /clear, shows nothing: the reminder has
+    /// nothing to alert for.
+    func testRemindedNoneDoesNotAlert() {
+        XCTAssertFalse(AttentionNotifier.alerts(.none, remind: true))
+    }
+
     func testNeedsInputAlerts() {
         XCTAssertTrue(AttentionNotifier.alerts(.needsInput),
-                      "needsInput carries both the permission prompt and the idle_prompt completion alert")
+                      "needsInput is a permission prompt or a question")
     }
 
     func testNoneDoesNotAlert() {

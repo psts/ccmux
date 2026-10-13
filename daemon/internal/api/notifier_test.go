@@ -66,7 +66,7 @@ func TestNotifier_NeedsInputPushesUnfocusedDevsOnly(t *testing.T) {
 	// push for ANY workspace's attention; Bob has none.
 	focus := fakeFocus{"alice@example.com": true}
 
-	newNotifier(sender, store, focus).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	newNotifier(sender, store, focus).onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 
 	if len(sender.sent) != 1 {
 		t.Fatalf("sent %d pushes, want 1 (only Bob)", len(sender.sent))
@@ -80,7 +80,7 @@ func TestNotifier_IgnoresAmbientStates(t *testing.T) {
 	for _, att := range []model.Attention{model.AttentionIdle, model.AttentionRunning} {
 		sender := &fakeSender{}
 		store := &fakeStore{subs: []*model.PushSubscription{{ID: "a", Login: "x", Address: `{"endpoint":"e"}`}}}
-		newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", att)
+		newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", att, false)
 		if len(sender.sent) != 0 {
 			t.Errorf("attention %q pushed %d times, want 0", att, len(sender.sent))
 		}
@@ -92,22 +92,37 @@ func TestNotifier_IgnoresAmbientStates(t *testing.T) {
 // measured over a day, 8 of 57 Stops were followed by another Stop in the same
 // prompt, sometimes spawning five more agents half a minute later. The signal
 // that really means "finished" is Claude Code's idle_prompt, which arrives 60s
-// after the last Stop and maps to needs_input.
+// after the last Stop and re-sends the done still showing with remind set.
 func TestNotifier_DoneDoesNotPush(t *testing.T) {
 	sender := &fakeSender{}
 	store := &fakeStore{subs: []*model.PushSubscription{{ID: "a", Login: "x", Address: `{"endpoint":"e"}`}}}
-	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionDone)
+	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionDone, false)
 	if len(sender.sent) != 0 {
 		t.Fatalf("done pushed %d times, want 0 — Stop is not a finish", len(sender.sent))
 	}
 }
 
-// The other half of the same rule: idle_prompt maps to needs_input, and that is
-// what carries the completion alert now.
+// The other half of the same rule: the reminder is what carries the
+// completion alert, on the done the row still shows. An idle pane never
+// claims, so a reminder cannot push for it.
+func TestNotifier_RemindedDonePushes(t *testing.T) {
+	sender := &fakeSender{}
+	store := &fakeStore{subs: []*model.PushSubscription{{ID: "a", Login: "x", Address: `{"endpoint":"e"}`}}}
+	n := newNotifier(sender, store, fakeFocus{})
+	n.onAttention(context.Background(), "ws1", model.AttentionIdle, true)
+	if len(sender.sent) != 0 {
+		t.Fatalf("reminded idle pushed %d times, want 0", len(sender.sent))
+	}
+	n.onAttention(context.Background(), "ws1", model.AttentionDone, true)
+	if len(sender.sent) != 1 {
+		t.Fatalf("reminded done pushed %d times, want 1", len(sender.sent))
+	}
+}
+
 func TestNotifier_NeedsInputPushes(t *testing.T) {
 	sender := &fakeSender{}
 	store := &fakeStore{subs: []*model.PushSubscription{{ID: "a", Login: "x", Address: `{"endpoint":"e"}`}}}
-	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 	if len(sender.sent) != 1 {
 		t.Fatalf("needs_input pushed %d times, want 1", len(sender.sent))
 	}
@@ -123,7 +138,7 @@ func TestNotifier_PrunesDeadSubscriptions(t *testing.T) {
 		{ID: "gone", Login: "x", Address: `{"endpoint":"gone"}`},
 		{ID: "nf", Login: "x", Address: `{"endpoint":"nf"}`},
 	}}
-	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	newNotifier(sender, store, fakeFocus{}).onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 
 	if len(sender.sent) != 3 {
 		t.Fatalf("attempted %d sends, want 3", len(sender.sent))
@@ -168,7 +183,7 @@ func TestNotifier_BoundedAudienceRoutesAway(t *testing.T) {
 		return map[string]bool{"patric@x.com": true}, true
 	}
 
-	n.onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	n.onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 
 	if len(sender.sent) != 1 || sender.sent[0].address != `{"endpoint":"e-patric"}` {
 		t.Fatalf("sent = %+v; want only the audience member's phone", sender.sent)
@@ -186,7 +201,7 @@ func TestNotifier_UnboundedAudienceSendsToAll(t *testing.T) {
 	n := newNotifier(sender, store, fakeFocus{})
 	n.audience = func(string) (map[string]bool, bool) { return nil, false }
 
-	n.onAttention(context.Background(), "ws1", model.AttentionNeedsInput)
+	n.onAttention(context.Background(), "ws1", model.AttentionNeedsInput, false)
 
 	if len(sender.sent) != 2 {
 		t.Fatalf("sent = %+v; want both phones", sender.sent)
