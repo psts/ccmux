@@ -55,12 +55,15 @@ type mockRouter struct {
 	// atts is every attention applied, in order. A hold can now rewrite an
 	// event rather than only dropping it, so "what did the pane end up
 	// showing" needs the sequence, not just a count.
-	atts     []model.Attention
-	reasons  []model.AttentionReason
-	calls    int
-	gotSig   model.SessionSignal
-	gotSess  string
-	sigCalls int
+	atts    []model.Attention
+	reasons []model.AttentionReason
+	calls   int
+	// unclaimed makes the pane read as idle (seen, or never flagged), so an
+	// EscalateAttention finds nothing to raise.
+	unclaimed bool
+	gotSig    model.SessionSignal
+	gotSess   string
+	sigCalls  int
 }
 
 // ResolvePane mirrors the manager: an explicit pane id wins, otherwise fall
@@ -80,6 +83,17 @@ func (r *mockRouter) ApplyAttention(paneID string, att model.Attention, reason m
 	r.gotPane, r.gotAtt, r.calls = paneID, att, r.calls+1
 	r.atts = append(r.atts, att)
 	r.reasons = append(r.reasons, reason)
+}
+
+func (r *mockRouter) EscalateAttention(paneID string, att model.Attention, reason model.AttentionReason) bool {
+	r.mu.Lock()
+	unclaimed := r.unclaimed
+	r.mu.Unlock()
+	if unclaimed {
+		return false
+	}
+	r.ApplyAttention(paneID, att, reason)
+	return true
 }
 
 // applied reports whether any attention in the sequence matches.
@@ -291,5 +305,33 @@ func TestListener_SessionEndWithoutPaneIDIsNotAttributed(t *testing.T) {
 	if r.sigCalls != 0 {
 		t.Fatalf("a pane-less session must not end another pane's session, got %d calls on %q",
 			r.sigCalls, r.gotPane)
+	}
+}
+
+// The idle reminder comes 60s after a Stop and after every /clear. On a pane
+// that has gone idle since, it must not light the row up again, and the trace
+// has to say why nothing happened. Every other hook still applies outright.
+func TestRoute_IdleReminderOnlyRaisesAStandingFlash(t *testing.T) {
+	read := traceTo(t)
+	r := &mockRouter{resolve: "pane-1", unclaimed: true}
+	l := newListener(r)
+
+	l.route(hookMsg{Type: "notification", NotificationType: "idle_prompt", SessionID: "s1", PaneID: "pane-1", CWD: "/repo"})
+	if r.calls != 0 {
+		t.Fatalf("reminder on an idle pane applied %v", r.atts)
+	}
+	if got := routeOnly(read(), "reminder-dropped"); len(got) != 1 || got[0].Resolved != "pane-1" {
+		t.Fatalf("reminder-dropped lines = %+v", got)
+	}
+
+	l.route(hookMsg{Type: "stop", SessionID: "s1", PaneID: "pane-1", CWD: "/repo"})
+	if !r.applied(model.AttentionDone) {
+		t.Fatalf("a Stop must flash whatever the pane showed: %v", r.atts)
+	}
+
+	r.unclaimed = false
+	l.route(hookMsg{Type: "notification", NotificationType: "idle_prompt", SessionID: "s1", PaneID: "pane-1", CWD: "/repo"})
+	if !r.applied(model.AttentionNeedsInput) {
+		t.Fatalf("reminder on a flash still showing must raise it: %v", r.atts)
 	}
 }

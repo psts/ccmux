@@ -888,7 +888,18 @@ func (m *Manager) markHostedClaude(paneID string) {
 // Claude reading of busy (claudeBusy) is noted alongside; a harness that
 // reports its own busy flag uses ApplyAgentSignal instead.
 func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason) {
-	m.applyAttention(paneID, att, reason, nil)
+	m.applyAttention(paneID, att, reason, nil, false)
+}
+
+// EscalateAttention is ApplyAttention for a hook that can only add to a
+// claim already standing, never start one: Claude Code's idle reminder, sent
+// 60s after the turn ended or after a /clear. It lands only while the pane
+// still claims the human, and reports whether it did. A pane that has gone
+// idle since (someone looked, or nothing ever finished) stays idle, so the
+// reminder cannot flash a row a second time. Checked under the same lock as
+// the write, so a look that lands at the same moment cannot be undone.
+func (m *Manager) EscalateAttention(paneID string, att model.Attention, reason model.AttentionReason) bool {
+	return m.applyAttention(paneID, att, reason, nil, true)
 }
 
 // ApplyAgentSignal is ApplyAttention for a harness that reports its own
@@ -896,13 +907,13 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason mode
 // one call, so no tick can read the pane between two writes. False when
 // the pane is unknown.
 func (m *Manager) ApplyAgentSignal(paneID string, att model.Attention, reason model.AttentionReason, busy bool) bool {
-	return m.applyAttention(paneID, att, reason, &busy)
+	return m.applyAttention(paneID, att, reason, &busy, false)
 }
 
-func (m *Manager) applyAttention(paneID string, att model.Attention, reason model.AttentionReason, busy *bool) bool {
+func (m *Manager) applyAttention(paneID string, att model.Attention, reason model.AttentionReason, busy *bool, onlyClaimed bool) bool {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
-	if p == nil {
+	if p == nil || (onlyClaimed && !p.Attention.Claims()) {
 		m.mu.Unlock()
 		return false
 	}

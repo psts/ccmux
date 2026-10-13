@@ -166,6 +166,13 @@ final class ClaudeHookListener {
             // claiming the wrong thing. Held before the monitor is touched, so
             // the sidebar does not flash either.
             if heldForSubagents(type: type, obj: obj, ctx: ctx) { return }
+            // The idle reminder raises a flash still showing; it never starts one.
+            if Self.dropsReminder(forEvent: type, notificationType: obj["notification_type"] as? String,
+                                  current: monitor.state) {
+                HookTrace.write(decision: "reminder-dropped", fields: ctx.merging(
+                    ["detail": "idle_prompt only raises a flash still showing; this workspace was seen or never flagged"]) { _, new in new })
+                return
+            }
             // Suppress when you're already watching this workspace — nothing to flag.
             if windowManager?.isWatching(workspace.id) ?? false {
                 monitor.clear()
@@ -278,6 +285,20 @@ final class ClaudeHookListener {
     /// same untrue thing. Stop fires when the main loop stops talking, which is
     /// exactly what it does while it waits for background agents to report.
     static func endsTurn(forEvent type: String, notificationType: String?) -> Bool {
-        type == "stop" || (type == "notification" && notificationType == "idle_prompt")
+        type == "stop" || isReminder(forEvent: type, notificationType: notificationType)
+    }
+
+    /// Claude Code's idle reminder: idle_prompt, sent 60s after the last Stop
+    /// and 60s after a /clear where nothing finished. Same rule as the daemon's
+    /// `isReminder` (daemon/internal/hooks/hooks.go).
+    static func isReminder(forEvent type: String, notificationType: String?) -> Bool {
+        type == "notification" && notificationType == "idle_prompt"
+    }
+
+    /// Whether to drop the idle reminder: it may raise a flash still showing (done
+    /// to needs input, which is what posts the alert) but must never start one,
+    /// or a row you already looked at, or a fresh /clear, flashes a minute later.
+    static func dropsReminder(forEvent type: String, notificationType: String?, current: AttentionState) -> Bool {
+        isReminder(forEvent: type, notificationType: notificationType) && current == .none
     }
 }

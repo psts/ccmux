@@ -19,7 +19,8 @@ final class AttentionNotifier {
     /// reporting back produces a Stop for each one. The signal that really means
     /// "finished, nothing more coming" is Claude Code's own `idle_prompt`, which
     /// arrives 60s after the last Stop, resets on every new one, and maps to
-    /// `needsInput` — so it alerts through here.
+    /// `needsInput` — so it alerts through here, but only while the row's flash
+    /// is still showing: a look within the minute retires both.
     ///
     /// This lives on the notifier rather than at the call sites because there are
     /// two of them — the local hook listener and the hosted firehose — and they

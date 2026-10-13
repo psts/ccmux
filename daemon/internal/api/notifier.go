@@ -77,7 +77,9 @@ type pushPayload struct {
 //
 // The signal that does mean "finished, and nothing more is coming" is Claude
 // Code's own idle_prompt, which arrives 60s after the last Stop and resets on
-// every new one. It maps to needs_input, so it still pushes here. That costs a
+// every new one. It maps to needs_input, so it still pushes here, but only on a
+// pane whose flash is still showing (hooks.isReminder): a look within the
+// minute retires the flash and with it the push. That costs a
 // minute of latency on a completion alert, which is invisible: respond inside
 // the minute and no alert is wanted, and if you are away a minute does not
 // matter. Flashing eagerly while pushing conservatively is the whole split.

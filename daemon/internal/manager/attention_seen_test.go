@@ -193,3 +193,35 @@ func TestMarkActed_NothingToRetireIsQuiet(t *testing.T) {
 		t.Fatalf("done pane = %q, want untouched", got)
 	}
 }
+
+// The idle reminder raises a claim already standing and starts none: a pane
+// seen since its Stop, or one that never finished anything (a fresh /clear),
+// stays idle and nothing goes out.
+func TestEscalateAttention_OnlyRaisesAStandingClaim(t *testing.T) {
+	m, ch := seenManager(t)
+
+	for _, id := range []string{"idle", "running", "nope"} {
+		if m.EscalateAttention(id, model.AttentionNeedsInput, model.ReasonFinished) {
+			t.Errorf("pane %s: escalated a pane that claims nothing", id)
+		}
+	}
+	if evs := drain(ch); len(evs) != 0 {
+		t.Fatalf("events for a refused reminder: %+v", evs)
+	}
+
+	if !m.EscalateAttention("done", model.AttentionNeedsInput, model.ReasonFinished) {
+		t.Fatal("a done pane still showing must take the reminder")
+	}
+	if got := m.byID["ws"].ws.Panes[0].Attention; got != model.AttentionNeedsInput {
+		t.Fatalf("done pane = %q, want needs_input", got)
+	}
+	if evs := drain(ch); len(evs) != 1 || evs[0].Attention != model.AttentionNeedsInput {
+		t.Fatalf("events %+v, want the raised claim once", evs)
+	}
+
+	m.MarkSeen("ws")
+	drain(ch)
+	if m.EscalateAttention("done", model.AttentionNeedsInput, model.ReasonFinished) {
+		t.Fatal("a reminder after a look flashed the pane again")
+	}
+}

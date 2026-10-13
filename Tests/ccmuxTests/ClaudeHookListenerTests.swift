@@ -76,4 +76,28 @@ final class ClaudeHookListenerTests: XCTestCase {
         XCTAssertFalse(endsTurn("user_prompt_submit"))
         XCTAssertFalse(endsTurn("session_end"))
     }
+
+    // MARK: - idle reminder
+
+    private func drops(_ type: String, _ notif: String?, _ current: AttentionState) -> Bool {
+        ClaudeHookListener.dropsReminder(forEvent: type, notificationType: notif, current: current)
+    }
+
+    /// A row already seen, or a fresh /clear, must not flash a minute later.
+    func testIdleReminderNeverStartsAFlash() {
+        XCTAssertTrue(drops("notification", "idle_prompt", .none))
+    }
+
+    /// A flash still showing is raised, which is what posts the alert.
+    func testIdleReminderRaisesAStandingFlash() {
+        XCTAssertFalse(drops("notification", "idle_prompt", .done))
+        XCTAssertFalse(drops("notification", "idle_prompt", .needsInput))
+    }
+
+    /// Every other claim flashes whatever the row showed.
+    func testOtherClaimsAreNeverDropped() {
+        XCTAssertFalse(drops("stop", nil, .none))
+        XCTAssertFalse(drops("notification", "permission_prompt", .none))
+        XCTAssertFalse(drops("permission_request", nil, .none))
+    }
 }
