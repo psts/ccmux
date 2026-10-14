@@ -4,8 +4,11 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/push"
 )
 
 type sentPush struct {
@@ -116,6 +119,46 @@ func TestNotifier_RemindedDonePushes(t *testing.T) {
 	n.onAttention(context.Background(), "ws1", model.AttentionDone, true)
 	if len(sender.sent) != 1 {
 		t.Fatalf("reminded done pushed %d times, want 1", len(sender.sent))
+	}
+}
+
+// chanSender reports each push on a channel: run sends from its own goroutines,
+// so fakeSender's slice would race.
+type chanSender struct{ topics chan string }
+
+func (c chanSender) PublicKey() string { return "pub" }
+func (c chanSender) Send(_ context.Context, _ string, _ []byte, topic string) (int, error) {
+	c.topics <- topic
+	return http.StatusCreated, nil
+}
+
+// The firehose is the only way a reminder reaches a phone, so run must carry
+// the event's remind flag into onAttention. A plain done rides along and must
+// not push at all.
+func TestNotifier_RunCarriesRemindFromTheFirehose(t *testing.T) {
+	sender := chanSender{topics: make(chan string, 4)}
+	store := &fakeStore{subs: []*model.PushSubscription{{ID: "a", Login: "x", Address: `{"endpoint":"e"}`}}}
+	n := newNotifier(sender, store, fakeFocus{})
+	ch := make(chan manager.Event, 2)
+	ch <- manager.Event{Kind: "attention", WorkspaceID: "plain", Attention: model.AttentionDone}
+	ch <- manager.Event{Kind: "attention", WorkspaceID: "reminded", Attention: model.AttentionDone, Remind: true}
+	close(ch)
+	n.run(context.Background(), ch)
+
+	select {
+	case topic := <-sender.topics:
+		if topic != push.Topic("reminded") {
+			t.Fatalf("pushed topic %q, want the reminded workspace's", topic)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a reminded done from the firehose never pushed")
+	}
+	// Each event runs in its own goroutine, so the plain done's push could land
+	// after the reminded one. Wait for it before calling the run clean.
+	select {
+	case topic := <-sender.topics:
+		t.Fatalf("a second push went out (topic %q); a plain done must not push", topic)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

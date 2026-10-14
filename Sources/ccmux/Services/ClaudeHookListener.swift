@@ -162,35 +162,42 @@ final class ClaudeHookListener {
                 ["detail": obj["notification_type"] as? String ?? "no attention meaning"]) { _, new in new })
         case .set(let newState):
             ctx["attention"] = String(describing: newState)
-            // A turn that claims to be over while its agents are still working is
-            // claiming the wrong thing. Held before the monitor is touched, so
-            // the sidebar does not flash either.
-            if heldForSubagents(type: type, obj: obj, ctx: ctx) { return }
-            // The idle reminder changes no row; it only alerts for the flash still showing.
-            if Self.isReminder(forEvent: type, notificationType: obj["notification_type"] as? String) {
-                remind(workspace: workspace, monitor: monitor, ctx: ctx)
-                return
-            }
-            // Suppress when you're already watching this workspace — nothing to flag.
-            if windowManager?.isWatching(workspace.id) ?? false {
-                monitor.clear()
-                HookTrace.write(decision: "suppressed", fields: ctx.merging(
-                    ["detail": "key window, on your current Space"]) { _, new in new })
-                return
-            }
-            monitor.set(newState)
-
-            // The sidebar flashes for every state; only some raise an alert. The
-            // rule lives on AttentionNotifier so this path and the hosted firehose
-            // path cannot drift apart — they already did once.
-            guard AttentionNotifier.alerts(newState) else {
-                HookTrace.write(decision: "flashed", fields: ctx.merging(
-                    ["detail": "done flashes the lens; the alert waits for idle_prompt"]) { _, new in new })
-                return
-            }
-            notifier.post(for: workspace, state: newState)
-            HookTrace.write(decision: "posted", fields: ctx)
+            applySet(newState, type: type, obj: obj, workspace: workspace, monitor: monitor, ctx: ctx)
         }
+    }
+
+    /// A hook event that sets attention: held, reminded, suppressed, or flashed,
+    /// and alerted when the state is one that alerts.
+    private func applySet(_ newState: AttentionState, type: String, obj: [String: Any],
+                          workspace: Workspace, monitor: ClaudeAttentionMonitor, ctx: [String: String]) {
+        // A turn that claims to be over while its agents are still working is
+        // claiming the wrong thing. Held before the monitor is touched, so
+        // the sidebar does not flash either.
+        if heldForSubagents(type: type, obj: obj, ctx: ctx) { return }
+        // The idle reminder changes no row; it only alerts for the flash still showing.
+        if Self.isReminder(forEvent: type, notificationType: obj["notification_type"] as? String) {
+            remind(workspace: workspace, monitor: monitor, ctx: ctx)
+            return
+        }
+        // Suppress when you're already watching this workspace — nothing to flag.
+        if windowManager?.isWatching(workspace.id) ?? false {
+            monitor.clear()
+            HookTrace.write(decision: "suppressed", fields: ctx.merging(
+                ["detail": "key window, on your current Space"]) { _, new in new })
+            return
+        }
+        monitor.set(newState)
+
+        // The sidebar flashes for every state; only some raise an alert. The
+        // rule lives on AttentionNotifier so this path and the hosted firehose
+        // path cannot drift apart — they already did once.
+        guard AttentionNotifier.alerts(newState) else {
+            HookTrace.write(decision: "flashed", fields: ctx.merging(
+                ["detail": "done flashes the lens; the alert waits for idle_prompt"]) { _, new in new })
+            return
+        }
+        notifier.post(for: workspace, state: newState)
+        HookTrace.write(decision: "posted", fields: ctx)
     }
 
     /// Claude Code's idle reminder: leave the row as it is, and alert for what it
