@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -56,7 +57,12 @@ type Definition struct {
 	// may say otherwise for that one start.
 	Start           string `json:"start,omitempty"`
 	IdleExitMinutes int    `json:"idleExitMinutes"`
-	KeepAlive       bool   `json:"keepAlive"`
+	// CardWaitMinutes is how long the session may sit stopped on a human (a
+	// question card, a permission prompt) before it ends. 0 follows
+	// IdleExitMinutes. Its own number so a card can wait for an answer
+	// without the agent's idle sessions living as long.
+	CardWaitMinutes int  `json:"cardWaitMinutes"`
+	KeepAlive       bool `json:"keepAlive"`
 
 	// MaxTurnsPerTask, MaxTokensPerTask and SideEffects are recorded for the
 	// lenses and the spec; the daemon does not enforce or render them yet
@@ -115,7 +121,7 @@ func rejectLifecycle(d Definition) string {
 	if d.Start != "" && d.Start != "fresh" && d.Start != "continue" {
 		return fmt.Sprintf("agent %q: start must be fresh or continue", d.Name)
 	}
-	if d.IdleExitMinutes < 0 || d.MaxTurnsPerTask < 0 || d.MaxTokensPerTask < 0 {
+	if slices.ContainsFunc([]int{d.IdleExitMinutes, d.CardWaitMinutes, d.MaxTurnsPerTask, d.MaxTokensPerTask}, func(n int) bool { return n < 0 }) {
 		return fmt.Sprintf("agent %q: limits cannot be negative", d.Name)
 	}
 	return ""

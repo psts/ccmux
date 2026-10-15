@@ -135,10 +135,12 @@ type Manager struct {
 
 // New builds a Manager. ctx bounds the lifetime of spawned control connections.
 func New(ctx context.Context, server *tmux.Server, st store.Store) *Manager {
-	return &Manager{
+	m := &Manager{
 		server: server, store: st, ctx: ctx, events: newFirehose(),
 		byID: map[string]*entry{}, paneTitleDefaults: defaultPaneTitles(),
 	}
+	m.activity.save = m.persistActivity
+	return m
 }
 
 // SubscribeEvents registers a global firehose consumer (the /v1/events endpoint).
@@ -165,6 +167,7 @@ func (m *Manager) Start() error {
 	if err != nil {
 		return err
 	}
+	m.loadActivity()
 	live := map[string]bool{}
 	metas, _ := m.server.ListManaged()
 	for _, meta := range metas {
@@ -484,6 +487,13 @@ func (m *Manager) reviveWorkspace(wsID string, deliver map[string]string) (*mode
 	ws := e.ws
 	if len(ws.Panes) == 0 {
 		return nil, fmt.Errorf("workspace %s has no panes to revive", wsID)
+	}
+	// A revive is a new session in every pane: no agent clock from the one
+	// that died carries over, or a revived agent idle-exits on its first tick.
+	for _, p := range ws.Panes {
+		if p.Agent != "" {
+			m.activity.reset(p.ID)
+		}
 	}
 
 	pane0 := ws.Panes[0]
@@ -885,10 +895,9 @@ func (m *Manager) markHostedClaude(paneID string) {
 
 // ApplyAttention sets a pane's attention state, persists it, and broadcasts the
 // change to every lens attached to its workspace. For an agent pane the
-// Claude reading of busy (claudeBusy) is noted alongside; a harness that
-// reports its own busy flag uses ApplyAgentSignal instead.
+// lifecycle state (agentStateFor) is noted alongside.
 func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason) {
-	m.applyAttention(paneID, att, reason, nil)
+	m.applyAttention(paneID, att, reason)
 }
 
 // Remind is Claude Code's idle reminder, sent 60s after the turn ended or
@@ -913,14 +922,14 @@ func (m *Manager) Remind(paneID string) bool {
 }
 
 // ApplyAgentSignal is ApplyAttention for a harness that reports its own
-// busy/idle reading (the opencode plugin): attention and activity land in
-// one call, so no tick can read the pane between two writes. False when
-// the pane is unknown.
-func (m *Manager) ApplyAgentSignal(paneID string, att model.Attention, reason model.AttentionReason, busy bool) bool {
-	return m.applyAttention(paneID, att, reason, &busy)
+// state (the opencode plugin), reporting whether the pane exists. The
+// lifecycle reads the same attention a hook would set (agentStateFor), so
+// both harnesses keep one rule. False when the pane is unknown.
+func (m *Manager) ApplyAgentSignal(paneID string, att model.Attention, reason model.AttentionReason) bool {
+	return m.applyAttention(paneID, att, reason)
 }
 
-func (m *Manager) applyAttention(paneID string, att model.Attention, reason model.AttentionReason, busy *bool) bool {
+func (m *Manager) applyAttention(paneID string, att model.Attention, reason model.AttentionReason) bool {
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil {
@@ -932,12 +941,10 @@ func (m *Manager) applyAttention(paneID string, att model.Attention, reason mode
 	wsID := e.ws.ID
 	saved := *p
 	m.mu.Unlock()
-	switch {
-	case busy != nil:
-		m.activity.note(paneID, *busy, time.Now())
-	case saved.Agent != "":
-		// A Claude Code agent's hooks are its busy/idle signal (claudeBusy).
-		m.activity.note(paneID, claudeBusy(att), time.Now())
+	if saved.Agent != "" {
+		// The harness's own signal (Claude's hooks, the opencode plugin) is
+		// the lifecycle's state; agentStateFor reads it.
+		m.activity.note(paneID, agentStateFor(att, reason), time.Now())
 	}
 
 	m.publishAttention(ctrl, wsID, saved)
@@ -1295,7 +1302,7 @@ func (m *Manager) dropPane(wsID, paneID string) {
 	if paneID == "" {
 		return
 	}
-	m.activity.forget(paneID)
+	m.activity.forget(paneID, false) // the row goes with the pane
 	m.wakeBackoff.forget(paneID)
 	m.starting.forget(paneID)
 	pushLocks.Delete(paneID)

@@ -23,6 +23,10 @@ type Store interface {
 	SaveWorkspace(*model.Workspace) error
 	SavePane(*model.Pane) error
 	UpdatePaneSize(paneID string, cols, rows int) error
+	// An agent pane's lifecycle reading (paneactivity.go): written on its
+	// own, read once at start so a restart keeps every idle clock.
+	UpdatePaneActivity(paneID, state string, since int64) error
+	PaneActivities() (map[string]PaneActivity, error)
 	UpdatePanePositions(wsID string, orderedIDs []string) error
 	DeleteWorkspace(id string) error
 	DeletePane(id string) error
@@ -107,7 +111,8 @@ CREATE TABLE IF NOT EXISTS panes (
   dormant INTEGER DEFAULT 0, hosted_claude INTEGER DEFAULT 0,
   cols INTEGER DEFAULT 0, rows INTEGER DEFAULT 0, harness TEXT DEFAULT '',
   agent TEXT DEFAULT '', agent_version TEXT DEFAULT '', position INTEGER DEFAULT 0,
-  attention_reason TEXT DEFAULT '', attention_since INTEGER DEFAULT 0
+  attention_reason TEXT DEFAULT '', attention_since INTEGER DEFAULT 0,
+  agent_state TEXT DEFAULT '', agent_state_since INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS panes_by_ws ON panes(workspace_id);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -282,6 +287,9 @@ func erroringMigrations(db *sql.DB) error {
 		return err
 	}
 	if err := migrateAttentionClaim(db); err != nil {
+		return err
+	}
+	if err := migratePaneActivity(db); err != nil {
 		return err
 	}
 	return migrateWindowOpenDevices(db)

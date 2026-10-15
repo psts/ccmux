@@ -31,6 +31,12 @@ func TestDecideAgent(t *testing.T) {
 		{"idle, no cap configured: nothing", agentView{idle: true, idleSince: now.Add(-time.Hour), idleExit: 0}, actNone},
 		{"keep-alive idle, same base: stays up", agentView{idle: true, idleSince: now.Add(-time.Hour), idleExit: tenMin, keepAlive: true}, actNone},
 		{"keep-alive idle, base moved: exit so the wake picks it up", agentView{idle: true, idleSince: now.Add(-time.Hour), idleExit: tenMin, keepAlive: true, drift: true}, actExit},
+		{"card open past the idle cap, inside its wait: nothing", agentView{idle: true, waiting: true, idleSince: now.Add(-time.Hour), idleExit: tenMin, cardWait: 12 * time.Hour}, actNone},
+		{"card open past its wait: exit", agentView{idle: true, waiting: true, idleSince: now.Add(-13 * time.Hour), idleExit: tenMin, cardWait: 12 * time.Hour}, actExit},
+		{"card with no wait of its own follows the idle cap", agentView{idle: true, waiting: true, idleSince: now.Add(-11 * time.Minute), idleExit: tenMin}, actExit},
+		{"card wait does not stretch a plain idle", agentView{idle: true, idleSince: now.Add(-11 * time.Minute), idleExit: tenMin, cardWait: 12 * time.Hour}, actExit},
+		{"opencode dialog is never exited under", agentView{idle: true, waiting: true, holdsDialog: true, idleSince: now.Add(-48 * time.Hour), idleExit: tenMin, cardWait: time.Hour}, actNone},
+		{"opencode idle still exits", agentView{idle: true, holdsDialog: true, idleSince: now.Add(-11 * time.Minute), idleExit: tenMin}, actExit},
 	}
 	for _, c := range cases {
 		if got := decideAgent(c.v, now); got != c.want {
@@ -42,30 +48,43 @@ func TestDecideAgent(t *testing.T) {
 func TestAgentActivityKeepsFirstSince(t *testing.T) {
 	var a agentActivity
 	t0 := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	a.note("p", false, t0)
-	a.note("p", false, t0.Add(time.Minute)) // still idle: since must not move
-	if act, _ := a.get("p"); act.busy || !act.since.Equal(t0) {
+	a.note("p", stateIdle, t0)
+	a.note("p", stateIdle, t0.Add(time.Minute)) // still idle: since must not move
+	if act, _ := a.get("p"); act.state != stateIdle || !act.since.Equal(t0) {
 		t.Fatalf("since moved: %+v", act)
 	}
-	a.note("p", true, t0.Add(2*time.Minute))
-	if act, _ := a.get("p"); !act.busy || !act.since.Equal(t0.Add(2*time.Minute)) {
+	a.note("p", stateBusy, t0.Add(2*time.Minute))
+	if act, _ := a.get("p"); act.state != stateBusy || !act.since.Equal(t0.Add(2*time.Minute)) {
 		t.Fatalf("busy flip not recorded: %+v", act)
 	}
-	a.forget("p")
+	a.forget("p", true)
 	if _, ok := a.get("p"); ok {
 		t.Fatal("forget did not remove")
 	}
 }
 
 // The hooks encode attention for the lens: user_prompt_submit → idle is the
-// moment an agent STARTS working; stop → done and permission → needs_input
-// are when it stops. Getting this backwards ends sessions mid-task.
-func TestClaudeBusyReadsHookAttentionCorrectly(t *testing.T) {
-	if !claudeBusy(model.AttentionIdle) {
-		t.Error("user_prompt_submit (attention idle) means the agent is working")
+// moment an agent STARTS working; stop → done is when it stops, and a
+// permission or question → needs_input is when it waits on a human. Getting
+// this backwards ends sessions mid-task.
+func TestAgentStateForReadsHookAttentionCorrectly(t *testing.T) {
+	cases := []struct {
+		att    model.Attention
+		reason model.AttentionReason
+		want   agentState
+	}{
+		{model.AttentionIdle, model.ReasonNone, stateBusy},                // user_prompt_submit
+		{model.AttentionRunning, model.ReasonNone, stateBusy},             // opencode busy
+		{model.AttentionDone, model.ReasonFinished, stateIdle},            // stop
+		{model.AttentionNeedsInput, model.ReasonQuestion, stateWaiting},   // a card
+		{model.AttentionNeedsInput, model.ReasonPermission, stateWaiting}, // a permission prompt
+		{model.AttentionNeedsInput, model.ReasonNone, stateWaiting},       // opencode needs-input
+		{model.AttentionNeedsInput, model.ReasonFinished, stateIdle},      // the turn is over
 	}
-	if claudeBusy(model.AttentionDone) || claudeBusy(model.AttentionNeedsInput) {
-		t.Error("stop and permission prompts mean the agent is not working")
+	for _, c := range cases {
+		if got := agentStateFor(c.att, c.reason); got != c.want {
+			t.Errorf("agentStateFor(%s, %q) = %s, want %s", c.att, c.reason, got, c.want)
+		}
 	}
 }
 

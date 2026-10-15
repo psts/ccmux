@@ -45,7 +45,7 @@ func drain(ch <-chan Event) []Event {
 
 func TestMarkSeen_RetiresFlashesAndNothingElse(t *testing.T) {
 	m, ch := seenManager(t)
-	m.activity.note("done", false, time.Now())
+	m.activity.note("done", stateIdle, time.Now())
 
 	m.MarkSeen("ws")
 
@@ -68,7 +68,7 @@ func TestMarkSeen_RetiresFlashesAndNothingElse(t *testing.T) {
 		}
 	}
 	// A human looking is not the agent starting work.
-	if act, ok := m.activity.get("done"); !ok || act.busy {
+	if act, ok := m.activity.get("done"); !ok || act.state != stateIdle {
 		t.Fatalf("lifecycle record changed by a look: %+v ok=%v", act, ok)
 	}
 }
@@ -104,7 +104,7 @@ func TestApplyAttention_WatchedWorkspaceIsRetiredAfterTheHookGoesOut(t *testing.
 	}
 
 	m.ApplyAttention("done", model.AttentionDone, model.ReasonFinished) // an agent pane
-	if act, ok := m.activity.get("done"); !ok || act.busy {
+	if act, ok := m.activity.get("done"); !ok || act.state != stateIdle {
 		t.Fatalf("lifecycle read the shown value, not the hook: %+v ok=%v", act, ok)
 	}
 

@@ -141,6 +141,7 @@ instance's last opencode session (the chat view offers the choice per wake);
 |---|---|---|
 | Start mode | fresh conversation per start | `continue` for one-long-thread agents |
 | Idle exit | 10 minutes with no open task | shorter for chatty cheap agents, longer for slow external APIs; 0 = never |
+| Card wait | 0 = same as idle exit | longer for an agent whose question cards must wait for a human (radar: 720) without its idle sessions living that long |
 | Keep alive | off | on for agents that must answer inside a second |
 | Concurrency | daemon cap shared by all agents | pin `maxConcurrent: 1` for agents with a rate-limited upstream |
 | Autostart | off | on only with keep alive |
@@ -153,10 +154,29 @@ to `POST /v1/panes/{id}/agent-signal` on loopback. Since 2026-09-08 that
 signal also carries `needs-input` (a permission or question is up) and
 `replied`, and every state sets the pane's attention the way a Claude
 pane's hooks do: busy → running, idle → done, needs-input → needs_input
-(tab badge, sidebar flash, web push), replied → running. needs-input keeps
-the busy clock running: an agent waiting on a human is mid-task, not idle. Before that an
+(tab badge, sidebar flash, web push), replied → running. Before that an
 opencode agent waiting on a permission was silent everywhere but its own
-chat view. An instance idle past
+chat view.
+
+**Three states (2026-10-15).** The lifecycle reads each change as busy,
+idle, or waiting (stopped on a human: a question card or a permission
+prompt), one rule for both harnesses (`agentStateFor`). Waiting takes no
+pushed prompt. It ends the session after `cardWaitMinutes`, or
+`idleExitMinutes` when that is 0, except under an opencode dialog, which
+ignores ctrl-d and so is never exited. The state and since-when are saved
+on the pane row, so a daemon restart keeps every idle clock; before that a
+restart made the lifecycle guess from the pane's attention, which a look
+rewrites to "idle", read as busy, and an agent stayed up for a day. A pane
+with no reading counts as idle from the first tick that sees it, for a
+harness that reports its state (Claude, opencode: `agent.HasChat`). pi,
+codex and aider never report, so they are never ended blindly. A busy reading
+loaded after a restart is believed for an hour unless a live signal
+confirms it, then reads idle: the sidecar and the opencode plugin do not
+retry a signal the down daemon missed. A waiting reading keeps its own
+card clock. A revive clears the panes' clocks,
+since it starts new sessions.
+
+An instance idle past
 `idleExitMinutes` (0 = never) with no open peer delegation gets ctrl-d and
 drops to its shell ("asleep") — note the loop cannot tell a human composing
 in the TUI from an idle agent, so a draft in a running agent's input can be
@@ -287,6 +307,7 @@ Code instances get them as channel messages.
   "memory": "per-instance",
   "start": "fresh",
   "idleExitMinutes": 10,
+  "cardWaitMinutes": 0,
   "keepAlive": false,
   "maxTurnsPerTask": 40,
   "maxTokensPerTask": 400000,

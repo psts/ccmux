@@ -30,12 +30,12 @@ func TestAgentSignal_ValidationAndUnknownPane(t *testing.T) {
 
 func TestAgentSignal_OutcomeTable(t *testing.T) {
 	for state, want := range map[string]agentSignalOutcome{
-		"busy":        {model.AttentionRunning, model.ReasonNone, true},
-		"idle":        {model.AttentionDone, model.ReasonFinished, false},
-		"permission":  {model.AttentionNeedsInput, model.ReasonPermission, true},
-		"question":    {model.AttentionNeedsInput, model.ReasonQuestion, true},
-		"needs-input": {model.AttentionNeedsInput, model.ReasonNone, true},
-		"replied":     {model.AttentionRunning, model.ReasonNone, true},
+		"busy":        {model.AttentionRunning, model.ReasonNone},
+		"idle":        {model.AttentionDone, model.ReasonFinished},
+		"permission":  {model.AttentionNeedsInput, model.ReasonPermission},
+		"question":    {model.AttentionNeedsInput, model.ReasonQuestion},
+		"needs-input": {model.AttentionNeedsInput, model.ReasonNone},
+		"replied":     {model.AttentionRunning, model.ReasonNone},
 	} {
 		got, ok := agentSignals[state]
 		if !ok || got != want {
@@ -47,9 +47,8 @@ func TestAgentSignal_OutcomeTable(t *testing.T) {
 	}
 }
 
-// The handler on a real agent pane: needs-input badges the pane AND keeps
-// the busy clock running (a single activity write, never the Claude
-// reading first); idle ends both.
+// The handler on a real agent pane: needs-input badges the pane AND reads
+// busy to a push (waiting); idle ends both.
 func TestAgentSignal_NeedsInputBadgesAndStaysBusy(t *testing.T) {
 	f := newWindowAgentFixture(t, "sleep 4;:")
 	code, pane := f.start(t, "x-poster", "")
@@ -81,7 +80,7 @@ func TestAgentSignal_NeedsInputBadgesAndStaysBusy(t *testing.T) {
 		t.Fatalf("attention after needs-input = %q", att)
 	}
 	if !f.srv.mgr.AgentBusy(pane.ID) {
-		t.Fatal("a pane waiting on a human must read busy, or the idle cap ends it under the dialog")
+		t.Fatal("a pane waiting on a human must read busy, or a scheduled prompt is typed into the dialog")
 	}
 	if code := post("idle"); code != 204 {
 		t.Fatalf("idle = %d", code)

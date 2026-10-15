@@ -9,56 +9,10 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
 )
-
-// agentActivity is the daemon's view of whether an agent pane is busy, from
-// the harness's own signals: opencode's ccmux plugin posts busy/idle to
-// /v1/panes/{id}/agent-signal; a Claude Code pane's attention changes arrive
-// through the hooks socket (ApplyAttention). Both land here with a time, so
-// the lifecycle loop can ask "idle since when".
-type agentActivity struct {
-	mu    sync.Mutex
-	state map[string]activity
-}
-
-type activity struct {
-	busy  bool
-	since time.Time
-}
-
-func (a *agentActivity) note(paneID string, busy bool, now time.Time) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.state == nil {
-		a.state = map[string]activity{}
-	}
-	if cur, ok := a.state[paneID]; ok && cur.busy == busy {
-		return // same state: keep the original since
-	}
-	a.state[paneID] = activity{busy: busy, since: now}
-}
-
-func (a *agentActivity) get(paneID string) (activity, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	act, ok := a.state[paneID]
-	return act, ok
-}
-
-func (a *agentActivity) forget(paneID string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	delete(a.state, paneID)
-}
-
-// AgentBusy says whether the harness in paneID last reported busy. No
-// signal yet reads as idle: a pane nobody has typed into is not mid-task.
-func (m *Manager) AgentBusy(paneID string) bool {
-	act, ok := m.activity.get(paneID)
-	return ok && act.busy
-}
 
 // agentAction is what one lifecycle tick decides for one agent pane.
 type agentAction int
@@ -72,17 +26,41 @@ const (
 // agentView is the slice of pane + policy the decision reads.
 type agentView struct {
 	atShell   bool
-	idle      bool
+	idle      bool // not working: idle, or waiting on a human
+	waiting   bool // stopped on a human (a card, a permission prompt)
 	idleSince time.Time
 	openTasks int
 	keepAlive bool
 	idleExit  time.Duration
-	drift     bool
+	cardWait  time.Duration // 0: a waiting agent follows idleExit
+	// holdsDialog: the harness ignores the exit keystroke while a dialog is
+	// open (opencode), so ending a waiting session would only leave a
+	// half-dead pane. Claude closes the card and exits.
+	holdsDialog bool
+	drift       bool
+}
+
+// mayEnd says whether this session is a candidate for ending at all: not
+// working, no open delegation, a cap configured, and not a dialog the
+// harness would ignore ctrl-d under.
+func (v agentView) mayEnd() bool {
+	return v.idle && v.openTasks == 0 && v.idleExit > 0 && !(v.waiting && v.holdsDialog)
+}
+
+// limit is how long this stretch may last before the session ends. A card
+// gets its own wait so it can stay open longer than an idle session lives;
+// without one it follows the idle cap, which is how it always behaved.
+func (v agentView) limit() time.Duration {
+	if v.waiting && v.cardWait > 0 {
+		return v.cardWait
+	}
+	return v.idleExit
 }
 
 // decideAgent is the pure rule of the loop, tested on its own:
 //   - at a shell: wake when keep-alive, otherwise leave it asleep;
-//   - running and idle past idleExit with no open delegations: exit — a
+//   - running and idle past its limit (idleExit, or cardWait while it waits
+//     on a human) with no open delegations: exit — a
 //     keep-alive instance that drifted from its base exits too, so the wake
 //     on the next tick picks the new base up;
 //   - anything else: nothing.
@@ -93,10 +71,10 @@ func decideAgent(v agentView, now time.Time) agentAction {
 		}
 		return actNone
 	}
-	if !v.idle || v.openTasks > 0 || v.idleExit <= 0 {
+	if !v.mayEnd() {
 		return actNone
 	}
-	if now.Sub(v.idleSince) < v.idleExit {
+	if now.Sub(v.idleSince) < v.limit() {
 		return actNone
 	}
 	if v.keepAlive && !v.drift {
@@ -168,28 +146,60 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 }
 
 // agentViewFor assembles what decideAgent reads for one pane: the pane's
-// shell state, the base's policy, drift, the harness's busy/idle signal (or
-// the attention fallback before the first signal) and open delegations.
+// shell state, the base's policy, drift, the harness's state and open
+// delegations.
 func (m *Manager) agentViewFor(p model.Pane, d agent.Definition, now time.Time) agentView {
 	v := agentView{
-		atShell:   atBareShell(&p),
-		keepAlive: d.KeepAlive,
-		idleExit:  time.Duration(d.IdleExitMinutes) * time.Minute,
-		drift:     agent.Drifted(p.AgentVersion, d.Version),
+		atShell:     atBareShell(&p),
+		keepAlive:   d.KeepAlive,
+		idleExit:    time.Duration(d.IdleExitMinutes) * time.Minute,
+		cardWait:    time.Duration(d.CardWaitMinutes) * time.Minute,
+		holdsDialog: paneHarness(p) != harness.Builtin,
+		drift:       agent.Drifted(p.AgentVersion, d.Version),
 	}
-	if act, ok := m.activity.get(p.ID); ok {
-		v.idle, v.idleSince = !act.busy, act.since
-	} else if p.Attention != "" && !claudeBusy(p.Attention) {
-		// No harness signal yet (a Claude pane before its first hook, or a
-		// plugin-less harness): fall back to the pane's attention, counting
-		// from the moment we first saw it not working.
-		m.activity.note(p.ID, false, now)
-		v.idle, v.idleSince = true, now
+	if v.atShell {
+		// The session is gone: its clock with it, so the next start counts
+		// from its own first reading and not from the last session's.
+		m.activity.forget(p.ID, true)
+		return v
+	}
+	if act, ok := m.readingFor(p, now); ok {
+		v.idle, v.waiting, v.idleSince = act.state != stateBusy, act.state == stateWaiting, act.since
 	}
 	if m.OpenTasksForPane != nil {
 		v.openTasks = m.OpenTasksForPane(p.ID)
 	}
 	return v
+}
+
+// readingFor is the pane's state for the lifecycle, false when there is
+// nothing to act on.
+//
+// With no reading, a harness that reports its own state (agent.HasChat:
+// Claude through its hooks or sidecar, opencode through its plugin) counts
+// as idle from the first tick that sees it. That is the safe guess for
+// them: a working one reports within its turn, while a guess of busy, which
+// reading the pane's attention gave after a restart, never expires. Any
+// other harness (pi, codex, aider) never reports, so no reading is all it
+// will ever have; reading that as idle would end it mid-task every cap, so
+// it is never ended blindly.
+func (m *Manager) readingFor(p model.Pane, now time.Time) (activity, bool) {
+	if act, ok := m.activity.current(p.ID, now); ok {
+		return act, true
+	}
+	if !agent.HasChat(paneHarness(p)) {
+		return activity{}, false
+	}
+	return m.activity.note(p.ID, stateIdle, now), true
+}
+
+// paneHarness is the harness an agent pane runs, with "" (a row from before
+// the harness column, when only Claude could run one) read as the builtin.
+func paneHarness(p model.Pane) string {
+	if p.Harness == "" {
+		return harness.Builtin
+	}
+	return p.Harness
 }
 
 // wakeWithBackoff retries a keep-alive wake with a doubling wait (one tick up
@@ -256,15 +266,6 @@ func (b *wakeBackoff) forget(paneID string) {
 	delete(b.next, paneID)
 }
 
-// claudeBusy reads a Claude Code pane's attention as the lifecycle's
-// busy/idle. The hooks encode attention for the LENS, not for us, and the
-// mapping is easy to invert: user_prompt_submit → "idle" (the flash clears
-// because the human is there), which for an agent is the moment work STARTS;
-// stop → "done" and permission/ask → "needs_input" are the moments it stops.
-// So "idle" is busy and everything else is not; see hooks.outcome for the
-// mapping this reads.
-func claudeBusy(att model.Attention) bool { return att == model.AttentionIdle }
-
 // ErrPaneGone says the pane (or its session) vanished before an action
 // reached it — the tick's snapshot was stale.
 var ErrPaneGone = errors.New("pane is gone")
@@ -290,7 +291,7 @@ func (m *Manager) exitAgent(paneID, wsID, why string) error {
 		log.Printf("agent pane %s: exit keystroke failed: %v", paneID, err)
 		return fmt.Errorf("exit keystroke: %w", err)
 	}
-	m.activity.forget(paneID)
+	m.activity.forget(paneID, true)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return nil
 }

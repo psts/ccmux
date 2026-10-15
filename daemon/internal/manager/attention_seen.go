@@ -31,7 +31,7 @@ func (m *Manager) retireIfWatched(wsID string, att model.Attention) {
 
 // MarkSeen retires every flash in a workspace because a lens reported it is
 // looking at one of its panes. The agent lifecycle's busy/idle record is left
-// alone on purpose: it read the real hook (claudeBusy) when it arrived, and a
+// alone on purpose: it read the real hook (agentStateFor) when it arrived, and a
 // human glancing at the pane is not the agent starting work.
 func (m *Manager) MarkSeen(wsID string) {
 	m.retire(wsID, "")

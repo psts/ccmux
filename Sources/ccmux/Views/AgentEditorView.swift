@@ -249,6 +249,14 @@ struct AgentEditorView: View {
                 Text("min, 0 = never sleeps").font(.system(size: 11)).foregroundColor(.secondary)
                 Toggle("keep alive", isOn: $agent.keepAlive).toggleStyle(.checkbox)
             }
+            // How long a session stopped on a human (a question card, a
+            // permission prompt) may wait before it ends. Same field as the
+            // web lens's agent editor.
+            HStack(spacing: 8) {
+                Text("card wait").foregroundColor(.secondary)
+                TextField("0", value: $agent.cardWaitMinutes, format: .number).frame(width: 50)
+                Text("min, 0 = same as idle").font(.system(size: 11)).foregroundColor(.secondary)
+            }
         }
     }
 

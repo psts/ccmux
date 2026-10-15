@@ -167,6 +167,9 @@ struct DaemonAgent: Codable, Identifiable {
     var start: String
     var keepAlive: Bool
     var idleExitMinutes: Int
+    /// How long a session stopped on a human may wait before it ends; 0
+    /// follows idleExitMinutes (the daemon's decideAgent).
+    var cardWaitMinutes: Int
     var version: String
     var instructions: String
     var id: String { name }
@@ -175,7 +178,7 @@ struct DaemonAgent: Codable, Identifiable {
          keepAlive: Bool = false, idleExitMinutes: Int = 10, version: String = "", instructions: String = "") {
         self.name = name; self.icon = icon; self.description = description; self.harness = harness
         self.account = ""; self.model = ""; self.permissions = DaemonAgentPermissions(); self.plugins = []; self.start = "fresh"
-        self.keepAlive = keepAlive; self.idleExitMinutes = idleExitMinutes; self.version = version
+        self.keepAlive = keepAlive; self.idleExitMinutes = idleExitMinutes; self.cardWaitMinutes = 0; self.version = version
         self.instructions = instructions
     }
 
@@ -192,12 +195,13 @@ struct DaemonAgent: Codable, Identifiable {
         start = try c.decodeIfPresent(String.self, forKey: .start) ?? "fresh"
         keepAlive = try c.decodeIfPresent(Bool.self, forKey: .keepAlive) ?? false
         idleExitMinutes = try c.decodeIfPresent(Int.self, forKey: .idleExitMinutes) ?? 10
+        cardWaitMinutes = try c.decodeIfPresent(Int.self, forKey: .cardWaitMinutes) ?? 0
         version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
         instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, icon, description, harness, account, model, permissions, plugins, start, keepAlive, idleExitMinutes, version, instructions
+        case name, icon, description, harness, account, model, permissions, plugins, start, keepAlive, idleExitMinutes, cardWaitMinutes, version, instructions
     }
 }
 

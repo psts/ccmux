@@ -40,7 +40,11 @@
       section("opencode plugins", `<textarea class="setting-input am-plugins" rows="2" spellcheck="false" placeholder="plugin packages, one per line"></textarea>`) +
       section("Lifecycle",
         `<div class="entry-line"><label class="am-lbl">start</label>${sel("am-start", ["fresh", "continue"])}<label class="am-lbl">idle</label><input class="setting-input agent-num am-idle" type="number" min="0"><span class="am-lbl">min, 0 = never sleeps</span>` +
-        `<label class="hx-confirm"><input type="checkbox" class="am-keep"> keep alive</label></div>`) +
+        `<label class="hx-confirm"><input type="checkbox" class="am-keep"> keep alive</label></div>` +
+        // How long a session stopped on a human (a question card, a permission
+        // prompt) may wait before it ends. Its own number so a card can wait
+        // for an answer without idle sessions living as long (decideAgent).
+        `<div class="entry-line"><label class="am-lbl">card wait</label><input class="setting-input agent-num am-cardwait" type="number" min="0"><span class="am-lbl">min, 0 = same as idle</span></div>`) +
       section("Instances", `<div class="am-instances rules-list"></div><div class="entry-line"><button class="rule-add am-restart" type="button">Restart to apply</button><span class="hint am-inst-state"></span></div>`);
     q("#agent-modal-close").onclick = close;
     m.onclick = (e) => { if (e.target === m) close(); };
@@ -99,6 +103,7 @@
     q(".am-plugins").value = (a.plugins || []).join("\n");
     q(".am-start").value = a.start || "fresh";
     q(".am-idle").value = a.idleExitMinutes ?? 10;
+    q(".am-cardwait").value = a.cardWaitMinutes ?? 0;
     q(".am-keep").checked = !!a.keepAlive;
   }
 
@@ -111,7 +116,8 @@
       icon: q(".am-icon").value.trim(), description: q(".am-desc").value.trim(), instructions: q(".am-instr").value,
       harness: q(".am-harness").value, account: q(".am-account").value.trim(), model: q(".am-model").value.trim(),
       permissions, plugins: lines(".am-plugins"), start: q(".am-start").value,
-      idleExitMinutes: Number(q(".am-idle").value) || 0, keepAlive: q(".am-keep").checked,
+      idleExitMinutes: Number(q(".am-idle").value) || 0, cardWaitMinutes: Number(q(".am-cardwait").value) || 0,
+      keepAlive: q(".am-keep").checked,
     };
   }
 
