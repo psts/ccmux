@@ -315,6 +315,18 @@ private struct TabChip: View {
         return service.agentPanes[id] != nil
     }
 
+    /// Same words as the web lens's tab title (renderTabs, updateTip).
+    private var tooltip: String {
+        var lines: [String] = []
+        if tab.isDormant { lines.append("Claude exited — shell only") }
+        switch tab.claudeUpdate {
+        case "pending": lines.append("Claude update installed: restarts by itself after an hour idle")
+        case "manual": lines.append("Claude update installed: ccmux can't restart this one by itself, restart it by hand")
+        default: break
+        }
+        return lines.joined(separator: "\n")
+    }
+
     var body: some View {
         HStack(spacing: 5) {
             // A dormant tab is dimmed rather than badged: it marks an absence,
@@ -329,6 +341,13 @@ private struct TabChip: View {
                 .opacity(tab.isDormant ? 0.55 : 1)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
+            // The web lens's ↻: this pane still runs an older Claude than the
+            // one installed. Orange once ccmux cannot do the restart itself.
+            if !tab.claudeUpdate.isEmpty {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 9))
+                    .foregroundColor(tab.claudeUpdate == "manual" ? .orange : .secondary)
+            }
 
             if canClose {
                 Button(action: onClose) {
@@ -360,7 +379,7 @@ private struct TabChip: View {
             }
         }
         .contentShape(Rectangle())
-        .help(tab.isDormant ? "Claude exited — shell only" : "")
+        .help(tooltip)
         .onHover { isHovered = $0 }
     }
 }

@@ -32,6 +32,7 @@ enum RemoteWorkspaceBuilder {
             startupCommand: nil)
         config.host = .hosted(paneId: pane.id)
         config.dormant = pane.dormant
+        config.claudeUpdate = pane.claudeUpdate
         return config
     }
 
@@ -112,26 +113,20 @@ enum RemoteWorkspaceBuilder {
     /// daemon re-derives titles live from tmux — "Claude", "Terminal", "vim").
     /// Returns nil when nothing changed so callers can skip republishing.
     static func updatingTitles(_ tree: SplitTree<PaneTabs>, panes: [DaemonPane]) -> SplitTree<PaneTabs>? {
-        let titles = Dictionary(panes.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
-        // Dormancy rides the same reconcile as titles: it changes for the same
-        // reason (the pane's foreground command moved) and must not need its own.
-        let dormant = Dictionary(panes.map { ($0.id, $0.dormant) }, uniquingKeysWith: { a, _ in a })
+        // Dormancy and the Claude update mark ride the same reconcile as titles:
+        // they change for the same reason (the pane's foreground moved) and must
+        // not need their own.
+        let byId = Dictionary(panes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var result = tree
         var changed = false
         for (leafId, tabs) in tree.allLeaves {
             var newTabs = tabs
             var leafChanged = false
             for (idx, tab) in tabs.tabs.enumerated() {
-                guard case .terminal(var cfg) = tab, let paneId = cfg.host.hostedPaneId,
-                      let raw = titles[paneId] else { continue }
-                let title: String? = raw.isEmpty ? nil : raw
-                let isDormant = dormant[paneId] ?? false
-                if cfg.title != title || cfg.dormant != isDormant {
-                    cfg.title = title
-                    cfg.dormant = isDormant
-                    newTabs.tabs[idx] = .terminal(cfg)
-                    leafChanged = true
-                }
+                guard case .terminal(let cfg) = tab, let paneId = cfg.host.hostedPaneId,
+                      let pane = byId[paneId], let fresh = refreshed(cfg, from: pane) else { continue }
+                newTabs.tabs[idx] = .terminal(fresh)
+                leafChanged = true
             }
             if leafChanged {
                 result = result.replaceContent(leafId: leafId, newContent: newTabs)
@@ -139,6 +134,19 @@ enum RemoteWorkspaceBuilder {
             }
         }
         return changed ? result : nil
+    }
+
+    /// A hosted tab's config with the daemon pane's live fields folded in, or
+    /// nil when none of them moved.
+    private static func refreshed(_ cfg: TerminalConfig, from pane: DaemonPane) -> TerminalConfig? {
+        var next = cfg
+        next.title = pane.title.isEmpty ? nil : pane.title
+        next.dormant = pane.dormant
+        next.claudeUpdate = pane.claudeUpdate
+        if next.title == cfg.title && next.dormant == cfg.dormant && next.claudeUpdate == cfg.claudeUpdate {
+            return nil
+        }
+        return next
     }
 
     /// Place a freshly spawned daemon pane at the leaf the user acted on — appended

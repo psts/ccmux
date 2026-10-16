@@ -34,6 +34,14 @@ final class DaemonWireTests: XCTestCase {
         XCTAssertTrue(ws.panes.isEmpty)
     }
 
+    func testPaneDecodesClaudeUpdateMark() throws {
+        let marked = #"{"id":"p","title":"t","cwd":"/","claudeUpdate":"pending"}"#
+        XCTAssertEqual(try JSONDecoder().decode(DaemonPane.self, from: Data(marked.utf8)).claudeUpdate, "pending")
+        // omitempty: an up-to-date pane carries no key at all.
+        let plain = #"{"id":"p","title":"t","cwd":"/"}"#
+        XCTAssertEqual(try JSONDecoder().decode(DaemonPane.self, from: Data(plain.utf8)).claudeUpdate, "")
+    }
+
     func testUnknownStatusAndAttentionDoNotThrow() throws {
         let json = #"{"id":"p","title":"t","cwd":"/","status":"zombie","attention":"pondering"}"#
         let p = try JSONDecoder().decode(DaemonPane.self, from: Data(json.utf8))

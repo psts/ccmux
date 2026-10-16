@@ -720,6 +720,10 @@ struct DaemonPane: Codable, Identifiable {
     /// The harness the pane runs ("" = a plain shell pane); an agent pane
     /// shows the chat view when its harness serves one (AgentPaneRef.hasChat).
     var harness: String
+    /// "pending" when the pane's Claude runs an older version than the one
+    /// installed and the daemon will restart it after an hour idle, "manual"
+    /// when it cannot and the human must, "" otherwise (manager/autorestart.go).
+    var claudeUpdate: String
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -735,6 +739,7 @@ struct DaemonPane: Codable, Identifiable {
         agent = try c.decodeIfPresent(String.self, forKey: .agent) ?? ""
         agentVersion = try c.decodeIfPresent(String.self, forKey: .agentVersion) ?? ""
         harness = try c.decodeIfPresent(String.self, forKey: .harness) ?? ""
+        claudeUpdate = try c.decodeIfPresent(String.self, forKey: .claudeUpdate) ?? ""
     }
 }
 

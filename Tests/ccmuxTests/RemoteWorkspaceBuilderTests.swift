@@ -113,6 +113,16 @@ final class RemoteWorkspaceBuilderTests: XCTestCase {
         XCTAssertEqual(cfg2.title, nil, "empty daemon title stays nil")
     }
 
+    func testUpdatingTitlesCarriesTheClaudeUpdateMark() throws {
+        let tree = twoLeafTree()
+        let marked = try! JSONDecoder().decode(
+            DaemonPane.self, from: Data(#"{"id":"p1","cwd":"/r","title":"","claudeUpdate":"manual"}"#.utf8))
+        let updated = try XCTUnwrap(RemoteWorkspaceBuilder.updatingTitles(tree, panes: [marked, pane("p2")]),
+                                    "a mark change alone must republish")
+        XCTAssertEqual(updated.allLeaves[0].content.tabs[0].claudeUpdate, "manual")
+        XCTAssertEqual(updated.allLeaves[1].content.tabs[0].claudeUpdate, "")
+    }
+
     func testUpdatingTitlesReturnsNilWhenNothingChanged() {
         let tree = twoLeafTree()
         XCTAssertNil(RemoteWorkspaceBuilder.updatingTitles(tree, panes: [pane("p1"), pane("p2")]),

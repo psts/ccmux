@@ -160,6 +160,9 @@ func runDaemon() {
 	// live workspace — lenses render it; they can't read the daemon's repos.
 	mgr.StartGitStatus(5 * time.Second)
 	mgr.StartListenerScan(2 * time.Second)
+	// Panes still on an older Claude Code than the one installed restart
+	// after an hour idle (manager/autorestart.go).
+	mgr.StartAutoRestart(time.Minute, claudeLauncherLink())
 	removeComposeOverrides()
 
 	// Built before the hooks listener: NewServer wires mgr.Watched, which
@@ -638,6 +641,17 @@ func tsSuffix(ts *tsnet.Server, hostname string) string {
 		}
 	}
 	return "ts.net" // unreachable in practice; keeps URLs recognizably wrong, not empty
+}
+
+// claudeLauncherLink is the native installer's launcher: an update lands
+// under ~/.local/share/claude/versions and moves this link. "" without a home
+// directory, which leaves the auto restart logging that it is off.
+func claudeLauncherLink() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "bin", "claude")
 }
 
 // loopbackURL turns a listen address into a base URL an on-host hook can reach.

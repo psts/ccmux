@@ -375,6 +375,13 @@ type Pane struct {
 	// have a harness started IN it. Derived from RawCommand alongside Dormant;
 	// runtime-observed, serialized for the lenses, never persisted.
 	AtShell bool `json:"atShell,omitempty"`
+	// ClaudeUpdate says the pane's Claude runs an older version than the one
+	// installed: "pending" while ccmux will restart it after an hour idle,
+	// "manual" when ccmux cannot (a restart that failed, or a session whose
+	// transcript it cannot find to resume) and the human must. Recomputed
+	// every minute (manager/autorestart.go), serialized for the lenses, never
+	// persisted.
+	ClaudeUpdate string `json:"claudeUpdate,omitempty"`
 	// RawTitle/RawCommand are the tmux runtime signals (#{pane_title},
 	// #{pane_current_command}) that Title is derived from. Runtime-only.
 	RawTitle   string `json:"-"`

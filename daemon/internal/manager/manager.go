@@ -98,6 +98,7 @@ type Manager struct {
 	// agentStartMu.
 	AgentsMax    int
 	activity     agentActivity
+	restart      autoRestart // Claude auto restart after an update (autorestart.go)
 	agentStartMu sync.Mutex
 	wakeBackoff  wakeBackoff
 	starting     startMarks
@@ -870,6 +871,7 @@ func (m *Manager) ApplySession(paneID, sessionID string, sig model.SessionSignal
 	if sig == model.SessionStarted || sig == model.SessionActive {
 		m.markHostedClaude(paneID)
 	}
+	m.restart.clocks.session(paneID, sessionID, sig)
 	if m.SessionSink == nil {
 		return
 	}
@@ -908,6 +910,7 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason mode
 // false says so. Nothing is stored, and the per-workspace attach sockets get
 // no frame: they would only redraw what they already show.
 func (m *Manager) Remind(paneID string) bool {
+	m.restart.clocks.reminder(paneID, time.Now())
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
 	if p == nil || !p.Attention.Claims() {
@@ -941,6 +944,7 @@ func (m *Manager) applyAttention(paneID string, att model.Attention, reason mode
 	wsID := e.ws.ID
 	saved := *p
 	m.mu.Unlock()
+	m.restart.clocks.attention(paneID, att, reason, time.Now())
 	if saved.Agent != "" {
 		// The harness's own signal (Claude's hooks, the opencode plugin) is
 		// the lifecycle's state; agentStateFor reads it.
@@ -1303,6 +1307,7 @@ func (m *Manager) dropPane(wsID, paneID string) {
 		return
 	}
 	m.activity.forget(paneID, false) // the row goes with the pane
+	m.restart.forget(paneID)
 	m.wakeBackoff.forget(paneID)
 	m.starting.forget(paneID)
 	pushLocks.Delete(paneID)

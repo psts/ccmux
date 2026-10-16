@@ -789,6 +789,13 @@ async function peersFailureCases() {
   const drift = Object.entries(table).filter(([h, want]) => ok.ctx.hasChat(h) !== want).map(([h]) => h);
   check("hasChat matches the daemon's HasChat table", drift.length === 0, `drift on: ${drift.join(", ")}`);
 
+  // The daemon's claudeUpdate marks (restartMark in Go): each has its own
+  // words, and no mark has none.
+  const tips = ["pending", "manual"].map((m) => ok.ctx.updateTip(m));
+  check("each update mark explains itself", tips.every((t) => t.startsWith("Claude update installed")) && tips[0] !== tips[1]);
+  check("no mark, no tip", ok.ctx.updateTip(undefined) === "" && ok.ctx.updateTip("") === "" &&
+    ok.ctx.updateTip("failed") === "");
+
   await peersMergeCases();
   await peersFailureCases();
   await boardCases();

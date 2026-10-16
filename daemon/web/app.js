@@ -344,13 +344,15 @@ function syncPaneTitles() {
     // registry refresh — the firehose fires one for exactly this change.
     if (!!q.atShell !== !!p.atShell || !!q.dormant !== !!p.dormant ||
         !!q.devServer !== !!p.devServer || (q.harness || "") !== (p.harness || "") ||
-        (q.agent || "") !== (p.agent || "") || (q.agentVersion || "") !== (p.agentVersion || "")) {
+        (q.agent || "") !== (p.agent || "") || (q.agentVersion || "") !== (p.agentVersion || "") ||
+        (q.claudeUpdate || "") !== (p.claudeUpdate || "")) {
       p.atShell = q.atShell;
       p.dormant = q.dormant;
       p.devServer = q.devServer;
       p.harness = q.harness;
       p.agent = q.agent;
       p.agentVersion = q.agentVersion;
+      p.claudeUpdate = q.claudeUpdate;
       shellChanged = true;
     }
   }
@@ -1478,6 +1480,16 @@ async function movePaneTab(paneId, slot) {
 }
 
 // --- pane tabs ---
+
+// updateTip explains a pane's claudeUpdate mark (manager/autorestart.go): the
+// daemon restarts a Claude that is behind the installed version once it has
+// sat idle an hour, and says so when it cannot do that one.
+function updateTip(mark) {
+  if (mark === "pending") return "Claude update installed: restarts by itself after an hour idle";
+  if (mark === "manual") return "Claude update installed: ccmux can't restart this one by itself, restart it by hand";
+  return "";
+}
+
 function renderTabs() {
   if (state.tabDrag) return; // rebuilding the strip mid-drag would orphan the drag
   const tabs = $("tabs");
@@ -1488,11 +1500,12 @@ function renderTabs() {
     // which is exactly why it needs saying — nothing else tells it apart from a
     // working session.
     b.className = "tab" + (p.id === state.paneId ? " active" : "") +
-      " att-" + (p.attention || "idle") + (p.dormant ? " dormant" : "");
+      " att-" + (p.attention || "idle") + (p.dormant ? " dormant" : "") +
+      (p.claudeUpdate ? " update-" + p.claudeUpdate : "");
     b.dataset.pane = p.id;
-    b.title = p.agent ? `agent ${p.agent}` + (p.atShell || p.dormant ? " — asleep" : "")
-      : p.dormant ? "Claude exited — shell only" : "";
-    b.textContent = (p.agent ? "⚙ " : "") + (p.title || `pane ${i + 1}`);
+    b.title = [p.agent ? `agent ${p.agent}` + (p.atShell || p.dormant ? " — asleep" : "")
+      : p.dormant ? "Claude exited — shell only" : "", updateTip(p.claudeUpdate)].filter(Boolean).join("\n");
+    b.textContent = (p.agent ? "⚙ " : "") + (p.title || `pane ${i + 1}`) + (p.claudeUpdate ? " ↻" : "");
     // A drop ends with a click on the same button; that click must not switch panes.
     b.onclick = () => { if (!state.tabDrag) attach(state.wsId, p.id); };
     b.oncontextmenu = (e) => { e.preventDefault(); if (!state.tabDrag) openPaneLLMMenu(p.id, e.clientX, e.clientY); };
