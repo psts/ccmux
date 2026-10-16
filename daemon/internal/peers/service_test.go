@@ -199,10 +199,14 @@ func TestSend_WindowScopingAndGuards(t *testing.T) {
 		!strings.HasPrefix(resp.Error, "Cannot send messages across projects") {
 		t.Fatalf("cross-window send = %+v, want guard error", resp)
 	}
-	// Name resolution stays inside the sender's window.
+	// Name resolution stays inside the sender's window. "app" is running in
+	// another one, so the miss points there, not at a spawn that would start a
+	// second "app" in this window.
 	if resp := svc.Send(SendReq{FromID: a, ToName: "app", Text: "hi"}); resp.OK ||
-		!strings.Contains(resp.Error, "not found in project") {
-		t.Fatalf("cross-window name resolve = %+v, want not-found", resp)
+		!strings.Contains(resp.Error, "not found in project") ||
+		!strings.Contains(resp.Error, `to_group="CHARTLABS"`) ||
+		strings.Contains(resp.Error, "spawn_if_missing") {
+		t.Fatalf("cross-window name resolve = %+v, want not-found pointing at CHARTLABS", resp)
 	}
 	// The delivered event snapshots the sender's group.
 	evs, err := svc.Poll(b)

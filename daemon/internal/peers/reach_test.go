@@ -31,6 +31,80 @@ func TestSend_CrossGroupRefusedWithoutToGroup(t *testing.T) {
 	}
 }
 
+// A name running nowhere is the one miss where spawning is the right advice.
+func TestSend_NameMissingEverywhereHintsSpawn(t *testing.T) {
+	svc, sender, _ := twoGroups(t)
+	resp := svc.Send(SendReq{FromID: sender, ToName: "nobody", Text: "hi"})
+	if resp.OK || !strings.Contains(resp.Error, "spawn_if_missing=true") {
+		t.Fatalf("a name running nowhere should hint spawn_if_missing, got %+v", resp)
+	}
+}
+
+// A miss inside a named group must not hint a spawn: the spawn path starts the
+// teammate in the sender's own window, not the group the sender named.
+func TestSend_NameMissingInToGroupNoSpawnHint(t *testing.T) {
+	svc, sender, _ := twoGroups(t)
+	resp := svc.Send(SendReq{FromID: sender, ToName: "nobody", ToGroup: "CHARTLABS", Text: "hi"})
+	if resp.OK || strings.Contains(resp.Error, "spawn_if_missing") ||
+		!strings.Contains(resp.Error, `"CHARTLABS"`) {
+		t.Fatalf("a miss in a named group should name it and not hint a spawn, got %+v", resp)
+	}
+}
+
+// A departed session elsewhere is not "running": the miss hints a spawn, not a
+// to_group that would only reach a dead mailbox.
+func TestSend_NameDepartedElsewhereHintsSpawn(t *testing.T) {
+	svc, sender, target := twoGroups(t)
+	svc.Unregister(target)
+	resp := svc.Send(SendReq{FromID: sender, ToName: "backend", Text: "hi"})
+	if resp.OK || !strings.Contains(resp.Error, "spawn_if_missing=true") ||
+		strings.Contains(resp.Error, "to_group") {
+		t.Fatalf("a departed peer elsewhere should hint spawn, got %+v", resp)
+	}
+}
+
+// An agent joins the caller's project when contacted, so one running in
+// another project still gets the spawn hint, not a to_group into that project.
+func TestSend_AgentElsewhereHintsSpawn(t *testing.T) {
+	svc, sender, _ := twoGroups(t)
+	svc.IsAgent = func(name string) (bool, error) { return name == "backend", nil }
+	resp := svc.Send(SendReq{FromID: sender, ToName: "backend", Text: "hi"})
+	if resp.OK || !strings.Contains(resp.Error, "spawn_if_missing=true") ||
+		strings.Contains(resp.Error, "to_group") {
+		t.Fatalf("an agent elsewhere should hint spawn here, got %+v", resp)
+	}
+}
+
+// An agent missing from a NAMED group gets no spawn hint: the spawn would start
+// it in the sender's group, so the message would land in the wrong project.
+func TestSend_AgentMissingInToGroupNoSpawnHint(t *testing.T) {
+	svc, sender, _ := twoGroups(t)
+	svc.IsAgent = func(name string) (bool, error) { return name == "x-poster", nil }
+	resp := svc.Send(SendReq{FromID: sender, ToName: "x-poster", ToGroup: "CHARTLABS", Text: "hi"})
+	if resp.OK || strings.Contains(resp.Error, "spawn_if_missing") ||
+		!strings.Contains(resp.Error, `"CHARTLABS"`) {
+		t.Fatalf("an agent missing from a named group should not hint a spawn, got %+v", resp)
+	}
+}
+
+// A name running in several other groups lists them all, in a stable order,
+// instead of naming whichever the map visits first.
+func TestSend_NameInSeveralGroupsListsAll(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.setGroup("pane-mine", "MIXED")
+	hook.setGroup("pane-theirs", "CHARTLABS")
+	hook.setGroup("pane-third", "OTHER")
+	sender := registerPane(svc, "pane-mine", "/w/ccmux").PeerID
+	registerPane(svc, "pane-theirs", "/w/backend")
+	registerPane(svc, "pane-third", "/x/backend")
+	for i := 0; i < 5; i++ {
+		resp := svc.Send(SendReq{FromID: sender, ToName: "backend", Text: "hi"})
+		if resp.OK || !strings.Contains(resp.Error, `"CHARTLABS", "OTHER"`) {
+			t.Fatalf("a name in two groups should list both in order, got %+v", resp)
+		}
+	}
+}
+
 // "Check in with backend in ChartLabs" — naming the group authorizes the send.
 func TestSend_CrossGroupAllowedByName(t *testing.T) {
 	svc, sender, _ := twoGroups(t)

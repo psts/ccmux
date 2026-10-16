@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,11 +158,70 @@ func (s *Service) resolveTargetLocked(req SendReq, sender *Peer, senderGroup str
 		if req.SpawnIfMissing {
 			return nil, s.trySpawnLocked(sender, senderGroup, req.ToName, req.Text, req.ToRepo)
 		}
-		return nil, SendResp{Error: fmt.Sprintf("Peer %q not found in project", req.ToName)}
+		return nil, SendResp{Error: s.nameMissErrorLocked(req, sender, senderGroup, wantGroup)}
 	default:
 		return nil, SendResp{Error: fmt.Sprintf(
 			"Multiple peers named %q in this group — reply with to_id instead (see list_peers)", req.ToName)}
 	}
+}
+
+// nameMissErrorLocked explains a by-name miss with the fix that applies. The
+// old sentence stays the prefix. The spawn path starts the teammate in the
+// sender's own group, so a spawn is advised only when the sender stayed in its
+// group and either the name is an agent (agents join the caller's project by
+// design) or no session with that name runs anywhere else.
+func (s *Service) nameMissErrorLocked(req SendReq, sender *Peer, senderGroup, wantGroup string) string {
+	prefix := fmt.Sprintf("Peer %q not found in project", req.ToName)
+	ownGroup := sameGroup(wantGroup, senderGroup)
+	if ownGroup && s.isAgentName(req.ToName) {
+		return prefix + ": it is an agent not running here. Resend with spawn_if_missing=true to start it in this project"
+	}
+	switch groups := s.groupsRunningNameLocked(req.ToName, sender.ID, wantGroup); {
+	case len(groups) == 1:
+		return fmt.Sprintf("%s: it is running in %q. Pass to_group=%q to reach it", prefix, groups[0], groups[0])
+	case len(groups) > 1:
+		return fmt.Sprintf("%s: it is running in %s. Pass to_group with the one you mean", prefix, quoteJoin(groups))
+	}
+	if !ownGroup {
+		return fmt.Sprintf("%s: it is not running in %q", prefix, wantGroup)
+	}
+	return prefix + ": it is not running. Resend with spawn_if_missing=true to start it"
+}
+
+// isAgentName reports whether spawning `name` would start a base agent. A base
+// that exists but cannot be read counts: the spawn path then names the fault.
+func (s *Service) isAgentName(name string) bool {
+	if s.IsAgent == nil {
+		return false
+	}
+	ok, err := s.IsAgent(name)
+	return ok || err != nil
+}
+
+// groupsRunningNameLocked returns, sorted, every group other than `exclude`
+// where a present peer named `name` runs.
+func (s *Service) groupsRunningNameLocked(name, senderID, exclude string) []string {
+	seen := map[string]bool{}
+	var groups []string
+	for _, p := range s.peers {
+		if p.Name != name || p.ID == senderID || !s.presentLocked(p) {
+			continue
+		}
+		if g := s.groupOfLocked(p); !sameGroup(g, exclude) && !seen[g] {
+			seen[g] = true
+			groups = append(groups, g)
+		}
+	}
+	sort.Strings(groups)
+	return groups
+}
+
+func quoteJoin(xs []string) string {
+	q := make([]string, len(xs))
+	for i, x := range xs {
+		q[i] = strconv.Quote(x)
+	}
+	return strings.Join(q, ", ")
 }
 
 // tryVerdictLocked converts a "yes <id>"/"no <id>" reply into a structured
