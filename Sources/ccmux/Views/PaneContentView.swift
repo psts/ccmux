@@ -95,9 +95,7 @@ struct ScratchpadPaneView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
 
-            TextEditor(text: $text)
-                .font(.system(size: 13, design: .monospaced))
-                .scrollContentBackground(.hidden)
+            ScratchpadTextView(text: $text)
                 .background(Color(nsColor: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0)))
         }
         .background(Color(nsColor: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0)))
