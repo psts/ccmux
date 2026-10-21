@@ -101,24 +101,23 @@ final class WindowSizingTests: XCTestCase {
         XCTAssertEqual(WindowSizing.sharedWindowId(stamped: "w-gone", name: nil, members: [], shared: []), "w-gone")
     }
 
-    /// An unnamed window answers to an automatic "Window N" that shifts as
-    /// other windows close. Matching on it would hand one window's size to a
-    /// shared window that happens to carry that name today. Runs the same
-    /// helper `sharedWindowSizeSettled` calls, with the clash set up.
-    func testAnUnnamedWindowNeverMatchesByTheAutomaticName() throws {
+    /// Runs the same helper `sharedWindowSizeSettled` calls: the window's
+    /// name matches first, and with no name match its displayed session
+    /// counts as a member.
+    func testAWindowMatchesByItsNameThenByItsDisplayedSession() throws {
         let shared = [
             try window(#"{"id":"w-3","name":"Window 3","workspaceIds":["ws-9"]}"#),
             try window(#"{"id":"w-mine","name":"Mine","workspaceIds":["ws-1"]}"#),
         ]
-        let wc = WindowContext(workspaceId: nil, workspaceManager: WorkspaceManager(autosaves: false))
-        wc.autoName = "Window 3"
+        let wc = WindowContext(
+            workspaceId: nil, windowName: "Elsewhere", workspaceManager: WorkspaceManager(autosaves: false))
         XCTAssertNil(WindowSizing.sharedWindowId(for: wc, shared: shared),
-                     "the automatic name must never match")
+                     "no name and no session matches nothing")
         wc.displayedWorkspaceId = RemoteWorkspaceBuilder.workspaceUUID("ws-1")
         XCTAssertEqual(WindowSizing.sharedWindowId(for: wc, shared: shared), "w-mine",
                        "the displayed session counts as a member")
         wc.windowName = "window 3"
         XCTAssertEqual(WindowSizing.sharedWindowId(for: wc, shared: shared), "w-3",
-                       "a name of its own does match")
+                       "its name wins, ignoring case")
     }
 }

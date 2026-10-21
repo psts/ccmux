@@ -60,7 +60,7 @@ class ListWorkspacesCommand: NSScriptCommand {
 
         var lines: [String] = []
         for wc in windowManager.windowControllers {
-            let windowName = wc.windowContext.windowName ?? wc.window?.title ?? "Window"
+            let windowName = wc.windowContext.windowName
             let ownedIds = wc.windowContext.ownedWorkspaceIds
             let workspaces = (windowManager.workspaceManager.workspaces + RemoteSessionService.shared.workspaces)
                 .filter { ownedIds.contains($0.id) }

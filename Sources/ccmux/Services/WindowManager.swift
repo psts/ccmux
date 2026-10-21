@@ -13,14 +13,11 @@ class WindowContext: ObservableObject {
     @Published var otherWindowWorkspaceIds: Set<UUID> = []
     /// IDs of workspaces that belong to THIS window (displayed + previously selected here)
     @Published var ownedWorkspaceIds: Set<UUID> = []
-    /// Custom window name, nil = auto-generated "Window N"
-    @Published var windowName: String?
-    /// The auto-generated name an unnamed window ACTUALLY answers to ("Window N",
-    /// maintained by refreshOtherWindowIds). The sidebar must fall back to this,
-    /// not a cosmetic "This Window": group rows are matched by name, and a window
-    /// that displays one name while matching another can never claim its own
-    /// cold sessions.
-    @Published var autoName: String = "Window"
+    /// The name this window answers to: its identity on the daemon, matched by
+    /// membership, open flags, sizes and the peers bus. Fixed when the window is
+    /// made and changed only by a rename; see WindowNaming for why it is never
+    /// derived from the window's place in the list.
+    @Published var windowName: String
     /// Info about other windows for sidebar display
     @Published var otherWindowGroups: [WindowGroup] = []
     /// Workspace IDs whose sidebar disclosure is collapsed in this window.
@@ -49,8 +46,9 @@ class WindowContext: ObservableObject {
         return workspaceManager?.controllers[id] ?? RemoteSessionService.shared.controllers[id]
     }
 
-    init(workspaceId: UUID?, workspaceManager: WorkspaceManager) {
+    init(workspaceId: UUID?, windowName: String, workspaceManager: WorkspaceManager) {
         self.displayedWorkspaceId = workspaceId
+        self.windowName = windowName
         self.workspaceManager = workspaceManager
         if let id = workspaceId {
             ownedWorkspaceIds = [id]
@@ -103,10 +101,9 @@ class WindowManager {
     // MARK: - Window Lifecycle
 
     /// Create a new window displaying the given workspace (or nil for welcome screen).
-    /// `name` is applied before the window joins `windowControllers`, because the
-    /// `refreshOtherWindowIds` below pushes each window's name to the daemon as its
-    /// hosted group. Naming afterwards means the auto "Window N" goes out first, and
-    /// the corrective push races it from a separate unstructured Task.
+    /// Without a `name` it takes a free "Window N" (see freeWindowName), fixed from
+    /// here on. The name is set before the window joins `windowControllers`, because
+    /// the `refreshOtherWindowIds` below pushes each window's name to the daemon.
     @discardableResult
     func createWindow(
         displayingWorkspace workspaceId: UUID?, frame: WindowFrame? = nil, name: String? = nil
@@ -114,9 +111,9 @@ class WindowManager {
         let wc = WorkspaceWindowController(
             workspaceManager: workspaceManager,
             windowManager: self,
-            displayedWorkspaceId: workspaceId
+            displayedWorkspaceId: workspaceId,
+            windowName: name ?? freeWindowName()
         )
-        wc.windowContext.windowName = name
 
         if let frame {
             wc.window?.setFrame(
@@ -298,7 +295,7 @@ class WindowManager {
         // still having the window open means nothing sleeps — their window,
         // their panes, untouched.
         if !plan.archiveHosted.isEmpty {
-            let name = controller.windowContext.windowName ?? autoWindowName(for: controller)
+            let name = controller.windowContext.windowName
             Task { @MainActor in
                 await RemoteSessionService.shared.closeSharedWindow(named: name)
             }
@@ -439,7 +436,7 @@ class WindowManager {
         // optimistic note keeps the reconcile that runs before the daemon's ack
         // from bouncing the workspace back.
         if RemoteSessionService.shared.isHosted(id) {
-            let name = targetController.windowContext.windowName ?? autoWindowName(for: targetController)
+            let name = targetController.windowContext.windowName
             RemoteSessionService.shared.noteGroup(id, to: name)
             Task { @MainActor in
                 if !(await RemoteSessionService.shared.setGroup(id, to: name)) {
@@ -507,8 +504,9 @@ class WindowManager {
         // Display what was on screen when it closed, unless that one didn't come back.
         let displayId = closedWindow.displayedWorkspaceId.flatMap { restored.contains($0) ? $0 : nil }
             ?? restored[0]
-        let wc = createWindow(
-            displayingWorkspace: displayId, frame: closedWindow.frame, name: closedWindow.windowName)
+        let name = WindowNaming.restoreName(
+            saved: closedWindow.windowName, open: windowControllers.map(\.windowContext.windowName))
+        let wc = createWindow(displayingWorkspace: displayId, frame: closedWindow.frame, name: name)
         wc.windowContext.ownedWorkspaceIds = Set(restored)
         // Claim exclusively rather than inserting: a session that stayed live (an
         // archive that failed, or one revived by hand) may have been adopted elsewhere,
@@ -641,61 +639,11 @@ class WindowManager {
     /// via NSWorkspace.activeSpaceDidChangeNotification.
     func restoreWindows(from descriptors: [WindowDescriptor]) {
         let currentSpaceID = SpaceTracker.currentSpaceID()
+        // Named over ALL descriptors, before any is skipped: see launchNames.
+        let names = WindowNaming.launchNames(saved: descriptors.map(\.windowName))
 
-        for desc in descriptors {
-            // Restore if the displayed workspace exists locally — or if the window
-            // owns anything at all: a hosted displayed workspace can't be checked
-            // here (the daemon list arrives async after startup), so the window gets
-            // the benefit of the doubt and shows the welcome screen until the hosted
-            // workspace materializes.
-            let displayedExistsLocally = desc.workspaceId.map { id in
-                workspaceManager.workspaces.contains { $0.id == id }
-            } ?? false
-            if let wsId = desc.workspaceId,
-               displayedExistsLocally || !desc.ownedWorkspaceIds.isEmpty {
-                // Step 1: Create window (defer: false → valid windowNumber)
-                let wc = WorkspaceWindowController(
-                    workspaceManager: workspaceManager,
-                    windowManager: self,
-                    displayedWorkspaceId: wsId,
-                    windowId: desc.id
-                )
-
-                // Step 2: Resolve target Space
-                let targetSpaceID: size_t? = {
-                    guard let spaceSnap = desc.space else { return nil }
-                    return SpaceTracker.resolveSpaceID(from: spaceSnap)
-                }()
-                let isOtherSpace = targetSpaceID != nil && targetSpaceID != currentSpaceID
-
-                // Restore ownership from saved state
-                if !desc.ownedWorkspaceIds.isEmpty {
-                    wc.windowContext.ownedWorkspaceIds = Set(desc.ownedWorkspaceIds)
-                }
-                wc.windowContext.windowName = desc.windowName
-                wc.windowContext.collapsedWorkspaceIds = Set(desc.collapsedWorkspaceIds)
-
-                windowControllers.append(wc)
-
-                // Step 3/4: Order or defer based on Space
-                if isOtherSpace, let targetSpaceID, let window = wc.window {
-                    // OTHER SPACE: Pre-assign to target Space BEFORE any ordering.
-                    // The window has a valid windowNumber from defer:false but is not yet
-                    // on any space. Assigning first means it won't auto-place on current space.
-                    SpaceTracker.assignWindowToSpace(window, spaceID: targetSpaceID)
-                    // Do NOT order — any ordering triggers macOS to switch Spaces.
-                    pendingSpaceWindows[targetSpaceID, default: []].append(wc)
-                } else if let window = wc.window {
-                    // CURRENT SPACE (or no Space info): Order directly on NSWindow
-                    // Use makeKeyAndOrderFront, not showWindow (which triggers extra WC machinery)
-                    window.makeKeyAndOrderFront(nil)
-                }
-
-                // Step 5: Apply frame AFTER ordering decision
-                let frame = NSRect(x: desc.frame.x, y: desc.frame.y,
-                                   width: desc.frame.width, height: desc.frame.height)
-                wc.window?.setFrame(frame, display: true)
-            }
+        for (desc, name) in zip(descriptors, names) {
+            restoreWindow(desc, name: name, currentSpaceID: currentSpaceID)
         }
 
         // If no windows were restored, create one showing the first workspace
@@ -717,6 +665,64 @@ class WindowManager {
         // Schedule fallback: if the user is already on a target Space,
         // no activeSpaceDidChangeNotification will fire. Force-order after a delay.
         schedulePendingWindowFallback()
+    }
+
+    /// Reopen one saved window under `name`, on its saved Space. Steps 1-5 are the
+    /// sequence restoreWindows documents.
+    private func restoreWindow(_ desc: WindowDescriptor, name: String, currentSpaceID: size_t) {
+        // Restore if the displayed workspace exists locally — or if the window
+        // owns anything at all: a hosted displayed workspace can't be checked
+        // here (the daemon list arrives async after startup), so the window gets
+        // the benefit of the doubt and shows the welcome screen until the hosted
+        // workspace materializes.
+        let displayedExistsLocally = desc.workspaceId.map { id in
+            workspaceManager.workspaces.contains { $0.id == id }
+        } ?? false
+        guard let wsId = desc.workspaceId,
+              displayedExistsLocally || !desc.ownedWorkspaceIds.isEmpty else { return }
+
+        // Step 1: Create window (defer: false → valid windowNumber)
+        let wc = WorkspaceWindowController(
+            workspaceManager: workspaceManager,
+            windowManager: self,
+            displayedWorkspaceId: wsId,
+            windowName: name,
+            windowId: desc.id
+        )
+
+        // Step 2: Resolve target Space
+        let targetSpaceID: size_t? = {
+            guard let spaceSnap = desc.space else { return nil }
+            return SpaceTracker.resolveSpaceID(from: spaceSnap)
+        }()
+        let isOtherSpace = targetSpaceID != nil && targetSpaceID != currentSpaceID
+
+        // Restore ownership from saved state
+        if !desc.ownedWorkspaceIds.isEmpty {
+            wc.windowContext.ownedWorkspaceIds = Set(desc.ownedWorkspaceIds)
+        }
+        wc.windowContext.collapsedWorkspaceIds = Set(desc.collapsedWorkspaceIds)
+
+        windowControllers.append(wc)
+
+        // Step 3/4: Order or defer based on Space
+        if isOtherSpace, let targetSpaceID, let window = wc.window {
+            // OTHER SPACE: Pre-assign to target Space BEFORE any ordering.
+            // The window has a valid windowNumber from defer:false but is not yet
+            // on any space. Assigning first means it won't auto-place on current space.
+            SpaceTracker.assignWindowToSpace(window, spaceID: targetSpaceID)
+            // Do NOT order — any ordering triggers macOS to switch Spaces.
+            pendingSpaceWindows[targetSpaceID, default: []].append(wc)
+        } else if let window = wc.window {
+            // CURRENT SPACE (or no Space info): Order directly on NSWindow
+            // Use makeKeyAndOrderFront, not showWindow (which triggers extra WC machinery)
+            window.makeKeyAndOrderFront(nil)
+        }
+
+        // Step 5: Apply frame AFTER ordering decision
+        let frame = NSRect(x: desc.frame.x, y: desc.frame.y,
+                           width: desc.frame.width, height: desc.frame.height)
+        wc.window?.setFrame(frame, display: true)
     }
 
     /// Windows with a hosted-session create in flight. While non-zero, the orphan
@@ -749,7 +755,7 @@ class WindowManager {
         // SHARED membership — without this, the next reconcile sees an
         // ungrouped workspace and releases it straight into AVAILABLE. The
         // optimistic note bridges the gap until the daemon acks.
-        let name = controller.windowContext.windowName ?? autoWindowName(for: controller)
+        let name = controller.windowContext.windowName
         if RemoteSessionService.shared.isHosted(id),
            !Self.sameWindowName(RemoteSessionService.shared.groups[id] ?? "", name) {
             RemoteSessionService.shared.noteGroup(id, to: name)
@@ -779,7 +785,7 @@ class WindowManager {
             workspaceIds: RemoteSessionService.shared.workspaces.map(\.id),
             groups: RemoteSessionService.shared.groups,
             owned: windowControllers.map { $0.windowContext.ownedWorkspaceIds },
-            windowNames: windowControllers.map { $0.windowContext.windowName ?? autoWindowName(for: $0) })
+            windowNames: windowControllers.map { $0.windowContext.windowName })
         else { return }
         for (wc, ids) in zip(windowControllers, resolved) where wc.windowContext.ownedWorkspaceIds != ids {
             wc.windowContext.ownedWorkspaceIds = ids
@@ -877,7 +883,7 @@ class WindowManager {
         var set = Set<String>()
         var unmatched: [String] = []
         for wc in windowControllers {
-            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
+            let name = wc.windowContext.windowName
             var members = wc.windowContext.ownedWorkspaceIds
             if let displayed = wc.windowContext.displayedWorkspaceId { members.insert(displayed) }
             let match = shared.first { Self.sameWindowName($0.name, name) }
@@ -1010,10 +1016,9 @@ class WindowManager {
             var otherGroups: [WindowContext.WindowGroup] = []
             for otherWc in windowControllers where otherWc !== wc {
                 otherIds.formUnion(otherWc.windowContext.ownedWorkspaceIds)
-                let name = otherWc.windowContext.windowName ?? autoWindowName(for: otherWc)
                 otherGroups.append(WindowContext.WindowGroup(
                     id: otherWc.windowId,
-                    name: name,
+                    name: otherWc.windowContext.windowName,
                     workspaceIds: Array(otherWc.windowContext.ownedWorkspaceIds)
                 ))
             }
@@ -1025,12 +1030,6 @@ class WindowManager {
             }
             if wc.windowContext.otherWindowGroups != otherGroups {
                 wc.windowContext.otherWindowGroups = otherGroups
-            }
-            // Keep the published auto name truthful to window order, so the
-            // sidebar displays and matches the SAME name membership resolves.
-            let auto = autoWindowName(for: wc)
-            if wc.windowContext.autoName != auto {
-                wc.windowContext.autoName = auto
             }
         }
         // Deliberately NO blanket membership push here (v2): the daemon is the
@@ -1053,7 +1052,7 @@ class WindowManager {
     func syncLocalPaneGroups() {
         var map: [String: String] = [:]
         for wc in windowControllers {
-            let name = wc.windowContext.windowName ?? autoWindowName(for: wc)
+            let name = wc.windowContext.windowName
             for wsId in wc.windowContext.ownedWorkspaceIds {
                 guard let ws = workspaceManager.workspaces.first(where: { $0.id == wsId }),
                       ws.mode == .local else { continue }
@@ -1077,31 +1076,33 @@ class WindowManager {
     /// descriptor, and nothing else about a rename touches the autosave triggers, so
     /// without this the new name survived only if you happened to move, resize, or
     /// change a workspace before quitting.
-    func renameWindow(id: UUID, newName: String?) {
+    ///
+    /// An empty name, or one another open window answers to, is refused: a window
+    /// with no name has nothing to match its repos by, and of two windows sharing a
+    /// name only the first gets them.
+    func renameWindow(id: UUID, newName requested: String) {
         guard let wc = windowControllers.first(where: { $0.windowId == id }) else { return }
-        let oldName = wc.windowContext.windowName ?? autoWindowName(for: wc)
+        let oldName = wc.windowContext.windowName
+        let others = windowControllers.filter { $0 !== wc }.map(\.windowContext.windowName)
+        if let refusal = WindowNaming.renameRefusal(requested, others: others) {
+            showRenameRefused(oldName: oldName, reason: refusal)
+            return
+        }
+        let newName = requested.trimmingCharacters(in: .whitespacesAndNewlines)
         wc.windowContext.windowName = newName
         // A rename is an explicit shared edit (v2): when the old name matched a
         // shared window, rename that window for everyone. A collision refusal
         // reverts the local name — a window answering to a name the daemon does
         // not know would shed its repos on the next reconcile.
         let service = RemoteSessionService.shared
-        if let newName,
-           let win = service.sharedWindows.first(where: { Self.sameWindowName($0.name, oldName) }),
+        if let win = service.sharedWindows.first(where: { Self.sameWindowName($0.name, oldName) }),
            !Self.sameWindowName(oldName, newName) {
             Task { @MainActor in
                 if let error = await service.renameSharedWindow(id: win.id, to: newName) {
                     NSLog("[ccmux] windows: shared rename %@ → %@ refused: %@", oldName, newName, error)
-                    wc.windowContext.windowName = oldName == self.autoWindowName(for: wc) ? nil : oldName
+                    wc.windowContext.windowName = oldName
                     self.refreshOtherWindowIds()
-                    // The name visibly snaps back; without the reason that
-                    // reads as "renaming is broken sometimes".
-                    let alert = NSAlert()
-                    alert.messageText = "Could not rename “\(oldName)”"
-                    alert.informativeText = error
-                    alert.alertStyle = .warning
-                    alert.addButton(withTitle: "OK")
-                    alert.runModal()
+                    self.showRenameRefused(oldName: oldName, reason: error)
                 }
             }
         }
@@ -1109,12 +1110,26 @@ class WindowManager {
         workspaceManager.scheduleSaveFromWindow()
     }
 
-    /// Get the auto-generated name for a window based on its index.
-    func autoWindowName(for controller: WorkspaceWindowController) -> String {
-        if let idx = windowControllers.firstIndex(where: { $0 === controller }) {
-            return "Window \(idx + 1)"
-        }
-        return "Window"
+    /// The name stays (or visibly snaps back); without the reason that reads as
+    /// "renaming is broken sometimes".
+    private func showRenameRefused(oldName: String, reason: String) {
+        let alert = NSAlert()
+        alert.messageText = "Could not rename “\(oldName)”"
+        alert.informativeText = reason
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    /// A name for a new window that nothing answers to yet: not an open window,
+    /// not a shared window on the daemon (taking a closed one's name would pull its
+    /// repos in), not a closed-window record. Before the daemon's list has loaded
+    /// it cannot see the daemon's names; the open windows and records still count.
+    func freeWindowName() -> String {
+        WindowNaming.freeName(taken:
+            windowControllers.map(\.windowContext.windowName)
+            + RemoteSessionService.shared.sharedWindows.map(\.name)
+            + workspaceManager.closedWindows.compactMap(\.windowName))
     }
 
     // MARK: - Space Management

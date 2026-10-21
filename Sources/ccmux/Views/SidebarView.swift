@@ -107,11 +107,10 @@ struct SidebarView: View {
         owner.split(separator: "@").first.map(String.init) ?? owner
     }
 
-    /// This window's ANSWERABLE name: the custom name, else the auto name
-    /// ("Window N"). Never a cosmetic "This Window" — the name is matched
-    /// against the shared membership, not just displayed.
+    /// This window's ANSWERABLE name. Never a cosmetic "This Window": the
+    /// name is matched against the shared membership, not just displayed.
     private var thisWindowName: String {
-        windowContext.windowName ?? windowContext.autoName
+        windowContext.windowName
     }
 
     var body: some View {

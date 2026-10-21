@@ -16,6 +16,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         workspaceManager: WorkspaceManager,
         windowManager: WindowManager,
         displayedWorkspaceId: UUID?,
+        windowName: String,
         windowId: UUID = UUID()
     ) {
         self.workspaceManager = workspaceManager
@@ -23,6 +24,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         self.windowId = windowId
         self.windowContext = WindowContext(
             workspaceId: displayedWorkspaceId,
+            windowName: windowName,
             workspaceManager: workspaceManager
         )
 
@@ -257,8 +259,8 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
         alert.beginSheetModal(for: window!) { [weak self] response in
             if response == .alertFirstButtonReturn {
-                let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                self?.windowManager?.renameWindow(id: windowId, newName: newName.isEmpty ? nil : newName)
+                // Refusals (empty, another window's name) are renameWindow's to say.
+                self?.windowManager?.renameWindow(id: windowId, newName: textField.stringValue)
             }
         }
     }
@@ -338,8 +340,7 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     @objc func togglePeerMessages() {
         // Peers are grouped by ccmux window now: the overlay shows THIS window's
         // traffic, keyed by the same name syncHostedGroups pushes to the daemon.
-        let group = windowContext.windowName ?? windowManager?.autoWindowName(for: self) ?? "This Window"
-        peerMessagesController.toggle(group: group, relativeTo: window)
+        peerMessagesController.toggle(group: windowContext.windowName, relativeTo: window)
     }
 
     /// Menu actions (split, close pane…) act on the displayed workspace; with

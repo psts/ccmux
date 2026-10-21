@@ -30,11 +30,9 @@ enum WindowSizing {
     /// own UUID is minted fresh on every open, so it cannot be the key.
     ///
     /// A stamped id (set when the window was opened from the shared list) wins
-    /// while the daemon still has it. Otherwise the window's own name, then its
-    /// sessions, the same order `resolveOpenSet` uses. Never the automatic
-    /// "Window N": it shifts as other windows close, and would hand one
-    /// window's size to another. An empty list means it has not loaded yet,
-    /// not that nothing exists, so the stamp stands unchecked.
+    /// while the daemon still has it. Otherwise the window's name, then its
+    /// sessions, the same order `resolveOpenSet` uses. An empty list means it
+    /// has not loaded yet, not that nothing exists, so the stamp stands unchecked.
     static func sharedWindowId(
         stamped: String?, name: String?, members: Set<UUID>, shared: [DaemonWindow]
     ) -> String? {
@@ -49,8 +47,8 @@ enum WindowSizing {
         return byMembers?.id
     }
 
-    /// The shared window a Mac window is, from its context: the stamp, its OWN
-    /// name (never `autoName`), then its sessions with the displayed one
+    /// The shared window a Mac window is, from its context: the stamp, its
+    /// name, then its sessions with the displayed one
     /// folded in. The one place those inputs are picked, so a test can hold
     /// the real choice to the rule rather than a copy of it.
     static func sharedWindowId(for context: WindowContext, shared: [DaemonWindow]) -> String? {

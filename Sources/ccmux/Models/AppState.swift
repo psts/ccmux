@@ -74,7 +74,7 @@ struct WindowDescriptor: Codable, Identifiable {
     let id: UUID
     var workspaceId: UUID?
     var ownedWorkspaceIds: [UUID] = []  // all workspaces owned by this window
-    var windowName: String?             // custom name, nil = auto "Window N"
+    var windowName: String?             // nil only in state saved before names were fixed (WindowNaming.launchNames)
     var frame: WindowFrame
     var space: SpaceSnapshot?
     /// Workspace IDs whose sidebar disclosure is collapsed in this window.

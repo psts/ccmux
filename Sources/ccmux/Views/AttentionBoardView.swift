@@ -20,7 +20,7 @@ struct AttentionBoardView: View {
         _model = StateObject(wrappedValue: AttentionBoardModel())
     }
 
-    private var windowName: String { windowContext.windowName ?? windowContext.autoName }
+    private var windowName: String { windowContext.windowName }
 
     var body: some View {
         GeometryReader { geo in
