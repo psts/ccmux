@@ -89,14 +89,21 @@ type OpencodeEvent struct {
 }
 
 // Up says whether the server answers at all.
-func (c *Opencode) Up(ctx context.Context) bool {
+func (c *Opencode) Up(ctx context.Context) bool { return c.Ping(ctx) == nil }
+
+// Ping is Up with the reason it is not: the connection failed, or the
+// server answered with a 5xx.
+func (c *Opencode) Ping(ctx context.Context) error {
 	req, _ := http.NewRequestWithContext(ctx, "GET", c.Base+"/session", nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return false
+		return err
 	}
 	resp.Body.Close()
-	return resp.StatusCode < 500
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("GET /session → %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // Sessions lists the instance's sessions, newest first.

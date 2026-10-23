@@ -25,9 +25,13 @@ struct BoardChatTileView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .defaultScrollAnchor(.bottom)
-        // A new read is a new set of cards, live again: the answered card
-        // is gone from it, or still there if the agent never took it.
-        .onChange(of: picture) { sending = false }
+        // A new read is a new set of cards, live again and with no error
+        // from the last: the answered card is gone from it, or still there
+        // if the agent never took it. The web lens repaints the same way.
+        .onChange(of: picture) {
+            sending = false
+            failure = ""
+        }
     }
 
     @ViewBuilder

@@ -599,7 +599,7 @@
     open, close, refresh, count, isOpen: () => !!board.win, window: () => board.win,
     reportPresence: () => { if (board.win) reportBoardPresence(); },
     // exposed for smoke_test.js
-    activate, snooze, next, sizePane,
+    activate, snooze, next, sizePane, paintChat, answerCard,
     peek: () => ({ active: board.active, waiting: board.waiting.map((c) => c.pane),
       visible: board.visible.map((c) => c.pane + (c.handled ? "!" : "")) }),
     rules: { isBlocked, claimOrder, capFor, columnsFor, snoozedNow, layout, tileGrid, fontFor, sizeOutcome },

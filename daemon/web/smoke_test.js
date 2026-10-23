@@ -334,6 +334,97 @@ async function boardCases() {
   check("board: a reopened board sizes its panes again", resizes().length === 8, resizes().join());
 }
 
+// --- board.js: an agent tile drawn as its chat, whose cards answer in
+// place (paintChat, answerCard). The Mac's BoardChatTileView keeps the same
+// rules. Its own tiny DOM: the cards need class lookups, clicks and
+// disabled buttons, which the permissive Proxy above cannot answer.
+class TileEl {
+  constructor(tag) { Object.assign(this, { tag, children: [], textContent: "", disabled: false, value: "", onclick: null, _cls: new Set() }); }
+  set className(v) { this._cls = new Set(String(v || "").split(/\s+/).filter(Boolean)); }
+  get className() { return [...this._cls].join(" "); }
+  get classList() {
+    const c = this._cls;
+    return { add: (k) => c.add(k), remove: (k) => c.delete(k), contains: (k) => c.has(k),
+      toggle: (k, on) => ((on === undefined ? !c.has(k) : on) ? c.add(k) : c.delete(k)) };
+  }
+  set innerHTML(v) { if (v === "") this.children = []; }
+  get childElementCount() { return this.children.length; }
+  appendChild(c) { this.children.push(c); c.parent = this; return c; }
+  all() { return this.children.flatMap((c) => [c, ...c.all()]); }
+  querySelectorAll(sel) { return this.all().filter((e) => (sel.startsWith(".") ? e._cls.has(sel.slice(1)) : e.tag === sel)); }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+  // A click bubbles to the first ancestor with a handler that does not stop it.
+  click() {
+    let stopped = false;
+    const ev = { stopPropagation: () => { stopped = true; } };
+    for (let e = this; e && !stopped; e = e.parent) if (e.onclick) e.onclick(ev);
+  }
+}
+
+async function boardChatTileCases() {
+  const z = run({ withBoard: true });
+  await tick();
+  const page = z.ctx.document;
+  z.ctx.document = new Proxy({}, { get: (_t, k) => (k === "createElement" ? (tag) => new TileEl(tag) : page[k]) });
+  const Z = z.ctx.ccmuxBoard;
+  const hello = { t: "hello", agent: "radar", state: "running",
+    turns: [{ id: "m1", role: "assistant", parts: [{ id: "p1", type: "text", text: "Two questions." }] }],
+    permissions: [{ id: "per_1", permission: "bash", patterns: ["ls"], always: [] }],
+    questions: [{ id: "que_1", questions: [{ question: "VIX gap?", options: [{ label: "Say it plainly" }, { label: "Leave it alone" }] }] }] };
+  const posts = [];
+  let reply = { status: 200, body: '{"ok":true}' };
+  z.ctx.fetch = async (u, o) => {
+    posts.push({ url: String(u), body: JSON.parse(o.body) });
+    return { ok: reply.status === 200, status: reply.status, json: async () => JSON.parse(reply.body) };
+  };
+  const draw = () => {
+    const tile = new TileEl("div");
+    let opened = 0;
+    tile.onclick = () => { opened++; };
+    const box = tile.appendChild(new TileEl("div"));
+    Z.paintChat("q", box, hello);
+    const button = (label) => box.querySelectorAll("button").find((b) => b.textContent === label ||
+      (b.children[0] && b.children[0].textContent === label));
+    return { box, button, opened: () => opened };
+  };
+
+  const t = draw();
+  check("board chat tile: draws the turns and every waiting card",
+    t.box.querySelectorAll(".ac-turn").length === 1 && t.box.querySelectorAll(".ac-perm").length === 2 &&
+    !t.button("Allow always"), t.box.querySelectorAll(".ac-perm").length);
+  t.button("Say it plainly").click();
+  await tick();
+  t.button("Allow once").click();
+  await tick();
+  check("board chat tile: a card sends its answer, naming its request, over the reply route",
+    posts.length === 2 && posts.every((p) => p.url === "/v1/panes/q/agent/reply") &&
+    JSON.stringify(posts.map((p) => p.body)) ===
+      '[{"t":"question","id":"que_1","answers":[["Say it plainly"]]},{"t":"permission","id":"per_1","reply":"once"}]',
+    JSON.stringify(posts));
+  check("board chat tile: a card tap answers, it does not open the tile", t.opened() === 0, t.opened());
+  check("board chat tile: a sent answer keeps the cards off until the next read",
+    t.box.querySelectorAll("button").every((b) => b.disabled));
+  t.box.querySelector(".ac-turn").click();
+  check("board chat tile: a tap on the turns opens the tile", t.opened() === 1, t.opened());
+
+  reply = { status: 503, body: '{"error":"the agent\'s server did not answer"}' };
+  const f = draw();
+  f.button("Reject").click();
+  await tick();
+  await tick();
+  const err = f.box.querySelector(".ac-error");
+  check("board chat tile: a failed answer says why and turns the cards back on",
+    !err.classList.contains("hidden") && err.textContent === "Not sent: the agent's server did not answer" &&
+    f.box.querySelectorAll("button").every((b) => !b.disabled), err.textContent);
+  reply = { status: 404, body: "not json" };
+  const n = draw();
+  n.button("Reject").click();
+  await tick();
+  await tick();
+  check("board chat tile: a reply with no error body names its status",
+    n.box.querySelector(".ac-error").textContent === "Not sent: HTTP 404", n.box.querySelector(".ac-error").textContent);
+}
+
 // --- peers.js: the message panel's history merge (PeerMessage.merged and
 // liveRow on the Mac, whose tests run only on a Mac). Its own tiny DOM: rows
 // need children, dataset and replaceChildren, which the permissive Proxy above
@@ -799,6 +890,7 @@ async function peersFailureCases() {
   await peersMergeCases();
   await peersFailureCases();
   await boardCases();
+  await boardChatTileCases();
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

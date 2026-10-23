@@ -1,9 +1,11 @@
 package api
 
 import (
+	"net"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent/agenttest"
 )
@@ -54,6 +56,28 @@ func TestAgentReply_AnswersCardsWithoutTheSocket(t *testing.T) {
 	}
 }
 
+// A running agent whose server does not answer (busy, stuck) still holds
+// its cards: 503 with the reason, never the asleep 409, which would read as
+// nothing left to answer.
+func TestAgentReply_ASilentServerIsNotAsleep(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close() // nothing listens there now
+	f := newWindowAgentFixture(t, "sleep 4;: --port "+strconv.Itoa(port))
+	code, pane := f.start(t, "x-poster", "")
+	if code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	waitForegroundNotShell(t, f, pane.ID)
+	rec := do(t, f.srv, "POST", "/v1/panes/"+pane.ID+"/agent/reply", `{"t":"question","id":"que_1","answers":[["a"]]}`)
+	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "did not answer") {
+		t.Fatalf("silent server reply = %d %s, want 503", rec.Code, rec.Body)
+	}
+}
+
 // An agent with no chat server (asleep, or a harness without one) has no
 // cards: 409, not a 502 that reads like the server broke.
 func TestAgentReply_AsleepIsAConflict(t *testing.T) {
@@ -64,5 +88,18 @@ func TestAgentReply_AsleepIsAConflict(t *testing.T) {
 	}
 	if rec := do(t, f.srv, "POST", "/v1/panes/"+pane.ID+"/agent/reply", `{"t":"question","id":"que_1","answers":[["a"]]}`); rec.Code != 409 {
 		t.Fatalf("asleep reply = %d %s, want 409", rec.Code, rec.Body)
+	}
+}
+
+// waitForegroundNotShell waits for the pane's harness to take the
+// foreground, so the reply route sees a running agent.
+func waitForegroundNotShell(t *testing.T, f *windowAgentFixture, pane string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.srv.mgr.PaneAtShell(pane) {
+		if time.Now().After(deadline) {
+			t.Fatal("the harness never took the foreground")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
+
+	"ccmux.dev/ccmuxd/internal/agent"
 )
 
 // paneAgentReply: POST /v1/panes/{id}/agent/reply answers one card without
@@ -13,7 +16,8 @@ import (
 // answers} or {t:"question-reject", id}. An answer names its request, so a
 // card answered elsewhere meanwhile fails at the agent's server (502)
 // rather than landing on a different card. 409 when the agent is not
-// running: an asleep agent has no cards to answer.
+// running: an asleep agent has no cards to answer. 503 when it runs but
+// its server does not answer: busy or stuck, and still holding the card.
 func (s *Server) paneAgentReply(w http.ResponseWriter, r *http.Request) {
 	p := s.agentPaneOr404(w, r)
 	if p == nil {
@@ -30,12 +34,18 @@ func (s *Server) paneAgentReply(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	c := newChatConn(s, p, cancel)
-	oc := c.liveClient(ctx)
-	if oc == nil {
+	port := agent.ChatPort(p.StartupCommand)
+	if port == 0 || s.mgr.PaneAtShell(p.ID) {
 		writeError(w, http.StatusConflict, "the agent is not running, so there is nothing to answer")
 		return
 	}
+	oc := agent.OpencodeAt(port)
+	if err := oc.Ping(ctx); err != nil {
+		log.Printf("agent reply %s: its server on :%d did not answer: %v", p.ID, port, err)
+		writeError(w, http.StatusServiceUnavailable, "the agent's server did not answer ("+err.Error()+"); try again")
+		return
+	}
+	c := newChatConn(s, p, cancel)
 	if err := c.liveAction(ctx, oc, "", f); err != nil {
 		writeError(w, http.StatusBadGateway, "agent server: "+err.Error())
 		return
