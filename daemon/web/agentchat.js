@@ -339,8 +339,17 @@
   // --- permissions: opencode asking before a tool runs ---
   function addPermission(req) {
     if (!req || cur.perms.has(req.id)) return;
+    const card = permissionCard(req, cur.agent, (frame) => send(frame));
+    cur.perms.set(req.id, card);
+    $("agent-chat").querySelector(".ac-perms").appendChild(card);
+  }
+
+  // permissionCard draws one permission request; a click hands the answer
+  // frame to answer. The chat sends it on its socket, the attention board's
+  // tile over REST, so both show the same card.
+  function permissionCard(req, agent, answer) {
     const card = el("div", "ac-perm");
-    card.appendChild(el("div", "ac-perm-text", `${cur.agent} asks to run ${req.permission}: ${(req.patterns || []).join(", ") || "(no pattern)"}`));
+    card.appendChild(el("div", "ac-perm-text", `${agent} asks to run ${req.permission}: ${(req.patterns || []).join(", ") || "(no pattern)"}`));
     const row = el("div", "ac-perm-actions");
     // "Allow always" only when the card carries a rule to keep (always is
     // non-empty); the sidecar leaves it empty when the SDK says the rule
@@ -350,12 +359,11 @@
     choices.push(["Reject", "reject"]);
     for (const [label, reply] of choices) {
       const b = el("button", "ac-perm-btn " + reply, label);
-      b.onclick = () => send({ t: "permission", id: req.id, reply });
+      b.onclick = () => answer({ t: "permission", id: req.id, reply });
       row.appendChild(b);
     }
     card.appendChild(row);
-    cur.perms.set(req.id, card);
-    $("agent-chat").querySelector(".ac-perms").appendChild(card);
+    return card;
   }
 
   function removePermission(id) {
@@ -364,27 +372,34 @@
   }
 
   // --- questions: the question tool asking you to choose ---
-  // A single-choice question answers on the tap itself: the options are a
-  // vertical list, label and description, full width so a phone can hit
-  // them. Several choices (or a free answer) keep an Answer button.
   function addQuestion(req) {
     if (!req || cur.perms.has(req.id)) return;
+    const card = questionCard(req, (frame) => send(frame));
+    cur.perms.set(req.id, card);
+    $("agent-chat").querySelector(".ac-perms").appendChild(card);
+  }
+
+  // questionCard draws one question request; the answer (or the reject)
+  // goes to answer as a frame, as permissionCard's does. A single-choice
+  // question answers on the tap itself: the options are a vertical list,
+  // label and description, full width so a phone can hit them. Several
+  // choices (or a free answer) keep an Answer button.
+  function questionCard(req, answer) {
     const card = el("div", "ac-perm ac-question");
     const qs = req.questions || [];
     const direct = qs.length === 1 && !qs[0].multiple && !qs[0].custom;
-    const pickers = qs.map((q) => questionPicker(card, q, direct ? (label) => send({ t: "question", id: req.id, answers: [[label]] }) : null));
+    const pickers = qs.map((q) => questionPicker(card, q, direct ? (label) => answer({ t: "question", id: req.id, answers: [[label]] }) : null));
     const row = el("div", "ac-perm-actions");
     if (!direct) {
-      const answer = el("button", "ac-perm-btn once", "Answer");
-      answer.onclick = () => send({ t: "question", id: req.id, answers: pickers.map((p) => p.answers()) });
-      row.appendChild(answer);
+      const ok = el("button", "ac-perm-btn once", "Answer");
+      ok.onclick = () => answer({ t: "question", id: req.id, answers: pickers.map((p) => p.answers()) });
+      row.appendChild(ok);
     }
     const reject = el("button", "ac-perm-btn reject", "Reject");
-    reject.onclick = () => send({ t: "question-reject", id: req.id });
+    reject.onclick = () => answer({ t: "question-reject", id: req.id });
     row.appendChild(reject);
     card.appendChild(row);
-    cur.perms.set(req.id, card);
-    $("agent-chat").querySelector(".ac-perms").appendChild(card);
+    return card;
   }
 
   // questionPicker renders one question: its options stacked, each with its
@@ -420,5 +435,22 @@
 
   function removeQuestion(id) { removePermission(id); }
 
-  window.ccmuxAgentChat = { show, hide };
+  // turnView draws one finished turn, for a reader with no socket (the
+  // attention board's tile): the same rows the transcript shows.
+  function turnView(t, agent) {
+    if (t.role === "session") return el("div", "ac-session-mark", `${t.title || "conversation"} · ${fmtWhen(t.time)}`);
+    const box = el("div", "ac-turn " + t.role);
+    box.appendChild(el("div", "ac-who", t.role === "user" ? "you" : agent));
+    const parts = el("div", "ac-parts");
+    for (const p of t.parts || []) {
+      const pe = partEl(p);
+      pe.update(p);
+      parts.appendChild(pe.root);
+    }
+    box.appendChild(parts);
+    if (t.error) box.appendChild(el("div", "ac-turn-error", t.error));
+    return box;
+  }
+
+  window.ccmuxAgentChat = { show, hide, turnView, permissionCard, questionCard };
 })();

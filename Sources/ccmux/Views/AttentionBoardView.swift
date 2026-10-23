@@ -5,7 +5,8 @@ import SwiftUI
 /// feature with the same rules (AttentionBoard).
 ///
 /// A passive tile is a picture: the pane's screen as text, or an agent's last
-/// word, read over REST. A screen tile sizes its pane to the tile, so the text
+/// turns and cards drawn as its chat draws them (BoardChatTileView), read
+/// over REST. An agent's cards answer in place. A screen tile sizes its pane to the tile, so the text
 /// reads at a terminal's size however many tiles share the board; the
 /// workspace takes its own size back when it shows the pane again. Clicking a
 /// tile makes it ACTIVE: it hosts the live terminal or chat, which takes over
@@ -108,6 +109,9 @@ struct AttentionBoardView: View {
             Divider()
             if isActive {
                 liveView(c)
+            } else if let picture = model.previews[c.pane]?.chat {
+                BoardChatTileView(picture: picture, onOpen: { model.activate(c.pane) },
+                                  onAnswer: { await model.answerCard(c.pane, $0) })
             } else {
                 BoardPreviewView(preview: model.previews[c.pane], cell: model.cell) { area in
                     model.tileArea(c.pane, width: area.width, height: area.height)
@@ -133,7 +137,8 @@ struct AttentionBoardView: View {
             Text(AttentionBoard.waited(since: c.since, now: model.clock))
                 .font(.system(size: 11)).foregroundColor(.secondary)
             Spacer()
-            // A tile answers nothing by itself: to answer, open it.
+            // A tile types nothing by itself: to type, open it (an agent's
+            // cards are the one thing answered in place, BoardChatTileView).
             Button("Not now") { model.snooze(c) }
             if active {
                 Button("Done") { model.next() }

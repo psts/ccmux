@@ -5,7 +5,9 @@
 // are the same rules, kept in the same words in both lenses.
 //
 // A passive tile is a picture: the pane's screen as plain text, or an agent's
-// last word, fetched over REST. A screen tile sizes its pane to the tile, so
+// last turns and the cards it waits on, drawn as its chat draws them and
+// fetched over REST. Those cards answer in place: an answer names its
+// request, so it cannot land on a card that changed since the read. A screen tile sizes its pane to the tile, so
 // the text reads at a terminal's size however many tiles share the board; the
 // workspace takes its own size back when it shows the pane again. Clicking a
 // tile makes it ACTIVE: the lens's one live view (terminal or chat) moves
@@ -349,13 +351,14 @@
     tile.appendChild(body);
     if (active) hostLiveView(body);
     else {
-      body.appendChild(el("pre", "board-preview", "…"));
+      body.appendChild(el(c.chat ? "div" : "pre", "board-preview" + (c.chat ? " chat" : ""), "…"));
       body.onclick = () => activate(c.pane);
     }
     return tile;
   }
 
-  // A tile answers nothing by itself: to answer, open it. Its buttons act on
+  // A tile types nothing by itself: to type, open it (an agent's cards are
+  // the one thing answered in place, chatPicture). Its buttons act on
   // the claim as it is when clicked, not as it was drawn, since the header is
   // updated in place and the claim can change under it.
   function tileButtons(c, active) {
@@ -438,18 +441,10 @@
     return { text, cols: body.cols || 80, rows: body.rows || 0 };
   }
 
-  // The agent's last word (its tail) and the card it is waiting on, as
-  // text. Same words as the Mac app's BoardPreviewReader.agentPreview.
+  // The agent's last turns and the cards it waits on, kept whole for
+  // paintChat. Same read as the Mac app's BoardPreviewReader.agentPreview.
   function agentPreview(hello) {
-    const turns = (hello.turns || []).filter((t) => t.role === "assistant");
-    const last = turns[turns.length - 1];
-    const said = last ? (last.parts || []).filter((p) => p.type === "text").map((p) => p.text).join("\n") : "";
-    const perm = (hello.permissions || [])[0];
-    const ask = (hello.questions || [])[0];
-    let text = said ? said.slice(-800) : "(no reply yet)";
-    if (perm) text += `\n\n? ${perm.permission}: ${(perm.patterns || []).join(" ")}`;
-    else if (ask) text += "\n\n? " + (ask.questions || []).map((q) => q.question).join(" / ");
-    return { text: text.trim(), cols: 0 };
+    return { chat: hello, cols: 0 };
   }
 
   // A terminal picture is drawn at TILE_FONT once its pane fits the tile,
@@ -459,6 +454,7 @@
     const tile = $("board").querySelector(`.board-tile[data-pane="${pane}"]`);
     const pre = tile && tile.querySelector(".board-preview");
     if (!pre) return;
+    if (p.chat) { paintChat(pane, pre, p.chat); return; }
     pre.textContent = p.text || " ";
     pre.classList.toggle("screen", p.cols > 0);
     if (p.cols > 0) {
@@ -469,6 +465,57 @@
       pre.style.fontSize = "";
       pre.scrollTop = pre.scrollHeight;
     }
+  }
+
+  // paintChat draws an agent tile as its chat: the last turns (a click there
+  // opens the tile, as on any tile), then the cards, which answer in place
+  // and so keep their clicks to themselves. One scroll, opened at the
+  // bottom so the cards are what shows. Painted once per read, so a
+  // half-made choice survives the ticks.
+  function paintChat(pane, box, hello) {
+    const chat = window.ccmuxAgentChat, agent = hello.agent || "agent";
+    box.innerHTML = "";
+    const log = el("div", "ac-log");
+    for (const t of hello.turns || []) log.appendChild(chat.turnView(t, agent));
+    if (!log.childElementCount) log.appendChild(el("div", "ac-session-mark", "(no reply yet)"));
+    box.appendChild(log);
+    const cards = el("div", "ac-perms");
+    cards.onclick = (e) => e.stopPropagation();
+    const answer = (frame) => answerCard(pane, cards, frame);
+    for (const r of hello.permissions || []) cards.appendChild(chat.permissionCard(r, agent, answer));
+    for (const q of hello.questions || []) cards.appendChild(chat.questionCard(q, answer));
+    const err = el("div", "ac-error hidden");
+    cards.appendChild(err);
+    box.appendChild(cards);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  // answerCard sends a card's answer over REST. The tile leaves when the
+  // daemon says the agent moved on, not here (a lost answer keeps it up).
+  // A sent answer reads the agent again, so the card goes or the next one
+  // shows; a failure says why on the tile and leaves the card to retry.
+  async function answerCard(pane, cards, frame) {
+    for (const b of cards.querySelectorAll("button")) b.disabled = true;
+    const err = cards.querySelector(".ac-error");
+    let why = "";
+    try {
+      const r = await fetch(`/v1/panes/${pane}/agent/reply`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(frame),
+      });
+      if (!r.ok) why = ((await r.json().catch(() => ({}))).error) || `HTTP ${r.status}`;
+    } catch (e) {
+      why = String(e);
+    }
+    if (why) {
+      console.warn("board: answer to", pane, "failed -", why);
+      err.textContent = "Not sent: " + why;
+      err.classList.remove("hidden");
+      for (const b of cards.querySelectorAll("button")) b.disabled = false;
+      return;
+    }
+    const had = board.previews.get(pane);
+    if (had) had.key = "";
+    reread(pane);
   }
 
   // One character's box at TILE_FONT in .board-preview.screen's font and

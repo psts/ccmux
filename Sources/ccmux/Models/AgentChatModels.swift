@@ -40,13 +40,13 @@ struct AgentChatFrame: Codable {
 
 /// The question tool asking the human to choose; the reply is the chosen
 /// labels per question, in order.
-struct AgentQuestion: Codable, Identifiable {
+struct AgentQuestion: Codable, Identifiable, Equatable {
     var id: String
     var sessionID: String?
     var questions: [AgentQuestionInfo]
 }
 
-struct AgentQuestionInfo: Codable {
+struct AgentQuestionInfo: Codable, Equatable {
     var question: String
     var header: String?
     var options: [AgentQuestionOption]?
@@ -54,14 +54,14 @@ struct AgentQuestionInfo: Codable {
     var custom: Bool?
 }
 
-struct AgentQuestionOption: Codable, Identifiable {
+struct AgentQuestionOption: Codable, Identifiable, Equatable {
     var label: String
     var description: String?
     var id: String { label }
 }
 
 /// One message of the conversation, in the daemon's normalized shape.
-struct AgentTurn: Codable, Identifiable {
+struct AgentTurn: Codable, Identifiable, Equatable {
     var id: String
     var role: String
     var time: Int64
@@ -90,7 +90,7 @@ struct AgentTurn: Codable, Identifiable {
 }
 
 /// One piece of a turn: text, reasoning, or a tool call with its state.
-struct AgentTurnPart: Codable, Identifiable {
+struct AgentTurnPart: Codable, Identifiable, Equatable {
     var id: String
     var type: String
     var text: String?
@@ -108,7 +108,7 @@ struct AgentTurnPart: Codable, Identifiable {
 }
 
 /// The agent asking before a tool runs; replies are once, always or reject.
-struct AgentPermission: Codable, Identifiable {
+struct AgentPermission: Codable, Identifiable, Equatable {
     var id: String
     var sessionID: String?
     var permission: String
@@ -128,7 +128,7 @@ struct AgentPermission: Codable, Identifiable {
 
 /// A JSON value kept as-is (a tool's input is whatever the tool takes),
 /// rendered pretty for the transcript.
-enum AnyJSON: Codable {
+enum AnyJSON: Codable, Equatable {
     case string(String), number(Double), bool(Bool), null
     case array([AnyJSON]), object([String: AnyJSON])
 

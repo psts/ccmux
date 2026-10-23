@@ -414,6 +414,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/panes/{id}/resize", s.scoped(s.paneResize))
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.scoped(s.paneDriver))
 	mux.HandleFunc("GET /v1/panes/{id}/agent", s.scoped(s.paneAgentHistory))
+	mux.HandleFunc("POST /v1/panes/{id}/agent/reply", s.scoped(s.paneAgentReply))
 	mux.HandleFunc("GET /v1/panes/{id}/agent/ws", s.paneAgentChat)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
 	mux.HandleFunc("GET /v1/push/subscriptions", s.listSubscriptions)

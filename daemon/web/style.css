@@ -653,6 +653,11 @@ body {
   white-space: pre-wrap; font: 12px/1.35 -apple-system, "SF Pro Text", sans-serif; color: var(--fg);
 }
 .board-preview.screen { white-space: pre; overflow: hidden; font-family: Menlo, Monaco, "SF Mono", monospace; line-height: 1.2; }
+/* An agent tile is its chat (board.js paintChat): the last turns, then the
+   cards, in one scroll opened at the bottom so the cards are what shows. */
+.board-preview.chat { padding: 0; white-space: normal; }
+.board-preview.chat .ac-log { overflow: visible; }
+.board-preview.chat .ac-perms { cursor: auto; padding-bottom: 8px; }
 .ws.board-row .board-icon { width: 14px; text-align: center; color: var(--muted); }
 .ws.board-row.waiting .board-icon, .ws.board-row.waiting .name { color: var(--needs); }
 .ws.board-row .board-count {

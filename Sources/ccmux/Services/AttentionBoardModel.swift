@@ -14,7 +14,7 @@ final class BoardSnoozes: ObservableObject {
 }
 
 /// What a passive tile shows: the pane's screen as text, or an agent's last
-/// word and the card it is waiting on.
+/// turns and the cards it is waiting on.
 struct BoardPreview: Equatable {
     /// The claim this was read for; an agent is re-read only when it changes.
     var key = ""
@@ -22,6 +22,21 @@ struct BoardPreview: Equatable {
     /// The pane's size for a screen picture (scaled to fit), 0 for an agent.
     var cols: Int
     var rows = 0
+    /// An agent's picture, drawn as its chat draws it; nil for a screen.
+    var chat: BoardChatPicture?
+}
+
+/// An agent tile's read: its last turns and the cards still waiting, as the
+/// web lens's paintChat draws them.
+struct BoardChatPicture: Equatable {
+    var agent: String
+    var turns: [AgentTurn]
+    var permissions: [AgentPermission]
+    var questions: [AgentQuestion]
+    /// Every read is a new picture, even one that matches the last: the
+    /// tile turns its cards back on when one lands (BoardChatTileView), as
+    /// the web lens repaints its tile on every read.
+    var read = UUID()
 }
 
 /// One window's attention board: which tiles are on show, which one is
@@ -216,10 +231,16 @@ final class AttentionBoardModel: ObservableObject {
         if Date().timeIntervalSince(clock) >= 30 { clock = Date() }
     }
 
+    /// Makes an agent tile read again on the next fetch, though its claim
+    /// has not changed: a card on it was just answered.
+    fileprivate func forgetPreviewKey(_ pane: String) {
+        previews[pane]?.key = ""
+    }
+
     /// A terminal tile re-reads its screen every few seconds (a capture is
     /// cheap). An agent tile reads its last turns once per claim: that read
     /// can wake a node process on the daemon for an asleep agent.
-    private func fetchPreviews() {
+    fileprivate func fetchPreviews() {
         for c in visible where c.pane != active && !c.handled && !fetching.contains(c.pane) {
             let key = "\(c.state.rawValue)\(c.since)"
             if c.chat, previews[c.pane]?.key == key { continue }
@@ -232,6 +253,24 @@ final class AttentionBoardModel: ObservableObject {
                 if self?.previews[c.pane] != preview { self?.previews[c.pane] = preview }
             }
         }
+    }
+}
+
+extension AttentionBoardModel {
+    /// Answers one of an agent tile's cards over REST. The tile leaves when
+    /// the daemon says the agent moved on, not here (a lost answer keeps it
+    /// up). A sent answer reads the agent again, so the card goes or the
+    /// next one shows; a failure comes back, in words, for the tile to show.
+    /// Same rule as the web lens's answerCard.
+    func answerCard(_ pane: String, _ frame: AgentChatFrame) async -> String? {
+        if let why = await BoardPreviewReader.answer(paneId: pane, frame: frame) {
+            NSLog("[ccmux board] answer to %@ failed: %@", pane, why)
+            return why
+        }
+        forgetPreviewKey(pane)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        fetchPreviews()
+        return nil
     }
 }
 
@@ -255,20 +294,33 @@ enum BoardPreviewReader {
         return BoardPreview(text: text, cols: snap.cols ?? 80, rows: snap.rows ?? 0)
     }
 
-    /// The agent's last word (its tail, as the web lens shows it) and the
-    /// card it is waiting on.
+    /// The agent's last turns and the cards it waits on, kept whole for the
+    /// tile to draw as a chat. Same read as the web lens's agentPreview.
     static func agentPreview(_ data: Data) -> BoardPreview? {
         guard let hello = try? JSONDecoder().decode(AgentChatFrame.self, from: data) else { return nil }
-        let last = (hello.turns ?? []).last { $0.role == "assistant" }
-        let said = (last?.parts ?? []).filter { $0.type == "text" }.compactMap(\.text).joined(separator: "\n")
-        var text = said.isEmpty ? "(no reply yet)" : String(said.suffix(800))
-        let perm = hello.permissions?.first
-        if let perm {
-            text += "\n\n? \(perm.permission): \((perm.patterns ?? []).joined(separator: " "))"
-        } else if let ask = hello.questions?.first {
-            text += "\n\n? " + ask.questions.map(\.question).joined(separator: " / ")
+        let chat = BoardChatPicture(agent: hello.agent ?? "agent", turns: hello.turns ?? [],
+                                    permissions: hello.permissions ?? [], questions: hello.questions ?? [])
+        return BoardPreview(text: "", cols: 0, chat: chat)
+    }
+
+    /// One card's answer, POST /v1/panes/{id}/agent/reply, for a tile with
+    /// no chat socket. nil when it went; otherwise why not, in words.
+    static func answer(paneId: String, frame: AgentChatFrame) async -> String? {
+        guard let url = URL(string: DaemonConfig.baseURL + "/v1/panes/\(paneId)/agent/reply") else { return "bad pane id" }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONEncoder().encode(frame)
+        let reply: (Data, URLResponse)
+        do {
+            reply = try await URLSession.shared.data(for: req)
+        } catch {
+            return error.localizedDescription
         }
-        return BoardPreview(text: text.trimmingCharacters(in: .whitespacesAndNewlines), cols: 0)
+        let status = (reply.1 as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 200 { return nil }
+        struct Failure: Decodable { let error: String }
+        return (try? JSONDecoder().decode(Failure.self, from: reply.0))?.error ?? "HTTP \(status)"
     }
 }
 

@@ -171,20 +171,7 @@ struct AgentChatPaneView: View {
     private var permissionCards: some View {
         VStack(spacing: 8) {
             ForEach(chat.permissions) { p in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("\(agent) asks to run \(p.summary)").font(.system(size: 11))
-                    HStack(spacing: 6) {
-                        Button("Allow once") { chat.reply(p, "once") }
-                        if p.offersAlways {
-                            Button("Allow always") { chat.reply(p, "always") }
-                        }
-                        Button("Reject") { chat.reply(p, "reject") }
-                    }
-                    .font(.system(size: 11))
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange, lineWidth: 1))
+                AgentPermissionCard(permission: p, agent: agent) { chat.reply(p, $0) }
             }
         }
         .padding(.horizontal, 12).padding(.bottom, 8)
@@ -315,6 +302,32 @@ struct AgentPartView: View {
         case "running": return .orange
         default: return .secondary
         }
+    }
+}
+
+/// One permission request: Allow once, Allow always when the card carries a
+/// rule to keep, Reject. The chat answers on its socket, the attention
+/// board's tile over REST; both draw this card.
+struct AgentPermissionCard: View {
+    let permission: AgentPermission
+    let agent: String
+    let onReply: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(agent) asks to run \(permission.summary)").font(.system(size: 11))
+            HStack(spacing: 6) {
+                Button("Allow once") { onReply("once") }
+                if permission.offersAlways {
+                    Button("Allow always") { onReply("always") }
+                }
+                Button("Reject") { onReply("reject") }
+            }
+            .font(.system(size: 11))
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange, lineWidth: 1))
     }
 }
 

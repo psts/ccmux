@@ -217,4 +217,22 @@ final class AttentionBoardModelTests: XCTestCase {
         model.tileArea("sz-3", width: 634, height: 350)
         XCTAssertEqual(sent, 2)
     }
+
+    /// An agent tile keeps its read whole, to draw as the chat does: the
+    /// turns and every waiting card, not a line of text.
+    func testAnAgentTileKeepsItsTurnsAndCards() throws {
+        let hello = """
+        {"t":"hello","agent":"radar","state":"running",
+         "turns":[{"id":"m1","role":"assistant","time":5,"parts":[{"id":"p1","type":"text","text":"Two questions."}]}],
+         "permissions":[{"id":"per_1","permission":"bash","patterns":["ls"]}],
+         "questions":[{"id":"que_1","questions":[{"question":"VIX gap?","options":[{"label":"Say it plainly"},{"label":"Leave it alone"}]}]}]}
+        """
+        let preview = try XCTUnwrap(BoardPreviewReader.agentPreview(Data(hello.utf8)))
+        let chat = try XCTUnwrap(preview.chat)
+        XCTAssertEqual(preview.cols, 0)
+        XCTAssertEqual(chat.agent, "radar")
+        XCTAssertEqual(chat.turns.map(\.id), ["m1"])
+        XCTAssertEqual(chat.permissions.map(\.id), ["per_1"])
+        XCTAssertEqual(chat.questions.first?.questions.first?.options?.map(\.label), ["Say it plainly", "Leave it alone"])
+    }
 }
