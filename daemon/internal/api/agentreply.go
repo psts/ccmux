@@ -3,11 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
-
-	"ccmux.dev/ccmuxd/internal/agent"
 )
 
 // paneAgentReply: POST /v1/panes/{id}/agent/reply answers one card without
@@ -34,15 +33,14 @@ func (s *Server) paneAgentReply(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	port := agent.ChatPort(p.StartupCommand)
-	if port == 0 || s.mgr.PaneAtShell(p.ID) {
+	oc, err := s.runningAgent(ctx, p)
+	if errors.Is(err, errAsleep) {
 		writeError(w, http.StatusConflict, "the agent is not running, so there is nothing to answer")
 		return
 	}
-	oc := agent.OpencodeAt(port)
-	if err := oc.Ping(ctx); err != nil {
-		log.Printf("agent reply %s: its server on :%d did not answer: %v", p.ID, port, err)
-		writeError(w, http.StatusServiceUnavailable, "the agent's server did not answer ("+err.Error()+"); try again")
+	if err != nil {
+		log.Printf("agent reply %s: its server did not answer: %v", p.ID, err)
+		silentAgent(w, err)
 		return
 	}
 	c := newChatConn(s, p, cancel)

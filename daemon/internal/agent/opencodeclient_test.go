@@ -4,16 +4,36 @@ import (
 	"ccmux.dev/ccmuxd/internal/agent/agenttest"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func client(f *agenttest.FakeOpencode) *Opencode {
 	return &Opencode{Base: f.Server.URL, HTTP: &http.Client{Timeout: 2 * time.Second}}
+}
+
+// A server that answers 5xx is not up, and Ping says why; any other answer
+// is up, as a 404 from a server without /session still means it runs.
+func TestOpencodePingNamesA5xx(t *testing.T) {
+	var status atomic.Int32 // set here, read by the server's goroutine
+	status.Store(500)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(int(status.Load())) }))
+	defer srv.Close()
+	c := &Opencode{Base: srv.URL, HTTP: &http.Client{Timeout: 2 * time.Second}}
+	ctx := context.Background()
+	if err := c.Ping(ctx); err == nil || !strings.Contains(err.Error(), "500") || c.Up(ctx) {
+		t.Fatalf("a 500 must not be up: ping %v, up %v", err, c.Up(ctx))
+	}
+	status.Store(404)
+	if err := c.Ping(ctx); err != nil || !c.Up(ctx) {
+		t.Fatalf("a 404 is a running server: ping %v", err)
+	}
 }
 
 func TestOpencodeClientRoundTrips(t *testing.T) {

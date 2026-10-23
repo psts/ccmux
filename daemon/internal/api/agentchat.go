@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -97,7 +98,9 @@ func newChatConn(s *Server, p *model.Pane, cancel context.CancelFunc) *chatConn 
 // paneAgentHistory: GET /v1/panes/{id}/agent → the hello frame: state,
 // session and transcript, for a lens that wants a one-shot read. ?tail=N
 // keeps only the last N turns, for the attention board's tile preview, which
-// has room for the agent's last word and the card it is waiting on.
+// has room for the agent's last word and the card it is waiting on. 503 when
+// the agent runs but its server is silent: an asleep hello would show the
+// tile no cards while the agent still waits on one.
 func (s *Server) paneAgentHistory(w http.ResponseWriter, r *http.Request) {
 	p := s.agentPaneOr404(w, r)
 	if p == nil {
@@ -107,7 +110,12 @@ func (s *Server) paneAgentHistory(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	c := newChatConn(s, p, cancel)
-	if oc := c.liveClient(ctx); oc != nil {
+	oc, err := s.runningAgent(ctx, p)
+	if err != nil && !errors.Is(err, errAsleep) {
+		silentAgent(w, err)
+		return
+	}
+	if oc != nil {
 		hello, err := c.liveHello(ctx, oc)
 		if err != nil {
 			// The server answers but its history does not: say so rather
@@ -281,15 +289,37 @@ func (c *chatConn) liveClient(ctx context.Context) *agent.Opencode {
 	if p == nil {
 		return nil
 	}
+	oc, _ := c.s.runningAgent(ctx, p)
+	return oc
+}
+
+// errAsleep: the agent pane has no chat server to talk to, because its
+// harness has none (no chat port) or the pane is back at its shell.
+var errAsleep = errors.New("the agent is not running")
+
+// runningAgent is the one rule for "is this agent's chat server live":
+// its client, errAsleep when it is not running, or why its server did not
+// answer when it runs but is silent (busy, stuck, a 5xx). A silent server
+// still holds its cards, so a one-shot read or reply must not call it
+// asleep; the chat socket, which retries every second, treats both alike
+// (liveClient). Nothing is logged here: the socket and the board's read
+// both poll it. The reply route, a person's click, logs its own.
+func (s *Server) runningAgent(ctx context.Context, p *model.Pane) (*agent.Opencode, error) {
 	port := agent.ChatPort(p.StartupCommand)
-	if port == 0 || c.s.mgr.PaneAtShell(p.ID) {
-		return nil
+	if port == 0 || s.mgr.PaneAtShell(p.ID) {
+		return nil, errAsleep
 	}
 	oc := agent.OpencodeAt(port)
-	if !oc.Up(ctx) {
-		return nil
+	if err := oc.Ping(ctx); err != nil {
+		return nil, err
 	}
-	return oc
+	return oc, nil
+}
+
+// silentAgent answers a one-shot route whose agent runs but did not
+// answer: 503, since the agent may come back.
+func silentAgent(w http.ResponseWriter, err error) {
+	writeError(w, http.StatusServiceUnavailable, "the agent's server did not answer ("+err.Error()+"); try again")
 }
 
 // awaitWake waits, while asleep, for a prompt from the lens (which starts

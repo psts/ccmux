@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"net"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/agent/agenttest"
 )
 
@@ -57,16 +59,11 @@ func TestAgentReply_AnswersCardsWithoutTheSocket(t *testing.T) {
 }
 
 // A running agent whose server does not answer (busy, stuck) still holds
-// its cards: 503 with the reason, never the asleep 409, which would read as
-// nothing left to answer.
+// its cards: 503 with the reason, from the reply route and from the read
+// the board's tile draws. Never the asleep answer, which reads as nothing
+// left to answer and, on the tile, would draw no cards.
 func TestAgentReply_ASilentServerIsNotAsleep(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close() // nothing listens there now
-	f := newWindowAgentFixture(t, "sleep 4;: --port "+strconv.Itoa(port))
+	f := newWindowAgentFixture(t, "sleep 4;: --port "+strconv.Itoa(closedPort(t)))
 	code, pane := f.start(t, "x-poster", "")
 	if code != 201 {
 		t.Fatalf("start = %d", code)
@@ -76,6 +73,47 @@ func TestAgentReply_ASilentServerIsNotAsleep(t *testing.T) {
 	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "did not answer") {
 		t.Fatalf("silent server reply = %d %s, want 503", rec.Code, rec.Body)
 	}
+	if rec := do(t, f.srv, "GET", "/v1/panes/"+pane.ID+"/agent?tail=4", ""); rec.Code != 503 {
+		t.Fatalf("silent server read = %d %s, want 503", rec.Code, rec.Body)
+	}
+}
+
+// A real agent's launch line always carries --port: asleep is its pane
+// back at the shell, with nothing on that port. That is 409, not the
+// silent server's 503, and the read is the asleep history.
+func TestAgentReply_AsleepWithAPortIsAConflict(t *testing.T) {
+	f := newWindowAgentFixture(t, "sleep 1;: --port "+strconv.Itoa(closedPort(t)))
+	f.srv.offlineSessions = func(context.Context, string, string) ([]agent.OpencodeSession, error) { return nil, nil }
+	f.srv.offlineTranscript = func(context.Context, string, string, string) ([]agent.Turn, error) { return nil, nil }
+	code, pane := f.start(t, "x-poster", "")
+	if code != 201 {
+		t.Fatalf("start = %d", code)
+	}
+	waitForegroundNotShell(t, f, pane.ID)
+	deadline := time.Now().Add(5 * time.Second)
+	for !f.srv.mgr.PaneAtShell(pane.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("the harness never gave the shell back")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if rec := do(t, f.srv, "POST", "/v1/panes/"+pane.ID+"/agent/reply", `{"t":"question","id":"que_1","answers":[["a"]]}`); rec.Code != 409 {
+		t.Fatalf("asleep reply = %d %s, want 409", rec.Code, rec.Body)
+	}
+	if rec := do(t, f.srv, "GET", "/v1/panes/"+pane.ID+"/agent?tail=4", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"asleep"`) {
+		t.Fatalf("asleep read = %d %s, want the asleep hello", rec.Code, rec.Body)
+	}
+}
+
+// closedPort is a port nothing listens on: one just freed.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }
 
 // An agent with no chat server (asleep, or a harness without one) has no
