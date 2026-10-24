@@ -23,8 +23,11 @@ type nullHook struct{}
 func (nullHook) GroupForPane(string) (string, bool)                         { return "", false }
 func (nullHook) PaneAtShell(string) bool                                    { return false }
 func (nullHook) LiveWorkspaceForRepo(string, string) (string, string, bool) { return "", "", false }
-func (nullHook) SpawnEphemeralPane(string, string, string, string) error    { return nil }
-func (nullHook) WorkspaceForPane(string) string                             { return "" }
+func (nullHook) ClosedWorkspaceForRepo(string, string) (string, string, bool) {
+	return "", "", false
+}
+func (nullHook) StartClaudeIn(string, string) error { return nil }
+func (nullHook) WorkspaceForPane(string) string     { return "" }
 
 // newPeersTestServer stands up the peers surface over a real HTTP server —
 // pane-less peers only (nullHook), which exercises the dirname fallback group.

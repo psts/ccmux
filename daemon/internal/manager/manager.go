@@ -110,6 +110,11 @@ type Manager struct {
 	// races the routing decision.
 	PaneLLMRoute func(paneID, account string) error
 
+	// OnMembershipChange hears every workspace entering or leaving a shared
+	// window (membership.go), in the order they happen; nil hears nothing.
+	// Called inline with no lock held: it must not block.
+	OnMembershipChange func(MembershipChange)
+
 	// Harnesses resolves named harnesses for spawn and revive (see
 	// internal/harness). Set once at startup; nil disables harness spawns and
 	// makes revive treat every pane as legacy (autoconfirm armed).
@@ -478,16 +483,23 @@ func (m *Manager) ReviveWorkspace(wsID string) (*model.Workspace, error) {
 // command — an agent wake replays the launch WITH its one-shot first prompt,
 // which must never be the persisted line.
 func (m *Manager) reviveWorkspace(wsID string, deliver map[string]string) (*model.Workspace, error) {
+	ws, _, err := m.reviveIfClosed(wsID, deliver)
+	return ws, err
+}
+
+// reviveIfClosed is reviveWorkspace saying whether it reopened the session
+// (and so typed deliver) or found it open already (and typed nothing).
+func (m *Manager) reviveIfClosed(wsID string, deliver map[string]string) (*model.Workspace, bool, error) {
 	e := m.entry(wsID)
 	if e == nil {
-		return nil, fmt.Errorf("unknown workspace %s", wsID)
+		return nil, false, fmt.Errorf("unknown workspace %s", wsID)
 	}
 	if e.ctrl != nil {
-		return e.ws, nil // already live
+		return e.ws, false, nil // already live
 	}
 	ws := e.ws
 	if len(ws.Panes) == 0 {
-		return nil, fmt.Errorf("workspace %s has no panes to revive", wsID)
+		return nil, false, fmt.Errorf("workspace %s has no panes to revive", wsID)
 	}
 	// A revive is a new session in every pane: no agent clock from the one
 	// that died carries over, or a revived agent idle-exits on its first tick.
@@ -501,23 +513,23 @@ func (m *Manager) reviveWorkspace(wsID string, deliver map[string]string) (*mode
 	want := m.wantedSizes(ws)
 	first := sizeFor(want, pane0.ID)
 	if err := m.server.NewSession(ws.TmuxSession, pane0.CWD, first.cols, first.rows, m.paneEnv(ws, pane0.ID)); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	ctrl, err := session.Open(m.ctx, m.server, ws.TmuxSession, wsID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	applied, err := m.revivePanes(ctrl, ws, want, deliver)
 	if err != nil {
 		ctrl.Close()
-		return nil, err
+		return nil, false, err
 	}
 	ws.Status = model.StatusLive
 
 	m.commitRevive(e, ws, ctrl, applied)
 	go m.watch(wsID, ctrl)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
-	return ws, nil
+	return ws, true, nil
 }
 
 // commitRevive publishes a revived workspace: the controller and the sizes tmux
@@ -711,7 +723,11 @@ func (m *Manager) KillWorkspace(wsID string) error {
 	session := e.ws.TmuxSession
 	delete(m.byID, wsID)
 	panes, group := append([]*model.Pane(nil), e.ws.Panes...), e.ws.Group
+	gone := changeOf(e.ws)
 	m.mu.Unlock()
+	// Its window, read before the membership row goes below.
+	gone.From = m.windowSnapshot().resolve(wsID, "")
+	defer m.membershipLeft(gone)
 
 	if ctrl != nil {
 		ctrl.Close()
@@ -1248,7 +1264,7 @@ func (m *Manager) LiveWorkspaceForRepo(group, name string) (wsID, repoPath strin
 		if e.ctrl == nil || st.resolve(e.ws.ID, e.ws.Group) != group {
 			continue
 		}
-		if e.ws.RepoPath != "" && baseName(e.ws.RepoPath) == name {
+		if e.ws.RepoPath != "" && repoNamed(e.ws, name) {
 			return e.ws.ID, e.ws.RepoPath, true
 		}
 	}

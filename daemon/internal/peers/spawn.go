@@ -1,6 +1,7 @@
 // Teammate spawn (spawn_if_missing): preferred path is native — a live
 // workspace in the sender's window whose repo basename matches the name gets
-// an ephemeral pane running the frozen claude launch command. With no match
+// an ephemeral pane running the frozen claude launch command; a CLOSED one
+// is reopened like Revive with Claude in the pane it last ran in. With no match
 // (including pane-less requesters, whose group is a directory path with no
 // window) it falls back to the old ccmux://spawn deep link with the classic
 // parent-dir + name repo guess. Either way the triggering message is queued
@@ -103,43 +104,64 @@ func (s *Service) trySpawnLocked(sender *Peer, group, name, text, toRepo string)
 	if resp, ok := s.tryStartAgentLocked(sender, key, group, name, text, prompt); ok {
 		return resp
 	}
-	wsID, repoPath, native := s.mgr.LiveWorkspaceForRepo(group, name)
-	if !native {
-		// Classic repo guess: the requester's parent dir + name. For pane-less
-		// requesters the group IS that parent dir, and this formula still lands
-		// there because it derives from the requester's own path, not the group.
-		repoPath = toRepo
-		if repoPath == "" {
-			base := sender.GitRoot
-			if base == "" {
-				base = sender.CWD
-			}
-			repoPath = filepath.Join(filepath.Dir(base), name)
-		}
-		if st, err := os.Stat(repoPath); err != nil || !st.IsDir() {
-			return SendResp{Error: fmt.Sprintf("Cannot spawn %q: repo path %s does not exist", name, repoPath)}
-		}
+	plan, err := s.spawnPlanFor(sender, group, name, toRepo)
+	if err != nil {
+		return SendResp{Error: err.Error()}
 	}
 
 	pending := &pendingSpawn{
-		name: name, group: group, repo: repoPath,
+		name: name, group: group, repo: plan.repoPath,
 		requests: []queuedRequest{{fromID: sender.ID, text: text}},
 	}
 	pending.timer = time.AfterFunc(s.SpawnTimeout, func() { s.spawnTimedOut(key) })
 	s.spawns[key] = pending
 
 	go func() {
-		var err error
-		if native {
-			err = s.mgr.SpawnEphemeralPane(wsID, repoPath, claudeLaunchCommand(prompt), "claude-peers")
-		} else {
-			err = s.openSpawnURL(repoPath, prompt, sender.ID)
-		}
-		if err != nil {
+		if err := s.startSpawn(plan, prompt, sender.ID); err != nil {
 			s.abortSpawn(key, fmt.Sprintf("Teammate %q could not be started: %v", name, err))
 		}
 	}()
 	return SendResp{OK: true, Spawning: true}
+}
+
+// spawnPlan is where a teammate starts: in the repo's own session, open or
+// closed (inWorkspace), or with none, through the deep link.
+type spawnPlan struct {
+	wsID, repoPath string
+	inWorkspace    bool
+}
+
+// spawnPlanFor finds the repo's own session in the sender's window, open or
+// closed, before falling back to the classic repo guess: the requester's
+// parent dir + name. For pane-less requesters the group IS that parent dir,
+// and the formula still lands there because it derives from the
+// requester's own path, not the group.
+func (s *Service) spawnPlanFor(sender *Peer, group, name, toRepo string) (spawnPlan, error) {
+	if wsID, repo, ok := s.mgr.LiveWorkspaceForRepo(group, name); ok {
+		return spawnPlan{wsID: wsID, repoPath: repo, inWorkspace: true}, nil
+	}
+	if wsID, repo, ok := s.mgr.ClosedWorkspaceForRepo(group, name); ok {
+		return spawnPlan{wsID: wsID, repoPath: repo, inWorkspace: true}, nil
+	}
+	repoPath := toRepo
+	if repoPath == "" {
+		base := sender.GitRoot
+		if base == "" {
+			base = sender.CWD
+		}
+		repoPath = filepath.Join(filepath.Dir(base), name)
+	}
+	if st, err := os.Stat(repoPath); err != nil || !st.IsDir() {
+		return spawnPlan{}, fmt.Errorf("Cannot spawn %q: repo path %s does not exist", name, repoPath)
+	}
+	return spawnPlan{repoPath: repoPath}, nil
+}
+
+func (s *Service) startSpawn(plan spawnPlan, prompt, requesterID string) error {
+	if plan.inWorkspace {
+		return s.mgr.StartClaudeIn(plan.wsID, claudeLaunchCommand(prompt))
+	}
+	return s.openSpawnURL(plan.repoPath, prompt, requesterID)
 }
 
 // openSpawnURL fires the ccmux://spawn deep link, exactly like the old broker

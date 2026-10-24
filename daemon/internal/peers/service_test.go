@@ -20,7 +20,8 @@ type fakeHook struct {
 	shells map[string]bool   // paneID -> foreground is a bare shell right now
 	groups map[string]string // paneID -> group ("" allowed: known but ungrouped)
 	repos  map[string]string // group\x00name -> wsID:repoPath
-	spawns []string          // recorded SpawnEphemeralPane calls "wsID|cwd|cmd"
+	spawns []string          // recorded StartClaudeIn calls "wsID|cmd"
+	closed map[string]string // group\x00name -> wsID:repoPath of a closed workspace
 }
 
 func (f *fakeHook) GroupForPane(paneID string) (string, bool) {
@@ -62,10 +63,21 @@ func (f *fakeHook) WorkspaceForPane(paneID string) string {
 	return "ws-of-" + paneID
 }
 
-func (f *fakeHook) SpawnEphemeralPane(wsID, cwd, cmd, createdBy string) error {
+func (f *fakeHook) ClosedWorkspaceForRepo(group, name string) (string, string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.spawns = append(f.spawns, wsID+"|"+cwd+"|"+cmd)
+	v, ok := f.closed[group+"\x00"+name]
+	if !ok {
+		return "", "", false
+	}
+	parts := strings.SplitN(v, ":", 2)
+	return parts[0], parts[1], true
+}
+
+func (f *fakeHook) StartClaudeIn(wsID, cmd string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spawns = append(f.spawns, wsID+"|"+cmd)
 	return nil
 }
 
@@ -384,7 +396,7 @@ func TestSpawn_NativeInWindowThenQueuedDelivery(t *testing.T) {
 	}
 	waitFor(t, func() bool { return hook.spawnCount() == 1 })
 	spawned := hook.spawn(0)
-	if !strings.HasPrefix(spawned, "ws-9|/w/maestro|") ||
+	if !strings.HasPrefix(spawned, "ws-9|") ||
 		!strings.Contains(spawned, "--dangerously-load-development-channels server:claude-peers") {
 		t.Fatalf("native spawn call = %q, want frozen claude launch in ws-9", spawned)
 	}
@@ -406,6 +418,38 @@ func TestSpawn_NativeInWindowThenQueuedDelivery(t *testing.T) {
 	// ...which seeds the permission relay's recent senders.
 	if n, _ := svc.PermissionRequest(teammate, "cdefg", "Bash", "x", "{}"); n != 1 {
 		t.Fatalf("relay after spawn reached %d, want the requester", n)
+	}
+}
+
+// A closed session of the named repo in the sender's window is reopened
+// with Claude in it, not guessed at by folder; the work waits and lands
+// when that Claude registers. An open one still wins.
+func TestSpawn_ClosedSessionIsReopened(t *testing.T) {
+	svc, hook := newTestService(t)
+	hook.closed = map[string]string{"CL\x00admin": "ws-adm:/w/admin"}
+	hook.groups["pane-fe"] = "CL"
+	fe := registerPane(svc, "pane-fe", "/w/frontend").PeerID
+
+	resp := svc.Send(SendReq{FromID: fe, ToName: "admin", Text: "add a users page", SpawnIfMissing: true})
+	if !resp.OK || !resp.Spawning {
+		t.Fatalf("send = %+v, want spawning", resp)
+	}
+	waitFor(t, func() bool { return hook.spawnCount() == 1 })
+	if got := hook.spawn(0); !strings.HasPrefix(got, "ws-adm|") || !strings.Contains(got, "server:claude-peers") {
+		t.Fatalf("start = %q, want Claude started in the admin session", got)
+	}
+	hook.setGroup("pane-adm", "CL")
+	admin := registerPane(svc, "pane-adm", "/w/admin").PeerID
+	if evs, _ := svc.Poll(admin); len(evs) != 1 || evs[0].Text != "add a users page" || evs[0].FromID != fe {
+		t.Fatalf("admin inbox = %+v", evs)
+	}
+
+	hook.repos["CL\x00hq"] = "ws-hq:/w/hq"
+	hook.closed["CL\x00hq"] = "ws-hq-old:/w/hq"
+	svc.Send(SendReq{FromID: fe, ToName: "hq", Text: "x", SpawnIfMissing: true})
+	waitFor(t, func() bool { return hook.spawnCount() == 2 })
+	if got := hook.spawn(1); !strings.HasPrefix(got, "ws-hq|") {
+		t.Fatalf("an open session wins over a closed one: %q", got)
 	}
 }
 

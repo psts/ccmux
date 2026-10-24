@@ -30,8 +30,12 @@ type Hook interface {
 	// arrive out of band and can land after the observation that contradicts
 	// them, and a fact we can look up has no reason to be cached.
 	PaneAtShell(paneID string) bool
+	// LiveWorkspaceForRepo and ClosedWorkspaceForRepo find the repo's own
+	// session in a window, open or closed; StartClaudeIn starts a teammate
+	// there, deciding open or closed when it starts.
 	LiveWorkspaceForRepo(group, name string) (wsID, repoPath string, ok bool)
-	SpawnEphemeralPane(wsID, cwd, oneShotCmd, createdBy string) error
+	ClosedWorkspaceForRepo(group, name string) (wsID, repoPath string, ok bool)
+	StartClaudeIn(wsID, cmd string) error
 	// WorkspaceForPane is the workspace a pane belongs to ("" if unknown) —
 	// where an agent contacted from that pane gets added.
 	WorkspaceForPane(paneID string) string

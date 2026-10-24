@@ -327,9 +327,10 @@ func TestWindowAgents_ProjectFoldersOnTheLaunch(t *testing.T) {
 		t.Fatalf("startup command does not name the env files: %s", pane.StartupCommand)
 	}
 	// The bus tells the same folders by session: the agent's own session is
-	// not a project folder, so it is not in the list.
+	// not a project folder, so it is not in the list. A session is named as
+	// the bus knows it, by its folder: workspace "flood" in /tmp is "tmp".
 	sessions := f.srv.windowSessions(win)
-	if len(sessions) != 1 || sessions[0].Name != "flood" || sessions[0].RepoPath != "/tmp" || sessions[0].Status != "live" {
+	if len(sessions) != 1 || sessions[0].Name != "tmp" || sessions[0].RepoPath != "/tmp" || sessions[0].Status != "live" {
 		t.Fatalf("window sessions = %+v, want the project session only", sessions)
 	}
 }
@@ -489,10 +490,10 @@ func TestPeersSessions_AndPaneBusContext(t *testing.T) {
 		t.Fatalf("sessions: %d %v", resp.StatusCode, err)
 	}
 	sessions := got.Sessions
-	if len(sessions) != 1 || sessions[0]["name"] != "flood" || sessions[0]["repoPath"] != "/tmp" || sessions[0]["status"] != "live" {
+	if len(sessions) != 1 || sessions[0]["name"] != "tmp" || sessions[0]["repoPath"] != "/tmp" || sessions[0]["status"] != "live" {
 		t.Fatalf("sessions = %v, want the project session only", sessions)
 	}
-	if got.Reader["agent"] != false || got.Reader["self"] != "flood" {
+	if got.Reader["agent"] != false || got.Reader["self"] != "tmp" {
 		t.Fatalf("the project session's own pane reads as that repo session: %v", got.Reader)
 	}
 	if got.Shared != "" {
@@ -518,7 +519,7 @@ func TestPeersSessions_AndPaneBusContext(t *testing.T) {
 	// A repo session is told to hand other repos' work to their owners and
 	// is not given their folders; a role agent is given the folders.
 	text := getText(t, f.base+"/v1/panes/"+pane+"/bus-context")
-	for _, want := range []string{"PROJECT SESSIONS IN THIS WINDOW", "- flood (you) [live]", "Never read or change another session's repo", "SHARED FOLDER of this window: " + got.Shared, "AGENTS ON THIS BUS", "- x-poster: "} {
+	for _, want := range []string{"PROJECT SESSIONS IN THIS WINDOW", "- tmp (you) [live]", "Never read or change another session's repo", "SHARED FOLDER of this window: " + got.Shared, "AGENTS ON THIS BUS", "- x-poster: "} {
 		if !strings.Contains(text, want) {
 			t.Errorf("bus-context missing %q:\n%s", want, text)
 		}
@@ -531,7 +532,7 @@ func TestPeersSessions_AndPaneBusContext(t *testing.T) {
 	if ws := f.srv.agentWorkspace(win, "x-poster"); ws != nil && len(ws.Panes) > 0 {
 		agentPane = ws.Panes[0].ID
 	}
-	if text := getText(t, f.base+"/v1/panes/"+agentPane+"/bus-context"); !strings.Contains(text, "- flood: /tmp [live]") || !strings.Contains(text, "read there") {
+	if text := getText(t, f.base+"/v1/panes/"+agentPane+"/bus-context"); !strings.Contains(text, "- tmp: /tmp [live]") || !strings.Contains(text, "read there") {
 		t.Errorf("a role agent's pane must get the repo folders:\n%s", text)
 	}
 	if text := getText(t, f.base+"/v1/panes/no-such-pane/bus-context"); text != "" {

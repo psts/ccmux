@@ -224,7 +224,8 @@ func (m *Manager) AssignWorkspace(wsID, windowName string) error {
 	if m.store == nil {
 		return errors.New("no store: windows are not available")
 	}
-	previous := m.windowSnapshot().members[wsID]
+	before := m.windowSnapshot()
+	previous := before.members[wsID]
 	windowName = strings.TrimSpace(windowName)
 	if windowName == "" {
 		if err := m.store.RemoveWindowMember(wsID); err != nil {
@@ -240,6 +241,7 @@ func (m *Manager) AssignWorkspace(wsID, windowName string) error {
 		}
 	}
 	m.invalidateWindows()
+	m.membershipChanged(wsID, before.names[previous])
 	m.pruneWindowIfAbandoned(previous)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return nil

@@ -209,6 +209,8 @@ func runDaemon() {
 	// Each repo's "owns" line for the bus: Haiku's summary of its
 	// CLAUDE.md and README, on the subscription accounts.
 	apiSrv.SetOwns(repoowns.New(st, llmSvc.Complete), st)
+	// A repo or agent joining or leaving a window is told to the others there.
+	mgr.OnMembershipChange = apiSrv.WindowNotice
 	apiSrv.StartScheduler(ctx, 30*time.Second)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {

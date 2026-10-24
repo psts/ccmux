@@ -118,11 +118,13 @@ func (s *Server) agentWorkspace(win manager.WindowInfo, name string) *model.Work
 
 // windowSessions lists win's ordinary (non-agent) sessions on this host —
 // the project's repos, as the bus tells them to every session in the window.
+// Each is named as the bus knows it (repoBusName), so the name a session
+// reads is one it can message.
 func (s *Server) windowSessions(win manager.WindowInfo) []buscontext.Session {
 	out := []buscontext.Session{}
 	for _, id := range win.WorkspaceIDs {
 		if ws := s.mgr.Workspace(id); ws != nil && ws.Agent == "" {
-			out = append(out, buscontext.Session{Name: ws.Name, RepoPath: ws.RepoPath, Status: string(ws.Status)})
+			out = append(out, buscontext.Session{Name: repoBusName(ws.Name, ws.RepoPath), RepoPath: ws.RepoPath, Status: string(ws.Status)})
 		}
 	}
 	return out

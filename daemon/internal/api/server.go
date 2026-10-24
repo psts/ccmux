@@ -58,8 +58,12 @@ type Server struct {
 	scheduleCatchUp time.Duration
 	// owns keeps each repo's "owns" line for the bus (owns.go); nil shows
 	// none and answers 503 on its routes.
-	owns        *repoowns.Service
-	ownsStore   ownsStore
+	owns      *repoowns.Service
+	ownsStore ownsStore
+	// notices carries membership changes to the one worker that tells the
+	// windows about them, in order (windownotices.go).
+	notices     chan manager.MembershipChange
+	noticesOnce sync.Once
 	scheduleNow func() time.Time
 
 	// projectsRoot is the one folder whose direct subdirectories are offered as
