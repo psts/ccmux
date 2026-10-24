@@ -42,3 +42,41 @@ func TestComplete_AsksWithTheAccountAndReturnsTheText(t *testing.T) {
 		t.Fatal("no account must be an error, not an empty answer")
 	}
 }
+
+// A refused first subscription moves on to the next one, and an account
+// that is not a claude subscription with a token is never asked.
+func TestComplete_MovesOnToTheNextAccount(t *testing.T) {
+	asked := map[string]int{}
+	serve := func(name string, status int, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			asked[name]++
+			w.WriteHeader(status)
+			w.Write([]byte(body))
+		}))
+	}
+	limited := serve("limited", http.StatusTooManyRequests, `{"error":{"message":"rate limited"}}`)
+	defer limited.Close()
+	open := serve("open", http.StatusOK, `{"content":[{"type":"text","text":"billing jobs"}]}`)
+	defer open.Close()
+	other := serve("other", http.StatusOK, `{"content":[{"type":"text","text":"wrong"}]}`)
+	defer other.Close()
+
+	s := New(fakeStore{})
+	accs := []Account{
+		{Name: "router", Kind: "openai", BaseURL: other.URL, APIKey: "k"},
+		{Name: "nokey", Kind: "claude", BaseURL: other.URL},
+		{Name: "limited", Kind: "claude", BaseURL: limited.URL, APIKey: "t1"},
+		{Name: "open", Kind: "claude", BaseURL: open.URL, APIKey: "t2"},
+	}
+	route := "limited"
+	if err := s.Apply(&accs, &route); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Complete(context.Background(), "x", 10)
+	if err != nil || got != "billing jobs" {
+		t.Fatalf("Complete = %q, %v", got, err)
+	}
+	if asked["limited"] != 1 || asked["open"] != 1 || asked["other"] != 0 {
+		t.Fatalf("asked %v: the refused one, then the next; never a non-claude or keyless account", asked)
+	}
+}

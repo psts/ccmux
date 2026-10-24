@@ -14,6 +14,9 @@ struct OwnsSheetView: View {
     @State private var auto = ""
     @State private var manual = ""
     @State private var loaded = false
+    /// The current line was read. Until then the field is not the line, so
+    /// saving it would overwrite a typed line with whatever the field holds.
+    @State private var readOK = false
     @State private var status = ""
     @State private var saving = false
 
@@ -27,15 +30,16 @@ struct OwnsSheetView: View {
                 .fixedSize(horizontal: false, vertical: true)
             TextField("e.g. API, database, auth, billing jobs", text: $manual)
                 .textFieldStyle(.roundedBorder)
-                .onSubmit { commit(manual) }
+                .onSubmit { if readOK { commit(manual) } }
             if !status.isEmpty {
                 Text(status).font(.system(size: 11)).foregroundColor(.red)
             }
             HStack {
                 Spacer()
                 Button("Cancel", action: onClose).keyboardShortcut(.cancelAction)
-                Button("Use summary") { commit("") }
-                Button("Save") { commit(manual) }.keyboardShortcut(.defaultAction)
+                // Cancel always closes; the two that write need the line read first.
+                Button("Use summary") { commit("") }.disabled(!readOK)
+                Button("Save") { commit(manual) }.keyboardShortcut(.defaultAction).disabled(!readOK)
             }
             .disabled(saving)
         }
@@ -43,7 +47,7 @@ struct OwnsSheetView: View {
         .frame(width: 440)
         .task {
             switch await load() {
-            case .success(let o): auto = o.auto; manual = o.manual
+            case .success(let o): auto = o.auto; manual = o.manual; readOK = true
             case .failure(let e): status = e.message
             }
             loaded = true
@@ -52,6 +56,7 @@ struct OwnsSheetView: View {
 
     private var summaryText: String {
         if !loaded { return "Reading…" }
+        if !readOK { return "Could not read the current line, so it cannot be changed now." }
         if auto.isEmpty {
             return "No summary yet. It is written the next time a session in this window starts, if the repo has a CLAUDE.md or README."
         }

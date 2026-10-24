@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -137,5 +138,61 @@ func TestWindowNotices_ALeaveIsNotOvertaken(t *testing.T) {
 	texts := containing(noticesFor(f, obs, 3*time.Second), "admin ")
 	if len(texts) != 1 || !strings.Contains(texts[0], "admin left this window") {
 		t.Fatalf("notices = %q, want only the leave", texts)
+	}
+}
+
+// A join whose summary has already failed (no account, a refusal) goes out
+// at once without an owns line, instead of holding every notice behind it
+// for the whole wait.
+func TestWindowNotices_AFailedSummaryDoesNotHoldTheQueue(t *testing.T) {
+	noticeOwnsPoll, noticeOwnsWait = 20*time.Millisecond, time.Minute
+	f := newWindowAgentFixture(t, "sleep 30;:")
+	f.srv.SetOwns(repoowns.New(f.st, func(context.Context, string, int) (string, error) {
+		return "", errors.New("no claude account with a setup-token to ask with")
+	}), f.st)
+	obs := noticeObserver(t, f)
+
+	start := time.Now()
+	for _, name := range []string{"admin", "billing"} {
+		f.put(t, "/v1/workspaces/"+addRepo(t, f, name)+"/group", `{"group":"Chart Labs"}`, 204)
+	}
+	texts := noticesFor(f, obs, 2*time.Second)
+	if a, b := containing(texts, "admin joined"), containing(texts, "billing joined"); len(a) != 1 || len(b) != 1 ||
+		strings.Contains(a[0], "owns") {
+		t.Fatalf("both joins, without an owns line, within seconds: %q", texts)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("a failed summary held the queue")
+	}
+}
+
+// Join, leave and join again arrive in that order: the one worker keeps a
+// leave from overtaking the join still waiting for its owns line, and from
+// being overtaken by the rejoin.
+func TestWindowNotices_JoinLeaveRejoinInOrder(t *testing.T) {
+	noticeOwnsPoll, noticeOwnsWait = 20*time.Millisecond, 10*time.Second
+	f := newWindowAgentFixture(t, "sleep 30;:")
+	release := make(chan struct{})
+	f.srv.SetOwns(repoowns.New(f.st, func(context.Context, string, int) (string, error) {
+		<-release
+		return "admin panel", nil
+	}), f.st)
+	obs := noticeObserver(t, f)
+
+	admin := addRepo(t, f, "admin")
+	f.put(t, "/v1/workspaces/"+admin+"/group", `{"group":"Chart Labs"}`, 204)
+	f.put(t, "/v1/workspaces/"+admin+"/group", `{"group":""}`, 204)
+	f.put(t, "/v1/workspaces/"+admin+"/group", `{"group":"Chart Labs"}`, 204)
+	close(release)
+	var order []string
+	for _, x := range containing(noticesFor(f, obs, 3*time.Second), "admin ") {
+		if strings.Contains(x, "joined") {
+			order = append(order, "joined")
+		} else if strings.Contains(x, "left") {
+			order = append(order, "left")
+		}
+	}
+	if strings.Join(order, ",") != "joined,left,joined" {
+		t.Fatalf("order = %v, want joined,left,joined", order)
 	}
 }

@@ -350,6 +350,7 @@ class TileEl {
   set innerHTML(v) { if (v === "") this.children = []; }
   get childElementCount() { return this.children.length; }
   appendChild(c) { this.children.push(c); c.parent = this; return c; }
+  addEventListener(kind, fn) { this["on" + kind] = fn; }
   all() { return this.children.flatMap((c) => [c, ...c.all()]); }
   querySelectorAll(sel) { return this.all().filter((e) => (sel.startsWith(".") ? e._cls.has(sel.slice(1)) : e.tag === sel)); }
   querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
@@ -423,6 +424,43 @@ async function boardChatTileCases() {
   await tick();
   check("board chat tile: a reply with no error body names its status",
     n.box.querySelector(".ac-error").textContent === "Not sent: HTTP 404", n.box.querySelector(".ac-error").textContent);
+}
+
+// --- owns.js: the "What It Owns…" editor (the Mac's OwnsSheetView keeps the
+// same rules). A failed read must not let Save overwrite a typed line with
+// the empty box; a good read fills the box and Save sends the line.
+async function ownsEditorCases() {
+  const z = run({});
+  await tick();
+  const els = {};
+  const page = z.ctx.document;
+  z.ctx.document = new Proxy({}, { get: (_t, k) => (k === "getElementById" ? (id) => els[id] || (els[id] = new TileEl("div")) : page[k]) });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "owns.js"), "utf8"), z.ctx, { filename: "owns.js" });
+  const O = z.ctx.ccmuxOwns;
+  const puts = [];
+  let read = { status: 503, body: { error: "owns lines are not configured on this daemon" } };
+  z.ctx.fetch = async (u, o) => {
+    const method = (o && o.method) || "GET";
+    if (method === "PUT") puts.push(JSON.parse(o.body));
+    const r = method === "PUT" ? { status: 200, body: { auto: "", manual: puts[puts.length - 1].manual, line: "" } } : read;
+    return { ok: r.status === 200, status: r.status, json: async () => r.body };
+  };
+
+  await O.open({ id: "w1", name: "backend" });
+  await O.save("");
+  check("owns editor: after a failed read, Save sends nothing and the two writing buttons are off",
+    puts.length === 0 && els["owns-auto"].textContent.startsWith("Could not read") &&
+      els["owns-save"].disabled && els["owns-clear"].disabled && !els["owns-close"].disabled, JSON.stringify(puts));
+
+  read = { status: 200, body: { auto: "API, database", manual: "API, auth, billing", line: "API, auth, billing" } };
+  await O.open({ id: "w1", name: "backend" });
+  check("owns editor: a good read fills the box with the typed line and shows the summary",
+    els["owns-manual"].value === "API, auth, billing" && els["owns-auto"].textContent === "Summary: API, database" &&
+      !els["owns-save"].disabled && !els["owns-clear"].disabled,
+    els["owns-manual"].value + " | " + els["owns-auto"].textContent);
+  await O.save("API, auth");
+  check("owns editor: Save sends the line and closes",
+    JSON.stringify(puts) === '[{"manual":"API, auth"}]' && els["owns-modal"].classList.contains("hidden"), JSON.stringify(puts));
 }
 
 // --- peers.js: the message panel's history merge (PeerMessage.merged and
@@ -891,6 +929,7 @@ async function peersFailureCases() {
   await peersFailureCases();
   await boardCases();
   await boardChatTileCases();
+  await ownsEditorCases();
 
   console.log(failures === 0 ? "web lens smoke: ok" : `web lens smoke: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

@@ -7,16 +7,29 @@
   "use strict";
 
   let wsId = null;
+  // ready: the current line was read. Until then the box is not the line,
+  // so saving it would overwrite a typed line with whatever the box holds.
+  let ready = false;
+
+  // The two buttons that write are off until the line is read; the Mac
+  // sheet greys out the same two.
+  function setReady(v) {
+    ready = v;
+    $("owns-save").disabled = !v;
+    $("owns-clear").disabled = !v;
+  }
 
   async function open(ws) {
     wsId = ws.id;
+    setReady(false);
     $("owns-title").textContent = `What ${ws.name} owns`;
     $("owns-manual").value = "";
     $("owns-auto").textContent = "Reading…";
     hideError();
     $("owns-modal").classList.remove("hidden");
     const r = await call("GET");
-    if (r && wsId === ws.id) show(r);
+    if (wsId !== ws.id) return;
+    if (r) { show(r); setReady(true); } else $("owns-auto").textContent = "Could not read the current line, so it cannot be changed now.";
   }
 
   function show(o) {
@@ -27,6 +40,7 @@
   }
 
   async function save(manual) {
+    if (!ready) return;
     const r = await call("PUT", { manual });
     if (r) $("owns-modal").classList.add("hidden");
   }
@@ -62,5 +76,5 @@
   $("owns-clear").onclick = () => save("");
   $("owns-manual").addEventListener("keydown", (e) => { if (e.key === "Enter") save($("owns-manual").value.trim()); });
 
-  window.ccmuxOwns = { open };
+  window.ccmuxOwns = { open, save };
 })();

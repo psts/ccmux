@@ -89,6 +89,14 @@ func (s *Service) Line(name, repoPath string) string {
 	return o.Line()
 }
 
+// Pending reports whether a summary of repoPath is running now, so a
+// caller waiting for its line knows whether one is coming.
+func (s *Service) Pending(repoPath string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inflight[repoPath]
+}
+
 // Wait blocks until the background summaries started so far are done (tests).
 func (s *Service) Wait() { s.wg.Wait() }
 

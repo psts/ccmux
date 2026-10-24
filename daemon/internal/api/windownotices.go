@@ -132,6 +132,15 @@ func (s *Server) waitForOwns(name, repoPath string) string {
 		if line := s.owns.Line(name, repoPath); line != "" {
 			return line
 		}
+		if !s.owns.Pending(repoPath) {
+			// None running: it just finished (read once more), or it failed
+			// recently (the repoowns log says why) and nothing is coming.
+			if line := s.owns.Line(name, repoPath); line != "" {
+				return line
+			}
+			log.Printf("window notice: no owns summary running for %s; announcing without one", name)
+			return ""
+		}
 		if time.Now().After(deadline) {
 			log.Printf("window notice: no owns line for %s yet; announcing without one", name)
 			return ""
