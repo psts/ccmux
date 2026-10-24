@@ -624,6 +624,8 @@ function openWsMenu(ws, x, y) {
   // arrangement everyone sees.
   add(ws.group ? "Move to Window…" : "Add to Window…", () => moveToWindow(ws));
   if (ws.group) add("Remove from Window (for everyone)", () => putGroup(ws.id, ""));
+  // An agent's session owns no repo; its description says what it does.
+  if (!isAgentWs(ws)) add("What It Owns…", () => window.ccmuxOwns.open(ws));
   sep();
   if (ws.status === "cold") {
     add("Revive", () => reviveWorkspace(ws.id));

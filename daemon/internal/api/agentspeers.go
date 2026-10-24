@@ -14,7 +14,7 @@ import (
 // starts it here. A caller outside a shared window (pane-less, or an
 // ungrouped session) sees every agent as absent.
 func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
-	win, ok := s.peerWindow(w, r)
+	win, _, ok := s.peerWindow(w, r)
 	if !ok {
 		return
 	}
@@ -34,18 +34,23 @@ func (s *Server) peersAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// peersSessions: POST /v1/peers/sessions {"peer_id"} → {"sessions", "shared"}:
+// peersSessions: POST /v1/peers/sessions {"peer_id"} → {"sessions", "shared", "reader"}:
 // the repo sessions of the caller's window and the window's shared folder
 // ("" until an agent's first start there creates it). This is how an agent
 // finds the project it was added to: its own folder holds only its memory,
 // the code lives in these. A caller outside a shared window sees an empty
-// list and no folder.
+// list and no folder. reader says who is asking (buscontext.Reader): a
+// repo session is told to hand other repos' work to their owners, a role
+// agent where the code is.
 func (s *Server) peersSessions(w http.ResponseWriter, r *http.Request) {
-	win, ok := s.peerWindow(w, r)
+	win, peerID, ok := s.peerWindow(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.windowSessions(win), "shared": s.sharedDirOf(win)})
+	pane, name := s.peersSvc.PeerIdentity(peerID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions": s.sessionsWithOwns(win), "shared": s.sharedDirOf(win), "reader": s.readerOfPane(pane, name),
+	})
 }
 
 // sharedDirOf is the window's shared folder when it exists, "" otherwise —
@@ -62,23 +67,23 @@ func (s *Server) sharedDirOf(win manager.WindowInfo) string {
 // WindowInfo, so the caller sees no members. An unreadable window table is
 // NOT that: it answers 503, never "nothing here". ok=false means the
 // response was already written.
-func (s *Server) peerWindow(w http.ResponseWriter, r *http.Request) (manager.WindowInfo, bool) {
+func (s *Server) peerWindow(w http.ResponseWriter, r *http.Request) (manager.WindowInfo, string, bool) {
 	if !s.peersEnabled(w) {
-		return manager.WindowInfo{}, false
+		return manager.WindowInfo{}, "", false
 	}
 	var req peerIDReq
 	if !decodeJSON(w, r, &req) {
-		return manager.WindowInfo{}, false
+		return manager.WindowInfo{}, "", false
 	}
 	if !s.requirePeer(w, r, req.PeerID) {
-		return manager.WindowInfo{}, false
+		return manager.WindowInfo{}, "", false
 	}
 	win, status, msg := s.windowByName(s.peersSvc.GroupOfPeer(req.PeerID))
 	if msg != "" && status != http.StatusNotFound {
 		writeError(w, status, msg)
-		return manager.WindowInfo{}, false
+		return manager.WindowInfo{}, "", false
 	}
-	return win, true
+	return win, req.PeerID, true
 }
 
 // startAgentForPeer is the bus's spawn_if_missing path for agents: the one

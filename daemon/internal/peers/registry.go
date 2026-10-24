@@ -63,6 +63,18 @@ func (s *Service) GroupOfPeer(peerID string) string {
 	return s.groupOfLocked(p)
 }
 
+// PeerIdentity is a peer's ccmux pane ("" for a session outside ccmux or
+// in a Mac-local pane) and its name, for a caller that must tell what kind
+// of session is asking.
+func (s *Service) PeerIdentity(peerID string) (paneID, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.peers[peerID]; p != nil {
+		return p.PaneID, p.Name
+	}
+	return "", ""
+}
+
 // RegisterFrom is Register plus the connection's origin IP, which the hub turns
 // into the peer's owning-host label when there is no pane to look one up by.
 // The IP comes from the socket, never from the request body: a self-asserted

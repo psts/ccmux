@@ -12,13 +12,24 @@ import (
 )
 
 // Session is one repo session of the window: the name it is messaged by,
-// where its code is on this host, and whether its tmux session is open
-// ("live") or archived ("cold"). Whether someone is listening there is
-// list_peers' question, not this one's.
+// where its code is on this host, what it owns (its repo's one line, ""
+// before one is known), and whether its tmux session is open ("live") or
+// archived ("cold"). Whether someone is listening there is list_peers'
+// question, not this one's.
 type Session struct {
 	Name     string `json:"name"`
 	RepoPath string `json:"repoPath"`
+	Owns     string `json:"owns,omitempty"`
 	Status   string `json:"status"`
+}
+
+// Reader is who the text is for. A repo session owns its repo and hands
+// any work in another repo to that repo's session; a role agent (Agent)
+// has no repo of its own and may read the repos it reaches. Self is the
+// reader's own session name, marked in the list; "" for an agent.
+type Reader struct {
+	Agent bool   `json:"agent"`
+	Self  string `json:"self,omitempty"`
 }
 
 // Agent is one base agent as seen from the window: absent (never added
@@ -34,13 +45,13 @@ type Agent struct {
 // shared folder (shared is its path, "" before any agent has started
 // there), then agents. Empty when there is nothing to say, so a caller
 // outside any window appends nothing.
-func Paragraph(sessions []Session, shared string, agents []Agent) string {
-	return sessionsParagraph(sessions) + sharedParagraph(shared) + agentsParagraph(agents)
+func Paragraph(r Reader, sessions []Session, shared string, agents []Agent) string {
+	return sessionsParagraph(r, sessions) + sharedParagraph(shared) + agentsParagraph(agents)
 }
 
 // Section is the list_peers footer: the same lists, tool-shaped.
-func Section(sessions []Session, shared string, agents []Agent) string {
-	return sessionsSection(sessions) + sharedSection(shared) + agentsSection(agents)
+func Section(r Reader, sessions []Session, shared string, agents []Agent) string {
+	return sessionsSection(r, sessions) + sharedSection(shared) + agentsSection(agents)
 }
 
 func sharedParagraph(dir string) string {
@@ -59,38 +70,74 @@ func sharedSection(dir string) string {
 	return "\n\nShared folder of this window (every agent reads and writes it; its .env loads into agents at start): " + dir + "\n"
 }
 
-func sessionsParagraph(list []Session) string {
+// ownerRule is what a repo session is told: every repo has its owner, and
+// work in another repo is handed to that owner, tracked both ways.
+const ownerRule = "Each repo is owned by its own session. Never read or change another session's repo: " +
+	"when your task needs work in one, delegate it to that session (delegate with to_name=<session>, spawn_if_missing=true) " +
+	"saying what you need and why, then carry on with your own part. " +
+	"When a session delegates work to you, ask it with send_message if anything is unclear, " +
+	"report progress with update_task, and close the task with what you did.\n"
+
+// agentRule is what a role agent is told: it has no repo, and reads the
+// ones it reaches.
+const agentRule = "Their code lives at these folders: read there if your harness reaches it, otherwise message the session by name. " +
+	"If list_peers does not show it, send with spawn_if_missing=true and it starts.\n"
+
+func sessionsParagraph(r Reader, list []Session) string {
 	if len(list) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\n\nPROJECT SESSIONS IN THIS WINDOW: the repos this project is made of, each its own session on this host. ")
-	b.WriteString("Their code lives at these folders: read there if your harness reaches it, otherwise message the session by name. ")
-	b.WriteString("If list_peers does not show it, send with spawn_if_missing=true and it starts.\n")
+	if r.Agent {
+		b.WriteString(agentRule)
+	} else {
+		b.WriteString(ownerRule)
+	}
 	for _, e := range list {
-		b.WriteString(sessionLine(e))
+		b.WriteString(sessionLine(r, e))
 	}
 	return b.String()
 }
 
-func sessionsSection(list []Session) string {
+func sessionsSection(r Reader, list []Session) string {
 	if len(list) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\nProject sessions in this window (folders on this host; message by name, spawn_if_missing=true starts one not listed above):\n")
+	if r.Agent {
+		b.WriteString("\n\nProject sessions in this window (folders on this host; message by name, spawn_if_missing=true starts one not listed above):\n")
+	} else {
+		b.WriteString("\n\nProject sessions in this window (each owns its repo: delegate work there to it, spawn_if_missing=true starts one not listed above):\n")
+	}
 	for _, e := range list {
-		b.WriteString(sessionLine(e))
+		b.WriteString(sessionLine(r, e))
 	}
 	return b.String()
 }
 
-func sessionLine(e Session) string {
+// sessionLine names a session and what it owns. A role agent also gets the
+// folder, which it may read; a repo session does not, since it must not.
+func sessionLine(r Reader, e Session) string {
 	state := e.Status
 	if state == "cold" {
 		state = "archived; starts on contact"
 	}
-	return fmt.Sprintf("- %s: %s [%s]\n", e.Name, e.RepoPath, state)
+	name := e.Name
+	if r.Self != "" && e.Name == r.Self {
+		name += " (you)"
+	}
+	var about []string
+	if e.Owns != "" {
+		about = append(about, "owns "+e.Owns)
+	}
+	if r.Agent {
+		about = append(about, e.RepoPath)
+	}
+	if len(about) == 0 {
+		return fmt.Sprintf("- %s [%s]\n", name, state)
+	}
+	return fmt.Sprintf("- %s: %s [%s]\n", name, strings.Join(about, "; "), state)
 }
 
 // agentsParagraph says how an agent differs from a teammate: it exists

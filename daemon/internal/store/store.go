@@ -196,7 +196,11 @@ CREATE TABLE IF NOT EXISTS agent_schedules (
   cron TEXT NOT NULL, prompt TEXT NOT NULL, paused INTEGER DEFAULT 0,
   created_by TEXT DEFAULT '', created_at INTEGER, last_run_at INTEGER DEFAULT 0, next_run_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS agent_schedules_by_instance ON agent_schedules(window_id, agent);`
+CREATE INDEX IF NOT EXISTS agent_schedules_by_instance ON agent_schedules(window_id, agent);
+CREATE TABLE IF NOT EXISTS repo_owns (
+  repo_path TEXT PRIMARY KEY, auto TEXT DEFAULT '', auto_hash TEXT DEFAULT '',
+  manual TEXT DEFAULT '', updated_at INTEGER DEFAULT 0
+);`
 
 // Open opens (creating if needed) the registry at path.
 func Open(path string) (*SQLite, error) {

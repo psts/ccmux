@@ -132,6 +132,25 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.beginSheet(sheetWindow)
     }
 
+    /// Sheet for the repo's "owns" line (OwnsSheetView). Save closes only
+    /// on success; the daemon's refusal stays in the sheet.
+    func showOwnsSheet(for workspaceId: UUID) {
+        guard let window else { return }
+        let service = RemoteSessionService.shared
+        let name = service.workspaces.first(where: { $0.id == workspaceId })?.name ?? "workspace"
+        guard let daemonId = service.daemonId(forApp: workspaceId) else { return }
+        var sheet: NSWindow?
+        let editor = OwnsSheetView(
+            workspaceName: name,
+            load: { await RepoOwnsClient.read(daemonId: daemonId) },
+            save: { await RepoOwnsClient.setManual(daemonId: daemonId, $0) },
+            onClose: { if let sheet { window.endSheet(sheet) } }
+        )
+        let sheetWindow = NSWindow(contentViewController: NSHostingController(rootView: editor))
+        sheet = sheetWindow
+        window.beginSheet(sheetWindow)
+    }
+
     private func setupSplitView() {
         let splitVC = NSSplitViewController()
 
@@ -169,6 +188,9 @@ class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             },
             onWorkspaceHostnames: { [weak self] id in
                 self?.showHostnamesSheet(for: id)
+            },
+            onWorkspaceOwns: { [weak self] id in
+                self?.showOwnsSheet(for: id)
             },
             onNewWindow: { [weak self] in
                 self?.windowManager?.createWindow(displayingWorkspace: nil)

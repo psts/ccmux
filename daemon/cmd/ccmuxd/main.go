@@ -41,6 +41,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/push"
+	"ccmux.dev/ccmuxd/internal/repoowns"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/internal/tmux"
@@ -205,6 +206,9 @@ func runDaemon() {
 	// Timed prompts: a run missed by more than six hours (daemon down, agent
 	// busy the whole time) skips to its next slot rather than firing late.
 	apiSrv.SetSchedules(st, 6*time.Hour)
+	// Each repo's "owns" line for the bus: Haiku's summary of its
+	// CLAUDE.md and README, on the subscription accounts.
+	apiSrv.SetOwns(repoowns.New(st, llmSvc.Complete), st)
 	apiSrv.StartScheduler(ctx, 30*time.Second)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {

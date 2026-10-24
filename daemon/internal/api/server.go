@@ -27,6 +27,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/meridian"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/peers"
+	"ccmux.dev/ccmuxd/internal/repoowns"
 	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/internal/version"
 	"ccmux.dev/ccmuxd/web"
@@ -55,7 +56,11 @@ type Server struct {
 	// 503 on its routes. scheduleNow is the clock, replaced in tests.
 	schedules       scheduleStore
 	scheduleCatchUp time.Duration
-	scheduleNow     func() time.Time
+	// owns keeps each repo's "owns" line for the bus (owns.go); nil shows
+	// none and answers 503 on its routes.
+	owns        *repoowns.Service
+	ownsStore   ownsStore
+	scheduleNow func() time.Time
 
 	// projectsRoot is the one folder whose direct subdirectories are offered as
 	// hosted-workspace locations (GET /v1/projects). Empty disables the listing
@@ -413,6 +418,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/panes/{id}/snapshot", s.scoped(s.paneSnapshot))
 	mux.HandleFunc("POST /v1/panes/{id}/resize", s.scoped(s.paneResize))
 	mux.HandleFunc("GET /v1/panes/{id}/driver", s.scoped(s.paneDriver))
+	mux.HandleFunc("GET /v1/workspaces/{id}/owns", s.scoped(s.workspaceOwns))
+	mux.HandleFunc("PUT /v1/workspaces/{id}/owns", s.scoped(s.workspaceOwns))
 	mux.HandleFunc("GET /v1/panes/{id}/agent", s.scoped(s.paneAgentHistory))
 	mux.HandleFunc("POST /v1/panes/{id}/agent/reply", s.scoped(s.paneAgentReply))
 	mux.HandleFunc("GET /v1/panes/{id}/agent/ws", s.paneAgentChat)

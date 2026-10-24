@@ -16,6 +16,7 @@ struct SidebarView: View {
     var onRestoreWindow: ((UUID) -> Void)?
     var onNewHostedSession: (() -> Void)?
     var onWorkspaceHostnames: ((UUID) -> Void)?
+    var onWorkspaceOwns: ((UUID) -> Void)?
     var onNewWindow: (() -> Void)?
     /// Drag-and-drop move: (workspaceId, targetWindowId). Any window section —
     /// this window's or another's — accepts a dropped workspace row.
@@ -594,6 +595,12 @@ struct SidebarView: View {
         }
         Button("Open in New Window") {
             onDetachWorkspace(workspace.id)
+        }
+        // An agent's session owns no repo; its description says what it does.
+        if remoteService.agentWorkspaces[workspace.id] == nil {
+            Button("What It Owns…") {
+                onWorkspaceOwns?(workspace.id)
+            }
         }
         Divider()
         Button("Hostnames…") {

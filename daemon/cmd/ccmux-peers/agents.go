@@ -19,10 +19,13 @@ func (a *app) agents() []agentEntry {
 }
 
 // windowSessions is the daemon's answer to POST /v1/peers/sessions: the
-// window's repo sessions and its shared folder ("" before it exists).
+// window's repo sessions, its shared folder ("" before it exists) and who
+// this session is to them. A daemon too old to say reads as a repo
+// session, which is told to hand other repos' work to their owners.
 type windowSessions struct {
-	Sessions []sessionEntry `json:"sessions"`
-	Shared   string         `json:"shared"`
+	Sessions []sessionEntry    `json:"sessions"`
+	Shared   string            `json:"shared"`
+	Reader   buscontext.Reader `json:"reader"`
 }
 
 // sessions fetches the repo sessions and shared folder of this session's
@@ -50,11 +53,11 @@ func (a *app) windowList(path string, out any) {
 // project's code is without anyone writing paths into its instructions.
 func (a *app) windowParagraph() string {
 	w := a.sessions()
-	return buscontext.Paragraph(w.Sessions, w.Shared, a.agents())
+	return buscontext.Paragraph(w.Reader, w.Sessions, w.Shared, a.agents())
 }
 
 // windowSection is the list_peers footer: the same lists, tool-shaped.
 func (a *app) windowSection() string {
 	w := a.sessions()
-	return buscontext.Section(w.Sessions, w.Shared, a.agents())
+	return buscontext.Section(w.Reader, w.Sessions, w.Shared, a.agents())
 }

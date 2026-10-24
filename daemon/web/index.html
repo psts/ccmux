@@ -78,6 +78,22 @@
   <!-- Workspace context menu (right-click / ⋯) — mirrors the Mac hosted menu. -->
   <div id="ctx-menu" class="ctx-menu hidden"></div>
 
+  <!-- What It Owns — the repo's line every session in its window is told (owns.js). -->
+  <div id="owns-modal" class="modal hidden">
+    <div class="sheet">
+      <header>
+        <span id="owns-title">What it owns</span>
+        <button id="owns-close" title="Close">&times;</button>
+      </header>
+      <p class="crumb">Every session in this window is told what each repo owns, so work in this repo is handed to its session. Haiku writes it from the repo's CLAUDE.md and README; type your own line to override it.</p>
+      <p id="owns-auto" class="crumb"></p>
+      <input id="owns-manual" class="setting-input" type="text" spellcheck="false" autocomplete="off" maxlength="200"
+             placeholder="e.g. API, database, auth, billing jobs">
+      <p id="owns-error" class="status hidden"></p>
+      <div class="sheet-actions"><button id="owns-clear" type="button">Use summary</button><button id="owns-save">Save</button></div>
+    </div>
+  </div>
+
   <!-- Hostnames editor — dev hostname↔port mappings + the ▶ dev command. -->
   <div id="hostnames-modal" class="modal hidden">
     <div class="sheet">
@@ -202,6 +218,7 @@
   <script src="/app.js"></script>
   <script src="/agentchat.js"></script>
   <script src="/board.js"></script>
+  <script src="/owns.js"></script>
   <script src="/agentmodal.js"></script>
   <script src="/peers.js"></script>
   <script src="/push.js"></script>
