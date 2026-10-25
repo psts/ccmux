@@ -200,6 +200,12 @@ CREATE INDEX IF NOT EXISTS agent_schedules_by_instance ON agent_schedules(window
 CREATE TABLE IF NOT EXISTS repo_owns (
   repo_path TEXT PRIMARY KEY, auto TEXT DEFAULT '', auto_hash TEXT DEFAULT '',
   manual TEXT DEFAULT '', updated_at INTEGER DEFAULT 0
+);
+-- Pages: an agent's urgent push to its human, at most one per incident key
+-- in a window (scope). The row is the "already paged" answer.
+CREATE TABLE IF NOT EXISTS agent_pages (
+  scope TEXT, incident TEXT, paged_at INTEGER, by_name TEXT DEFAULT '',
+  PRIMARY KEY (scope, incident)
 );`
 
 // Open opens (creating if needed) the registry at path.

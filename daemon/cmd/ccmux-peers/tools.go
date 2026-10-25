@@ -197,6 +197,24 @@ var toolsList = []map[string]any{
 		},
 	},
 	{
+		"name":        "page",
+		"description": `Page your human: one urgent push to their phone and browser, sent even while they sit at a screen. Only for security, money, or a live outage, never for routine news (use send_message for that). At most one page per incident: pass the same incident key every time you run into the same problem, and the bus refuses the repeats; a new key only for a new incident.`,
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"incident": map[string]any{
+					"type":        "string",
+					"description": `A short stable key for this one incident, e.g. "cve-2026-1234-backend" or "stripe-webhooks-down-2026-10-25". At most 80 characters.`,
+				},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "One line: what is wrong and what it means. Shown on the lock screen; cut at 300 characters.",
+				},
+			},
+			"required": []string{"incident", "message"},
+		},
+	},
+	{
 		"name":        "check_messages",
 		"description": "Manually check for new messages from other Claude Code instances. Messages are normally pushed automatically via channel notifications, but you can use this as a fallback.",
 		"inputSchema": map[string]any{
@@ -247,6 +265,8 @@ func (a *app) callTool(name string, args json.RawMessage) any {
 		return a.toolCheckMessages()
 	case "schedule":
 		return a.toolSchedule(args)
+	case "page":
+		return a.toolPage(args)
 	default:
 		return toolText("Unknown tool: "+name, true)
 	}

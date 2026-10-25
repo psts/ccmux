@@ -51,6 +51,9 @@ type Server struct {
 	// /v1/push/* handlers then answer 503 and no notifier runs).
 	sender    pushSender
 	pushStore pushStore
+	// pages is the one-page-per-incident record (page.go); nil when the push
+	// store lacks it, and the page route answers 503.
+	pages pageStore
 
 	// schedules is the timed-prompt store (agentschedules.go); nil answers
 	// 503 on its routes. scheduleNow is the clock, replaced in tests.
@@ -289,6 +292,7 @@ func (s *Server) SetClipboardToken(t string) { s.clipToken = t }
 func (s *Server) EnablePush(ctx context.Context, sender pushSender, ps pushStore) {
 	s.sender = sender
 	s.pushStore = ps
+	s.pages, _ = ps.(pageStore)
 	// s.focus, not a second oracle of its own: it is already the federated union
 	// on a hub and the local presence hub elsewhere. Building another here meant
 	// two pollers hitting every member's /v1/presence every 3s, and — worse —
@@ -372,6 +376,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-ask", s.agentAsk)
 	mux.HandleFunc("POST /v1/panes/{id}/notices", s.paneNotices)
+	mux.HandleFunc("POST /v1/panes/{id}/page", s.panePage)
 	mux.HandleFunc("GET /v1/panes/{id}/bus-context", s.paneBusContext)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.
