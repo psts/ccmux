@@ -66,6 +66,9 @@ type SendReq struct {
 	Text           string `json:"text"`
 	SpawnIfMissing bool   `json:"spawn_if_missing"`
 	ToRepo         string `json:"to_repo"`
+	// Quiet stores the message without pushing it or waking anyone; it rides
+	// along with the addressee's next delivery (quiet.go).
+	Quiet bool `json:"quiet"`
 }
 
 // SendResp is the tool-facing outcome. Error strings the old broker used are
@@ -92,6 +95,9 @@ func (s *Service) Send(req SendReq) SendResp {
 		return SendResp{Error: "sender is not registered"}
 	}
 	senderGroup := s.groupOfLocked(sender)
+	if req.Quiet {
+		return s.sendQuietLocked(req, sender, senderGroup)
+	}
 
 	target, resp := s.resolveTargetLocked(req, sender, senderGroup)
 	if target == nil {
@@ -361,9 +367,11 @@ func systemEvent(target *Peer, group, text string) *model.PeerEvent {
 // always either in a subscriber's replay or in its channel — never neither.
 func (s *Service) deliverLocked(ev *model.PeerEvent) error {
 	ev.SentAt = s.Now().UnixMilli()
+	upto := s.foldNoticesLocked(ev)
 	if _, err := s.st.AppendPeerEvent(ev); err != nil {
 		return err
 	}
+	s.markNoticesLocked(ev.ToID, upto)
 	if c := s.conns[ev.ToID]; c != nil {
 		c.enqueue(ev)
 	}
@@ -465,7 +473,22 @@ func (s *Service) Poll(peerID string) ([]*model.PeerEvent, error) {
 			return nil, err
 		}
 	}
-	return evs, nil
+	// Waiting quiet notices are handed over here too: asking is reading.
+	notices, err := s.st.PendingNotices(peerID)
+	if err != nil {
+		log.Printf("peers: quiet notices for %s unreadable (%v); they wait for the next delivery", peerID, err)
+		return evs, nil
+	}
+	if len(notices) == 0 {
+		return evs, nil
+	}
+	s.markNoticesLocked(peerID, notices[len(notices)-1].Seq)
+	// Handed over without their seq: it is older than what the shim has
+	// already shown, and its seq dedupe would drop them unread.
+	for _, n := range notices {
+		n.Seq = 0
+	}
+	return append(evs, notices...), nil
 }
 
 // GroupHistory is the read-only viewer's message list, oldest first, with

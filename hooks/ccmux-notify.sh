@@ -248,6 +248,32 @@ print(json.dumps({
 }))
 ' 2>/dev/null)
 
+# Quiet notices (send_message quiet=true) wait in the daemon until something
+# reaches this session anyway. A prompt its human just typed is that moment, so on
+# UserPromptSubmit a daemon-hosted pane asks for them and prints them as the
+# turn's additionalContext: read inside this turn, no extra turn, nobody woken.
+# The pane's own token gates the route. Two seconds at most, and any failure
+# prints nothing, so the turn goes ahead exactly as it would have. Printed from an
+# EXIT trap because stdout is the hook's answer to Claude Code and the exits
+# below must not cut it off.
+if [[ "$TYPE" == "user_prompt_submit" && -n "${CCMUX_DAEMON_URL:-}" && -n "${CCMUX_PANE_TOKEN:-}" && -n "${CCMUX_PANE_ID:-}" ]]; then
+    NOTICES=$(curl -s -m 2 -X POST -H "Authorization: Bearer $CCMUX_PANE_TOKEN" \
+        "$CCMUX_DAEMON_URL/v1/panes/$CCMUX_PANE_ID/notices" 2>/dev/null)
+    if [[ -n "$NOTICES" && "$NOTICES" != *'"text":""'* ]]; then
+        HOOK_OUT=$(NOTICES="$NOTICES" python3 - 2>/dev/null <<'PY'
+import json, os
+try:
+    text = json.loads(os.environ["NOTICES"]).get("text") or ""
+except Exception:
+    text = ""
+if text:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}))
+PY
+)
+        [[ -n "$HOOK_OUT" ]] && trap 'printf "%s\n" "$HOOK_OUT"' EXIT
+    fi
+fi
+
 [[ -z "$MSG" ]] && exit 0
 
 # Send, and if that fails, try the daemon's CURRENT socket before giving up.

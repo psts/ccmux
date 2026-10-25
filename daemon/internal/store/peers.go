@@ -16,10 +16,10 @@ const peerEventCols = `seq,kind,from_id,from_name,from_summary,from_cwd,to_id,to
 // AppendPeerEvent stores one event and returns (also setting) its seq.
 func (s *SQLite) AppendPeerEvent(ev *model.PeerEvent) (int64, error) {
 	res, err := s.db.Exec(`
-INSERT INTO peer_events (kind,from_id,from_name,from_summary,from_cwd,to_id,to_name,grp,text,request_id,behavior,sent_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+INSERT INTO peer_events (kind,from_id,from_name,from_summary,from_cwd,to_id,to_name,grp,text,request_id,behavior,sent_at,quiet)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		ev.Kind, ev.FromID, ev.FromName, ev.FromSummary, ev.FromCWD,
-		ev.ToID, ev.ToName, ev.Group, ev.Text, ev.RequestID, ev.Behavior, ev.SentAt)
+		ev.ToID, ev.ToName, ev.Group, ev.Text, ev.RequestID, ev.Behavior, ev.SentAt, quietCol(ev.Quiet))
 	if err != nil {
 		return 0, err
 	}
@@ -32,15 +32,45 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 }
 
 // PeerEventsAfter returns a peer's events with seq > afterSeq, in seq order —
-// the replay a (re)subscribe or poll delivers.
+// the replay a (re)subscribe or poll delivers. Quiet notices are never in
+// it: they reach the peer only inside another delivery (PendingNotices).
 func (s *SQLite) PeerEventsAfter(toID string, afterSeq int64) ([]*model.PeerEvent, error) {
 	rows, err := s.db.Query(
-		`SELECT `+peerEventCols+` FROM peer_events WHERE to_id=? AND seq>? ORDER BY seq`,
+		`SELECT `+peerEventCols+` FROM peer_events WHERE to_id=? AND seq>? AND quiet=0 ORDER BY seq`,
 		toID, afterSeq)
 	if err != nil {
 		return nil, err
 	}
 	return scanPeerEvents(rows)
+}
+
+// quietCol is the quiet column's value for a new row: waiting, or not quiet.
+func quietCol(quiet bool) int {
+	if quiet {
+		return 1
+	}
+	return 0
+}
+
+// PendingNotices returns the quiet notices waiting for toID, oldest first.
+func (s *SQLite) PendingNotices(toID string) ([]*model.PeerEvent, error) {
+	rows, err := s.db.Query(
+		`SELECT `+peerEventCols+` FROM peer_events WHERE to_id=? AND quiet=1 ORDER BY seq`, toID)
+	if err != nil {
+		return nil, err
+	}
+	evs, err := scanPeerEvents(rows)
+	for _, ev := range evs {
+		ev.Quiet = true
+	}
+	return evs, err
+}
+
+// MarkNoticesDelivered marks toID's waiting notices up to seq as delivered,
+// so none rides along twice. Ones that arrived after seq keep waiting.
+func (s *SQLite) MarkNoticesDelivered(toID string, uptoSeq int64) error {
+	_, err := s.db.Exec(`UPDATE peer_events SET quiet=2 WHERE to_id=? AND quiet=1 AND seq<=?`, toID, uptoSeq)
+	return err
 }
 
 // PeerCursor returns a peer's highest acked seq (0 when it has none yet).
@@ -117,11 +147,12 @@ func (s *SQLite) DeletePeerState(peerID string) error {
 
 // RecentPeerSenders returns the distinct peers that sent toID a message since
 // sinceMillis — the permission-relay broadcast set, computed instead of stored
-// so it survives daemon and client restarts alike.
+// so it survives daemon and client restarts alike. A quiet notice does not
+// count: leaving one must not sign its sender up to be woken by relays.
 func (s *SQLite) RecentPeerSenders(toID string, sinceMillis int64) ([]string, error) {
 	return s.queryIDs(`
 SELECT DISTINCT from_id FROM peer_events
-WHERE to_id=? AND kind=? AND sent_at>? AND from_id!=''`,
+WHERE to_id=? AND kind=? AND sent_at>? AND from_id!='' AND quiet=0`,
 		toID, model.PeerEventMessage, sinceMillis)
 }
 
@@ -169,11 +200,12 @@ func (s *SQLite) PeerGroupMessages(group string, sinceMillis int64, limit int) (
 }
 
 // PrunePeerEvents deletes events older than beforeMillis that their addressee
-// has acked. An unacked event is never pruned — and, unlike the old broker's
+// has acked. A quiet notice still waiting is kept whatever the cursor says:
+// it was never in the stream the cursor counts. An unacked event is never pruned — and, unlike the old broker's
 // prefix scan, it doesn't block pruning anything else.
 func (s *SQLite) PrunePeerEvents(beforeMillis int64) (int64, error) {
 	res, err := s.db.Exec(`
-DELETE FROM peer_events WHERE sent_at<? AND seq <= COALESCE(
+DELETE FROM peer_events WHERE sent_at<? AND quiet!=1 AND seq <= COALESCE(
   (SELECT acked_seq FROM peer_cursors WHERE peer_id = peer_events.to_id), 0)`,
 		beforeMillis)
 	if err != nil {

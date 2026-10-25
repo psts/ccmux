@@ -270,6 +270,10 @@ func Open(path string) (*SQLite, error) {
 	// different verbs; rows from before question cards existed were all
 	// permission dialogs.
 	_, _ = db.Exec(`ALTER TABLE peer_perm_requests ADD COLUMN kind TEXT DEFAULT 'permission'`)
+	// A quiet notice (send_message quiet=true) waits in the log without being
+	// pushed: 1 while it waits, 2 once it rode along with a later delivery.
+	// Older rows were all ordinary messages.
+	_, _ = db.Exec(`ALTER TABLE peer_events ADD COLUMN quiet INTEGER DEFAULT 0`)
 	// The registry holds peer message history and workspace state; SQLite creates
 	// it with the process umask (typically 0644), but the config dir is 0700 and
 	// the peers secret/info files are 0600 (see internal/peers/token.go) — keep the

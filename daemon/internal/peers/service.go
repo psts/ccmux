@@ -76,6 +76,9 @@ type Store interface {
 	OpenPeerTasksFor(peerID string, limit int) ([]store.PeerTask, error)
 	OpenDelegatorsOf(workerID string) ([]string, error)
 	OpenWorkerTaskCount(workerID string) (int, error)
+	// Quiet notices (quiet.go).
+	PendingNotices(toID string) ([]*model.PeerEvent, error)
+	MarkNoticesDelivered(toID string, uptoSeq int64) error
 	DeletePeerTask(taskID string) error
 	PrunePeerTasks(beforeMillis int64) error
 }

@@ -312,6 +312,10 @@ type PeerEvent struct {
 	RequestID string `json:"request_id,omitempty"` // verdicts and answers
 	Behavior  string `json:"behavior,omitempty"`   // verdicts only: "allow" | "deny"
 	SentAt    int64  `json:"sent_at"`              // unix millis
+	// Quiet marks a notice sent with send_message quiet=true: stored and shown
+	// to the lenses, never pushed, and handed to the addressee only inside
+	// its next delivery, start or check_messages.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // PeerEventMessage, PeerEventVerdict and PeerEventAnswer are the PeerEvent

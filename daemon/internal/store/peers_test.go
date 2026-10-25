@@ -210,3 +210,33 @@ func TestDeletePeerState_ErasesInboxOnly(t *testing.T) {
 		t.Fatalf("third party's inbox = %+v (err %v), want the outbound message intact", evs, err)
 	}
 }
+
+// A quiet notice is not a message for the relay set, and while it waits it
+// is never pruned, whatever the cursor says; once delivered it prunes as usual.
+func TestQuietNotices_NotRelaySendersAndKeptWhileWaiting(t *testing.T) {
+	st := openTestStore(t)
+	quiet := msgEvent("q", "w", "G", "fyi", 100)
+	quiet.Quiet = true
+	delivered := msgEvent("d", "w", "G", "fyi too", 100)
+	delivered.Quiet = true
+	for _, ev := range []*model.PeerEvent{delivered, quiet, msgEvent("a", "w", "G", "hi", 100)} { // marking takes every notice up to a seq
+		if _, err := st.AppendPeerEvent(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := st.RecentPeerSenders("w", 50); err != nil || len(got) != 1 || got[0] != "a" {
+		t.Fatalf("recent senders = %v %v, want only a", got, err)
+	}
+	if err := st.MarkNoticesDelivered("w", delivered.Seq); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AdvancePeerCursor("w", 99); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.PrunePeerEvents(500); err != nil || n != 2 {
+		t.Fatalf("pruned %d %v, want 2 (the delivered notice and the message)", n, err)
+	}
+	if left, _ := st.PendingNotices("w"); len(left) != 1 || left[0].Text != "fyi" {
+		t.Fatalf("waiting notice = %+v, want it kept", left)
+	}
+}

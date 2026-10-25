@@ -240,7 +240,7 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 		}
 		return startOutcome{status: http.StatusInternalServerError, msg: "window membership: " + err.Error(), err: err}
 	}
-	s.pushPromptLater(ws.Panes[0].ID, l)
+	s.pushPromptLater(ws.Panes[0].ID, l, 0)
 	return startOutcome{pane: ws.Panes[0], status: http.StatusCreated}
 }
 
@@ -401,9 +401,12 @@ func (s *Server) agentPort(wsID, name string, h harness.Harness) (int, int, stri
 // pushPromptLater delivers a chat-serving instance's first message through
 // its server once it is up. Runs off the request: the pane is already live
 // and the human sees the harness come up; a push failure is logged, not a
-// 5xx.
-func (s *Server) pushPromptLater(paneID string, l manager.AgentLaunch) {
+// 5xx. notices is the last quiet notice folded into the prompt (0: none),
+// marked delivered only once the prompt is.
+func (s *Server) pushPromptLater(paneID string, l manager.AgentLaunch, notices int64) {
 	if l.Port == 0 || l.Prompt == "" {
+		// The prompt rode on the launch line, which went through.
+		s.markQuietNotices(paneID, notices)
 		return
 	}
 	go func() {
@@ -414,7 +417,9 @@ func (s *Server) pushPromptLater(paneID string, l manager.AgentLaunch) {
 		err := s.mgr.PushLocked(paneID, func() error { return agent.PushPrompt(ctx, l.Port, l.Prompt) })
 		if err != nil {
 			log.Printf("agent %s: first prompt not delivered: %v", l.Name, err)
+			return // the quiet notices in it keep waiting for the next handover
 		}
+		s.markQuietNotices(paneID, notices)
 	}()
 }
 
@@ -463,6 +468,7 @@ func (s *Server) startAgent(wsID, name, prompt string, resume *bool) startOutcom
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
 	}
+	prompt, notices := s.withQuietNotices(existing.ID, prompt)
 	l, status, msg := s.resolveAgentLaunch(d, ws.RepoPath, dirs, shared, wsID, prompt, resume)
 	if msg != "" {
 		return startOutcome{status: status, msg: msg}
@@ -470,7 +476,7 @@ func (s *Server) startAgent(wsID, name, prompt string, resume *bool) startOutcom
 	if out := s.launchIntoAgentSession(ws, existing.ID, l); out.msg != "" {
 		return out
 	}
-	s.pushPromptLater(existing.ID, l)
+	s.pushPromptLater(existing.ID, l, notices)
 	return startOutcome{pane: s.mgr.AgentPane(wsID, name), status: http.StatusOK}
 }
 

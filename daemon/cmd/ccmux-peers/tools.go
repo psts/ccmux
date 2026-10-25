@@ -90,6 +90,10 @@ var toolsList = []map[string]any{
 					"type":        "boolean",
 					"description": `If the named teammate (to_name) isn't running, ask the session manager (ccmux) to start a fresh Claude Code instance in that repo and queue this message for delivery once it comes up. Only works with to_name. Use this to reach a teammate that hasn't been started yet — e.g. send_message(to_name="backend", spawn_if_missing=true, message="..."). The teammate replies over the channel when ready, or you get an "unreachable" notice if it can't be started.`,
 				},
+				"quiet": map[string]any{
+					"type":        "boolean",
+					"description": `A notice nobody has to act on now: it wakes no one and interrupts no one. It waits and is handed to the receiver with the next thing that reaches it anyway (its next message, its next start, its next prompt, or its own check_messages). Reaches an asleep agent or a closed session by name; never starts one, so spawn_if_missing is ignored. Use it for "notify:" messages; never for anything that needs an answer.`,
+				},
 			},
 			"required": []string{"message"},
 		},
@@ -307,12 +311,16 @@ func (a *app) toolSendMessage(args json.RawMessage) any {
 		ToGroup        string `json:"to_group"`
 		Message        string `json:"message"`
 		SpawnIfMissing bool   `json:"spawn_if_missing"`
+		Quiet          bool   `json:"quiet"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return toolText("Bad arguments: "+err.Error(), true)
 	}
 	if in.ToID == "" && in.ToName == "" {
 		return toolText("Either to_name or to_id is required", true)
+	}
+	if in.Quiet {
+		in.SpawnIfMissing = false
 	}
 	var resp struct {
 		OK       bool   `json:"ok"`
@@ -324,24 +332,35 @@ func (a *app) toolSendMessage(args json.RawMessage) any {
 		"from_id": a.peerID(), "to_id": in.ToID, "to_name": in.ToName,
 		"to_group": in.ToGroup,
 		"text":     in.Message, "spawn_if_missing": in.SpawnIfMissing,
+		"quiet": in.Quiet,
 	}, &resp); err != nil {
 		return toolText("Error sending message: "+err.Error(), true)
 	}
 	if !resp.OK {
 		return toolText("Failed to send: "+resp.Error, true)
 	}
-	if resp.Spawning {
-		return toolText(fmt.Sprintf(`Teammate "%s" isn't running — asked ccmux to start it. Your message is queued and will be delivered once it registers; it'll reply over the channel when ready (or you'll get an "unreachable" notice if it can't be started).`, in.ToName), false)
+	return sendResultText(in.ToName, in.ToID, in.Quiet, resp.Spawning, resp.Queued)
+}
+
+// sendResultText is what send_message tells the sender once the bus took
+// the message: quiet, spawning, queued for an absent session, or sent.
+func sendResultText(toName, toID string, quiet, spawning, queued bool) any {
+	if quiet {
+		return toolText(fmt.Sprintf("Quiet notice left for %s: it wakes no one and is handed over with the next thing that reaches it. Don't wait on a reply.",
+			orID(toName, toID)), false)
 	}
-	if resp.Queued {
+	if spawning {
+		return toolText(fmt.Sprintf(`Teammate "%s" isn't running — asked ccmux to start it. Your message is queued and will be delivered once it registers; it'll reply over the channel when ready (or you'll get an "unreachable" notice if it can't be started).`, toName), false)
+	}
+	if queued {
 		return toolText(fmt.Sprintf(
 			"Queued for %s — no Claude session is running there right now. It stays in that pane's inbox and is delivered the moment a session starts there; nobody will read it before then. Don't wait on a reply.",
-			orID(in.ToName, in.ToID)), false)
+			orID(toName, toID)), false)
 	}
-	if in.ToName != "" {
-		return toolText(fmt.Sprintf("Message sent to %q", in.ToName), false)
+	if toName != "" {
+		return toolText(fmt.Sprintf("Message sent to %q", toName), false)
 	}
-	return toolText("Message sent to peer "+in.ToID, false)
+	return toolText("Message sent to peer "+toID, false)
 }
 
 func (a *app) toolSetSummary(args json.RawMessage) any {

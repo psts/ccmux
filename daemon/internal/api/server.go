@@ -371,6 +371,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/panes/{id}/schedules", s.paneSchedules)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-ask", s.agentAsk)
+	mux.HandleFunc("POST /v1/panes/{id}/notices", s.paneNotices)
 	mux.HandleFunc("GET /v1/panes/{id}/bus-context", s.paneBusContext)
 	mux.HandleFunc("PUT /v1/settings", s.putSettings)
 	// GET /v1/workspaces is the aggregated list in hub mode, local otherwise.
