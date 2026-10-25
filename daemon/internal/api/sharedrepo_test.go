@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/manager"
 )
 
@@ -91,5 +93,66 @@ func TestSendNotice_GrantsARepoJoinOnly(t *testing.T) {
 	raw, err := os.ReadFile(settings)
 	if own := filepath.Join(shared, "app"); err != nil || !strings.Contains(string(raw), own) {
 		t.Fatalf("join grant = %s %v, want %s (the bus name, not the workspace name)", raw, err, own)
+	}
+}
+
+// Walls are a claude-harness field, kept across a save that does not name
+// them; on any other harness the save is refused.
+func TestAgents_WallsOnlyOnClaude(t *testing.T) {
+	s := agentsServer(t)
+	if rec := do(t, s, "PUT", "/v1/agents/radar-seo", `{"description":"d","harness":"claude","walls":true}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"walls":true`) {
+		t.Fatalf("walls on claude = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, s, "PUT", "/v1/agents/radar-seo", `{"description":"a lens save that does not know walls"}`); !strings.Contains(rec.Body.String(), `"walls":true`) {
+		t.Fatalf("a save without the field dropped walls: %s", rec.Body)
+	}
+	if rec := do(t, s, "PUT", "/v1/agents/x-poster", `{"description":"d","walls":true}`); rec.Code != 400 || !strings.Contains(rec.Body.String(), "claude harness") {
+		t.Fatalf("walls on the default harness = %d %s, want 400", rec.Code, rec.Body)
+	}
+}
+
+func TestWallRoots_HomeAndOwnSharedFolder(t *testing.T) {
+	shared := t.TempDir()
+	if roots, err := wallRoots(agent.Definition{Name: "radar-seo"}, "opencode", "/w/agents/radar-seo", shared); roots != nil || err != nil {
+		t.Fatalf("no walls = %v %v", roots, err)
+	}
+	if _, err := wallRoots(agent.Definition{Name: "radar-seo", Walls: true}, "opencode", "/w/agents/radar-seo", shared); err == nil {
+		t.Fatal("walls on opencode must refuse the start: nothing would hold them")
+	}
+	roots, err := wallRoots(agent.Definition{Name: "radar-seo", Walls: true}, "claude", "/w/agents/radar-seo", shared)
+	own := filepath.Join(shared, "radar-seo")
+	if err != nil || len(roots) != 2 || roots[0] != "/w/agents/radar-seo" || roots[1] != own {
+		t.Fatalf("roots = %v %v", roots, err)
+	}
+	if fi, err := os.Stat(own); err != nil || !fi.IsDir() {
+		t.Fatalf("own shared folder not made: %v", err)
+	}
+}
+
+// The start's options carry a walled agent's roots onto the launch line,
+// and an unwalled agent's line has none.
+func TestLaunchOpts_WallsReachTheLaunchLine(t *testing.T) {
+	shared, home := t.TempDir(), t.TempDir()
+	h := harness.Harness{Name: harness.Builtin, Command: harness.FallbackClaudeCommand}
+	d := agent.Definition{Name: "radar-seo", Walls: true, Permissions: agent.Permissions{Read: "allow", Edit: "allow", Bash: "ask", Webfetch: "ask"}}
+	opts, err := launchOpts(d, h.Name, home, []string{"/repo"}, shared, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Serve = "/s.mjs"
+	line := agent.LaunchCommand(d, h, "/b", opts).Persist
+	want := "--write-root " + home + " --write-root " + filepath.Join(shared, "radar-seo") + " --write-inside allow"
+	if !strings.Contains(line, want) || strings.Contains(line, "Edit") {
+		t.Fatalf("walled line = %s\nwant %q and no pre-allowed edit tools", line, want)
+	}
+	d.Walls = false
+	plain, _ := launchOpts(d, h.Name, home, nil, shared, "", 0)
+	plain.Serve = "/s.mjs"
+	if l := agent.LaunchCommand(d, h, "/b", plain).Persist; strings.Contains(l, "--write-root") {
+		t.Fatalf("unwalled line has roots: %s", l)
+	}
+	d.Walls = true
+	if _, err := launchOpts(d, "opencode", home, nil, shared, "", 0); err == nil || !strings.Contains(err.Error(), "walls:") {
+		t.Fatalf("walls on opencode = %v, want the start refused", err)
 	}
 }

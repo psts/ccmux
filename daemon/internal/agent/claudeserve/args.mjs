@@ -7,7 +7,8 @@
 //
 //   serve   --port N --agent NAME --plugin-dir DIR --system-prompt-file FILE
 //           --mcp-file FILE [--add-dir DIR]... [--model M] [--allowed-tools a,b]
-//           [--disallowed-tools c] [--session ID]
+//           [--disallowed-tools c] [--write-root DIR]... [--write-inside allow]
+//           [--session ID]
 //   sessions --dir DIR
 //   export   --dir DIR --session ID
 
@@ -24,6 +25,8 @@ const flags = {
   "--model": (o, v) => { o.model = v; },
   "--allowed-tools": (o, v) => { o.allowed = list(v); },
   "--disallowed-tools": (o, v) => { o.disallowed = list(v); },
+  "--write-root": (o, v) => { o.writeRoots.push(v); },
+  "--write-inside": (o, v) => { o.writeInside = v; },
   "--session": (o, v) => { o.session = v; },
   "--dir": (o, v) => { o.dir = v; },
 };
@@ -32,7 +35,7 @@ const flags = {
 // no value, throws: a launch line the daemon and the sidecar disagree on
 // must fail at the start, where the pane shows why, not later.
 export function parseArgs(argv) {
-  const o = { addDirs: [], allowed: [], disallowed: [] };
+  const o = { addDirs: [], allowed: [], disallowed: [], writeRoots: [] };
   for (let i = 0; i < argv.length; i += 2) {
     const set = flags[argv[i]];
     if (!set) throw new Error("unknown flag " + argv[i]);

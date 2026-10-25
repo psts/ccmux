@@ -145,6 +145,9 @@ struct AgentEditorView: View {
             }
             Text("bash patterns always allowed, one per line, e.g. git log *").font(.system(size: 11)).foregroundColor(.secondary)
             TextEditor(text: $bashAllowText).font(.system(size: 12, design: .monospaced)).frame(minHeight: 44).border(Color.white.opacity(0.12))
+            // Walls: writes only in its home and shared/<name>/, any other
+            // write refused (claude harness only). Same field as the web lens.
+            Toggle("walls: writes only its own folders (claude harness; shell commands not covered)", isOn: $agent.walls).toggleStyle(.checkbox)
         }
     }
 

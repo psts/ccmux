@@ -1,12 +1,14 @@
 package api
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/buscontext"
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/manager"
 )
 
@@ -62,4 +64,27 @@ func (s *Server) grantOnJoin(c manager.MembershipChange) {
 		return
 	}
 	s.grantRepoShared(win, buscontext.Session{Name: repoBusName(c.Name, c.RepoPath), RepoPath: c.RepoPath})
+}
+
+// wallRoots is a walled agent's write roots: its instance home and its own
+// folder in the window's shared folder, made here so the first write has
+// somewhere to land. nil for an agent without walls. Walls on another
+// harness than claude (an agent.json edited by hand: a save refuses it)
+// refuse the start, since nothing there would hold them.
+func wallRoots(d agent.Definition, harnessName, home, shared string) ([]string, error) {
+	if !d.Walls {
+		return nil, nil
+	}
+	if harnessName != harness.Builtin {
+		return nil, errors.New("walls work only on the claude harness; this agent runs on " + harnessName)
+	}
+	roots := []string{home}
+	if shared != "" {
+		own := filepath.Join(shared, d.Name)
+		if err := os.MkdirAll(own, 0o755); err != nil {
+			return nil, err
+		}
+		roots = append(roots, own)
+	}
+	return roots, nil
 }

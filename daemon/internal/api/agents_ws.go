@@ -282,6 +282,25 @@ func (s *Server) agentDefinition(name string) (agent.Definition, int, string) {
 	return d, 0, ""
 }
 
+// launchOpts is what one start of d in home adds to its base: the window's
+// folders plus its shared folder, the env files in load order (the
+// instance's last, so it wins), and a walled agent's write roots.
+func launchOpts(d agent.Definition, harnessName, home string, dirs []string, shared, prompt string, port int) (agent.LaunchOpts, error) {
+	var envFiles []string
+	if shared != "" {
+		dirs = append(dirs, shared)
+		envFiles = append(envFiles, filepath.Join(shared, agent.EnvFile))
+	}
+	envFiles = append(envFiles, filepath.Join(home, agent.EnvFile))
+	opts := agent.LaunchOpts{Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port}
+	roots, err := wallRoots(d, harnessName, home, shared)
+	if err != nil {
+		return opts, fmt.Errorf("walls: %w", err)
+	}
+	opts.WriteRoots = roots
+	return opts, nil
+}
+
 // resolveAgentLaunch turns base d into a ready AgentLaunch for the instance
 // folder dir (written here) with dirs as the project folders and shared the
 // window's shared folder ("" outside a window), or an HTTP status and
@@ -311,17 +330,13 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 	if msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}
-	// Env files load in this order, the instance's last so it wins.
-	var envFiles []string
-	if shared != "" {
-		dirs = append(dirs, shared)
-		envFiles = append(envFiles, filepath.Join(shared, agent.EnvFile))
+	opts, err := launchOpts(d, h.Name, dir, dirs, shared, prompt, port)
+	if err != nil {
+		return manager.AgentLaunch{}, http.StatusInternalServerError, err.Error()
 	}
-	envFiles = append(envFiles, filepath.Join(dir, agent.EnvFile))
 	// The sidecar first: resumeSession reads history through it, so on a
 	// fresh host a "continue" start would otherwise refuse before the
 	// sidecar ever landed.
-	opts := agent.LaunchOpts{Dirs: dirs, EnvFiles: envFiles, Prompt: prompt, Port: port}
 	if opts.Serve, opts.Node, status, msg = s.sidecarFor(h, dir); msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}

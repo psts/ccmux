@@ -27,7 +27,10 @@
         `<div class="entry-line"><label class="am-lbl">model</label><input class="setting-input am-model grow" placeholder="default for the harness, e.g. anthropic/claude-sonnet-5"></div>`) +
       section("Permissions",
         `<div class="entry-line am-perms">` + PERMS.map((p) => `<label class="am-lbl">${p}</label>${sel("am-perm-" + p, ["allow", "ask", "deny"])}`).join("") + `</div>` +
-        `<textarea class="setting-input am-bashallow" rows="2" spellcheck="false" placeholder="bash patterns always allowed, one per line, e.g.  git log *"></textarea>`) +
+        `<textarea class="setting-input am-bashallow" rows="2" spellcheck="false" placeholder="bash patterns always allowed, one per line, e.g.  git log *"></textarea>` +
+        // Walls: writes only in its home and shared/<name>/, any other write
+        // refused (claude harness only). Same field as the Mac editor.
+        `<div class="entry-line"><label class="hx-confirm"><input type="checkbox" class="am-walls"> walls: writes only its own folders (claude harness; shell commands not covered)</label></div>`) +
       section("Skills",
         `<div class="am-skills rules-list"></div>` +
         `<div class="entry-line"><input class="setting-input am-skill-url grow" spellcheck="false" placeholder="https://github.com/owner/repo/tree/main/skills/name"><button class="rule-add am-skill-add" type="button">Add from URL</button></div>` +
@@ -105,6 +108,7 @@
     q(".am-idle").value = a.idleExitMinutes ?? 10;
     q(".am-cardwait").value = a.cardWaitMinutes ?? 0;
     q(".am-keep").checked = !!a.keepAlive;
+    q(".am-walls").checked = !!a.walls;
   }
 
   function formValue() {
@@ -117,7 +121,7 @@
       harness: q(".am-harness").value, account: q(".am-account").value.trim(), model: q(".am-model").value.trim(),
       permissions, plugins: lines(".am-plugins"), start: q(".am-start").value,
       idleExitMinutes: Number(q(".am-idle").value) || 0, cardWaitMinutes: Number(q(".am-cardwait").value) || 0,
-      keepAlive: q(".am-keep").checked,
+      keepAlive: q(".am-keep").checked, walls: q(".am-walls").checked,
     };
   }
 

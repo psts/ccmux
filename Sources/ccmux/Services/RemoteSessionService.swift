@@ -1599,7 +1599,7 @@ final class RemoteSessionService: ObservableObject {
             "account": a.account, "model": a.model, "plugins": a.plugins, "start": a.start,
             "permissions": ["read": a.permissions.read, "edit": a.permissions.edit, "bash": a.permissions.bash,
                             "webfetch": a.permissions.webfetch, "bashAllow": a.permissions.bashAllow],
-            "keepAlive": a.keepAlive, "idleExitMinutes": a.idleExitMinutes,
+            "keepAlive": a.keepAlive, "walls": a.walls, "idleExitMinutes": a.idleExitMinutes,
             "cardWaitMinutes": a.cardWaitMinutes,
         ]
         if !a.instructions.isEmpty { body["instructions"] = a.instructions }

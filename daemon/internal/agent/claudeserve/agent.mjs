@@ -6,6 +6,10 @@
 import { randomUUID, randomInt } from "node:crypto";
 import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAnswers, questionCardText } from "./translate.mjs";
 import { mcpFromNeutral } from "./mcp.mjs";
+import { WRITE_TOOLS, wallSafe, wallVerdict } from "./walls.mjs";
+
+// WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
+const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
 
 // askID is a card's id: five lowercase letters without l, the shape the
 // bus's reply matchers accept ("yes abcde", "answer abcde ..."), so the
@@ -174,7 +178,20 @@ export class Agent {
     // the base chose those servers, so a card for their tools asks nothing.
     opts.allowedTools = o.allowed.concat(this.mcp.allow);
     if (o.disallowed.length) opts.disallowedTools = o.disallowed;
+    if (o.writeRoots && o.writeRoots.length) opts.hooks = { PreToolUse: [{ matcher: WRITE_MATCHER, hooks: [(input) => this.wallHook(input)] }] };
     return opts;
+  }
+
+  // wallHook is the walls' hard stop. A PreToolUse hook runs before every
+  // permission rule, so an allow rule saved in a settings file the SDK loads
+  // (an old "always" answer in the home's .claude/settings.local.json) cannot
+  // approve a write outside the roots. Inside them it decides nothing and
+  // the write goes on to the rules and canUseTool as before.
+  async wallHook(input) {
+    const wall = wallVerdict(input.tool_name, input.tool_input, this.o, this.cwd);
+    if (!wall || !wall.deny) return {};
+    this.log(`walls: ${input.tool_name} refused: ${wall.deny}`);
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: wall.deny } };
   }
 
   // ensureQuery has the SDK session running; a session that ended (an
@@ -315,10 +332,20 @@ export class Agent {
   // the chat, or a question card for AskUserQuestion, answered by a human.
   canUseTool(name, input, extra) {
     if (name === "AskUserQuestion") return this.askQuestion(input, extra);
+    const wall = wallVerdict(name, input, this.o, this.cwd);
+    if (wall === "allow") return Promise.resolve({ behavior: "allow", updatedInput: input });
+    if (wall && wall.deny) {
+      this.log(`walls: ${name} refused: ${wall.deny}`);
+      return Promise.resolve({ behavior: "deny", message: wall.deny });
+    }
     const id = askID();
     // The SDK's suggestions are the rule "always" would write; when it says
     // that rule would grant more than this one ask, "always" is not offered.
-    const suggestions = extra.suppressAlwaysAllowRule ? [] : extra.suggestions || [];
+    // Nor on a walled write: its suggestion switches to acceptEdits, which
+    // approves every edit in the added folders without asking canUseTool.
+    // And on any walled agent's card, never one that would lift the walls.
+    let suggestions = extra.suppressAlwaysAllowRule || wall === "ask" ? [] : extra.suggestions || [];
+    if (this.o.writeRoots && this.o.writeRoots.length) suggestions = wallSafe(suggestions);
     const request = {
       id, sessionID: this.sid, permission: name, patterns: [permissionPattern(name, input)],
       always: suggestions.length ? ["*"] : [],

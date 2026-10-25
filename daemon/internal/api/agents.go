@@ -1,6 +1,7 @@
 package api
 
 import (
+	"ccmux.dev/ccmuxd/internal/harness"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,6 +182,9 @@ func (s *Server) renameInstances(d agent.Definition) error {
 func (s *Server) rejectDefinition(d agent.Definition) string {
 	if msg := agent.Reject(d); msg != "" {
 		return msg
+	}
+	if d.Walls && d.Harness != harness.Builtin {
+		return "walls work only on the claude harness for now: opencode cannot hold file writes to a folder"
 	}
 	return s.rejectAgentHarness(d.Harness)
 }

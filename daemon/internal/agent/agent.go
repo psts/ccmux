@@ -71,6 +71,13 @@ type Definition struct {
 	MaxTokensPerTask int      `json:"maxTokensPerTask"`
 	SideEffects      []string `json:"sideEffects,omitempty"`
 	AddDirs          []string `json:"addDirs,omitempty"`
+	// Walls, when on, hold the agent's file writes to its own folders: its
+	// instance home and its folder in the window's shared folder. A write
+	// anywhere else (a repo, another agent's folder) is refused, not asked.
+	// Off by default, because agents that still write into a repo of their
+	// own would break; Bash is the bash gate's and not covered. Claude
+	// harness only (the sidecar enforces it, claudeserve/walls.mjs).
+	Walls bool `json:"walls,omitempty"`
 	// Plugins are opencode plugin packages (npm names or paths) the instance
 	// loads besides ccmux's own; other harnesses ignore them.
 	Plugins []string `json:"plugins,omitempty"`

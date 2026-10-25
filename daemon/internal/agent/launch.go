@@ -80,13 +80,16 @@ func LaunchCommand(d Definition, h harness.Harness, baseDir string, o LaunchOpts
 // conversation), and for claude the sidecar script and the node to run it
 // (Store.EnsureClaudeServe).
 type LaunchOpts struct {
-	Dirs     []string
-	EnvFiles []string
-	Prompt   string
-	Port     int
-	Session  string
-	Serve    string
-	Node     string
+	Dirs []string
+	// WriteRoots are a walled agent's own folders (Definition.Walls); empty
+	// for every other agent.
+	WriteRoots []string
+	EnvFiles   []string
+	Prompt     string
+	Port       int
+	Session    string
+	Serve      string
+	Node       string
 }
 
 // envPrefix puts ccmuxd's env-exec verb ahead of the harness line with the
@@ -129,8 +132,8 @@ func claudeServeLine(d Definition, baseDir string, o LaunchOpts) string {
 	if d.Model != "" {
 		parts = append(parts, "--model", shellQuote(d.Model))
 	}
-	parts = append(parts, claudePermissionFlags(d.Permissions)...)
-	return strings.Join(parts, " ")
+	parts = append(parts, claudePermissionFlags(d.Permissions, len(o.WriteRoots) > 0)...)
+	return strings.Join(append(parts, wallFlags(d.Permissions, o.WriteRoots)...), " ")
 }
 
 // claudeTools maps the neutral permission gates onto Claude Code tool names.
@@ -143,13 +146,16 @@ var claudeTools = map[string][]string{
 // permission card), and each BashAllow pattern → an allowed Bash(pattern).
 // The sidecar hands them to the SDK as allowedTools/disallowedTools.
 // opencode gets the same gates through its config (opencodePermission).
-func claudePermissionFlags(p Permissions) []string {
+func claudePermissionFlags(p Permissions, walled bool) []string {
 	var allow, deny []string
 	for gate, v := range map[string]string{"read": p.Read, "edit": p.Edit, "bash": p.Bash, "webfetch": p.Webfetch} {
-		switch v {
-		case "allow":
+		switch {
+		case v == "allow" && walled && gate == "edit":
+			// Walled: an allowed edit tool would never reach canUseTool,
+			// where the sidecar holds writes to the roots (wallFlags).
+		case v == "allow":
 			allow = append(allow, claudeTools[gate]...)
-		case "deny":
+		case v == "deny":
 			deny = append(deny, claudeTools[gate]...)
 		}
 	}
@@ -164,6 +170,19 @@ func claudePermissionFlags(p Permissions) []string {
 	}
 	if len(deny) > 0 {
 		out = append(out, "--disallowed-tools", shellQuote(strings.Join(deny, ",")))
+	}
+	return out
+}
+
+// wallFlags tells the sidecar a walled agent's write roots, and with an
+// edit gate of allow that a write inside them needs no card.
+func wallFlags(p Permissions, roots []string) []string {
+	var out []string
+	for _, r := range roots {
+		out = append(out, "--write-root", shellQuote(r))
+	}
+	if len(roots) > 0 && p.Edit == "allow" {
+		out = append(out, "--write-inside", "allow")
 	}
 	return out
 }

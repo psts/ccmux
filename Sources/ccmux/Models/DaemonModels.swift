@@ -166,6 +166,10 @@ struct DaemonAgent: Codable, Identifiable {
     var plugins: [String]
     var start: String
     var keepAlive: Bool
+    /// Walls: file writes held to the agent's home and its own shared
+    /// folder, refused anywhere else (claude harness only; the daemon
+    /// refuses the save on another). Same field as the web lens's editor.
+    var walls: Bool
     var idleExitMinutes: Int
     /// How long a session stopped on a human may wait before it ends; 0
     /// follows idleExitMinutes (the daemon's decideAgent).
@@ -178,7 +182,7 @@ struct DaemonAgent: Codable, Identifiable {
          keepAlive: Bool = false, idleExitMinutes: Int = 10, version: String = "", instructions: String = "") {
         self.name = name; self.icon = icon; self.description = description; self.harness = harness
         self.account = ""; self.model = ""; self.permissions = DaemonAgentPermissions(); self.plugins = []; self.start = "fresh"
-        self.keepAlive = keepAlive; self.idleExitMinutes = idleExitMinutes; self.cardWaitMinutes = 0; self.version = version
+        self.keepAlive = keepAlive; self.walls = false; self.idleExitMinutes = idleExitMinutes; self.cardWaitMinutes = 0; self.version = version
         self.instructions = instructions
     }
 
@@ -194,6 +198,7 @@ struct DaemonAgent: Codable, Identifiable {
         plugins = try c.decodeIfPresent([String].self, forKey: .plugins) ?? []
         start = try c.decodeIfPresent(String.self, forKey: .start) ?? "fresh"
         keepAlive = try c.decodeIfPresent(Bool.self, forKey: .keepAlive) ?? false
+        walls = try c.decodeIfPresent(Bool.self, forKey: .walls) ?? false
         idleExitMinutes = try c.decodeIfPresent(Int.self, forKey: .idleExitMinutes) ?? 10
         cardWaitMinutes = try c.decodeIfPresent(Int.self, forKey: .cardWaitMinutes) ?? 0
         version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
@@ -201,7 +206,7 @@ struct DaemonAgent: Codable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, icon, description, harness, account, model, permissions, plugins, start, keepAlive, idleExitMinutes, cardWaitMinutes, version, instructions
+        case name, icon, description, harness, account, model, permissions, plugins, start, keepAlive, walls, idleExitMinutes, cardWaitMinutes, version, instructions
     }
 }
 

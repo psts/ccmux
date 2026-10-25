@@ -67,6 +67,32 @@ func TestLaunchCommandClaude(t *testing.T) {
 		t.Errorf("permission flags: %s", got)
 	}
 }
+
+// A walled agent's line names its write roots, and its allowed edit gate
+// moves off the allow list (so every write reaches the sidecar's check)
+// onto --write-inside allow. An unwalled line has neither.
+func TestLaunchCommandClaudeWalls(t *testing.T) {
+	h := harness.Harness{Name: harness.Builtin, Command: harness.FallbackClaudeCommand}
+	d := withDefaults(Definition{Name: "radar-seo"})
+	walled := LaunchCommand(d, h, "/b", LaunchOpts{Serve: "/s.mjs", WriteRoots: []string{"/w/agents/radar-seo", "/w/shared/radar-seo"}}).Persist
+	for _, want := range []string{"--allowed-tools 'Glob,Grep,Read'", "--write-root /w/agents/radar-seo --write-root /w/shared/radar-seo", "--write-inside allow"} {
+		if !strings.Contains(walled, want) {
+			t.Errorf("walled line missing %q: %s", want, walled)
+		}
+	}
+	if strings.Contains(walled, "Edit") || strings.Contains(walled, "Write,") {
+		t.Errorf("a walled line must not pre-allow the edit tools: %s", walled)
+	}
+	asks := d
+	asks.Permissions.Edit = "ask"
+	if l := LaunchCommand(asks, h, "/b", LaunchOpts{Serve: "/s.mjs", WriteRoots: []string{"/w/a"}}).Persist; strings.Contains(l, "--write-inside") {
+		t.Errorf("an edit gate of ask keeps its card inside the roots: %s", l)
+	}
+	if plain := LaunchCommand(d, h, "/b", LaunchOpts{Serve: "/s.mjs"}).Persist; strings.Contains(plain, "--write-") || !strings.Contains(plain, "Edit") {
+		t.Errorf("an agent without walls: %s", plain)
+	}
+}
+
 func TestLaunchCommandOtherHarness(t *testing.T) {
 	l := LaunchCommand(Definition{Name: "a-b"}, harness.Harness{Name: "pi", Command: "pi"}, "/b", LaunchOpts{Prompt: "hi there"})
 	if l.Persist != "CLAUDE_PEERS_NAME=a-b pi" || l.Deliver != "CLAUDE_PEERS_NAME=a-b pi 'hi there'" {

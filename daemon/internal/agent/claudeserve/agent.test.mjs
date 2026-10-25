@@ -414,3 +414,46 @@ test("the base's mcp.json reaches the SDK as servers, expanded from the environm
   const denied = () => { const e = new Error("EACCES: permission denied"); e.code = "EACCES"; throw e; };
   assert.throws(() => makeAgent({ mcpFile: "/base/mcp.json", readFile: denied }), /EACCES/);
 });
+
+test("walls: a write inside the roots skips the card, one outside is refused with none, the rest still ask", async () => {
+  const { agent, asks, events } = makeAgent({ writeRoots: ["/inst", "/win/shared/probe"], writeInside: "allow" });
+  assert.deepEqual(await agent.canUseTool("Write", { file_path: "/inst/log.md" }, { toolUseID: "w1" }),
+    { behavior: "allow", updatedInput: { file_path: "/inst/log.md" } });
+  const out = await agent.canUseTool("Edit", { file_path: "/repo/app/x.ts" }, { toolUseID: "w2" });
+  assert.equal(out.behavior, "deny");
+  assert.match(out.message, /Walls: .*\/repo\/app\/x\.ts is outside/);
+  assert.equal(asks.length, 0, "a walled write raises no card on the bus");
+  assert.equal(events.filter((e) => e.type === "permission.asked").length, 0, "nor in the chat");
+  agent.canUseTool("Bash", { command: "ls" }, { toolUseID: "w3" }); // not a file write: the card as before
+  await tick();
+  assert.equal(events.filter((e) => e.type === "permission.asked").length, 1);
+});
+
+test("walls: a card for a write inside the roots never offers always (its rule would lift the walls)", async () => {
+  const { agent, events } = makeAgent({ writeRoots: ["/inst"] }); // edit gate ask: the card stays
+  const S = { type: "setMode", mode: "acceptEdits", destination: "session" };
+  agent.canUseTool("Write", { file_path: "/inst/log.md" }, { toolUseID: "a1", suggestions: [S] });
+  const shellRule = { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "session" };
+  const editRule = { type: "addRules", rules: [{ toolName: "Edit" }], behavior: "allow", destination: "session" };
+  agent.canUseTool("Bash", { command: "ls" }, { toolUseID: "a2", suggestions: [S, editRule] }); // both would lift the walls
+  agent.canUseTool("Bash", { command: "npm test" }, { toolUseID: "a3", suggestions: [S, shellRule] });
+  await tick();
+  const asked = events.filter((e) => e.type === "permission.asked").map((e) => e.properties);
+  assert.deepEqual(asked.map((r) => r.always), [[], [], ["*"]]);
+  const pending = [...agent.permissions.values()];
+  assert.deepEqual(pending[2].suggestions, [shellRule], "a shell rule stays; the mode switch goes");
+});
+
+test("walls: a PreToolUse hook refuses writes outside the roots before any saved allow rule; no walls, no hook", async () => {
+  const { agent } = makeAgent({ writeRoots: ["/inst", "/win/shared/probe"], writeInside: "allow" });
+  const [m] = agent.options().hooks.PreToolUse;
+  assert.equal(m.matcher, "Edit|Write|MultiEdit|NotebookEdit");
+  const hook = m.hooks[0];
+  const out = await hook({ tool_name: "Write", tool_input: { file_path: "/ext/projects/chartlabs/hq/ideas/x.md" } });
+  assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /^Walls: /);
+  assert.deepEqual(await hook({ tool_name: "Write", tool_input: { file_path: "/inst/log.md" } }), {}, "inside a root the hook decides nothing");
+  assert.deepEqual(await hook({ tool_name: "NotebookEdit", tool_input: { notebook_path: "/win/shared/probe/n.ipynb" } }), {});
+  const { agent: plain } = makeAgent({ writeRoots: [] });
+  assert.equal(plain.options().hooks, undefined);
+});
