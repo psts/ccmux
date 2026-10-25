@@ -85,7 +85,8 @@ type Manager struct {
 	// WakeAgent restarts an asleep instance; wired by the api layer, which
 	// owns launch resolution (harness, route, instance config).
 	WakeAgent func(wsID, name string) error
-	// OpenTasksForPane reports a pane's open peer delegations; an agent with
+	// OpenTasksForPane reports the open delegations a pane owes (worker side
+	// only; a requester may sleep and is woken by the update). An agent with
 	// open work is never put to sleep. Wired from the peers bus; nil = 0.
 	OpenTasksForPane func(paneID string) int
 	// Watched reports whether a lens at a screen is looking at this workspace

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 )
 
-// SharedFolder is the window's folder every agent added to it reads and
-// writes: what one agent learned that another in the same project needs.
+// SharedFolder is the window's folder every agent added to it reads, each
+// writing only its own subfolder: what one agent learned that another in the same project needs.
 // It sits beside agents/ in the window folder. Its .env (and the one in an
 // instance folder) is what the daemon loads into an agent's environment at
 // start (EnvFile, launch.go's envPrefix): secrets live there, never in notes.
@@ -47,7 +47,7 @@ func (s *Store) EnsureShared(windowID, windowName string) (string, error) {
 
 const sharedReadme = "# Shared by every agent in this window\n\n" +
 	"<!-- Written once by ccmux; yours from here on. -->\n\n" +
-	"Any agent added to this window reads and writes here. Put what another agent in this project needs.\n\n" +
+	"Any agent added to this window reads every folder here and writes only its own. Put what another agent in this project needs.\n\n" +
 	"## How knowledge is laid out\n\n" +
 	"- **One folder per agent, named after it** (`scout/`, `writer/`). Your findings go only inside your own folder; you read every folder. " +
 	"What you did last time and when is your own memory (`memory/`, `log.md` in your instance folder), not this folder.\n" +

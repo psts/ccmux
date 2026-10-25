@@ -143,7 +143,7 @@ func runDaemon() {
 		// the MCP server merely loaded.
 		mgr.SessionSink = peersSvc.NoteSession
 		mgr.SessionLiveFn = peersSvc.PaneHasLiveSession
-		mgr.OpenTasksForPane = peersSvc.OpenTaskCountForPane // agents with open work are never put to sleep
+		mgr.OpenTasksForPane = peersSvc.OpenTaskCountForPane // agents that owe a delegator work are never put to sleep
 		peersSvc.Start(ctx)
 	}
 

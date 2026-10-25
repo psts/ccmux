@@ -75,6 +75,7 @@ type Store interface {
 	PeerTask(taskID string) (*store.PeerTask, error)
 	OpenPeerTasksFor(peerID string, limit int) ([]store.PeerTask, error)
 	OpenDelegatorsOf(workerID string) ([]string, error)
+	OpenWorkerTaskCount(workerID string) (int, error)
 	DeletePeerTask(taskID string) error
 	PrunePeerTasks(beforeMillis int64) error
 }

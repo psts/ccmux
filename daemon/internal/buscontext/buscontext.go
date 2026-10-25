@@ -58,8 +58,8 @@ func sharedParagraph(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	return "\n\nSHARED FOLDER of this window: " + dir + ". Every agent here reads and writes it: put what another agent in this project needs there, " +
-		"as dated files with frontmatter inside a folder named after you (the shared folder's own README.md has the layout). " +
+	return "\n\nSHARED FOLDER of this window: " + dir + ". Every agent here reads every folder in it and writes only its own: put what another agent in this project needs there, " +
+		"as dated files with frontmatter inside the folder named after you (the shared folder's own README.md has the layout). " +
 		"Its .env is loaded into every agent's environment at its next start: one KEY=VALUE per line, the value taken as-is (surrounding quotes stripped, no shell syntax, nothing runs); an agent's own folder may hold a .env too, and that one wins. Secrets go in .env, never in notes or memory.\n"
 }
 
@@ -67,7 +67,7 @@ func sharedSection(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	return "\n\nShared folder of this window (every agent reads and writes it; its .env loads into agents at start): " + dir + "\n"
+	return "\n\nShared folder of this window (every agent reads every folder, writes only its own; its .env loads into agents at start): " + dir + "\n"
 }
 
 // ownerRule is what a repo session is told: every repo has its owner, and

@@ -239,3 +239,22 @@ func TestOpenTasks_BothDirectionsOpenOnly(t *testing.T) {
 		t.Fatal("unregistered peer listed tasks")
 	}
 }
+
+// Only the worker side of an open task keeps an agent awake: the requester
+// may sleep, since the worker's update wakes it.
+func TestOpenTaskCountForPane_WorkerSideOnly(t *testing.T) {
+	svc, hook, _ := newTestServiceWithStore(t)
+	delegator, worker := twoPeers(t, svc, hook)
+
+	task := svc.Delegate(DelegateReq{FromID: delegator, ToID: worker, Text: "fix it"}).TaskID
+	if n := svc.OpenTaskCountForPane("pane-w"); n != 1 {
+		t.Fatalf("worker open count = %d, want 1", n)
+	}
+	if n := svc.OpenTaskCountForPane("pane-d"); n != 0 {
+		t.Fatalf("delegator open count = %d, want 0 (a requester may sleep)", n)
+	}
+	svc.UpdateTask(TaskUpdateReq{PeerID: worker, TaskID: task, Status: "completed", Result: "done"})
+	if n := svc.OpenTaskCountForPane("pane-w"); n != 0 {
+		t.Fatalf("worker open count after close = %d, want 0", n)
+	}
+}

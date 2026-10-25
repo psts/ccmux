@@ -87,6 +87,17 @@ SELECT DISTINCT from_id FROM peer_tasks
 WHERE to_id=? AND status NOT IN ('completed','failed')`, workerID)
 }
 
+// OpenWorkerTaskCount counts the non-terminal tasks delegated TO workerID:
+// the work it still owes. Tasks it sent are left out, since a requester
+// only waits, and an update on one wakes it anyway.
+func (s *SQLite) OpenWorkerTaskCount(workerID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`
+SELECT COUNT(*) FROM peer_tasks
+WHERE to_id=? AND status NOT IN ('completed','failed')`, workerID).Scan(&n)
+	return n, err
+}
+
 // DeletePeerTask removes one task (delegation rollback when delivery failed —
 // no message went out, so there is nothing to report against).
 func (s *SQLite) DeletePeerTask(taskID string) error {

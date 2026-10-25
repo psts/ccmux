@@ -84,3 +84,26 @@ func TestPeerTasks_OpenListAndPrune(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenWorkerTaskCount_CountsOnlyOpenTasksToWorker(t *testing.T) {
+	s := taskStore(t)
+	for _, task := range []PeerTask{
+		{TaskID: "tsk_a", FromID: "d", ToID: "w", Status: "open"},
+		{TaskID: "tsk_b", FromID: "d", ToID: "w", Status: "working"},
+		{TaskID: "tsk_c", FromID: "d", ToID: "w", Status: "completed"},
+		{TaskID: "tsk_d", FromID: "w", ToID: "x", Status: "open"},
+	} {
+		if err := s.SavePeerTask(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]int{"w": 2, "d": 0, "x": 1} {
+		n, err := s.OpenWorkerTaskCount(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != want {
+			t.Errorf("OpenWorkerTaskCount(%s) = %d, want %d", id, n, want)
+		}
+	}
+}
