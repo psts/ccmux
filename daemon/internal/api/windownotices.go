@@ -52,6 +52,7 @@ func (s *Server) WindowNotice(c manager.MembershipChange) {
 // notice in the window joined (a move is both). A join is dropped when the
 // session is no longer in that window by the time its notice is ready.
 func (s *Server) sendNotice(c manager.MembershipChange) {
+	s.grantOnJoin(c)
 	if s.peersSvc == nil {
 		return
 	}

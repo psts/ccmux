@@ -202,6 +202,9 @@ func runDaemon() {
 	defer sidecars.Stop() // waits for the children: the unit's KillMode=process would not reap them
 	agent.DefaultModel = *agentsModel
 	apiSrv.SetAgents(agent.NewStore(*agentsDir), *agentsMax)
+	// Repo sessions write their own shared/<repo>/ folder without asking;
+	// joins after this are granted as they happen (window notices).
+	go apiSrv.GrantSharedFolders()
 	mgr.StartAgentLifecycle(ctx, 30*time.Second)
 	// Timed prompts: a run missed by more than six hours (daemon down, agent
 	// busy the whole time) skips to its next slot rather than firing late.
