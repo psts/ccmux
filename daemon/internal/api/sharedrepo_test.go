@@ -112,7 +112,9 @@ func TestAgents_WallsOnlyOnClaude(t *testing.T) {
 }
 
 func TestWallRoots_HomeAndOwnSharedFolder(t *testing.T) {
-	shared := t.TempDir()
+	shared, config := t.TempDir(), t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", config) // never the real ~/.claude
+
 	if roots, err := wallRoots(agent.Definition{Name: "radar-seo"}, "opencode", "/w/agents/radar-seo", shared); roots != nil || err != nil {
 		t.Fatalf("no walls = %v %v", roots, err)
 	}
@@ -121,18 +123,26 @@ func TestWallRoots_HomeAndOwnSharedFolder(t *testing.T) {
 	}
 	roots, err := wallRoots(agent.Definition{Name: "radar-seo", Walls: true}, "claude", "/w/agents/radar-seo", shared)
 	own := filepath.Join(shared, "radar-seo")
-	if err != nil || len(roots) != 2 || roots[0] != "/w/agents/radar-seo" || roots[1] != own {
-		t.Fatalf("roots = %v %v", roots, err)
+	memory := filepath.Join(config, "projects", "-w-agents-radar-seo", "memory")
+	if err != nil || len(roots) != 3 || roots[0] != "/w/agents/radar-seo" || roots[1] != memory || roots[2] != own {
+		t.Fatalf("roots = %v %v, want home, its Claude memory store, its shared folder", roots, err)
 	}
-	if fi, err := os.Stat(own); err != nil || !fi.IsDir() {
-		t.Fatalf("own shared folder not made: %v", err)
+	for _, dir := range []string{own, memory} {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			t.Fatalf("%s not made: %v", dir, err)
+		}
+	}
+	// Only the memory folder: the rest of the Claude config stays outside.
+	if entries, _ := os.ReadDir(config); len(entries) != 1 || entries[0].Name() != "projects" {
+		t.Fatalf("config dir holds %v, want only projects/", entries)
 	}
 }
 
 // The start's options carry a walled agent's roots onto the launch line,
 // and an unwalled agent's line has none.
 func TestLaunchOpts_WallsReachTheLaunchLine(t *testing.T) {
-	shared, home := t.TempDir(), t.TempDir()
+	shared, home, config := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
 	h := harness.Harness{Name: harness.Builtin, Command: harness.FallbackClaudeCommand}
 	d := agent.Definition{Name: "radar-seo", Walls: true, Permissions: agent.Permissions{Read: "allow", Edit: "allow", Bash: "ask", Webfetch: "ask"}}
 	opts, err := launchOpts(d, h.Name, home, []string{"/repo"}, shared, "", 0)
@@ -141,7 +151,8 @@ func TestLaunchOpts_WallsReachTheLaunchLine(t *testing.T) {
 	}
 	opts.Serve = "/s.mjs"
 	line := agent.LaunchCommand(d, h, "/b", opts).Persist
-	want := "--write-root " + home + " --write-root " + filepath.Join(shared, "radar-seo") + " --write-inside allow"
+	memory, _ := agent.ClaudeMemoryDir(home)
+	want := "--write-root " + home + " --write-root " + memory + " --write-root " + filepath.Join(shared, "radar-seo") + " --write-inside allow"
 	if !strings.Contains(line, want) || strings.Contains(line, "Edit") {
 		t.Fatalf("walled line = %s\nwant %q and no pre-allowed edit tools", line, want)
 	}

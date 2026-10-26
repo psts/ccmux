@@ -66,9 +66,10 @@ func (s *Server) grantOnJoin(c manager.MembershipChange) {
 	s.grantRepoShared(win, buscontext.Session{Name: repoBusName(c.Name, c.RepoPath), RepoPath: c.RepoPath})
 }
 
-// wallRoots is a walled agent's write roots: its instance home and its own
-// folder in the window's shared folder, made here so the first write has
-// somewhere to land. nil for an agent without walls. Walls on another
+// wallRoots is a walled agent's write roots: its instance home, its own
+// folder in the window's shared folder, and its Claude Code memory store
+// (the one its MEMORY.md is loaded from; nothing else under ~/.claude),
+// each made here so the first write has somewhere to land. nil for an agent without walls. Walls on another
 // harness than claude (an agent.json edited by hand: a save refuses it)
 // refuse the start, since nothing there would hold them.
 func wallRoots(d agent.Definition, harnessName, home, shared string) ([]string, error) {
@@ -78,13 +79,18 @@ func wallRoots(d agent.Definition, harnessName, home, shared string) ([]string, 
 	if harnessName != harness.Builtin {
 		return nil, errors.New("walls work only on the claude harness; this agent runs on " + harnessName)
 	}
-	roots := []string{home}
+	memory, err := agent.ClaudeMemoryDir(home)
+	if err != nil {
+		return nil, err
+	}
+	roots := []string{home, memory}
 	if shared != "" {
-		own := filepath.Join(shared, d.Name)
-		if err := os.MkdirAll(own, 0o755); err != nil {
+		roots = append(roots, filepath.Join(shared, d.Name))
+	}
+	for _, r := range roots[1:] {
+		if err := os.MkdirAll(r, 0o755); err != nil {
 			return nil, err
 		}
-		roots = append(roots, own)
 	}
 	return roots, nil
 }

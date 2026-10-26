@@ -1,6 +1,7 @@
 // Walls: an agent whose base turns them on (agent.json "walls": true)
-// writes files only inside its write roots, its home and its own folder in
-// the window's shared folder. The daemon passes them as --write-root and
+// writes files only inside its write roots: its home, its Claude Code
+// memory store (~/.claude/projects/<home>/memory, where its MEMORY.md is
+// loaded from) and its own folder in the window's shared folder. The daemon passes them as --write-root and
 // leaves the edit tools off the allow list. A PreToolUse hook (agent.mjs
 // wallHook) refuses a write outside the roots before any saved allow rule
 // is read, and canUseTool decides the rest, both here: inside a root it follows the base's edit

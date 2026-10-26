@@ -54,3 +54,13 @@ test("realish resolves the deepest existing folder and keeps the rest", () => {
   assert.equal(realish("/home/agent/dangling", real), "/repo/app/src/new.ts");
   assert.equal(realish("/win/shared/radar/a.md", real), "/win/shared/radar/a.md");
 });
+
+test("the agent's own Claude memory store is a root; the rest of ~/.claude is not", () => {
+  const mem = "/home/u/.claude/projects/-home-u--ccmux-a-radar-seo/memory";
+  const withMem = { writeRoots: ["/home/agent", mem], writeInside: "allow" };
+  assert.equal(wallVerdict("Write", { file_path: mem + "/MEMORY.md" }, withMem, "/home/agent", real), "allow");
+  assert.equal(wallVerdict("Edit", { file_path: mem + "/topic.md" }, withMem, "/home/agent", real), "allow");
+  for (const p of ["/home/u/.claude/settings.json", "/home/u/.claude/projects/-other-agent/memory/MEMORY.md", "/home/u/.claude/projects/-home-u--ccmux-a-radar-seo/x.jsonl"]) {
+    assert.ok(wallVerdict("Write", { file_path: p }, withMem, "/home/agent", real).deny, p);
+  }
+});
