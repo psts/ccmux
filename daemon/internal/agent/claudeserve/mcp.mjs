@@ -38,9 +38,12 @@ function sdkServer(e, env) {
 
 // PEERS_RULE allows every tool of the peers shim (mcp__<server> is Claude
 // Code's "all tools of that server" rule). The shim is not in mcp.json: it
-// reaches the Claude child through the user's own config, but its tools
-// are the agent's voice on the bus and never a question for a human.
-export const PEERS_RULE = "mcp__claude-peers";
+// reaches the Claude child through the user's own config, or, for an
+// isolated agent that reads no user config, through --peers-command
+// (mcpFromFiles); either way its tools are the agent's voice on the bus
+// and never a question for a human.
+export const PEERS_SERVER = "claude-peers";
+export const PEERS_RULE = "mcp__" + PEERS_SERVER;
 
 // unresolvedRefs lists the ${VAR} references still in a rendered server:
 // the variables the instance's .env does not set.
@@ -71,4 +74,22 @@ export function mcpFromNeutral(text, env) {
     if (missing.length) unresolved[name] = missing;
   }
   return { servers, allow, unresolved };
+}
+
+// mcpFromFiles merges the servers of every --mcp-file (the base's, then an
+// isolated agent's capabilities), a later file winning a shared name, and
+// adds the peers shim when the daemon names its command. Same result shape
+// as mcpFromNeutral, the peers rule once.
+export function mcpFromFiles(texts, env, peersCommand) {
+  const out = { servers: {}, allow: [PEERS_RULE], unresolved: {} };
+  for (const text of texts) {
+    const m = mcpFromNeutral(text, env);
+    Object.assign(out.servers, m.servers);
+    Object.assign(out.unresolved, m.unresolved);
+  }
+  if (peersCommand) out.servers[PEERS_SERVER] = { type: "stdio", command: peersCommand, args: [] };
+  for (const name of Object.keys(out.servers)) {
+    if (name !== PEERS_SERVER) out.allow.push(`mcp__${name}`);
+  }
+  return out;
 }

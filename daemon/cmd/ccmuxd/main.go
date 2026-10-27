@@ -201,7 +201,9 @@ func runDaemon() {
 	sidecars := wireSidecars(ctx, llmSvc, apiSrv, mgr)
 	defer sidecars.Stop() // waits for the children: the unit's KillMode=process would not reap them
 	agent.DefaultModel = *agentsModel
-	apiSrv.SetAgents(agent.NewStore(*agentsDir), *agentsMax)
+	agentStore := agent.NewStore(*agentsDir)
+	agentStore.AskNPMForLatestSDK() // the lenses' "agents on X, latest Y"
+	apiSrv.SetAgents(agentStore, *agentsMax)
 	// Repo sessions write their own shared/<repo>/ folder without asking;
 	// joins after this are granted as they happen (window notices).
 	go apiSrv.GrantSharedFolders()

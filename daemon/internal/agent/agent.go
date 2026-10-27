@@ -82,6 +82,22 @@ type Definition struct {
 	// loads besides ccmux's own; other harnesses ignore them.
 	Plugins []string `json:"plugins,omitempty"`
 
+	// Isolated, on the claude harness, loads only what the base names: its
+	// own folder, the catalog Capabilities it lists, and the home's project
+	// settings and CLAUDE.md. Off, the session also takes everything the
+	// host user's Claude Code setup brings (user settings, hooks, plugins,
+	// MCP servers, claude.ai connectors), which is how agents started.
+	Isolated     bool     `json:"isolated,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	// SkillsOff are skills (<plugin>:<skill>) an isolated agent does not
+	// get; empty leaves every skill on.
+	SkillsOff []string `json:"skillsOff,omitempty"`
+	// ToolAllow and ToolDeny are Claude Code permission rules
+	// ("mcp__kb__kb_get_doc", "Bash(git status:*)") added to the four gates,
+	// claude harness only: what runs without a card, and what never runs.
+	ToolAllow []string `json:"toolAllow,omitempty"`
+	ToolDeny  []string `json:"toolDeny,omitempty"`
+
 	// Version comes from .claude-plugin/plugin.json; Save bumps it when the
 	// generated content changed. Read-only through the API.
 	Version string `json:"version,omitempty"`
@@ -115,6 +131,9 @@ func Reject(d Definition) string {
 		return fmt.Sprintf("agent %q: description over 160 chars", d.Name)
 	}
 	if msg := rejectPermissions(d.Name, d.Permissions); msg != "" {
+		return msg
+	}
+	if msg := rejectCapabilityFields(d); msg != "" {
 		return msg
 	}
 	return rejectLifecycle(d)
@@ -193,6 +212,8 @@ type Store struct {
 	Root string
 	// now is stubbed by tests for the CHANGELOG stamp.
 	now func() time.Time
+	// latest is the newest SDK on npm, nil until AskNPMForLatestSDK.
+	latest *latestCache
 }
 
 // NewStore returns a Store over root, creating nothing until the first Save.

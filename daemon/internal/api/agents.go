@@ -107,7 +107,7 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error()) // names the broken base; 503 is "no agents support"
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": defs})
+	writeJSON(w, http.StatusOK, map[string]any{"agents": defs, "sdk": s.agents.SDKVersions()})
 }
 
 // putAgent: PUT /v1/agents/{name} creates or updates ONE base. Deliberately

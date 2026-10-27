@@ -82,6 +82,46 @@ put them in skills and reference them.
 - Ask: does this tool let the agent do damage outside its role? If yes, the
   permission block (section 6) must gate it.
 
+### 4a. Isolated claude agents and the capability catalog (2026-10-27)
+
+By default a claude-harness agent's session takes everything the host
+user's Claude Code setup brings: `~/.claude/settings.json` (hooks, env,
+model, plugins), user MCP servers, the global CLAUDE.md, and the claude.ai
+connectors of the login. `agent.json.isolated: true` turns that off:
+
+- The sidecar runs with `settingSources: ["project"]`, so only the instance
+  home's own project config loads: its CLAUDE.md, `.claude/settings.json`
+  and `.mcp.json`. The home's `.claude/settings.local.json` does NOT load.
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false` switches off the claude.ai connectors,
+  which ride on the login, not on a settings file.
+- The peers shim, which otherwise comes from the user's `~/.claude.json`, is
+  added by the sidecar (`--peers-command`).
+- What else it loads is `agent.json.capabilities`: ids from the host's one
+  catalog, `~/.ccmux/agents/.ccmux/capabilities.json`, edited in either
+  lens (`GET /v1/capabilities`, `PUT`/`DELETE /v1/capabilities/{id}`). An
+  entry is a plugin (an installed one by `name@marketplace`, resolved to its
+  install folder at every start, or a folder `path`) or one MCP server in
+  the neutral shape. Secrets stay `${VAR}` references, filled from the
+  instance's `.env`. An id the catalog lacks, or a plugin no longer
+  installed, fails the start with the reason. The catalog refuses to drop
+  an entry a base still lists.
+- `skillsOff` switches off single skills (`<plugin>:<skill>`, the base's own
+  plugin being the agent's name). With any skill off the session gets an
+  explicit skill list, and the CLI's built-in skills are off too.
+- `toolAllow` / `toolDeny` are Claude Code permission rules on top of the
+  four gates, for any claude agent, isolated or not. They hold no comma.
+- `POST /v1/capabilities/import` seeds the catalog from the installed
+  plugins and every instance home's `.mcp.json`, never replacing an entry,
+  and returns per base a proposal (capabilities, toolAllow, toolDeny) read
+  from the homes' `settings.local.json`. It does not apply the proposal,
+  and the lenses show only what was added and skipped: the proposal is in
+  the API answer, for a migration to review.
+
+Everything applies at the agent's next wake. Not covered: what the home's
+own `.mcp.json` brings still loads (it is the agent's folder; walls refuse
+writes to it), and isolation is not a sandbox: Bash still reaches what the
+user can.
+
 ## 5. Harness, account, model
 
 | Decide | Default | Notes |

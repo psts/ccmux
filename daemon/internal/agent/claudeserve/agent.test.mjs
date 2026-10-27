@@ -56,7 +56,7 @@ function makeAgent(opts = {}, script = []) {
       return { ok: true };
     },
   };
-  const agent = new Agent({ agent: "probe", addDirs: [], allowed: [], disallowed: [], ...opts }, deps);
+  const agent = new Agent({ agent: "probe", addDirs: [], allowed: [], disallowed: [], pluginDirs: [], mcpFiles: [], ...opts }, deps);
   const events = [];
   agent.clients.add({ write: (line) => events.push(JSON.parse(line.slice(6))), end() {} });
   return { agent, sdk, out, signals, asks, headers, events };
@@ -396,23 +396,57 @@ test("the base's mcp.json reaches the SDK as servers, expanded from the environm
     "/base/mcp.json": JSON.stringify({ door: { type: "http", url: "${X_MCP_URL}" }, kb: { command: "kb-mcp" } }),
   };
   const readFile = (p) => { if (files[p] === undefined) { const e = new Error("ENOENT"); e.code = "ENOENT"; throw e; } return files[p]; };
-  const { agent, sdk } = makeAgent({ systemPromptFile: "/base/AGENTS.md", mcpFile: "/base/mcp.json", allowed: ["Read"], readFile, env: { X_MCP_URL: "http://door/mcp" } });
+  const { agent, sdk } = makeAgent({ systemPromptFile: "/base/AGENTS.md", mcpFiles: ["/base/mcp.json"], allowed: ["Read"], readFile, env: { X_MCP_URL: "http://door/mcp" } });
   agent.prompt("hi");
   const o = sdk.queries[0].options;
   assert.deepEqual(o.mcpServers, { door: { type: "http", url: "http://door/mcp" }, kb: { type: "stdio", command: "kb-mcp", args: [] } });
   assert.deepEqual(o.allowedTools, ["Read", "mcp__claude-peers", "mcp__door", "mcp__kb"]);
 
   // A base without the file: no servers, the peers rule still there.
-  const bare = makeAgent({ mcpFile: "/base/none.json", readFile }).agent;
+  const bare = makeAgent({ mcpFiles: ["/base/none.json"], readFile }).agent;
   assert.deepEqual(bare.mcp, { servers: {}, allow: ["mcp__claude-peers"], unresolved: {} });
   // A reference the .env does not set is said in the terminal at start.
-  const { out: out2 } = makeAgent({ mcpFile: "/base/mcp.json", readFile, env: {} });
+  const { out: out2 } = makeAgent({ mcpFiles: ["/base/mcp.json"], readFile, env: {} });
   assert.ok(out2.some((l) => l.includes("! mcp door: ${X_MCP_URL} not set")), out2.join(""));
   // A file that does not parse ends the start, like an unreadable AGENTS.md;
   // so does one that cannot be read for any reason but absence.
-  assert.throws(() => makeAgent({ mcpFile: "/base/bad.json", readFile: () => "{nope" }), SyntaxError);
+  assert.throws(() => makeAgent({ mcpFiles: ["/base/bad.json"], readFile: () => "{nope" }), SyntaxError);
   const denied = () => { const e = new Error("EACCES: permission denied"); e.code = "EACCES"; throw e; };
-  assert.throws(() => makeAgent({ mcpFile: "/base/mcp.json", readFile: denied }), /EACCES/);
+  assert.throws(() => makeAgent({ mcpFiles: ["/base/mcp.json"], readFile: denied }), /EACCES/);
+});
+
+test("an isolated start names its setting sources, every plugin folder and its skills; any other start sends none of them", () => {
+  const { agent, sdk } = makeAgent({ pluginDirs: ["/base", "/plugins/kb"], settingSources: ["project"], skills: ["radar:scan"], peersCommand: "/bin/ccmux-peers" });
+  agent.prompt("hi");
+  const o = sdk.queries[0].options;
+  assert.deepEqual(o.plugins, [{ type: "local", path: "/base" }, { type: "local", path: "/plugins/kb" }]);
+  assert.deepEqual(o.settingSources, ["project"]);
+  assert.equal(o.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false", "the login's claude.ai connectors are off too");
+  assert.equal(o.env.CCMUX_PANE_ID, "p1", "the rest of the environment rides along");
+  assert.deepEqual(o.skills, ["radar:scan"]);
+  assert.deepEqual(o.mcpServers, { "claude-peers": { type: "stdio", command: "/bin/ccmux-peers", args: [] } });
+  const plain = makeAgent({ pluginDirs: ["/base"] });
+  plain.agent.prompt("hi");
+  const p = plain.sdk.queries[0].options;
+  assert.equal(p.settingSources, undefined, "not isolated: the SDK's default, every source");
+  assert.equal(p.env, undefined);
+  assert.equal(p.skills, undefined);
+  assert.equal(p.mcpServers, undefined);
+});
+
+test("an isolated agent's always is saved where its next start reads it: project settings, not local ones", async () => {
+  const { agent } = makeAgent({ settingSources: ["project"] });
+  const local = { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "localSettings" };
+  const session = { type: "addRules", rules: [{ toolName: "Read" }], behavior: "allow", destination: "session" };
+  const p = agent.canUseTool("Bash", { command: "npm test" }, { toolUseID: "c1", suggestions: [local, session] });
+  const [id] = [...agent.permissions.keys()];
+  agent.replyPermission(id, "always");
+  const res = await p;
+  assert.deepEqual(res.updatedPermissions, [{ ...local, destination: "projectSettings" }, session]);
+  const plain = makeAgent({});
+  const p2 = plain.agent.canUseTool("Bash", { command: "npm test" }, { toolUseID: "c2", suggestions: [local] });
+  plain.agent.replyPermission([...plain.agent.permissions.keys()][0], "always");
+  assert.deepEqual((await p2).updatedPermissions, [local], "not isolated: as the SDK suggested");
 });
 
 test("walls: a write inside the roots skips the card, one outside is refused with none, the rest still ask", async () => {

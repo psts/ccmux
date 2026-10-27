@@ -17,13 +17,22 @@ var notProjectChar = regexp.MustCompile(`[^A-Za-z0-9]`)
 // MEMORY.md is what the session loads at start, so a walled agent needs it
 // writable to keep or correct its memory.
 func ClaudeMemoryDir(cwd string) (string, error) {
-	config := os.Getenv("CLAUDE_CONFIG_DIR")
-	if config == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		config = filepath.Join(home, ".claude")
+	config, err := ClaudeConfigDir()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(config, "projects", notProjectChar.ReplaceAllString(cwd, "-"), "memory"), nil
+}
+
+// ClaudeConfigDir is where Claude Code keeps its state: $CLAUDE_CONFIG_DIR,
+// or ~/.claude.
+func ClaudeConfigDir() (string, error) {
+	if config := os.Getenv("CLAUDE_CONFIG_DIR"); config != "" {
+		return config, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude"), nil
 }

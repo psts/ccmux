@@ -664,3 +664,6 @@ body {
   margin-left: auto; background: var(--needs); color: #1c1e22; border-radius: 8px;
   font-size: 10px; font-weight: 700; padding: 0 6px;
 }
+/* Agent editor, capabilities (agentcaps.js) */
+.cap-checks { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
+.cap-add > summary { cursor: pointer; }

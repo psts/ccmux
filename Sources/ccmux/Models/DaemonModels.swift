@@ -174,6 +174,16 @@ struct DaemonAgent: Codable, Identifiable {
     /// How long a session stopped on a human may wait before it ends; 0
     /// follows idleExitMinutes (the daemon's decideAgent).
     var cardWaitMinutes: Int
+    /// Isolated (claude harness): the session loads only its base and the
+    /// catalog capabilities listed, none of the host user's Claude setup.
+    /// skillsOff are <plugin>:<skill> names switched off; toolAllow and
+    /// toolDeny are permission rules on top of the four gates. Same fields
+    /// as the web lens's editor (agentcaps.js).
+    var isolated: Bool
+    var capabilities: [String]
+    var skillsOff: [String]
+    var toolAllow: [String]
+    var toolDeny: [String]
     var version: String
     var instructions: String
     var id: String { name }
@@ -183,6 +193,7 @@ struct DaemonAgent: Codable, Identifiable {
         self.name = name; self.icon = icon; self.description = description; self.harness = harness
         self.account = ""; self.model = ""; self.permissions = DaemonAgentPermissions(); self.plugins = []; self.start = "fresh"
         self.keepAlive = keepAlive; self.walls = false; self.idleExitMinutes = idleExitMinutes; self.cardWaitMinutes = 0; self.version = version
+        self.isolated = false; self.capabilities = []; self.skillsOff = []; self.toolAllow = []; self.toolDeny = []
         self.instructions = instructions
     }
 
@@ -201,12 +212,80 @@ struct DaemonAgent: Codable, Identifiable {
         walls = try c.decodeIfPresent(Bool.self, forKey: .walls) ?? false
         idleExitMinutes = try c.decodeIfPresent(Int.self, forKey: .idleExitMinutes) ?? 10
         cardWaitMinutes = try c.decodeIfPresent(Int.self, forKey: .cardWaitMinutes) ?? 0
+        isolated = try c.decodeIfPresent(Bool.self, forKey: .isolated) ?? false
+        capabilities = try c.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        skillsOff = try c.decodeIfPresent([String].self, forKey: .skillsOff) ?? []
+        toolAllow = try c.decodeIfPresent([String].self, forKey: .toolAllow) ?? []
+        toolDeny = try c.decodeIfPresent([String].self, forKey: .toolDeny) ?? []
         version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
         instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, icon, description, harness, account, model, permissions, plugins, start, keepAlive, walls, idleExitMinutes, cardWaitMinutes, version, instructions
+        case name, icon, description, harness, account, model, permissions, plugins, start, keepAlive, walls, idleExitMinutes, cardWaitMinutes,
+             isolated, capabilities, skillsOff, toolAllow, toolDeny, version, instructions
+    }
+}
+
+/// One entry of the host's capability catalog (GET /v1/capabilities): a
+/// plugin (an installed one by id, or a folder by path) or one MCP server.
+/// skills are what a plugin brings, as <plugin>:<skill>.
+struct DaemonCapability: Decodable, Identifiable {
+    let id: String
+    let kind: String
+    let description: String?
+    let plugin: String?
+    let path: String?
+    let server: DaemonCapabilityServer?
+    let skills: [String]?
+    let sideEffects: [String]?
+
+    /// What the row shows: the plugin, or the server's url or command and
+    /// the names (never the values) of its env and headers. Same rule as
+    /// agentcaps.js describe.
+    var summary: String {
+        if kind == "plugin" { return "plugin " + (plugin ?? path ?? "") }
+        guard let s = server else { return "MCP" }
+        let names = (s.env ?? [:]).keys.sorted() + (s.headers ?? [:]).keys.sorted()
+        return "MCP " + s.summary + (names.isEmpty ? "" : " · " + names.joined(separator: ", "))
+    }
+}
+
+struct DaemonCapabilityServer: Decodable {
+    let command: String?
+    let args: [String]?
+    let env: [String: String]?
+    let type: String?
+    let url: String?
+    let headers: [String: String]?
+    var summary: String {
+        if let url { return "\(type ?? "http") \(url)" }
+        return ([command ?? ""] + (args ?? [])).joined(separator: " ")
+    }
+}
+
+/// What POST /v1/capabilities/import added, and what it skipped: an id the
+/// catalog has something else under, or an entry with the reason it was
+/// refused.
+struct DaemonCapabilityImport: Decodable {
+    let added: [String]
+    let skipped: [String]
+}
+
+/// The Agent SDK claude agents run on (GET /v1/agents "sdk"): pinned in the
+/// daemon, installed under the agents root, newest on npm ("" unknown).
+struct DaemonSDKVersions: Decodable {
+    let pinned: String
+    let installed: String
+    let latest: String
+
+    /// The "agents on X, latest Y" line, the same words as app.js sdkLine.
+    var line: String {
+        guard !pinned.isEmpty else { return "" }
+        var s = "Claude agents run Agent SDK \(pinned)"
+        if !installed.isEmpty, installed != pinned { s += " (installed \(installed); \(pinned) lands at the next claude start)" }
+        if !latest.isEmpty, latest != pinned { s += " · newest is \(latest)" }
+        return s + "."
     }
 }
 

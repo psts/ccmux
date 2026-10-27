@@ -5,7 +5,8 @@ import UniformTypeIdentifiers
 /// The agent editor: one sheet for a whole base, mirroring the web lens's
 /// agentmodal.js — identity, role, harness and model, permissions, skills
 /// (from a git folder URL or dropped files), MCP servers (from a pasted
-/// snippet), opencode plugins, lifecycle, and where it is deployed with
+/// snippet), capabilities (AgentCapabilitiesView), opencode plugins,
+/// lifecycle, and where it is deployed with
 /// "Restart to apply". Save is one PUT; skills, servers and restart act at
 /// once against the daemon.
 struct AgentEditorView: View {
@@ -17,6 +18,8 @@ struct AgentEditorView: View {
     @State private var isNew: Bool
     @State private var bashAllowText: String
     @State private var pluginsText: String
+    @State private var toolAllowText: String
+    @State private var toolDenyText: String
     @State private var status = ""
     @State private var skills: [DaemonSkill] = []
     @State private var skillURL = ""
@@ -39,6 +42,8 @@ struct AgentEditorView: View {
         _isNew = State(initialValue: agent == nil)
         _bashAllowText = State(initialValue: a.permissions.bashAllow.joined(separator: "\n"))
         _pluginsText = State(initialValue: a.plugins.joined(separator: "\n"))
+        _toolAllowText = State(initialValue: a.toolAllow.joined(separator: "\n"))
+        _toolDenyText = State(initialValue: a.toolDeny.joined(separator: "\n"))
     }
 
     var body: some View {
@@ -59,6 +64,7 @@ struct AgentEditorView: View {
                     permissions
                     skillsSection
                     mcpSection
+                    capabilitiesSection
                     pluginsSection
                     lifecycle
                     instancesSection
@@ -231,6 +237,13 @@ struct AgentEditorView: View {
         }
     }
 
+    private var capabilitiesSection: some View {
+        section("Capabilities (claude)") {
+            AgentCapabilitiesView(agent: $agent, toolAllowText: $toolAllowText, toolDenyText: $toolDenyText,
+                                  baseSkills: skills.map { "\(agent.name):\($0.name)" })
+        }
+    }
+
     private var pluginsSection: some View {
         section("opencode plugins") {
             Text("plugin packages, one per line").font(.system(size: 11)).foregroundColor(.secondary)
@@ -295,6 +308,8 @@ struct AgentEditorView: View {
     private func save() async {
         agent.permissions.bashAllow = lines(bashAllowText)
         agent.plugins = lines(pluginsText)
+        agent.toolAllow = lines(toolAllowText)
+        agent.toolDeny = lines(toolDenyText)
         if let error = await service.putAgent(agent) { status = "Not saved: \(error)"; return }
         let wasNew = isNew
         isNew = false

@@ -40,6 +40,7 @@
         `<div class="am-mcp rules-list"></div>` +
         `<textarea class="setting-input am-mcp-paste" rows="3" spellcheck="false" placeholder='Paste the snippet from the server&#39;s readme: {"mcpServers": {"name": {"command": "...", "args": [...]}}} or a remote one: {"name": {"type": "http", "url": "\${MY_URL}"}}'></textarea>` +
         `<div class="entry-line"><button class="rule-add am-mcp-add" type="button">Add servers</button><span class="hint am-mcp-state"></span></div>`) +
+      section("Capabilities (claude)", `<div class="am-caps"></div>`) +
       section("opencode plugins", `<textarea class="setting-input am-plugins" rows="2" spellcheck="false" placeholder="plugin packages, one per line"></textarea>`) +
       section("Lifecycle",
         `<div class="entry-line"><label class="am-lbl">start</label>${sel("am-start", ["fresh", "continue"])}<label class="am-lbl">idle</label><input class="setting-input agent-num am-idle" type="number" min="0"><span class="am-lbl">min, 0 = never sleeps</span>` +
@@ -56,6 +57,7 @@
     q(".am-mcp-add").onclick = () => addMCP();
     q(".am-restart").onclick = () => restart();
     wireDrop(q(".am-drop"));
+    window.ccmuxAgentCaps.mount(q(".am-caps"));
   }
 
   function section(title, body) {
@@ -77,7 +79,8 @@
     q("#agent-modal-state").textContent = "";
     modal().classList.remove("hidden");
     (a ? q(".am-desc") : q(".am-name")).focus();
-    if (a) await Promise.all([loadSkills(), loadMCP(), loadInstances()]);
+    if (a) await Promise.all([loadSkills(), loadMCP(), loadInstances(), window.ccmuxAgentCaps.fill(a)]);
+    else await window.ccmuxAgentCaps.fill({});
   }
 
   function close() { modal().classList.add("hidden"); cur = null; }
@@ -122,6 +125,7 @@
       permissions, plugins: lines(".am-plugins"), start: q(".am-start").value,
       idleExitMinutes: Number(q(".am-idle").value) || 0, cardWaitMinutes: Number(q(".am-cardwait").value) || 0,
       keepAlive: q(".am-keep").checked, walls: q(".am-walls").checked,
+      ...window.ccmuxAgentCaps.value(),
     };
   }
 

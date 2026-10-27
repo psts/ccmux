@@ -363,6 +363,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents/{name}/mcp", s.listAgentMCP)
 	mux.HandleFunc("POST /v1/agents/{name}/mcp", s.addAgentMCP)
 	mux.HandleFunc("DELETE /v1/agents/{name}/mcp/{server}", s.deleteAgentMCP)
+	mux.HandleFunc("GET /v1/capabilities", s.listCapabilities)
+	mux.HandleFunc("POST /v1/capabilities/import", s.importCapabilities)
+	mux.HandleFunc("PUT /v1/capabilities/{id}", s.putCapability)
+	mux.HandleFunc("DELETE /v1/capabilities/{id}", s.deleteCapability)
 	mux.HandleFunc("GET /v1/agents/{name}/instances", s.listAgentInstances)
 	mux.HandleFunc("POST /v1/agents/{name}/instances/restart", s.restartAgentInstances)
 	// Instances: a base agent added to one shared window as its own session,

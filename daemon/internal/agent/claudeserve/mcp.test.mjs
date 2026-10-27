@@ -2,7 +2,7 @@
 // servers and the allow rules for their tools.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { expand, mcpFromNeutral, PEERS_RULE } from "./mcp.mjs";
+import { expand, mcpFromFiles, mcpFromNeutral, PEERS_RULE } from "./mcp.mjs";
 
 test("${VAR} expands from the environment, an unset one stays as written, nothing else is a reference", () => {
   const env = { X_MCP_URL: "http://100.100.67.87:8931/mcp", EMPTY: "" };
@@ -48,4 +48,16 @@ test("a file that is not an object of servers fails loudly", () => {
   assert.throws(() => mcpFromNeutral("[]", {}), /JSON object of servers/);
   assert.throws(() => mcpFromNeutral('{"x": {"args": ["a"]}}', {}), /server "x" needs a command or a url/);
   assert.throws(() => mcpFromNeutral("{bad", {}), SyntaxError);
+});
+
+test("several files merge, a later one winning a name; the peers shim is added only when its command is named", () => {
+  const base = JSON.stringify({ kb: { command: "kb-old" } });
+  const caps = JSON.stringify({ kb: { command: "kb-new" }, door: { type: "http", url: "${U}", headers: { Authorization: "${T}" } } });
+  const m = mcpFromFiles([base, caps], { U: "http://d/mcp" }, "/bin/ccmux-peers");
+  assert.deepEqual(m.servers.kb, { type: "stdio", command: "kb-new", args: [] });
+  assert.deepEqual(m.servers["claude-peers"], { type: "stdio", command: "/bin/ccmux-peers", args: [] });
+  assert.deepEqual(m.allow, [PEERS_RULE, "mcp__kb", "mcp__door"], "the peers rule once, then every other server");
+  assert.deepEqual(m.unresolved, { door: ["T"] });
+  assert.deepEqual(mcpFromFiles([base], {}, undefined).servers, { kb: { type: "stdio", command: "kb-old", args: [] } }, "no command: the user's config brings the shim");
+  assert.deepEqual(mcpFromFiles([], {}, ""), { servers: {}, allow: [PEERS_RULE], unresolved: {} });
 });

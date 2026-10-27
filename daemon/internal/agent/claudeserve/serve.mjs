@@ -9,9 +9,10 @@
 // tool calls), a typed line is a prompt, and end-of-input (ctrl-d) ends
 // the session — which is how the lifecycle puts an idle agent to sleep.
 //
-//   serve.mjs serve --port N --agent NAME --plugin-dir DIR --system-prompt-file FILE
-//             [--add-dir DIR]... [--model M] [--allowed-tools a,b] [--disallowed-tools c]
-//             [--session ID]
+//   serve.mjs serve --port N --agent NAME --plugin-dir DIR... --system-prompt-file FILE
+//             --mcp-file FILE... [--add-dir DIR]... [--model M] [--allowed-tools a,b]
+//             [--disallowed-tools c] [--setting-sources a,b] [--peers-command CMD]
+//             [--skills a,b] [--session ID]   (args.mjs has them all)
 //   serve.mjs sessions --dir DIR                 conversations opened in DIR, JSON
 //   serve.mjs export --dir DIR --session ID      one conversation, JSON
 //

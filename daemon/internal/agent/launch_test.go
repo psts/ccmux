@@ -130,3 +130,31 @@ func TestLaunchCommandResumesOnTheTypedLineOnly(t *testing.T) {
 		t.Errorf("persist: %q", l.Persist)
 	}
 }
+
+func TestLaunchCommandClaudeIsolated(t *testing.T) {
+	d := Definition{Name: "radar", ToolAllow: []string{"mcp__plugin_kb_kb-api__kb_get_doc"}, ToolDeny: []string{"AskUserQuestion"}}
+	h := harness.Harness{Name: harness.Builtin}
+	in := &IsolatedLaunch{PluginDirs: []string{"/plugins/kb"}, MCPFile: "/agents/.ccmux/caps/radar.mcp.json", PeersCommand: "/bin/ccmux-peers", Skills: []string{"radar:scan", "kb:draft"}}
+	l := LaunchCommand(d, h, "/agents/radar", LaunchOpts{Port: 7, Serve: "/s.mjs", Isolated: in}).Persist
+	for _, want := range []string{
+		"--plugin-dir /agents/radar", "--setting-sources project --plugin-dir /plugins/kb",
+		"--mcp-file /agents/radar/mcp.json", "--mcp-file /agents/.ccmux/caps/radar.mcp.json",
+		"--peers-command /bin/ccmux-peers", "--skills 'radar:scan,kb:draft'",
+		"--allowed-tools mcp__plugin_kb_kb-api__kb_get_doc", "--disallowed-tools AskUserQuestion",
+	} {
+		if !strings.Contains(l, want) {
+			t.Errorf("isolated line missing %q: %s", want, l)
+		}
+	}
+	in.Skills = []string{}
+	if l := LaunchCommand(d, h, "/b", LaunchOpts{Isolated: in}).Persist; !strings.Contains(l, "--skills ''") {
+		t.Errorf("every skill off is an empty --skills, not none: %s", l)
+	}
+	in.Skills = nil
+	if l := LaunchCommand(d, h, "/b", LaunchOpts{Isolated: in}).Persist; strings.Contains(l, "--skills") {
+		t.Errorf("no skill off sends no --skills: %s", l)
+	}
+	if l := LaunchCommand(d, h, "/b", LaunchOpts{}).Persist; strings.Contains(l, "--setting-sources") || strings.Contains(l, "--peers-command") {
+		t.Errorf("a start that is not isolated reads every setting source: %s", l)
+	}
+}

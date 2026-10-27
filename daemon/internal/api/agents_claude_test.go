@@ -134,3 +134,44 @@ func claudeProjectTrusted(t *testing.T, path, dir string) bool {
 	}
 	return true
 }
+
+// An isolated base's start reads only its project settings, loads its
+// capabilities and gets the peers shim on its line; a capability the
+// catalog lacks refuses the start with the reason instead of waking the
+// agent without the tool.
+func TestResolveAgentLaunch_ClaudeIsolated(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	f := newWindowAgentFixture(t, "sleep 1;:")
+	d, _, msg := f.srv.agentDefinition("x-poster")
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	d.Harness, d.Isolated, d.Capabilities = harness.Builtin, true, []string{"door"}
+	f.srv.ensureSidecar = func() (string, string, error) { return "/s.mjs", "/node", nil }
+	old := lookPeersShim
+	lookPeersShim = func() (string, error) { return "/bin/ccmux-peers", nil }
+	t.Cleanup(func() { lookPeersShim = old })
+
+	if _, status, msg := f.srv.resolveAgentLaunch(d, t.TempDir(), nil, "", "", "", nil); status != 503 || !strings.Contains(msg, `capability "door" is not in the catalog`) {
+		t.Fatalf("missing capability: %d %s", status, msg)
+	}
+	if _, err := f.srv.agents.SaveCapability(agent.Capability{ID: "door", Kind: agent.CapMCP, Server: nil}); err == nil {
+		t.Fatal("a server-less mcp entry must not save")
+	}
+	if rec := do(t, f.srv, "PUT", "/v1/capabilities/door", `{"kind":"mcp","server":{"url":"http://d/mcp"}}`); rec.Code != 200 {
+		t.Fatalf("put = %d %s", rec.Code, rec.Body)
+	}
+	l, status, msg := f.srv.resolveAgentLaunch(d, t.TempDir(), nil, "", "", "", nil)
+	if msg != "" {
+		t.Fatalf("isolated start: %d %s", status, msg)
+	}
+	for _, want := range []string{"--setting-sources project", "--peers-command /bin/ccmux-peers", "/.ccmux/caps/x-poster.mcp.json"} {
+		if !strings.Contains(l.Persist, want) {
+			t.Errorf("line missing %q: %s", want, l.Persist)
+		}
+	}
+	d.Isolated = false
+	if l, _, _ := f.srv.resolveAgentLaunch(d, t.TempDir(), nil, "", "", "", nil); strings.Contains(l.Persist, "--setting-sources") {
+		t.Errorf("not isolated reads every source: %s", l.Persist)
+	}
+}

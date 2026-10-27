@@ -1483,17 +1483,19 @@ final class RemoteSessionService: ObservableObject {
     /// Every base agent. `supported` is false only on a 503 (this daemon
     /// predates agents); any other failure keeps the tab and reports `error`,
     /// so a network blip does not read as a missing feature.
-    func fetchAgents() async -> (list: [DaemonAgent], supported: Bool, error: String?) {
-        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/agents") else { return ([], true, "bad daemon URL") }
+    func fetchAgents() async -> (list: [DaemonAgent], supported: Bool, error: String?, sdk: DaemonSDKVersions?) {
+        guard let url = URL(string: "\(DaemonConfig.baseURL)/v1/agents") else { return ([], true, "bad daemon URL", nil) }
         do {
             let (data, resp) = try await session.data(from: url)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 503 { return ([], false, nil) }
-            guard code == 200 else { return ([], true, "HTTP \(code)") }
-            struct Body: Decodable { let agents: [DaemonAgent] }
-            return (try JSONDecoder().decode(Body.self, from: data).agents, true, nil)
+            if code == 503 { return ([], false, nil, nil) }
+            guard code == 200 else { return ([], true, "HTTP \(code)", nil) }
+            // sdk is absent on a daemon older than the version line.
+            struct Body: Decodable { let agents: [DaemonAgent]; let sdk: DaemonSDKVersions? }
+            let body = try JSONDecoder().decode(Body.self, from: data)
+            return (body.agents, true, nil, body.sdk)
         } catch {
-            return ([], true, error.localizedDescription)
+            return ([], true, error.localizedDescription, nil)
         }
     }
 
@@ -1601,6 +1603,8 @@ final class RemoteSessionService: ObservableObject {
                             "webfetch": a.permissions.webfetch, "bashAllow": a.permissions.bashAllow],
             "keepAlive": a.keepAlive, "walls": a.walls, "idleExitMinutes": a.idleExitMinutes,
             "cardWaitMinutes": a.cardWaitMinutes,
+            "isolated": a.isolated, "capabilities": a.capabilities, "skillsOff": a.skillsOff,
+            "toolAllow": a.toolAllow, "toolDeny": a.toolDeny,
         ]
         if !a.instructions.isEmpty { body["instructions"] = a.instructions }
         return await sendReportingError("PUT", path: "/v1/agents/\(agentPath(a.name))", body: body, expect: 200)
@@ -1694,6 +1698,31 @@ final class RemoteSessionService: ObservableObject {
 
     func deleteMCP(agent: String, server: String) async -> String? {
         await sendReportingError("DELETE", path: "/v1/agents/\(agentPath(agent))/mcp/\(agentPath(server))", body: nil, expect: 204)
+    }
+
+    // MARK: - Capability catalog (agent editor, AgentCapabilitiesView)
+
+    /// The catalog and the ids of the plugins installed on the daemon's host.
+    func fetchCapabilities() async -> ([DaemonCapability], [String], String?) {
+        struct Body: Decodable { let capabilities: [DaemonCapability]; let installed: [String] }
+        let (b, err) = await getDecoded(Body.self, path: "/v1/capabilities")
+        return (b?.capabilities ?? [], b?.installed ?? [], err)
+    }
+
+    /// Add or replace one entry: {"kind": "plugin", "plugin" | "path": ...}
+    /// or {"kind": "mcp", "server": {...}}.
+    func putCapability(id: String, body: [String: Any]) async -> String? {
+        await sendReportingError("PUT", path: "/v1/capabilities/\(agentPath(id))", body: body, expect: 200)
+    }
+
+    /// Remove an entry; the daemon refuses (409) one a base still lists.
+    func deleteCapability(id: String) async -> String? {
+        await sendReportingError("DELETE", path: "/v1/capabilities/\(agentPath(id))", body: nil, expect: 200)
+    }
+
+    /// Seed the catalog from the host's own Claude setup (read only).
+    func importCapabilities() async -> (DaemonCapabilityImport?, String?) {
+        await postDecoded(DaemonCapabilityImport.self, path: "/v1/capabilities/import", body: [:])
     }
 
     func fetchDeployments(agent: String) async -> ([DaemonAgentDeployment], String?) {

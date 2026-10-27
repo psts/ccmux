@@ -3,6 +3,7 @@ package agent
 import (
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,6 +91,19 @@ type LaunchOpts struct {
 	Session    string
 	Serve      string
 	Node       string
+	// Isolated is set for an isolated claude start only (IsolatedLaunch).
+	Isolated *IsolatedLaunch
+}
+
+// IsolatedLaunch is what an isolated start adds to the sidecar's line: the
+// capability plugin folders, the generated MCP file of its capability
+// servers (Store.WriteCapabilityMCP), the peers shim's command, and the
+// enabled skills (nil: all of them).
+type IsolatedLaunch struct {
+	PluginDirs   []string
+	MCPFile      string
+	PeersCommand string
+	Skills       []string
 }
 
 // envPrefix puts ccmuxd's env-exec verb ahead of the harness line with the
@@ -132,7 +146,8 @@ func claudeServeLine(d Definition, baseDir string, o LaunchOpts) string {
 	if d.Model != "" {
 		parts = append(parts, "--model", shellQuote(d.Model))
 	}
-	parts = append(parts, claudePermissionFlags(d.Permissions, len(o.WriteRoots) > 0)...)
+	parts = append(parts, isolatedFlags(o.Isolated)...)
+	parts = append(parts, claudePermissionFlags(d, len(o.WriteRoots) > 0)...)
 	return strings.Join(append(parts, wallFlags(d.Permissions, o.WriteRoots)...), " ")
 }
 
@@ -141,13 +156,35 @@ var claudeTools = map[string][]string{
 	"read": {"Read", "Glob", "Grep"}, "edit": {"Edit", "Write"}, "bash": {"Bash"}, "webfetch": {"WebFetch", "WebSearch"},
 }
 
+// isolatedFlags are an isolated start's (Definition.Isolated): only the
+// home's project settings, the capability plugins after the base, their
+// MCP servers in a second --mcp-file, the peers shim (it otherwise comes
+// from the user's own config, which an isolated start does not read), and
+// the enabled skills when some are off. Nothing for any other start.
+func isolatedFlags(in *IsolatedLaunch) []string {
+	if in == nil {
+		return nil
+	}
+	out := []string{"--setting-sources", "project"}
+	for _, dir := range in.PluginDirs {
+		out = append(out, "--plugin-dir", shellQuote(dir))
+	}
+	out = append(out, "--mcp-file", shellQuote(in.MCPFile), "--peers-command", shellQuote(in.PeersCommand))
+	if in.Skills != nil {
+		out = append(out, "--skills", shellQuote(strings.Join(in.Skills, ",")))
+	}
+	return out
+}
+
 // claudePermissionFlags translates Permissions for the claude harness: deny →
 // --disallowed-tools, allow → --allowed-tools, ask → nothing (the chat's
-// permission card), and each BashAllow pattern → an allowed Bash(pattern).
+// permission card), each BashAllow pattern → an allowed Bash(pattern), and
+// the base's ToolAllow and ToolDeny rules as written.
 // The sidecar hands them to the SDK as allowedTools/disallowedTools.
 // opencode gets the same gates through its config (opencodePermission).
-func claudePermissionFlags(p Permissions, walled bool) []string {
-	var allow, deny []string
+func claudePermissionFlags(d Definition, walled bool) []string {
+	p := d.Permissions
+	allow, deny := slices.Clone(d.ToolAllow), slices.Clone(d.ToolDeny)
 	for gate, v := range map[string]string{"read": p.Read, "edit": p.Edit, "bash": p.Bash, "webfetch": p.Webfetch} {
 		switch {
 		case v == "allow" && walled && gate == "edit":

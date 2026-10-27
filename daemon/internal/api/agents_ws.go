@@ -337,7 +337,7 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 	// The sidecar first: resumeSession reads history through it, so on a
 	// fresh host a "continue" start would otherwise refuse before the
 	// sidecar ever landed.
-	if opts.Serve, opts.Node, status, msg = s.sidecarFor(h, dir); msg != "" {
+	if status, msg = s.claudeStart(d, h, dir, &opts); msg != "" {
 		return manager.AgentLaunch{}, status, msg
 	}
 	if opts.Session, err = s.resumeSession(d, h, dir, resume); err != nil {
@@ -346,6 +346,43 @@ func (s *Server) resolveAgentLaunch(d agent.Definition, dir string, dirs []strin
 	l := agent.LaunchCommand(d, h, s.agents.Dir(d.Name), opts)
 	return manager.AgentLaunch{Name: d.Name, Version: d.Version, Harness: h, Persist: l.Persist, Deliver: l.Deliver, CWD: dir, RouteAccount: route, Prompt: prompt, Port: port}, 0, ""
 }
+
+// claudeStart fills a claude start's sidecar (sidecarFor) and, for an
+// isolated base, what its capabilities load (isolatedFor); nothing for
+// another harness.
+func (s *Server) claudeStart(d agent.Definition, h harness.Harness, dir string, opts *agent.LaunchOpts) (int, string) {
+	var status int
+	var msg string
+	if opts.Serve, opts.Node, status, msg = s.sidecarFor(h, dir); msg != "" || h.Name != harness.Builtin || !d.Isolated {
+		return status, msg
+	}
+	if opts.Isolated, msg = s.isolatedFor(d); msg != "" {
+		return http.StatusServiceUnavailable, msg
+	}
+	return 0, ""
+}
+
+// isolatedFor resolves an isolated base's capabilities against the
+// catalog and this host's installed plugins, and names the peers shim the
+// session gets in place of the one the user's config would bring.
+func (s *Server) isolatedFor(d agent.Definition) (*agent.IsolatedLaunch, string) {
+	claudeDir, err := agent.ClaudeConfigDir()
+	if err != nil {
+		return nil, "isolated agent: " + err.Error()
+	}
+	peers, err := lookPeersShim()
+	if err != nil {
+		return nil, "isolated agent: the peers shim (ccmux-peers) is not installed: " + err.Error()
+	}
+	in, err := s.agents.IsolatedLaunchFor(d, claudeDir, peers)
+	if err != nil {
+		return nil, "isolated agent: " + err.Error()
+	}
+	return in, ""
+}
+
+// lookPeersShim finds the peers shim an isolated start runs; tests stub it.
+var lookPeersShim = func() (string, error) { return harness.LookPath("ccmux-peers") }
 
 // sidecarFor is the claude sidecar for a claude start, nothing for another
 // harness. The sidecar and its SDK land under the agents root at every

@@ -2960,6 +2960,16 @@ function wireAgentSettings() {
     load();
   }
 
+  // sdkLine is the "agents on X, latest Y" line, the same words as the Mac
+  // app's: what claude agents run, and the newest on npm when it differs.
+  function sdkLine(v) {
+    if (!v || !v.pinned) return "";
+    let line = `Claude agents run Agent SDK ${v.pinned}`;
+    if (v.installed && v.installed !== v.pinned) line += ` (installed ${v.installed}; ${v.pinned} lands at the next claude start)`;
+    if (v.latest && v.latest !== v.pinned) line += ` · newest is ${v.latest}`;
+    return line + ".";
+  }
+
   async function load() {
     try {
       const [c, r] = await Promise.all([(await fetch("/v1/settings")).json(), fetch("/v1/agents")]);
@@ -2968,7 +2978,9 @@ function wireAgentSettings() {
       if (r.status === 503) { statusEl.textContent = "This daemon has no agents support."; addBtn.disabled = true; return; }
       addBtn.disabled = false;
       if (!r.ok) { statusEl.textContent = "Couldn't load agents: " + (await r.text()); return; } // names the broken folder
-      const list = (await r.json()).agents || [];
+      const body = await r.json();
+      const list = body.agents || [];
+      $("agent-sdk").textContent = sdkLine(body.sdk);
       for (const a of list) box.appendChild(agentRow(a));
       statusEl.textContent = list.length ? "" : "No agents yet.";
       agentCatalog.at = 0;

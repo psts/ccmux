@@ -48,6 +48,8 @@ struct DaemonSettingsView: View {
     /// Base agents from GET /v1/agents; nil = this daemon has no agents support.
     @State private var agents: [DaemonAgent]? = nil
     @State private var agentStatus = ""
+    /// "Claude agents run Agent SDK X · newest is Y" (DaemonSDKVersions.line).
+    @State private var agentSDKLine = ""
     @State private var editingAgent: AgentEditTarget? = nil
     @State private var editingAccount: AccountEditTarget? = nil
     @State private var supportsLLM = false
@@ -488,6 +490,9 @@ struct DaemonSettingsView: View {
                 Text(agentStatus)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
+                if !agentSDKLine.isEmpty {
+                    Text(agentSDKLine).font(.system(size: 11)).foregroundColor(.secondary)
+                }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -523,6 +528,7 @@ struct DaemonSettingsView: View {
         let res = await RemoteSessionService.shared.fetchAgents()
         if let err = res.error { agentStatus = "Couldn't reload agents: \(err)"; return }
         agents = res.list
+        agentSDKLine = res.sdk?.line ?? ""
     }
 
     /// Bounds-checked row lookup: SwiftUI can hand a stale index after the
@@ -862,6 +868,7 @@ struct DaemonSettingsView: View {
             apply(try await RemoteSessionService.shared.fetchSettings())
             let fetched = await RemoteSessionService.shared.fetchAgents()
             agents = fetched.supported ? fetched.list : nil
+            agentSDKLine = fetched.sdk?.line ?? ""
             if fetched.supported && fetched.error != nil { agentStatus = "✗ Couldn't load agents: \(fetched.error!)" }
             status = ""
             loaded = true

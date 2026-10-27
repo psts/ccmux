@@ -5,7 +5,7 @@
 // SDK installed; serve.mjs is the only file that imports the real one.
 import { randomUUID, randomInt } from "node:crypto";
 import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAnswers, questionCardText } from "./translate.mjs";
-import { mcpFromNeutral } from "./mcp.mjs";
+import { mcpFromFiles } from "./mcp.mjs";
 import { WRITE_TOOLS, wallSafe, wallVerdict } from "./walls.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
@@ -50,7 +50,7 @@ export class Agent {
     this.systemPrompt = o.systemPromptFile ? deps.readFile(o.systemPromptFile, "utf8") : "";
     // The base's MCP servers, same rule: read once, fail the start when the
     // file is unreadable. A base without the file has no servers.
-    this.mcp = mcpFromNeutral(o.mcpFile ? readIfPresent(deps.readFile, o.mcpFile) : "", deps.env);
+    this.mcp = mcpFromFiles(o.mcpFiles.map((f) => readIfPresent(deps.readFile, f)), deps.env, o.peersCommand);
     // Said at start: the SDK's init line reports only "failed" for a server
     // whose url or token came out of an unset variable.
     for (const [name, vars] of Object.entries(this.mcp.unresolved)) {
@@ -170,7 +170,16 @@ export class Agent {
     };
     if (this.resume) opts.resume = this.sid;
     else opts.sessionId = this.sid;
-    if (o.pluginDir) opts.plugins = [{ type: "local", path: o.pluginDir }];
+    if (o.pluginDirs.length) opts.plugins = o.pluginDirs.map((path) => ({ type: "local", path }));
+    // An isolated agent: only the settings named (the home's project ones),
+    // and the skills listed when some are switched off.
+    // The claude.ai connectors (Gmail, Drive...) ride on the login, not on
+    // any settings file, so they are switched off here too.
+    if (o.settingSources) {
+      opts.settingSources = o.settingSources;
+      opts.env = { ...this.sdk.env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" };
+    }
+    if (o.skills) opts.skills = o.skills;
     if (this.systemPrompt) opts.systemPrompt = { type: "preset", preset: "claude_code", append: this.systemPrompt };
     if (o.model) opts.model = o.model;
     if (Object.keys(this.mcp.servers).length) opts.mcpServers = this.mcp.servers;
@@ -346,6 +355,10 @@ export class Agent {
     // And on any walled agent's card, never one that would lift the walls.
     let suggestions = extra.suppressAlwaysAllowRule || wall === "ask" ? [] : extra.suggestions || [];
     if (this.o.writeRoots && this.o.writeRoots.length) suggestions = wallSafe(suggestions);
+    // An isolated start reads no local settings, so an "always" saved there
+    // would be forgotten at the next wake: it goes to the home's project
+    // settings, which that start does read.
+    if (this.o.settingSources) suggestions = suggestions.map((sg) => (sg.destination === "localSettings" ? { ...sg, destination: "projectSettings" } : sg));
     const request = {
       id, sessionID: this.sid, permission: name, patterns: [permissionPattern(name, input)],
       always: suggestions.length ? ["*"] : [],
