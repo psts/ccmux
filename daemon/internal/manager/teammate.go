@@ -69,12 +69,21 @@ func (m *Manager) StartClaudeIn(wsID, cmd string) error {
 }
 
 // lastClaudePane is the newest pane a Claude ran in: one started with the
-// claude harness, or one the bus started for a teammate.
+// claude harness, or one the bus started for a teammate. Newest by creation
+// time, not by tab position: agent tabs are served first (agentsFirst), so
+// position says nothing about age.
 func lastClaudePane(panes []*model.Pane) string {
-	for i := len(panes) - 1; i >= 0; i-- {
-		if p := panes[i]; p.Harness == "claude" || p.CreatedBy == "claude-peers" {
-			return p.ID
+	var newest *model.Pane
+	for _, p := range panes {
+		if p.Harness != "claude" && p.CreatedBy != "claude-peers" {
+			continue
+		}
+		if newest == nil || p.CreatedAt >= newest.CreatedAt {
+			newest = p
 		}
 	}
-	return ""
+	if newest == nil {
+		return ""
+	}
+	return newest.ID
 }

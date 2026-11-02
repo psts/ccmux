@@ -15,7 +15,7 @@ import (
 // Agent tabs always come first (agentsFirst): a lens attaching a session opens
 // its first tab, and that should be the agent, not the terminal that happened
 // to be opened before it. Every path that sets the order goes through it: a
-// drag, a new tab, and the load at startup.
+// drag, a new tab, a terminal that starts an agent, and the load at startup.
 
 // ReorderPanes puts the listed panes first, in the given order, and keeps the
 // rest behind them in their old order. Ids the workspace does not hold are

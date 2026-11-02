@@ -57,13 +57,23 @@ func TestMembershipChange_JoinMoveLeaveAndDelete(t *testing.T) {
 // the bus started; a session that never had one has none to reuse.
 func TestLastClaudePane(t *testing.T) {
 	panes := []*model.Pane{
-		{ID: "dev", Harness: ""},
-		{ID: "old", Harness: "claude"},
-		{ID: "bus", CreatedBy: "claude-peers"},
-		{ID: "shell"},
+		{ID: "dev", Harness: "", CreatedAt: 1},
+		{ID: "old", Harness: "claude", CreatedAt: 2},
+		{ID: "bus", CreatedBy: "claude-peers", CreatedAt: 3},
+		{ID: "shell", CreatedAt: 4},
 	}
 	if got := lastClaudePane(panes); got != "bus" {
 		t.Fatalf("lastClaudePane = %q, want the newest claude pane", got)
+	}
+	// Agent tabs are served first, so a newer claude tab can sit ahead of an
+	// older bus pane: age decides, not position.
+	served := []*model.Pane{
+		{ID: "new-claude", Harness: "claude", CreatedAt: 9},
+		{ID: "old-bus", CreatedBy: "claude-peers", CreatedAt: 3},
+		{ID: "shell", CreatedAt: 4},
+	}
+	if got := lastClaudePane(served); got != "new-claude" {
+		t.Fatalf("lastClaudePane = %q, want new-claude (newest, served first)", got)
 	}
 	if got := lastClaudePane(panes[:1]); got != "" {
 		t.Fatalf("no claude pane = %q", got)

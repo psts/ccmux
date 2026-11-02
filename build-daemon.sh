@@ -33,8 +33,19 @@ case "$(uname -s)" in
 esac
 
 echo "Health:"
-sleep 1
-HEALTH=$(curl -sf --max-time 5 http://127.0.0.1:7900/v1/health) || { echo "(no healthy response yet — check the service logs)"; exit 0; }
+# Up to 15s: a -tsnet -hub start can take a few seconds to bind. A daemon that
+# never answers is a FAILED deploy, not a pending one: /ship runs this script
+# as its deploy step (.claude/ship-after-release) and only a non-zero exit
+# stops it from reporting a release that is not running.
+HEALTH=""
+for _ in $(seq 15); do
+	HEALTH=$(curl -sf --max-time 2 http://127.0.0.1:7900/v1/health) && break
+	sleep 1
+done
+if [ -z "$HEALTH" ]; then
+	echo "ccmuxd did not answer /v1/health within 15s of the restart — see: journalctl --user -u ccmuxd" >&2
+	exit 1
+fi
 echo "$HEALTH"
 # The build only went live if the RUNNING daemon reports the version we just
 # built — a service still pointing at another binary path (e.g. a pre-break

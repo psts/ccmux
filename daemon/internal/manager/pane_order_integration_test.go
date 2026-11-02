@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
@@ -116,5 +117,43 @@ func TestStart_ServesSavedAgentsFirst(t *testing.T) {
 	}
 	if got := servedIDs(t, m, "shells"); !sameIDs(got, []string{"a", "b"}) {
 		t.Fatalf("session with no agent served %v, want [a b]", got)
+	}
+}
+
+// A terminal that starts an agent ("start it here") moves up with the agents
+// at once, and the store holds the new order; a terminal that stays one does
+// not move.
+func TestStartInPane_TerminalThatBecomesAnAgentMovesFirst(t *testing.T) {
+	m, path := startOrderManager(t, "ccmux-order-startin-itest")
+	ws, err := m.CreateWorkspace("w", "/tmp", "/tmp", "", "tester", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	term0 := ws.Panes[0].ID
+	term1, err := m.spawnPane(ws.ID, "/tmp", "", "", "tester", "", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	term1.RawCommand = "bash" // at a bare shell, as the tmux signal would report
+	m.mu.Unlock()
+	if err := m.startInPane(term1.ID, harness.Harness{Name: "pi"}, "true", "true", ""); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{term1.ID, term0}
+	if got := servedIDs(t, m, ws.ID); !sameIDs(got, want) {
+		t.Fatalf("served %v, want %v", got, want)
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	all, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || !sameIDs(idsOf(all[0].Panes), want) {
+		t.Fatalf("stored order %v, want %v", idsOf(all[0].Panes), want)
 	}
 }

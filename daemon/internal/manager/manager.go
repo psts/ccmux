@@ -360,9 +360,15 @@ func (m *Manager) startInPane(paneID string, h harness.Harness, persist, deliver
 	m.mu.Lock()
 	p.Harness = h.Name
 	p.StartupCommand = persist
+	// A terminal that becomes an agent moves up with the other agents.
+	e.ws.Panes = agentsFirst(e.ws.Panes)
+	ordered := renumber(e.ws.Panes)
 	saved := *p
 	m.mu.Unlock()
 	_ = m.store.SavePane(&saved)
+	if err := m.store.UpdatePanePositions(wsID, ordered); err != nil {
+		log.Printf("workspace %s: pane order not persisted (lenses still follow it until restart): %v", wsID, err)
+	}
 	m.deliverStartup(ctrl, paneID, deliver, h.Autoconfirm)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return nil

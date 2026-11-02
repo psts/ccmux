@@ -204,6 +204,12 @@ async function pageWindowCases() {
   const menus = run({ windowsReply: oneOpen, search: "?w=win-a" });
   await settle();
   const winB = menus.evalIn("state.windows").find((w) => w.id === "win-b");
+  await menus.ctx.ccmuxPage.openClosed(winB, "");
+  await settle();
+  check("a plain click on a closed window, from a browser window showing another, opens a new browser window",
+    menus.opened.join() === "/?w=win-b" && menus.ctx.ccmuxPage.current() === "win-a",
+    `opened ${menus.opened.join()}, current ${menus.ctx.ccmuxPage.current()}`);
+  menus.opened.length = 0;
   await menus.ctx.ccmuxPage.openClosed(winB, "new");
   await settle();
   check("Open in new window on a closed window opens a browser window and keeps this one",

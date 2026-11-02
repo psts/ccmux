@@ -103,6 +103,19 @@ func TestReorderPanes_PersistsAndAnnounces(t *testing.T) {
 	default:
 		t.Fatal("no firehose event: other lenses would never redraw")
 	}
+	// A drag that lists a terminal ahead of an agent still serves, stores and
+	// announces the agent first; the terminals keep the dragged order.
+	ws.Panes[2].Harness = "claude" // b
+	if err := st.SavePane(ws.Panes[2]); err != nil {
+		t.Fatal(err)
+	}
+	got, err = m.ReorderPanes("ws", []string{"a", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := idsOf(got.Panes); !sameIDs(ids, []string{"b", "a", "c"}) {
+		t.Fatalf("drag of terminals ahead of an agent served %v, want [b a c]", ids)
+	}
 	if _, err := m.ReorderPanes("nope", []string{"a"}); err == nil {
 		t.Fatal("unknown workspace accepted")
 	}
@@ -117,7 +130,7 @@ func TestReorderPanes_PersistsAndAnnounces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 1 || !sameIDs(idsOf(all[0].Panes), []string{"c", "a", "b"}) {
+	if len(all) != 1 || !sameIDs(idsOf(all[0].Panes), []string{"b", "a", "c"}) {
 		t.Fatalf("after restart: %+v", all)
 	}
 }
