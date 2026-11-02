@@ -80,32 +80,41 @@ func TestBuildFollowsEveryByte(t *testing.T) {
 	}
 }
 
-// Every file the service worker caches and every file index.html loads must
-// be served: one 404 fails the worker's whole cache refresh, and the page
-// would never move onto a new build. Catches a name left out of go:embed.
-func TestEveryShellFileIsServed(t *testing.T) {
-	sw, _ := os.ReadFile("sw.js")
-	html, _ := os.ReadFile("index.html")
-	shell := regexp.MustCompile(`(?s)const SHELL = \[(.*?)\]`).FindSubmatch(sw)
-	if shell == nil {
-		t.Fatal("no SHELL list in sw.js")
+// Every file index.html loads and every icon the manifest names must be
+// served, each stamped with the build: a browser revalidates it by that ETag
+// on every load. Catches a name left out of go:embed.
+func TestEveryLensFileIsServed(t *testing.T) {
+	html, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
 	}
-	var paths []string
-	for _, m := range regexp.MustCompile(`"(/[^"]*)"`).FindAllSubmatch(shell[1], -1) {
-		paths = append(paths, string(m[1]))
+	manifest, err := os.ReadFile("manifest.webmanifest")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, m := range regexp.MustCompile(`(?:src|href)="(/[^"]+)"`).FindAllSubmatch(html, -1) {
-		paths = append(paths, string(m[1]))
+	page := matches(`(?:src|href)="(/[^"]+)"`, html)
+	icons := matches(`"src"\s*:\s*"(/[^"]+)"`, manifest)
+	if len(page) < 15 || len(icons) < 2 {
+		t.Fatalf("found %d page paths and %d icons; the patterns no longer match the files", len(page), len(icons))
 	}
-	if len(paths) < 20 {
-		t.Fatalf("found only %d paths; the patterns no longer match the files", len(paths))
-	}
-	for _, p := range paths {
-		if code := get(t, p, "").StatusCode; code >= 400 {
-			t.Errorf("GET %s = %d", p, code)
+	for _, p := range append(page, icons...) {
+		resp := get(t, p, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s = %d", p, resp.StatusCode)
+		}
+		if tag := resp.Header.Get("ETag"); tag != `"`+Build+`"` {
+			t.Errorf("GET %s ETag = %s, want the build", p, tag)
 		}
 	}
 	if code := get(t, "/no-such-file.js", "").StatusCode; code != http.StatusNotFound {
 		t.Errorf("a missing file answered %d; the check above would pass on anything", code)
 	}
+}
+
+func matches(pattern string, b []byte) []string {
+	var out []string
+	for _, m := range regexp.MustCompile(pattern).FindAllSubmatch(b, -1) {
+		out = append(out, string(m[1]))
+	}
+	return out
 }

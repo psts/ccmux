@@ -54,9 +54,10 @@ func hashFiles(fsys fs.FS) string {
 }
 
 // Handler serves the lens: the embedded files plus /build.js. Every answer
-// carries Build as its ETag with no-cache, so a browser (and the service
-// worker's network-first fetch) asks "still this build?" on every load and
-// gets a 304 instead of the bytes when nothing changed.
+// carries Build as its ETag with no-cache, so a browser asks "still this
+// build?" on every load and gets a 304 instead of the bytes when nothing
+// changed. The service worker caches nothing (sw.js), so this is the only
+// cache, and a deploy lands on the very next load.
 func Handler() http.Handler {
 	files := http.FileServerFS(Files)
 	etag := `"` + Build + `"`

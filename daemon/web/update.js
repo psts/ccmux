@@ -9,8 +9,8 @@
 // "Nobody is using it" means the page has just come back into view (the phone
 // app reopened, the tab switched back to) with no dialog open and no unsent
 // chat text. A page that is hidden waits for that moment. At boot the page
-// never reloads itself: the service worker hands a stale copy to a slow
-// network, and reloading into the same slow network would only loop.
+// never reloads itself: it was just fetched, so a mismatch then means a deploy
+// landed mid-load, and the bar is enough.
 (function (root) {
   "use strict";
   const CHECK_MS = 60000;
