@@ -1,7 +1,7 @@
 # Run by /ship after the tag is pushed (Step 7b), one command per line.
 #
-# The deploy (2026-11-02): nothing builds on GitHub, verkstan is the only host,
-# and this builds ccmuxd + ccmux-peers from the clean tagged checkout, installs
+# The deploy (2026-11-02): nothing builds on GitHub, and this updates verkstan
+# only (the Mac daemons stay on v0.1.86, see CLAUDE.md "Shipping"). It builds ccmuxd + ccmux-peers from the clean tagged checkout, installs
 # them in ~/.local/bin, restarts the service, and exits non-zero unless the
 # running daemon reports the version it just built. The web lens is embedded in
 # ccmuxd, so it ships with it. See CLAUDE.md "Shipping".

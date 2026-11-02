@@ -67,3 +67,9 @@ the version it just built; that is the deploy, and its health line is the live
 check. The web lens is embedded in ccmuxd, so it ships with it. Never run
 `ccmuxd upgrade` without a tag here: it fetches the latest GitHub release and
 would put verkstan back on v0.1.88.
+
+verkstan is not the only daemon: the hub also federates `patric-ccmux` and
+`dasha-ccmux`, tsnet nodes on the Macs (`GET /v1/hosts`). They stay on v0.1.86
+by the user's choice (2026-11-02), so a session hosted there misses daemon-side
+changes such as agent-first tab order. Updating them needs a GitHub release run
+by hand and `POST /v1/hosts/{id}/upgrade`.
