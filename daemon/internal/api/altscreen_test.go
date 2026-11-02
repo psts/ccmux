@@ -41,21 +41,21 @@ func TestAPI_AlternateScreenSnapshots(t *testing.T) {
 		t.Fatalf("repaint: %v", err)
 	}
 	b := nextSnapshot(t, ch, pane0)
-	if !bytes.HasPrefix(b, []byte(enterAlternateScreen+snapshotReset)) {
+	if !bytes.HasPrefix(b, []byte(enterAlternateScreen+mouseOff+snapshotReset)) {
 		t.Fatalf("snapshot of a pane on its alternate screen does not start with enter+reset: %q", firstBytes(b))
 	}
 
 	// Leaving repaints on its own, once, and describes the main screen.
 	typeLine(t, c, pane0, "printf '\\033[?1049l'")
 	b = nextSnapshot(t, ch, pane0)
-	if !bytes.HasPrefix(b, []byte(leaveAlternateScreen+snapshotReset)) {
+	if !bytes.HasPrefix(b, []byte(leaveAlternateScreen+mouseOff+snapshotReset)) {
 		t.Fatalf("snapshot after leaving the alternate screen does not leave it: %q", firstBytes(b))
 	}
 	if got := snapshotsUntilQuiet(ch, pane0, time.Second); got != 0 {
 		t.Fatalf("leaving the alternate screen gave %d extra snapshots, want exactly one", got+1)
 	}
 	b = nextSnapshot(t, bch, pane0)
-	if !bytes.HasPrefix(b, []byte(leaveAlternateScreen+snapshotReset)) {
+	if !bytes.HasPrefix(b, []byte(leaveAlternateScreen+mouseOff+snapshotReset)) {
 		t.Fatalf("bystander's snapshot after leaving does not leave the alternate screen: %q", firstBytes(b))
 	}
 	if got := snapshotsUntilQuiet(bch, pane0, time.Second); got != 0 {

@@ -179,13 +179,40 @@ const enterAlternateScreen = "\x1b[?1049h"
 // and does nothing else; the reset that follows homes and clears anyway.
 const leaveAlternateScreen = "\x1b[?1049l"
 
-// snapshotFrame is the self-describing snapshot: the switch to the buffer the
-// pane is on, then the reset, then the captured rows.
-func snapshotFrame(rows []byte, alt bool) []byte {
-	prefix := leaveAlternateScreen + snapshotReset
-	if alt {
-		prefix = enterAlternateScreen + snapshotReset
+// mouseOff switches every mouse report off: the first half of putting a lens in
+// the mode the program asked for. 1000, 1002 and 1003 replace each other, so
+// switching one off after another was switched on would undo it.
+const mouseOff = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
+
+// mouseModes is the switch set for the mouse reports a pane's program asked
+// for. A program's own switch rides %output, which a lens that attached later
+// never saw, so without this a fresh lens (a phone opening Claude Code) never
+// reports the wheel and has no way to scroll it. Unknown modes say nothing.
+func mouseModes(m tmux.MouseModes) string {
+	if !m.Known {
+		return ""
 	}
+	s := mouseOff
+	for _, on := range []struct {
+		set  bool
+		mode string
+	}{{m.Standard, "1000"}, {m.Button, "1002"}, {m.All, "1003"}, {m.SGR, "1006"}} {
+		if on.set {
+			s += "\x1b[?" + on.mode + "h"
+		}
+	}
+	return s
+}
+
+// snapshotFrame is the self-describing snapshot: the switch to the buffer the
+// pane is on, the mouse reports its program asked for, then the reset, then
+// the captured rows.
+func snapshotFrame(rows []byte, scr tmux.Screen) []byte {
+	prefix := leaveAlternateScreen
+	if scr.Alt {
+		prefix = enterAlternateScreen
+	}
+	prefix += mouseModes(scr.Mouse) + snapshotReset
 	return append([]byte(prefix), rows...)
 }
 
@@ -200,12 +227,12 @@ func snapshotFrame(rows []byte, alt bool) []byte {
 // Both are logged. A dropped repaint leaves a screen that is already wrong, and
 // "the next resize will retry" means the user has to resize again to fix it.
 func sendSnapshot(conn *websocket.Conn, ctrl *session.Controller, paneID string) error {
-	rows, alt, err := ctrl.CaptureScreen(paneID)
+	rows, scr, err := ctrl.CaptureScreen(paneID)
 	if err != nil {
 		log.Printf("attach: capture pane %s: %v (lens keeps its current screen)", paneID, err)
 		return nil
 	}
-	if err := conn.WriteJSON(wsMsg{T: "snapshot", Pane: paneID, Data: b64(snapshotFrame(rows, alt))}); err != nil {
+	if err := conn.WriteJSON(wsMsg{T: "snapshot", Pane: paneID, Data: b64(snapshotFrame(rows, scr))}); err != nil {
 		log.Printf("attach: send snapshot for pane %s: %v", paneID, err)
 		return err
 	}

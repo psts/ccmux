@@ -236,7 +236,7 @@ func (c *Client) ResizeWindow(window string, cols, rows int) error {
 // (command replies are not octal-escaped).
 //
 // A visible-screen capture (historyLines == 0) is CaptureScreen with the
-// alternate-screen flag dropped; see there for the cursor-restore it appends.
+// Screen state dropped; see there for the cursor-restore it appends.
 func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 	if historyLines == 0 {
 		rows, _, err := c.CaptureScreen(pane)
@@ -249,9 +249,22 @@ func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 	return []byte(joinPaintRows(lines)), nil
 }
 
+// MouseModes are the mouse reports a pane's program asked for, as tmux tracks
+// them: DECSET 1000 (Standard), 1002 (Button), 1003 (All) and the SGR encoding
+// 1006. Known is false when this tmux did not report them, so a snapshot then
+// says nothing about the mouse rather than switching reporting off.
+type MouseModes struct{ Known, Standard, Button, All, SGR bool }
+
+// Screen is what a fresh emulator must be told to match a pane: the buffer the
+// program is on (Alt: a fullscreen program such as Claude Code, vim or htop),
+// and the mouse reports it asked for.
+type Screen struct {
+	Alt   bool
+	Mouse MouseModes
+}
+
 // CaptureScreen returns the visible screen with escape sequences preserved, and
-// whether the pane was on its alternate screen (a fullscreen program such as
-// Claude Code, vim or htop) when it was read.
+// the pane's Screen state when it was read.
 //
 // It appends a cursor-restore (CUP) escape: capture-pane emits every pane row
 // including the trailing blank ones, so feeding them leaves the emulator cursor
@@ -267,51 +280,59 @@ func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 // paints a fullscreen program onto the lens's main buffer, which is the very
 // defect the alternate flag exists to prevent, so the log says which pane and
 // why.
-func (c *Client) CaptureScreen(pane string) (rows []byte, alt bool, err error) {
+func (c *Client) CaptureScreen(pane string) (rows []byte, scr Screen, err error) {
 	lines, err := c.Command(paintCaptureArgs("-t", pane)...)
 	if err != nil {
-		return nil, false, err
+		return nil, Screen{}, err
 	}
 	rows = []byte(joinPaintRows(lines))
-	x, y, alt, err := c.CursorPosition(pane)
+	x, y, scr, err := c.CursorPosition(pane)
 	if err != nil {
 		log.Printf("tmux: capture pane %s: %v (snapshot sent without cursor restore, as main screen)", pane, err)
-		return rows, false, nil
+		return rows, Screen{}, nil
 	}
 	// CUP is 1-indexed; tmux cursor_x/_y are 0-indexed.
-	return append(rows, []byte(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1))...), alt, nil
+	return append(rows, []byte(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1))...), scr, nil
 }
 
+// cursorFormat asks for the cursor and the Screen state in one display-message,
+// so neither costs a snapshot an extra round-trip.
+const cursorFormat = "#{cursor_x} #{cursor_y} #{alternate_on} " +
+	"#{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag}"
+
 // CursorPosition returns a pane's 0-indexed cursor column (x) and row (y),
-// relative to the top of the visible screen, and whether the pane is on its
-// alternate screen. One display-message answers all three, so the alternate
-// flag costs a snapshot no extra round-trip.
-func (c *Client) CursorPosition(pane string) (x, y int, alt bool, err error) {
-	lines, err := c.Command("display-message", "-p", "-t", pane, "#{cursor_x} #{cursor_y} #{alternate_on}")
+// relative to the top of the visible screen, and its Screen state.
+func (c *Client) CursorPosition(pane string) (x, y int, scr Screen, err error) {
+	lines, err := c.Command("display-message", "-p", "-t", pane, cursorFormat)
 	if err != nil {
-		return 0, 0, false, err
+		return 0, 0, Screen{}, err
 	}
 	if len(lines) == 0 {
-		return 0, 0, false, fmt.Errorf("tmux: empty cursor position for pane %s", pane)
+		return 0, 0, Screen{}, fmt.Errorf("tmux: empty cursor position for pane %s", pane)
 	}
 	return parseCursorReply(lines[0])
 }
 
-// parseCursorReply reads "x y alt". The alternate flag is optional: a tmux
-// that renders #{alternate_on} empty must not cost the cursor restore too, so a
-// two-field reply parses as main screen rather than failing the whole query.
-func parseCursorReply(reply string) (x, y int, alt bool, err error) {
+// parseCursorReply reads "x y alt std btn all sgr". Everything after x and y
+// is optional: a tmux that renders a flag empty must not cost the cursor
+// restore too. A reply without all four mouse flags leaves Mouse unknown.
+func parseCursorReply(reply string) (x, y int, scr Screen, err error) {
 	fields := strings.Fields(reply)
 	if len(fields) < 2 {
-		return 0, 0, false, fmt.Errorf("tmux: parse cursor position %q: want at least x and y", reply)
+		return 0, 0, Screen{}, fmt.Errorf("tmux: parse cursor position %q: want at least x and y", reply)
 	}
 	if x, err = strconv.Atoi(fields[0]); err != nil {
-		return 0, 0, false, fmt.Errorf("tmux: parse cursor x %q: %w", reply, err)
+		return 0, 0, Screen{}, fmt.Errorf("tmux: parse cursor x %q: %w", reply, err)
 	}
 	if y, err = strconv.Atoi(fields[1]); err != nil {
-		return 0, 0, false, fmt.Errorf("tmux: parse cursor y %q: %w", reply, err)
+		return 0, 0, Screen{}, fmt.Errorf("tmux: parse cursor y %q: %w", reply, err)
 	}
-	return x, y, len(fields) > 2 && fields[2] == "1", nil
+	on := func(i int) bool { return len(fields) > i && fields[i] == "1" }
+	scr.Alt = on(2)
+	if len(fields) == 7 {
+		scr.Mouse = MouseModes{Known: true, Standard: on(3), Button: on(4), All: on(5), SGR: on(6)}
+	}
+	return x, y, scr, nil
 }
 
 // CapturePlain returns a pane's visible contents as plain text (no escape

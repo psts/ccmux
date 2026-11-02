@@ -23,6 +23,8 @@ const state = {
   tabDrag: null,     // pane id of the tab being dragged along the strip, else null
   paneCols: 0,       // authoritative width of the current pane (from the daemon)
   gitOpen: {},       // wsId -> true when the row's changed-files list is expanded
+  harnessIcons: {},  // harness name -> its icon from Settings, for the tab strip
+  iconsFor: null,    // the session harnessIcons was last read for
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1212,6 +1214,9 @@ function ensureTerm() {
   state.fit = new FitAddon.FitAddon();
   state.term.loadAddon(state.fit);
   state.term.open($("terminal"));
+  // A finger scrolls Claude and opencode too, which xterm.js leaves to the
+  // mouse once they capture it (touchscroll.js).
+  if (window.ccmuxTouchScroll) window.ccmuxTouchScroll.attach(state.term);
   state.term.onData((d) => sendInput(d));
   window.addEventListener("resize", scheduleFit);
   // visibility/focus does double duty:
@@ -1320,6 +1325,7 @@ async function attach(wsId, wantPane) {
   state.wsId = wsId;
   state.wantPane = wantPane;
   if (window.ccmuxPage) window.ccmuxPage.onAttach(wsId);
+  if (state.iconsFor !== wsId) loadHarnessIcons(wsId);
   if (!state.board) delete state.attn[wsId]; // opening it marks its attention seen; a board tile does not
   $("empty").style.display = "none";
   $("harness-bar").classList.add("hidden"); // re-derived from the next hello
@@ -1562,13 +1568,52 @@ function renderTabs() {
     b.dataset.pane = p.id;
     b.title = [p.agent ? `agent ${p.agent}` + (p.atShell || p.dormant ? " — asleep" : "")
       : p.dormant ? "Claude exited — shell only" : "", updateTip(p.claudeUpdate)].filter(Boolean).join("\n");
-    b.textContent = (p.agent ? "⚙ " : "") + (p.title || `pane ${i + 1}`) + (p.claudeUpdate ? " ↻" : "");
+    const icon = document.createElement("span");
+    icon.className = "tab-icon";
+    icon.textContent = tabIcon(p);
+    const label = document.createElement("span");
+    label.className = "tab-label";
+    label.textContent = (p.agent ? "⚙ " : "") + (p.title || `pane ${i + 1}`) + (p.claudeUpdate ? " ↻" : "");
+    b.append(icon, label);
+    b.setAttribute("aria-label", label.textContent); // a phone shows the icon only
     // A drop ends with a click on the same button; that click must not switch panes.
     b.onclick = () => { if (!state.tabDrag) attach(state.wsId, p.id); };
     b.oncontextmenu = (e) => { e.preventDefault(); if (!state.tabDrag) openPaneLLMMenu(p.id, e.clientX, e.clientY); };
     wireTabDrag(b, p.id);
     tabs.appendChild(b);
   });
+}
+
+// tabIcon is the glyph a tab shows for what runs in it: the harness's icon
+// from Settings (✳ claude, ⌬ opencode, …), its first letter when it has none,
+// ▶ for the dev server, and >_ for a plain terminal. A phone shows only this.
+function tabIcon(p) {
+  if (p.devServer) return "▶";
+  if (!p.harness) return ">_";
+  return state.harnessIcons[p.harness] || p.harness.charAt(0).toUpperCase();
+}
+
+// rememberHarnessIcons keeps the harness icons from a settings read for the
+// tab strip, and redraws it when they changed.
+function rememberHarnessIcons(cfg) {
+  const icons = {};
+  for (const h of (cfg && cfg.harnesses) || []) if (h.icon) icons[h.name] = h.icon;
+  if (JSON.stringify(icons) === JSON.stringify(state.harnessIcons)) return;
+  state.harnessIcons = icons;
+  renderTabs();
+}
+
+// loadHarnessIcons reads a session's harness icons once per session shown.
+// A failed read keeps the icons there were; tabs then show letters at worst.
+async function loadHarnessIcons(wsId) {
+  state.iconsFor = wsId;
+  const ws = state.workspaces.find((w) => w.id === wsId);
+  try {
+    rememberHarnessIcons(await (await fetch(settingsURLFor(ws))).json());
+  } catch (e) {
+    console.warn("harness icons unreadable; tabs show letters:", e);
+    state.iconsFor = null; // try again on the next attach
+  }
 }
 
 // Right-click on a pane tab: pick which LLM account answers THIS pane. The
@@ -1693,6 +1738,7 @@ async function updateHarnessBar() {
   try {
     cfg = await (await fetch(settingsURLFor(ws))).json();
   } catch (_) { setHarnessBar(false); return; }
+  rememberHarnessIcons(cfg);
   if (state.paneId !== paneId) return; // switched tabs while fetching
   const harnesses = cfg.harnesses || [];
   if (!harnesses.length) { setHarnessBar(false); return; }

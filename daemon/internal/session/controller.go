@@ -249,13 +249,13 @@ func (c *Controller) Capture(paneID string, historyLines int) ([]byte, error) {
 	return c.client.CapturePane(ref.pane, historyLines)
 }
 
-// CaptureScreen is Capture of the visible screen plus whether the pane is on its
-// alternate screen, for a snapshot frame that has to reproduce that state in the
-// lens (see api.snapshotFrame).
-func (c *Controller) CaptureScreen(paneID string) (rows []byte, alt bool, err error) {
+// CaptureScreen is Capture of the visible screen plus the pane's Screen state
+// (alternate buffer, mouse reports), for a snapshot frame that has to
+// reproduce that state in the lens (see api.snapshotFrame).
+func (c *Controller) CaptureScreen(paneID string) (rows []byte, scr tmux.Screen, err error) {
 	ref := c.ref(paneID)
 	if ref == nil {
-		return nil, false, fmt.Errorf("unknown pane %s", paneID)
+		return nil, tmux.Screen{}, fmt.Errorf("unknown pane %s", paneID)
 	}
 	return c.client.CaptureScreen(ref.pane)
 }

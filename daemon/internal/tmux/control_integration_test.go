@@ -567,8 +567,8 @@ func TestCaptureScreen_ReportsAlternateScreen(t *testing.T) {
 	}
 	defer c.Close()
 
-	if _, alt, err := c.CaptureScreen("it"); err != nil || alt {
-		t.Fatalf("fresh shell: alt=%v err=%v, want off", alt, err)
+	if _, scr, err := c.CaptureScreen("it"); err != nil || scr.Alt {
+		t.Fatalf("fresh shell: alt=%v err=%v, want off", scr.Alt, err)
 	}
 	if err := c.SendKeys("it", []byte("printf '\\033[?1049h'\n")); err != nil {
 		t.Fatalf("send-keys: %v", err)
@@ -584,14 +584,63 @@ func waitAlternateScreen(t *testing.T, c *Client, want bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		_, alt, err := c.CaptureScreen("it")
+		_, scr, err := c.CaptureScreen("it")
 		if err != nil {
 			t.Fatalf("capture: %v", err)
 		}
-		if alt == want {
+		if scr.Alt == want {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("pane alternate screen never became %v", want)
+}
+
+// TestCaptureScreen_ReportsMouseModes pins the mouse half of Screen: tmux
+// reports the modes a program asked for (here 1000 + 1006, as Claude Code in
+// wheel-only mode asks), and reports them off again when it lets go.
+func TestCaptureScreen_ReportsMouseModes(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	const socket = "ccmux-mousecap-itest"
+	tmuxRun(t, socket, "kill-server")
+	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, socket, "it", newCollectHandler())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	waitMouse := func(want MouseModes) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		var got MouseModes
+		for time.Now().Before(deadline) {
+			_, scr, err := c.CaptureScreen("it")
+			if err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			if got = scr.Mouse; got == want {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("mouse modes = %+v, want %+v", got, want)
+	}
+	waitMouse(MouseModes{Known: true})
+	if err := c.SendKeys("it", []byte("printf '\\033[?1000h\\033[?1006h'\n")); err != nil {
+		t.Fatalf("send-keys: %v", err)
+	}
+	waitMouse(MouseModes{Known: true, Standard: true, SGR: true})
+	if err := c.SendKeys("it", []byte("printf '\\033[?1000l\\033[?1006l'\n")); err != nil {
+		t.Fatalf("send-keys: %v", err)
+	}
+	waitMouse(MouseModes{Known: true})
 }
