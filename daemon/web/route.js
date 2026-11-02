@@ -35,14 +35,16 @@
     return "/" + (s ? "?" + s : "");
   }
 
-  // bootTarget is the window a page opened at w/ws should show. The session
-  // decides while it belongs to a window: the window in a link can be out of
-  // date (the session moved, the window was deleted). A session in no window
-  // left it or was deleted, so then the window in the address stays, while it
-  // exists.
-  function bootTarget(windows, w, ws) {
+  // bootTarget is the window a page opened at w/ws should show, "" for none.
+  // The session decides while it belongs to a window: the window in a link can
+  // be out of date (the session moved, the window was deleted). A live session
+  // in no window (AVAILABLE) is shown on its own, so it pins none. Only a
+  // session that no longer exists leaves the address's window to stand, while
+  // that window exists.
+  function bootTarget(windows, sessions, w, ws) {
     const byWs = ws ? windowOf(windows, ws) : "";
     if (byWs) return byWs;
+    if (ws && (sessions || []).some((x) => x.id === ws)) return "";
     return (windows || []).some((x) => x.id === w) ? w : "";
   }
 

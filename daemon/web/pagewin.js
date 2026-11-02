@@ -172,10 +172,12 @@
     // the address is where the page was, the tap is where the user asked to go.
     const w = opened.w;
     const ws = state.wsId || opened.ws;
-    const target = R.bootTarget(state.windows, w, ws);
+    const target = R.bootTarget(state.windows, state.workspaces, w, ws);
     if (target) return enter(target, ws);
-    if (ws) return openWorkspace(ws, null); // a session in no window: show it, no window to pin
-    return launch();
+    if (!ws) return launch();
+    // A session in no window: show it, no window to pin (already on screen
+    // when a tap opened it while the page was starting).
+    if (ws !== state.wsId) openWorkspace(ws, null);
   }
 
   // onAttach follows a session into its window: a click on another window's

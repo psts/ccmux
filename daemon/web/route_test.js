@@ -82,15 +82,17 @@ test("unreadable storage means nothing remembered, never a throw", () => {
 
 test("the session in a link picks the window, not a stale window id", () => {
   const windows = [{ id: "a", workspaceIds: ["s1"] }, { id: "b", workspaceIds: ["s2"] }];
-  assert.strictEqual(R.bootTarget(windows, "a", "s2"), "b"); // s2 moved to b after the link was made
-  assert.strictEqual(R.bootTarget(windows, "gone", "s1"), "a"); // window deleted
-  assert.strictEqual(R.bootTarget(windows, "a", ""), "a");
-  assert.strictEqual(R.bootTarget(windows, "gone", ""), "");
-  // A session in no window: with a window in the address it left or was
-  // deleted, so the window stays; with none it pins nothing.
-  assert.strictEqual(R.bootTarget(windows, "a", "loose"), "a");
-  assert.strictEqual(R.bootTarget(windows, "", "loose"), "");
-  assert.strictEqual(R.bootTarget(windows, "gone", "loose"), "");
+  const live = [{ id: "s1" }, { id: "s2" }, { id: "loose" }];
+  assert.strictEqual(R.bootTarget(windows, live, "a", "s2"), "b"); // s2 moved to b after the link was made
+  assert.strictEqual(R.bootTarget(windows, live, "gone", "s1"), "a"); // window deleted
+  assert.strictEqual(R.bootTarget(windows, live, "a", ""), "a");
+  assert.strictEqual(R.bootTarget(windows, live, "gone", ""), "");
+  // A live session in no window (AVAILABLE) shows on its own, whatever the
+  // address says; only a session that is gone falls back to the address's window.
+  assert.strictEqual(R.bootTarget(windows, live, "a", "loose"), "");
+  assert.strictEqual(R.bootTarget(windows, live, "a", "deleted"), "a");
+  assert.strictEqual(R.bootTarget(windows, live, "", "deleted"), "");
+  assert.strictEqual(R.bootTarget(windows, live, "gone", "deleted"), "");
 });
 
 test("a missed tap is taken by whoever reads it, unless it is stale", () => {

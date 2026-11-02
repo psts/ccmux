@@ -40,7 +40,7 @@ const el = () => new Proxy(function () {}, {
 // /v1/windows answer in turn, and gate lets it hold one open so two reads can
 // resolve OUT OF ORDER. `book` is the bookkeeping the cases read back.
 function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null, whoami = null,
-  whoamiGate = null }, book) {
+  whoamiGate = null, workspacesReply = null }, book) {
   // A fetch that never settles, unless its abort signal fires — the shape of
   // a half-open connection.
   const hang = (signal) => new Promise((_, reject) => {
@@ -49,7 +49,7 @@ function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null,
   return async (url, opts) => {
     const u = String(url);
     book.fetched.push({ url: u, method: (opts && opts.method) || "GET", body: opts && opts.body });
-    if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => [] };
+    if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => (workspacesReply ? workspacesReply() : []) };
     if (u.startsWith("/v1/whoami")) {
       if (whoami === "hang") return hang(opts && opts.signal);
       if (whoami === null) return { ok: false, status: 404, json: async () => ({}) };
@@ -270,7 +270,7 @@ async function pageWindowCases() {
     pendingNav: `/?w=win-b&ws=ws-2&t=${Date.now()}` });
   await settle();
   check("a window that missed the message still opens the tapped session, in its window",
-    attachedTo(missed).includes("ws-2") && missed.ctx.ccmuxPage.current() === "win-b",
+    missed.evalIn("state.wsId") === "ws-2" && missed.ctx.ccmuxPage.current() === "win-b",
     `attached ${attachedTo(missed).join()}, current ${missed.ctx.ccmuxPage.current()}`);
   const stale = run({ windowsReply: twoWindows, search: "?w=win-a", withPush: true,
     pendingNav: `/?w=win-b&ws=ws-2&t=${Date.now() - 61000}` });
@@ -278,6 +278,19 @@ async function pageWindowCases() {
   check("a tap nobody took for a minute is dropped, not replayed",
     !attachedTo(stale).includes("ws-2") && stale.cacheDeletes.includes("/__ccmux_pending_nav") &&
     stale.ctx.ccmuxPage.current() === "win-a", `attached ${attachedTo(stale).join()}, deletes ${stale.cacheDeletes.join()}`);
+
+  // A live session in no window (AVAILABLE) is not a deleted one: a reload of
+  // a page showing it, or a tap for it read while the page starts, shows it.
+  const sessions = () => [{ id: "ws-1" }, { id: "ws-2" }, { id: "loose" }];
+  const avail = run({ windowsReply: twoWindows, workspacesReply: sessions, search: "?w=win-a&ws=loose" });
+  await settle();
+  check("a reload showing a session in no window keeps showing it",
+    avail.evalIn("state.wsId") === "loose", `on ${avail.evalIn("state.wsId")}`);
+  const looseTap = run({ windowsReply: twoWindows, workspacesReply: sessions, search: "?w=win-a", withPush: true,
+    pendingNav: `/?ws=loose&t=${Date.now()}`, storage: { "ccmux-last-ws:win-a": "ws-1" } });
+  await settle();
+  check("a tap for a session in no window, read while the page starts, is not undone",
+    looseTap.evalIn("state.wsId") === "loose", `on ${looseTap.evalIn("state.wsId")}`);
 
   // A window whose session was deleted keeps its window on a reload or restore.
   const orphan = run({ windowsReply: twoWindows, search: "?w=win-a&ws=gone" });
