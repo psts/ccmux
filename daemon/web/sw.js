@@ -3,7 +3,7 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v28"; // v28: a swipe sends a row per row of travel, and the phone cannot take it over
+const CACHE = "ccmux-shell-v29"; // v29: a swipe in from the left edge opens the session drawer
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.
@@ -22,6 +22,7 @@ const SHELL = [
   "/route.js",
   "/pagewin.js",
   "/touchscroll.js",
+  "/drawerswipe.js",
   "/agentchat.js",
   "/board.js",
   "/owns.js",
