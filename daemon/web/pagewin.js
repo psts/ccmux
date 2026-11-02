@@ -62,10 +62,18 @@
 
   const windowById = (id) => (state.windows || []).find((w) => w.id === id);
   const isMember = (w, ws) => !!(windowById(w) && (windowById(w).workspaceIds || []).includes(ws));
+  // showable says whether session id can be on screen in window w (w may be ""
+  // for the picker): one of w's own sessions, or a live session in no window
+  // (AVAILABLE), which shows inside whatever window this browser window has,
+  // as on the Mac. A session the daemon no longer lists is neither.
+  const isLoose = (id) => (state.workspaces || []).some((x) => x.id === id) && !R.windowOf(state.windows, id);
+  const showable = (w, id) => !!id && (isMember(w, id) || isLoose(id));
 
+  // The session stays in the address whenever it can be shown here, so a
+  // reload lands on it again.
   function syncAddress() {
     if (!booted) return;
-    const ws = current && state.wsId && isMember(current, state.wsId) ? state.wsId : "";
+    const ws = showable(current, state.wsId) ? state.wsId : "";
     try { history.replaceState(null, "", R.href(current, ws)); } catch (_) {}
   }
 
@@ -106,12 +114,13 @@
   }
 
   // showSession picks window w's session: the one asked for, else the one last
-  // shown in it, else none (the session list opens instead).
+  // shown in it, else none (the session list opens instead). A deleted one is
+  // not showable, so it falls to the one last shown.
   function showSession(w, ws) {
-    const pick = [ws, R.recall(store, w)].find((id) => id && isMember(w, id));
+    const pick = [ws, R.recall(store, w)].find((id) => showable(w, id));
     if (pick === state.wsId && pick) return onAttach(pick); // already on screen (opened while boot waited)
     if (pick) return openWorkspace(pick, null);
-    if (state.wsId && !isMember(w, state.wsId)) return detachIfCurrent(state.wsId);
+    if (state.wsId && !showable(w, state.wsId)) return detachIfCurrent(state.wsId);
     openDrawer();
   }
 
@@ -172,16 +181,17 @@
     // the address is where the page was, the tap is where the user asked to go.
     const w = opened.w;
     const ws = state.wsId || opened.ws;
-    const target = R.bootTarget(state.windows, state.workspaces, w, ws);
+    const target = R.bootTarget(state.windows, w, ws);
     if (target) return enter(target, ws);
     if (!ws) return launch();
-    // A session in no window: show it, no window to pin (already on screen
-    // when a tap opened it while the page was starting).
+    // No window to show: the session alone (already on screen when a tap
+    // opened it while the page was starting).
     if (ws !== state.wsId) openWorkspace(ws, null);
   }
 
   // onAttach follows a session into its window: a click on another window's
-  // row, or a notification for it, moves this browser window there.
+  // row, or a notification for it, moves this browser window there. A session
+  // in no window stays in this one.
   function onAttach(wsId) {
     const w = R.windowOf(state.windows, wsId);
     if (w && w !== current) show(w);

@@ -279,18 +279,41 @@ async function pageWindowCases() {
     !attachedTo(stale).includes("ws-2") && stale.cacheDeletes.includes("/__ccmux_pending_nav") &&
     stale.ctx.ccmuxPage.current() === "win-a", `attached ${attachedTo(stale).join()}, deletes ${stale.cacheDeletes.join()}`);
 
-  // A live session in no window (AVAILABLE) is not a deleted one: a reload of
-  // a page showing it, or a tap for it read while the page starts, shows it.
+  // A live session in no window (AVAILABLE) is shown inside the window this
+  // browser window already has, and stays in the address, so a reload, and a
+  // second one, land in the same place.
   const sessions = () => [{ id: "ws-1" }, { id: "ws-2" }, { id: "loose" }];
-  const avail = run({ windowsReply: twoWindows, workspacesReply: sessions, search: "?w=win-a&ws=loose" });
+  const looseStore = {};
+  const avail = run({ windowsReply: twoWindows, workspacesReply: sessions, search: "?w=win-a&ws=loose",
+    storage: looseStore, name: "ccmux-page:loose" });
   await settle();
-  check("a reload showing a session in no window keeps showing it",
-    avail.evalIn("state.wsId") === "loose", `on ${avail.evalIn("state.wsId")}`);
+  check("a session in no window shows inside this browser window's window",
+    avail.evalIn("state.wsId") === "loose" && avail.ctx.ccmuxPage.current() === "win-a" &&
+    lastAddress(avail) === "/?w=win-a&ws=loose",
+    `on ${avail.evalIn("state.wsId")}, current ${avail.ctx.ccmuxPage.current()}, address ${lastAddress(avail)}`);
+  let again = avail;
+  for (let i = 0; i < 2; i++) {
+    const search = lastAddress(again).slice(1);
+    again = run({ windowsReply: twoWindows, workspacesReply: sessions, search, storage: looseStore, name: "ccmux-page:loose" });
+    await settle();
+  }
+  check("reloading twice on a session in no window keeps the window and the session",
+    again.ctx.ccmuxPage.current() === "win-a" && again.evalIn("state.wsId") === "loose" &&
+    lastAddress(again) === "/?w=win-a&ws=loose",
+    `current ${again.ctx.ccmuxPage.current()}, on ${again.evalIn("state.wsId")}, address ${lastAddress(again)}`);
   const looseTap = run({ windowsReply: twoWindows, workspacesReply: sessions, search: "?w=win-a", withPush: true,
     pendingNav: `/?ws=loose&t=${Date.now()}`, storage: { "ccmux-last-ws:win-a": "ws-1" } });
   await settle();
   check("a tap for a session in no window, read while the page starts, is not undone",
-    looseTap.evalIn("state.wsId") === "loose", `on ${looseTap.evalIn("state.wsId")}`);
+    looseTap.evalIn("state.wsId") === "loose" && looseTap.ctx.ccmuxPage.current() === "win-a" &&
+    lastAddress(looseTap) === "/?w=win-a&ws=loose" && !attachedTo(looseTap).includes("ws-1"),
+    `on ${looseTap.evalIn("state.wsId")}, current ${looseTap.ctx.ccmuxPage.current()}, address ${lastAddress(looseTap)}, attached ${attachedTo(looseTap).join()}`);
+  // With no window in the address it shows on its own, and a reload keeps it.
+  const alone = run({ windowsReply: twoWindows, workspacesReply: sessions, search: "?ws=loose" });
+  await settle();
+  check("a session in no window with no window in the address shows alone and stays in the address",
+    alone.evalIn("state.wsId") === "loose" && alone.ctx.ccmuxPage.current() === "" && lastAddress(alone) === "/?ws=loose",
+    `on ${alone.evalIn("state.wsId")}, current ${alone.ctx.ccmuxPage.current()}, address ${lastAddress(alone)}`);
 
   // A window whose session was deleted keeps its window on a reload or restore.
   const orphan = run({ windowsReply: twoWindows, search: "?w=win-a&ws=gone" });
@@ -298,6 +321,13 @@ async function pageWindowCases() {
   check("an address whose session is gone keeps its window",
     orphan.ctx.ccmuxPage.current() === "win-a" && !attachedTo(orphan).includes("gone") && lastAddress(orphan) === "/?w=win-a",
     `current ${orphan.ctx.ccmuxPage.current()}, attached ${attachedTo(orphan).join()}, address ${lastAddress(orphan)}`);
+  const orphanBack = run({ windowsReply: twoWindows, workspacesReply: sessions, search: "?w=win-a&ws=gone",
+    storage: { "ccmux-last-ws:win-a": "ws-1" } });
+  await settle();
+  check("an address whose session is gone shows the window's remembered session",
+    orphanBack.ctx.ccmuxPage.current() === "win-a" && orphanBack.evalIn("state.wsId") === "ws-1" &&
+    lastAddress(orphanBack) === "/?w=win-a&ws=ws-1",
+    `current ${orphanBack.ctx.ccmuxPage.current()}, on ${orphanBack.evalIn("state.wsId")}, address ${lastAddress(orphanBack)}`);
 
   // A reload of the picker is not a relaunch: windows closed earlier stay closed.
   const reloadQuit = JSON.stringify({ me: { w: "", seen: 0, closedAt: 2000 }, p1: { w: "win-a", seen: 0, closedAt: 1000 } });
