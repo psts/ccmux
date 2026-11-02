@@ -103,6 +103,13 @@ test("a missed tap is taken by whoever reads it, unless it is stale", () => {
   assert.strictEqual(R.takesNav("/?ws=s1", now), "take"); // a stash from before windows
 });
 
+test("a launch opens every open window, the one last on screen first", () => {
+  assert.deepStrictEqual(R.launchSet(["a", "b", "c"], ["b"]), ["b", "a", "c"]);
+  assert.deepStrictEqual(R.launchSet(["a", "b"], []), ["a", "b"]); // nothing remembered
+  assert.deepStrictEqual(R.launchSet(["a", "b"], ["gone", "b"]), ["b", "a"]); // closed since
+  assert.deepStrictEqual(R.launchSet([], ["a"]), []);
+});
+
 test("a reload knows its page; a new window does not", () => {
   const s = memStorage();
   assert.strictEqual(R.known(s, "p1"), false);

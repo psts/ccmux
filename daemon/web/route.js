@@ -133,8 +133,18 @@
     return set;
   }
 
+  // launchSet answers a fresh launch: every window open on this device, each
+  // in its own browser window, as the Mac app reopens all of its windows. The
+  // first one lands in the browser window that launched; it is the first of
+  // `recent` (what takeRestoreSet remembers was on screen) that is still open,
+  // else the first open one.
+  function launchSet(open, recent) {
+    const first = (recent || []).find((w) => open.includes(w));
+    return first ? [first, ...open.filter((w) => w !== first)] : open.slice();
+  }
+
   const api = {
-    parse, href, windowOf, bootTarget, takesNav, remember, recall, known, beat, ended, takeRestoreSet,
+    parse, href, windowOf, bootTarget, takesNav, remember, recall, known, beat, ended, takeRestoreSet, launchSet,
     BURST_MS, NAV_TTL_MS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

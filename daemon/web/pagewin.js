@@ -126,20 +126,18 @@
   }
 
   // A launch with no window in the address: Cmd+N while others are open, or a
-  // reload of the picker, shows the picker; a relaunch brings back what was
-  // open. A browser may refuse to open windows nobody clicked for; those get a
-  // button each.
+  // reload of the picker, shows the picker; a fresh launch opens every window
+  // that is open on this device, each in its own browser window. A browser may
+  // refuse to open windows nobody clicked for; those get a button each.
   async function launch() {
     if (reloaded) return picker();
     const live = await othersAlive();
     if (live.size) return picker();
-    const back = R.takeRestoreSet(store, pageId, live).filter(windowById);
-    if (!back.length) {
-      const open = (state.windows || []).filter(openHereOf);
-      return open.length === 1 ? enter(open[0].id, "") : picker();
-    }
-    await enter(back[0], "");
-    const refused = back.slice(1).filter((id) => !window.open(R.href(id, ""), "_blank"));
+    const open = (state.windows || []).filter(openHereOf).map((w) => w.id);
+    const all = R.launchSet(open, R.takeRestoreSet(store, pageId, live));
+    if (!all.length) return picker();
+    await enter(all[0], "");
+    const refused = all.slice(1).filter((id) => !window.open(R.href(id, ""), "_blank"));
     if (refused.length) offerRestore(refused);
   }
 
@@ -226,13 +224,22 @@
       });
   }
 
-  // openClosed opens a closed window from the sidebar. On the picker it lands
-  // here; a browser window already showing one gets a new browser window, as
-  // the Mac app opens a new window for it, unless the browser refuses one.
-  async function openClosed(win) {
+  // openClosed opens a closed window from the sidebar. `where` is "here",
+  // "new", or "" for the click default: on the picker it lands here; a browser
+  // window already showing one gets a new browser window, as the Mac app opens
+  // a new window for it. A refused new window lands here instead.
+  async function openClosed(win, where) {
     if (!(await openWindow(win))) return;
-    if (current && window.open(R.href(win.id, ""), "_blank")) return;
+    const wantNew = where === "new" || (where !== "here" && !!current);
+    if (wantNew && window.open(R.href(win.id, ""), "_blank")) return;
     enter(win.id, "");
+  }
+
+  // openElsewhere shows an open window in a browser window of its own (the
+  // header's "Open in new window"). Refused, it offers a button, which the
+  // browser will allow: it is a click.
+  function openElsewhere(win) {
+    if (!window.open(R.href(win.id, ""), "_blank")) offerRestore([win.id]);
   }
 
   function onClosed(id) {
@@ -242,5 +249,5 @@
   window.addEventListener("pagehide", () => R.ended(store, pageId, Date.now()));
   window.addEventListener("pageshow", () => R.beat(store, pageId, current, Date.now()));
 
-  window.ccmuxPage = { current: () => current, boot, enter, onAttach, onRefresh, onClosed, openClosed, syncAddress };
+  window.ccmuxPage = { current: () => current, boot, enter, onAttach, onRefresh, onClosed, openClosed, openElsewhere, syncAddress };
 })();

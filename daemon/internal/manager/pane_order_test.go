@@ -50,13 +50,11 @@ func TestOrderPanes_ListedFirstRestKeepTheirOrder(t *testing.T) {
 	}
 }
 
-func TestNextPosition_AfterEverything(t *testing.T) {
-	if n := nextPosition(nil); n != 0 {
-		t.Fatalf("empty workspace: %d", n)
-	}
-	// Positions can have gaps after a close; the next pane still goes last.
-	if n := nextPosition([]*model.Pane{{Position: 0}, {Position: 4}}); n != 5 {
-		t.Fatalf("gapped: %d", n)
+func TestRenumber(t *testing.T) {
+	// Positions can have gaps after a close; renumbering closes them.
+	panes := []*model.Pane{{ID: "a", Position: 0}, {ID: "b", Position: 4}}
+	if ids := renumber(panes); !sameIDs(ids, []string{"a", "b"}) || panes[1].Position != 1 {
+		t.Fatalf("renumber: ids %v, b at %d", ids, panes[1].Position)
 	}
 }
 
@@ -177,5 +175,24 @@ func TestRenameWorkspace_PersistsAndAnnounces(t *testing.T) {
 	}
 	if len(all) != 1 || all[0].Name != "🚀 x-poster" {
 		t.Fatalf("after restart: %+v", all)
+	}
+}
+
+// Agent tabs (a pane with a harness: claude, opencode, pi, codex) come before
+// plain terminals, each group keeping its own order, so attaching a session
+// lands on its agent rather than on whichever terminal was opened first.
+func TestAgentsFirst(t *testing.T) {
+	panes := []*model.Pane{
+		{ID: "term1"}, {ID: "claude", Harness: "claude"}, {ID: "term2"}, {ID: "pi", Harness: "pi"},
+	}
+	got := idsOf(agentsFirst(panes))
+	if want := []string{"claude", "pi", "term1", "term2"}; !sameIDs(got, want) {
+		t.Fatalf("agentsFirst = %v, want %v", got, want)
+	}
+	// A drag that puts a terminal first still serves the agents first, in the
+	// order the drag gave them.
+	got = idsOf(agentsFirst(orderPanes(panes, []string{"term2", "pi", "claude"})))
+	if want := []string{"pi", "claude", "term2", "term1"}; !sameIDs(got, want) {
+		t.Fatalf("after a drag = %v, want %v", got, want)
 	}
 }

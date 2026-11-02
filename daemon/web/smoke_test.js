@@ -183,11 +183,41 @@ async function pageWindowCases() {
   check("a window shows the session last shown in it", attachedTo(back).join() === "ws-1",
     `attached ${attachedTo(back).join()}; errors: ${back.errors.join(" | ")}`);
 
+  // A fresh launch with nothing remembered still brings back every window
+  // open on this device, each in its own browser window, as the Mac app does.
   const fresh = run({ windowsReply: twoWindows });
   await settle();
-  check("a launch with two windows open and nothing to restore asks which window",
-    attachedTo(fresh).length === 0 && lastAddress(fresh) === "/" && fresh.opened.length === 0,
-    `attached ${attachedTo(fresh).join()}, address ${lastAddress(fresh)}, opened ${fresh.opened.join()}`);
+  check("a launch with two windows open and nothing remembered opens both",
+    fresh.ctx.ccmuxPage.current() === "win-a" && lastAddress(fresh).startsWith("/?w=win-a") &&
+    fresh.opened.join() === "/?w=win-b",
+    `current ${fresh.ctx.ccmuxPage.current()}, address ${lastAddress(fresh)}, opened ${fresh.opened.join()}`);
+  // A window open on this device but closed in the daemon's list for this
+  // lens (openHere false) stays closed.
+  const oneOpen = () => [twoWindows()[0], { ...twoWindows()[1], openHere: false, open: false }];
+  const partial = run({ windowsReply: oneOpen });
+  await settle();
+  check("a launch opens only the windows open on this device",
+    partial.ctx.ccmuxPage.current() === "win-a" && partial.opened.length === 0,
+    `current ${partial.ctx.ccmuxPage.current()}, opened ${partial.opened.join()}`);
+
+  // Right-click choices on a closed window, and "Open in new window" on an open one.
+  const menus = run({ windowsReply: oneOpen, search: "?w=win-a" });
+  await settle();
+  const winB = menus.evalIn("state.windows").find((w) => w.id === "win-b");
+  await menus.ctx.ccmuxPage.openClosed(winB, "new");
+  await settle();
+  check("Open in new window on a closed window opens a browser window and keeps this one",
+    menus.opened.join() === "/?w=win-b" && menus.ctx.ccmuxPage.current() === "win-a",
+    `opened ${menus.opened.join()}, current ${menus.ctx.ccmuxPage.current()}`);
+  await menus.ctx.ccmuxPage.openClosed(winB, "here");
+  await settle();
+  check("Open here on a closed window moves this browser window to it",
+    menus.opened.length === 1 && menus.ctx.ccmuxPage.current() === "win-b",
+    `opened ${menus.opened.join()}, current ${menus.ctx.ccmuxPage.current()}`);
+  menus.ctx.ccmuxPage.openElsewhere(menus.evalIn("state.windows").find((w) => w.id === "win-a"));
+  check("Open in new window on an open window opens a browser window for it",
+    menus.opened[menus.opened.length - 1] === "/?w=win-a" && menus.ctx.ccmuxPage.current() === "win-b",
+    `opened ${menus.opened.join()}, current ${menus.ctx.ccmuxPage.current()}`);
 
   const quit = JSON.stringify({ p1: { w: "win-a", seen: 0, closedAt: 1000 }, p2: { w: "win-b", seen: 0, closedAt: 1001 } });
   const relaunch = run({ windowsReply: twoWindows, storage: { "ccmux-pages": quit } });

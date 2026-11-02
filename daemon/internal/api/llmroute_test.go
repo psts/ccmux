@@ -168,7 +168,14 @@ func TestSettingsCarriesResolvedPaneOrders(t *testing.T) {
 	}
 	// And a pane with no harness follows the default account, not the
 	// harness order — the two tiers must not bleed into each other.
-	shell := mgr.List()[0].Panes[0].ID
+	// By kind, not by index: agent tabs are served first, so the shell is no
+	// longer Panes[0] once the claude pane exists.
+	var shell string
+	for _, p := range mgr.List()[0].Panes {
+		if p.Harness == "" {
+			shell = p.ID
+		}
+	}
 	// Asserted POSITIVELY: a negative check here passed on an empty result,
 	// so it stayed green if the field vanished or the endpoint failed — and
 	// it would also have stayed green if tier 3 disappeared entirely.

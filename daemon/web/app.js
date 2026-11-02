@@ -455,7 +455,11 @@ function appendClosedWindows(ul, closed) {
       `<span class="owner-tag">${n} repo${n === 1 ? "" : "s"}</span>` +
       `<button class="more" title="Open window">▸</button>` +
       `</div>`;
-    li.onclick = () => (window.ccmuxPage ? window.ccmuxPage.openClosed(win) : openWindow(win));
+    li.onclick = () => (window.ccmuxPage ? window.ccmuxPage.openClosed(win, "") : openWindow(win));
+    li.oncontextmenu = (e) => {
+      e.preventDefault();
+      if (window.ccmuxPage) openClosedWindowMenu(win, e.clientX, e.clientY);
+    };
     ul.appendChild(li);
   }
 }
@@ -693,6 +697,9 @@ function showMenuAt(menu, x, y) {
 function openWindowMenu(win, x, y) {
   const menu = $("ctx-menu");
   menu.innerHTML = "";
+  if (window.ccmuxPage && win.id !== pageWindow()) {
+    menuButton(menu, "Open in new window", () => window.ccmuxPage.openElsewhere(win));
+  }
   const line = document.createElement("div");
   line.className = "host-line";
   line.textContent = "⚙ agents in " + win.name;
@@ -747,6 +754,23 @@ async function sleepAgent(winId, name) {
 }
 
 function closeWsMenu() { $("ctx-menu").classList.add("hidden"); }
+
+// menuButton adds one entry to a context menu; picking it closes the menu.
+function menuButton(menu, label, fn) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.onclick = () => { closeWsMenu(); fn(); };
+  menu.appendChild(b);
+}
+
+// openClosedWindowMenu is a closed window row's right-click: where to open it.
+function openClosedWindowMenu(win, x, y) {
+  const menu = $("ctx-menu");
+  menu.innerHTML = "";
+  menuButton(menu, "Open here", () => window.ccmuxPage.openClosed(win, "here"));
+  menuButton(menu, "Open in new window", () => window.ccmuxPage.openClosed(win, "new"));
+  showMenuAt(menu, x, y);
+}
 
 async function setDevServer(id, start) {
   const r = await fetch(`/v1/workspaces/${id}/dev-server`, {

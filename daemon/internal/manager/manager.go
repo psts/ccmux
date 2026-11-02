@@ -181,6 +181,10 @@ func (m *Manager) Start() error {
 		live[meta.WorkspaceID] = true
 	}
 	for _, ws := range saved {
+		// Agents first in sessions saved before that rule; the store catches
+		// up on the next change to the order.
+		ws.Panes = agentsFirst(ws.Panes)
+		renumber(ws.Panes)
 		m.adopt(ws, live[ws.ID])
 	}
 	return nil
@@ -465,10 +469,16 @@ func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnes
 	m.deliverStartup(e.ctrl, p.ID, deliverCmd, confirm)
 
 	m.mu.Lock()
-	p.Position = nextPosition(e.ws.Panes)
-	e.ws.Panes = append(e.ws.Panes, p)
+	// A new agent tab goes after the other agents and before the terminals; a
+	// new terminal goes last. Either way the rest may shift, so all of them
+	// are renumbered and saved.
+	e.ws.Panes = agentsFirst(append(e.ws.Panes, p))
+	ordered := renumber(e.ws.Panes)
 	m.mu.Unlock()
 	_ = m.store.SavePane(p)
+	if err := m.store.UpdatePanePositions(wsID, ordered); err != nil {
+		log.Printf("workspace %s: pane order not persisted (lenses still follow it until restart): %v", wsID, err)
+	}
 	return p, nil
 }
 

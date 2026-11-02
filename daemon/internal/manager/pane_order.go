@@ -11,6 +11,11 @@ import (
 // tab, the daemon renumbers, and every other lens redraws its strip from the
 // served order. The Mac keeps its own split geometry in the layout blob, but
 // within a leaf its tabs follow this order too, so the two lenses agree.
+//
+// Agent tabs always come first (agentsFirst): a lens attaching a session opens
+// its first tab, and that should be the agent, not the terminal that happened
+// to be opened before it. Every path that sets the order goes through it: a
+// drag, a new tab, and the load at startup.
 
 // ReorderPanes puts the listed panes first, in the given order, and keeps the
 // rest behind them in their old order. Ids the workspace does not hold are
@@ -24,12 +29,8 @@ func (m *Manager) ReorderPanes(wsID string, ids []string) (*model.Workspace, err
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w %s", ErrUnknownWorkspace, wsID)
 	}
-	e.ws.Panes = orderPanes(e.ws.Panes, ids)
-	ordered := make([]string, len(e.ws.Panes))
-	for i, p := range e.ws.Panes {
-		p.Position = i
-		ordered[i] = p.ID
-	}
+	e.ws.Panes = agentsFirst(orderPanes(e.ws.Panes, ids))
+	ordered := renumber(e.ws.Panes)
 	ws := e.ws
 	m.mu.Unlock()
 	if err := m.store.UpdatePanePositions(wsID, ordered); err != nil {
@@ -61,13 +62,31 @@ func orderPanes(panes []*model.Pane, ids []string) []*model.Pane {
 	return out
 }
 
-// nextPosition is where a new pane goes: after everything the workspace holds.
-func nextPosition(panes []*model.Pane) int {
-	next := 0
+// agentsFirst puts the panes with a harness (claude, opencode, pi, codex, an
+// agent) ahead of plain shells, each group keeping its order. Stable, so it is
+// safe to apply to an order that already holds.
+func agentsFirst(panes []*model.Pane) []*model.Pane {
+	out := make([]*model.Pane, 0, len(panes))
 	for _, p := range panes {
-		if p.Position >= next {
-			next = p.Position + 1
+		if p.Harness != "" {
+			out = append(out, p)
 		}
 	}
-	return next
+	for _, p := range panes {
+		if p.Harness == "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// renumber makes each pane's Position its index and returns the ids in order,
+// the shape UpdatePanePositions takes.
+func renumber(panes []*model.Pane) []string {
+	ids := make([]string, len(panes))
+	for i, p := range panes {
+		p.Position = i
+		ids[i] = p.ID
+	}
+	return ids
 }
