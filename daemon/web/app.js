@@ -53,12 +53,28 @@ const deviceId = (() => {
 // holding a window open. Recomputed rather than stored: the name can change.
 const deviceLabel = () => currentName() + " (web)";
 
+// A phone is a SUPPORT lens: it mirrors what its person has open on their
+// computers rather than keeping windows of its own. It lists every window open
+// for the person (`open`, not `openHere`), holds nothing open by looking, has
+// no close, and starts in the session they last typed in (pagewin.js). A
+// window it does open is opened for the person, under a "phone:" device the
+// daemon clears whenever any of their computers closes that window
+// (store.PhoneDevicePrefix). Decided once at load: a narrow desktop window is
+// not a phone, and the device id must not change under a running page.
+const phoneLens = !!(window.matchMedia && window.matchMedia("(max-width: 700px) and (pointer: coarse)").matches);
+window.ccmuxPhone = phoneLens;
+// The device a window open or close is recorded under. Exported for the
+// smoke test, the only reader outside this file.
+const windowDevice = phoneLens ? "phone:" + deviceId : deviceId;
+window.ccmuxWindowDevice = windowDevice;
+
 // Does THIS lens hold the window open? `openHere` is per-device; `open` is
 // per-login and cannot answer it. The fallback is for a daemon older than the
 // field: without it a newer lens reads every window as closed, renders live
 // windows as closed rows, and clicking one opens a second window onto a shared
 // one. Module scope so the smoke test can assert it directly.
 function openHereOf(w) {
+  if (phoneLens) return !!w.open; // a phone mirrors its person's computers
   return w.openHere ?? w.open;
 }
 
@@ -84,12 +100,13 @@ function openHereOf(w) {
 // so the TTL still reaches it — that case is untouched.
 let lastKeepAliveAt = 0;
 async function keepOpenFlagsAlive() {
+  if (phoneLens) return; // a phone holds nothing open by looking
   if (Date.now() - lastKeepAliveAt < 12 * 3600 * 1000) return;
   lastKeepAliveAt = Date.now();
   for (const w of (state.windows || []).filter(openHereOf)) {
     try {
       const r = await fetch(
-        `/v1/windows/${w.id}/open?device=${encodeURIComponent(deviceId)}` +
+        `/v1/windows/${w.id}/open?device=${encodeURIComponent(windowDevice)}` +
         `&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
       if (!r.ok) {
         lastKeepAliveAt = 0; // released, so the next read retries
@@ -100,6 +117,22 @@ async function keepOpenFlagsAlive() {
       console.error("open-flag keep-alive failed:", w.id, e);
     }
   }
+}
+
+// clearPhoneLeftovers drops the open flags a phone set under its plain device
+// id before it became a support lens: nothing would ever clear or re-assert
+// them, so each kept its window, and the window's sessions, awake for
+// store.OpenFlagTTL. An empty open-set clears exactly that one device's rows.
+// Runs on every phone load; after the first it finds nothing to clear.
+function clearPhoneLeftovers() {
+  if (!phoneLens) return;
+  fetch("/v1/windows/open-set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device: deviceId, deviceLabel: deviceLabel(), windowIds: [] }),
+  }).then((r) => {
+    if (!r.ok) console.warn("phone: clearing old open flags failed:", r.status);
+  }).catch((e) => console.warn("phone: clearing old open flags failed:", e));
 }
 
 // Who the daemon takes this lens for, from GET /v1/whoami at boot. On the
@@ -264,7 +297,7 @@ async function fetchWorkspaces() {
       fetch("/v1/workspaces"),
       // device= so each window reports openHere: whether THIS lens holds it,
       // which openBy (per-login) cannot answer.
-      fetch("/v1/windows?device=" + encodeURIComponent(deviceId)),
+      fetch("/v1/windows?device=" + encodeURIComponent(windowDevice)),
     ]);
     // Parse BEFORE the staleness test: the bodies have to be consumed either
     // way, and the test has to sit as close to the write as possible.
@@ -414,7 +447,7 @@ function groupHeader(group, win, here) {
   const h = document.createElement("li");
   h.className = "group-hdr" + (win && win.id === here ? " current" : "");
   h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
-    (win ? `<button class="grp-close" title="Close window">–</button>` : "") +
+    (win && !phoneLens ? `<button class="grp-close" title="Close window">–</button>` : "") +
     `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>` +
     (win ? `<button class="grp-agents" title="Agents in ${esc(group)}">⚙</button>` : "");
   h.querySelector(".grp-msgs").onclick = (e) => {
@@ -422,7 +455,7 @@ function groupHeader(group, win, here) {
     window.ccmuxPeers.open(group);
   };
   if (!win) return h;
-  h.querySelector(".grp-close").onclick = (e) => {
+  if (!phoneLens) h.querySelector(".grp-close").onclick = (e) => {
     e.stopPropagation();
     closeWindow(win);
   };
@@ -521,7 +554,7 @@ function ownerLabel(ws) {
 // when the window is now open here (a member that would not wake still is).
 async function openWindow(win) {
   try {
-    const r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(deviceId)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
+    const r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(windowDevice)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
     if (!r.ok) { alert("open failed: " + (await r.text())); return false; }
     for (const wsId of win.workspaceIds || []) {
       const ws = state.workspaces.find((w) => w.id === wsId);
@@ -543,7 +576,7 @@ async function openWindow(win) {
 // which is the model's own permission).
 async function closeWindow(win) {
   try {
-    const r = await fetch(`/v1/windows/${win.id}/close?device=${encodeURIComponent(deviceId)}`, { method: "POST" });
+    const r = await fetch(`/v1/windows/${win.id}/close?device=${encodeURIComponent(windowDevice)}`, { method: "POST" });
     if (!r.ok) { alert("close failed: " + (await r.text())); return; }
     const out = await r.json();
     if (out.last) {
@@ -3144,6 +3177,7 @@ $("menu-toggle").onclick = toggleDrawer;
 $("drawer-backdrop").onclick = closeDrawer;
 $("takeover").onclick = takeOver;
 identityReady.then(() => {
+  clearPhoneLeftovers();
   fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-link attach dials direct
   connectFirehose();
 });

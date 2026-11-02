@@ -40,7 +40,7 @@ const el = () => new Proxy(function () {}, {
 // /v1/windows answer in turn, and gate lets it hold one open so two reads can
 // resolve OUT OF ORDER. `book` is the bookkeeping the cases read back.
 function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null, whoami = null,
-  whoamiGate = null, workspacesReply = null }, book) {
+  whoamiGate = null, workspacesReply = null, lastSession = "" }, book) {
   // A fetch that never settles, unless its abort signal fires — the shape of
   // a half-open connection.
   const hang = (signal) => new Promise((_, reject) => {
@@ -49,6 +49,7 @@ function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null,
   return async (url, opts) => {
     const u = String(url);
     book.fetched.push({ url: u, method: (opts && opts.method) || "GET", body: opts && opts.body });
+    if (u.startsWith("/v1/me/last-session")) return { ok: true, status: 200, json: async () => ({ workspaceId: lastSession }) };
     if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => (workspacesReply ? workspacesReply() : []) };
     if (u.startsWith("/v1/whoami")) {
       if (whoami === "hang") return hang(opts && opts.signal);
@@ -191,13 +192,7 @@ async function pageWindowCases() {
     fresh.ctx.ccmuxPage.current() === "win-a" && lastAddress(fresh).startsWith("/?w=win-a") &&
     fresh.opened.join() === "/?w=win-b",
     `current ${fresh.ctx.ccmuxPage.current()}, address ${lastAddress(fresh)}, opened ${fresh.opened.join()}`);
-  // A phone has one window: a launch shows the first and opens no others, so
-  // there is nothing to offer back either.
-  const phone = run({ windowsReply: twoWindows, phone: true });
-  await settle();
-  check("a launch on a phone shows the first window and opens no others",
-    phone.ctx.ccmuxPage.current() === "win-a" && phone.opened.length === 0,
-    `current ${phone.ctx.ccmuxPage.current()}, opened ${phone.opened.join()}`);
+  await phoneCases();
   // A window open on this device but closed in the daemon's list for this
   // lens (openHere false) stays closed.
   const oneOpen = () => [twoWindows()[0], { ...twoWindows()[1], openHere: false, open: false }];
@@ -387,6 +382,60 @@ async function pageWindowCases() {
   await settle();
   check("opening another window's session moves this browser window there",
     lastAddress(follow) === "/?w=win-b&ws=ws-2" && follow.ctx.ccmuxPage.current() === "win-b", lastAddress(follow));
+}
+
+// phoneCases: a phone is a support lens. It mirrors what its person has open
+// on their computers, holds nothing open by looking, and starts in the session
+// they last typed in.
+async function phoneCases() {
+  // Open for the person on a computer, not on this phone: still listed open.
+  const onComputer = () => twoWindows().map((w) => ({ ...w, openHere: false }));
+  const posts = (r, path) => r.fetched.filter((f) => f.method === "POST" && f.url.includes(path));
+
+  const plain = run({ windowsReply: onComputer, phone: true });
+  await settle();
+  check("a phone with no last session starts in the first window open for its person, and opens no others",
+    plain.ctx.ccmuxPage.current() === "win-a" && plain.opened.length === 0,
+    `current ${plain.ctx.ccmuxPage.current()}, opened ${plain.opened.join()}`);
+  check("a phone holds nothing open by looking: no open flag is written for a window open on the computer",
+    posts(plain, "/open?").length === 0, posts(plain, "/open?").map((f) => f.url).join(" "));
+  const leftovers = posts(plain, "/v1/windows/open-set").map((f) => JSON.parse(f.body));
+  check("a phone clears the open flags it set under its plain device id, and only those",
+    leftovers.length === 1 && !leftovers[0].device.startsWith("phone:") && leftovers[0].windowIds.length === 0,
+    JSON.stringify(leftovers));
+
+  const live = () => [{ id: "ws-1" }, { id: "ws-2" }];
+  const last = run({ windowsReply: onComputer, workspacesReply: live, phone: true, lastSession: "ws-2" });
+  await settle();
+  check("a phone starts in the session its person last typed in, inside that session's window",
+    last.ctx.ccmuxPage.current() === "win-b" && attachedTo(last).join() === "ws-2",
+    `current ${last.ctx.ccmuxPage.current()}, attached ${attachedTo(last).join()}`);
+  // The last session's window was closed on the computer: the phone neither
+  // reopens it nor wakes its sessions; it starts in a window that is open.
+  const shut = () => [onComputer()[0], { ...twoWindows()[1], open: false, openHere: false }];
+  const closedHome = run({ windowsReply: shut, workspacesReply: live, phone: true, lastSession: "ws-2" });
+  await settle();
+  check("a last session whose window was closed on the computer does not reopen it",
+    closedHome.ctx.ccmuxPage.current() === "win-a" && posts(closedHome, "/open?").length === 0 &&
+    posts(closedHome, "/revive").length === 0 && !attachedTo(closedHome).includes("ws-2"),
+    `current ${closedHome.ctx.ccmuxPage.current()}, opens ${posts(closedHome, "/open?").length}, attached ${attachedTo(closedHome).join()}`);
+  const gone = run({ windowsReply: onComputer, workspacesReply: live, phone: true, lastSession: "deleted" });
+  await settle();
+  check("a last session that no longer exists falls back to the first open window",
+    gone.ctx.ccmuxPage.current() === "win-a" && !attachedTo(gone).includes("deleted"),
+    `current ${gone.ctx.ccmuxPage.current()}, attached ${attachedTo(gone).join()}`);
+
+  // A window closed everywhere, opened from the phone, is opened for the person
+  // under the phone's own device, which the computer's close clears.
+  const closedAll = () => [onComputer()[0], { ...twoWindows()[1], open: false, openHere: false }];
+  const opener = run({ windowsReply: closedAll, phone: true });
+  await settle();
+  await opener.ctx.ccmuxPage.openClosed(opener.evalIn("state.windows").find((w) => w.id === "win-b"), "here");
+  await settle();
+  const opens = posts(opener, "/v1/windows/win-b/open?");
+  check("opening a window from the phone records it under the phone's device",
+    opens.length >= 1 && opens.every((f) => f.url.includes("device=phone%3A")) && opener.opened.length === 0,
+    opens.map((f) => f.url).join(" ") + " opened " + opener.opened.join());
 }
 
 // cmdNCase: Cmd+N while another window is open. The two pages share storage

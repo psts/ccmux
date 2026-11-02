@@ -762,11 +762,20 @@ type WindowOpenFlag struct {
 	Seen     int64 // unix millis
 }
 
+// PhoneDevicePrefix marks a support lens's device id (the web lens on a phone,
+// "phone:<id>"). A phone mirrors what its person has open on their computers:
+// it can open a window for them, but it has no close of its own, so a close
+// from any of that person's other lenses clears the phone's row for the window
+// too. Without that, a window opened from the phone stayed open, and its
+// sessions awake, for OpenFlagTTL after the computer closed it.
+const PhoneDevicePrefix = "phone:"
+
 // SetWindowOpen records (or clears) one lens's open flag on a window.
 //
 // An empty Device clears EVERY row for that login and window, which is what a
 // lens too old to send one means by "close": it has no way to name a device, so
-// it can only mean all of them. With a device it clears exactly its own.
+// it can only mean all of them. With a device it clears exactly its own, and
+// the person's phone rows for that window (PhoneDevicePrefix).
 func (s *SQLite) SetWindowOpen(f WindowOpenFlag, open bool) error {
 	if !open {
 		if f.Device == "" {
@@ -781,8 +790,8 @@ func (s *SQLite) SetWindowOpen(f WindowOpenFlag, open bool) error {
 		// workspaces that lens still had on screen — and daemon/app version
 		// skew is the normal case during a release. The remnants drain on their
 		// own: migrateWindowOpenDevices stamps them to expire within a day.
-		_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=? AND device=?`,
-			f.Login, f.WindowID, f.Device)
+		_, err := s.db.Exec(`DELETE FROM window_open WHERE login=? AND window_id=? AND (device=? OR device LIKE ?)`,
+			f.Login, f.WindowID, f.Device, PhoneDevicePrefix+"%")
 		return err
 	}
 	if f.Seen == 0 {

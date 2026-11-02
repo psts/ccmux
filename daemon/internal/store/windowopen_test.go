@@ -188,6 +188,49 @@ func TestWindowOpen_CloseTouchesOnlyItsOwnDevice(t *testing.T) {
 	}
 }
 
+// A phone is a support lens: it can open a window for its person but has no
+// close of its own, so a close from any of that person's other lenses takes
+// the phone's row with it. Nothing else changes: another person's phone row,
+// and another lens of the same person, keep theirs.
+func TestWindowOpen_CloseTakesThePersonsPhoneRows(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UnixMilli()
+	open := func(login, dev string) {
+		t.Helper()
+		if err := st.SetWindowOpen(WindowOpenFlag{Login: login, WindowID: "win-a", Device: dev, Seen: now}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open("patric@x.com", PhoneDevicePrefix+"p1")
+	open("patric@x.com", "mac-1")
+	open("patric@x.com", "web-1")
+	open("dasha@x.com", PhoneDevicePrefix+"d1")
+	if err := st.SetWindowOpen(WindowOpenFlag{Login: "patric@x.com", WindowID: "win-a", Device: "web-1"}, false); err != nil {
+		t.Fatal(err)
+	}
+	has := func(login, dev string) bool {
+		t.Helper()
+		m, err := st.DeviceWindowOpens(login, dev, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m["win-a"]
+	}
+	if has("patric@x.com", PhoneDevicePrefix+"p1") {
+		t.Fatal("a close on the computer left the phone holding the window open")
+	}
+	if !has("patric@x.com", "mac-1") {
+		t.Fatal("the close cleared another full lens's row")
+	}
+	if !has("dasha@x.com", PhoneDevicePrefix+"d1") {
+		t.Fatal("one person's close cleared another person's phone")
+	}
+}
+
 // Two daemons opening the same pre-device file at once. The guard narrows the
 // race but does not literally close it — a deferred transaction takes no write
 // lock until its first write — so this measures the outcome rather than

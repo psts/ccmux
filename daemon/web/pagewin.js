@@ -125,9 +125,27 @@
     openDrawer();
   }
 
-  // A phone shows one window at a time (style.css's phone layout): there a
-  // launch shows the first window and opens no others, which the drawer lists.
-  const onePageOnly = () => window.matchMedia("(max-width: 700px)").matches;
+  // A phone (app.js phoneLens) mirrors its person's computers and shows one
+  // window at a time: it starts in the session they last typed in, on any
+  // lens, inside that session's window, and opens no other windows; the drawer
+  // lists them. A session in no window shows inside the first open one. With
+  // no such session it starts in the first window open for them. A last
+  // session whose window is CLOSED for them counts as none: the phone mirrors
+  // what is open and must not reopen, and wake, a window closed on a computer.
+  async function launchPhone(open) {
+    let ws = "";
+    try {
+      ws = (await (await fetch("/v1/me/last-session")).json()).workspaceId || "";
+    } catch (e) {
+      console.warn("phone: last session unreadable; starting in the first open window:", e);
+    }
+    const known = !!ws && (state.workspaces || []).some((x) => x.id === ws);
+    const home = known ? R.windowOf(state.windows, ws) : "";
+    if (home && !open.includes(home)) ws = ""; // its window is closed: not reopened
+    const target = (home && open.includes(home) && home) || open[0] || "";
+    if (target) return enter(target, ws && known ? ws : "");
+    return known && !home ? openWorkspace(ws, null) : picker();
+  }
 
   // A launch with no window in the address: Cmd+N while others are open, or a
   // reload of the picker, shows the picker; a fresh launch opens every window
@@ -138,10 +156,10 @@
     const live = await othersAlive();
     if (live.size) return picker();
     const open = (state.windows || []).filter(openHereOf).map((w) => w.id);
+    if (window.ccmuxPhone) return launchPhone(open);
     const all = R.launchSet(open, R.takeRestoreSet(store, pageId, live));
     if (!all.length) return picker();
     await enter(all[0], "");
-    if (onePageOnly()) return;
     const refused = all.slice(1).filter((id) => !window.open(R.href(id, ""), "_blank"));
     if (refused.length) offerRestore(refused);
   }
