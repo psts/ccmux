@@ -41,6 +41,7 @@
   // started before the open was recorded must not bounce the window just shown.
   let seenOpen = false;
   let mapWritten = "";
+  let mapFailing = false; // logged on the way INTO failure only: this runs on every refresh
 
   // Other browser windows of this app answer a ping, so a launch can tell a
   // relaunch (nobody answers) from Cmd+N (somebody does).
@@ -216,7 +217,13 @@
     const json = JSON.stringify(map);
     if (json === mapWritten || typeof caches === "undefined") return;
     mapWritten = json;
-    caches.open("ccmux-nav").then((c) => c.put(WS_WINDOWS, new Response(json))).catch(() => { mapWritten = ""; });
+    caches.open("ccmux-nav").then((c) => c.put(WS_WINDOWS, new Response(json)))
+      .then(() => { mapFailing = false; })
+      .catch((e) => {
+        if (!mapFailing) console.warn("window map write failed; a notification tap will go to the focused window:", e);
+        mapFailing = true;
+        mapWritten = "";
+      });
   }
 
   // openClosed opens a closed window from the sidebar. On the picker it lands

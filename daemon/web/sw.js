@@ -124,7 +124,8 @@ async function windowOfTap(url) {
     const resp = await (await caches.open(NAV_CACHE)).match(WS_WINDOWS);
     const map = resp ? await resp.json() : {};
     return (ws && map[ws]) || "";
-  } catch (_) {
+  } catch (e) {
+    console.warn("ccmux sw: window map unreadable; the tap goes to the focused window:", e);
     return "";
   }
 }
@@ -139,7 +140,9 @@ async function routeTap(url) {
     // A plain URL, as before per-window pages, with t for its age: a page
     // still running older code reads only its ws and is not confused by it.
     await cache.put(PENDING_NAV, new Response(`${href}${href.includes("?") ? "&" : "?"}t=${Date.now()}`));
-  } catch (_) {}
+  } catch (e) {
+    console.warn("ccmux sw: could not stash the tap; a page that misses the message will not open it:", e);
+  }
   const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   const shows = (c) => { try { return new URL(c.url).searchParams.get("w") === w; } catch (_) { return false; } };
   const client = (w && wins.find(shows)) || wins.find((c) => c.focused) || wins[0];

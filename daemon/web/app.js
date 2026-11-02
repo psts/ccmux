@@ -362,6 +362,12 @@ function syncPaneTitles() {
   if (shellChanged) updateHarnessBar();
 }
 
+// pageWindow is the window THIS browser window shows (pagewin.js), "" for none.
+const pageWindow = () => (window.ccmuxPage ? window.ccmuxPage.current() : "");
+// carriesBoard: only the current window carries the Attention row, or every
+// open one while this browser window shows none.
+const carriesBoard = (win, here) => !!win && (!here || win.id === here);
+
 // renderList renders the SHARED arrangement (v2): windows you have OPEN as
 // sections, windows you have closed as one-line rows you can open, and
 // ungrouped sessions under AVAILABLE. The arrangement is the same for
@@ -377,7 +383,7 @@ function renderList() {
   // older daemon, which omits the field, keeps the previous per-login behavior
   // instead of rendering every open window as closed and dropping its rows.
   const closed = state.windows.filter((w) => !openHereOf(w));
-  const here = window.ccmuxPage ? window.ccmuxPage.current() : "";
+  const here = pageWindow();
   const isHere = (group) => !!here && (winByName.get(group.toLowerCase()) || {}).id === here;
   grouped.sort(([a], [b]) => Number(isHere(b)) - Number(isHere(a))); // stable: the rest keep their order
 
@@ -386,7 +392,7 @@ function renderList() {
       const win = winByName.get(group.toLowerCase());
       if (win && !openHereOf(win)) continue; // rendered below as a closed-window row
       ul.appendChild(groupHeader(group, win, here));
-      if (win && (!here || win.id === here)) ul.appendChild(boardRow(group));
+      if (carriesBoard(win, here)) ul.appendChild(boardRow(group));
     } else if (grouped.length > 1 || closed.length) {
       // Header only when there is something to separate from: a deployment
       // where nothing is grouped keeps its plain flat list.
