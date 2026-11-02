@@ -81,7 +81,6 @@ func runDaemon() {
 	agentsDir := flag.String("agents-dir", defaultAgentsDir(), "folder holding base agent definitions, one subfolder per agent (GET /v1/agents)")
 	agentsMax := flag.Int("agents-max", 6, "how many agent instances may run at once on this daemon (0 = no cap); asleep instances do not count")
 	agentsModel := flag.String("agents-model", agent.DefaultModel, "model an agent instance runs on when its base pins none (opencode provider/model form; the anthropic provider rides the pane proxy)")
-	autoUpgradeEvery := flag.Duration("auto-upgrade", 2*time.Minute, "how often a release build checks for a newer release and upgrades itself (0 = never); source builds never do")
 	hubEnabled := flag.Bool("hub", false, "run hub-role services: aggregate every tag:ccmux host into one lens surface, own the peers bus + dev registrar + push (requires -tsnet)")
 	flag.Parse()
 
@@ -218,8 +217,6 @@ func runDaemon() {
 	// A repo or agent joining or leaving a window is told to the others there.
 	mgr.OnMembershipChange = apiSrv.WindowNotice
 	apiSrv.StartScheduler(ctx, 30*time.Second)
-	// A new release tag reaches this daemon on its own (autoupgrade.go).
-	go autoUpgrade(ctx, *autoUpgradeEvery, latestReleaseTag, apiSrv.StartUpgrade)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)

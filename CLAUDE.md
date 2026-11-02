@@ -4,7 +4,7 @@
 
 **PAUSED since 2026-11-02 (user's call).** The web lens is the focus while it is
 brought up to par: new work goes in `daemon/web/` only, and the Mac app stays as
-it is. Its release build is off too (`BUILD_MAC_APP`, see Shipping). When the
+it is. Its build is off too (see Shipping). When the
 Mac build is turned back on, the Mac app is caught up to the web lens first, and
 the rule below applies again. Until then, do not add Swift changes for parity,
 and do not report a missing Mac side as a gap.
@@ -19,10 +19,10 @@ approximation.
 
 When you touch one lens, grep the other for the same feature and update it.
 Note: the Swift side cannot be built or tested on this Linux host, so say so
-when reporting — but that never excuses skipping the change. The release tag
-job builds it on macOS only when the repo variable `BUILD_MAC_APP` is `true`,
-and it is OFF since 2026-11-02 (web lens first): until it is back on, nothing
-compiles the Swift side at all. No CI runs `swift test`: the `qa-gates` line for it
+when reporting — but that never excuses skipping the change. Only the release
+workflow builds it on macOS, and since 2026-11-02 that workflow runs by hand
+only, and the Mac job only with the repo variable `BUILD_MAC_APP=true`: until
+someone does that, nothing compiles the Swift side at all. No CI runs `swift test`: the `qa-gates` line for it
 fires only where a Swift toolchain exists, so `Tests/ccmuxTests/` executes on a
 developer's Mac and nowhere else. Known hole, needs a Mac to close.
 
@@ -58,12 +58,12 @@ deploys, so there is no safe intermediate state — the advisory review runs
 BEFORE the push, and against the previous `v*` tag, because `origin/main...HEAD`
 is empty on this branch model and would review nothing.
 
-The `v*` tag is what reaches verkstan. The release job builds ccmuxd and
-ccmux-peers (GoReleaser; the Mac app only with `BUILD_MAC_APP`), and every
-release build of ccmuxd checks for a newer release every 2 minutes and upgrades
-itself through the same path as `POST /v1/upgrade`
-(`daemon/cmd/ccmuxd/autoupgrade.go`). So the running daemon, the web lens
-embedded in it and the peers shim update on their own a few minutes after the
-tag. Only a GoReleaser binary checks (`version.Release`), so a source build
-from `build-daemon.sh` is never replaced, even one made from a tag; `-auto-upgrade 0`
-turns it off for a release build, but `ccmuxd install` does not save that flag.
+**Deploying is local (2026-11-02, user's call).** Nothing builds on GitHub: the
+release workflow runs by hand only, and the last published release is v0.1.88.
+After `/ship` pushes the tag, run `./build-daemon.sh` from the clean tagged
+checkout on verkstan. It builds ccmuxd and ccmux-peers, installs them in
+`~/.local/bin`, restarts the service and fails unless the running daemon reports
+the version it just built; that is the deploy, and its health line is the live
+check. The web lens is embedded in ccmuxd, so it ships with it. Never run
+`ccmuxd upgrade` without a tag here: it fetches the latest GitHub release and
+would put verkstan back on v0.1.88.

@@ -57,9 +57,8 @@ func TestSelfUpgrade(t *testing.T) {
 	}
 }
 
-// A spawn that fails must free the in-flight flag: the daemon's own release
-// check retries every few minutes, and a flag left set would answer every
-// later try with "already running" until the daemon restarts.
+// A spawn that fails must free the in-flight flag: a flag left set would
+// answer every later try with "already running" until the daemon restarts.
 func TestStartUpgradeSpawnFailureAllowsRetry(t *testing.T) {
 	oldBuild := version.Build
 	t.Cleanup(func() { version.Build = oldBuild; upgrading.Store(false) })

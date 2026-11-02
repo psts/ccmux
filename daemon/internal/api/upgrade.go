@@ -50,9 +50,7 @@ func (s *Server) selfUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// StartUpgrade is POST /v1/upgrade without the HTTP, shared with the daemon's
-// own release check (cmd/ccmuxd/autoupgrade.go) so both refuse the same things.
-// It answers with the HTTP status the route sends and its message: 202
+// StartUpgrade is POST /v1/upgrade without the HTTP. It answers with the HTTP status the route sends and its message: 202
 // "upgrading" when the child was spawned, 200 when this is already that
 // version, 4xx/5xx for a refusal or a spawn failure.
 func (s *Server) StartUpgrade(tag string) (int, string) {

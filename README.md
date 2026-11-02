@@ -28,6 +28,11 @@ byte stream still connects straight to the owning host. See
 
 ## Install a host
 
+**Releases stopped at v0.1.88 (2026-11-02).** The installer below still works but
+installs that version. For anything newer, build from a checkout: `./build-daemon.sh`
+builds both binaries into `~/.local/bin` and restarts an existing install's service;
+on a new host, run `~/.local/bin/ccmuxd install` once after it.
+
 Each host runs `ccmuxd` as a user service. The installer downloads the binaries, writes the
 service (launchd on macOS, systemd `--user` on Linux), joins the tailnet, and registers the
 per-host peers MCP:
@@ -48,9 +53,9 @@ for your tailnet (Admin → DNS → HTTPS Certificates).
 
 ## Update a host
 
-From v0.1.88 on, a host updates itself: every 2 minutes the daemon checks for a
-newer release and, when there is one, runs the upgrade below on its own. Builds
-from source never do, even from a release tag. To update by hand, on any host running v0.1.3 or later:
+To update from source, pull and run `./build-daemon.sh`. Do not run `ccmuxd upgrade`
+on a source build newer than v0.1.88: it installs the latest published release, which
+is older. For hosts that stay on releases, on any host running v0.1.3 or later:
 
 ```sh
 ccmuxd upgrade            # to the latest release; `ccmuxd upgrade v0.1.4` pins one

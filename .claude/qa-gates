@@ -24,9 +24,9 @@
 # Read the skip as permanent: development is Linux-only and goes straight to CI,
 # so nobody runs these two lines. What that leaves is worth knowing but has not
 # been a problem in practice — release.yml's macos-15 job built the app on every
-# v* tag, and that caught what it needed to. Since 2026-11-02 that job runs only
-# when the repo variable BUILD_MAC_APP is "true" (web lens first), so while it is
-# off nothing compiles Swift at all. Recorded as scope, not as a defect: a green
+# v* tag, and that caught what it needed to. Since 2026-11-02 the workflow runs
+# by hand only, and the Mac job only with BUILD_MAC_APP=true (web lens first), so
+# until someone runs it nothing compiles Swift at all. Recorded as scope, not as a defect: a green
 # from this file covers the Go daemon. `swift test` is not run by either.
 
 # --- static checks first: they are the cheapest and fail fastest ---

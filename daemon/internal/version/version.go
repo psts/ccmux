@@ -10,13 +10,6 @@ const Contract = 1
 
 // Build is the human-readable build identity (e.g. a git-describe string), set at
 // link time via -ldflags "-X ccmux.dev/ccmuxd/internal/version.Build=...".
-// Surfaced in /v1/health and the UI; the upgrade paths read it too (a source
-// build refuses a remote upgrade, and only a plain X.Y.Z upgrades itself).
+// Surfaced in /v1/health and the UI; the upgrade route reads it too (a source
+// build refuses a remote upgrade).
 var Build = "dev"
-
-// Release is "true" only in a binary GoReleaser built for a v* tag
-// (.goreleaser.yaml). Build alone cannot tell: build-daemon.sh stamps a clean
-// checkout of a tag with the same "0.1.80" a release carries, on purpose. The
-// daemon's self-upgrade (cmd/ccmuxd/autoupgrade.go) runs only when this is set,
-// so a source build, tag or not, is never replaced underneath someone.
-var Release = ""
