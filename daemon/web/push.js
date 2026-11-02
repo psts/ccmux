@@ -71,18 +71,17 @@
   // Read + clear a deep-link the SW stashed for a client that may have dropped
   // the postMessage. Idempotent: the entry is deleted once consumed. The stash
   // is a plain URL (/?w=&ws=&t=), so a page from before per-window pages still
-  // reads its ws; route.js's takesNav decides whether THIS window takes it.
+  // reads its ws; route.js's takesNav drops one nobody took in time.
   async function consumePendingNav() {
     try {
       const cache = await caches.open(NAV_CACHE);
       const resp = await cache.match(PENDING_NAV);
       if (!resp) return;
       const url = await resp.text();
-      const mine = window.ccmuxPage ? window.ccmuxPage.owner() : "";
-      const verdict = window.ccmuxRoute ? window.ccmuxRoute.takesNav(url, mine, Date.now()) : "take";
-      if (verdict === "leave") return; // another browser window's tap
+      const verdict = window.ccmuxRoute ? window.ccmuxRoute.takesNav(url, Date.now()) : "take";
       await cache.delete(PENDING_NAV);
       if (verdict === "take") navToURL(url);
+      else console.info("ccmux: dropped a notification tap nobody took within a minute:", url);
     } catch (_) {}
   }
 

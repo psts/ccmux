@@ -168,7 +168,10 @@
     }
     waiting = false;
     booted = true;
-    const { w, ws } = opened;
+    // A session a tap opened while the page was starting outranks the address:
+    // the address is where the page was, the tap is where the user asked to go.
+    const w = opened.w;
+    const ws = state.wsId || opened.ws;
     const target = R.bootTarget(state.windows, w, ws);
     if (target) return enter(target, ws);
     if (ws) return openWorkspace(ws, null); // a session in no window: show it, no window to pin
@@ -220,9 +223,5 @@
   window.addEventListener("pagehide", () => R.ended(store, pageId, Date.now()));
   window.addEventListener("pageshow", () => R.beat(store, pageId, current, Date.now()));
 
-  // owner is the window a stashed tap is matched against. Before boot the page
-  // has shown nothing yet, but its address already says which window it is.
-  const owner = () => (booted ? current : opened.w);
-
-  window.ccmuxPage = { current: () => current, owner, boot, enter, onAttach, onRefresh, onClosed, openClosed, syncAddress };
+  window.ccmuxPage = { current: () => current, boot, enter, onAttach, onRefresh, onClosed, openClosed, syncAddress };
 })();

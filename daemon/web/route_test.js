@@ -86,17 +86,20 @@ test("the session in a link picks the window, not a stale window id", () => {
   assert.strictEqual(R.bootTarget(windows, "gone", "s1"), "a"); // window deleted
   assert.strictEqual(R.bootTarget(windows, "a", ""), "a");
   assert.strictEqual(R.bootTarget(windows, "gone", ""), "");
-  assert.strictEqual(R.bootTarget(windows, "a", "loose"), ""); // a session in no window pins none
+  // A session in no window: with a window in the address it left or was
+  // deleted, so the window stays; with none it pins nothing.
+  assert.strictEqual(R.bootTarget(windows, "a", "loose"), "a");
+  assert.strictEqual(R.bootTarget(windows, "", "loose"), "");
+  assert.strictEqual(R.bootTarget(windows, "gone", "loose"), "");
 });
 
-test("a stashed tap goes to its own window, and nobody takes a stale one", () => {
+test("a missed tap is taken by whoever reads it, unless it is stale", () => {
   const now = 1000000;
-  const tap = (w, t) => `/?w=${w}&ws=s1&t=${t}`;
-  assert.strictEqual(R.takesNav(tap("a", now), "a", now), "take");
-  assert.strictEqual(R.takesNav(tap("a", now), "b", now), "leave");
-  assert.strictEqual(R.takesNav(tap("a", now), "", now), "take"); // the picker, or a fresh window
-  assert.strictEqual(R.takesNav(tap("a", now - R.NAV_TTL_MS - 1), "a", now), "drop");
-  assert.strictEqual(R.takesNav("/?ws=s1", "b", now), "take"); // a stash from before windows
+  const tap = (t) => `/?w=a&ws=s1&t=${t}`;
+  assert.strictEqual(R.takesNav(tap(now), now), "take");
+  assert.strictEqual(R.takesNav(tap(now - R.NAV_TTL_MS), now), "take"); // exactly at the limit
+  assert.strictEqual(R.takesNav(tap(now - R.NAV_TTL_MS - 1), now), "drop");
+  assert.strictEqual(R.takesNav("/?ws=s1", now), "take"); // a stash from before windows
 });
 
 test("a reload knows its page; a new window does not", () => {

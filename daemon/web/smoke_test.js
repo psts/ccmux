@@ -263,12 +263,28 @@ async function pageWindowCases() {
   check("the window that takes a tap by message clears the stash",
     owner.cacheDeletes.includes("/__ccmux_pending_nav") && attachedTo(owner).includes("ws-2"),
     `deletes ${owner.cacheDeletes.join()}, attached ${attachedTo(owner).join()}`);
-  const other = run({ windowsReply: twoWindows, search: "?w=win-a", withPush: true,
+  // Only a missed message leaves a stash to read, and the window that reads it
+  // is the one the tap brought back: an iPhone's single window showing Mixed
+  // must still open a ChartLabs session it was tapped for.
+  const missed = run({ windowsReply: twoWindows, search: "?w=win-a", withPush: true,
     pendingNav: `/?w=win-b&ws=ws-2&t=${Date.now()}` });
   await settle();
-  check("a window leaves a stashed tap meant for another window",
-    !attachedTo(other).includes("ws-2") && !other.cacheDeletes.includes("/__ccmux_pending_nav") &&
-    other.ctx.ccmuxPage.current() === "win-a", `attached ${attachedTo(other).join()}, deletes ${other.cacheDeletes.join()}`);
+  check("a window that missed the message still opens the tapped session, in its window",
+    attachedTo(missed).includes("ws-2") && missed.ctx.ccmuxPage.current() === "win-b",
+    `attached ${attachedTo(missed).join()}, current ${missed.ctx.ccmuxPage.current()}`);
+  const stale = run({ windowsReply: twoWindows, search: "?w=win-a", withPush: true,
+    pendingNav: `/?w=win-b&ws=ws-2&t=${Date.now() - 61000}` });
+  await settle();
+  check("a tap nobody took for a minute is dropped, not replayed",
+    !attachedTo(stale).includes("ws-2") && stale.cacheDeletes.includes("/__ccmux_pending_nav") &&
+    stale.ctx.ccmuxPage.current() === "win-a", `attached ${attachedTo(stale).join()}, deletes ${stale.cacheDeletes.join()}`);
+
+  // A window whose session was deleted keeps its window on a reload or restore.
+  const orphan = run({ windowsReply: twoWindows, search: "?w=win-a&ws=gone" });
+  await settle();
+  check("an address whose session is gone keeps its window",
+    orphan.ctx.ccmuxPage.current() === "win-a" && !attachedTo(orphan).includes("gone") && lastAddress(orphan) === "/?w=win-a",
+    `current ${orphan.ctx.ccmuxPage.current()}, attached ${attachedTo(orphan).join()}, address ${lastAddress(orphan)}`);
 
   // A reload of the picker is not a relaunch: windows closed earlier stay closed.
   const reloadQuit = JSON.stringify({ me: { w: "", seen: 0, closedAt: 2000 }, p1: { w: "win-a", seen: 0, closedAt: 1000 } });

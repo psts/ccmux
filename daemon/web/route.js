@@ -36,23 +36,25 @@
   }
 
   // bootTarget is the window a page opened at w/ws should show. The session
-  // decides: a link or a tap names a session, and the window in it can be out
-  // of date (the session moved, the window was deleted). w alone counts only
-  // while that window exists.
+  // decides while it belongs to a window: the window in a link can be out of
+  // date (the session moved, the window was deleted). A session in no window
+  // left it or was deleted, so then the window in the address stays, while it
+  // exists.
   function bootTarget(windows, w, ws) {
-    if (ws) return windowOf(windows, ws);
+    const byWs = ws ? windowOf(windows, ws) : "";
+    if (byWs) return byWs;
     return (windows || []).some((x) => x.id === w) ? w : "";
   }
 
   // takesNav says what a page does with a stashed tap (a plain URL, so a page
-  // from before this rule still reads its ws): "drop" a stale one, "leave" one
-  // for the window that shows its w, else "take" it.
-  function takesNav(url, mine, now) {
+  // from before this rule still reads its ws): "drop" a stale one, else
+  // "take" it. Whichever window takes a tap by message clears the stash, so it
+  // is only read when that message was missed (a page the phone had frozen),
+  // and the window reading it is the one the tap brought back.
+  function takesNav(url, now) {
     const p = new URLSearchParams(String(url).split("?")[1] || "");
     const at = Number(p.get("t") || 0);
-    if (at && now - at > NAV_TTL_MS) return "drop";
-    const w = p.get("w") || "";
-    return w && mine && w !== mine ? "leave" : "take";
+    return at && now - at > NAV_TTL_MS ? "drop" : "take";
   }
 
   // windowOf is the shared window a session belongs to, "" when none.
