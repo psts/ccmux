@@ -44,7 +44,8 @@ test("an edge swipe opens the drawer and never reaches the terminal", () => {
   doc.fire("touchend", 130, 305, term);
   assert.strictEqual(open, true);
   assert.deepStrictEqual(seen, []);
-  // A swipe left over the open drawer closes it; it is not the terminal's either way.
+  // A swipe left over the open drawer closes it. (The drawer covers the
+  // terminal while open, so on a phone this touch never lands on it.)
   doc.fire("touchstart", 200, 300, term);
   doc.fire("touchend", 40, 300, term);
   assert.strictEqual(open, false);

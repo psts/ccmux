@@ -164,7 +164,9 @@ const twoWindows = () => [
   { id: "win-a", name: "Mixed", workspaceIds: ["ws-1"], openBy: ["p"], open: true, openHere: true },
   { id: "win-b", name: "ChartLabs", workspaceIds: ["ws-2"], openBy: ["p"], open: true, openHere: true },
 ];
-const attachedTo = (r) => r.sockets.filter((u) => u.includes("/v1/attach")).map((u) => /workspace=([^&]+)/.exec(u)[1]);
+// Sockets with no workspace id (an attach of a session the page never had) count as none.
+const attachedTo = (r) => r.sockets.filter((u) => u.includes("/v1/attach"))
+  .map((u) => (/workspace=([^&]+)/.exec(u) || [])[1]).filter(Boolean);
 const lastAddress = (r) => r.addresses[r.addresses.length - 1] || "";
 
 async function pageWindowCases() {
@@ -419,6 +421,25 @@ async function phoneCases() {
     closedHome.ctx.ccmuxPage.current() === "win-a" && posts(closedHome, "/open?").length === 0 &&
     posts(closedHome, "/revive").length === 0 && !attachedTo(closedHome).includes("ws-2"),
     `current ${closedHome.ctx.ccmuxPage.current()}, opens ${posts(closedHome, "/open?").length}, attached ${attachedTo(closedHome).join()}`);
+  // Nothing open for the person at all: a last session whose window is closed
+  // is not shown (the computer put it away); the picker is.
+  const allShut = () => twoWindows().map((w) => ({ ...w, open: false, openHere: false }));
+  const nothingOpen = run({ windowsReply: allShut, workspacesReply: live, phone: true, lastSession: "ws-2" });
+  await settle();
+  check("with nothing open, a phone does not show a last session whose window was closed",
+    nothingOpen.ctx.ccmuxPage.current() === "" && !attachedTo(nothingOpen).includes("ws-2") &&
+    posts(nothingOpen, "/open?").length === 0,
+    `current ${nothingOpen.ctx.ccmuxPage.current()}, attached ${attachedTo(nothingOpen).join()}`);
+  // A last session in no window, with nothing open: shown on its own.
+  const loose = () => [{ id: "ws-1" }, { id: "ws-2" }, { id: "loose" }];
+  const looseLast = run({ windowsReply: allShut, workspacesReply: loose, phone: true, lastSession: "loose" });
+  await settle();
+  check("with nothing open, a phone shows a last session that is in no window",
+    attachedTo(looseLast).join() === "loose", `attached ${attachedTo(looseLast).join()}`);
+  // The phone says who it is, as attach does.
+  const asks = last.fetched.filter((f) => f.url.startsWith("/v1/me/last-session"));
+  check("a phone asks for its last session under the name it types as",
+    asks.length === 1 && asks[0].url.includes("?user="), asks.map((f) => f.url).join(" "));
   const gone = run({ windowsReply: onComputer, workspacesReply: live, phone: true, lastSession: "deleted" });
   await settle();
   check("a last session that no longer exists falls back to the first open window",
@@ -432,6 +453,15 @@ async function phoneCases() {
   await settle();
   await opener.ctx.ccmuxPage.openClosed(opener.evalIn("state.windows").find((w) => w.id === "win-b"), "here");
   await settle();
+  // A plain tap on a closed window, with one already showing, lands here on a
+  // phone: a new browser window would leave the installed app.
+  const tapper = run({ windowsReply: closedAll, phone: true });
+  await settle();
+  await tapper.ctx.ccmuxPage.openClosed(tapper.evalIn("state.windows").find((w) => w.id === "win-b"), "");
+  await settle();
+  check("a tap on a closed window opens it in place on a phone, never in a new browser window",
+    tapper.opened.length === 0 && tapper.ctx.ccmuxPage.current() === "win-b",
+    `opened ${tapper.opened.join()}, current ${tapper.ctx.ccmuxPage.current()}`);
   const opens = posts(opener, "/v1/windows/win-b/open?");
   check("opening a window from the phone records it under the phone's device",
     opens.length >= 1 && opens.every((f) => f.url.includes("device=phone%3A")) && opener.opened.length === 0,

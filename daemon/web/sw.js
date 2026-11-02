@@ -3,7 +3,7 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v31"; // v31: a phone mirrors its person's computers and starts in the last session
+const CACHE = "ccmux-shell-v32"; // v32: a phone says who it is for its last session, and opens taps in place
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.

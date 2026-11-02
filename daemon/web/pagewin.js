@@ -135,7 +135,9 @@
   async function launchPhone(open) {
     let ws = "";
     try {
-      ws = (await (await fetch("/v1/me/last-session")).json()).workspaceId || "";
+      // ?user= as attach sends it: a phone the tailnet does not vouch for is
+      // known by the name it typed under, and without it the daemon asks as "anon".
+      ws = (await (await fetch("/v1/me/last-session?user=" + encodeURIComponent(getUser()))).json()).workspaceId || "";
     } catch (e) {
       console.warn("phone: last session unreadable; starting in the first open window:", e);
     }
@@ -250,10 +252,12 @@
   // openClosed opens a closed window from the sidebar. `where` is "here",
   // "new", or "" for the click default: on the picker it lands here; a browser
   // window already showing one gets a new browser window, as the Mac app opens
-  // a new window for it. A refused new window lands here instead.
+  // a new window for it, except on a phone, where it lands here. A refused new
+  // window lands here instead.
   async function openClosed(win, where) {
     if (!(await openWindow(win))) return;
-    const wantNew = where === "new" || (where !== "here" && !!current);
+    // A phone has one window: a new browser window would leave the installed app.
+    const wantNew = where === "new" || (where !== "here" && !!current && !window.ccmuxPhone);
     if (wantNew && window.open(R.href(win.id, ""), "_blank")) return;
     enter(win.id, "");
   }
