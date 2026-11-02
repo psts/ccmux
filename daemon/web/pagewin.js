@@ -125,6 +125,10 @@
     openDrawer();
   }
 
+  // A phone shows one window at a time (style.css's phone layout): there a
+  // launch shows the first window and opens no others, which the drawer lists.
+  const onePageOnly = () => window.matchMedia("(max-width: 700px)").matches;
+
   // A launch with no window in the address: Cmd+N while others are open, or a
   // reload of the picker, shows the picker; a fresh launch opens every window
   // that is open on this device, each in its own browser window. A browser may
@@ -137,6 +141,7 @@
     const all = R.launchSet(open, R.takeRestoreSet(store, pageId, live));
     if (!all.length) return picker();
     await enter(all[0], "");
+    if (onePageOnly()) return;
     const refused = all.slice(1).filter((id) => !window.open(R.href(id, ""), "_blank"));
     if (refused.length) offerRestore(refused);
   }

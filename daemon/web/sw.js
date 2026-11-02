@@ -3,7 +3,7 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v29"; // v29: a swipe in from the left edge opens the session drawer
+const CACHE = "ccmux-shell-v30"; // v30: a phone launch opens one window, no reopen bar
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.

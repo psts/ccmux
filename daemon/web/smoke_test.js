@@ -119,7 +119,7 @@ function makeContext(opts, book) {
       put: async (k, v) => { book.cachePuts.push([k, v && v.body]); return true; },
     }) },
     setInterval: () => 0, setTimeout: (fn) => { book.timers.push(fn); return book.timers.length; }, clearInterval() {}, clearTimeout() {},
-    addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }),
+    addEventListener() {}, matchMedia: () => ({ matches: !!opts.phone, addEventListener() {} }),
     prompt: () => { book.prompts++; return "Patric"; }, alert() {}, confirm: () => true,
     AbortController: function () { const s = { onabort: null }; this.signal = s; this.abort = () => { if (s.onabort) s.onabort(); }; },
     Notification: { permission: "default" },
@@ -191,6 +191,13 @@ async function pageWindowCases() {
     fresh.ctx.ccmuxPage.current() === "win-a" && lastAddress(fresh).startsWith("/?w=win-a") &&
     fresh.opened.join() === "/?w=win-b",
     `current ${fresh.ctx.ccmuxPage.current()}, address ${lastAddress(fresh)}, opened ${fresh.opened.join()}`);
+  // A phone has one window: a launch shows the first and opens no others, so
+  // there is nothing to offer back either.
+  const phone = run({ windowsReply: twoWindows, phone: true });
+  await settle();
+  check("a launch on a phone shows the first window and opens no others",
+    phone.ctx.ccmuxPage.current() === "win-a" && phone.opened.length === 0,
+    `current ${phone.ctx.ccmuxPage.current()}, opened ${phone.opened.join()}`);
   // A window open on this device but closed in the daemon's list for this
   // lens (openHere false) stays closed.
   const oneOpen = () => [twoWindows()[0], { ...twoWindows()[1], openHere: false, open: false }];
