@@ -473,7 +473,39 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     {
         window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
     }
-    
+
+    // ccmux: the cell size is snapped to the pixel grid of the screen it was
+    // measured on (computeFontDimensions). A view built before it has a window
+    // measures against NSScreen.main, and a window can move between a Retina and
+    // a non-Retina screen. Either way text keeps the old grid while box drawing
+    // rounds the cell to the new one (Monaco 12: 7.5 vs 8 points), so `┃` and
+    // friends drift right half a point per column. Re-measure on the real screen.
+    open override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        remeasureCellsForScreen()
+    }
+
+    open override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        remeasureCellsForScreen()
+    }
+
+    private func remeasureCellsForScreen() {
+        // Without a window the scale is a guess (NSScreen.main); re-gridding a
+        // detached view would resize its pane for a screen it is not on.
+        guard window != nil, cellDimension != nil else { return }
+        let measured = computeFontDimensions()
+        guard measured != cellDimension else { return }
+        resetCaches()
+        cellDimension = measured
+        updateCaretView()
+        // The frame-resize path: tells the delegate (and so the daemon) the new
+        // grid, without the soft reset a font change does.
+        _ = processSizeChange(newSize: frame.size)
+        needsDisplay = true
+        updateCursorPosition()
+    }
+
     @objc
     func scrollerActivated ()
     {

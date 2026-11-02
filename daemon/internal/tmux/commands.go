@@ -232,11 +232,8 @@ func (c *Client) ResizeWindow(window string, cols, rows int) error {
 }
 
 // CapturePane returns the current pane contents with escape sequences preserved
-// (`capture-pane -e -p`). Lines are joined with CRLF, not LF: the result is fed
-// raw into a lens emulator to seed a fresh attach, and a bare LF only moves the
-// cursor down — without the CR each seeded line would start at the previous
-// line's column (a staircase). Bytes are otherwise raw (command replies are not
-// octal-escaped).
+// (see paintCaptureArgs), joined by joinPaintRows. Bytes are otherwise raw
+// (command replies are not octal-escaped).
 //
 // A visible-screen capture (historyLines == 0) is CaptureScreen with the
 // alternate-screen flag dropped; see there for the cursor-restore it appends.
@@ -245,11 +242,11 @@ func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 		rows, _, err := c.CaptureScreen(pane)
 		return rows, err
 	}
-	lines, err := c.Command("capture-pane", "-e", "-p", "-t", pane, "-S", "-"+strconv.Itoa(historyLines))
+	lines, err := c.Command(paintCaptureArgs("-t", pane, "-S", "-"+strconv.Itoa(historyLines))...)
 	if err != nil {
 		return nil, err
 	}
-	return []byte(strings.Join(lines, "\r\n")), nil
+	return []byte(joinPaintRows(lines)), nil
 }
 
 // CaptureScreen returns the visible screen with escape sequences preserved, and
@@ -271,11 +268,11 @@ func (c *Client) CapturePane(pane string, historyLines int) ([]byte, error) {
 // defect the alternate flag exists to prevent, so the log says which pane and
 // why.
 func (c *Client) CaptureScreen(pane string) (rows []byte, alt bool, err error) {
-	lines, err := c.Command("capture-pane", "-e", "-p", "-t", pane)
+	lines, err := c.Command(paintCaptureArgs("-t", pane)...)
 	if err != nil {
 		return nil, false, err
 	}
-	rows = []byte(strings.Join(lines, "\r\n"))
+	rows = []byte(joinPaintRows(lines))
 	x, y, alt, err := c.CursorPosition(pane)
 	if err != nil {
 		log.Printf("tmux: capture pane %s: %v (snapshot sent without cursor restore, as main screen)", pane, err)
@@ -331,4 +328,27 @@ func (c *Client) CapturePlain(pane string) ([]byte, error) {
 func (c *Client) SetOption(args ...string) error {
 	_, err := c.Command(append([]string{"set-option"}, args...)...)
 	return err
+}
+
+// paintCaptureArgs is the capture-pane command for a screen a lens will paint.
+//
+// -N keeps trailing spaces. Without it tmux trims them even when they carry a
+// background colour, and a blank row comes back empty, so a fullscreen
+// program's painted background (opencode's black) showed as the lens's own
+// default wherever a row ended in blanks. -N does not pad: tmux still stops at
+// the last cell the row actually used, so a row that ends in a coloured badge
+// comes back as exactly that badge, with nothing to spread its colour.
+//
+// The cost: a row painted to the pane's full width wraps in a lens narrower
+// than the pane. That lens is already flagged stale (it offers "take over"),
+// and a program that paints whole rows draws for the pane's size anyway.
+func paintCaptureArgs(extra ...string) []string {
+	return append([]string{"capture-pane", "-e", "-p", "-N"}, extra...)
+}
+
+// joinPaintRows joins capture-pane rows with CRLF, not LF: the result is fed
+// raw into a lens emulator, and a bare LF only moves the cursor down, so each
+// row would start at the previous row's column (a staircase).
+func joinPaintRows(lines []string) string {
+	return strings.Join(lines, "\r\n")
 }
