@@ -41,9 +41,10 @@ jobs:
   # stays silent, "Check for Updates…" says the download is not attached, and
   # the app never pushes the daemon BACKWARDS (it only syncs daemons older
   # than itself). Turn it on again with:
-  #   gh variable set BUILD_MAC_APP --body true Secrets are consumed inside the
-  # shell steps (not in `if:` conditions), so the job degrades gracefully:
-  # no cert secret → ad-hoc signed build; no notary key → signed, not
+  #   gh variable set BUILD_MAC_APP --body true
+  #
+  # Secrets are consumed inside the shell steps (not in `if:` conditions), so
+  # the job degrades gracefully: no cert secret → ad-hoc signed build; no notary key → signed, not
   # notarized (first manual install needs right-click→Open; self-updates are
   # unaffected either way).
   macapp:

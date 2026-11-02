@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,5 +54,29 @@ func TestSelfUpgrade(t *testing.T) {
 	}
 	if len(spawned) != 1 || spawned[0] != "v0.1.15" {
 		t.Fatalf("spawned = %v, want [v0.1.15]", spawned)
+	}
+}
+
+// A spawn that fails must free the in-flight flag: the daemon's own release
+// check retries every few minutes, and a flag left set would answer every
+// later try with "already running" until the daemon restarts.
+func TestStartUpgradeSpawnFailureAllowsRetry(t *testing.T) {
+	oldBuild := version.Build
+	t.Cleanup(func() { version.Build = oldBuild; upgrading.Store(false) })
+	version.Build = "0.1.13"
+
+	fail := true
+	s := &Server{spawnUpgrade: func(string) error {
+		if fail {
+			return errors.New("fork failed")
+		}
+		return nil
+	}}
+	if code, _ := s.StartUpgrade("v0.1.15"); code != http.StatusInternalServerError {
+		t.Fatalf("failed spawn: %d, want 500", code)
+	}
+	fail = false
+	if code, msg := s.StartUpgrade("v0.1.15"); code != http.StatusAccepted {
+		t.Fatalf("retry after a failed spawn: %d %s, want 202", code, msg)
 	}
 }

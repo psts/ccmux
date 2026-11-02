@@ -64,5 +64,6 @@ release build of ccmuxd checks for a newer release every 2 minutes and upgrades
 itself through the same path as `POST /v1/upgrade`
 (`daemon/cmd/ccmuxd/autoupgrade.go`). So the running daemon, the web lens
 embedded in it and the peers shim update on their own a few minutes after the
-tag. A source build never checks, so a test binary is not replaced; `-auto-upgrade 0`
+tag. Only a GoReleaser binary checks (`version.Release`), so a source build
+from `build-daemon.sh` is never replaced, even one made from a tag; `-auto-upgrade 0`
 turns it off for a release build, but `ccmuxd install` does not save that flag.

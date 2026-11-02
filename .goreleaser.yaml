@@ -25,7 +25,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X ccmux.dev/ccmuxd/internal/version.Build={{ .Version }}
+      - -s -w -X ccmux.dev/ccmuxd/internal/version.Build={{ .Version }} -X ccmux.dev/ccmuxd/internal/version.Release=true
     goos: [darwin, linux]
     goarch: [amd64, arm64]
     ignore:

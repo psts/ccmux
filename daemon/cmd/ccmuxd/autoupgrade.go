@@ -18,14 +18,15 @@ import (
 // after its tag with nobody running anything. Safe mid-job for the reason the
 // route is: tmux survives the restart and the lenses reconnect.
 //
-// A source build ("dev", "0.1.87-3-gabc") never checks: it is someone's
-// working binary, and StartUpgrade would refuse it anyway. every <= 0 turns
-// the check off (-auto-upgrade 0).
+// Only a binary GoReleaser built for a tag checks (version.Release). A source
+// build never does, even one made from a clean tag checkout, which
+// build-daemon.sh stamps exactly like a release: it is someone's working
+// binary. every <= 0 turns the check off (-auto-upgrade 0).
 //
 // A tick that finds a newer tag whose files are not uploaded yet, or whose
 // upgrade fails, leaves this daemon on its version; the next tick tries again.
 func autoUpgrade(ctx context.Context, every time.Duration, latest func() (string, error), start func(tag string) (int, string)) {
-	if every <= 0 || !releaseBuild(version.Build) {
+	if every <= 0 || !selfUpgrades(version.Release, version.Build) {
 		return
 	}
 	t := time.NewTicker(every)
@@ -75,10 +76,10 @@ func latestReleaseTag() (string, error) {
 	return resolveReleaseTag(repo, "")
 }
 
-// releaseBuild says whether this binary came from a release tag: plain
-// numbers, no "dev" and no git-describe suffix.
-func releaseBuild(b string) bool {
-	return releaseNums(b) != nil
+// selfUpgrades says whether a binary with these stamps keeps itself current:
+// GoReleaser marked it a release, and its version is plain numbers.
+func selfUpgrades(release, build string) bool {
+	return release == "true" && releaseNums(build) != nil
 }
 
 // newerRelease says whether tag ("v0.1.88") is a release newer than current

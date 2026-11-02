@@ -50,7 +50,7 @@ for your tailnet (Admin → DNS → HTTPS Certificates).
 
 From v0.1.88 on, a host updates itself: every 2 minutes the daemon checks for a
 newer release and, when there is one, runs the upgrade below on its own. Builds
-from source never do. To update by hand, on any host running v0.1.3 or later:
+from source never do, even from a release tag. To update by hand, on any host running v0.1.3 or later:
 
 ```sh
 ccmuxd upgrade            # to the latest release; `ccmuxd upgrade v0.1.4` pins one

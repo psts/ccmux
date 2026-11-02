@@ -25,10 +25,20 @@ func TestNewerRelease(t *testing.T) {
 	}
 }
 
-func TestReleaseBuild(t *testing.T) {
-	for b, want := range map[string]bool{"0.1.87": true, "dev": false, "0.1.87-3-gabc": false, "0.1.87-dirty": false} {
-		if got := releaseBuild(b); got != want {
-			t.Errorf("releaseBuild(%q) = %v, want %v", b, got, want)
+func TestSelfUpgrades(t *testing.T) {
+	cases := []struct {
+		release, build string
+		want           bool
+	}{
+		{"true", "0.1.88", true},
+		{"", "0.1.88", false}, // build-daemon.sh on a clean tag checkout: stamped like a release, not one
+		{"", "dev", false},
+		{"true", "0.1.87-3-gabc", false},
+		{"true", "0.1.87-dirty", false},
+	}
+	for _, c := range cases {
+		if got := selfUpgrades(c.release, c.build); got != c.want {
+			t.Errorf("selfUpgrades(%q, %q) = %v, want %v", c.release, c.build, got, c.want)
 		}
 	}
 }
