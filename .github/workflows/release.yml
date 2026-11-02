@@ -33,12 +33,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # The native Mac app, attached to the same release as ccmux-app.zip — what
-  # the app's "Check for Updates…" downloads. Secrets are consumed inside the
+  # the app's "Check for Updates…" downloads.
+  #
+  # OFF unless the repo variable BUILD_MAC_APP is "true" (2026-11-02: the web
+  # lens is the focus, and this job was most of each release's wall time).
+  # With it off a release has no ccmux-app.zip: the app's automatic check
+  # stays silent, "Check for Updates…" says the download is not attached, and
+  # the app never pushes the daemon BACKWARDS (it only syncs daemons older
+  # than itself). Turn it on again with:
+  #   gh variable set BUILD_MAC_APP --body true Secrets are consumed inside the
   # shell steps (not in `if:` conditions), so the job degrades gracefully:
   # no cert secret → ad-hoc signed build; no notary key → signed, not
   # notarized (first manual install needs right-click→Open; self-updates are
   # unaffected either way).
   macapp:
+    if: vars.BUILD_MAC_APP == 'true'
     runs-on: macos-15
     needs: goreleaser # the release must exist before we can attach to it
     steps:

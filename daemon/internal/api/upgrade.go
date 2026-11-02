@@ -30,7 +30,7 @@ var upgradeTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 // Macs could fire together).
 var upgrading atomic.Bool
 
-// selfUpgrade validates the request and hands off to the spawn seam.
+// selfUpgrade validates the request and hands off to StartUpgrade.
 func (s *Server) selfUpgrade(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Version string `json:"version"`
@@ -39,32 +39,44 @@ func (s *Server) selfUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tag := strings.TrimSpace(req.Version)
+	code, msg := s.StartUpgrade(tag)
+	switch {
+	case code >= 400:
+		writeError(w, code, msg)
+	case code == http.StatusAccepted:
+		writeJSON(w, code, map[string]string{"status": msg, "target": tag})
+	default:
+		writeJSON(w, code, map[string]string{"status": msg})
+	}
+}
+
+// StartUpgrade is POST /v1/upgrade without the HTTP, shared with the daemon's
+// own release check (cmd/ccmuxd/autoupgrade.go) so both refuse the same things.
+// It answers with the HTTP status the route sends and its message: 202
+// "upgrading" when the child was spawned, 200 when this is already that
+// version, 4xx/5xx for a refusal or a spawn failure.
+func (s *Server) StartUpgrade(tag string) (int, string) {
 	if !upgradeTag.MatchString(tag) {
-		writeError(w, http.StatusBadRequest, "version must be a release tag like v0.1.15")
-		return
+		return http.StatusBadRequest, "version must be a release tag like v0.1.15"
 	}
 	// A source build is a developer's working binary — refuse to clobber it
 	// remotely, same rule the Mac updater applies locally.
 	if b := version.Build; b == "dev" || strings.Contains(b, "-") {
-		writeError(w, http.StatusConflict, fmt.Sprintf("this daemon runs a source build (%s) — upgrade it manually", b))
-		return
+		return http.StatusConflict, fmt.Sprintf("this daemon runs a source build (%s) — upgrade it manually", b)
 	}
 	if "v"+version.Build == tag {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "already " + version.Build})
-		return
+		return http.StatusOK, "already " + version.Build
 	}
 	if !upgrading.CompareAndSwap(false, true) {
-		writeError(w, http.StatusConflict, "an upgrade is already running")
-		return
+		return http.StatusConflict, "an upgrade is already running"
 	}
 	if err := s.spawnUpgrade(tag); err != nil {
 		upgrading.Store(false)
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	// Deliberately NOT reset on success: the daemon restarts underneath us,
 	// which is the only successful exit from this state.
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "upgrading", "target": tag})
+	return http.StatusAccepted, "upgrading"
 }
 
 // spawnUpgrade is the default spawn seam (tests replace it): run our own
