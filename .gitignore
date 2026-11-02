@@ -12,6 +12,8 @@ dist/
 # qa-receipt.sh finds no test command here (go.mod is under daemon/, and it does
 # not recognise Package.swift) and refuses to sign anything.
 !.claude/qa-gates
+# What /ship runs after the tag (the deploy). Same reason: the repo's, not one machine's.
+!.claude/ship-after-release
 # The gate scripts qa-gates invokes, and their frozen baselines. These must be
 # tracked or the gate only works on the machine that wrote it. Un-ignoring the
 # DIRECTORY is what does it: git will not descend into an ignored directory, so

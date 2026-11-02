@@ -60,8 +60,8 @@ is empty on this branch model and would review nothing.
 
 **Deploying is local (2026-11-02, user's call).** Nothing builds on GitHub: the
 release workflow runs by hand only, and the last published release is v0.1.88.
-After `/ship` pushes the tag, run `./build-daemon.sh` from the clean tagged
-checkout on verkstan. It builds ccmuxd and ccmux-peers, installs them in
+After `/ship` pushes the tag it runs `./build-daemon.sh` from the clean tagged
+checkout on verkstan (listed in `.claude/ship-after-release`). It builds ccmuxd and ccmux-peers, installs them in
 `~/.local/bin`, restarts the service and fails unless the running daemon reports
 the version it just built; that is the deploy, and its health line is the live
 check. The web lens is embedded in ccmuxd, so it ships with it. Never run
