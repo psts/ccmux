@@ -3,7 +3,9 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v33"; // v33: the shell comes from the network first, so a deploy lands on the next load
+// The shell cache is named after the lens build it holds (web.go's Build),
+// and holds that build whole or not at all: see refreshShell.
+const SHELL_PREFIX = "ccmux-shell-";
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.
@@ -12,6 +14,9 @@ const PENDING_NAV = "/__ccmux_pending_nav";
 // ws id -> window id, written by every page (pagewin.js) so a tap can find the
 // browser window that shows the session's window.
 const WS_WINDOWS = "/__ccmux_ws_windows";
+// The build whose shell cache is complete, kept in NAV_CACHE beside the two
+// above. Only refreshShell writes it, and only after the whole set landed.
+const SHELL_BUILD = "/__ccmux_shell_build";
 
 // The app shell: everything needed to boot the lens offline. Session bytes are
 // never cached (they come over /v1/attach, which the fetch handler leaves alone).
@@ -42,18 +47,11 @@ const SHELL = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(refreshShell().then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {
-  e.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(
-        // Purge only superseded shell caches; keep NAV_CACHE (pending deep-link).
-        keys.filter((k) => k.startsWith("ccmux-shell-") && k !== CACHE).map((k) => caches.delete(k))
-      ))
-      .then(() => self.clients.claim())
-  );
+  e.waitUntil(self.clients.claim());
 });
 
 // Network first for the shell; network-only for the API (/v1/*) and anything
@@ -65,11 +63,12 @@ self.addEventListener("activate", (e) => {
 //
 // The cache is the fallback when the daemon cannot be reached, and when it is
 // slow to send the page itself: past SLOW_MS the cached page is served. A page
-// is then ALL cache or ALL network. Cut over per file, a slow link would hand
-// a page the new tiny build.js beside the old big app.js, and that page would
-// run old code while believing it is current, so update.js would never move
-// it on. A page served from the cache takes every file from the cache, and
-// learns from /v1/health that it is behind.
+// is ALL cache or ALL network, and the cache holds ONE build. Mixed per file,
+// a slow link would hand a page the new tiny build.js beside the old big
+// app.js, and that page would run old code while believing it is current, so
+// update.js would never move it on. So a page from the network takes nothing
+// from the cache, a page from the cache takes everything from it, and nothing
+// a page loads is written to the cache: only refreshShell writes it, whole.
 const SLOW_MS = 3000;
 const cachedPages = new Set(); // client ids of pages that booted from the cache
 
@@ -79,50 +78,75 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/v1/")) {
     return; // default network handling
   }
-  if (req.mode === "navigate") e.respondWith(pageFetch(req, e.resultingClientId));
+  if (req.mode === "navigate") e.respondWith(pageFetch(e));
   else if (cachedPages.has(e.clientId)) e.respondWith(cacheFirst(req));
-  else e.respondWith(networkFirst(req));
+  else e.respondWith(fetch(req, { cache: "no-cache" }));
 });
 
-async function pageFetch(req, clientId) {
-  const cache = await caches.open(CACHE);
-  const net = fromNetwork(cache, req);
-  const copy = await slowOrFailed(net, cache.match(req, { ignoreSearch: true }));
+async function pageFetch(e) {
+  const net = fetch(e.request, { cache: "no-cache" });
+  // Whenever the network answers, even after the cache already served this
+  // page, the cache catches up with the build the daemon serves now.
+  e.waitUntil(net.then(() => refreshShell(), () => {}));
+  const copy = await slowOrFailed(net, fromShell(e.request));
   if (!copy) return net; // the network answered first, or there is nothing else
-  if (clientId) cachedPages.add(clientId);
+  if (e.resultingClientId) cachedPages.add(e.resultingClientId);
   return copy;
 }
 
 // slowOrFailed settles with the cached copy when the network fails or has not
-// answered in SLOW_MS, and with null when the network answers first.
+// answered in SLOW_MS, and with null when the network answers first. A copy
+// that cannot be read counts as none, so a load fails instead of hanging.
 function slowOrFailed(net, cached) {
-  return new Promise((resolve) => {
-    net.then(() => resolve(null), () => cached.then(resolve));
-    setTimeout(() => cached.then((copy) => { if (copy) resolve(copy); }), SLOW_MS);
+  const copy = cached.catch((err) => {
+    console.warn("ccmux sw: the shell cache is unreadable:", err);
+    return undefined;
   });
-}
-
-async function networkFirst(req) {
-  const cache = await caches.open(CACHE);
-  try {
-    return await fromNetwork(cache, req);
-  } catch (err) {
-    const copy = await cache.match(req, { ignoreSearch: true }); // offline
-    if (copy) return copy;
-    throw err;
-  }
+  return new Promise((resolve) => {
+    net.then(() => resolve(null), () => copy.then(resolve));
+    setTimeout(() => copy.then((c) => { if (c) resolve(c); }), SLOW_MS);
+  });
 }
 
 async function cacheFirst(req) {
-  const cache = await caches.open(CACHE);
-  return (await cache.match(req, { ignoreSearch: true })) || fromNetwork(cache, req);
+  return (await fromShell(req)) || fetch(req, { cache: "no-cache" });
 }
 
-function fromNetwork(cache, req) {
-  return fetch(req, { cache: "no-cache" }).then((resp) => {
-    if (resp.ok && resp.type === "basic") cache.put(req, resp.clone());
-    return resp;
-  });
+async function fromShell(req) {
+  const build = await shellBuild();
+  if (!build) return undefined;
+  return (await caches.open(SHELL_PREFIX + build)).match(req, { ignoreSearch: true });
+}
+
+async function shellBuild() {
+  const resp = await (await caches.open(NAV_CACHE)).match(SHELL_BUILD);
+  return resp ? resp.text() : "";
+}
+
+// buildOf reads the build a response belongs to from its ETag (web.go).
+function buildOf(resp) {
+  return (resp.headers.get("ETag") || "").replace(/^W\//, "").replace(/"/g, "");
+}
+
+// refreshShell makes the cache hold the build the daemon serves now, whole:
+// every shell file, each stamped with that one build, or nothing new at all.
+// A deploy landing mid-refresh stamps some files with the next build; the set
+// is then dropped, and the next page load tries again.
+async function refreshShell() {
+  try {
+    const build = buildOf(await fetch("/build.js", { cache: "no-cache" }));
+    if (!build || build === await shellBuild()) return;
+    const resps = await Promise.all(SHELL.map((p) => fetch(p, { cache: "no-cache" })));
+    if (resps.some((r) => !r.ok || buildOf(r) !== build)) return;
+    const name = SHELL_PREFIX + build;
+    const cache = await caches.open(name);
+    await Promise.all(SHELL.map((p, i) => cache.put(p, resps[i])));
+    await (await caches.open(NAV_CACHE)).put(SHELL_BUILD, new Response(build));
+    const stale = (await caches.keys()).filter((k) => k.startsWith(SHELL_PREFIX) && k !== name);
+    await Promise.all(stale.map((k) => caches.delete(k)));
+  } catch (err) {
+    console.warn("ccmux sw: the shell cache was not refreshed; it keeps the build it has:", err);
+  }
 }
 
 // A push arrives even with the PWA closed and the phone locked. The payload is

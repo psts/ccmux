@@ -3,6 +3,8 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("fs");
+const path = require("path");
 const U = require("./update.js");
 
 const idle = { returning: true, busy: false, hidden: false };
@@ -24,4 +26,16 @@ test("a page in use gets the bar instead", () => {
 
 test("a hidden page waits until it is shown", () => {
   assert.strictEqual(U.decide("aaa", "bbb", { ...idle, hidden: true }), "none");
+});
+
+// busy() finds unsent chat text and open dialogs by class name. Renamed on
+// the other side, a page would reload over a half-written message.
+test("the chat box and the dialogs still carry the names busy() looks for", () => {
+  const src = (f) => fs.readFileSync(path.join(__dirname, f), "utf8");
+  assert.match(src("update.js"), /"\.ac-compose textarea"/);
+  assert.match(src("agentchat.js"), /<form class="ac-compose"><textarea/);
+  assert.match(src("update.js"), /"\.modal:not\(\.hidden\)"/);
+  const modals = src("index.html").match(/<div id="[^"]*-modal" class="[^"]*"/g) || [];
+  assert.ok(modals.length >= 4, "index.html has its dialogs");
+  for (const m of modals) assert.match(m, /class="modal[ "]/, m);
 });
