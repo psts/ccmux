@@ -1970,8 +1970,16 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
     }
     
+    // ccmux: true when this mouse event belongs to the app rather than to local
+    // selection. Holding Option keeps it local, as in iTerm and Terminal.app,
+    // so text stays selectable under an app that captures the mouse (Claude
+    // Code in its wheel-only mode still turns on click tracking to get the wheel).
+    func reportsMouse (_ event: NSEvent) -> Bool {
+        allowMouseReporting && terminal.mouseMode != .off && !event.modifierFlags.contains(.option)
+    }
+
     public override func mouseDown(with event: NSEvent) {
-        if allowMouseReporting && terminal.mouseMode.sendButtonPress() {
+        if reportsMouse(event) && terminal.mouseMode.sendButtonPress() {
             sharedMouseEvent(with: event)
             return
         }
@@ -2016,7 +2024,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             terminalDelegate?.requestOpenLink(source: self, link: result.link, params: result.params)
             return
         }
-        if allowMouseReporting && terminal.mouseMode.sendButtonRelease() {
+        if reportsMouse(event) && terminal.mouseMode.sendButtonRelease() {
             sharedMouseEvent(with: event)
             return
         }
@@ -2033,7 +2041,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         let displayBuffer = terminal.displayBuffer
         let mouseHit = calculateMouseHit(with: event)
         let hit = mouseHit.grid
-        if allowMouseReporting {
+        if reportsMouse(event) {
             if terminal.mouseMode.sendMotionEvent() {
                 let flags = encodeMouseEvent(with: event)
                 let screenRow = max (0, min (displayBuffer.rows - 1, hit.row - displayBuffer.yDisp))
@@ -2185,8 +2193,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     /// raise it if trackpad scrolling pages too fast, lower it if too slow.
     static let wheelPageThreshold: CGFloat = 50
 
+    /// Points of precise (trackpad) scrolling per wheel report when the app
+    /// asked for mouse events and scrolls itself, line by line. Tuned by feel,
+    /// about one text line.
+    static let wheelReportThreshold: CGFloat = 16
+
     /// Running sum of precise scroll deltas while forwarding the wheel to an
-    /// alternate-buffer app (e.g. Claude Code's fullscreen TUI) as PgUp/PgDn.
+    /// app, as PgUp/PgDn or as wheel reports.
     private var wheelPageAccumulator: CGFloat = 0
 
     /// Pure page-stepping math for trackpad wheel forwarding (factored out for
@@ -2220,6 +2233,15 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         if event.deltaY == 0 {
             return
         }
+        // ccmux: an app that asked for mouse events (Claude Code with
+        // CLAUDE_CODE_DISABLE_MOUSE_CLICKS, opencode, vim with mouse=a) gets the
+        // wheel as wheel reports and scrolls itself smoothly, the way xterm.js
+        // does in the web lens. Option is deliberately not checked here: the
+        // wheel is never a selection gesture.
+        if allowMouseReporting && terminal.mouseMode != .off {
+            forwardWheelAsReports (with: event)
+            return
+        }
         // On the alternate buffer there is no local scrollback to move. Rather
         // than let the wheel do nothing, forward it to the app as PgUp/PgDn —
         // the same sequence the PgUp/PgDn keys send there — so full-screen TUIs
@@ -2233,6 +2255,34 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             scrollUp (lines: velocity)
         } else {
             scrollDown(lines: velocity)
+        }
+    }
+
+    private func forwardWheelAsReports (with event: NSEvent) {
+        var steps = event.deltaY > 0 ? 1 : -1
+        // Trackpad: one report per threshold of travel, momentum included, so
+        // a flick coasts the way it does in any other scrolling view.
+        if event.hasPreciseScrollingDeltas {
+            let (n, acc) = TerminalView.wheelPageSteps (
+                accumulator: wheelPageAccumulator,
+                delta: event.scrollingDeltaY,
+                threshold: TerminalView.wheelReportThreshold)
+            wheelPageAccumulator = acc
+            steps = n
+        }
+        if steps == 0 {
+            return
+        }
+        let flags = event.modifierFlags
+        let buttonFlags = terminal.encodeButton (button: steps > 0 ? 4 : 5, release: false,
+                                                 shift: flags.contains(.shift), meta: false,
+                                                 control: flags.contains(.control))
+        let displayBuffer = terminal.displayBuffer
+        let hit = calculateMouseHit(with: event)
+        let screenRow = max (0, min (displayBuffer.rows - 1, hit.grid.row - displayBuffer.yDisp))
+        for _ in 0 ..< abs (steps) {
+            terminal.sendEvent(buttonFlags: buttonFlags, x: hit.grid.col, y: screenRow,
+                               pixelX: hit.pixels.col, pixelY: hit.pixels.row)
         }
     }
 

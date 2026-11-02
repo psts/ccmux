@@ -1153,6 +1153,11 @@ function ensureTerm() {
     cursorBlink: true,
     scrollback: 5000,
     allowProposedApi: true,
+    // An app that captures the mouse (Claude Code's wheel-only mode, opencode)
+    // gets the wheel as wheel reports, which xterm.js does on its own. Option-
+    // drag still selects text on a Mac, as in the Mac lens (reportsMouse in
+    // MacTerminalView); elsewhere xterm.js's Shift does the same.
+    macOptionClickForcesSelection: true,
     theme: { background: "#1c1e22", foreground: "#d9dbdd", cursor: "#d9dbdd" },
   });
   state.fit = new FitAddon.FitAddon();
