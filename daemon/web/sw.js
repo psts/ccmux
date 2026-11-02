@@ -3,7 +3,7 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v27"; // v27: touch scrolls apps that capture the mouse; icon tabs on phones
+const CACHE = "ccmux-shell-v28"; // v28: a swipe sends a row per row of travel, and the phone cannot take it over
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.

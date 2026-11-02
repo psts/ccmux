@@ -18,6 +18,15 @@ test("a flick glides at the finger's speed per frame", () => {
   assert.strictEqual(T.glideSpeed(5, 0), 80); // no time passed: counted as 1ms, never a divide by zero
 });
 
+test("finger travel goes out as whole rows, the rest waits for the next move", () => {
+  // xterm.js sends one report per wheel event, so a 31px move over 14px rows
+  // must be two events, with 3px carried into the next move.
+  assert.deepStrictEqual(T.rowsFor(31, 14), { rows: 2, rest: 3 });
+  assert.deepStrictEqual(T.rowsFor(-31, 14), { rows: -2, rest: -3 });
+  assert.deepStrictEqual(T.rowsFor(10, 14), { rows: 0, rest: 10 }); // under a row: nothing yet
+  assert.deepStrictEqual(T.rowsFor(14, 14), { rows: 1, rest: 0 });
+});
+
 test("a finger that rested before lifting does not glide; a flick does", () => {
   // A phone sends no touchmove while the finger holds still, so the rest only
   // shows as time between the last move and the lift.

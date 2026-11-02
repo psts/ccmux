@@ -343,6 +343,12 @@ body {
 }
 #app.stale #takeover:hover { filter: brightness(1.06); }
 #tabs { display: flex; gap: 4px; }
+/* The terminal handles every touch itself: xterm.js scrolls a plain shell in
+   code, and touchscroll.js turns a drag into wheel reports for an app that has
+   the mouse. Left to the browser, a phone could take the drag for its own page
+   scroll after the first move and cancel the touch, so a swipe sent one or two
+   rows. */
+#terminal .xterm { touch-action: none; }
 #pane-add {
   background: none; border: 1px dashed var(--line); border-radius: 6px;
   color: var(--muted); cursor: pointer; font-size: 14px;

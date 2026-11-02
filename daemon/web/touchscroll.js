@@ -36,16 +36,35 @@
     return restMs > REST_MS ? 0 : speed;
   }
 
+  // rowsFor splits pending finger travel (px) into whole rows to send now and
+  // the px left over for the next move. xterm.js sends ONE wheel report per
+  // wheel event however far the event goes, so a fast swipe sent as one event
+  // per move lost every row but the first of each move.
+  function rowsFor(px, rowPx) {
+    const rows = Math.trunc(px / rowPx);
+    return { rows, rest: px - rows * rowPx };
+  }
+
   function attach(term) {
     const el = term.element;
     const captured = () => term.modes.mouseTrackingMode !== "none";
-    const send = (dy, x, y) => el.dispatchEvent(new WheelEvent("wheel", wheelFor(dy, x, y)));
+    const rowPx = () => (el.querySelector(".xterm-screen") || el).clientHeight / term.rows || 14;
+    let pending = 0; // finger travel not yet sent, under one row
+    // send turns finger travel into one wheel event per whole row crossed.
+    const send = (dy, x, y) => {
+      const row = rowPx();
+      const { rows, rest } = rowsFor(pending + dy, row);
+      pending = rest;
+      const step = Math.sign(rows) * row;
+      for (let i = 0; i < Math.abs(rows); i++) el.dispatchEvent(new WheelEvent("wheel", wheelFor(step, x, y)));
+    };
     let last = null;
     let speed = 0;
     let glide = 0;
     el.addEventListener("touchstart", (e) => {
       cancelAnimationFrame(glide);
       last = null;
+      pending = 0;
       if (e.touches.length !== 1 || !captured()) return;
       const t = e.touches[0];
       last = { x: t.clientX, y: t.clientY, at: e.timeStamp };
@@ -60,7 +79,9 @@
       last = { x: t.clientX, y: t.clientY, at: e.timeStamp };
       e.preventDefault(); // the page must not scroll or bounce under the finger
     }, { passive: false });
-    el.addEventListener("touchend", (e) => {
+    // A lift glides on; so does a cancel, which is what a phone sends when it
+    // takes the gesture for itself after all.
+    const release = (e) => {
       if (!last) return;
       const { x, y } = last;
       speed = liftSpeed(speed, e.timeStamp - last.at);
@@ -72,10 +93,12 @@
         glide = requestAnimationFrame(step);
       };
       glide = requestAnimationFrame(step);
-    });
+    };
+    el.addEventListener("touchend", release);
+    el.addEventListener("touchcancel", release);
   }
 
-  const api = { attach, wheelFor, glideSpeed, liftSpeed, FRICTION, MIN_SPEED, REST_MS };
+  const api = { attach, wheelFor, glideSpeed, liftSpeed, rowsFor, FRICTION, MIN_SPEED, REST_MS };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxTouchScroll = api;
 })(typeof window !== "undefined" ? window : this);
