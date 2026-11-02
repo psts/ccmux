@@ -1466,6 +1466,16 @@ function sendInput(data) {
   send({ t: "input", pane: state.paneId, data: bytesToB64(new TextEncoder().encode(data)) });
 }
 
+// typeIntoPane types text into the pane {ws, pane} named when it was asked
+// for, not whichever pane is open now, and says false when it cannot: the
+// socket is down, or this window has moved to another session since.
+// paste.js uses it after an upload that may take seconds.
+function typeIntoPane(to, text) {
+  if (!to || to.ws !== state.wsId || !state.conn || state.conn.readyState !== 1) return false;
+  state.conn.send(JSON.stringify({ t: "input", pane: to.pane, data: bytesToB64(new TextEncoder().encode(text)) }));
+  return true;
+}
+
 // The daemon serves panes in the shared tab order. Another lens dragging a tab
 // reaches us as a workspace-status refresh, so re-sort the open session's tabs
 // to the served order here; the pane objects themselves are kept (their
@@ -3159,7 +3169,13 @@ function bootDeepLink() {
 // push.js awaits the same promise before its own deep-link attach (a
 // notification tap), which otherwise fires on DOMContentLoaded, ahead of it.
 const identityReady = loadIdentity();
-window.ccmux = { attach: openWorkspace, getUser, identityReady }; // push.js deep-links + shares the presence name
+// push.js deep-links and shares the presence name; paste.js types a pasted
+// image's path into the pane it was pasted in.
+window.ccmux = {
+  attach: openWorkspace, getUser, identityReady,
+  currentPane: () => (state.wsId && state.paneId ? { ws: state.wsId, pane: state.paneId } : null),
+  typeIntoPane,
+};
 $("new-ws").onclick = newWorkspace;
 $("project-close").onclick = closeProjectModal;
 $("project-folder-mk").onclick = createProjectFolder;

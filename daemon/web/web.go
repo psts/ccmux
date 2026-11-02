@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-//go:embed index.html app.js route.js pagewin.js touchscroll.js drawerswipe.js agentchat.js board.js owns.js agentcaps.js agentmodal.js peers.js push.js update.js sw.js style.css manifest.webmanifest vendor icons
+//go:embed index.html app.js route.js pagewin.js touchscroll.js drawerswipe.js agentchat.js board.js owns.js agentcaps.js agentmodal.js peers.js push.js paste.js update.js sw.js style.css manifest.webmanifest vendor icons
 var Files embed.FS
 
 // Build names this exact set of lens files: a short hash of every embedded

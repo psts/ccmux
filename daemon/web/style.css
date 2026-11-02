@@ -76,19 +76,22 @@ body {
 .group-hdr.current { color: var(--fg); opacity: 1; }
 .group-hdr:not(.current):has(.grp-close) { cursor: pointer; }
 /* relaunch: windows the browser would not open without a click */
-#restore-bar, #update-bar {
+#restore-bar, #update-bar, #paste-bar {
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 50;
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: calc(100vw - 32px);
   background: var(--bg2); color: var(--fg); border: 1px solid var(--muted);
   border-radius: 8px; padding: 8px 12px; font-size: 13px;
 }
-#restore-bar button, #update-bar button {
+#restore-bar button, #update-bar button, #paste-bar button {
   background: var(--bg); color: var(--fg); border: 1px solid var(--muted);
   border-radius: 6px; padding: 3px 10px; cursor: pointer;
 }
-#restore-bar .restore-dismiss, #update-bar .update-dismiss { border: 0; background: none; color: var(--muted); }
+#restore-bar .restore-dismiss, #update-bar .update-dismiss, #paste-bar .paste-dismiss { border: 0; background: none; color: var(--muted); }
 /* a new lens build: above the restore bar, which only shows at launch */
 #update-bar { bottom: 64px; z-index: 51; }
+/* a paste that went wrong (paste.js); its own bar, so it shows on any view */
+#paste-bar { bottom: 112px; z-index: 52; }
+#paste-bar span { user-select: text; overflow-wrap: anywhere; }
 .group-hdr > span { flex: 1; }
 .group-hdr .grp-msgs {
   background: transparent; border: 0; cursor: pointer; padding: 0 2px;
