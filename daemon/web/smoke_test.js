@@ -76,7 +76,8 @@ function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null,
 // collected into `book`, never fired on their own: a case fires them itself
 // (fireTimers) to prove a timeout does what it claims.
 function makeContext(opts, book) {
-  const { storage = {}, pendingNav = null } = opts;
+  const { storage = {}, pendingNav = null, search = "", openRefused = false } = opts;
+  const location = { href: "http://x/" + search, origin: "http://x", search, pathname: "/", protocol: "http:", host: "x" };
   return {
     console: { log() {}, warn() {}, error: (...a) => { book.errors.push(a.map(String).join(" ")); }, info() {} },
     document: new Proxy({}, { get: () => el() }),
@@ -86,7 +87,19 @@ function makeContext(opts, book) {
       removeItem: (k) => { delete storage[k]; },
     },
     crypto: { randomUUID: () => "test-device-uuid" },
-    location: { href: "http://x/", origin: "http://x", search: "", pathname: "/", protocol: "http:", host: "x" },
+    location,
+    // pagewin.js: this browser window's name (its page id), its address bar,
+    // and the windows it asks the browser for (null when the browser refuses one).
+    name: "",
+    // replaceState moves location too, as in a browser: a page that rewrites
+    // its address before reading it must see the rewrite.
+    history: { replaceState: (_s, _t, url) => {
+      const u = String(url);
+      book.addresses.push(u);
+      location.search = u.includes("?") ? u.slice(u.indexOf("?")) : "";
+    } },
+    open: (url) => { book.opened.push(String(url)); return openRefused ? null : {}; },
+    Response: function (body) { this.body = body; },
     navigator: { userAgent: "node", serviceWorker: {
       register: () => { book.swRegistrations++; return Promise.resolve({ pushManager: { getSubscription: async () => null } }); },
       addEventListener() {},
@@ -99,6 +112,7 @@ function makeContext(opts, book) {
     caches: { open: async () => ({
       match: async (k) => (pendingNav && k === "/__ccmux_pending_nav" ? { text: async () => pendingNav } : undefined),
       delete: async () => true,
+      put: async () => true,
     }) },
     setInterval: () => 0, setTimeout: (fn) => { book.timers.push(fn); return book.timers.length; }, clearInterval() {}, clearTimeout() {},
     addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }),
@@ -115,11 +129,15 @@ function makeContext(opts, book) {
 // back the handles the cases assert on.
 function run(opts = {}) {
   const { withPush = false, withBoard = false } = opts;
-  const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0 };
+  const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0,
+    addresses: [], opened: [] };
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), ctx, { filename: "app.js" });
+  // Same order as index.html: app.js, then the per-window glue that boots it.
+  for (const f of ["app.js", "route.js", "pagewin.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), ctx, { filename: f });
+  }
   if (withPush) vm.runInContext(fs.readFileSync(path.join(__dirname, "push.js"), "utf8"), ctx, { filename: "push.js" });
   // board.js runs after agentchat.js on the page and leans on it; same here.
   for (const f of withBoard ? ["agentchat.js", "board.js"] : []) {
@@ -131,7 +149,98 @@ function run(opts = {}) {
   const evalIn = (code) => vm.runInContext(code, ctx);
   const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
   return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
-    sockets: book.sockets, swRegistrations: () => book.swRegistrations };
+    sockets: book.sockets, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened };
+}
+
+// --- pagewin.js: one ccmux window per browser window. The rules themselves
+// are in route_test.js; these drive the real boot through app.js.
+const twoWindows = () => [
+  { id: "win-a", name: "Mixed", workspaceIds: ["ws-1"], openBy: ["p"], open: true, openHere: true },
+  { id: "win-b", name: "ChartLabs", workspaceIds: ["ws-2"], openBy: ["p"], open: true, openHere: true },
+];
+const attachedTo = (r) => r.sockets.filter((u) => u.includes("/v1/attach")).map((u) => /workspace=([^&]+)/.exec(u)[1]);
+const lastAddress = (r) => r.addresses[r.addresses.length - 1] || "";
+
+async function pageWindowCases() {
+  const link = run({ windowsReply: twoWindows, search: "?ws=ws-2" });
+  await settle();
+  check("a notification link opens its session in the session's window",
+    attachedTo(link).join() === "ws-2" && lastAddress(link) === "/?w=win-b&ws=ws-2",
+    `attached ${attachedTo(link).join()}, address ${lastAddress(link)}; errors: ${link.errors.join(" | ")}`);
+
+  const back = run({ windowsReply: twoWindows, search: "?w=win-a", storage: { "ccmux-last-ws:win-a": "ws-1" } });
+  await settle();
+  check("a window shows the session last shown in it", attachedTo(back).join() === "ws-1",
+    `attached ${attachedTo(back).join()}; errors: ${back.errors.join(" | ")}`);
+
+  const fresh = run({ windowsReply: twoWindows });
+  await settle();
+  check("a launch with two windows open and nothing to restore asks which window",
+    attachedTo(fresh).length === 0 && lastAddress(fresh) === "/" && fresh.opened.length === 0,
+    `attached ${attachedTo(fresh).join()}, address ${lastAddress(fresh)}, opened ${fresh.opened.join()}`);
+
+  const quit = JSON.stringify({ p1: { w: "win-a", seen: 0, closedAt: 1000 }, p2: { w: "win-b", seen: 0, closedAt: 1001 } });
+  const relaunch = run({ windowsReply: twoWindows, storage: { "ccmux-pages": quit } });
+  await settle();
+  check("a relaunch shows the first window here and asks the browser for the rest",
+    lastAddress(relaunch).startsWith("/?w=win-a") && relaunch.opened.join() === "/?w=win-b",
+    `address ${lastAddress(relaunch)}, opened ${relaunch.opened.join()}; errors: ${relaunch.errors.join(" | ")}`);
+
+  const refused = run({ windowsReply: twoWindows, storage: { "ccmux-pages": quit }, openRefused: true });
+  await settle();
+  check("a browser that refuses the extra windows costs nothing but a button",
+    lastAddress(refused).startsWith("/?w=win-a") && refused.errors.length === 0, refused.errors.join(" | "));
+
+  // A cold launch from a notification tap: push.js attaches from the stashed
+  // tap before app.js has read the window list, and must not wipe the address
+  // the boot is about to read.
+  const cold = run({ windowsReply: twoWindows, search: "?w=win-b&ws=ws-2", withPush: true,
+    pendingNav: JSON.stringify({ url: "/?w=win-b&ws=ws-2", w: "win-b", at: Date.now() }) });
+  await settle();
+  check("a notification that launches the app lands on its session, in its window",
+    cold.ctx.ccmuxPage.current() === "win-b" && lastAddress(cold) === "/?w=win-b&ws=ws-2",
+    `current ${cold.ctx.ccmuxPage.current()}, addresses ${cold.addresses.join(" ")}`);
+
+  // Switching windows from a header takes down the old window's board: only
+  // openWorkspace closed it before, and a window with no session to show
+  // left Mixed's board on screen under a sidebar that said ChartLabs.
+  const boarded = run({ windowsReply: twoWindows, search: "?w=win-a", withBoard: true });
+  await settle();
+  boarded.ctx.ccmuxBoard.open("Mixed");
+  await boarded.ctx.ccmuxPage.enter("win-b", "");
+  check("switching windows closes the other window's attention board",
+    !boarded.ctx.ccmuxBoard.isOpen() && boarded.ctx.ccmuxPage.current() === "win-b",
+    `board open: ${boarded.ctx.ccmuxBoard.isOpen()}, current ${boarded.ctx.ccmuxPage.current()}`);
+
+  // A window list that cannot be read at boot decides nothing: the tapped
+  // session still opens, the address and the relaunch list stay as they were,
+  // and the next good read finishes the boot.
+  const blind = run({ windowsOk: false, search: "?w=win-b&ws=ws-2" });
+  await settle();
+  check("an unreadable window list still opens the tapped session and keeps the address",
+    attachedTo(blind).join() === "ws-2" && blind.addresses.length === 0,
+    `attached ${attachedTo(blind).join()}, addresses ${blind.addresses.join(" ")}`);
+  const kept = { "ccmux-pages": quit };
+  const blindRelaunch = run({ windowsOk: false, storage: kept });
+  await settle();
+  check("an unreadable window list keeps last session's windows for the next launch",
+    kept["ccmux-pages"].includes("p1") && kept["ccmux-pages"].includes("p2") && blindRelaunch.opened.length === 0,
+    kept["ccmux-pages"]);
+  const late = run({ windowsReply: twoWindows, windowsOkFor: (n) => n > 0, search: "?w=win-b&ws=ws-2" });
+  await settle();
+  check("before a good read the page has no window", late.ctx.ccmuxPage.current() === "");
+  await late.ctx.fetchWorkspaces();
+  await settle();
+  check("the first good read finishes the boot", late.ctx.ccmuxPage.current() === "win-b" &&
+    lastAddress(late) === "/?w=win-b&ws=ws-2" && attachedTo(late).join() === "ws-2",
+    `current ${late.ctx.ccmuxPage.current()}, address ${lastAddress(late)}, attached ${attachedTo(late).join()}`);
+
+  const follow = run({ windowsReply: twoWindows, search: "?w=win-a" });
+  await settle();
+  follow.ctx.openWorkspace("ws-2", null);
+  await settle();
+  check("opening another window's session moves this browser window there",
+    lastAddress(follow) === "/?w=win-b&ws=ws-2" && follow.ctx.ccmuxPage.current() === "win-b", lastAddress(follow));
 }
 
 // --- board.js: the attention board's rules. The Mac app's AttentionBoard
@@ -925,6 +1034,7 @@ async function peersFailureCases() {
   check("no mark, no tip", ok.ctx.updateTip(undefined) === "" && ok.ctx.updateTip("") === "" &&
     ok.ctx.updateTip("failed") === "");
 
+  await pageWindowCases();
   await peersMergeCases();
   await peersFailureCases();
   await boardCases();

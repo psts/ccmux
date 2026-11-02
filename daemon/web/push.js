@@ -56,14 +56,25 @@
   }
 
   // Read + clear a deep-link the SW stashed for a client that may have dropped
-  // the postMessage. Idempotent: the entry is deleted once consumed.
+  // the postMessage. Idempotent: the entry is deleted once consumed. The SW
+  // stashes {url, w, at}; a bare URL is what a service worker from before
+  // per-window pages wrote. With several browser windows open, the one showing
+  // the tap's window takes it, or the one the tap focused; a stash older than a
+  // minute is a tap nobody took and is dropped rather than replayed later.
   async function consumePendingNav() {
     try {
       const cache = await caches.open(NAV_CACHE);
       const resp = await cache.match(PENDING_NAV);
       if (!resp) return;
+      const raw = await resp.text();
+      let nav;
+      try { nav = JSON.parse(raw); } catch (_) { nav = { url: raw }; }
+      if (!nav || typeof nav !== "object") nav = { url: raw };
+      const stale = nav.at && Date.now() - nav.at > 60000;
+      const mine = window.ccmuxPage ? window.ccmuxPage.current() : "";
+      if (!stale && nav.w && mine && nav.w !== mine && !document.hasFocus()) return;
       await cache.delete(PENDING_NAV);
-      navToURL(await resp.text());
+      if (!stale) navToURL(nav.url);
     } catch (_) {}
   }
 

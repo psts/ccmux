@@ -3,12 +3,15 @@
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v24"; // v24: agent capabilities (agentcaps.js)
+const CACHE = "ccmux-shell-v25"; // v25: one ccmux window per browser window (route.js, pagewin.js)
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.
 const NAV_CACHE = "ccmux-nav";
 const PENDING_NAV = "/__ccmux_pending_nav";
+// ws id -> window id, written by every page (pagewin.js) so a tap can find the
+// browser window that shows the session's window.
+const WS_WINDOWS = "/__ccmux_ws_windows";
 
 // The app shell: everything needed to boot the lens offline. Session bytes are
 // never cached (they come over /v1/attach, which the fetch handler leaves alone).
@@ -16,6 +19,8 @@ const SHELL = [
   "/",
   "/index.html",
   "/app.js",
+  "/route.js",
+  "/pagewin.js",
   "/agentchat.js",
   "/board.js",
   "/owns.js",
@@ -101,23 +106,45 @@ self.addEventListener("push", (e) => {
 // here — a backgrounded page may be frozen and drop a postMessage — so we cover
 // every case: (1) stash the target in NAV_CACHE, which the page reads when it
 // regains visibility (survives a dropped message or a relaunch); (2) postMessage
-// every client as the fast path; (3) focus an existing window, else open a new
-// one at the deep-link URL (its ?ws= is consumed on boot).
+// the chosen client as the fast path; (3) focus it, else open a new window at
+// the deep-link URL (its ?w=&ws= is consumed on boot).
+//
+// The chosen client is the browser window showing the session's window, so a
+// tap moves only that one. Before per-window pages every client was told, and
+// every open window jumped to the session.
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const url = (e.notification.data && e.notification.data.url) || "/";
-  e.waitUntil(
-    (async () => {
-      try {
-        const cache = await caches.open(NAV_CACHE);
-        await cache.put(PENDING_NAV, new Response(url));
-      } catch (_) {}
-      const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      for (const c of wins) c.postMessage({ type: "ccmux-navigate", url });
-      for (const c of wins) {
-        if ("focus" in c) { await c.focus(); return; }
-      }
-      if (self.clients.openWindow) await self.clients.openWindow(url);
-    })()
-  );
+  e.waitUntil(routeTap(url));
 });
+
+async function windowOfTap(url) {
+  try {
+    const ws = new URL(url, self.location.origin).searchParams.get("ws");
+    const resp = await (await caches.open(NAV_CACHE)).match(WS_WINDOWS);
+    const map = resp ? await resp.json() : {};
+    return (ws && map[ws]) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+async function routeTap(url) {
+  const w = await windowOfTap(url);
+  const target = new URL(url, self.location.origin);
+  if (w) target.searchParams.set("w", w);
+  const href = target.pathname + target.search;
+  try {
+    const cache = await caches.open(NAV_CACHE);
+    await cache.put(PENDING_NAV, new Response(JSON.stringify({ url: href, w, at: Date.now() })));
+  } catch (_) {}
+  const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const shows = (c) => { try { return new URL(c.url).searchParams.get("w") === w; } catch (_) { return false; } };
+  const client = (w && wins.find(shows)) || wins.find((c) => c.focused) || wins[0];
+  if (client) {
+    client.postMessage({ type: "ccmux-navigate", url: href });
+    if ("focus" in client) await client.focus();
+    return;
+  }
+  if (self.clients.openWindow) await self.clients.openWindow(href);
+}

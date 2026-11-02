@@ -287,6 +287,7 @@ async function fetchWorkspaces() {
     state.workspaces = workspaces;
     if (windows) {
       state.windows = windows;
+      state.windowsKnown = true; // pagewin.js boots on the first good read, not the first try
       keepOpenFlagsAlive();
     }
   } catch (_) {
@@ -295,6 +296,7 @@ async function fetchWorkspaces() {
   syncPaneTitles();
   renderList();
   if (window.ccmuxBoard) window.ccmuxBoard.refresh();
+  if (window.ccmuxPage) window.ccmuxPage.onRefresh();
 }
 
 // fetchHosts loads the federation registry (hub mode). 404/empty in single-host
@@ -363,7 +365,8 @@ function syncPaneTitles() {
 // renderList renders the SHARED arrangement (v2): windows you have OPEN as
 // sections, windows you have closed as one-line rows you can open, and
 // ungrouped sessions under AVAILABLE. The arrangement is the same for
-// everyone; open/closed is yours.
+// everyone; open/closed is yours. The window THIS browser window shows
+// (pagewin.js) comes first and alone carries the Attention row, as on the Mac.
 function renderList() {
   const ul = $("ws-list");
   ul.innerHTML = "";
@@ -374,39 +377,16 @@ function renderList() {
   // older daemon, which omits the field, keeps the previous per-login behavior
   // instead of rendering every open window as closed and dropping its rows.
   const closed = state.windows.filter((w) => !openHereOf(w));
+  const here = window.ccmuxPage ? window.ccmuxPage.current() : "";
+  const isHere = (group) => !!here && (winByName.get(group.toLowerCase()) || {}).id === here;
+  grouped.sort(([a], [b]) => Number(isHere(b)) - Number(isHere(a))); // stable: the rest keep their order
 
   for (const [group, list] of grouped) {
     if (group) {
       const win = winByName.get(group.toLowerCase());
       if (win && !openHereOf(win)) continue; // rendered below as a closed-window row
-      const h = document.createElement("li");
-      h.className = "group-hdr";
-      h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
-        (win ? `<button class="grp-close" title="Close window">–</button>` : "") +
-        `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>` +
-        (win ? `<button class="grp-agents" title="Agents in ${esc(group)}">⚙</button>` : "");
-      h.querySelector(".grp-msgs").onclick = (e) => {
-        e.stopPropagation();
-        window.ccmuxPeers.open(group);
-      };
-      if (win) {
-        h.querySelector(".grp-close").onclick = (e) => {
-          e.stopPropagation();
-          closeWindow(win);
-        };
-        // Agents belong to the window (the project), not to one session:
-        // the header is where they are added, woken and put to sleep.
-        h.querySelector(".grp-agents").onclick = (e) => {
-          e.stopPropagation();
-          openWindowMenu(win, e.clientX, e.clientY);
-        };
-        h.oncontextmenu = (e) => {
-          e.preventDefault();
-          openWindowMenu(win, e.clientX, e.clientY);
-        };
-      }
-      ul.appendChild(h);
-      if (win) ul.appendChild(boardRow(group));
+      ul.appendChild(groupHeader(group, win, here));
+      if (win && (!here || win.id === here)) ul.appendChild(boardRow(group));
     } else if (grouped.length > 1 || closed.length) {
       // Header only when there is something to separate from: a deployment
       // where nothing is grouped keeps its plain flat list.
@@ -417,25 +397,60 @@ function renderList() {
     }
     for (const ws of list) ul.appendChild(wsRow(ws));
   }
+  appendClosedWindows(ul, closed);
+}
 
-  if (closed.length) {
-    const h = document.createElement("li");
-    h.className = "group-hdr";
-    h.innerHTML = "<span>CLOSED WINDOWS</span>";
-    ul.appendChild(h);
-    for (const win of closed) {
-      const li = document.createElement("li");
-      li.className = "ws closed-window";
-      const n = (win.workspaceIds || []).length;
-      li.innerHTML = `<div class="ws-row">` +
-        `<span class="dot cold"></span>` +
-        `<span class="name">${esc(win.name)}</span>` +
-        `<span class="owner-tag">${n} repo${n === 1 ? "" : "s"}</span>` +
-        `<button class="more" title="Open window">▸</button>` +
-        `</div>`;
-      li.onclick = () => openWindow(win);
-      ul.appendChild(li);
-    }
+// groupHeader is an open window's section header. Another window's header
+// switches this browser window to it; the current one is marked.
+function groupHeader(group, win, here) {
+  const h = document.createElement("li");
+  h.className = "group-hdr" + (win && win.id === here ? " current" : "");
+  h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
+    (win ? `<button class="grp-close" title="Close window">–</button>` : "") +
+    `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>` +
+    (win ? `<button class="grp-agents" title="Agents in ${esc(group)}">⚙</button>` : "");
+  h.querySelector(".grp-msgs").onclick = (e) => {
+    e.stopPropagation();
+    window.ccmuxPeers.open(group);
+  };
+  if (!win) return h;
+  h.querySelector(".grp-close").onclick = (e) => {
+    e.stopPropagation();
+    closeWindow(win);
+  };
+  // Agents belong to the window (the project), not to one session:
+  // the header is where they are added, woken and put to sleep.
+  h.querySelector(".grp-agents").onclick = (e) => {
+    e.stopPropagation();
+    openWindowMenu(win, e.clientX, e.clientY);
+  };
+  h.oncontextmenu = (e) => {
+    e.preventDefault();
+    openWindowMenu(win, e.clientX, e.clientY);
+  };
+  if (window.ccmuxPage && win.id !== here) h.onclick = () => window.ccmuxPage.enter(win.id, "");
+  return h;
+}
+
+// appendClosedWindows lists the windows this lens has closed, one row each.
+function appendClosedWindows(ul, closed) {
+  if (!closed.length) return;
+  const h = document.createElement("li");
+  h.className = "group-hdr";
+  h.innerHTML = "<span>CLOSED WINDOWS</span>";
+  ul.appendChild(h);
+  for (const win of closed) {
+    const li = document.createElement("li");
+    li.className = "ws closed-window";
+    const n = (win.workspaceIds || []).length;
+    li.innerHTML = `<div class="ws-row">` +
+      `<span class="dot cold"></span>` +
+      `<span class="name">${esc(win.name)}</span>` +
+      `<span class="owner-tag">${n} repo${n === 1 ? "" : "s"}</span>` +
+      `<button class="more" title="Open window">▸</button>` +
+      `</div>`;
+    li.onclick = () => (window.ccmuxPage ? window.ccmuxPage.openClosed(win) : openWindow(win));
+    ul.appendChild(li);
   }
 }
 
@@ -490,11 +505,12 @@ function ownerLabel(ws) {
 }
 
 // openWindow marks the shared window open for this login and wakes its cold
-// members — opening a sleeping window is how it comes back everywhere.
+// members — opening a sleeping window is how it comes back everywhere. True
+// when the window is now open here (a member that would not wake still is).
 async function openWindow(win) {
   try {
     const r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(deviceId)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
-    if (!r.ok) { alert("open failed: " + (await r.text())); return; }
+    if (!r.ok) { alert("open failed: " + (await r.text())); return false; }
     for (const wsId of win.workspaceIds || []) {
       const ws = state.workspaces.find((w) => w.id === wsId);
       if (ws && ws.status === "cold") {
@@ -504,9 +520,10 @@ async function openWindow(win) {
     }
   } catch (e) {
     alert("open failed: " + e.message);
-    return;
+    return false;
   }
-  fetchWorkspaces();
+  await fetchWorkspaces();
+  return true;
 }
 
 // closeWindow clears this login's open flag; when that was the LAST opener,
@@ -530,6 +547,7 @@ async function closeWindow(win) {
     alert("close failed: " + e.message);
     return;
   }
+  if (window.ccmuxPage) window.ccmuxPage.onClosed(win.id);
   fetchWorkspaces();
 }
 
@@ -1060,6 +1078,7 @@ function detachIfCurrent(id) {
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = null;
   state.panes = [];
+  if (window.ccmuxPage) window.ccmuxPage.syncAddress();
   renderTabs();
   $("empty").style.display = "";
   openDrawer();
@@ -1270,6 +1289,7 @@ async function attach(wsId, wantPane) {
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = wsId;
   state.wantPane = wantPane;
+  if (window.ccmuxPage) window.ccmuxPage.onAttach(wsId);
   if (!state.board) delete state.attn[wsId]; // opening it marks its attention seen; a board tile does not
   $("empty").style.display = "none";
   $("harness-bar").classList.add("hidden"); // re-derived from the next hello
@@ -3018,6 +3038,7 @@ wireSettingsTabs();
 // Without a deep link there's nothing on screen but "Select a workspace", so
 // surface the session list (the flyout drawer on mobile) instead of a dead end.
 function bootDeepLink() {
+  if (window.ccmuxPage) return window.ccmuxPage.boot(); // pagewin.js: this window's ccmux window
   const ws = new URLSearchParams(location.search).get("ws");
   if (ws) openWorkspace(ws, null);
   else openDrawer();
