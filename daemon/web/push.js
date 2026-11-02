@@ -52,29 +52,37 @@
   // Notification tap → the SW asks an open window to deep-link (fast path).
   function onSWMessage(ev) {
     const m = ev.data || {};
-    if (m.type === "ccmux-navigate") navToURL(m.url);
+    if (m.type === "ccmux-navigate") {
+      // This window took the tap, so the stash for a missed message is spent:
+      // left in place, the next window to become visible would take it too.
+      clearPendingNav();
+      navToURL(m.url);
+    }
+  }
+
+  async function clearPendingNav() {
+    try {
+      await (await caches.open(NAV_CACHE)).delete(PENDING_NAV);
+    } catch (e) {
+      console.warn("ccmux: could not clear the stashed notification tap:", e);
+    }
   }
 
   // Read + clear a deep-link the SW stashed for a client that may have dropped
-  // the postMessage. Idempotent: the entry is deleted once consumed. The SW
-  // stashes {url, w, at}; a bare URL is what a service worker from before
-  // per-window pages wrote. With several browser windows open, the one showing
-  // the tap's window takes it, or the one the tap focused; a stash older than a
-  // minute is a tap nobody took and is dropped rather than replayed later.
+  // the postMessage. Idempotent: the entry is deleted once consumed. The stash
+  // is a plain URL (/?w=&ws=&t=), so a page from before per-window pages still
+  // reads its ws; route.js's takesNav decides whether THIS window takes it.
   async function consumePendingNav() {
     try {
       const cache = await caches.open(NAV_CACHE);
       const resp = await cache.match(PENDING_NAV);
       if (!resp) return;
-      const raw = await resp.text();
-      let nav;
-      try { nav = JSON.parse(raw); } catch (_) { nav = { url: raw }; }
-      if (!nav || typeof nav !== "object") nav = { url: raw };
-      const stale = nav.at && Date.now() - nav.at > 60000;
-      const mine = window.ccmuxPage ? window.ccmuxPage.current() : "";
-      if (!stale && nav.w && mine && nav.w !== mine && !document.hasFocus()) return;
+      const url = await resp.text();
+      const mine = window.ccmuxPage ? window.ccmuxPage.owner() : "";
+      const verdict = window.ccmuxRoute ? window.ccmuxRoute.takesNav(url, mine, Date.now()) : "take";
+      if (verdict === "leave") return; // another browser window's tap
       await cache.delete(PENDING_NAV);
-      if (!stale) navToURL(nav.url);
+      if (verdict === "take") navToURL(url);
     } catch (_) {}
   }
 

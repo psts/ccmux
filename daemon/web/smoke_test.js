@@ -75,8 +75,11 @@ function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null,
 // The fake browser: the minimum globals app.js touches at load. Timers are
 // collected into `book`, never fired on their own: a case fires them itself
 // (fireTimers) to prove a timeout does what it claims.
+let pageSeq = 0;
 function makeContext(opts, book) {
-  const { storage = {}, pendingNav = null, search = "", openRefused = false } = opts;
+  const { storage = {}, pendingNav = null, search = "", openRefused = false, name = "" } = opts;
+  let uuids = 0; // the first is the device id app.js asks for, the next this window's page id
+  let stash = pendingNav;
   const location = { href: "http://x/" + search, origin: "http://x", search, pathname: "/", protocol: "http:", host: "x" };
   return {
     console: { log() {}, warn() {}, error: (...a) => { book.errors.push(a.map(String).join(" ")); }, info() {} },
@@ -86,11 +89,12 @@ function makeContext(opts, book) {
       setItem: (k, v) => { storage[k] = String(v); },
       removeItem: (k) => { delete storage[k]; },
     },
-    crypto: { randomUUID: () => "test-device-uuid" },
+    crypto: { randomUUID: () => (uuids++ === 0 && !storage["ccmux-device"] ? "test-device-uuid" : `page-${++pageSeq}`) },
     location,
     // pagewin.js: this browser window's name (its page id), its address bar,
     // and the windows it asks the browser for (null when the browser refuses one).
-    name: "",
+    name,
+    BroadcastChannel: opts.BroadcastChannel,
     // replaceState moves location too, as in a browser: a page that rewrites
     // its address before reading it must see the rewrite.
     history: { replaceState: (_s, _t, url) => {
@@ -102,7 +106,7 @@ function makeContext(opts, book) {
     Response: function (body) { this.body = body; },
     navigator: { userAgent: "node", serviceWorker: {
       register: () => { book.swRegistrations++; return Promise.resolve({ pushManager: { getSubscription: async () => null } }); },
-      addEventListener() {},
+      addEventListener: (type, fn) => { if (type === "message") book.swListeners.push(fn); },
     } },
     WebSocket: function (url) { book.sockets.push(String(url)); return el(); },
     PushManager: function () {},
@@ -110,9 +114,9 @@ function makeContext(opts, book) {
     Terminal: function () { return el(); },
     FitAddon: { FitAddon: function () { return el(); } },
     caches: { open: async () => ({
-      match: async (k) => (pendingNav && k === "/__ccmux_pending_nav" ? { text: async () => pendingNav } : undefined),
-      delete: async () => true,
-      put: async () => true,
+      match: async (k) => (stash && k === "/__ccmux_pending_nav" ? { text: async () => stash } : undefined),
+      delete: async (k) => { book.cacheDeletes.push(k); if (k === "/__ccmux_pending_nav") stash = null; return true; },
+      put: async (k, v) => { book.cachePuts.push([k, v && v.body]); return true; },
     }) },
     setInterval: () => 0, setTimeout: (fn) => { book.timers.push(fn); return book.timers.length; }, clearInterval() {}, clearTimeout() {},
     addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }),
@@ -130,7 +134,7 @@ function makeContext(opts, book) {
 function run(opts = {}) {
   const { withPush = false, withBoard = false } = opts;
   const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0,
-    addresses: [], opened: [] };
+    addresses: [], opened: [], swListeners: [], cacheDeletes: [], cachePuts: [] };
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
@@ -149,7 +153,8 @@ function run(opts = {}) {
   const evalIn = (code) => vm.runInContext(code, ctx);
   const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
   return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
-    sockets: book.sockets, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened };
+    sockets: book.sockets, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened,
+    swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts };
 }
 
 // --- pagewin.js: one ccmux window per browser window. The rules themselves
@@ -167,6 +172,11 @@ async function pageWindowCases() {
   check("a notification link opens its session in the session's window",
     attachedTo(link).join() === "ws-2" && lastAddress(link) === "/?w=win-b&ws=ws-2",
     `attached ${attachedTo(link).join()}, address ${lastAddress(link)}; errors: ${link.errors.join(" | ")}`);
+
+  // The map the service worker routes taps by (sw_test.js reads the same key).
+  const mapPut = link.cachePuts.find(([k]) => k === "/__ccmux_ws_windows");
+  check("pages publish which window each session is in, for the service worker",
+    mapPut && mapPut[1] === JSON.stringify({ "ws-1": "win-a", "ws-2": "win-b" }), JSON.stringify(link.cachePuts));
 
   const back = run({ windowsReply: twoWindows, search: "?w=win-a", storage: { "ccmux-last-ws:win-a": "ws-1" } });
   await settle();
@@ -189,13 +199,14 @@ async function pageWindowCases() {
   const refused = run({ windowsReply: twoWindows, storage: { "ccmux-pages": quit }, openRefused: true });
   await settle();
   check("a browser that refuses the extra windows costs nothing but a button",
-    lastAddress(refused).startsWith("/?w=win-a") && refused.errors.length === 0, refused.errors.join(" | "));
+    lastAddress(refused).startsWith("/?w=win-a") && refused.opened.join() === "/?w=win-b" && refused.errors.length === 0,
+    `opened ${refused.opened.join()}; errors: ${refused.errors.join(" | ")}`);
 
   // A cold launch from a notification tap: push.js attaches from the stashed
   // tap before app.js has read the window list, and must not wipe the address
   // the boot is about to read.
   const cold = run({ windowsReply: twoWindows, search: "?w=win-b&ws=ws-2", withPush: true,
-    pendingNav: JSON.stringify({ url: "/?w=win-b&ws=ws-2", w: "win-b", at: Date.now() }) });
+    pendingNav: `/?w=win-b&ws=ws-2&t=${Date.now()}` });
   await settle();
   check("a notification that launches the app lands on its session, in its window",
     cold.ctx.ccmuxPage.current() === "win-b" && lastAddress(cold) === "/?w=win-b&ws=ws-2",
@@ -235,12 +246,72 @@ async function pageWindowCases() {
     lastAddress(late) === "/?w=win-b&ws=ws-2" && attachedTo(late).join() === "ws-2",
     `current ${late.ctx.ccmuxPage.current()}, address ${lastAddress(late)}, attached ${attachedTo(late).join()}`);
 
+  // The session in a link decides: a window id from before the session moved
+  // (or from a deleted window) must not cost the user the session they tapped.
+  const moved = run({ windowsReply: twoWindows, search: "?w=win-a&ws=ws-2" });
+  await settle();
+  check("a link whose window is out of date still opens its session, in its window now",
+    moved.ctx.ccmuxPage.current() === "win-b" && attachedTo(moved).join() === "ws-2",
+    `current ${moved.ctx.ccmuxPage.current()}, attached ${attachedTo(moved).join()}`);
+
+  // The window that takes a tap by message spends the stash; another window
+  // leaves a tap meant for a window it does not show.
+  const owner = run({ windowsReply: twoWindows, search: "?w=win-b", withPush: true });
+  await settle();
+  for (const fn of owner.swListeners) fn({ data: { type: "ccmux-navigate", url: "/?w=win-b&ws=ws-2" } });
+  await settle();
+  check("the window that takes a tap by message clears the stash",
+    owner.cacheDeletes.includes("/__ccmux_pending_nav") && attachedTo(owner).includes("ws-2"),
+    `deletes ${owner.cacheDeletes.join()}, attached ${attachedTo(owner).join()}`);
+  const other = run({ windowsReply: twoWindows, search: "?w=win-a", withPush: true,
+    pendingNav: `/?w=win-b&ws=ws-2&t=${Date.now()}` });
+  await settle();
+  check("a window leaves a stashed tap meant for another window",
+    !attachedTo(other).includes("ws-2") && !other.cacheDeletes.includes("/__ccmux_pending_nav") &&
+    other.ctx.ccmuxPage.current() === "win-a", `attached ${attachedTo(other).join()}, deletes ${other.cacheDeletes.join()}`);
+
+  // A reload of the picker is not a relaunch: windows closed earlier stay closed.
+  const reloadQuit = JSON.stringify({ me: { w: "", seen: 0, closedAt: 2000 }, p1: { w: "win-a", seen: 0, closedAt: 1000 } });
+  const reload = run({ windowsReply: twoWindows, name: "ccmux-page:me", storage: { "ccmux-pages": reloadQuit } });
+  await settle();
+  check("reloading the picker reopens nothing", reload.opened.length === 0 && reload.ctx.ccmuxPage.current() === "" &&
+    attachedTo(reload).length === 0, `current ${reload.ctx.ccmuxPage.current()}, opened ${reload.opened.join()}`);
+
+  await cmdNCase();
+
   const follow = run({ windowsReply: twoWindows, search: "?w=win-a" });
   await settle();
   follow.ctx.openWorkspace("ws-2", null);
   await settle();
   check("opening another window's session moves this browser window there",
     lastAddress(follow) === "/?w=win-b&ws=ws-2" && follow.ctx.ccmuxPage.current() === "win-b", lastAddress(follow));
+}
+
+// cmdNCase: Cmd+N while another window is open. The two pages share storage
+// and a BroadcastChannel; the open one answers the new one's ping, so the new
+// one shows the picker, opens nothing, and forgets nothing.
+async function cmdNCase() {
+  const members = [];
+  function BC() {
+    const me = { onmessage: null, postMessage: (data) => {
+      for (const m of members) if (m !== me && m.onmessage) setImmediate(() => m.onmessage({ data }));
+    } };
+    members.push(me);
+    return me;
+  }
+  const shared = {};
+  const first = run({ windowsReply: twoWindows, search: "?w=win-a", storage: shared, BroadcastChannel: BC });
+  await settle();
+  const second = run({ windowsReply: twoWindows, storage: shared, BroadcastChannel: BC });
+  await settle();
+  second.fireTimers(); // the ping's wait is over; the pong has long arrived
+  await settle();
+  const pages = JSON.parse(shared["ccmux-pages"] || "{}");
+  const firstKept = Object.values(pages).some((p) => p.w === "win-a");
+  check("Cmd+N while a window is open shows the picker and restores nothing",
+    second.opened.length === 0 && second.ctx.ccmuxPage.current() === "" && firstKept,
+    `opened ${second.opened.join()}, current ${second.ctx.ccmuxPage.current()}, pages ${shared["ccmux-pages"]}`);
+  check("the open window is untouched by the new one", first.ctx.ccmuxPage.current() === "win-a");
 }
 
 // --- board.js: the attention board's rules. The Mac app's AttentionBoard

@@ -79,3 +79,30 @@ test("unreadable storage means nothing remembered, never a throw", () => {
   R.beat(broken, "p1", "a", 1);
   assert.deepStrictEqual(R.takeRestoreSet(broken, "p1", new Set()), []);
 });
+
+test("the session in a link picks the window, not a stale window id", () => {
+  const windows = [{ id: "a", workspaceIds: ["s1"] }, { id: "b", workspaceIds: ["s2"] }];
+  assert.strictEqual(R.bootTarget(windows, "a", "s2"), "b"); // s2 moved to b after the link was made
+  assert.strictEqual(R.bootTarget(windows, "gone", "s1"), "a"); // window deleted
+  assert.strictEqual(R.bootTarget(windows, "a", ""), "a");
+  assert.strictEqual(R.bootTarget(windows, "gone", ""), "");
+  assert.strictEqual(R.bootTarget(windows, "a", "loose"), ""); // a session in no window pins none
+});
+
+test("a stashed tap goes to its own window, and nobody takes a stale one", () => {
+  const now = 1000000;
+  const tap = (w, t) => `/?w=${w}&ws=s1&t=${t}`;
+  assert.strictEqual(R.takesNav(tap("a", now), "a", now), "take");
+  assert.strictEqual(R.takesNav(tap("a", now), "b", now), "leave");
+  assert.strictEqual(R.takesNav(tap("a", now), "", now), "take"); // the picker, or a fresh window
+  assert.strictEqual(R.takesNav(tap("a", now - R.NAV_TTL_MS - 1), "a", now), "drop");
+  assert.strictEqual(R.takesNav("/?ws=s1", "b", now), "take"); // a stash from before windows
+});
+
+test("a reload knows its page; a new window does not", () => {
+  const s = memStorage();
+  assert.strictEqual(R.known(s, "p1"), false);
+  R.beat(s, "p1", "", 1);
+  assert.strictEqual(R.known(s, "p1"), true);
+  assert.strictEqual(R.known(s, "p2"), false);
+});

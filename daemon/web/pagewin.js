@@ -30,6 +30,9 @@
   // a notification that launches the app attaches from push.js before the
   // window list has arrived, and that attach must not cost the boot its target.
   const opened = R.parse(location.search);
+  // A reload of this browser window, not a new one: its page id was already
+  // recorded. Read now, before this load's own first beat records it again.
+  const reloaded = R.known(store, pageId);
   let booted = false; // the address is ours to rewrite only once boot has used it
   let waiting = false; // boot asked before the window list could be read
 
@@ -92,25 +95,32 @@
   }
 
   // enter puts window w on screen here: marked open for this lens first when a
-  // link or a restore names one it has closed, then its session (the asked-for
-  // one, else the one last shown in it).
+  // link or a restore names one it has closed, then its session.
   async function enter(w, ws) {
     const win = windowById(w);
     if (!win) return picker();
     if (!openHereOf(win) && !(await openWindow(win))) return picker();
     leaveBoard(win.name);
     show(w);
-    const pick = ws && isMember(w, ws) ? ws : R.recall(store, w);
-    if (pick && pick === state.wsId) onAttach(pick); // already on screen (opened while boot waited)
-    else if (pick && isMember(w, pick)) openWorkspace(pick, null);
-    else if (state.wsId && !isMember(w, state.wsId)) detachIfCurrent(state.wsId);
-    else openDrawer();
+    showSession(w, ws);
   }
 
-  // A launch with no window in the address: Cmd+N while others are open shows
-  // the picker; a relaunch brings back what was open. A browser may refuse to
-  // open windows nobody clicked for; those get a button each.
+  // showSession picks window w's session: the one asked for, else the one last
+  // shown in it, else none (the session list opens instead).
+  function showSession(w, ws) {
+    const pick = [ws, R.recall(store, w)].find((id) => id && isMember(w, id));
+    if (pick === state.wsId && pick) return onAttach(pick); // already on screen (opened while boot waited)
+    if (pick) return openWorkspace(pick, null);
+    if (state.wsId && !isMember(w, state.wsId)) return detachIfCurrent(state.wsId);
+    openDrawer();
+  }
+
+  // A launch with no window in the address: Cmd+N while others are open, or a
+  // reload of the picker, shows the picker; a relaunch brings back what was
+  // open. A browser may refuse to open windows nobody clicked for; those get a
+  // button each.
   async function launch() {
+    if (reloaded) return picker();
     const live = await othersAlive();
     if (live.size) return picker();
     const back = R.takeRestoreSet(store, pageId, live).filter(windowById);
@@ -159,7 +169,7 @@
     waiting = false;
     booted = true;
     const { w, ws } = opened;
-    const target = w || (ws ? R.windowOf(state.windows, ws) : "");
+    const target = R.bootTarget(state.windows, w, ws);
     if (target) return enter(target, ws);
     if (ws) return openWorkspace(ws, null); // a session in no window: show it, no window to pin
     return launch();
@@ -210,5 +220,9 @@
   window.addEventListener("pagehide", () => R.ended(store, pageId, Date.now()));
   window.addEventListener("pageshow", () => R.beat(store, pageId, current, Date.now()));
 
-  window.ccmuxPage = { current: () => current, boot, enter, onAttach, onRefresh, onClosed, openClosed, syncAddress };
+  // owner is the window a stashed tap is matched against. Before boot the page
+  // has shown nothing yet, but its address already says which window it is.
+  const owner = () => (booted ? current : opened.w);
+
+  window.ccmuxPage = { current: () => current, owner, boot, enter, onAttach, onRefresh, onClosed, openClosed, syncAddress };
 })();

@@ -66,9 +66,9 @@ node --test daemon/internal/agent/claudeserve/args.test.mjs daemon/internal/agen
 node daemon/web/smoke_test.js || exit 1
 
 # Which ccmux window a browser window shows, and what a relaunch brings back
-# (route.js). Added 2026-11-02 with the rules themselves: they are plain
-# functions over a Storage, so node --test drives them with no browser.
-node --test daemon/web/route_test.js || exit 1
+# (route.js), and which browser window a notification tap moves (sw.js, run
+# in a vm against fake clients). Added 2026-11-02 with the rules themselves.
+node --test daemon/web/route_test.js daemon/web/sw_test.js || exit 1
 
 # Go complexity, capped at 10, as a ratchet over frozen pre-existing debt.
 # See .claude/gates/gocyclo.sh for why it is a ratchet and not a wall.

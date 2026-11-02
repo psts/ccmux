@@ -17,6 +17,10 @@
   // window of an app hears pagehide in the same instant when it quits; a window
   // closed by hand earlier is minutes older and is not brought back.
   const BURST_MS = 10000;
+  // A notification tap the service worker stashed for a page that may have
+  // missed its message is good for this long; after that it is a tap nobody
+  // took, and replaying it later would yank a window somewhere unasked.
+  const NAV_TTL_MS = 60000;
 
   function parse(search) {
     const p = new URLSearchParams(search || "");
@@ -29,6 +33,26 @@
     if (ws) p.set("ws", ws);
     const s = p.toString();
     return "/" + (s ? "?" + s : "");
+  }
+
+  // bootTarget is the window a page opened at w/ws should show. The session
+  // decides: a link or a tap names a session, and the window in it can be out
+  // of date (the session moved, the window was deleted). w alone counts only
+  // while that window exists.
+  function bootTarget(windows, w, ws) {
+    if (ws) return windowOf(windows, ws);
+    return (windows || []).some((x) => x.id === w) ? w : "";
+  }
+
+  // takesNav says what a page does with a stashed tap (a plain URL, so a page
+  // from before this rule still reads its ws): "drop" a stale one, "leave" one
+  // for the window that shows its w, else "take" it.
+  function takesNav(url, mine, now) {
+    const p = new URLSearchParams(String(url).split("?")[1] || "");
+    const at = Number(p.get("t") || 0);
+    if (at && now - at > NAV_TTL_MS) return "drop";
+    const w = p.get("w") || "";
+    return w && mine && w !== mine ? "leave" : "take";
   }
 
   // windowOf is the shared window a session belongs to, "" when none.
@@ -59,6 +83,12 @@
 
   function recall(storage, w) {
     try { return (w && storage.getItem(LAST_WS + w)) || ""; } catch (_) { return ""; }
+  }
+
+  // known says whether this page id was here before: true after a reload of the
+  // same browser window, false in a new one. Read before the first beat.
+  function known(storage, pageId) {
+    return Object.prototype.hasOwnProperty.call(readPages(storage), pageId);
   }
 
   // beat records that this browser window is open on window w (w may be "" for
@@ -100,7 +130,10 @@
     return set;
   }
 
-  const api = { parse, href, windowOf, remember, recall, beat, ended, takeRestoreSet, BURST_MS };
+  const api = {
+    parse, href, windowOf, bootTarget, takesNav, remember, recall, known, beat, ended, takeRestoreSet,
+    BURST_MS, NAV_TTL_MS,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxRoute = api;
 })(typeof window !== "undefined" ? window : this);

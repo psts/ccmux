@@ -136,7 +136,9 @@ async function routeTap(url) {
   const href = target.pathname + target.search;
   try {
     const cache = await caches.open(NAV_CACHE);
-    await cache.put(PENDING_NAV, new Response(JSON.stringify({ url: href, w, at: Date.now() })));
+    // A plain URL, as before per-window pages, with t for its age: a page
+    // still running older code reads only its ws and is not confused by it.
+    await cache.put(PENDING_NAV, new Response(`${href}${href.includes("?") ? "&" : "?"}t=${Date.now()}`));
   } catch (_) {}
   const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   const shows = (c) => { try { return new URL(c.url).searchParams.get("w") === w; } catch (_) { return false; } };
