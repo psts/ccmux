@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/version"
+	"ccmux.dev/ccmuxd/web"
 )
 
 // TestHealth_Handshake pins the federation handshake shape: /v1/health must
@@ -65,5 +66,22 @@ func TestHealth_ChildrenFieldNames(t *testing.T) {
 	}
 	if _, isBool := children["known"].(bool); !isBool {
 		t.Errorf("children.known must stay a bool; lenses branch on it: %v", children["known"])
+	}
+}
+
+// TestHealth_WebBuild pins the field web/update.js reads to learn which lens
+// build the daemon serves. Renamed or dropped, every open page would think it
+// is current forever and never move onto a deploy, with every test green.
+func TestHealth_WebBuild(t *testing.T) {
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	s.health(rec, httptest.NewRequest("GET", "/v1/health", nil))
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	if got["web"] != web.Build || web.Build == "" {
+		t.Fatalf(`"web" = %v, want the lens build %q`, got["web"], web.Build)
 	}
 }

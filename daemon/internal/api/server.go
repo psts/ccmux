@@ -517,7 +517,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	// The web lens (served from the embedded bundle) catches everything not
 	// matched by a more specific /v1 pattern.
-	mux.Handle("GET /", http.FileServerFS(web.Files))
+	mux.Handle("GET /", web.Handler())
 	return mux
 }
 
@@ -609,6 +609,10 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		// window — which is why the lenses poll rather than alarm on one
 		// sample. Additive: an old lens ignores the field.
 		"children": childproc.Count(),
+		// The web lens build this daemon serves (web.Build). An open page
+		// that booted with another one moves onto it (web/update.js).
+		// Additive: an old lens ignores the field.
+		"web": web.Build,
 	})
 }
 

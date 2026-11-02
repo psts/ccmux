@@ -1,9 +1,9 @@
-// ccmux service worker: makes the web lens installable (cache-first app shell)
+// ccmux service worker: makes the web lens installable (a cached app shell)
 // and receives Web Push notifications. It never caches the API or WebSocket —
 // live session data must always hit the network.
 "use strict";
 
-const CACHE = "ccmux-shell-v32"; // v32: a phone says who it is for its last session, and opens taps in place
+const CACHE = "ccmux-shell-v33"; // v33: the shell comes from the network first, so a deploy lands on the next load
 // A pending deep-link target, stashed on notificationclick so a client that was
 // frozen/backgrounded (and may drop the postMessage) can still pick it up when it
 // regains visibility. Kept in its own cache so shell-cache cleanup never purges it.
@@ -30,6 +30,8 @@ const SHELL = [
   "/agentmodal.js",
   "/peers.js",
   "/push.js",
+  "/update.js",
+  "/build.js",
   "/style.css",
   "/manifest.webmanifest",
   "/vendor/xterm.js",
@@ -54,32 +56,74 @@ self.addEventListener("activate", (e) => {
   );
 });
 
-// Stale-while-revalidate for the shell; network-only for the API (/v1/*) and
-// anything that isn't a same-origin GET. Serving cache-first keeps the lens
-// instant and offline-capable, but we ALSO refresh the cache from the network in
-// the background so a deployed shell change (app.js/style.css/push.js) lands on
-// the next load — a fixed cache name alone would otherwise pin the old assets
-// forever. WebSocket upgrades never reach fetch, so /v1/attach and /v1/events are
+// Network first for the shell; network-only for the API (/v1/*) and anything
+// that isn't a same-origin GET. Network first, so a deploy lands on the very
+// next load instead of the one after: the daemon tags every shell file with
+// its build (web.go), so an unchanged file costs a 304, not the bytes.
+// WebSocket upgrades never reach fetch, so /v1/attach and /v1/events are
 // unaffected either way.
+//
+// The cache is the fallback when the daemon cannot be reached, and when it is
+// slow to send the page itself: past SLOW_MS the cached page is served. A page
+// is then ALL cache or ALL network. Cut over per file, a slow link would hand
+// a page the new tiny build.js beside the old big app.js, and that page would
+// run old code while believing it is current, so update.js would never move
+// it on. A page served from the cache takes every file from the cache, and
+// learns from /v1/health that it is behind.
+const SLOW_MS = 3000;
+const cachedPages = new Set(); // client ids of pages that booted from the cache
+
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/v1/")) {
     return; // default network handling
   }
-  e.respondWith(
-    caches.open(CACHE).then(async (cache) => {
-      const cached = await cache.match(req, { ignoreSearch: true });
-      const fresh = fetch(req)
-        .then((resp) => {
-          if (resp.ok && resp.type === "basic") cache.put(req, resp.clone());
-          return resp;
-        })
-        .catch(() => cached); // offline → fall back to whatever we have
-      return cached || fresh; // instant from cache, refreshed in the background
-    })
-  );
+  if (req.mode === "navigate") e.respondWith(pageFetch(req, e.resultingClientId));
+  else if (cachedPages.has(e.clientId)) e.respondWith(cacheFirst(req));
+  else e.respondWith(networkFirst(req));
 });
+
+async function pageFetch(req, clientId) {
+  const cache = await caches.open(CACHE);
+  const net = fromNetwork(cache, req);
+  const copy = await slowOrFailed(net, cache.match(req, { ignoreSearch: true }));
+  if (!copy) return net; // the network answered first, or there is nothing else
+  if (clientId) cachedPages.add(clientId);
+  return copy;
+}
+
+// slowOrFailed settles with the cached copy when the network fails or has not
+// answered in SLOW_MS, and with null when the network answers first.
+function slowOrFailed(net, cached) {
+  return new Promise((resolve) => {
+    net.then(() => resolve(null), () => cached.then(resolve));
+    setTimeout(() => cached.then((copy) => { if (copy) resolve(copy); }), SLOW_MS);
+  });
+}
+
+async function networkFirst(req) {
+  const cache = await caches.open(CACHE);
+  try {
+    return await fromNetwork(cache, req);
+  } catch (err) {
+    const copy = await cache.match(req, { ignoreSearch: true }); // offline
+    if (copy) return copy;
+    throw err;
+  }
+}
+
+async function cacheFirst(req) {
+  const cache = await caches.open(CACHE);
+  return (await cache.match(req, { ignoreSearch: true })) || fromNetwork(cache, req);
+}
+
+function fromNetwork(cache, req) {
+  return fetch(req, { cache: "no-cache" }).then((resp) => {
+    if (resp.ok && resp.type === "basic") cache.put(req, resp.clone());
+    return resp;
+  });
+}
 
 // A push arrives even with the PWA closed and the phone locked. The payload is
 // the daemon's pushPayload JSON; tag = workspace id so a newer notification
