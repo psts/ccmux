@@ -23,6 +23,21 @@ const taskRunner = "task-runner"
 // reopens it, so a task filed in the evening still runs after its session
 // was closed for the night.
 func (m *Manager) TaskWorkspace(repo, windowID string) (string, error) {
+	best, err := m.taskSession(repo, windowID)
+	if err != nil {
+		return "", err
+	}
+	if m.Controller(best) != nil {
+		return best, nil
+	}
+	if _, err := m.ReviveWorkspace(best); err != nil {
+		return "", fmt.Errorf("reopening the session for %s: %w", repo, err)
+	}
+	return best, nil
+}
+
+// taskSession picks the session a task in repo runs in, live or closed.
+func (m *Manager) taskSession(repo, windowID string) (string, error) {
 	members, err := m.windowMembers()
 	if err != nil {
 		return "", fmt.Errorf("reading which window each session is in: %w", err)
@@ -38,12 +53,6 @@ func (m *Manager) TaskWorkspace(repo, windowID string) (string, error) {
 	}
 	if best == "" {
 		return "", fmt.Errorf("no ccmux session for %s on this daemon", repo)
-	}
-	if m.Controller(best) != nil {
-		return best, nil
-	}
-	if _, err := m.ReviveWorkspace(best); err != nil {
-		return "", fmt.Errorf("reopening the session for %s: %w", repo, err)
 	}
 	return best, nil
 }

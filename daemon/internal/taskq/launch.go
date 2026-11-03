@@ -71,7 +71,7 @@ func slug(title string) string {
 
 // briefText is what the worker reads first: the rules of working
 // unattended, who else is building this feature, then its own plan.
-func briefText(t store.Task, p store.Part, l layout, trunk string, team []string) string {
+func briefText(t store.Task, p store.Part, l layout, trunk string, team []string, servers string) string {
 	return fmt.Sprintf(`# ccmux task #%d: %s
 
 You are building one part of this feature, the part in %s, on your own and
@@ -96,6 +96,7 @@ Your name on the peers bus is %s. %s
   action "add_part", that repo's folder name, and a plan for it. A Claude starts
   on it at once, as %s.
 
+%s
 ## When you are done
 
 - When your part is done and committed, call the tasks tool with action "report",
@@ -108,7 +109,7 @@ Your name on the peers bus is %s. %s
 
 %s
 `, t.ID, t.Title, filepath.Base(p.RepoPath), l.worktree, l.branch, trunk, l.busName,
-		teamLine(team), BusName("<repo>", t.ID), p.Plan)
+		teamLine(team), BusName("<repo>", t.ID), servers, p.Plan)
 }
 
 // teamLine names the other parts' Claudes, or says there are none yet.
@@ -120,11 +121,11 @@ func teamLine(team []string) string {
 		" (all starting now; list_peers shows who is up)."
 }
 
-func writeBrief(t store.Task, p store.Part, l layout, trunk string, team []string) error {
+func writeBrief(t store.Task, p store.Part, l layout, trunk string, team []string, servers string) error {
 	if err := os.MkdirAll(l.dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(l.brief, []byte(briefText(t, p, l, trunk, team)), 0o644)
+	return os.WriteFile(l.brief, []byte(briefText(t, p, l, trunk, team, servers)), 0o644)
 }
 
 // launchCommand starts the worker's Claude: on the peers bus under its own

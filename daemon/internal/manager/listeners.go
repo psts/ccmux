@@ -52,17 +52,24 @@ func (m *Manager) StartListenerScan(interval time.Duration) {
 // changed — a HeldBy flip comes from another workspace's scan, so the diff
 // is on the routes, not just the workspace's own rows. Rows whose pane the
 // daemon does not know (closed since the process started, a foreign
-// daemon's pane) are dropped.
+// daemon's pane) are dropped. Rows from a task worker's pane are not its
+// session's: they only mark their ports as held by a worker (taskserve.go).
 func (m *Manager) applyListeners(found []listeners.Listener) {
 	byWS := map[string][]model.Listener{}
+	taskPorts := map[int]bool{}
 	m.mu.Lock()
 	for _, l := range found {
-		e, _ := m.findPaneLocked(l.PaneID)
-		if e == nil {
+		e, p := m.findPaneLocked(l.PaneID)
+		switch {
+		case e == nil:
 			continue
+		case p.CreatedBy == taskRunner:
+			taskPorts[l.Port] = true // the worker's own servers, not its session's
+		default:
+			byWS[e.ws.ID] = append(byWS[e.ws.ID], model.Listener{Port: l.Port, Process: l.Process, PaneID: l.PaneID})
 		}
-		byWS[e.ws.ID] = append(byWS[e.ws.ID], model.Listener{Port: l.Port, Process: l.Process, PaneID: l.PaneID})
 	}
+	m.taskPorts = taskPorts
 	before := map[string]string{}
 	for id, e := range m.byID {
 		before[id] = routeSignature(e.ws)
@@ -123,6 +130,9 @@ func (m *Manager) Listeners(wsID string) ([]model.Listener, bool) {
 // inputs change: a hostname save and a listener scan.
 func (m *Manager) resolveRoutesLocked() {
 	owner := map[int]portOwner{}
+	for port := range m.taskPorts {
+		owner[port] = taskWorkerOwner
+	}
 	for _, e := range m.byID {
 		for _, l := range e.ws.Listeners {
 			owner[l.Port] = portOwner{e.ws.ID, e.ws.Name}

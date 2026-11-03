@@ -51,6 +51,11 @@ type Manager struct {
 	events  *firehose
 	// taskSigs is each task worker's last hook signal (tasks.go).
 	taskSigs taskSignals
+	// taskRoutes are the task workers' own dev-server routes, name → port,
+	// and taskPorts the ports worker panes listen on now (taskserve.go).
+	// Both guarded by mu.
+	taskRoutes map[string]int
+	taskPorts  map[int]bool
 
 	// LocalURL is the daemon's own loopback base URL (e.g. http://127.0.0.1:7890),
 	// injected into every hosted pane's env as CCMUX_DAEMON_URL so on-host hooks

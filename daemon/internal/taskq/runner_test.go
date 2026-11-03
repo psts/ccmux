@@ -73,7 +73,11 @@ type fakeHost struct {
 	panes     map[string]PaneState
 	changed   int
 	onStart   func()
-	windows   []string // the window each session lookup asked for
+	windows   []string                    // the window each session lookup asked for
+	hostnames map[string][]model.Hostname // by repo folder name
+	nameErr   map[string]error            // by repo folder name
+	routes    map[string]int              // the last routes sent
+	domain    string
 }
 
 func (h *fakeHost) TaskWorkspace(repo, windowID string) (string, error) {
@@ -101,6 +105,11 @@ func (h *fakeHost) StartTaskPane(wsID, cwd, cmd string) (string, error) {
 	return id, nil
 }
 func (h *fakeHost) TaskPane(id string) (PaneState, bool) { st, ok := h.panes[id]; return st, ok }
+func (h *fakeHost) TaskHostnames(repo, _ string) ([]model.Hostname, error) {
+	return h.hostnames[filepath.Base(repo)], h.nameErr[filepath.Base(repo)]
+}
+func (h *fakeHost) SetTaskRoutes(routes map[string]int) { h.routes = routes }
+func (h *fakeHost) DevDomain() string                   { return h.domain }
 func (h *fakeHost) TasksChanged() {
 	h.mu.Lock()
 	defer h.mu.Unlock()

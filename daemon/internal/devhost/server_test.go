@@ -26,6 +26,7 @@ type fakeState struct {
 	authKey    string
 	lensName   string
 	hostnames  map[string]int
+	tasks      map[string]int    // task workers' routes
 	stamped    map[string]string // name → url from the last stamp
 	listening  map[int]bool      // port → listening from the last stamp
 }
@@ -38,6 +39,13 @@ func (f *fakeState) AllHostnames() map[string]int {
 	f.reconciles.Add(1)
 	out := map[string]int{}
 	for k, v := range f.hostnames {
+		out[k] = v
+	}
+	return out
+}
+func (f *fakeState) TaskRoutes() map[string]int {
+	out := map[string]int{}
+	for k, v := range f.tasks {
 		out[k] = v
 	}
 	return out
@@ -257,4 +265,33 @@ func freePort(t *testing.T) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	return port
+}
+
+// TestRefresh_TaskRoutes pins where task workers' servers are served: under
+// the dev domain only (in the ts.net fallback each name would be a tailnet
+// node), and never over a session's own name or the lens alias.
+func TestRefresh_TaskRoutes(t *testing.T) {
+	st := &fakeState{domain: "dev.test", lensName: "ccmux",
+		hostnames: map[string]int{"app": 4000},
+		tasks:     map[string]int{"app-t1": 22010, "app": 22011, "ccmux": 22012}}
+	s, started := testServer(t, st)
+	s.Refresh()
+	tbl := s.table.Load()
+	for host, want := range map[string]int{"app-t1.dev.test": 22010, "app.dev.test": 4000} {
+		if got, ok := tbl.Route(host); !ok || got != want {
+			t.Errorf("Route(%s) = %d %v, want %d", host, got, ok, want)
+		}
+	}
+	if _, ok := tbl.Route("ccmux.dev.test"); ok {
+		t.Errorf("a task route took the lens alias")
+	}
+
+	st.domain = ""
+	s.Refresh()
+	if _, ok := s.table.Load().Route("app-t1.tailtest.ts.net"); ok {
+		t.Errorf("a task route was served in the ts.net fallback")
+	}
+	if _, ok := started["app-t1"]; ok {
+		t.Errorf("a task route started a tailnet node")
+	}
 }

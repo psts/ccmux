@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
@@ -26,6 +27,11 @@ type Host interface {
 	StartTaskPane(wsID, cwd, cmd string) (string, error)
 	TaskPane(paneID string) (PaneState, bool)
 	TasksChanged()
+	// TaskHostnames, SetTaskRoutes and DevDomain serve the workers' own dev
+	// servers (serve.go).
+	TaskHostnames(repo, windowID string) ([]model.Hostname, error)
+	SetTaskRoutes(routes map[string]int)
+	DevDomain() string
 }
 
 // Runner starts waiting tasks while slots are free (a slot is a feature:
@@ -49,11 +55,12 @@ type Runner struct {
 	merges  sync.WaitGroup // the merge in flight, for tests to wait on
 }
 
-// job is one claimed part to start, with the bus names of its teammates.
+// job is one claimed part to start, with its teammates' parts and bus names.
 type job struct {
-	task store.Task
-	part store.Part
-	team []string
+	task  store.Task
+	part  store.Part
+	mates []store.Part
+	team  []string
 }
 
 // Start ticks the runner every `every` for the life of ctx.
@@ -111,6 +118,7 @@ func (r *Runner) decide() ([]job, *mergeJob, bool) {
 		return nil, nil, false
 	}
 	changed := r.watch(parts)
+	r.publishRoutes(tasks, parts)
 	if r.rollup(tasks, parts) {
 		changed = true
 	}
@@ -206,19 +214,29 @@ func (r *Runner) claimParts(t store.Task, parts []store.Part) []job {
 		p.Status, p.Note, p.PaneID = Running, "", ""
 		p.StartedAt, p.FinishedAt = r.Now().UnixMilli(), 0
 		if r.savePart(p) {
-			jobs = append(jobs, job{task: t, part: p, team: teamOf(t.ID, p, mine)})
+			mates := matesOf(p, mine)
+			jobs = append(jobs, job{task: t, part: p, mates: mates, team: teamOf(t.ID, mates)})
 		}
 	}
 	return jobs
 }
 
-// teamOf is the bus names of a part's teammates.
-func teamOf(taskID int64, p store.Part, mine []store.Part) []string {
-	var out []string
+// matesOf is the other parts of p's task.
+func matesOf(p store.Part, mine []store.Part) []store.Part {
+	var out []store.Part
 	for _, o := range mine {
 		if o.ID != p.ID {
-			out = append(out, BusName(o.RepoPath, taskID))
+			out = append(out, o)
 		}
+	}
+	return out
+}
+
+// teamOf is the bus names of a part's teammates.
+func teamOf(taskID int64, mates []store.Part) []string {
+	var out []string
+	for _, o := range mates {
+		out = append(out, BusName(o.RepoPath, taskID))
 	}
 	return out
 }
@@ -290,7 +308,11 @@ func (r *Runner) prepareAndStart(j job, l layout) (string, error) {
 	if err := copyLocalSettings(repo, l.worktree); err != nil {
 		return "", err
 	}
-	if err := writeBrief(j.task, j.part, l, trunk, j.team); err != nil {
+	servers, err := r.serversBrief(j)
+	if err != nil {
+		return "", err
+	}
+	if err := writeBrief(j.task, j.part, l, trunk, j.team, servers); err != nil {
 		return "", err
 	}
 	return r.Host.StartTaskPane(wsID, l.worktree, launchCommand(l))

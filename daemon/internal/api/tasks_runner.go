@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/taskq"
 )
 
@@ -19,6 +20,11 @@ func (h taskHost) StartTaskPane(wsID, cwd, cmd string) (string, error) {
 }
 func (h taskHost) ClearTaskFolder(dir string) error { return h.mgr.ClearTaskFolder(dir) }
 func (h taskHost) TasksChanged()                    { h.mgr.TasksChanged() }
+func (h taskHost) TaskHostnames(repo, windowID string) ([]model.Hostname, error) {
+	return h.mgr.TaskHostnames(repo, windowID)
+}
+func (h taskHost) SetTaskRoutes(routes map[string]int) { h.mgr.SetTaskRoutes(routes) }
+func (h taskHost) DevDomain() string                   { return h.mgr.DevDomain() }
 func (h taskHost) TaskPane(paneID string) (taskq.PaneState, bool) {
 	if paneID == "" {
 		return taskq.PaneState{}, false

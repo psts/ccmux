@@ -22,6 +22,7 @@ type State interface {
 	TailscaleAuthKey() string
 	LensHostname() string
 	AllHostnames() map[string]int
+	TaskRoutes() map[string]int
 	StampHostnameRuntime(urlFor func(name string) string, listeningFor func(port int) bool)
 }
 
@@ -97,14 +98,17 @@ func (s *Server) Refresh() {
 	for name, port := range names {
 		byHost[name+"."+suffix] = port
 	}
-	s.table.Store(NewTable(byHost))
-	s.domain.Store(&domain)
 	// The reserved lens alias only exists in custom-domain mode — the ts.net
 	// fallback already serves the lens at the daemon node's own name.
 	lens := ""
 	if label := strings.ToLower(strings.TrimSpace(s.state.LensHostname())); label != "" && domain != "" {
 		lens = label + "." + domain
 	}
+	if domain != "" {
+		addTaskRoutes(byHost, s.state.TaskRoutes(), domain, lens)
+	}
+	s.table.Store(NewTable(byHost))
+	s.domain.Store(&domain)
 	s.lensHost.Store(&lens)
 	if domain != "" {
 		token := s.state.CloudflareToken()
@@ -117,6 +121,21 @@ func (s *Server) Refresh() {
 	}
 	s.mu.Unlock()
 	s.stampRuntime()
+}
+
+// addTaskRoutes adds the task workers' own servers to the routing table.
+// Custom-domain mode only: the wildcard cert and DNS record already cover any
+// name there, while in the ts.net fallback every name is a tailnet node of its
+// own, too much to register and remove for each task. A session's name, or
+// the lens, keeps a name a task route also claims.
+func addTaskRoutes(byHost, routes map[string]int, domain, lens string) {
+	for name, port := range routes {
+		host := name + "." + domain
+		if _, taken := byHost[host]; taken || host == lens {
+			continue
+		}
+		byHost[host] = port
+	}
 }
 
 // CertStatus reports the wildcard-cert lifecycle for the settings UI:
