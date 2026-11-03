@@ -104,6 +104,9 @@ function makeContext(opts, book) {
       location.search = u.includes("?") ? u.slice(u.indexOf("?")) : "";
     } },
     open: (url) => { book.opened.push(String(url)); return openRefused ? null : {}; },
+    // handOff: who opened this browser window, and whether it was raised.
+    opener: opts.opener || null, closed: false,
+    focus: () => { book.focused++; },
     Response: function (body) { this.body = body; },
     navigator: { userAgent: "node", serviceWorker: {
       register: () => { book.swRegistrations++; return Promise.resolve({ pushManager: { getSubscription: async () => null } }); },
@@ -135,7 +138,7 @@ function makeContext(opts, book) {
 function run(opts = {}) {
   const { withPush = false, withBoard = false } = opts;
   const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0,
-    addresses: [], opened: [], swListeners: [], cacheDeletes: [], cachePuts: [] };
+    addresses: [], opened: [], swListeners: [], cacheDeletes: [], cachePuts: [], focused: 0 };
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
@@ -155,7 +158,8 @@ function run(opts = {}) {
   const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
   return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
     sockets: book.sockets, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened,
-    swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts };
+    swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts,
+    focused: () => book.focused };
 }
 
 // --- scratchpad.js: a session's shared notes. A fake text box and daemon
@@ -655,6 +659,7 @@ async function pageWindowCases() {
     attachedTo(reload).length === 0, `current ${reload.ctx.ccmuxPage.current()}, opened ${reload.opened.join()}`);
 
   await cmdNCase();
+  await handOffCases();
 
   const follow = run({ windowsReply: twoWindows, search: "?w=win-a" });
   await settle();
@@ -744,6 +749,59 @@ async function phoneCases() {
   check("opening a window from the phone records it under the phone's device",
     opens.length >= 1 && opens.every((f) => f.url.includes("device=phone%3A")) && opener.opened.length === 0,
     opens.map((f) => f.url).join(" ") + " opened " + opener.opened.join());
+}
+
+// handOffCases: a click on another window's session, while a browser window
+// already shows that window, goes to that browser window instead of moving
+// this one. Reached by reference when linked by opener (and raised), over the
+// channel when opened by hand; nobody showing it keeps the old behavior.
+function sharedChannel() {
+  const members = [];
+  return function BC() {
+    const me = { onmessage: null, postMessage: (data) => {
+      for (const m of members) if (m !== me && m.onmessage) setImmediate(() => m.onmessage({ data }));
+    } };
+    members.push(me);
+    return me;
+  };
+}
+
+async function handOffCases() {
+  const mixed = run({ windowsReply: twoWindows, search: "?w=win-a" });
+  await settle();
+  const chart = run({ windowsReply: twoWindows, search: "?w=win-b", opener: mixed.ctx });
+  await settle();
+  check("a window opened by another joins its opener's list",
+    mixed.ctx.ccmuxPage.kids().some((k) => k.ccmuxPage === chart.ctx.ccmuxPage), String(mixed.ctx.ccmuxPage.kids().length));
+  await mixed.ctx.clickRow("ws-2");
+  await settle();
+  check("a click on another window's session goes to the linked browser window showing it, and raises it",
+    attachedTo(chart).includes("ws-2") && chart.focused() === 1 &&
+    mixed.ctx.ccmuxPage.current() === "win-a" && !attachedTo(mixed).includes("ws-2"),
+    `chart attached ${attachedTo(chart).join()}, focused ${chart.focused()}, mixed on ${mixed.ctx.ccmuxPage.current()}`);
+  const before = chart.focused();
+  check("a header click raises it too", (await chart.ctx.ccmuxPage.handOff("win-a", "")) === true &&
+    mixed.focused() === 1 && chart.focused() === before);
+
+  const BC = sharedChannel();
+  const shared = {};
+  const a = run({ windowsReply: twoWindows, search: "?w=win-a", storage: shared, BroadcastChannel: BC });
+  await settle();
+  const b = run({ windowsReply: twoWindows, search: "?w=win-b", storage: shared, BroadcastChannel: BC });
+  await settle();
+  const took = await a.ctx.clickRow("ws-2").then(() => true);
+  await settle();
+  check("a browser window opened by hand still takes the click over the channel",
+    took && attachedTo(b).includes("ws-2") && a.ctx.ccmuxPage.current() === "win-a" && !attachedTo(a).includes("ws-2"),
+    `b attached ${attachedTo(b).join()}, a on ${a.ctx.ccmuxPage.current()}, a attached ${attachedTo(a).join()}`);
+
+  const alone = run({ windowsReply: twoWindows, search: "?w=win-a" });
+  await settle();
+  await alone.ctx.clickRow("ws-2");
+  await settle();
+  check("with no browser window showing it, the click opens here as before",
+    alone.ctx.ccmuxPage.current() === "win-b" && attachedTo(alone).includes("ws-2"),
+    `current ${alone.ctx.ccmuxPage.current()}, attached ${attachedTo(alone).join()}`);
 }
 
 // cmdNCase: Cmd+N while another window is open. The two pages share storage

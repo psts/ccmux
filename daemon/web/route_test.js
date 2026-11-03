@@ -117,3 +117,46 @@ test("a reload knows its page; a new window does not", () => {
   assert.strictEqual(R.known(s, "p1"), true);
   assert.strictEqual(R.known(s, "p2"), false);
 });
+
+// A fake browser window: its opener, the windows it opened, and the ccmux
+// window it shows.
+function fakeWin(w, opener) {
+  const kids = [];
+  const win = { opener: opener || null, closed: false, ccmuxPage: { current: () => w, kids: () => kids } };
+  if (opener) opener.ccmuxPage.kids().push(win);
+  return win;
+}
+
+test("a window reaches its opener, its siblings and their children, not a window opened by hand", () => {
+  const first = fakeWin("mixed");
+  const chart = fakeWin("chartlabs", first);
+  const saac = fakeWin("saac", first);
+  const grand = fakeWin("other", saac);
+  const byHand = fakeWin("chartlabs"); // Cmd+N: no opener, nobody opened it
+  assert.deepStrictEqual(new Set(R.reachable(chart)), new Set([first, saac, grand]));
+  assert.strictEqual(R.showing(saac, "chartlabs"), chart);
+  assert.strictEqual(R.showing(chart, "mixed"), first);
+  assert.strictEqual(R.showing(byHand, "mixed"), null);
+  assert.strictEqual(R.showing(first, ""), null);
+});
+
+test("a closed window, or one of another origin, is not reached", () => {
+  const first = fakeWin("mixed");
+  const chart = fakeWin("chartlabs", first);
+  chart.closed = true;
+  const foreign = { closed: false, get ccmuxPage() { throw new Error("cross-origin"); } };
+  first.ccmuxPage.kids().push(foreign);
+  assert.strictEqual(R.showing(first, "chartlabs"), null);
+  assert.deepStrictEqual(R.reachable(first), []);
+});
+
+test("another window shows w only while it is open and says so", () => {
+  const s = memStorage();
+  R.beat(s, "me", "mixed", 1);
+  assert.strictEqual(R.othersShow(s, "me", "mixed"), false); // only this window
+  R.beat(s, "p2", "chartlabs", 1);
+  assert.strictEqual(R.othersShow(s, "me", "chartlabs"), true);
+  R.ended(s, "p2", 2);
+  assert.strictEqual(R.othersShow(s, "me", "chartlabs"), false);
+  assert.strictEqual(R.othersShow(s, "me", ""), false);
+});

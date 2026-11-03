@@ -469,7 +469,11 @@ function groupHeader(group, win, here) {
     e.preventDefault();
     openWindowMenu(win, e.clientX, e.clientY);
   };
-  if (window.ccmuxPage && win.id !== here) h.onclick = () => window.ccmuxPage.enter(win.id, "");
+  // Another window's header: to the browser window already showing it, when
+  // there is one (pagewin.js handOff), else into this one.
+  if (window.ccmuxPage && win.id !== here) h.onclick = async () => {
+    if (!(await window.ccmuxPage.handOff(win.id, ""))) window.ccmuxPage.enter(win.id, "");
+  };
   return h;
 }
 
@@ -618,6 +622,22 @@ function wsBadges(ws, agent, cold, running, label) {
   return tag + (running ? `<span class="bolt">⚡</span>` : "") + trailing;
 }
 
+// clickRow is a click on a session row. One of another window's sessions goes
+// to the browser window already showing that window (pagewin.js handOff);
+// anything else opens here.
+async function clickRow(id) {
+  if (window.ccmuxPage && await window.ccmuxPage.handOff("", id)) return;
+  openRow(id);
+}
+
+// openRow shows a session the way its row does: a cold one has nothing to
+// attach to, so it is revived in place. pagewin.js calls it for a hand-off.
+function openRow(id) {
+  const ws = state.workspaces.find((w) => w.id === id);
+  if (ws && ws.status === "cold") return reviveWorkspace(id);
+  return openWorkspace(id, null);
+}
+
 function wsRow(ws) {
   const active = ws.id === state.wsId && !state.board;
   const agent = isAgentWs(ws);
@@ -640,8 +660,7 @@ function wsRow(ws) {
     `<button class="more" title="Session menu">⋯</button>` +
     `</div>` +
     (open && !agent ? gitDetail(ws) : "");
-  // A cold session has nothing to attach to — clicking revives it in place.
-  li.onclick = cold ? () => reviveWorkspace(ws.id) : () => openWorkspace(ws.id, null);
+  li.onclick = () => clickRow(ws.id);
   if (!agent) li.querySelector(".exp").onclick = (e) => {
     e.stopPropagation();
     state.gitOpen[ws.id] = !open;

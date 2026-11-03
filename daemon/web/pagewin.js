@@ -52,8 +52,26 @@
       const m = e.data || {};
       if (m.type === "ping" && m.from !== pageId) chan.postMessage({ type: "pong", from: pageId, to: m.from });
       if (m.type === "pong" && m.to === pageId) pongs.add(m.from);
+      if (m.type === "hello" && m.from !== pageId) joinOpener(); // the opener reloaded and forgot its kids
+      if (m.type === "take" && m.from !== pageId && m.w && m.w === current) {
+        take(m.ws);
+        try { window.focus(); } catch (_) {} // a browser allows this only sometimes
+        chan.postMessage({ type: "took", from: pageId, to: m.from, id: m.id });
+      }
+      if (m.type === "took" && m.to === pageId && takers.has(m.id)) takers.get(m.id)();
     };
   }
+
+  // The browser windows this one opened, so a sibling can reach them through
+  // it (route.js reachable). Each child adds itself on load, which covers every
+  // window.open in this file; a reloaded opener asks them again ("hello").
+  const kids = new Set();
+  function joinOpener() {
+    try {
+      if (window.opener && window.opener.ccmuxPage) window.opener.ccmuxPage.adopt(window);
+    } catch (_) {} // an opener of another origin: nothing to join
+  }
+  const takers = new Map(); // hand-off id -> resolve, while waiting for "took"
   function othersAlive() {
     if (!chan) return Promise.resolve(new Set());
     pongs.clear();
@@ -273,8 +291,74 @@
     if (id === current) picker();
   }
 
+  // handOff gives a click on another window's session (or header) to the
+  // browser window already showing that window, and brings it to the front,
+  // instead of moving this one there. True when another browser window took
+  // it; false means "open it here", today's behavior.
+  //
+  // Call it straight from the click. Raising a window needs the click's user
+  // activation, so the by-reference path runs before anything awaits. A window
+  // this one cannot reach (opened by hand) is asked over the channel: it still
+  // switches, but the browser will not let us raise it, so a note says where.
+  function handOff(w, ws) {
+    w = w || R.windowOf(state.windows, ws);
+    if (window.ccmuxPhone || !w || w === current) return Promise.resolve(false);
+    const other = R.showing(window, w);
+    if (other) {
+      try {
+        other.ccmuxPage.take(ws);
+        other.focus();
+        return Promise.resolve(true);
+      } catch (e) {
+        console.warn("hand-off: the other window refused; asking over the channel:", e);
+      }
+    }
+    if (!chan || !R.othersShow(store, pageId, w)) return Promise.resolve(false);
+    return askToTake(w, ws);
+  }
+
+  function askToTake(w, ws) {
+    const id = uuid();
+    return new Promise((resolve) => {
+      const done = (took) => {
+        takers.delete(id);
+        if (took) noteTaken(w, ws);
+        resolve(took);
+      };
+      takers.set(id, () => done(true));
+      chan.postMessage({ type: "take", from: pageId, w, ws, id });
+      setTimeout(() => takers.has(id) && done(false), ALIVE_WAIT_MS);
+    });
+  }
+
+  // take is the receiving side: show session ws (a header click names none).
+  // Raising is the caller's job: the clicker by reference, else the channel.
+  function take(ws) {
+    if (ws && ws !== state.wsId) openRow(ws);
+  }
+
+  function noteTaken(w, ws) {
+    const old = document.getElementById("handoff-note");
+    if (old) old.remove();
+    const win = windowById(w);
+    const sess = (state.workspaces || []).find((x) => x.id === ws);
+    const bar = document.createElement("div");
+    bar.id = "handoff-note";
+    const what = sess ? `${sess.name || "The session"} is` : "It is";
+    bar.textContent = `${what} open in your ${win ? win.name : "other"} window.`;
+    document.body.appendChild(bar);
+    setTimeout(() => bar.remove(), 4000);
+  }
+
   window.addEventListener("pagehide", () => R.ended(store, pageId, Date.now()));
   window.addEventListener("pageshow", () => R.beat(store, pageId, current, Date.now()));
 
-  window.ccmuxPage = { current: () => current, boot, enter, onAttach, onRefresh, onClosed, openClosed, openElsewhere, syncAddress };
+  window.ccmuxPage = {
+    current: () => current, boot, enter, onAttach, onRefresh, onClosed, openClosed, openElsewhere, syncAddress,
+    handOff, take,
+    adopt: (w) => kids.add(w),
+    kids: () => [...kids].filter((w) => !w.closed),
+  };
+  joinOpener();
+  if (chan) chan.postMessage({ type: "hello", from: pageId });
 })();

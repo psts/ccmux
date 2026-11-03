@@ -143,8 +143,54 @@
     return first ? [first, ...open.filter((w) => w !== first)] : open.slice();
   }
 
+  // othersShow says whether another browser window of this app said, at its
+  // last beat, that it shows window w and has not gone away since. A crash
+  // leaves a stale yes; the caller confirms over the channel, so a stale yes
+  // costs a short wait, never a wrong move.
+  function othersShow(storage, pageId, w) {
+    if (!w) return false;
+    return Object.entries(readPages(storage)).some(([id, p]) => id !== pageId && p.w === w && !p.closedAt);
+  }
+
+  // A page can bring another browser window to the front only through a
+  // reference to it, and the browser hands those out along who-opened-whom:
+  // a window's opener, and the windows it opened. reachable walks that both
+  // ways from `self`, so a window can reach its siblings through their common
+  // opener. Each ccmux page lists the windows it opened as ccmuxPage.kids().
+  // A window opened by hand (Cmd+N) is not linked to anything: unreachable.
+  function linked(w) {
+    let list = [];
+    try {
+      const kids = w.ccmuxPage && w.ccmuxPage.kids ? w.ccmuxPage.kids() : [];
+      list = [w.opener, ...kids];
+    } catch (_) { return []; }
+    return list.filter((x) => {
+      try { return !!x && !x.closed && !!x.ccmuxPage; } catch (_) { return false; } // another origin
+    });
+  }
+
+  function reachable(self) {
+    const seen = new Set([self]);
+    const out = [];
+    for (let i = -1; i < out.length; i++) {
+      for (const n of linked(i < 0 ? self : out[i])) {
+        if (!seen.has(n)) { seen.add(n); out.push(n); }
+      }
+    }
+    return out;
+  }
+
+  // showing is a reachable browser window that shows window w, or null.
+  function showing(self, w) {
+    if (!w) return null;
+    return reachable(self).find((x) => {
+      try { return x.ccmuxPage.current() === w; } catch (_) { return false; }
+    }) || null;
+  }
+
   const api = {
     parse, href, windowOf, bootTarget, takesNav, remember, recall, known, beat, ended, takeRestoreSet, launchSet,
+    othersShow, reachable, showing,
     BURST_MS, NAV_TTL_MS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
