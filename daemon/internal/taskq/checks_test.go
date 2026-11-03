@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// worktreeOf makes a task worktree of repo, as the runner does.
+func worktreeOf(t *testing.T, repo string) string {
+	t.Helper()
+	wt := filepath.Join(t.TempDir(), "task-1")
+	if err := (ExecGit{}).AddWorktree(repo, wt, "task/1-x", "main"); err != nil {
+		t.Fatal(err)
+	}
+	return wt
+}
+
 func writeGates(t *testing.T, dir, body string) {
 	t.Helper()
 	os.MkdirAll(filepath.Join(dir, ".claude"), 0o755)
@@ -18,7 +28,8 @@ func writeGates(t *testing.T, dir, body string) {
 
 func TestGateChecks(t *testing.T) {
 	g := GateChecks{PerLine: 10 * time.Second}
-	repo, wt := gitRepo(t), t.TempDir()
+	repo := gitRepo(t)
+	wt := worktreeOf(t, repo)
 	if got := g.Run(repo, wt, "main"); got.Configured || got.OK {
 		t.Fatalf("no gates file = %+v, want not configured", got)
 	}
@@ -86,14 +97,56 @@ func TestGateChecks_CommentsOnlyIsNotConfigured(t *testing.T) {
 // A line past its time is stopped with everything it started, not only
 // its shell: a child left holding the output would hang the merge.
 func TestGateChecks_TimeoutKillsTheWholeLine(t *testing.T) {
-	repo, wt := t.TempDir(), t.TempDir()
+	repo := gitRepo(t)
+	wt := worktreeOf(t, repo)
 	writeGates(t, repo, "cd . && sleep 30\n")
 	start := time.Now()
 	got := (GateChecks{PerLine: 300 * time.Millisecond}).Run(repo, wt, "main")
 	if took := time.Since(start); took > 4*time.Second {
 		t.Fatalf("a timed-out line took %v", took)
 	}
-	if got.OK || !got.Configured {
+	if got.OK || !got.Configured || !strings.Contains(got.Output, "failed: cd . && sleep 30") {
 		t.Fatalf("timed out = %+v", got)
+	}
+}
+
+// A branch that loosens a gate's data (a frozen list) or adds a gate file
+// is checked with the trunk's copies, then gets its own files back as
+// committed; a branch that leaves .claude/ alone is checked as it is.
+func TestGateChecks_RunWithTheTrunksGateFiles(t *testing.T) {
+	repo := gitRepo(t)
+	commit := func(dir, msg string) {
+		runGit(dir, "add", "-A")
+		runGit(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", msg)
+	}
+	writeGates(t, repo, "! grep -q newfunc .claude/gates/frozen.txt\ntest ! -f .claude/gates/extra.sh\n")
+	os.MkdirAll(filepath.Join(repo, ".claude", "gates"), 0o755)
+	os.WriteFile(filepath.Join(repo, ".claude", "gates", "frozen.txt"), []byte("oldfunc\n"), 0o644)
+	commit(repo, "gates")
+	wt := filepath.Join(t.TempDir(), "task-1")
+	if err := (ExecGit{}).AddWorktree(repo, wt, "task/1-x", "main"); err != nil {
+		t.Fatal(err)
+	}
+	g := GateChecks{PerLine: 10 * time.Second}
+	if got := g.Run(repo, wt, "main"); !got.OK || len(got.TrunkCopies) != 0 {
+		t.Fatalf("an untouched .claude/ = %+v", got)
+	}
+
+	os.WriteFile(filepath.Join(wt, ".claude", "gates", "frozen.txt"), []byte("oldfunc\nnewfunc\n"), 0o644)
+	os.WriteFile(filepath.Join(wt, ".claude", "gates", "extra.sh"), []byte("exit 0\n"), 0o755)
+	commit(wt, "loosen the gates")
+	got := g.Run(repo, wt, "main")
+	if !got.OK || strings.Join(got.TrunkCopies, ",") != ".claude/gates/extra.sh,.claude/gates/frozen.txt" {
+		t.Fatalf("checked with the trunk's copies = %+v", got)
+	}
+	frozen, _ := os.ReadFile(filepath.Join(wt, ".claude", "gates", "frozen.txt"))
+	if !strings.Contains(string(frozen), "newfunc") {
+		t.Fatalf("the branch's frozen list was not put back: %q", frozen)
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".claude", "gates", "extra.sh")); err != nil {
+		t.Fatal("the branch's added gate file was not put back")
+	}
+	if left, _ := (ExecGit{}).Uncommitted(wt); left != "" {
+		t.Fatalf("the worktree is not clean after the checks: %s", left)
 	}
 }

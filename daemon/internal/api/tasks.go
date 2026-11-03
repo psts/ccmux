@@ -176,10 +176,11 @@ func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // saveTaskChange saves an edited task with what its status change means
-// for its parts: a cancel closes its Claudes now (not on the runner's next
-// pass, which a quick Remove or requeue would beat, leaving them running
-// untracked), and a cancelled task queued again gets its unbuilt parts set
-// to start again.
+// for its parts: a cancel, or a merge marked by hand, closes every one of
+// its Claudes now, idle ones that reported done too (not on the runner's
+// next pass, which a quick Remove or requeue would beat, leaving them
+// running untracked); a cancelled task queued again gets its unbuilt parts
+// set to start again. Worktrees and branches stay for the person.
 func (s *Server) saveTaskChange(was, next store.Task) error {
 	parts, err := s.tasks.Parts()
 	if err != nil {
@@ -187,7 +188,7 @@ func (s *Server) saveTaskChange(was, next store.Task) error {
 	}
 	var changed []store.Part
 	switch {
-	case next.Status == taskq.Cancelled && was.Status != taskq.Cancelled:
+	case (next.Status == taskq.Cancelled || next.Status == taskq.Done) && was.Status != next.Status:
 		changed, err = s.stopWorkers(taskq.PartsOf(parts, next.ID))
 	case was.Status == taskq.Cancelled && next.Status == taskq.Waiting:
 		changed = taskq.Requeued(taskq.PartsOf(parts, next.ID))
@@ -204,21 +205,20 @@ func (s *Server) saveTaskChange(was, next store.Task) error {
 	return s.saveTask(next)
 }
 
-// stopWorkers closes the Claude of every working part and returns those
-// parts stopped, to start again if the task is queued again.
+// stopWorkers closes every part's Claude, and returns the parts that were
+// still at work, stopped, to start again if the task is queued again.
 func (s *Server) stopWorkers(parts []store.Part) ([]store.Part, error) {
 	var out []store.Part
 	for _, p := range parts {
-		if p.Status != taskq.Running && p.Status != taskq.NeedsYou {
-			continue
-		}
 		if p.Worktree != "" {
 			if err := s.mgr.ClearTaskFolder(p.Worktree); err != nil {
 				return nil, fmt.Errorf("closing the %s worker: %w", filepath.Base(p.RepoPath), err)
 			}
 		}
-		p.Status, p.Note, p.PaneID = taskq.Pending, "stopped: the task was cancelled", ""
-		out = append(out, p)
+		if p.Status == taskq.Running || p.Status == taskq.NeedsYou {
+			p.Status, p.Note, p.PaneID = taskq.Pending, "stopped: the task was cancelled", ""
+			out = append(out, p)
+		}
 	}
 	return out, nil
 }

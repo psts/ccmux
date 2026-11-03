@@ -6,6 +6,7 @@ package autoconfirm
 
 import (
 	"context"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -76,12 +77,20 @@ func Watch(ctx context.Context, io PaneIO, paneID string) {
 	var w presses
 	for w.enters < maxEnters && time.Now().Before(deadline) && ctx.Err() == nil {
 		key := w.allow(screenKey(io, paneID))
-		if key != nil && io.SendInput(paneID, key) != nil {
-			return
+		if key != nil {
+			if err := io.SendInput(paneID, key); err != nil {
+				log.Printf("autoconfirm: pane %s: could not answer its startup prompt: %v", paneID, err)
+				return
+			}
 		}
 		if !sleepCtx(ctx, w.count(key)) {
 			return
 		}
+	}
+	if w.enters == 0 && w.downs > 0 {
+		// It walked off "No" but never confirmed: the session is likely still
+		// sitting on the trust prompt, and nothing else will say so.
+		log.Printf("autoconfirm: pane %s: left its trust prompt unconfirmed after %d moves", paneID, w.downs)
 	}
 }
 

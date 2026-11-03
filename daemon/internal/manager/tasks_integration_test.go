@@ -117,3 +117,60 @@ func TestClearTaskFolder(t *testing.T) {
 		t.Fatalf("after clearing: old=%v elsewhere=%v human=%v; want only the old worker gone", has(old), has(elsewhere), has(human.ID))
 	}
 }
+
+// A worker's window peers are the sessions in its own ccmux window, never
+// another window's; a session in no window has only itself.
+func TestWindowPeers(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	tsrv := &tmux.Server{Socket: "ccmux-tasks-peers-itest", ConfigPath: "../../config/tmux.conf"}
+	_ = tsrv.KillServer()
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := New(ctx, tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(name, window string) *model.Workspace {
+		dir := t.TempDir()
+		ws, err := mgr.CreateWorkspace(name, dir, dir, "", "tester", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if window != "" {
+			if err := mgr.SeedWindowMembership(ws.ID, window); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return ws
+	}
+	app := mk("app", "ChartLabs")
+	mk("backend", "ChartLabs")
+	mk("blog", "Personal")
+	loner := mk("scratch", "")
+	names := func(list []*model.Workspace) map[string]bool {
+		out := map[string]bool{}
+		for _, ws := range list {
+			out[ws.Name] = true
+		}
+		return out
+	}
+	got := names(mgr.WindowPeers(app.Panes[0].ID))
+	if len(got) != 2 || !got["app"] || !got["backend"] {
+		t.Fatalf("app's window peers = %v, want app and backend", got)
+	}
+	if got := names(mgr.WindowPeers(loner.Panes[0].ID)); len(got) != 1 || !got["scratch"] {
+		t.Fatalf("a session in no window = %v, want only itself", got)
+	}
+	if mgr.WindowPeers("no-such-pane") != nil {
+		t.Fatal("an unknown pane has peers")
+	}
+
+}

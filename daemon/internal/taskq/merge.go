@@ -121,7 +121,7 @@ func noteOf(err error) string {
 	if !found || len(msg) <= maxNote {
 		return cut(msg, maxNote)
 	}
-	head = cut(head, maxNote/4)
+	head = keepStart(head, maxNote/4)
 	return head + "\n" + cut(rest, maxNote-len(head)-1)
 }
 
@@ -129,12 +129,16 @@ func noteOf(err error) string {
 // exact commit that was checked: a commit its worker made meanwhile waits.
 func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 	trunks, revs := make([]string, len(parts)), make([]string, len(parts))
+	var gateFiles []string
 	for i, p := range parts {
-		trunk, rev, err := r.prepareMerge(p)
+		trunk, rev, res, err := r.prepareMerge(p)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", filepath.Base(p.RepoPath), err)
 		}
 		trunks[i], revs[i] = trunk, rev
+		for _, f := range res.TrunkCopies {
+			gateFiles = append(gateFiles, filepath.Base(p.RepoPath)+"/"+f)
+		}
 	}
 	// The checks took a while: a folder may have got changes meanwhile.
 	if why := r.mergeBlocked(parts); why != "" {
@@ -148,35 +152,46 @@ func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 		}
 		done = append(done, name+" into "+trunks[i])
 	}
-	return "merged " + strings.Join(done, ", "), nil
+	return "merged " + strings.Join(done, ", ") + gateFilesNote(gateFiles), nil
+}
+
+// gateFilesNote names the gate files a feature changed: checked with the
+// trunk's copies, merged as the worker wrote them, worth a person's look.
+func gateFilesNote(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	return "; it changed gate files (checked with the trunk's copies, look them over): " + strings.Join(files, ", ")
 }
 
 // prepareMerge refuses a part with uncommitted work, rebases it onto its
-// trunk and runs its checks there, returning the trunk and the commit checked.
-func (r *Runner) prepareMerge(p store.Part) (string, string, error) {
+// trunk and runs its checks there, returning the trunk, the commit checked
+// and what the checks found.
+func (r *Runner) prepareMerge(p store.Part) (string, string, CheckResult, error) {
+	var res CheckResult
 	trunk, err := r.Git.Trunk(p.RepoPath)
 	if err != nil {
-		return "", "", err
+		return "", "", res, err
 	}
 	left, err := r.MergeGit.Uncommitted(p.Worktree)
 	if err != nil {
-		return "", "", err
+		return "", "", res, err
 	}
 	if left != "" {
-		return "", "", fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))
+		return "", "", res, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))
 	}
 	rev, err := r.MergeGit.Rebase(p.Worktree, trunk)
 	if err != nil {
-		return "", "", err
+		return "", "", res, err
 	}
-	res := r.Checks.Run(p.RepoPath, p.Worktree, trunk)
+	res = r.Checks.Run(p.RepoPath, p.Worktree, trunk)
 	switch {
 	case !res.Configured:
-		return "", "", errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
+		return "", "", res, errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
 	case !res.OK:
-		return "", "", errors.New("checks failed:\n" + res.Output)
+		return "", "", res, errors.New("checks failed:\n" + res.Output)
 	}
-	return trunk, rev, nil
+	return trunk, rev, res, nil
 }
 
 // mergedSoFar names the repos already merged when a later one failed: the
@@ -216,13 +231,29 @@ func (r *Runner) tidyPart(p store.Part) string {
 	if err := r.Host.ClearTaskFolder(p.Worktree); err != nil {
 		return fmt.Sprintf("%s (its worker did not close: %v)", p.Worktree, err)
 	}
-	if err := r.MergeGit.RemoveWorktree(p.RepoPath, p.Worktree, p.Branch); err != nil {
+	trunk, err := r.Git.Trunk(p.RepoPath)
+	if err != nil {
+		return fmt.Sprintf("%s (its trunk unreadable: %v)", p.Worktree, err)
+	}
+	if err := r.MergeGit.RemoveWorktree(p.RepoPath, p.Worktree, p.Branch, trunk); err != nil {
 		return fmt.Sprintf("%s (%v)", p.Worktree, err)
 	}
 	if err := os.Remove(p.Worktree + ".md"); err != nil && !os.IsNotExist(err) {
 		log.Printf("tasks: brief %s.md not removed: %v", p.Worktree, err)
 	}
 	return ""
+}
+
+// keepStart keeps the first n bytes of s, ending on a whole character.
+func keepStart(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	end := n
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end] + "…"
 }
 
 // cut keeps the last n bytes of s, starting on a whole character.

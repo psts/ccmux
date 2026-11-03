@@ -1,8 +1,11 @@
 package taskq
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -23,23 +26,40 @@ type MergeGit interface {
 	// FastForward moves repo's trunk to rev, never rewriting it.
 	FastForward(repo, rev, trunk string) error
 	// RemoveWorktree removes a merged part's worktree and its branch.
-	RemoveWorktree(repo, path, branch string) error
+	RemoveWorktree(repo, path, branch, trunk string) error
 }
 
 // localSettings is the file the runner copies into every worktree
 // (copyLocalSettings); it is never the worker's work.
 const localSettings = ".claude/settings.local.json"
 
-func checkedOut(repo string) string {
-	cur, _ := runGit(repo, "symbolic-ref", "--short", "-q", "HEAD")
-	return cur
+// checkedOut names the branch the repo's own folder has checked out, ""
+// for a detached HEAD. Any other failure is an error, never a guess: ""
+// would read as "the trunk is not checked out here" and pick the path that
+// moves the ref under the folder's feet.
+func checkedOut(repo string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", repo, "symbolic-ref", "--short", "-q", "HEAD").Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", nil // detached: no branch checked out
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading the branch checked out in %s: %w", repo, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func (ExecGit) TrunkBlocked(repo, trunk string) (string, error) {
 	if elsewhere, err := trunkElsewhere(repo, trunk); err != nil || elsewhere != "" {
 		return elsewhere, err
 	}
-	if checkedOut(repo) != trunk {
+	cur, err := checkedOut(repo)
+	if err != nil {
+		return "", err
+	}
+	if cur != trunk {
 		return "", nil // the ref moves without touching anyone's files
 	}
 	out, err := runGit(repo, "status", "--porcelain", "--untracked-files=no")
@@ -101,7 +121,11 @@ func (ExecGit) Rebase(worktree, trunk string) (string, error) {
 // trunk ref alone, after checking it is a fast-forward, and only from the
 // value it checked.
 func (ExecGit) FastForward(repo, rev, trunk string) error {
-	if checkedOut(repo) == trunk {
+	cur, err := checkedOut(repo)
+	if err != nil {
+		return err
+	}
+	if cur == trunk {
 		_, err := runGit(repo, "merge", "--ff-only", rev)
 		return err
 	}
@@ -119,10 +143,11 @@ func (ExecGit) FastForward(repo, rev, trunk string) error {
 // RemoveWorktree removes the worktree and then the branch, forcing
 // neither. The local settings the runner copied in go first, when the repo
 // does not track them; then git's own remove refuses a worktree with
-// anything uncommitted (work written after the merge checked, say), and
-// its safe delete refuses a branch with a commit the trunk lacks. Either
-// refusal comes back as the error, and what it guards stays.
-func (ExecGit) RemoveWorktree(repo, path, branch string) error {
+// anything uncommitted (work written after the merge checked, say). The
+// branch goes only when the trunk holds every commit on it: git's own safe
+// delete judges against the folder's current branch instead, which is not
+// the trunk when the folder sits on another branch.
+func (ExecGit) RemoveWorktree(repo, path, branch, trunk string) error {
 	if _, err := runGit(path, "ls-files", "--error-unmatch", localSettings); err != nil {
 		if rmErr := os.Remove(filepath.Join(path, localSettings)); rmErr != nil && !os.IsNotExist(rmErr) {
 			return rmErr
@@ -132,8 +157,11 @@ func (ExecGit) RemoveWorktree(repo, path, branch string) error {
 	if _, err := runGit(repo, "worktree", "remove", path); err != nil {
 		return fmt.Errorf("kept, it holds uncommitted files: %w", err)
 	}
-	if _, err := runGit(repo, "branch", "-d", branch); err != nil {
-		return fmt.Errorf("worktree removed, branch %s kept: it has commits the trunk does not", branch)
+	if _, err := runGit(repo, "merge-base", "--is-ancestor", branch, trunk); err != nil {
+		return fmt.Errorf("worktree removed, branch %s kept: it has commits %s does not", branch, trunk)
+	}
+	if _, err := runGit(repo, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("worktree removed, branch %s not deleted: %w", branch, err)
 	}
 	return nil
 }

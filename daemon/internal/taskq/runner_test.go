@@ -151,7 +151,7 @@ func (g *fakeGit) FastForward(repo, rev, trunk string) error {
 	g.ffs = append(g.ffs, filepath.Base(repo)+"@"+rev)
 	return nil
 }
-func (g *fakeGit) RemoveWorktree(repo, path, branch string) error {
+func (g *fakeGit) RemoveWorktree(repo, path, branch, trunk string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.rmErr[repo]; err != nil {
@@ -467,6 +467,20 @@ func TestMerge_CleanupSaysWhatItLeft(t *testing.T) {
 	}
 }
 
+// Gate files a feature changed are named in the done note.
+func TestMerge_NamesChangedGateFiles(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.results["/p/app"] = CheckResult{Configured: true, OK: true, TrunkCopies: []string{".claude/gates/frozen.txt"}}
+	g.tick()
+	note := g.st.task(1).Note
+	if g.st.task(1).Status != Done || !strings.Contains(note, "it changed gate files") || !strings.Contains(note, "app/.claude/gates/frozen.txt") || strings.Contains(note, "backend/") {
+		t.Fatalf("note = %q", note)
+	}
+}
+
 // A failed merge with long check output still says which repo was red.
 func TestMerge_LongFailureNamesTheRepo(t *testing.T) {
 	g := newRig(t)
@@ -486,6 +500,10 @@ func TestNoteOf_KeepsTheHeadline(t *testing.T) {
 	got := noteOf(errors.New(long))
 	if !strings.HasPrefix(got, "backend: checks failed:") || !strings.HasSuffix(got, "exit status 1)") || len(got) > maxNote+8 {
 		t.Fatalf("note = %q (%d bytes)", got[:60], len(got))
+	}
+	longHead := noteOf(errors.New("backend: " + strings.Repeat("z", maxNote) + "\n" + strings.Repeat("w", maxNote)))
+	if !strings.HasPrefix(longHead, "backend: zzz") {
+		t.Fatalf("a long first line lost its start: %q", longHead[:20])
 	}
 	if short := noteOf(errors.New("app: its branch clashes with dev")); short != "app: its branch clashes with dev" {
 		t.Fatalf("a short note was changed: %q", short)
@@ -679,6 +697,31 @@ func TestRunner_RetryKeepsBranchAndClearsTheWorktree(t *testing.T) {
 	}
 }
 
+// The grace for a new pane counts from when the pane started, not from the
+// claim: a pass whose starts took longer than the grace does not fail its
+// last part, still at its shell while Claude comes up.
+func TestRunner_GraceCountsFromThePane(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.host.onStart = func() { g.now = g.now.Add(StartGrace) } // each start is slow
+	g.r.Tick()
+	g.host.onStart = nil
+	last := g.partsOf(1)[1]
+	g.host.panes[last.PaneID] = PaneState{AtShell: true}
+	g.now = g.now.Add(time.Second)
+	g.r.Tick()
+	if p := g.st.part(last.ID); p.Status != Running {
+		t.Fatalf("a part whose pane just started = %+v", p)
+	}
+	first := g.partsOf(1)[0]
+	g.host.panes[first.PaneID] = PaneState{AtShell: true}
+	g.now = g.now.Add(StartGrace)
+	g.r.Tick()
+	if p := g.st.part(first.ID); p.Status != Failed {
+		t.Fatalf("a part at its shell past the grace = %s", p.Status)
+	}
+}
+
 // The slow part of a start runs without the lock the routes take.
 func TestRunner_StartsOutsideTheLock(t *testing.T) {
 	g := newRig(t)
@@ -718,6 +761,8 @@ func TestJudge(t *testing.T) {
 		change bool
 	}{
 		{"working, no signal yet", run, PaneState{}, true, Running, false},
+		{"silent too long", store.Part{Status: Running, PaneID: "p", StartedAt: ms(-SilentLimit - time.Minute)}, PaneState{}, true, NeedsYou, true},
+		{"silent too long, then a sign", store.Part{Status: NeedsYou, PaneID: "p", Note: noteSilent, UpdatedAt: ms(-2 * time.Minute)}, stopNow, true, Running, true},
 		{"pane gone or session closed", run, PaneState{}, false, Failed, true},
 		{"at a shell inside the grace", run, PaneState{AtShell: true}, true, Running, false},
 		{"asks a question", run, question, true, NeedsYou, true},

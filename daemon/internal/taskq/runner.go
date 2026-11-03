@@ -243,7 +243,9 @@ func (r *Runner) start(j job) {
 		}
 		return
 	}
-	p.PaneID, p.Branch, p.Worktree = paneID, l.branch, l.worktree
+	// The start-up grace and the silence limit count from the pane, not
+	// the claim: a slow pass of starts must not use up a later part's grace.
+	p.PaneID, p.Branch, p.Worktree, p.StartedAt = paneID, l.branch, l.worktree, r.Now().UnixMilli()
 	if r.savePart(p) {
 		log.Printf("tasks: #%d part started on %s in %s", j.task.ID, l.branch, l.worktree)
 	}

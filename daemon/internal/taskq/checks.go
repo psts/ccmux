@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,9 @@ type CheckResult struct {
 	Configured bool
 	OK         bool
 	Output     string // the failing line's output, cut to its last lines
+	// TrunkCopies lists the branch's changed files under .claude/ that the
+	// checks ran from the trunk's copy instead, so the merge can name them.
+	TrunkCopies []string
 }
 
 // GateChecks runs the lines of the repo's .claude/qa-gates as the trunk has
@@ -43,12 +47,67 @@ func (g GateChecks) Run(repo, worktree, trunk string) CheckResult {
 	if len(lines) == 0 {
 		return CheckResult{} // a list of comments checks nothing
 	}
+	swapped, restore, err := useTrunkGates(worktree, trunk)
+	if err != nil {
+		return CheckResult{Configured: true, Output: "could not put the trunk's .claude/ in place for the checks: " + err.Error()}
+	}
+	defer restore()
 	for _, line := range lines {
 		if out, err := g.runLine(worktree, line); err != nil {
-			return CheckResult{Configured: true, Output: fmt.Sprintf("%s\n(failed: %s: %v)", tail(out, 20), line, err)}
+			return CheckResult{Configured: true, Output: fmt.Sprintf("%s\n(failed: %s: %v)", tail(out, 20), line, err), TrunkCopies: swapped}
 		}
 	}
-	return CheckResult{Configured: true, OK: true}
+	return CheckResult{Configured: true, OK: true, TrunkCopies: swapped}
+}
+
+// useTrunkGates puts the trunk's version of every file under .claude/ the
+// branch changed into the worktree for the checks (removing one the trunk
+// lacks), so the gate scripts and their data (a frozen list, say) grading
+// the branch are the trunk's, not the worker's. Only working files change;
+// restore puts the branch's back from its index, which the merge checked
+// is clean, so the merge itself still takes the branch's .claude/ changes.
+func useTrunkGates(worktree, trunk string) ([]string, func(), error) {
+	out, err := runGit(worktree, "diff", "--name-only", trunk, "HEAD", "--", ".claude")
+	if err != nil || out == "" {
+		return nil, func() {}, err
+	}
+	paths := strings.Split(out, "\n")
+	for _, p := range paths {
+		if err := placeTrunkCopy(worktree, trunk, p); err != nil {
+			restoreBranchCopies(worktree, paths)
+			return nil, func() {}, err
+		}
+	}
+	return paths, func() { restoreBranchCopies(worktree, paths) }, nil
+}
+
+func placeTrunkCopy(worktree, trunk, path string) error {
+	full := filepath.Join(worktree, path)
+	text, err := runGit(worktree, "show", trunk+":"+path)
+	if err != nil { // not on the trunk: the branch added it
+		if rmErr := os.Remove(full); rmErr != nil && !os.IsNotExist(rmErr) {
+			return rmErr
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(full, []byte(text+"\n"), 0o755)
+}
+
+// restoreBranchCopies puts the branch's files back as committed, and drops
+// a file the branch does not have.
+func restoreBranchCopies(worktree string, paths []string) {
+	for _, p := range paths {
+		if _, err := runGit(worktree, "cat-file", "-e", "HEAD:"+p); err == nil {
+			if _, err := runGit(worktree, "checkout", "--", p); err != nil {
+				log.Printf("tasks: %s: %s not restored after the checks: %v", worktree, p, err)
+			}
+			continue
+		}
+		_ = os.Remove(filepath.Join(worktree, p))
+	}
 }
 
 // gateLines reads the checks from the trunk, never from the branch being

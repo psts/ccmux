@@ -129,3 +129,25 @@ func (m *Manager) TaskPane(paneID string) (TaskPaneStatus, bool) {
 	}
 	return TaskPaneStatus{Signal: m.taskSigs.get(paneID), AtShell: atShell}, true
 }
+
+// WindowPeers lists the workspaces sharing a ccmux window with paneID's
+// session (that session too): the repos a task worker may pull into its
+// feature. A session in no window has only itself.
+func (m *Manager) WindowPeers(paneID string) []*model.Workspace {
+	st := m.windowSnapshot()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e, _ := m.findPaneLocked(paneID)
+	if e == nil {
+		return nil
+	}
+	group := st.resolve(e.ws.ID, e.ws.Group)
+	var out []*model.Workspace
+	for _, o := range m.byID {
+		same := o.ws.ID == e.ws.ID || (group != "" && st.resolve(o.ws.ID, o.ws.Group) == group)
+		if same {
+			out = append(out, o.ws)
+		}
+	}
+	return out
+}

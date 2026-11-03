@@ -40,6 +40,11 @@ const (
 	// before the task asks for a person. A worker reports the moment it is
 	// done, so a turn that ended this long ago without one ended unasked.
 	QuietLimit = 10 * time.Minute
+	// SilentLimit is how long a worker may give no sign at all before the
+	// part asks for a person. Its first prompt fires a hook within seconds,
+	// so silence this long means it is stuck on a screen nothing answers,
+	// or the daemon restarted and forgot what it last heard.
+	SilentLimit = 10 * time.Minute
 )
 
 // Notes the watcher writes. The worker's own report notes replace them.
@@ -49,6 +54,7 @@ const (
 	noteAsking = "waiting on a question or permission in its session"
 	noteQuiet  = "stopped without reporting; open its session to see why"
 	noteNoPane = "it lost its pane before starting"
+	noteSilent = "no sign of its Claude working; open its session to see why"
 )
 
 // Judge reads a running or waiting-on-a-person part against its pane and
@@ -73,13 +79,15 @@ func Judge(t store.Part, st PaneState, ok bool, now time.Time) (store.Part, bool
 }
 
 // judgeRunning moves a working part to "needs you" when its Claude asks
-// something, or finished a turn long ago without reporting.
+// something, finished a turn long ago without reporting, or never gave a sign.
 func judgeRunning(t store.Part, st PaneState, now time.Time) (store.Part, bool) {
 	switch {
 	case st.asking():
 		t.Status, t.Note = NeedsYou, noteAsking
 	case st.finished() && now.Sub(time.UnixMilli(st.At)) > QuietLimit:
 		t.Status, t.Note = NeedsYou, noteQuiet
+	case st.At == 0 && now.Sub(time.UnixMilli(t.StartedAt)) > SilentLimit:
+		t.Status, t.Note = NeedsYou, noteSilent
 	default:
 		return t, false
 	}
@@ -94,7 +102,9 @@ func judgeWaitingOnYou(t store.Part, st PaneState) (store.Part, bool) {
 	if st.At <= t.UpdatedAt {
 		return t, false
 	}
-	answered := t.Note == noteAsking && !st.asking()
+	// Asking or silent, any newer sign that is not another question means
+	// it moved on; after its own "stuck" report only a person typing does.
+	answered := (t.Note == noteAsking || t.Note == noteSilent) && !st.asking()
 	if !st.prompted() && !answered {
 		return t, false
 	}

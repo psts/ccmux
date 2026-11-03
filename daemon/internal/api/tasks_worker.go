@@ -82,7 +82,7 @@ func (s *Server) replacePlan(t store.Task, p store.Part, plan string) (string, i
 // addPartFromWorker adds a part for another repo to the worker's own,
 // running task. The runner starts it on its next pass.
 func (s *Server) addPartFromWorker(who taskFiler, mine store.Part, req paneTaskReq) (string, int, error) {
-	repo, err := s.repoByName(req.Repo)
+	repo, err := s.repoByName(who, req.Repo)
 	if err != nil {
 		return "", http.StatusBadRequest, err
 	}
@@ -125,9 +125,17 @@ func (s *Server) newPart(t store.Task, repo, plan, status, by, msg string) (stri
 	return msg, 0, nil
 }
 
-// repoByName finds the repo a worker names (its folder name) among this
-// daemon's repo sessions.
-func (s *Server) repoByName(name string) (string, error) { return repoNamed(s.mgr.List(), name) }
+// repoByName finds the repo a worker names (its folder name) among the
+// sessions sharing its ccmux window. Not any repo on the daemon: a worker
+// runs unattended in auto mode, and one misled by text it read must not be
+// able to start work in a repo outside the project it was given.
+func (s *Server) repoByName(who taskFiler, name string) (string, error) {
+	repo, err := repoNamed(s.mgr.WindowPeers(who.pane), name)
+	if err != nil {
+		return "", fmt.Errorf("%w (a worker can add parts only in repos in its own ccmux window)", err)
+	}
+	return repo, nil
+}
 
 // repoNamed picks the repo session whose folder is called name: a git repo,
 // never an agent's session.

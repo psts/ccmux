@@ -150,7 +150,7 @@ func TestExecGit_MergeSteps(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, "feature.txt")); err != nil {
 		t.Fatal("the repo's own folder did not get the merged work")
 	}
-	if err := g.RemoveWorktree(repo, wt, "task/1-x"); err == nil {
+	if err := g.RemoveWorktree(repo, wt, "task/1-x", "main"); err == nil {
 		t.Fatal("a branch holding an unmerged commit was deleted")
 	}
 	if _, err := os.Stat(wt); !os.IsNotExist(err) {
@@ -263,17 +263,57 @@ func TestExecGit_RemoveWorktreeNeverForces(t *testing.T) {
 	os.MkdirAll(filepath.Join(wt, ".claude"), 0o755)
 	os.WriteFile(filepath.Join(wt, localSettings), []byte("{}"), 0o644)
 	os.WriteFile(filepath.Join(wt, "late.go"), []byte("package late"), 0o644)
-	if err := g.RemoveWorktree(repo, wt, "task/1-x"); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+	if err := g.RemoveWorktree(repo, wt, "task/1-x", "main"); err == nil || !strings.Contains(err.Error(), "uncommitted") {
 		t.Fatalf("a worktree with a late file = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(wt, "late.go")); err != nil {
 		t.Fatal("the late file was deleted")
 	}
 	os.Remove(filepath.Join(wt, "late.go"))
-	if err := g.RemoveWorktree(repo, wt, "task/1-x"); err != nil {
+	if err := g.RemoveWorktree(repo, wt, "task/1-x", "main"); err != nil {
 		t.Fatalf("a worktree with only the copied settings = %v", err)
 	}
 	if _, err := os.Stat(wt); !os.IsNotExist(err) || branchExists(repo, "task/1-x") {
 		t.Fatal("clean worktree or its merged branch left behind")
+	}
+}
+
+// With the repo's folder on another branch, a merged part's branch is
+// still deleted: the trunk holds its commits, whatever the folder's branch.
+func TestExecGit_RemoveAfterAnOffTrunkMerge(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	wt := filepath.Join(t.TempDir(), "task-1")
+	g.AddWorktree(repo, wt, "task/1-x", "main")
+	commitFile(t, wt, "feature.txt", "new")
+	rev, _ := runGit(wt, "rev-parse", "HEAD")
+	runGit(repo, "checkout", "-q", "-b", "mine")
+	if err := g.FastForward(repo, rev, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.RemoveWorktree(repo, wt, "task/1-x", "main"); err != nil {
+		t.Fatalf("remove after an off-trunk merge = %v", err)
+	}
+	if branchExists(repo, "task/1-x") {
+		t.Fatal("the merged branch was kept")
+	}
+}
+
+// A detached folder has no branch checked out; a folder git cannot read is
+// an error, never taken for "the trunk is not checked out here".
+func TestCheckedOut(t *testing.T) {
+	repo := gitRepo(t)
+	if cur, err := checkedOut(repo); err != nil || cur != "main" {
+		t.Fatalf("on main = %q, %v", cur, err)
+	}
+	runGit(repo, "checkout", "-q", "--detach")
+	if cur, err := checkedOut(repo); err != nil || cur != "" {
+		t.Fatalf("detached = %q, %v", cur, err)
+	}
+	if _, err := checkedOut(t.TempDir()); err == nil {
+		t.Fatal("a folder that is no repo gave no error")
+	}
+	if why, err := (ExecGit{}).TrunkBlocked(t.TempDir(), "main"); err == nil {
+		t.Fatalf("TrunkBlocked on an unreadable folder = %q, no error", why)
 	}
 }
