@@ -104,6 +104,11 @@ func convertHEIF(ctx context.Context, dir string, b []byte) (string, error) {
 			continue
 		}
 		if why := runHEIF(ctx, c, in, out); why != "" {
+			if ctx.Err() != nil {
+				// Out of time, or the request went away: the host's trouble
+				// (a 500), not the image's, and no later converter can run.
+				return "", fmt.Errorf("HEIC conversion stopped at %s: %w", c.name, ctx.Err())
+			}
 			failed = append(failed, why)
 			continue
 		}

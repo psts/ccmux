@@ -86,6 +86,10 @@
       method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: img,
     });
     const body = await r.json().catch(() => ({}));
+    if (r.status === 415 && HEIF.test(img.type) && body.error === "not an image") {
+      // A ccmux from before HEIC conversion (heic.go) says only this.
+      throw new Error("this session's machine cannot convert HEIC photos yet; update its ccmux, or copy the photo as JPEG");
+    }
     if (r.status !== 201 || !body.path) throw new Error(body.error || `the daemon answered ${r.status}`);
     return body.path;
   }

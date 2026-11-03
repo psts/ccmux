@@ -182,3 +182,13 @@ test("a picture the daemon does not take is pasted as PNG, or named when it cann
   assert.doesNotMatch(tooBig.failed[0], /cannot read/, "a picture that opened is not called unreadable");
   assert.match(tooBig.failed[0], /TIFF image could not be turned into a PNG \(9000x9000 is too large to redraw\)/);
 });
+
+test("a HEIC sent to a host too old to convert it says so", async () => {
+  const heic = { name: "IMG_0001.HEIC", type: "image/heic", size: 2 << 20 };
+  const old = await paste({ data: clip({ files: [heic] }), answer: { status: 415, body: { error: "not an image" } } });
+  assert.match(old.failed[0], /machine cannot convert HEIC photos yet; update its ccmux/);
+  const png = await paste({ data: clip({ files: [{ name: "a.png", type: "image/png", size: 9 }] }), answer: { status: 415, body: { error: "not an image" } } });
+  assert.match(png.failed[0], /not pasted: not an image$/, "a non-HEIC refusal keeps the daemon's words");
+  const now = await paste({ data: clip({ files: [heic] }), answer: { status: 415, body: { error: "the HEIC image could not be converted (x)" } } });
+  assert.match(now.failed[0], /could not be converted \(x\)/, "a current host's own reason is kept");
+});

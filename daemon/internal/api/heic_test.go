@@ -183,3 +183,23 @@ func TestHEICWriteFailureIsTheHosts(t *testing.T) {
 		t.Errorf("a write failure was reported as a conversion failure: %v", err)
 	}
 }
+
+// A conversion that ran out of time, or whose request went away, is the
+// host's trouble: a 500 with no install advice, and no later converter runs.
+func TestHEICStoppedConversionIsTheHosts(t *testing.T) {
+	ran := fakeConverters(t, map[string]bool{"magick": true, "convert": true}, func(string) []byte { return nil }, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		*ran = append(*ran, name)
+		cancel() // the request goes away while the first converter runs
+		return nil, context.Canceled
+	}
+	_, code, err := landPaste(ctx, heicMagic)
+	var bad heifError
+	if code != http.StatusInternalServerError || errors.As(err, &bad) || !errors.Is(err, context.Canceled) {
+		t.Errorf("landPaste = %d, %v; want a 500 that is not a conversion failure", code, err)
+	}
+	if strings.Join(*ran, ",") != "magick" {
+		t.Errorf("ran %v, want no converter after the stop", *ran)
+	}
+}
