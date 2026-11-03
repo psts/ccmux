@@ -27,56 +27,18 @@ func (s *Server) workerPart(who taskFiler) (store.Part, bool, error) {
 	return store.Part{}, false, nil
 }
 
-// addPart is add_part: from a repo's session, this repo's part of a task
-// another repo filed (id); from a worker, a part of its own task for
-// another repo (repo), which starts at once.
+// addPart is add_part, a worker's alone: a part of its own running task for
+// another repo (repo), which starts at once. A session files every part
+// with the feature instead.
 func (s *Server) addPart(who taskFiler, req paneTaskReq) (string, int, error) {
 	mine, isWorker, err := s.workerPart(who)
 	if err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	if isWorker {
-		return s.addPartFromWorker(who, mine, req)
+	if !isWorker {
+		return "", http.StatusConflict, errors.New("add_part is for a Claude building a part; file a feature with every repo's part (file with parts), or cancel a filed one and file it again with the repo added")
 	}
-	return s.addPartFromSession(who, req)
-}
-
-// addPartFromSession adds this repo's part to task id, or replaces its plan
-// when the part is there already. Only before the task starts: a running
-// feature's workers are reached over the bus instead.
-func (s *Server) addPartFromSession(who taskFiler, req paneTaskReq) (string, int, error) {
-	t, err := s.tasks.Task(req.ID)
-	if err != nil {
-		return "", http.StatusInternalServerError, err
-	}
-	if t == nil || t.WindowID != who.window {
-		return "", http.StatusNotFound, fmt.Errorf("no task #%d in this session's window", req.ID)
-	}
-	if !taskq.Editable(t.Status) {
-		return "", http.StatusConflict, fmt.Errorf("task #%d is %s; message its workers on the bus instead", t.ID, t.Status)
-	}
-	parts, err := s.tasks.Parts()
-	if err != nil {
-		return "", http.StatusInternalServerError, err
-	}
-	for _, p := range taskq.PartsOf(parts, t.ID) {
-		if p.RepoPath == who.repo {
-			return s.replacePlan(*t, p, req.Plan)
-		}
-	}
-	return s.newPart(*t, who.repo, req.Plan, taskq.Pending, who.session,
-		fmt.Sprintf("Added this repo's part to task #%d.", t.ID))
-}
-
-func (s *Server) replacePlan(t store.Task, p store.Part, plan string) (string, int, error) {
-	next, err := taskq.EditPlan(t, p, plan)
-	if err != nil {
-		return "", http.StatusConflict, err
-	}
-	if err := s.savePart(next); err != nil {
-		return "", http.StatusInternalServerError, err
-	}
-	return fmt.Sprintf("Replaced this repo's plan in task #%d.", t.ID), 0, nil
+	return s.addPartFromWorker(who, mine, req)
 }
 
 // addPartFromWorker adds a part for another repo to the worker's own,

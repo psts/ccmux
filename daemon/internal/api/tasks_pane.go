@@ -1,11 +1,11 @@
 package api
 
-// The peers shim's `tasks` tool. A repo's session files a feature with its
-// own part, adds its part to a feature another repo filed, lists, edits or
-// cancels the features it has a part in. A worker building a part reports
-// on it, and pulls in another repo by adding a part (tasks_worker.go). The
-// repo is always the pane's own session's repo, never an argument, so a
-// session only writes plans for the repo it knows.
+// The peers shim's `tasks` tool. A repo's session files a whole feature,
+// its own part and every other repo's in its window, in one step, and lists,
+// edits or cancels the features it has a part in. A worker building a part
+// reports on it, and pulls in another repo by adding a part
+// (tasks_worker.go). The filing repo is always the pane's own session's;
+// the other repos are only ever ones in the same ccmux window.
 
 import (
 	"errors"
@@ -27,14 +27,24 @@ type paneTaskReq struct {
 	// After is "starts after" this task number; on an edit, nil leaves it
 	// alone and 0 clears it.
 	After *int64 `json:"after"`
-	// Draft files as planning instead of waiting; on an edit, nil leaves the
-	// status alone and a value moves the task to planning or waiting.
+	// Parts are the other repos' parts of a feature being filed.
+	Parts []partReq `json:"parts"`
+	// Draft is only read to refuse it: a session still holding the old tool
+	// would file a draft for others to add to, and a draft read as a plain
+	// filing starts with the lead's part alone.
 	Draft *bool `json:"draft"`
-	// Repo names the repo (its folder name) a worker adds a part for.
+	// Repo names a repo by its folder name: the one a worker adds a part
+	// for, or the part an edit's plan replaces (this repo's when empty).
 	Repo string `json:"repo"`
 	// Status and Note are a worker's report on its own part.
 	Status string `json:"status"`
 	Note   string `json:"note"`
+}
+
+// partReq is one other repo's part of a feature being filed.
+type partReq struct {
+	Repo string `json:"repo"`
+	Plan string `json:"plan"`
 }
 
 // taskFiler is who is asking: the repo, the session name stamped on what
@@ -107,6 +117,9 @@ func repoTasks(tasks []store.Task, parts []store.Part, repo string) []store.Task
 }
 
 func (s *Server) applyPaneTask(who taskFiler, req paneTaskReq) (string, int, error) {
+	if req.Draft != nil {
+		return "", http.StatusBadRequest, errors.New("drafts are gone: file the whole feature in one call, this repo's part as plan and every other repo's in parts (restart this session for the current tasks tool)")
+	}
 	switch req.Action {
 	case "file":
 		return s.fileTask(who, req)
@@ -125,12 +138,18 @@ func (s *Server) applyPaneTask(who taskFiler, req paneTaskReq) (string, int, err
 	return "", http.StatusBadRequest, errors.New("action must be one of file, add_part, list, edit, cancel, report")
 }
 
-// fileTask files a feature with the caller's repo's part.
+// fileTask files a whole feature at once from the session it was planned
+// in: this repo's part (plan) and every other repo's (parts), all in this
+// session's window. It waits in the queue at once; nothing else has to act.
 func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	if who.window == "" {
 		return "", http.StatusConflict, errors.New("this session is in no ccmux window, and each window has its own task queue; put the session in a window first")
 	}
-	if err := firstErr(taskq.CheckTitle(req.Title), taskq.CheckPlan(req.Plan)); err != nil {
+	if err := taskq.CheckTitle(req.Title); err != nil {
+		return "", http.StatusBadRequest, err
+	}
+	parts, err := s.partsToFile(who, req)
+	if err != nil {
 		return "", http.StatusBadRequest, err
 	}
 	all, err := s.tasks.Tasks()
@@ -141,28 +160,64 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	if err := taskq.CheckAfter(taskq.InWindow(all, who.window), 0, after); err != nil {
 		return "", http.StatusBadRequest, err
 	}
-	status := taskq.Waiting
-	if deref(req.Draft) {
-		status = taskq.Planning
-	}
 	now := s.taskNow()
-	id, err := s.tasks.AddTaskWithPart(
-		store.Task{Title: strings.TrimSpace(req.Title), Status: status, AfterID: after, FiledBy: who.session, WindowID: who.window, CreatedAt: now, UpdatedAt: now},
-		store.Part{RepoPath: who.repo, Plan: req.Plan, Status: taskq.Pending, FiledBy: who.session, CreatedAt: now, UpdatedAt: now})
+	for i := range parts {
+		parts[i].Status, parts[i].FiledBy, parts[i].CreatedAt, parts[i].UpdatedAt = taskq.Pending, who.session, now, now
+	}
+	id, err := s.tasks.AddTaskWithParts(
+		store.Task{Title: strings.TrimSpace(req.Title), Status: taskq.Waiting, AfterID: after, FiledBy: who.session, WindowID: who.window, CreatedAt: now, UpdatedAt: now},
+		parts)
 	if err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	s.mgr.TasksChanged()
-	return fileMessage(id, status, after), 0, nil
+	return fileMessage(id, parts, after), 0, nil
 }
 
-func fileMessage(id int64, status string, after int64) string {
-	msg := fmt.Sprintf("Filed task #%d with this repo's part", id)
-	if status == taskq.Planning {
-		msg += fmt.Sprintf(" as a draft. If other repos have parts, give them the number #%d over the bus so each adds its own part (action add_part); then mark it ready (edit, draft false)", id)
-	} else {
-		msg += ": it waits in the queue for a free slot"
+// partsToFile is a feature's parts: this repo's, always (the filing session
+// reaches its task through its own part: list, edit, cancel), then each
+// named repo's, found among the sessions in this one's window. One part per
+// repo, each with a plan.
+func (s *Server) partsToFile(who taskFiler, req paneTaskReq) ([]store.Part, error) {
+	var out []store.Part
+	seen := map[string]bool{}
+	add := func(repo, plan string) error {
+		name := filepath.Base(repo)
+		if seen[repo] {
+			return fmt.Errorf("%s has two parts; give each repo one plan", name)
+		}
+		if err := taskq.CheckPlan(plan); err != nil {
+			return fmt.Errorf("%s's part: %w", name, err)
+		}
+		seen[repo] = true
+		out = append(out, store.Part{RepoPath: repo, Plan: plan})
+		return nil
 	}
+	if err := add(who.repo, req.Plan); err != nil {
+		return nil, err
+	}
+	if len(req.Parts) == 0 {
+		return out, nil
+	}
+	peers := s.mgr.WindowPeers(who.pane)
+	for _, p := range req.Parts {
+		repo, err := repoNamed(peers, p.Repo)
+		if err != nil {
+			return nil, fmt.Errorf("%w (a feature's parts are repos in this session's ccmux window)", err)
+		}
+		if err := add(repo, p.Plan); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func fileMessage(id int64, parts []store.Part, after int64) string {
+	names := make([]string, len(parts))
+	for i, p := range parts {
+		names[i] = filepath.Base(p.RepoPath)
+	}
+	msg := fmt.Sprintf("Filed task #%d with parts for %s: it waits in the queue for a free slot", id, strings.Join(names, ", "))
 	if after != 0 {
 		msg += fmt.Sprintf(", and will not start before task #%d is done and merged", after)
 	}
@@ -170,7 +225,7 @@ func fileMessage(id int64, status string, after int64) string {
 }
 
 // editPaneTask changes a task this repo has a part in: its title, what it
-// starts after, draft or ready, and this repo's own plan. Everything is
+// starts after, and one part's plan (this repo's, or the one req.Repo names). Everything is
 // checked before anything is saved, so a refused edit changes nothing.
 func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	t, all, status, err := s.memberTask(who, req.ID)
@@ -181,7 +236,7 @@ func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, erro
 	if err != nil {
 		return "", http.StatusConflict, err
 	}
-	part, status, err := s.planEditOf(who, t, req.Plan)
+	part, status, err := s.planEditOf(t, partRepoOf(who, req), req.Plan)
 	if err != nil {
 		return "", status, err
 	}
@@ -202,19 +257,21 @@ func taskEditOf(req paneTaskReq) taskq.Edit {
 	if req.Title != "" {
 		e.Title = &req.Title
 	}
-	if req.Draft != nil {
-		status := taskq.Waiting
-		if *req.Draft {
-			status = taskq.Planning
-		}
-		e.Status = &status
-	}
 	return e
 }
 
-// planEditOf checks a new plan for this repo's part of task t; nil when the
-// edit carries no plan.
-func (s *Server) planEditOf(who taskFiler, t store.Task, plan string) (*store.Part, int, error) {
+// partRepoOf is the folder name of the part an edit's plan is for: the one
+// named, else the caller's own repo's.
+func partRepoOf(who taskFiler, req paneTaskReq) string {
+	if name := strings.TrimSpace(req.Repo); name != "" {
+		return name
+	}
+	return filepath.Base(who.repo)
+}
+
+// planEditOf checks a new plan for the part of task t in the repo whose
+// folder is named name; nil when the edit carries no plan.
+func (s *Server) planEditOf(t store.Task, name, plan string) (*store.Part, int, error) {
 	if plan == "" {
 		return nil, 0, nil
 	}
@@ -223,7 +280,7 @@ func (s *Server) planEditOf(who taskFiler, t store.Task, plan string) (*store.Pa
 		return nil, http.StatusInternalServerError, err
 	}
 	for _, p := range taskq.PartsOf(parts, t.ID) {
-		if p.RepoPath != who.repo {
+		if filepath.Base(p.RepoPath) != name {
 			continue
 		}
 		next, err := taskq.EditPlan(t, p, plan)
@@ -232,7 +289,7 @@ func (s *Server) planEditOf(who taskFiler, t store.Task, plan string) (*store.Pa
 		}
 		return &next, 0, nil
 	}
-	return nil, http.StatusNotFound, fmt.Errorf("this repo has no part in task #%d; add one with add_part", t.ID)
+	return nil, http.StatusNotFound, fmt.Errorf("task #%d has no part in %s", t.ID, name)
 }
 
 // changeMemberTask applies e to a task the caller's repo has a part in.
@@ -265,15 +322,6 @@ func (s *Server) memberTask(who taskFiler, id int64) (store.Task, []store.Task, 
 		}
 	}
 	return store.Task{}, nil, http.StatusNotFound, fmt.Errorf("no task #%d with a part in this repo", id)
-}
-
-func firstErr(errs ...error) error {
-	for _, err := range errs {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func deref[T any](p *T) T {

@@ -19,7 +19,7 @@ import (
 
 // taskStore is the slice of the registry the task queue needs.
 type taskStore interface {
-	AddTaskWithPart(store.Task, store.Part) (int64, error)
+	AddTaskWithParts(store.Task, []store.Part) (int64, error)
 	Task(id int64) (*store.Task, error)
 	Tasks() ([]store.Task, error)
 	SaveTask(store.Task) (bool, error)

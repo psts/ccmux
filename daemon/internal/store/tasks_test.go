@@ -4,7 +4,7 @@ import "testing"
 
 // addTask files a task with one part in /r/app, the only way tasks are made.
 func addTask(st *SQLite, t Task) (int64, error) {
-	return st.AddTaskWithPart(t, Part{RepoPath: "/r/app", Plan: "p", Status: "pending"})
+	return st.AddTaskWithParts(t, []Part{{RepoPath: "/r/app", Plan: "p", Status: "pending"}})
 }
 
 func TestTasks_AddQueuesAtTheBack(t *testing.T) {
@@ -62,8 +62,8 @@ func TestTasks_SaveSwapDelete(t *testing.T) {
 
 func TestParts_OnePerRepoAndSave(t *testing.T) {
 	st := taskStore(t)
-	id, err := st.AddTaskWithPart(Task{Title: "feature", Status: "planning"},
-		Part{RepoPath: "/r/app", Plan: "app plan", Status: "pending", FiledBy: "app"})
+	id, err := st.AddTaskWithParts(Task{Title: "feature", Status: "planning"},
+		[]Part{{RepoPath: "/r/app", Plan: "app plan", Status: "pending", FiledBy: "app"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,5 +106,27 @@ func TestTasks_KeepTheirWindow(t *testing.T) {
 	}
 	if again, _ := st.Task(id); again.WindowID != "win-a" || again.Title != "renamed" {
 		t.Fatalf("after a save = %+v, want renamed and still in win-a", again)
+	}
+}
+
+// A feature is filed whole or not at all: a part that cannot be written
+// (two for one repo) leaves no task behind, and no parts is refused.
+func TestTasks_FiledWholeOrNotAtAll(t *testing.T) {
+	st := taskStore(t)
+	if _, err := st.AddTaskWithParts(Task{Title: "none", Status: "waiting"}, nil); err == nil {
+		t.Fatal("a task with no parts was filed")
+	}
+	_, err := st.AddTaskWithParts(Task{Title: "twice", Status: "waiting"}, []Part{
+		{RepoPath: "/r/app", Plan: "a", Status: "pending"}, {RepoPath: "/r/app", Plan: "b", Status: "pending"}})
+	if err == nil {
+		t.Fatal("two parts for one repo were filed")
+	}
+	if list, _ := st.Tasks(); len(list) != 0 {
+		t.Fatalf("a refused filing left %+v", list)
+	}
+	id, err := st.AddTaskWithParts(Task{Title: "two", Status: "waiting"}, []Part{
+		{RepoPath: "/r/app", Plan: "a", Status: "pending"}, {RepoPath: "/r/api", Plan: "b", Status: "pending"}})
+	if parts, _ := st.Parts(); err != nil || len(parts) != 2 || parts[0].TaskID != id || parts[1].TaskID != id {
+		t.Fatalf("two-part filing = %v, %+v", err, parts)
 	}
 }

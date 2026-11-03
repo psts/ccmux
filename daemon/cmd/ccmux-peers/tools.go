@@ -198,18 +198,18 @@ var toolsList = []map[string]any{
 	},
 	{
 		"name":        "tasks",
-		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel). Each ccmux window has its own queue: a task goes into the queue of this session's window (a session in no window cannot file), and only repos in that window take parts in it. A task is one feature with one part per repo; when it starts, a fresh Claude builds every part at once, each in its own git worktree of its repo, and they coordinate over the peers bus. File only when the human says the plan is ready. Each part's plan is all its builder gets: write it for a fresh Claude that knows the repo but not this conversation (goal, files, steps, how to verify). One repo: file it. Several repos: file it with draft true and this repo's part, give the task number to the other repos' sessions over the bus so each adds its own part (add_part with id and plan), then mark it ready (edit, draft false). Actions: file (title, plan, optional after, draft), add_part (id, plan: this repo's part of task id), list (tasks this repo has a part in), edit (id + any of title, plan, after, draft), cancel (id). A Claude started to BUILD a part uses report (status done or stuck, plus note) and add_part (repo, plan) as its brief says.",
+		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel). Each ccmux window has its own queue; a task goes into this session's window's queue (a session in no window cannot file). A task is one feature with one part per repo; when it starts, a fresh Claude builds every part at once, each in its own git worktree of its repo, and they coordinate over the peers bus. File only when the human says the plan is ready, and always from this session: one file call holds the whole feature, this repo's part (plan) and every other repo's part (parts, repos in this window only), and it waits in the queue at once. You write every part's plan yourself. If you need a fact about another repo to write its plan, ask that repo's session over the bus first (send_message), then file. Each plan is all its builder gets: write it for a fresh Claude that knows its repo but not this conversation (goal, files, steps, how to verify, what it needs from the other parts). Actions: file (title, plan, parts, optional after), list (tasks this repo has a part in), edit (id + any of title, after, plan; plan with repo changes that repo's part), cancel (id). A Claude started to BUILD a part uses report (status done or stuck, plus note) and add_part (repo, plan) as its brief says.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []string{"file", "add_part", "list", "edit", "cancel", "report"},
-					"description": "What to do.",
+					"enum":        []string{"file", "list", "edit", "cancel", "report", "add_part"},
+					"description": "What to do. add_part is only for a Claude building a part.",
 				},
 				"id": map[string]any{
 					"type":        "integer",
-					"description": "add_part/edit/cancel: the task number.",
+					"description": "edit/cancel: the task number.",
 				},
 				"title": map[string]any{
 					"type":        "string",
@@ -217,19 +217,27 @@ var toolsList = []map[string]any{
 				},
 				"plan": map[string]any{
 					"type":        "string",
-					"description": "file/add_part/edit: the full plan for this repo's part (for a builder, the plan of the new part).",
+					"description": "file: the full plan for this repo's part (required: the filing repo always has one). edit: a new plan for this repo's part, or for the part in repo. add_part (a builder): the plan of the new part.",
+				},
+				"parts": map[string]any{
+					"type":        "array",
+					"description": "file: every other repo's part of the feature, each a repo in this session's ccmux window.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"repo": map[string]any{"type": "string", "description": "The repo's folder name."},
+							"plan": map[string]any{"type": "string", "description": "The full plan for that repo's part."},
+						},
+						"required": []string{"repo", "plan"},
+					},
 				},
 				"after": map[string]any{
 					"type":        "integer",
 					"description": "file/edit: a task number that must be done and merged before this one starts. On edit, 0 removes it.",
 				},
-				"draft": map[string]any{
-					"type":        "boolean",
-					"description": "file: true files it as planning, not run until marked ready. edit: true moves it back to planning, false marks it ready to run.",
-				},
 				"repo": map[string]any{
 					"type":        "string",
-					"description": "add_part from a builder: the folder name of the repo the new part is for.",
+					"description": "edit: the folder name of the repo whose part the plan replaces (default this repo). add_part from a builder: the repo the new part is for.",
 				},
 				"status": map[string]any{
 					"type":        "string",

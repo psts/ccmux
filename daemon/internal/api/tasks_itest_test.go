@@ -64,8 +64,8 @@ func TestTasks_WorkerAddsPartsOnlyInItsWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddTaskWithPart(store.Task{Title: "t", Status: taskq.Running},
-		store.Part{RepoPath: app.RepoPath, Plan: "p", Status: taskq.Running}); err != nil {
+	if _, err := st.AddTaskWithParts(store.Task{Title: "t", Status: taskq.Running},
+		[]store.Part{{RepoPath: app.RepoPath, Plan: "p", Status: taskq.Running}}); err != nil {
 		t.Fatal(err)
 	}
 	parts, _ := st.Parts()
@@ -101,8 +101,8 @@ func TestTasks_MarkMergedClosesIdleWorkers(t *testing.T) {
 	}
 	idle, _ := mgr.StartTaskPane(ws.ID, wt, "true")
 	elsewhere, _ := mgr.StartTaskPane(ws.ID, other, "true")
-	_, err = st.AddTaskWithPart(store.Task{Title: "t", Status: taskq.ReadyToMerge},
-		store.Part{RepoPath: repo, Plan: "p", Status: taskq.Ready})
+	_, err = st.AddTaskWithParts(store.Task{Title: "t", Status: taskq.ReadyToMerge},
+		[]store.Part{{RepoPath: repo, Plan: "p", Status: taskq.Ready}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,5 +121,50 @@ func TestTasks_MarkMergedClosesIdleWorkers(t *testing.T) {
 	}
 	if got, _ := st.Parts(); got[0].Status != taskq.Ready {
 		t.Fatalf("a built part changed status: %s", got[0].Status)
+	}
+}
+
+// The session a feature was planned in files it whole: its own part and the
+// parts of other repos in its window, in one call, waiting at once. A repo
+// in another window is refused and nothing is filed.
+func TestTasks_LeadFilesEveryPart(t *testing.T) {
+	s, mgr, st := itestServer(t, "ccmux-api-tasks-lead-itest")
+	repoIn := func(window, name string) string {
+		dir := filepath.Join(t.TempDir(), name)
+		os.MkdirAll(filepath.Join(dir, ".git"), 0o755)
+		ws, err := mgr.CreateWorkspace(name, dir, dir, "", "tester", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.SeedWindowMembership(ws.ID, window); err != nil {
+			t.Fatal(err)
+		}
+		return ws.ID
+	}
+	app := mgr.Workspace(repoIn("ChartLabs", "app"))
+	repoIn("ChartLabs", "backend")
+	repoIn("Personal", "blog")
+	lead := app.Panes[0].ID
+	plan := "a plan long enough to say what to build"
+
+	rec := do(t, s, "POST", "/v1/panes/"+lead+"/tasks",
+		`{"action":"file","title":"Export","plan":"`+plan+`","parts":[{"repo":"backend","plan":"`+plan+`"},{"repo":"blog","plan":"`+plan+`"}]}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "blog") {
+		t.Fatalf("a part in another window's repo = %d %s", rec.Code, rec.Body)
+	}
+	if got, _ := st.Tasks(); len(got) != 0 {
+		t.Fatalf("a refused filing left %d tasks", len(got))
+	}
+
+	rec = do(t, s, "POST", "/v1/panes/"+lead+"/tasks",
+		`{"action":"file","title":"Export","plan":"`+plan+`","parts":[{"repo":"backend","plan":"the endpoint, `+plan+`"}]}`)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "parts for app, backend") {
+		t.Fatalf("filing a two-repo feature = %d %s", rec.Code, rec.Body)
+	}
+	tasks, _ := st.Tasks()
+	parts, _ := st.Parts()
+	if len(tasks) != 1 || tasks[0].Status != taskq.Waiting || tasks[0].WindowID == "" || len(parts) != 2 ||
+		filepath.Base(parts[1].RepoPath) != "backend" || !strings.HasPrefix(parts[1].Plan, "the endpoint") || parts[1].FiledBy != "app" {
+		t.Fatalf("filed = %+v, parts %+v", tasks, parts)
 	}
 }

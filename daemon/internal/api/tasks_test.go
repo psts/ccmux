@@ -25,8 +25,8 @@ func taskServer(t *testing.T) *Server {
 	return s
 }
 
-func boolp(b bool) *bool    { return &b }
 func int64p(n int64) *int64 { return &n }
+func boolp(b bool) *bool    { return &b }
 
 var (
 	appRepo     = taskFiler{repo: "/p/app", session: "app", window: "w1"}
@@ -59,25 +59,31 @@ func tasksOf(t *testing.T, s *Server) taskList {
 	return out
 }
 
-// The lead files the feature as a draft with its part; another repo adds
-// its own part by number; the lead marks it ready. One task, two parts,
-// each plan written by its own repo.
-func TestTasks_LeadFilesOthersAdd(t *testing.T) {
-	s := taskServer(t)
-	msg := call(t, s, appRepo, paneTaskReq{Action: "file", Title: "Export", Plan: "app side", Draft: boolp(true)})
-	if !strings.Contains(msg, "add_part") {
-		t.Fatalf("a draft's message must say how the others join: %q", msg)
+// twoParts files task #1 in window w1 with parts in app and backend, the
+// way a lead's one filing does (multi-repo filing itself needs live sessions
+// to find the repos by: tasks_itest_test.go).
+func twoParts(t *testing.T, s *Server) {
+	t.Helper()
+	_, err := s.tasks.AddTaskWithParts(store.Task{Title: "t", Status: taskq.Waiting, WindowID: "w1", FiledBy: "app"},
+		[]store.Part{{RepoPath: "/p/app", Plan: "p", Status: taskq.Pending}, {RepoPath: "/p/backend", Plan: "p", Status: taskq.Pending}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	call(t, s, backendRepo, paneTaskReq{Action: "add_part", ID: 1, Plan: "backend side"})
-	call(t, s, backendRepo, paneTaskReq{Action: "add_part", ID: 1, Plan: "backend side, better"})
-	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 1, Draft: boolp(false)})
+}
+
+// One repo files its feature in one step: it waits at once, in the
+// session's window, with the session's part.
+func TestTasks_FileOneRepo(t *testing.T) {
+	s := taskServer(t)
+	msg := call(t, s, appRepo, paneTaskReq{Action: "file", Title: "Export", Plan: "app side"})
+	if !strings.Contains(msg, "#1 with parts for app") {
+		t.Fatalf("message = %q", msg)
+	}
 	got := tasksOf(t, s)
 	if len(got.Tasks) != 1 || got.Tasks[0].Status != taskq.Waiting || got.Counts["w1"][taskq.Waiting] != 1 {
 		t.Fatalf("tasks = %+v", got)
 	}
-	parts := got.Tasks[0].Parts
-	if len(parts) != 2 || parts[0].Repo != "app" || parts[1].Plan != "backend side, better" ||
-		parts[1].BusName != "backend-task-1" || parts[1].FiledBy != "backend" {
+	if parts := got.Tasks[0].Parts; len(parts) != 1 || parts[0].Repo != "app" || parts[0].FiledBy != "app" {
 		t.Fatalf("parts = %+v", parts)
 	}
 }
@@ -88,6 +94,11 @@ func TestTasks_FileRefusals(t *testing.T) {
 		{Action: "file", Title: "", Plan: "p"},
 		{Action: "file", Title: "t", Plan: " "},
 		{Action: "file", Title: "t", Plan: "p", After: int64p(9)},
+		{Action: "file", Title: "t", Plan: "p", Parts: []partReq{{Repo: "elsewhere", Plan: "p"}}}, // not in this window
+		{Action: "file", Title: "t", Parts: []partReq{{Repo: "", Plan: "p"}}},
+		{Action: "file", Title: "t", Parts: []partReq{{Repo: "backend", Plan: "p"}}}, // no part of its own
+		{Action: "file", Title: "t", Plan: "p", Draft: boolp(true)},                  // the old tool's draft
+		{Action: "edit", ID: 1, Draft: boolp(false)},
 		{Action: "nope"},
 	}
 	for _, req := range cases {
@@ -97,8 +108,8 @@ func TestTasks_FileRefusals(t *testing.T) {
 	}
 }
 
-// A session reaches only the tasks its repo has a part in, and adds parts
-// only before the task starts.
+// A session reaches only the tasks its repo has a part in, and never adds
+// parts by number: it files a feature with all of them.
 func TestTasks_SessionsStayInTheirTasks(t *testing.T) {
 	s := taskServer(t)
 	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "t", Plan: "p"})
@@ -108,11 +119,11 @@ func TestTasks_SessionsStayInTheirTasks(t *testing.T) {
 	if _, status, _ := s.applyPaneTask(adminRepo, paneTaskReq{Action: "edit", ID: 1, Title: "x"}); status != 404 {
 		t.Fatalf("a repo with no part edited it: %d", status)
 	}
-	task, _ := s.tasks.Task(1)
-	task.Status = taskq.Running
-	s.tasks.SaveTask(*task)
-	if _, status, err := s.applyPaneTask(backendRepo, paneTaskReq{Action: "add_part", ID: 1, Plan: "p"}); status != 409 || !strings.Contains(err.Error(), "bus") {
-		t.Fatalf("a part added to a running task from a session = %d %v", status, err)
+	if _, status, err := s.applyPaneTask(backendRepo, paneTaskReq{Action: "add_part", ID: 1, Plan: "p"}); status != 409 || !strings.Contains(err.Error(), "file with parts") {
+		t.Fatalf("a part added by number from a session = %d %v", status, err)
+	}
+	if parts, _ := s.tasks.Parts(); len(parts) != 1 {
+		t.Fatalf("a refused add_part added a part: %+v", parts)
 	}
 }
 
@@ -211,8 +222,7 @@ func TestTasks_LensRoutes(t *testing.T) {
 // built one stays built; a failed part of a running feature can be retried.
 func TestTasks_RequeueAndRetry(t *testing.T) {
 	s := taskServer(t)
-	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "t", Plan: "p", Draft: boolp(true)})
-	call(t, s, backendRepo, paneTaskReq{Action: "add_part", ID: 1, Plan: "p"})
+	twoParts(t, s)
 	parts, _ := s.tasks.Parts()
 	parts[0].Status, parts[1].Status = taskq.Ready, taskq.NeedsYou
 	s.tasks.SavePart(parts[0])
@@ -248,8 +258,7 @@ func TestTasks_RequeueAndRetry(t *testing.T) {
 // part stays built.
 func TestTasks_CancelStopsWorkersAtOnce(t *testing.T) {
 	s := taskServer(t)
-	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "t", Plan: "p", Draft: boolp(true)})
-	call(t, s, backendRepo, paneTaskReq{Action: "add_part", ID: 1, Plan: "p"})
+	twoParts(t, s)
 	task, _ := s.tasks.Task(1)
 	task.Status = taskq.Running
 	s.tasks.SaveTask(*task)
@@ -270,7 +279,7 @@ func TestTasks_CancelStopsWorkersAtOnce(t *testing.T) {
 }
 
 // An edit is checked whole before anything is saved, and a plan goes only
-// to a part this repo already has.
+// to a part the task already has: the caller's own, or the one it names.
 func TestTasks_EditIsAllOrNothing(t *testing.T) {
 	s := taskServer(t)
 	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "t", Plan: "first"})
@@ -291,11 +300,22 @@ func TestTasks_EditIsAllOrNothing(t *testing.T) {
 	if got := tasksOf(t, s).Tasks[0].Parts[0].Plan; got != "second" {
 		t.Fatalf("plan edit = %q", got)
 	}
+
+	// The lead wrote every part, so it can fix another repo's plan by name.
+	twoParts(t, s) // #2: app and backend
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 2, Repo: "backend", Plan: "backend, better"})
+	parts := tasksOf(t, s).Tasks[1].Parts
+	if parts[0].Plan != "p" || parts[1].Plan != "backend, better" {
+		t.Fatalf("named-part edit = %q / %q, want only backend changed", parts[0].Plan, parts[1].Plan)
+	}
+	if _, status, _ := s.applyPaneTask(appRepo, paneTaskReq{Action: "edit", ID: 2, Repo: "admin", Plan: "x"}); status != 404 {
+		t.Fatalf("an edit naming a repo with no part = %d, want 404", status)
+	}
 }
 
 // Each ccmux window has its own queue: a session in no window cannot file,
-// counts come per window, "starts after" and add_part stay inside the
-// window, and a move trades places only with a task of the same window.
+// counts come per window, "starts after" stays inside the window, and a
+// move trades places only with a task of the same window.
 func TestTasks_EachWindowHasItsOwnQueue(t *testing.T) {
 	s := taskServer(t)
 	plan := "a plan long enough to say what to build"
@@ -303,12 +323,12 @@ func TestTasks_EachWindowHasItsOwnQueue(t *testing.T) {
 		t.Fatalf("filing from no window = %d %v", status, err)
 	}
 	other := taskFiler{repo: "/p/site", session: "site", window: "w2"}
-	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "One", Plan: plan})                       // #1 in w1
-	call(t, s, other, paneTaskReq{Action: "file", Title: "Two", Plan: plan})                         // #2 in w2
-	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "Three", Plan: plan, Draft: boolp(true)}) // #3 in w1
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "One", Plan: plan})   // #1 in w1
+	call(t, s, other, paneTaskReq{Action: "file", Title: "Two", Plan: plan})     // #2 in w2
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "Three", Plan: plan}) // #3 in w1
 
 	got := tasksOf(t, s)
-	if got.Counts["w1"][taskq.Waiting] != 1 || got.Counts["w1"][taskq.Planning] != 1 || got.Counts["w2"][taskq.Waiting] != 1 {
+	if got.Counts["w1"][taskq.Waiting] != 2 || got.Counts["w2"][taskq.Waiting] != 1 {
 		t.Fatalf("counts = %v", got.Counts)
 	}
 	if got.Tasks[1].WindowID != "w2" {
@@ -317,13 +337,9 @@ func TestTasks_EachWindowHasItsOwnQueue(t *testing.T) {
 	if _, _, err := s.applyPaneTask(appRepo, paneTaskReq{Action: "file", Title: "Four", Plan: plan, After: int64p(2)}); err == nil {
 		t.Fatal("a task started after another window's task")
 	}
-	if _, status, err := s.applyPaneTask(other, paneTaskReq{Action: "add_part", ID: 3, Plan: plan}); err == nil || status != 404 {
-		t.Fatalf("add_part to another window's task = %d %v", status, err)
-	}
 
-	// #1 waiting, #3 planning in w1: back to waiting puts #3 next to #1 in
-	// w1, and up trades with #1, never with w2's #2 sitting between them.
-	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 3, Draft: boolp(false)})
+	// #1 and #3 wait in w1: up trades #3 with #1, never with w2's #2
+	// sitting between them.
 	rec := do(t, s, "POST", "/v1/tasks/3/move", `{"dir":"up"}`)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"moved":true`) {
 		t.Fatalf("move = %d %s", rec.Code, rec.Body)

@@ -26,9 +26,13 @@ type Task struct {
 
 const taskCols = "id,title,status,after_id,position,note,filed_by,window_id,created_at,updated_at,started_at,finished_at"
 
-// AddTaskWithPart files a task at the back of the queue together with its
-// first part, in one step: a task left without parts could never start.
-func (s *SQLite) AddTaskWithPart(t Task, p Part) (int64, error) {
+// AddTaskWithParts files a task at the back of the queue together with all
+// its parts, in one step: a task left without parts could never start, and
+// one with half its parts would start half a feature.
+func (s *SQLite) AddTaskWithParts(t Task, parts []Part) (int64, error) {
+	if len(parts) == 0 {
+		return 0, fmt.Errorf("a task needs at least one part")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -42,8 +46,10 @@ func (s *SQLite) AddTaskWithPart(t Task, p Part) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(addPartSQL, id, p.RepoPath, p.Plan, p.Status, p.Note, p.FiledBy, p.CreatedAt, p.UpdatedAt); err != nil {
-		return 0, err
+	for _, p := range parts {
+		if _, err := tx.Exec(addPartSQL, id, p.RepoPath, p.Plan, p.Status, p.Note, p.FiledBy, p.CreatedAt, p.UpdatedAt); err != nil {
+			return 0, err
+		}
 	}
 	return id, tx.Commit()
 }

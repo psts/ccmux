@@ -151,8 +151,8 @@ func TestPruneKeepsAWindowWithTasks(t *testing.T) {
 	must(m.SeedWindowMembership("w2", "Idle"))
 	members, _, _, err := m.WindowsStrict()
 	must(err)
-	_, err = st.AddTaskWithPart(store.Task{Title: "x", Status: "done", WindowID: members["w1"]},
-		store.Part{RepoPath: "/r", Plan: "p", Status: "ready"})
+	_, err = st.AddTaskWithParts(store.Task{Title: "x", Status: "done", WindowID: members["w1"]},
+		[]store.Part{{RepoPath: "/r", Plan: "p", Status: "ready"}})
 	must(err)
 	must(m.AssignWorkspace("w1", ""))
 	must(m.AssignWorkspace("w2", ""))
