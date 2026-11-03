@@ -39,3 +39,20 @@ test("the chat box and the dialogs still carry the names busy() looks for", () =
   assert.ok(modals.length >= 4, "index.html has its dialogs");
   for (const m of modals) assert.match(m, /class="modal[ "]/, m);
 });
+
+test("the logo names the daemon's version", () => {
+  assert.strictEqual(U.versionLine({ version: "0.1.96", web: "aaa" }, "aaa"), "ccmux v0.1.96");
+  assert.strictEqual(U.versionLine({ version: "dev", web: "aaa" }, "aaa"), "ccmux dev"); // a local build
+});
+
+test("and says when this page is behind it", () => {
+  assert.strictEqual(U.versionLine({ version: "0.1.96", web: "bbb" }, "aaa"),
+    "ccmux v0.1.96\nThis page is older than that: reload to update");
+  // A build nobody knows is not "behind".
+  assert.strictEqual(U.versionLine({ version: "0.1.96", web: "" }, "aaa"), "ccmux v0.1.96");
+  assert.strictEqual(U.versionLine({ version: "0.1.96", web: "bbb" }, undefined), "ccmux v0.1.96");
+});
+
+test("a daemon that does not answer is said plainly", () => {
+  assert.strictEqual(U.versionLine(null, "aaa"), "ccmux: version unknown, the daemon is not answering");
+});

@@ -24,7 +24,17 @@
     return returning && !busy ? "reload" : "bar";
   }
 
-  const api = { decide };
+  // versionLine is the tooltip on the "ccmux" logo: which version the daemon
+  // runs, and whether this page is still on an older lens than it serves.
+  // health is /v1/health's answer, or null when the daemon did not answer.
+  function versionLine(health, mine) {
+    if (!health) return "ccmux: version unknown, the daemon is not answering";
+    const v = health.version ? (/^\d/.test(health.version) ? "v" + health.version : health.version) : "unknown";
+    const stale = mine && health.web && mine !== health.web;
+    return `ccmux ${v}` + (stale ? "\nThis page is older than that: reload to update" : "");
+  }
+
+  const api = { decide, versionLine };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
     return;
@@ -38,17 +48,20 @@
     return [...doc.querySelectorAll(".ac-compose textarea")].some((t) => t.value.trim() !== "");
   }
 
-  async function served() {
+  async function health() {
     try {
       const r = await fetch("/v1/health", { cache: "no-store" });
-      return r.ok ? (await r.json()).web || "" : "";
+      return r.ok ? await r.json() : null;
     } catch (_) {
-      return ""; // the daemon is away; the next check asks again
+      return null; // the daemon is away; the next check asks again
     }
   }
 
   async function check(returning) {
-    const build = await served();
+    const h = await health();
+    const logo = doc.querySelector(".logo");
+    if (logo) logo.title = versionLine(h, root.ccmuxBuild);
+    const build = (h && h.web) || "";
     const what = decide(root.ccmuxBuild, build, { returning, busy: busy(), hidden: doc.visibilityState === "hidden" });
     if (what === "reload") root.location.reload();
     else if (what === "bar" && build !== dismissed) showBar(build);
