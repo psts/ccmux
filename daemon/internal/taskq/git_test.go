@@ -25,6 +25,15 @@ func gitRepo(t *testing.T) string {
 	return repo
 }
 
+func hasBranch(t *testing.T, repo, branch string) bool {
+	t.Helper()
+	ok, err := branchExists(repo, branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
 // The trunk is dev where there is one, main otherwise; a repo with neither
 // (and no master) builds from what is checked out.
 func TestExecGit_Trunk(t *testing.T) {
@@ -273,7 +282,7 @@ func TestExecGit_RemoveWorktreeNeverForces(t *testing.T) {
 	if err := g.RemoveWorktree(repo, wt, "task/1-x", "main"); err != nil {
 		t.Fatalf("a worktree with only the copied settings = %v", err)
 	}
-	if _, err := os.Stat(wt); !os.IsNotExist(err) || branchExists(repo, "task/1-x") {
+	if _, err := os.Stat(wt); !os.IsNotExist(err) || hasBranch(t, repo, "task/1-x") {
 		t.Fatal("clean worktree or its merged branch left behind")
 	}
 }
@@ -294,7 +303,7 @@ func TestExecGit_RemoveAfterAnOffTrunkMerge(t *testing.T) {
 	if err := g.RemoveWorktree(repo, wt, "task/1-x", "main"); err != nil {
 		t.Fatalf("remove after an off-trunk merge = %v", err)
 	}
-	if branchExists(repo, "task/1-x") {
+	if hasBranch(t, repo, "task/1-x") {
 		t.Fatal("the merged branch was kept")
 	}
 }
@@ -339,5 +348,59 @@ func TestExecGit_ChangedUnder(t *testing.T) {
 	want := ".claude/gates/frözen.txt,.claude/gates/run.sh,.claude/gates/run2.sh"
 	if err != nil || strings.Join(got, ",") != want {
 		t.Fatalf("changed = %v, %v; want %s", got, err, want)
+	}
+}
+
+// Moved sees a commit made after the checks and a tracked file changed,
+// but not a new untracked file, which never lands.
+func TestExecGit_Moved(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	wt := worktreeOf(t, repo)
+	commitFile(t, wt, "feature.txt", "new")
+	rev, _ := runGit(wt, "rev-parse", "HEAD")
+	os.MkdirAll(filepath.Join(wt, ".claude"), 0o755)
+	os.WriteFile(filepath.Join(wt, localSettings), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(wt, "report.xml"), []byte("<ok/>"), 0o644) // a check's output nobody ignored
+	if why, err := g.Moved(wt, rev); why != "" || err != nil {
+		t.Fatalf("unchanged (copied settings, a check's new file) = %q, %v", why, err)
+	}
+	os.WriteFile(filepath.Join(wt, "feature.txt"), []byte("reformatted"), 0o644)
+	if why, _ := g.Moved(wt, rev); !strings.Contains(why, "tracked files changed") || !strings.Contains(why, "feature.txt") {
+		t.Fatalf("edited after the checks = %q", why)
+	}
+	commitFile(t, wt, "feature.txt", "reformatted")
+	if why, _ := g.Moved(wt, rev); !strings.Contains(why, "commit the checks did not run on") {
+		t.Fatalf("committed after the checks = %q", why)
+	}
+}
+
+// A git failure is said as one: a trunk that cannot be read is neither "it
+// moved" nor "the branch has commits it lacks", and no branch counts as
+// missing when git could not look.
+func TestExecGit_GitErrorsAreNotNo(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	if ok, err := gitYes(repo, "merge-base", "--is-ancestor", "HEAD", "no-such-ref"); ok || err == nil {
+		t.Fatalf("bad ref = %v, %v; want an error", ok, err)
+	}
+	if ok, err := gitYes(repo, "rev-parse", "--verify", "--quiet", "refs/heads/nope"); ok || err != nil {
+		t.Fatalf("missing branch = %v, %v; want a plain no", ok, err)
+	}
+	if _, err := branchExists(filepath.Join(repo, "not-a-dir"), "main"); err == nil {
+		t.Fatal("a folder git cannot open read as a missing branch")
+	}
+	wt := worktreeOf(t, repo)
+	commitFile(t, wt, "feature.txt", "new")
+	rev, _ := runGit(wt, "rev-parse", "HEAD")
+	runGit(repo, "checkout", "-q", "--detach")
+	if err := g.FastForward(repo, rev, "no-such-trunk"); err == nil || strings.Contains(err.Error(), "moved since") {
+		t.Fatalf("unreadable trunk on fast-forward = %v", err)
+	}
+	if err := g.RemoveWorktree(repo, wt, "task/1-x", "no-such-trunk"); err == nil || !strings.Contains(err.Error(), "comparing it with no-such-trunk failed") {
+		t.Fatalf("unreadable trunk on cleanup = %v", err)
+	}
+	if !hasBranch(t, repo, "task/1-x") {
+		t.Fatal("the branch went although it could not be compared")
 	}
 }

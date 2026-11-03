@@ -27,6 +27,10 @@ type Store interface {
 	// own, read once at start so a restart keeps every idle clock.
 	UpdatePaneActivity(paneID, state string, since int64) error
 	PaneActivities() (map[string]PaneActivity, error)
+	// A task worker's last hook signal (tasksignal.go): written on its own,
+	// read once at start so a restart keeps what each worker last said.
+	UpdateTaskSignal(paneID string, sig TaskSignal) error
+	TaskSignals() (map[string]TaskSignal, error)
 	UpdatePanePositions(wsID string, orderedIDs []string) error
 	DeleteWorkspace(id string) error
 	DeletePane(id string) error
@@ -336,6 +340,9 @@ func erroringMigrations(db *sql.DB) error {
 		return err
 	}
 	if err := migratePaneActivity(db); err != nil {
+		return err
+	}
+	if err := migrateTaskSignal(db); err != nil {
 		return err
 	}
 	return migrateWindowOpenDevices(db)

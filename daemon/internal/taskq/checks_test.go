@@ -58,6 +58,18 @@ func TestGateChecks(t *testing.T) {
 	}
 }
 
+// A trunk git cannot read is an error, never "the trunk has no list": the
+// folder's own untracked copy must not stand in for it.
+func TestGateChecks_UnreadableTrunkIsNoFallback(t *testing.T) {
+	repo := gitRepo(t)
+	wt := worktreeOf(t, repo)
+	writeGates(t, repo, "true\n")
+	got := (GateChecks{PerLine: 10 * time.Second}).Run(repo, wt, "no-such-trunk")
+	if !got.Configured || got.OK || !strings.Contains(got.Output, "no-such-trunk") {
+		t.Fatalf("unreadable trunk = %+v", got)
+	}
+}
+
 // A branch that edits the list does not grade itself by its own copy.
 func TestGateChecks_BranchCannotWeakenTheList(t *testing.T) {
 	repo := gitRepo(t)
@@ -87,7 +99,8 @@ func TestTail(t *testing.T) {
 
 // A list of comments only checks nothing, so it is no list at all.
 func TestGateChecks_CommentsOnlyIsNotConfigured(t *testing.T) {
-	repo, wt := t.TempDir(), t.TempDir()
+	repo := gitRepo(t)
+	wt := worktreeOf(t, repo)
 	writeGates(t, repo, "# checks\n# go test ./...\n\n")
 	if got := (GateChecks{PerLine: time.Second}).Run(repo, wt, "main"); got.Configured || got.OK {
 		t.Fatalf("comments only = %+v, want not configured", got)

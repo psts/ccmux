@@ -112,6 +112,7 @@ type fakeGit struct {
 	rmErr       map[string]error    // repo -> its worktree will not go
 	gateChanges map[string][]string // repo -> files its branch changes under .claude
 	dirty       map[string]string   // repo -> uncommitted work in its worktree
+	moved       map[string]string   // repo -> how its worktree changed after the checks
 	ffs         []string            // repos fast-forwarded, in order
 	removed     []string            // worktrees removed after a merge
 	rebased     int
@@ -147,6 +148,16 @@ func (g *fakeGit) Rebase(worktree, trunk string) (string, error) {
 		}
 	}
 	return "rev-" + filepath.Base(filepath.Dir(worktree)), nil
+}
+func (g *fakeGit) Moved(worktree, rev string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for repo, why := range g.moved {
+		if strings.Contains(worktree, filepath.Base(repo)+"-") {
+			return why, nil
+		}
+	}
+	return "", nil
 }
 func (g *fakeGit) FastForward(repo, rev, trunk string) error {
 	g.mu.Lock()
@@ -207,7 +218,7 @@ type rig struct {
 
 func newRig(t *testing.T) *rig {
 	g := &rig{st: &memStore{}, host: &fakeHost{panes: map[string]PaneState{}},
-		git: &fakeGit{blocked: map[string]string{}, clash: map[string]bool{}, dirty: map[string]string{}, ffErr: map[string]error{}, rmErr: map[string]error{},
+		git: &fakeGit{blocked: map[string]string{}, clash: map[string]bool{}, dirty: map[string]string{}, moved: map[string]string{}, ffErr: map[string]error{}, rmErr: map[string]error{},
 			gateChanges: map[string][]string{}},
 		checks: &fakeChecks{results: map[string]CheckResult{}},
 		now:    time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC)}
@@ -409,6 +420,26 @@ func TestMerge_FolderDirtiedDuringTheChecks(t *testing.T) {
 	g.tick()
 	if g.st.task(1).Status != Done {
 		t.Fatalf("clean folders = %s", g.st.task(1).Status)
+	}
+}
+
+// A worker folder that moved while the checks ran in it (a new commit, or
+// work left uncommitted) stops the merge before any trunk moves: the checks
+// graded files that are not the commit that would land.
+func TestMerge_WorktreeMovedDuringTheChecks(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.during = func() {
+		g.git.mu.Lock()
+		g.git.moved["/p/backend"] = "tracked files changed (M export.go)"
+		g.git.mu.Unlock()
+	}
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != MergeFailed || !strings.Contains(got.Note, "backend: its worktree changed while the checks ran") || len(g.git.ffs) != 0 {
+		t.Fatalf("moved during checks = %+v, ffs %v", got, g.git.ffs)
 	}
 }
 

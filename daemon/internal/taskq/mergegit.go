@@ -23,6 +23,12 @@ type MergeGit interface {
 	// Rebase replays the worktree's branch onto trunk, undoing a clash, and
 	// returns the commit it ended on: the one checked and merged.
 	Rebase(worktree, trunk string) (string, error)
+	// Moved says how the worktree differs from the commit rev the checks
+	// were run on ("" for not at all): a new commit, or a tracked file
+	// changed. The checks graded the folder, and only rev lands. A new
+	// untracked file does not count: it never lands, and a check that writes
+	// one (a report nobody ignored) would otherwise block the part for good.
+	Moved(worktree, rev string) (string, error)
 	// FastForward moves repo's trunk to rev, never rewriting it.
 	FastForward(repo, rev, trunk string) error
 	// ChangedUnder lists the files under dir that rev changes against trunk.
@@ -112,10 +118,27 @@ func (ExecGit) Uncommitted(worktree string) (string, error) {
 
 func (ExecGit) Rebase(worktree, trunk string) (string, error) {
 	if _, err := runGit(worktree, "rebase", trunk); err != nil {
-		_, _ = runGit(worktree, "rebase", "--abort")
+		if _, abortErr := runGit(worktree, "rebase", "--abort"); abortErr != nil {
+			return "", fmt.Errorf("its branch clashes with %s, and undoing the rebase failed, so its worktree is mid-rebase: %w (%v)", trunk, err, abortErr)
+		}
 		return "", fmt.Errorf("its branch clashes with %s: %w", trunk, err)
 	}
 	return runGit(worktree, "rev-parse", "HEAD")
+}
+
+func (g ExecGit) Moved(worktree, rev string) (string, error) {
+	head, err := runGit(worktree, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if head != rev {
+		return "it has a commit the checks did not run on", nil
+	}
+	out, err := runGit(worktree, "status", "--porcelain", "--untracked-files=no")
+	if err != nil || out == "" {
+		return "", err
+	}
+	return "tracked files changed (" + cut(strings.ReplaceAll(out, "\n", ", "), 300) + "): a check rewrote them, or its worker kept going", nil
 }
 
 // FastForward merges in the repo's own folder when the trunk is checked out
@@ -135,7 +158,11 @@ func (ExecGit) FastForward(repo, rev, trunk string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runGit(repo, "merge-base", "--is-ancestor", old, rev); err != nil {
+	ahead, err := gitYes(repo, "merge-base", "--is-ancestor", old, rev)
+	if err != nil {
+		return err
+	}
+	if !ahead {
 		return fmt.Errorf("%s moved since the rebase; try the merge again", trunk)
 	}
 	_, err = runGit(repo, "update-ref", "refs/heads/"+trunk, rev, old)
@@ -150,21 +177,36 @@ func (ExecGit) FastForward(repo, rev, trunk string) error {
 // delete judges against the folder's current branch instead, which is not
 // the trunk when the folder sits on another branch.
 func (ExecGit) RemoveWorktree(repo, path, branch, trunk string) error {
-	if _, err := runGit(path, "ls-files", "--error-unmatch", localSettings); err != nil {
-		if rmErr := os.Remove(filepath.Join(path, localSettings)); rmErr != nil && !os.IsNotExist(rmErr) {
-			return rmErr
-		}
-		_ = os.Remove(filepath.Join(path, ".claude")) // only when that left it empty
+	if err := dropCopiedSettings(path); err != nil {
+		return fmt.Errorf("kept: %w", err)
 	}
 	if _, err := runGit(repo, "worktree", "remove", path); err != nil {
 		return fmt.Errorf("kept, it holds uncommitted files: %w", err)
 	}
-	if _, err := runGit(repo, "merge-base", "--is-ancestor", branch, trunk); err != nil {
+	merged, err := gitYes(repo, "merge-base", "--is-ancestor", branch, trunk)
+	if err != nil {
+		return fmt.Errorf("worktree removed, branch %s kept: comparing it with %s failed: %w", branch, trunk, err)
+	}
+	if !merged {
 		return fmt.Errorf("worktree removed, branch %s kept: it has commits %s does not", branch, trunk)
 	}
 	if _, err := runGit(repo, "branch", "-D", branch); err != nil {
 		return fmt.Errorf("worktree removed, branch %s not deleted: %w", branch, err)
 	}
+	return nil
+}
+
+// dropCopiedSettings removes the local settings the runner copied into the
+// worktree, unless the repo tracks that file: then it is the repo's own.
+func dropCopiedSettings(path string) error {
+	tracked, err := gitYes(path, "ls-files", "--error-unmatch", localSettings)
+	if err != nil || tracked {
+		return err
+	}
+	if err := os.Remove(filepath.Join(path, localSettings)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_ = os.Remove(filepath.Join(path, ".claude")) // only when that left it empty
 	return nil
 }
 

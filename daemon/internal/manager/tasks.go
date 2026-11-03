@@ -2,9 +2,11 @@ package manager
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // TasksChanged tells every lens the task queue changed, so a page showing it
@@ -78,18 +80,17 @@ func (m *Manager) ClearTaskFolder(dir string) error {
 // TaskSignal is a worker's last hook signal, kept apart from the pane's
 // attention: a lens looking at the session retires that attention to idle
 // (attention_seen.go), and the runner must still see what the worker said.
-type TaskSignal struct {
-	Attention model.Attention
-	Reason    model.AttentionReason
-	At        int64 // unix ms
-}
+// Saved in the pane's row, so a daemon restart does not forget it.
+type TaskSignal = store.TaskSignal
 
 type taskSignals struct {
 	mu   sync.Mutex
 	last map[string]TaskSignal
+	save func(paneID string, sig TaskSignal) // nil in tests without a store
 }
 
-// note keeps the signal when the pane is a task worker's.
+// note keeps the signal when the pane is a task worker's, and saves it.
+// Under the lock, so two signals in a row are saved in the order they came.
 func (s *taskSignals) note(p model.Pane, att model.Attention, reason model.AttentionReason) {
 	if p.CreatedBy != taskRunner {
 		return
@@ -99,7 +100,43 @@ func (s *taskSignals) note(p model.Pane, att model.Attention, reason model.Atten
 	if s.last == nil {
 		s.last = map[string]TaskSignal{}
 	}
-	s.last[p.ID] = TaskSignal{Attention: att, Reason: reason, At: nowMillis()}
+	sig := TaskSignal{Attention: att, Reason: reason, At: nowMillis()}
+	s.last[p.ID] = sig
+	if s.save != nil {
+		s.save(p.ID, sig)
+	}
+}
+
+// seed loads the saved signals at start, keeping any already noted.
+func (s *taskSignals) seed(stored map[string]TaskSignal) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		s.last = map[string]TaskSignal{}
+	}
+	for id, sig := range stored {
+		if _, ok := s.last[id]; !ok {
+			s.last[id] = sig
+		}
+	}
+}
+
+// persistTaskSignal is taskSignals.save for a manager with a store.
+func (m *Manager) persistTaskSignal(paneID string, sig TaskSignal) {
+	if err := m.store.UpdateTaskSignal(paneID, sig); err != nil {
+		log.Printf("task pane %s: signal %q not persisted (a restart forgets it): %v", paneID, sig.Attention, err)
+	}
+}
+
+// loadTaskSignals seeds the workers' signals from the registry. A failure
+// costs only those: every worker then starts with no signal, as before.
+func (m *Manager) loadTaskSignals() {
+	stored, err := m.store.TaskSignals()
+	if err != nil {
+		log.Printf("task signals unreadable, workers start with none: %v", err)
+		return
+	}
+	m.taskSigs.seed(stored)
 }
 
 func (s *taskSignals) get(paneID string) TaskSignal {

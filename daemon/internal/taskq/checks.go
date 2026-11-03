@@ -56,15 +56,12 @@ func (g GateChecks) Run(repo, worktree, trunk string) CheckResult {
 
 // gateLines reads the checks from the trunk, never from the branch being
 // checked: a worker that edited the list on its branch must not grade its
-// own work by it. A list the repo does not track is read from its folder.
+// own work by it. A list the repo does not track is read from its folder;
+// a git error is an error, never taken to mean the trunk has no list.
 func gateLines(repo, trunk string) ([]string, error) {
-	text, err := runGit(repo, "show", trunk+":"+gatesFile)
+	text, err := trunkGates(repo, trunk)
 	if err != nil {
-		data, ferr := os.ReadFile(filepath.Join(repo, gatesFile))
-		if ferr != nil {
-			return nil, ferr
-		}
-		text = string(data)
+		return nil, err
 	}
 	var out []string
 	for _, l := range strings.Split(text, "\n") {
@@ -73,6 +70,20 @@ func gateLines(repo, trunk string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// trunkGates is the gate list's text: the trunk's copy, or the repo
+// folder's own when the trunk does not track one.
+func trunkGates(repo, trunk string) (string, error) {
+	listed, err := runGit(repo, "ls-tree", "--name-only", trunk, "--", gatesFile)
+	if err != nil {
+		return "", err
+	}
+	if listed != "" {
+		return runGit(repo, "show", trunk+":"+gatesFile)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, gatesFile))
+	return string(data), err
 }
 
 // runLine runs one line in its own process group. On time out the whole

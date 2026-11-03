@@ -149,6 +149,7 @@ func New(ctx context.Context, server *tmux.Server, st store.Store) *Manager {
 		byID: map[string]*entry{}, paneTitleDefaults: defaultPaneTitles(),
 	}
 	m.activity.save = m.persistActivity
+	m.taskSigs.save = m.persistTaskSignal
 	return m
 }
 
@@ -177,6 +178,7 @@ func (m *Manager) Start() error {
 		return err
 	}
 	m.loadActivity()
+	m.loadTaskSignals()
 	live := map[string]bool{}
 	metas, _ := m.server.ListManaged()
 	for _, meta := range metas {

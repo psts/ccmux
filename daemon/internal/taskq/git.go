@@ -31,21 +31,39 @@ func runGit(dir string, args ...string) (string, error) {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-func branchExists(repo, branch string) bool {
-	_, err := runGit(repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
-	return err == nil
+// gitYes runs a git command that answers by its exit code: 0 is yes, 1 is
+// no, and anything else (a bad ref, a lock, a timeout) is an error, never
+// read as no.
+func gitYes(dir string, args ...string) (bool, error) {
+	_, err := runGit(dir, args...)
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return false, nil
+	}
+	return false, err
+}
+
+func branchExists(repo, branch string) (bool, error) {
+	return gitYes(repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 }
 
 // Trunk is dev where the repo has one (work happens on dev and only /ship
 // goes to main), else main, else master, else the branch checked out.
 func (ExecGit) Trunk(repo string) (string, error) {
 	for _, b := range []string{"dev", "main", "master"} {
-		if branchExists(repo, b) {
+		ok, err := branchExists(repo, b)
+		if err != nil {
+			return "", err
+		}
+		if ok {
 			return b, nil
 		}
 	}
@@ -64,11 +82,15 @@ func (ExecGit) AddWorktree(repo, path, branch, base string) error {
 	if _, err := runGit(repo, "worktree", "prune"); err != nil {
 		return err
 	}
-	if branchExists(repo, branch) {
+	exists, err := branchExists(repo, branch)
+	if err != nil {
+		return err
+	}
+	if exists {
 		_, err := runGit(repo, "worktree", "add", path, branch)
 		return err
 	}
-	_, err := runGit(repo, "worktree", "add", "-b", branch, path, base)
+	_, err = runGit(repo, "worktree", "add", "-b", branch, path, base)
 	return err
 }
 

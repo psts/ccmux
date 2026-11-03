@@ -140,6 +140,9 @@ func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 	if why := r.mergeBlocked(parts); why != "" {
 		return "", errors.New(why + "; try the merge again when it is clean")
 	}
+	if err := r.unmovedSinceChecks(parts, revs); err != nil {
+		return "", err
+	}
 	var done []string
 	for i, p := range parts {
 		name := filepath.Base(p.RepoPath)
@@ -181,6 +184,23 @@ func (r *Runner) prepareMerge(p store.Part) (string, string, error) {
 		return "", "", errors.New("checks failed:\n" + res.Output)
 	}
 	return trunk, rev, nil
+}
+
+// unmovedSinceChecks refuses a feature whose worker folder changed while
+// the checks ran in it (a check rewrote files, or its worker or a person
+// kept going): the checks then graded files that are not the commit that
+// would land.
+func (r *Runner) unmovedSinceChecks(parts []store.Part, revs []string) error {
+	for i, p := range parts {
+		why, err := r.MergeGit.Moved(p.Worktree, revs[i])
+		if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(p.RepoPath), err)
+		}
+		if why != "" {
+			return fmt.Errorf("%s: its worktree changed while the checks ran: %s; commit or undo that, then try the merge again", filepath.Base(p.RepoPath), why)
+		}
+	}
+	return nil
 }
 
 // gateFilesUntouched refuses a part that changes anything under .claude/,
