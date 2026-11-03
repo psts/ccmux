@@ -396,6 +396,15 @@ body {
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
 .tab.active { color: var(--fg); border-color: #3a3e44; background: #262b31; }
+/* The close × keeps its room so a tab does not change width on hover; it only
+   shows on a screen that can hover. The phone rules below remove it. */
+.tab-close {
+  visibility: hidden; width: 14px; height: 14px; margin-right: -6px; border-radius: 3px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1; color: var(--muted);
+}
+@media (hover: hover) { .tab:hover .tab-close { visibility: visible; } }
+.tab-close:hover { color: var(--fg); background: #3a3e44; }
 .tab-icon { font-size: 12px; line-height: 1; opacity: .85; }
 .tab.dragging { opacity: .5; }
 .tab.drop-before { box-shadow: -3px 0 0 var(--accent); }
@@ -548,7 +557,7 @@ body {
   }
   #menu-toggle { width: 34px; font-size: 17px; }
   .tab { padding: 0 8px; position: relative; }
-  .tab-label { display: none; }
+  .tab-label, .tab-close { display: none; }
   .tab-icon { font-size: 15px; opacity: 1; }
   .tab::before { position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; }
   #pane-add { padding: 0; font-size: 18px; }

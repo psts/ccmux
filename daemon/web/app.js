@@ -1413,7 +1413,9 @@ function onMessage(ev) {
   switch (m.t) {
     case "hello":
       state.panes = m.panes || [];
-      state.paneId = state.wantPane || (state.panes[0] && state.panes[0].id) || null;
+      // A pane asked for that is gone (just closed) falls to the first one.
+      state.paneId = (state.panes.some((p) => p.id === state.wantPane) && state.wantPane) ||
+        (state.panes[0] && state.panes[0].id) || null;
       state.wantPane = null;
       state.paneCols = paneColsOf(state.paneId);
       // After paneId is settled, not before: a notice belongs to its pane and
@@ -1633,6 +1635,7 @@ function renderTabs() {
     label.className = "tab-label";
     label.textContent = (p.agent ? "⚙ " : "") + (p.title || `pane ${i + 1}`) + (p.claudeUpdate ? " ↻" : "");
     b.append(icon, label);
+    if (closableTab(p)) b.appendChild(tabClose(p));
     b.setAttribute("aria-label", label.textContent); // a phone shows the icon only
     // A drop ends with a click on the same button; that click must not switch panes.
     b.onclick = () => { if (!state.tabDrag) attach(state.wsId, p.id); };
@@ -1640,6 +1643,55 @@ function renderTabs() {
     wireTabDrag(b, p.id);
     tabs.appendChild(b);
   });
+}
+
+// closableTab says whether a tab gets the hover ×. Not the only tab: closing
+// the last pane archives the whole session (manager.KillPane), which is
+// "Close Session"'s job. Not an agent's: an agent is put to sleep from its
+// window, and killing its pane under it would skip that.
+function closableTab(p) {
+  return state.panes.length > 1 && !p.agent;
+}
+
+// tabClose is the × a desktop shows on a hovered tab (style.css hides it on
+// a phone and on a touch screen, which cannot hover).
+function tabClose(p) {
+  const x = document.createElement("span");
+  x.className = "tab-close";
+  x.textContent = "×";
+  x.title = "Close tab";
+  x.setAttribute("role", "button");
+  x.onpointerdown = (e) => e.stopPropagation(); // a press on the × is not a tab drag
+  x.onclick = (e) => { e.stopPropagation(); closePaneTab(p); };
+  return x;
+}
+
+// closePaneTab ends a pane and whatever runs in it. A plain terminal goes at
+// once; a harness or a dev server asks first, since a stray click would stop
+// it. Then it re-attaches for the new tab list, as spawnWebPane does: no
+// daemon sends a pane-closed frame, whatever the onMessage case suggests.
+async function closePaneTab(p) {
+  const name = p.title || p.harness || "this tab";
+  if ((p.harness || p.devServer) && !confirm(`Close "${name}"? What runs in it stops.`)) return;
+  const wsId = state.wsId;
+  try {
+    const r = await fetch(`/v1/workspaces/${wsId}/panes/${p.id}`, { method: "DELETE" });
+    if (!r.ok) { alert("close tab: " + (await r.text())); return; }
+  } catch (e) {
+    alert("close tab: " + e.message); // the daemon is away: say so, the tab stays
+    return;
+  }
+  if (state.wsId !== wsId) return; // moved on while it closed
+  const show = p.id === state.paneId ? neighbourPane(p.id) : state.paneId;
+  attach(wsId, show);
+}
+
+// neighbourPane is the tab shown after closing paneId: the one to its right,
+// else the one to its left.
+function neighbourPane(paneId) {
+  const i = state.panes.findIndex((x) => x.id === paneId);
+  const next = state.panes[i + 1] || state.panes[i - 1];
+  return next ? next.id : null;
 }
 
 // tabIcon is the glyph a tab shows for what runs in it: the harness's icon

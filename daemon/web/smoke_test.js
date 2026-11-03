@@ -158,6 +158,39 @@ function run(opts = {}) {
     swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts };
 }
 
+// --- the tab ×: which tabs get one, and what a click does when the close
+// works, fails at the daemon, never reaches it, or is declined. ---
+async function closeTabCases() {
+  const r = run();
+  await settle();
+  const alerts = [];
+  r.ctx.alert = (m) => alerts.push(String(m));
+  r.evalIn(`state.wsId = "ws-1"; state.panes = [{ id: "p1" }, { id: "p2", agent: "hq" }, { id: "p3", harness: "claude" }]`);
+  const closable = ["p1", "p2", "p3"].filter((id) => r.evalIn(`closableTab(state.panes.find((p) => p.id === "${id}"))`));
+  check("an agent's tab has no ×, the others do", closable.join() === "p1,p3", closable.join());
+  r.evalIn(`state.panes = [{ id: "p1" }]`);
+  check("the only tab has no ×", r.evalIn(`closableTab(state.panes[0])`) === false);
+
+  const deletes = () => r.fetched.filter((f) => f.method === "DELETE").length;
+  const before = deletes();
+  r.ctx.confirm = () => false;
+  await r.ctx.closePaneTab({ id: "p3", harness: "claude" });
+  check("a declined harness close sends nothing", deletes() === before && alerts.length === 0);
+
+  r.ctx.fetch = () => Promise.reject(new TypeError("Failed to fetch"));
+  await r.ctx.closePaneTab({ id: "p1" });
+  check("a close that never reaches the daemon says so", alerts.length === 1 && alerts[0] === "close tab: Failed to fetch",
+    alerts.join(" | "));
+
+  r.ctx.fetch = async () => ({ ok: false, status: 400, text: async () => "unknown pane" });
+  await r.ctx.closePaneTab({ id: "p1" });
+  check("a close the daemon refuses says why", alerts[1] === "close tab: unknown pane", alerts.join(" | "));
+
+  r.ctx.fetch = async () => ({ ok: true, status: 204 });
+  await r.ctx.closePaneTab({ id: "p1" });
+  check("a close that works says nothing", alerts.length === 2, alerts.join(" | "));
+}
+
 // --- pagewin.js: one ccmux window per browser window. The rules themselves
 // are in route_test.js; these drive the real boot through app.js.
 const twoWindows = () => [
@@ -1286,6 +1319,7 @@ async function peersFailureCases() {
   check("no mark, no tip", ok.ctx.updateTip(undefined) === "" && ok.ctx.updateTip("") === "" &&
     ok.ctx.updateTip("failed") === "");
 
+  await closeTabCases();
   await pageWindowCases();
   await peersMergeCases();
   await peersFailureCases();
