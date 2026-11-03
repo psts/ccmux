@@ -3,22 +3,27 @@ package store
 // Task is one entry in the task queue (internal/taskq owns the rules: which
 // statuses exist, which moves are allowed). Times are unix milliseconds.
 type Task struct {
-	ID         int64  `json:"id"`
-	RepoPath   string `json:"repoPath"`
-	Title      string `json:"title"`
-	Plan       string `json:"plan"`
-	Status     string `json:"status"`
-	AfterID    int64  `json:"afterId,omitempty"`
-	Position   int64  `json:"position"`
-	Note       string `json:"note,omitempty"`
-	FiledBy    string `json:"filedBy,omitempty"`
+	ID       int64  `json:"id"`
+	RepoPath string `json:"repoPath"`
+	Title    string `json:"title"`
+	Plan     string `json:"plan"`
+	Status   string `json:"status"`
+	AfterID  int64  `json:"afterId,omitempty"`
+	Position int64  `json:"position"`
+	Note     string `json:"note,omitempty"`
+	FiledBy  string `json:"filedBy,omitempty"`
+	// Branch, Worktree and PaneID are the runner's: where the task is
+	// being built and the pane its Claude runs in.
+	Branch     string `json:"branch,omitempty"`
+	Worktree   string `json:"worktree,omitempty"`
+	PaneID     string `json:"paneId,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	UpdatedAt  int64  `json:"updatedAt"`
 	StartedAt  int64  `json:"startedAt,omitempty"`
 	FinishedAt int64  `json:"finishedAt,omitempty"`
 }
 
-const taskCols = "id,repo_path,title,plan,status,after_id,position,note,filed_by,created_at,updated_at,started_at,finished_at"
+const taskCols = "id,repo_path,title,plan,status,after_id,position,note,filed_by,branch,worktree,pane_id,created_at,updated_at,started_at,finished_at"
 
 // AddTask inserts a task at the back of the queue and returns its id.
 func (s *SQLite) AddTask(t Task) (int64, error) {
@@ -52,9 +57,9 @@ func (s *SQLite) Tasks() ([]Task, error) {
 // cannot undo it.
 func (s *SQLite) SaveTask(t Task) (bool, error) {
 	res, err := s.db.Exec(`
-UPDATE tasks SET title=?, plan=?, status=?, after_id=?, note=?,
+UPDATE tasks SET title=?, plan=?, status=?, after_id=?, note=?, branch=?, worktree=?, pane_id=?,
   updated_at=?, started_at=?, finished_at=? WHERE id=?`,
-		t.Title, t.Plan, t.Status, t.AfterID, t.Note,
+		t.Title, t.Plan, t.Status, t.AfterID, t.Note, t.Branch, t.Worktree, t.PaneID,
 		t.UpdatedAt, t.StartedAt, t.FinishedAt, t.ID)
 	if err != nil {
 		return false, err
@@ -100,7 +105,7 @@ func (s *SQLite) queryTasks(query string, args ...any) ([]Task, error) {
 	for rows.Next() {
 		var t Task
 		if err := rows.Scan(&t.ID, &t.RepoPath, &t.Title, &t.Plan, &t.Status, &t.AfterID, &t.Position,
-			&t.Note, &t.FiledBy, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
+			&t.Note, &t.FiledBy, &t.Branch, &t.Worktree, &t.PaneID, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

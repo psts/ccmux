@@ -8,7 +8,8 @@
 // It is a view that holds no session, like the attention board: a class on
 // #app (style.css) puts the list where the terminal was.
 // Runs after app.js and tasklist.js and uses their globals ($, esc, state,
-// getUser, renderList, leaveWorkspace, closeDrawer, ccmuxTaskList) at call time.
+// getUser, renderList, leaveWorkspace, openWorkspace, closeDrawer,
+// ccmuxTaskList) at call time.
 (() => {
   "use strict";
   const L = () => window.ccmuxTaskList;
@@ -155,7 +156,8 @@
       ? `<input class="tq-edit-title" data-field="title" maxlength="120" value="${esc(d.title)}">` +
         `<textarea class="tq-edit-plan" data-field="plan" spellcheck="false">${esc(d.plan)}</textarea>`
       : `<pre class="tq-plan">${esc(t.plan)}</pre>`;
-    return `<div class="tq-detail">${text}<div class="tq-meta">filed by ${esc(t.filedBy || "?")}</div>` +
+    const where = t.branch ? ` · branch ${esc(t.branch)}` : "";
+    return `<div class="tq-detail">${text}<div class="tq-meta">filed by ${esc(t.filedBy || "?")}${where}</div>` +
       `<div class="tq-actions">${buttonsHtml(t)}</div></div>`;
   }
 
@@ -164,6 +166,7 @@
     const out = [];
     if (t.editable) out.push(b("save", "Save"), b("up", "↑"), b("down", "↓"));
     if (t.afterId && t.orderable) out.push(b("unwait", `Stop waiting on #${t.afterId}`));
+    if (t.workspaceId) out.push(b("session", "Open session"));
     for (const to of t.moves || []) out.push(b("move", L().moveLabel(to), ` data-to="${to}"`));
     if (t.removable) out.push(b("remove", "Remove"));
     return out.join("");
@@ -216,6 +219,12 @@
     if (await send(`/${id}`, "DELETE")) q.expanded.delete(id);
   }
 
+  // openSession shows the worker's pane: openWorkspace leaves this view.
+  function openSession(id) {
+    const t = q.tasks.find((x) => x.id === id);
+    if (t && t.workspaceId) openWorkspace(t.workspaceId, t.paneId);
+  }
+
   // What each button does, by its data-act.
   const actions = {
     toggle,
@@ -225,6 +234,7 @@
     down: (id) => send(`/${id}/move`, "POST", { dir: "down" }),
     move: (id, to) => send(`/${id}`, "PATCH", { status: to }),
     unwait: (id) => send(`/${id}`, "PATCH", { afterId: 0 }),
+    session: openSession,
   };
 
   function act(kind, id, to) {

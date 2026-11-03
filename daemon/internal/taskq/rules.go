@@ -35,13 +35,14 @@ const (
 )
 
 // humanMoves is what a lens or a session may do to a task's status: file a
-// draft, pull a waiting task back to draft, cancel anything not running, and
-// put a cancelled or failed one back in the queue.
+// draft, pull a waiting task back to draft, cancel anything not running, put
+// a cancelled or failed one back in the queue, and mark built work merged
+// (by hand until the runner merges it itself).
 var humanMoves = map[string][]string{
 	Planning:     {Waiting, Cancelled},
 	Waiting:      {Planning, Cancelled},
 	NeedsYou:     {Cancelled},
-	ReadyToMerge: {Cancelled},
+	ReadyToMerge: {Done, Cancelled},
 	Failed:       {Waiting, Cancelled},
 	Cancelled:    {Waiting},
 }

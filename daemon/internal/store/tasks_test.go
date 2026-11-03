@@ -41,11 +41,13 @@ func TestTasks_SaveSwapDelete(t *testing.T) {
 		t.Fatalf("after swap first = %d, want %d", list[0].ID, b)
 	}
 	ta.Status, ta.Plan, ta.Note = "cancelled", "new plan", "why"
+	ta.Branch, ta.Worktree, ta.PaneID = "task/1-one", "/wt/1", "pane-1"
 	if ok, err := st.SaveTask(*ta); err != nil || !ok {
 		t.Fatalf("save = %v, %v", ok, err)
 	}
 	got, _ := st.Task(a)
-	if got.Status != "cancelled" || got.Plan != "new plan" || got.Note != "why" || got.Position != tb.Position {
+	if got.Status != "cancelled" || got.Plan != "new plan" || got.Note != "why" || got.Position != tb.Position ||
+		got.Branch != "task/1-one" || got.Worktree != "/wt/1" || got.PaneID != "pane-1" {
 		t.Fatalf("saved = %+v (save must not undo the swap's position)", got)
 	}
 	if ok, _ := st.DeleteTask(a); !ok {

@@ -38,12 +38,21 @@ func Apply(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 		return t, err
 	}
 	if e.Status != nil && *e.Status != t.Status {
-		if err := checkMove(next, all, *e.Status); err != nil {
-			return t, err
-		}
-		next.Status = *e.Status
+		return moveTo(next, all, *e.Status)
 	}
 	return next, nil
+}
+
+// moveTo checks and makes a status change.
+func moveTo(t store.Task, all []store.Task, to string) (store.Task, error) {
+	if err := checkMove(t, all, to); err != nil {
+		return t, err
+	}
+	if t.Status == Failed || t.Status == Cancelled {
+		t.Note = "" // back in the queue: why it stopped last time is history
+	}
+	t.Status = to
+	return t, nil
 }
 
 // checkMove judges a status change. A task put back in the queue has its

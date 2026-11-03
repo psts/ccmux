@@ -91,3 +91,65 @@ func TestWatch_PressesEnterOnPrompt(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// The trust prompt of a folder Claude has never seen starts on "No, exit":
+// Enter there quits. Watch moves down to "Yes" first, then confirms.
+func TestKeyFor_TrustPromptOnNo(t *testing.T) {
+	onNo := "Quick safety check: Is this a project you trust?\n ❯ No, exit\n   Yes, I trust this folder"
+	onYes := "Quick safety check: Is this a project you trust?\n   No, exit\n ❯ Yes, I trust this folder"
+	if got := keyFor(onNo); string(got) != string(down) {
+		t.Fatalf("cursor on No: key %q, want Down", got)
+	}
+	if got := keyFor("Is this a project you trust?\n ❯ 2. No, exit\n   1. Yes, I trust this folder"); string(got) != string(down) {
+		t.Fatalf("cursor on a numbered No: key %q, want Down", got)
+	}
+	if got := keyFor(onYes); string(got) != string(enter) {
+		t.Fatalf("cursor on Yes: key %q, want Enter", got)
+	}
+	if got := keyFor("Loading development channels\n ❯ 1. I am using this for local development"); string(got) != string(enter) {
+		t.Fatalf("dev channels: key %q, want Enter", got)
+	}
+	if keyFor("plain output") != nil {
+		t.Fatal("a key for a screen with no prompt")
+	}
+}
+
+func TestWatch_MovesOffNoBeforeConfirming(t *testing.T) {
+	io := &fakeIO{captures: []string{
+		"Is this a project you trust?\n ❯ No, exit\n   Yes, I trust this folder",
+		"Is this a project you trust?\n   No, exit\n ❯ Yes, I trust this folder",
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go Watch(ctx, io, "pane-1")
+	for {
+		io.mu.Lock()
+		sent := append([][]byte(nil), io.sent...)
+		io.mu.Unlock()
+		if len(sent) >= 2 {
+			if string(sent[0]) != string(down) || string(sent[1]) != string(enter) {
+				t.Fatalf("sent %q, want Down then Enter", sent)
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("sent only %q", sent)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Past maxDowns the watch stops pressing Down but keeps watching, so a
+// slow redraw that finally lands on Yes is still confirmed.
+func TestPresses_DownsAreBoundedNotFinal(t *testing.T) {
+	var p presses
+	for i := 0; i < maxDowns; i++ {
+		p.count(p.allow(down))
+	}
+	if p.allow(down) != nil {
+		t.Fatal("a Down past the bound was allowed")
+	}
+	if string(p.allow(enter)) != string(enter) {
+		t.Fatal("an Enter after the bound was dropped")
+	}
+}

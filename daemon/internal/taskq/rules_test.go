@@ -126,8 +126,9 @@ func TestApply_RequeueRechecksAfter(t *testing.T) {
 		t.Fatalf("requeue after a cancelled task = %v", err)
 	}
 	none := int64(0)
+	task.Note = "Claude exited before it reported"
 	got, err := Apply(task, list(dep, task), Edit{Status: &waiting, AfterID: &none})
-	if err != nil || got.Status != Waiting || got.AfterID != 0 {
+	if err != nil || got.Status != Waiting || got.AfterID != 0 || got.Note != "" {
 		t.Fatalf("requeue that clears after = %+v, %v", got, err)
 	}
 }

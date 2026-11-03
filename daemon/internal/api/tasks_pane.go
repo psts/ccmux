@@ -28,11 +28,14 @@ type paneTaskReq struct {
 	// Draft files as planning instead of waiting; on an edit, nil leaves the
 	// status alone and a value moves the task to planning or waiting.
 	Draft *bool `json:"draft"`
+	// Status and Note are a worker's report on its own task.
+	Status string `json:"status"`
+	Note   string `json:"note"`
 }
 
-// taskFiler is who is asking: the repo the task belongs to and the session
-// name stamped on it.
-type taskFiler struct{ repo, session string }
+// taskFiler is who is asking: the repo the task belongs to, the session
+// name stamped on it, and the pane (a worker reports by its pane).
+type taskFiler struct{ repo, session, pane string }
 
 // paneTasks: POST /v1/panes/{id}/tasks {action, ...} → {message, tasks}.
 func (s *Server) paneTasks(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +63,7 @@ func (s *Server) paneTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"message": message, "tasks": taskViewsOf(repoTasks(all, who.repo))})
+	writeJSON(w, http.StatusOK, map[string]any{"message": message, "tasks": s.taskViewsOf(repoTasks(all, who.repo))})
 }
 
 // taskFilerOfPane names the repo a pane's session works in. A session on
@@ -73,7 +76,7 @@ func (s *Server) taskFilerOfPane(paneID string) (taskFiler, int, string) {
 	if _, err := os.Stat(filepath.Join(ws.RepoPath, ".git")); err != nil {
 		return taskFiler{}, http.StatusBadRequest, "this session is not in a git repo, so there is nothing to build a task in"
 	}
-	return taskFiler{repo: ws.RepoPath, session: ws.Name}, 0, ""
+	return taskFiler{repo: ws.RepoPath, session: ws.Name, pane: paneID}, 0, ""
 }
 
 func repoTasks(all []store.Task, repo string) []store.Task {
@@ -97,8 +100,34 @@ func (s *Server) applyPaneTask(who taskFiler, req paneTaskReq) (string, int, err
 	case "cancel":
 		cancel := taskq.Cancelled
 		return s.changePaneTask(who, req.ID, taskq.Edit{Status: &cancel}, "Cancelled")
+	case "report":
+		return s.reportTask(who, req)
 	}
-	return "", http.StatusBadRequest, errors.New("action must be one of file, list, edit, cancel")
+	return "", http.StatusBadRequest, errors.New("action must be one of file, list, edit, cancel, report")
+}
+
+// reportTask takes a worker's report on the task its pane was started for.
+// The pane is the identity: a session cannot report on a task it is not
+// building.
+func (s *Server) reportTask(who taskFiler, req paneTaskReq) (string, int, error) {
+	all, err := s.tasks.Tasks()
+	if err != nil {
+		return "", http.StatusInternalServerError, err
+	}
+	for _, t := range all {
+		if t.PaneID != who.pane || who.pane == "" {
+			continue
+		}
+		next, err := taskq.Report(t, req.Status, strings.TrimSpace(req.Note), s.taskNow())
+		if err != nil {
+			return "", http.StatusConflict, err
+		}
+		if err := s.saveTask(next); err != nil {
+			return "", http.StatusInternalServerError, err
+		}
+		return fmt.Sprintf("Reported task #%d as %s. You can stop now.", t.ID, next.Status), 0, nil
+	}
+	return "", http.StatusNotFound, errors.New("this session is not building a queued task, so there is nothing to report on")
 }
 
 func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {

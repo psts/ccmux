@@ -41,13 +41,20 @@ type taskView struct {
 	Editable  bool     `json:"editable"`
 	Orderable bool     `json:"orderable"`
 	Removable bool     `json:"removable"`
+	// WorkspaceID is the session holding the task's worker pane, so a lens
+	// can open it; empty once that pane is gone.
+	WorkspaceID string `json:"workspaceId,omitempty"`
 }
 
-func taskViewsOf(list []store.Task) []taskView {
+func (s *Server) taskViewsOf(list []store.Task) []taskView {
 	out := make([]taskView, 0, len(list))
 	for _, t := range list {
+		ws := ""
+		if t.PaneID != "" {
+			ws = s.mgr.WorkspaceForPane(t.PaneID)
+		}
 		out = append(out, taskView{
-			Task: t, Repo: filepath.Base(t.RepoPath), Moves: taskq.Moves(t.Status),
+			Task: t, Repo: filepath.Base(t.RepoPath), Moves: taskq.Moves(t.Status), WorkspaceID: ws,
 			Editable: taskq.Editable(t.Status), Orderable: taskq.Orderable(t.Status),
 			Removable: taskq.Removable(t.Status),
 		})
@@ -74,7 +81,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": taskViewsOf(all), "counts": taskq.Counts(all)})
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskViewsOf(all), "counts": taskq.Counts(all)})
 }
 
 // taskOf loads {id} with the whole list, or writes the error and returns false.
@@ -132,7 +139,7 @@ func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, taskViewsOf([]store.Task{next})[0])
+	writeJSON(w, http.StatusOK, s.taskViewsOf([]store.Task{next})[0])
 }
 
 // moveTask: POST /v1/tasks/{id}/move {dir: "up"|"down"} trades places with

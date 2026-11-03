@@ -166,3 +166,30 @@ func TestTasks_LensPatchMoveDelete(t *testing.T) {
 		t.Fatalf("patch a deleted task = %d, want 404", rec.Code)
 	}
 }
+
+// A worker reports on the task its pane was started for, and only that one.
+func TestTasks_WorkerReportsByItsPane(t *testing.T) {
+	s := taskServer(t)
+	fileOne(t, s, adminRepo, paneTaskReq{Title: "t", Plan: "p"})
+	task, _ := s.tasks.Task(1)
+	task.Status, task.PaneID = taskq.Running, "worker-pane"
+	s.tasks.SaveTask(*task)
+	worker := adminRepo
+	worker.pane = "worker-pane"
+	if _, status, _ := s.applyPaneTask(adminRepo, paneTaskReq{Action: "report", Status: "done"}); status != 404 {
+		t.Fatalf("a session not building it reported: %d", status)
+	}
+	if _, _, err := s.applyPaneTask(worker, paneTaskReq{Action: "report", Status: "done", Note: " built it "}); err != nil {
+		t.Fatal(err)
+	}
+	got := tasksOf(t, s).Tasks[0]
+	if got.Status != taskq.ReadyToMerge || got.Note != "built it" || got.FinishedAt == 0 {
+		t.Fatalf("after report = %+v", got)
+	}
+	if _, status, _ := s.applyPaneTask(worker, paneTaskReq{Action: "report", Status: "done"}); status != 409 {
+		t.Fatalf("a second report = %d, want 409", status)
+	}
+	if rec := do(t, s, "PATCH", "/v1/tasks/1", `{"status":"done"}`); rec.Code != 200 {
+		t.Fatalf("mark merged = %d %s", rec.Code, rec.Body)
+	}
+}

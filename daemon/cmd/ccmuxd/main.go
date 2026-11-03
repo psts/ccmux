@@ -79,6 +79,8 @@ func runDaemon() {
 	tsnetDir := flag.String("tsnet-dir", defaultTsnetDir(), "tsnet node state directory")
 	projectsRoot := flag.String("projects-root", defaultProjectsRoot(), "folder whose subdirectories are offered as hosted-workspace locations (GET /v1/projects)")
 	agentsDir := flag.String("agents-dir", defaultAgentsDir(), "folder holding base agent definitions, one subfolder per agent (GET /v1/agents)")
+	worktreesDir := flag.String("worktrees-dir", defaultWorktreesDir(), "folder the task queue builds each task's git worktree in")
+	taskSlots := flag.Int("task-slots", 3, "queued tasks built at once, across every repo; 0 stops the task runner")
 	agentsMax := flag.Int("agents-max", 6, "how many agent instances may run at once on this daemon (0 = no cap); asleep instances do not count")
 	agentsModel := flag.String("agents-model", agent.DefaultModel, "model an agent instance runs on when its base pins none (opencode provider/model form; the anthropic provider rides the pane proxy)")
 	hubEnabled := flag.Bool("hub", false, "run hub-role services: aggregate every tag:ccmux host into one lens surface, own the peers bus + dev registrar + push (requires -tsnet)")
@@ -218,6 +220,8 @@ func runDaemon() {
 	// A repo or agent joining or leaving a window is told to the others there.
 	mgr.OnMembershipChange = apiSrv.WindowNotice
 	apiSrv.StartScheduler(ctx, 30*time.Second)
+	// The task queue's runner: starts filed tasks in their own worktrees.
+	apiSrv.StartTaskRunner(ctx, 15*time.Second, *taskSlots, *worktreesDir)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)
@@ -747,6 +751,16 @@ func defaultAgentsDir() string {
 		return filepath.Join(os.TempDir(), "ccmux-agents")
 	}
 	return filepath.Join(home, ".ccmux", "agents")
+}
+
+// defaultWorktreesDir is ~/.ccmux/worktrees: the task queue's worktrees are
+// work a human reads and merges, so they sit with the other user content.
+func defaultWorktreesDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "ccmux-worktrees")
+	}
+	return filepath.Join(home, ".ccmux", "worktrees")
 }
 
 func configDir() string {

@@ -198,13 +198,13 @@ var toolsList = []map[string]any{
 	},
 	{
 		"name":        "tasks",
-		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel) by a fresh Claude in its own git worktree of THIS repo, then merged if the checks pass. File only when the human says the plan is ready to file. The plan is all the builder gets: write it for a fresh Claude that knows this repo but not this conversation (goal, files, steps, how to verify). When a feature spans repos, each repo files its own part from its own session; if one part must land first, file that one, pass its task number to the other repo over the bus, and that repo files with after set to it. Actions: file (title + plan, optional after, draft), list (this repo's tasks), edit (id + any of title, plan, after, draft), cancel (id).",
+		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel) by a fresh Claude in its own git worktree of THIS repo, then merged if the checks pass. File only when the human says the plan is ready to file. The plan is all the builder gets: write it for a fresh Claude that knows this repo but not this conversation (goal, files, steps, how to verify). When a feature spans repos, each repo files its own part from its own session; if one part must land first, file that one, pass its task number to the other repo over the bus, and that repo files with after set to it. Actions: file (title + plan, optional after, draft), list (this repo's tasks), edit (id + any of title, plan, after, draft), cancel (id). A Claude started to BUILD a task uses report (status done or stuck, plus note) as its brief says.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []string{"file", "list", "edit", "cancel"},
+					"enum":        []string{"file", "list", "edit", "cancel", "report"},
 					"description": "What to do.",
 				},
 				"title": map[string]any{
@@ -226,6 +226,15 @@ var toolsList = []map[string]any{
 				"id": map[string]any{
 					"type":        "integer",
 					"description": "edit/cancel: the task number.",
+				},
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []string{"done", "stuck"},
+					"description": "report: done (work committed on the task's branch) or stuck (you need a person).",
+				},
+				"note": map[string]any{
+					"type":        "string",
+					"description": "report: what you built and how you checked it, or what you need.",
 				},
 			},
 			"required": []string{"action"},

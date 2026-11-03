@@ -20,7 +20,7 @@
   ];
 
   // The words a move button carries, by the status it moves to.
-  const MOVE_LABELS = { waiting: "Ready to run", planning: "Back to planning", cancelled: "Cancel" };
+  const MOVE_LABELS = { waiting: "Ready to run", planning: "Back to planning", cancelled: "Cancel", done: "Mark merged" };
 
   // sections splits the tasks by status in queue order, keeping one repo's
   // when repo is set, and drops the empty lists.

@@ -49,6 +49,8 @@ type Manager struct {
 	drivers drivers
 	ctx     context.Context
 	events  *firehose
+	// taskSigs is each task worker's last hook signal (tasks.go).
+	taskSigs taskSignals
 
 	// LocalURL is the daemon's own loopback base URL (e.g. http://127.0.0.1:7890),
 	// injected into every hosted pane's env as CCMUX_DAEMON_URL so on-host hooks
@@ -981,6 +983,7 @@ func (m *Manager) applyAttention(paneID string, att model.Attention, reason mode
 	saved := *p
 	m.mu.Unlock()
 	m.restart.clocks.attention(paneID, att, reason, time.Now())
+	m.taskSigs.note(saved, att, reason)
 	if saved.Agent != "" {
 		// The harness's own signal (Claude's hooks, the opencode plugin) is
 		// the lifecycle's state; agentStateFor reads it.
