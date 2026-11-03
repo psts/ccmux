@@ -17,18 +17,63 @@
   // Same order as the Mac app: a copy that carries real text (a spreadsheet,
   // a web selection with a picture in it) pastes as text, so a paste never
   // turns text into an upload by surprise. A bare image (a screenshot), or a
-  // copied image file whose only text is its own name, is the image. Only the
-  // four kinds the daemon takes (paste.go sniffImageExt) count; any other
-  // picture pastes as the browser would rather than fail at the daemon.
-  const KINDS = /^image\/(png|jpeg|gif|webp)$/;
+  // copied image file whose only text is its own name, is the image. Any
+  // picture counts; one of the four kinds the daemon takes is preferred when
+  // a copy offers several (Preview offers TIFF beside PNG).
+  const KINDS = /^image\/(png|jpeg|gif|webp)$/; // paste.go sniffImageExt
   function imageFrom(dt) {
     if (!dt) return null;
     const files = [...(dt.files || [])];
     const items = [...(dt.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile());
-    const img = [...files, ...items].find((f) => f && KINDS.test(f.type));
+    const all = [...files, ...items].filter((f) => f && /^image\//.test(f.type));
+    const img = all.find((f) => KINDS.test(f.type)) || all[0];
     if (!img) return null;
     const text = ((dt.getData && dt.getData("text/plain")) || "").trim();
     return text && text !== img.name ? null : img;
+  }
+
+  // uploadable gives an image the daemon takes: the four kinds as they are,
+  // any other picture redrawn as PNG by toPng. A picture this browser cannot
+  // open (HEIC outside Safari) is refused with its kind named; one it opened
+  // but could not redraw (too big for a canvas) says that instead.
+  async function uploadable(img, toPng) {
+    if (KINDS.test(img.type)) return img;
+    const kind = img.type.replace(/^image\//, "").toUpperCase();
+    try {
+      return await toPng(img);
+    } catch (err) {
+      if (err.unreadable) throw new Error(`this browser cannot read ${kind} images; copy it as PNG or JPEG instead`);
+      throw new Error(`the ${kind} image could not be turned into a PNG (${err.message})`);
+    }
+  }
+
+  // toPng draws a picture onto a canvas and reads it back as PNG.
+  async function toPng(img) {
+    const url = URL.createObjectURL(img);
+    try {
+      const pic = await opened(url);
+      const c = document.createElement("canvas");
+      c.width = pic.naturalWidth;
+      c.height = pic.naturalHeight;
+      const ctx = c.getContext("2d");
+      if (!ctx) throw new Error("no room to draw it");
+      ctx.drawImage(pic, 0, 0);
+      const png = await new Promise((resolve) => c.toBlob(resolve, "image/png"));
+      if (!png) throw new Error(`${c.width}x${c.height} is too large to redraw`);
+      return png;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  // opened decodes a picture, failing with err.unreadable when this browser
+  // cannot open its kind or it has no size to draw.
+  async function opened(url) {
+    const pic = new Image();
+    pic.src = url;
+    const decoded = await pic.decode().then(() => true, () => false);
+    if (!decoded || !pic.naturalWidth || !pic.naturalHeight) throw Object.assign(new Error("unreadable"), { unreadable: true });
+    return pic;
   }
 
   // upload lands the image on the session's host and returns its path there.
@@ -67,7 +112,7 @@
     if (!to) return env.fail("Open a session before pasting an image.");
     let path;
     try {
-      path = await upload(to.ws, img, env.fetch);
+      path = await upload(to.ws, await uploadable(img, env.toPng), env.fetch);
     } catch (err) {
       return env.fail("The image was not pasted: " + err.message);
     }
@@ -115,7 +160,7 @@
     return bar;
   }
 
-  const api = { imageFrom, upload, target, onPaste, showNote };
+  const api = { imageFrom, uploadable, upload, target, onPaste, showNote };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
     return;
@@ -130,6 +175,7 @@
       typeIntoPane: (to, t) => Boolean(app.typeIntoPane && app.typeIntoPane(to, t)),
       fail: (msg, keep) => showNote(root.document, msg, keep, root.setTimeout),
       fetch: (...a) => root.fetch(...a),
+      toPng,
     });
   }, true);
 })(typeof window !== "undefined" ? window : this);

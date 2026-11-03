@@ -21,13 +21,10 @@ test("text, even with a picture riding along, pastes as text", () => {
   assert.strictEqual(P.imageFrom(clip({ text: "hello" })), null);
   assert.strictEqual(P.imageFrom(clip({ files: [png()], text: "a cell from a sheet" })), null);
   assert.strictEqual(P.imageFrom(clip({ files: [{ name: "notes.pdf", type: "application/pdf", size: 9 }] })), null);
-  for (const type of ["image/tiff", "image/svg+xml", "image/heic", "image/bmp"]) {
-    assert.strictEqual(P.imageFrom(clip({ files: [{ name: "x", type, size: 9 }] })), null, type + " is not one the daemon takes");
-  }
-  for (const type of ["image/jpeg", "image/gif", "image/webp"]) {
-    assert.ok(P.imageFrom(clip({ files: [{ name: "x", type, size: 9 }] })), type);
-  }
-  assert.strictEqual(P.imageFrom(null), null);
+  const tiff = { name: "x.tiff", type: "image/tiff", size: 9 };
+  assert.strictEqual(P.imageFrom(clip({ files: [tiff] })), tiff, "any picture counts; it is converted later");
+  const shot = png();
+  assert.strictEqual(P.imageFrom(clip({ files: [tiff, shot] })), shot, "a kind the daemon takes wins when a copy offers both");
 });
 
 // el builds a fake element inside the terminal, or inside a chat box.
@@ -46,16 +43,24 @@ function el(where) {
 // paste runs one paste event and reports what happened.
 // `open` is the pane on screen; `connected` whether typing into it works.
 // switchTo moves the window to another pane while the upload is in flight.
+// toPng stands in for the browser's canvas: it "converts" a picture to a
+// PNG it names, or fails like a browser that cannot read the picture.
 async function paste({ where = "terminal", data, answer = { status: 201, body: { path: "/tmp/ccmux-paste/paste-ab.png" } },
-  open = { ws: "ws-1", pane: "p1" }, connected = true, switchTo = null }) {
+  open = { ws: "ws-1", pane: "p1" }, connected = true, switchTo = null, canDraw = true, drawError = null }) {
   const target = el(where);
-  const got = { typed: [], failed: [], kept: [], posted: [], prevented: false, target };
+  const got = { typed: [], failed: [], kept: [], posted: [], converted: [], prevented: false, target };
   let current = open;
   const e = { target, clipboardData: data, preventDefault() { got.prevented = true; }, stopPropagation() {} };
   await P.onPaste(e, {
     currentPane: () => current,
     typeIntoPane: (to, t) => { if (connected) got.typed.push([to.pane, t]); return connected; },
     fail: (m, keep) => { got.failed.push(m); got.kept.push(Boolean(keep)); },
+    toPng: async (img) => {
+      got.converted.push(img.type);
+      if (!canDraw) throw Object.assign(new Error("unreadable"), { unreadable: true });
+      if (drawError) throw new Error(drawError);
+      return { name: "converted.png", type: "image/png", size: img.size };
+    },
     fetch: async (url, opts) => {
       got.posted.push({ url, opts });
       if (switchTo) current = switchTo.gone ? null : switchTo;
@@ -150,4 +155,23 @@ test("a paste note shows with no pane open, and only a note without a path clear
   P.showNote(doc, "newer", false, later);
   assert.strictEqual(doc.kids.length, 1, "a newer note replaces the older one");
   assert.notStrictEqual(doc.getElementById("paste-bar"), kept);
+});
+
+test("a picture the daemon does not take is pasted as PNG, or named when it cannot be read", async () => {
+  const shot = png();
+  const asIs = await paste({ data: clip({ files: [shot] }) });
+  assert.deepStrictEqual(asIs.converted, [], "a PNG is sent as it is");
+  assert.strictEqual(asIs.posted[0].opts.body, shot);
+  const heic = { name: "IMG_0001.HEIC", type: "image/heic", size: 2048 };
+  const drawn = await paste({ data: clip({ files: [heic] }) });
+  assert.deepStrictEqual(drawn.converted, ["image/heic"]);
+  assert.strictEqual(drawn.posted[0].opts.body.type, "image/png");
+  assert.deepStrictEqual(drawn.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]]);
+  const unread = await paste({ data: clip({ files: [heic] }), canDraw: false });
+  assert.strictEqual(unread.prevented, true, "the paste is still taken, not dropped on xterm");
+  assert.strictEqual(unread.posted.length, 0);
+  assert.match(unread.failed[0], /cannot read HEIC images/);
+  const tooBig = await paste({ data: clip({ files: [{ name: "scan.tiff", type: "image/tiff", size: 9 }] }), drawError: "9000x9000 is too large to redraw" });
+  assert.doesNotMatch(tooBig.failed[0], /cannot read/, "a picture that opened is not called unreadable");
+  assert.match(tooBig.failed[0], /TIFF image could not be turned into a PNG \(9000x9000 is too large to redraw\)/);
 });
