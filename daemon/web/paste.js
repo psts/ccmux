@@ -33,15 +33,18 @@
   }
 
   // uploadable gives an image the daemon takes: the four kinds as they are,
-  // any other picture redrawn as PNG by toPng. A picture this browser cannot
-  // open (HEIC outside Safari) is refused with its kind named; one it opened
-  // but could not redraw (too big for a canvas) says that instead.
+  // any other picture redrawn as PNG by toPng. A HEIC photo this browser
+  // cannot open (Chrome) goes as it is: the daemon converts those (heic.go).
+  // Any other picture it cannot open is refused with its kind named; one it
+  // opened but could not redraw (too big for a canvas) says that instead.
+  const HEIF = /^image\/hei[cf]/;
   async function uploadable(img, toPng) {
     if (KINDS.test(img.type)) return img;
     const kind = img.type.replace(/^image\//, "").toUpperCase();
     try {
       return await toPng(img);
     } catch (err) {
+      if (err.unreadable && HEIF.test(img.type)) return img;
       if (err.unreadable) throw new Error(`this browser cannot read ${kind} images; copy it as PNG or JPEG instead`);
       throw new Error(`the ${kind} image could not be turned into a PNG (${err.message})`);
     }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -88,26 +89,47 @@ func (s *Server) pasteImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
 		return
 	}
-	ext := sniffImageExt(b)
-	if ext == "" {
-		writeError(w, http.StatusUnsupportedMediaType, "not an image")
-		return
-	}
-	dir := pasteDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	sweepStalePastes(dir)
-	var rnd [8]byte
-	if _, err := rand.Read(rnd[:]); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	path := filepath.Join(dir, "paste-"+hex.EncodeToString(rnd[:])+ext)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	path, code, err := landPaste(r.Context(), b)
+	if err != nil {
+		writeError(w, code, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"path": path})
+}
+
+// landPaste stores one upload in the paste dir and returns its path, or the
+// status and error to answer with. A PNG, JPEG, GIF or WebP lands as it is; a
+// HEIC photo lands as the PNG this host converts it to (heic.go).
+func landPaste(ctx context.Context, b []byte) (string, int, error) {
+	ext := sniffImageExt(b)
+	if ext == "" && !isHEIF(b) {
+		return "", http.StatusUnsupportedMediaType, errors.New("not an image")
+	}
+	dir := pasteDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", http.StatusInternalServerError, err
+	}
+	sweepStalePastes(dir)
+	if ext == "" {
+		path, err := convertHEIF(ctx, dir, b)
+		if err != nil {
+			return "", http.StatusUnsupportedMediaType, err
+		}
+		return path, 0, nil
+	}
+	path, err := writePaste(dir, b, ext)
+	if err != nil {
+		return "", http.StatusInternalServerError, err
+	}
+	return path, 0, nil
+}
+
+// writePaste writes b to a fresh, randomly named file in dir.
+func writePaste(dir string, b []byte, ext string) (string, error) {
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "paste-"+hex.EncodeToString(rnd[:])+ext)
+	return path, os.WriteFile(path, b, 0o600)
 }

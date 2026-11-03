@@ -167,10 +167,14 @@ test("a picture the daemon does not take is pasted as PNG, or named when it cann
   assert.deepStrictEqual(drawn.converted, ["image/heic"]);
   assert.strictEqual(drawn.posted[0].opts.body.type, "image/png");
   assert.deepStrictEqual(drawn.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]]);
-  const unread = await paste({ data: clip({ files: [heic] }), canDraw: false });
+  const chrome = await paste({ data: clip({ files: [heic] }), canDraw: false });
+  assert.strictEqual(chrome.posted[0].opts.body, heic, "a HEIC the browser cannot open goes as it is, for the host to convert");
+  assert.deepStrictEqual(chrome.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]]);
+  const bmp = { name: "x.bmp", type: "image/bmp", size: 9 };
+  const unread = await paste({ data: clip({ files: [bmp] }), canDraw: false });
   assert.strictEqual(unread.prevented, true, "the paste is still taken, not dropped on xterm");
-  assert.strictEqual(unread.posted.length, 0);
-  assert.match(unread.failed[0], /cannot read HEIC images/);
+  assert.strictEqual(unread.posted.length, 0, "only HEIC is left to the host");
+  assert.match(unread.failed[0], /cannot read BMP images/);
   const tooBig = await paste({ data: clip({ files: [{ name: "scan.tiff", type: "image/tiff", size: 9 }] }), drawError: "9000x9000 is too large to redraw" });
   assert.doesNotMatch(tooBig.failed[0], /cannot read/, "a picture that opened is not called unreadable");
   assert.match(tooBig.failed[0], /TIFF image could not be turned into a PNG \(9000x9000 is too large to redraw\)/);
