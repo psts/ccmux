@@ -11,20 +11,21 @@ import (
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
-// layout is where one task is built: its worktree, branch, brief and the
-// name its Claude carries on the peers bus.
+// layout is where one part of a task is built: its worktree, branch, brief
+// and the name its Claude carries on the peers bus.
 type layout struct {
 	dir, worktree, brief, branch, busName string
 }
 
-// layoutOf places task t under root. The repo's folder name is joined by a
-// short hash of its path, so two repos that share a name never share a folder.
-func layoutOf(root string, t store.Task) layout {
-	repo := filepath.Base(t.RepoPath)
-	sum := sha1.Sum([]byte(t.RepoPath))
-	dir := filepath.Join(root, repo+"-"+hex.EncodeToString(sum[:3]))
+// layoutOf places part p of task t under root. The repo's folder name is
+// joined by a short hash of its path, so two repos that share a name never
+// share a folder. Every part of a task gets the same branch name, each in
+// its own repo, and a bus name its teammates can work out: <repo>-task-<id>.
+func layoutOf(root string, t store.Task, p store.Part) layout {
+	sum := sha1.Sum([]byte(p.RepoPath))
+	dir := filepath.Join(root, filepath.Base(p.RepoPath)+"-"+hex.EncodeToString(sum[:3]))
 	name := fmt.Sprintf("task-%d", t.ID)
-	branch := t.Branch // a task run before keeps its branch, whatever its title says now
+	branch := p.Branch // a part run before keeps its branch, whatever the title says now
 	if branch == "" {
 		branch = fmt.Sprintf("task/%d-%s", t.ID, slug(t.Title))
 	}
@@ -33,8 +34,13 @@ func layoutOf(root string, t store.Task) layout {
 		worktree: filepath.Join(dir, name),
 		brief:    filepath.Join(dir, name+".md"),
 		branch:   branch,
-		busName:  fmt.Sprintf("%s-task-%d", repo, t.ID),
+		busName:  BusName(p.RepoPath, t.ID),
 	}
+}
+
+// BusName is the peers-bus name of the Claude building a task's part in repo.
+func BusName(repo string, taskID int64) string {
+	return fmt.Sprintf("%s-task-%d", filepath.Base(repo), taskID)
 }
 
 // slug turns a title into a branch-safe word: lower case, letters, digits
@@ -64,37 +70,59 @@ func slug(title string) string {
 }
 
 // briefText is what the worker reads first: the rules of working
-// unattended, then the plan its repo's session filed.
-func briefText(t store.Task, l layout, trunk string) string {
+// unattended, who else is building this feature, then its own plan.
+func briefText(t store.Task, p store.Part, l layout, trunk string, team []string) string {
 	return fmt.Sprintf(`# ccmux task #%d: %s
 
-You are building this task on your own, in your own git worktree. Nobody is
-watching; a person reads the result later.
+You are building one part of this feature, the part in %s, on your own and
+in your own git worktree. Nobody is watching; a person reads the result later.
 
-- Repo: %s
 - Your working folder (a git worktree): %s
 - Branch: %s, made from %s. Commit your work on this branch.
-- Do not push, merge, rebase or switch branches. ccmux merges your branch after you.
+- Do not push, merge, rebase or switch branches. ccmux merges every part of
+  this feature together once all of them are done.
 - Follow the repo's CLAUDE.md, run its checks, and leave them green.
-- When the work is done and committed, call the tasks tool with action "report",
+
+## Your team
+
+Your name on the peers bus is %s. %s
+- Start by telling your teammates you have started and what your part covers.
+- Talk to them directly when your part needs something from theirs (an API
+  endpoint, a field, a setting) or changes something they depend on. Ask them to
+  fold it into their part; do not build it in their repo yourself.
+- If the feature needs a repo that has no part yet, call the tasks tool with
+  action "add_part", that repo's folder name, and a plan for it. A Claude starts
+  on it at once, as %s.
+
+## When you are done
+
+- When your part is done and committed, call the tasks tool with action "report",
   status "done", and a note: a few lines on what you built and how you checked it.
 - If you cannot go on (a choice only a person can make, missing access, checks you
   cannot fix), commit what you have, call the tasks tool with action "report",
   status "stuck" and a note saying what you need, then stop.
-- Other repos' sessions are on the peers bus if the plan needs them. Your name there
-  is %s.
 
-## The plan
+## Your plan
 
 %s
-`, t.ID, t.Title, t.RepoPath, l.worktree, l.branch, trunk, l.busName, t.Plan)
+`, t.ID, t.Title, filepath.Base(p.RepoPath), l.worktree, l.branch, trunk, l.busName,
+		teamLine(team), BusName("<repo>", t.ID), p.Plan)
 }
 
-func writeBrief(t store.Task, l layout, trunk string) error {
+// teamLine names the other parts' Claudes, or says there are none yet.
+func teamLine(team []string) string {
+	if len(team) == 0 {
+		return "No other repo has a part in this feature yet."
+	}
+	return "The other parts are built by: " + strings.Join(team, ", ") +
+		" (all starting now; list_peers shows who is up)."
+}
+
+func writeBrief(t store.Task, p store.Part, l layout, trunk string, team []string) error {
 	if err := os.MkdirAll(l.dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(l.brief, []byte(briefText(t, l, trunk)), 0o644)
+	return os.WriteFile(l.brief, []byte(briefText(t, p, l, trunk, team)), 0o644)
 }
 
 // launchCommand starts the worker's Claude: on the peers bus under its own

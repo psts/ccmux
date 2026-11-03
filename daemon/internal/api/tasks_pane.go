@@ -1,9 +1,11 @@
 package api
 
-// The peers shim's `tasks` tool: a repo's session files the plan it just
-// made with its human, and can list, edit or cancel that repo's tasks. The
-// repo is the pane's own session's repo, never an argument, so a session can
-// only file and touch work in the repo it knows.
+// The peers shim's `tasks` tool. A repo's session files a feature with its
+// own part, adds its part to a feature another repo filed, lists, edits or
+// cancels the features it has a part in. A worker building a part reports
+// on it, and pulls in another repo by adding a part (tasks_worker.go). The
+// repo is always the pane's own session's repo, never an argument, so a
+// session only writes plans for the repo it knows.
 
 import (
 	"errors"
@@ -28,13 +30,15 @@ type paneTaskReq struct {
 	// Draft files as planning instead of waiting; on an edit, nil leaves the
 	// status alone and a value moves the task to planning or waiting.
 	Draft *bool `json:"draft"`
-	// Status and Note are a worker's report on its own task.
+	// Repo names the repo (its folder name) a worker adds a part for.
+	Repo string `json:"repo"`
+	// Status and Note are a worker's report on its own part.
 	Status string `json:"status"`
 	Note   string `json:"note"`
 }
 
-// taskFiler is who is asking: the repo the task belongs to, the session
-// name stamped on it, and the pane (a worker reports by its pane).
+// taskFiler is who is asking: the repo, the session name stamped on what
+// it files, and the pane (a worker is known by its pane).
 type taskFiler struct{ repo, session, pane string }
 
 // paneTasks: POST /v1/panes/{id}/tasks {action, ...} → {message, tasks}.
@@ -58,12 +62,13 @@ func (s *Server) paneTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
-	all, err := s.tasks.Tasks()
+	tasks, parts, err := s.board()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"message": message, "tasks": s.taskViewsOf(repoTasks(all, who.repo))})
+	mine := repoTasks(tasks, parts, who.repo)
+	writeJSON(w, http.StatusOK, map[string]any{"message": message, "tasks": s.taskViewsOf(mine, parts)})
 }
 
 // taskFilerOfPane names the repo a pane's session works in. A session on
@@ -79,10 +84,17 @@ func (s *Server) taskFilerOfPane(paneID string) (taskFiler, int, string) {
 	return taskFiler{repo: ws.RepoPath, session: ws.Name, pane: paneID}, 0, ""
 }
 
-func repoTasks(all []store.Task, repo string) []store.Task {
+// repoTasks is the tasks with a part in repo.
+func repoTasks(tasks []store.Task, parts []store.Part, repo string) []store.Task {
+	in := map[int64]bool{}
+	for _, p := range parts {
+		if p.RepoPath == repo {
+			in[p.TaskID] = true
+		}
+	}
 	out := []store.Task{}
-	for _, t := range all {
-		if t.RepoPath == repo {
+	for _, t := range tasks {
+		if in[t.ID] {
 			out = append(out, t)
 		}
 	}
@@ -93,67 +105,42 @@ func (s *Server) applyPaneTask(who taskFiler, req paneTaskReq) (string, int, err
 	switch req.Action {
 	case "file":
 		return s.fileTask(who, req)
+	case "add_part":
+		return s.addPart(who, req)
 	case "list":
 		return "", 0, nil
 	case "edit":
 		return s.editPaneTask(who, req)
 	case "cancel":
 		cancel := taskq.Cancelled
-		return s.changePaneTask(who, req.ID, taskq.Edit{Status: &cancel}, "Cancelled")
+		return s.changeMemberTask(who, req.ID, taskq.Edit{Status: &cancel}, "Cancelled")
 	case "report":
-		return s.reportTask(who, req)
+		return s.reportPart(who, req)
 	}
-	return "", http.StatusBadRequest, errors.New("action must be one of file, list, edit, cancel, report")
+	return "", http.StatusBadRequest, errors.New("action must be one of file, add_part, list, edit, cancel, report")
 }
 
-// reportTask takes a worker's report on the task its pane was started for.
-// The pane is the identity: a session cannot report on a task it is not
-// building.
-func (s *Server) reportTask(who taskFiler, req paneTaskReq) (string, int, error) {
-	all, err := s.tasks.Tasks()
-	if err != nil {
-		return "", http.StatusInternalServerError, err
-	}
-	for _, t := range all {
-		if t.PaneID != who.pane || who.pane == "" {
-			continue
-		}
-		next, err := taskq.Report(t, req.Status, strings.TrimSpace(req.Note), s.taskNow())
-		if err != nil {
-			return "", http.StatusConflict, err
-		}
-		if err := s.saveTask(next); err != nil {
-			return "", http.StatusInternalServerError, err
-		}
-		return fmt.Sprintf("Reported task #%d as %s. You can stop now.", t.ID, next.Status), 0, nil
-	}
-	return "", http.StatusNotFound, errors.New("this session is not building a queued task, so there is nothing to report on")
-}
-
+// fileTask files a feature with the caller's repo's part.
 func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
-	if err := taskq.CheckText(req.Title, req.Plan); err != nil {
+	if err := firstErr(taskq.CheckTitle(req.Title), taskq.CheckPlan(req.Plan)); err != nil {
 		return "", http.StatusBadRequest, err
 	}
 	all, err := s.tasks.Tasks()
 	if err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	after := int64(0)
-	if req.After != nil {
-		after = *req.After
-	}
+	after := deref(req.After)
 	if err := taskq.CheckAfter(all, 0, after); err != nil {
 		return "", http.StatusBadRequest, err
 	}
 	status := taskq.Waiting
-	if req.Draft != nil && *req.Draft {
+	if deref(req.Draft) {
 		status = taskq.Planning
 	}
 	now := s.taskNow()
-	id, err := s.tasks.AddTask(store.Task{
-		RepoPath: who.repo, Title: strings.TrimSpace(req.Title), Plan: req.Plan, Status: status,
-		AfterID: after, FiledBy: who.session, CreatedAt: now, UpdatedAt: now,
-	})
+	id, err := s.tasks.AddTaskWithPart(
+		store.Task{Title: strings.TrimSpace(req.Title), Status: status, AfterID: after, FiledBy: who.session, CreatedAt: now, UpdatedAt: now},
+		store.Part{RepoPath: who.repo, Plan: req.Plan, Status: taskq.Pending, FiledBy: who.session, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return "", http.StatusInternalServerError, err
 	}
@@ -162,27 +149,51 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 }
 
 func fileMessage(id int64, status string, after int64) string {
-	msg := fmt.Sprintf("Filed task #%d", id)
+	msg := fmt.Sprintf("Filed task #%d with this repo's part", id)
 	if status == taskq.Planning {
-		msg += " as a draft: it will not run until it is marked ready"
+		msg += fmt.Sprintf(" as a draft. If other repos have parts, give them the number #%d over the bus so each adds its own part (action add_part); then mark it ready (edit, draft false)", id)
 	} else {
 		msg += ": it waits in the queue for a free slot"
 	}
 	if after != 0 {
-		msg += fmt.Sprintf(", and not before task #%d is done and merged", after)
+		msg += fmt.Sprintf(", and will not start before task #%d is done and merged", after)
 	}
-	return msg + ". Tell other repos this number if their part should start after it."
+	return msg + "."
 }
 
+// editPaneTask changes a task this repo has a part in: its title, what it
+// starts after, draft or ready, and this repo's own plan. Everything is
+// checked before anything is saved, so a refused edit changes nothing.
 func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, error) {
-	var e taskq.Edit
+	t, all, status, err := s.memberTask(who, req.ID)
+	if err != nil {
+		return "", status, err
+	}
+	next, err := taskq.Apply(t, all, taskEditOf(req))
+	if err != nil {
+		return "", http.StatusConflict, err
+	}
+	part, status, err := s.planEditOf(who, t, req.Plan)
+	if err != nil {
+		return "", status, err
+	}
+	if part != nil {
+		if err := s.savePart(*part); err != nil {
+			return "", http.StatusInternalServerError, err
+		}
+	}
+	if err := s.saveTaskChange(t, next); err != nil {
+		return "", http.StatusInternalServerError, err
+	}
+	return fmt.Sprintf("Updated task #%d (%s).", t.ID, next.Status), 0, nil
+}
+
+// taskEditOf is the task-level part of an edit request.
+func taskEditOf(req paneTaskReq) taskq.Edit {
+	e := taskq.Edit{AfterID: req.After}
 	if req.Title != "" {
 		e.Title = &req.Title
 	}
-	if req.Plan != "" {
-		e.Plan = &req.Plan
-	}
-	e.AfterID = req.After
 	if req.Draft != nil {
 		status := taskq.Waiting
 		if *req.Draft {
@@ -190,29 +201,77 @@ func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, erro
 		}
 		e.Status = &status
 	}
-	return s.changePaneTask(who, req.ID, e, "Updated")
+	return e
 }
 
-// changePaneTask applies e to one of this repo's tasks. Another repo's id is
-// a 404, never a change to work the session does not know.
-func (s *Server) changePaneTask(who taskFiler, id int64, e taskq.Edit, verb string) (string, int, error) {
-	t, err := s.tasks.Task(id)
+// planEditOf checks a new plan for this repo's part of task t; nil when the
+// edit carries no plan.
+func (s *Server) planEditOf(who taskFiler, t store.Task, plan string) (*store.Part, int, error) {
+	if plan == "" {
+		return nil, 0, nil
+	}
+	parts, err := s.tasks.Parts()
 	if err != nil {
-		return "", http.StatusInternalServerError, err
+		return nil, http.StatusInternalServerError, err
 	}
-	if t == nil || t.RepoPath != who.repo {
-		return "", http.StatusNotFound, fmt.Errorf("no task #%d in this repo", id)
+	for _, p := range taskq.PartsOf(parts, t.ID) {
+		if p.RepoPath != who.repo {
+			continue
+		}
+		next, err := taskq.EditPlan(t, p, plan)
+		if err != nil {
+			return nil, http.StatusConflict, err
+		}
+		return &next, 0, nil
 	}
-	all, err := s.tasks.Tasks()
+	return nil, http.StatusNotFound, fmt.Errorf("this repo has no part in task #%d; add one with add_part", t.ID)
+}
+
+// changeMemberTask applies e to a task the caller's repo has a part in.
+// Any other task is a 404, never a change to work the session does not know.
+func (s *Server) changeMemberTask(who taskFiler, id int64, e taskq.Edit, verb string) (string, int, error) {
+	t, all, status, err := s.memberTask(who, id)
 	if err != nil {
-		return "", http.StatusInternalServerError, err
+		return "", status, err
 	}
-	next, err := taskq.Apply(*t, all, e)
+	next, err := taskq.Apply(t, all, e)
 	if err != nil {
 		return "", http.StatusConflict, err
 	}
-	if err := s.saveTask(next); err != nil {
+	if err := s.saveTaskChange(t, next); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	return fmt.Sprintf("%s task #%d (%s).", verb, id, next.Status), 0, nil
+}
+
+// memberTask loads task id with the whole list, if the caller's repo has a
+// part in it.
+func (s *Server) memberTask(who taskFiler, id int64) (store.Task, []store.Task, int, error) {
+	tasks, parts, err := s.board()
+	if err != nil {
+		return store.Task{}, nil, http.StatusInternalServerError, err
+	}
+	for _, t := range repoTasks(tasks, parts, who.repo) {
+		if t.ID == id {
+			return t, tasks, 0, nil
+		}
+	}
+	return store.Task{}, nil, http.StatusNotFound, fmt.Errorf("no task #%d with a part in this repo", id)
+}
+
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deref[T any](p *T) T {
+	var zero T
+	if p == nil {
+		return zero
+	}
+	return *p
 }

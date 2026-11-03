@@ -1,7 +1,8 @@
-// Package taskq is the task queue: plans a repo's session files to be built
-// later, each in its own worktree, a few at a time. This file holds the rules
-// every surface shares (the lens routes, the peers tool, the runner), so a
-// status a lens may set and one the tool may set can never disagree.
+// Package taskq is the task queue: features a repo's session files to be
+// built later, each by one part per repo, every part a Claude in its own
+// worktree; a few features at a time. This file holds the rules every
+// surface shares (the lens routes, the peers tool, the runner), so a move a
+// lens may make and one the tool may make can never disagree.
 package taskq
 
 import (
@@ -12,9 +13,9 @@ import (
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
-// The statuses a task moves through. planning and waiting are the human's
-// (filed as a draft, or ready to run); the rest belong to the runner, except
-// cancelled, which anyone may set on a task that is not running.
+// A task's statuses. planning and waiting are the human's (a draft, or
+// ready to run); running, needs_you and ready_to_merge follow its parts
+// (Rollup); done and cancelled are a person's call.
 const (
 	Planning     = "planning"
 	Waiting      = "waiting"
@@ -22,12 +23,18 @@ const (
 	NeedsYou     = "needs_you"
 	ReadyToMerge = "ready_to_merge"
 	Done         = "done"
-	Failed       = "failed"
 	Cancelled    = "cancelled"
 )
 
-// Statuses is every status in the order the lenses show them.
-var Statuses = []string{Planning, Waiting, Running, NeedsYou, ReadyToMerge, Done, Failed, Cancelled}
+// A part's statuses. Running and NeedsYou are shared with tasks.
+const (
+	Pending = "pending" // not started (or stopped, to start again)
+	Ready   = "ready"   // its Claude reported the work done
+	Failed  = "failed"  // it could not start, or its Claude went away
+)
+
+// Statuses is every task status in the order the lenses show them.
+var Statuses = []string{Planning, Waiting, Running, NeedsYou, ReadyToMerge, Done, Cancelled}
 
 const (
 	MaxTitle = 120
@@ -35,15 +42,15 @@ const (
 )
 
 // humanMoves is what a lens or a session may do to a task's status: file a
-// draft, pull a waiting task back to draft, cancel anything not running, put
-// a cancelled or failed one back in the queue, and mark built work merged
-// (by hand until the runner merges it itself).
+// draft, pull a waiting task back to draft, cancel anything not finished
+// (a running one's Claudes are closed), put a cancelled one back in the
+// queue, and mark built work merged (by hand until the runner merges).
 var humanMoves = map[string][]string{
 	Planning:     {Waiting, Cancelled},
 	Waiting:      {Planning, Cancelled},
+	Running:      {Cancelled},
 	NeedsYou:     {Cancelled},
 	ReadyToMerge: {Done, Cancelled},
-	Failed:       {Waiting, Cancelled},
 	Cancelled:    {Waiting},
 }
 
@@ -61,20 +68,28 @@ func CanMove(from, to string) bool {
 	return false
 }
 
-// Editable reports whether a task's title, plan and order may still change:
-// only before it starts, so a running worker never reads a plan that moved.
+// Editable reports whether a task's title, its parts' plans and its order
+// may still change: only before it starts, so no worker reads a plan that
+// moved under it.
 func Editable(status string) bool { return status == Planning || status == Waiting }
 
-// Removable reports whether a task may be deleted from the list for good.
-func Removable(status string) bool {
-	return status == Done || status == Failed || status == Cancelled
-}
+// Orderable reports whether what a task starts after may change: before it
+// runs, and on a cancelled one about to go back in the queue.
+func Orderable(status string) bool { return Editable(status) || status == Cancelled }
 
-// CheckText judges a title and plan for filing or editing.
-func CheckText(title, plan string) error {
+// Removable reports whether a task may be deleted from the list for good.
+func Removable(status string) bool { return status == Done || status == Cancelled }
+
+// CheckTitle judges a task's title.
+func CheckTitle(title string) error {
 	if t := strings.TrimSpace(title); t == "" || len(t) > MaxTitle {
 		return fmt.Errorf("title must be 1 to %d characters", MaxTitle)
 	}
+	return nil
+}
+
+// CheckPlan judges a part's plan.
+func CheckPlan(plan string) error {
 	if p := strings.TrimSpace(plan); p == "" || len(p) > MaxPlan {
 		return fmt.Errorf("plan must be 1 to %d characters", MaxPlan)
 	}

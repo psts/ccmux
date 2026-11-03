@@ -1,0 +1,85 @@
+package api
+
+import (
+	"net/http"
+	"strconv"
+
+	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/taskq"
+)
+
+// patchPart: PATCH /v1/tasks/{id}/parts/{part} with {plan} before the task
+// runs, or {retry: true} on a failed part of a running task.
+func (s *Server) patchPart(w http.ResponseWriter, r *http.Request) {
+	if !s.tasksReady(w) {
+		return
+	}
+	var req struct {
+		Plan  *string `json:"plan"`
+		Retry bool    `json:"retry"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	s.tasksMu.Lock()
+	defer s.tasksMu.Unlock()
+	t, _, ok := s.taskOf(w, r)
+	if !ok {
+		return
+	}
+	p, ok := s.partOf(w, r, t.ID)
+	if !ok {
+		return
+	}
+	next, err := changePart(t, p, req.Plan, req.Retry)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := s.savePart(next); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.partViewOf(t, next))
+}
+
+func changePart(t store.Task, p store.Part, plan *string, retry bool) (store.Part, error) {
+	if retry {
+		return taskq.Retry(t, p)
+	}
+	if plan == nil {
+		return p, nil
+	}
+	return taskq.EditPlan(t, p, *plan)
+}
+
+// partOf loads {part} of task taskID, or writes the error and returns false.
+func (s *Server) partOf(w http.ResponseWriter, r *http.Request, taskID int64) (store.Part, bool) {
+	id, err := strconv.ParseInt(r.PathValue("part"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad part id")
+		return store.Part{}, false
+	}
+	parts, err := s.tasks.Parts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return store.Part{}, false
+	}
+	for _, p := range taskq.PartsOf(parts, taskID) {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	writeError(w, http.StatusNotFound, "no such part in this task")
+	return store.Part{}, false
+}
+
+// savePart writes an edited part and tells the lenses.
+func (s *Server) savePart(p store.Part) error {
+	p.UpdatedAt = s.taskNow()
+	if _, err := s.tasks.SavePart(p); err != nil {
+		return err
+	}
+	s.mgr.TasksChanged()
+	return nil
+}

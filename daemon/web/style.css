@@ -769,6 +769,12 @@ body {
 .tq-edit-plan { min-height: 180px; font: 12px/1.45 ui-monospace, Menlo, monospace; resize: vertical; }
 .tq-plan { margin: 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, Menlo, monospace; max-height: 50vh; overflow: auto; }
 .tq-meta { font-size: 11px; color: var(--muted); }
+.tq-part { border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.tq-part-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tq-part-status { font-size: 12px; }
+.tq-repo-chip.tq-part-running { border-color: var(--accent); color: var(--fg); }
+.tq-repo-chip.tq-part-ready { border-color: var(--done); color: var(--done); }
+.tq-repo-chip.tq-part-needs_you, .tq-repo-chip.tq-part-failed { border-color: var(--needs); color: var(--needs); }
 .tq-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .tq-actions button {
   background: var(--bg); border: 1px solid var(--line); color: var(--fg);

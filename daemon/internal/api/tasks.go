@@ -1,9 +1,10 @@
 package api
 
-// The task queue's lens routes (internal/taskq has the rules). A repo's
-// session files a task through the peers tool (tasks_pane.go); the lenses
-// list them, edit a plan before it runs, reorder, cancel and remove. The
-// queue lives on the daemon the lenses talk to, so none of this is proxied.
+// The task queue's lens routes (internal/taskq has the rules). A task is a
+// feature with one part per repo; repo sessions file and add parts through
+// the peers tool (tasks_pane.go). The lenses list them, edit before they
+// run, reorder, cancel, retry a failed part and remove. The queue lives on
+// the daemon the lenses talk to, so none of this is proxied.
 
 import (
 	"fmt"
@@ -18,12 +19,15 @@ import (
 
 // taskStore is the slice of the registry the task queue needs.
 type taskStore interface {
-	AddTask(store.Task) (int64, error)
+	AddTaskWithPart(store.Task, store.Part) (int64, error)
 	Task(id int64) (*store.Task, error)
 	Tasks() ([]store.Task, error)
 	SaveTask(store.Task) (bool, error)
 	SwapTaskPositions(a, b store.Task) error
 	DeleteTask(id int64) (bool, error)
+	AddPart(store.Part) (int64, error)
+	Parts() ([]store.Part, error)
+	SavePart(store.Part) (bool, error)
 }
 
 // SetTasks wires the task queue's store.
@@ -31,35 +35,63 @@ func (s *Server) SetTasks(st taskStore) { s.tasks = st }
 
 func (s *Server) taskNow() int64 { return time.Now().UnixMilli() }
 
-// taskView is a task on the wire: the repo's short name the lenses label it
-// with, and what the rules allow on it now, so a lens draws only the buttons
-// the daemon will accept (taskq has the rules, nothing else copies them).
+// taskView is a task on the wire with its parts, and what the rules allow
+// on it now, so a lens draws only the buttons the daemon will accept (taskq
+// has the rules, nothing else copies them).
 type taskView struct {
 	store.Task
-	Repo      string   `json:"repo"`
-	Moves     []string `json:"moves"`
-	Editable  bool     `json:"editable"`
-	Orderable bool     `json:"orderable"`
-	Removable bool     `json:"removable"`
-	// WorkspaceID is the session holding the task's worker pane, so a lens
-	// can open it; empty once that pane is gone.
-	WorkspaceID string `json:"workspaceId,omitempty"`
+	Parts     []partView `json:"parts"`
+	Moves     []string   `json:"moves"`
+	Editable  bool       `json:"editable"`
+	Orderable bool       `json:"orderable"`
+	Removable bool       `json:"removable"`
 }
 
-func (s *Server) taskViewsOf(list []store.Task) []taskView {
-	out := make([]taskView, 0, len(list))
-	for _, t := range list {
-		ws := ""
-		if t.PaneID != "" {
-			ws = s.mgr.WorkspaceForPane(t.PaneID)
-		}
-		out = append(out, taskView{
-			Task: t, Repo: filepath.Base(t.RepoPath), Moves: taskq.Moves(t.Status), WorkspaceID: ws,
+// partView is a part with its repo's short name, its Claude's bus name, and
+// the session holding its pane (empty once that pane is gone), so a lens
+// can open it.
+type partView struct {
+	store.Part
+	Repo        string `json:"repo"`
+	BusName     string `json:"busName"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Retryable   bool   `json:"retryable"`
+}
+
+func (s *Server) taskViewsOf(tasks []store.Task, parts []store.Part) []taskView {
+	out := make([]taskView, 0, len(tasks))
+	for _, t := range tasks {
+		v := taskView{
+			Task: t, Parts: []partView{}, Moves: taskq.Moves(t.Status),
 			Editable: taskq.Editable(t.Status), Orderable: taskq.Orderable(t.Status),
 			Removable: taskq.Removable(t.Status),
-		})
+		}
+		for _, p := range taskq.PartsOf(parts, t.ID) {
+			v.Parts = append(v.Parts, s.partViewOf(t, p))
+		}
+		out = append(out, v)
 	}
 	return out
+}
+
+func (s *Server) partViewOf(t store.Task, p store.Part) partView {
+	v := partView{Part: p, Repo: filepath.Base(p.RepoPath), BusName: taskq.BusName(p.RepoPath, t.ID)}
+	if p.PaneID != "" {
+		v.WorkspaceID = s.mgr.WorkspaceForPane(p.PaneID)
+	}
+	_, err := taskq.Retry(t, p)
+	v.Retryable = err == nil
+	return v
+}
+
+// board reads every task and part.
+func (s *Server) board() ([]store.Task, []store.Part, error) {
+	tasks, err := s.tasks.Tasks()
+	if err != nil {
+		return nil, nil, err
+	}
+	parts, err := s.tasks.Parts()
+	return tasks, parts, err
 }
 
 // tasksReady answers 503 when this daemon has no task store.
@@ -76,12 +108,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {
 		return
 	}
-	all, err := s.tasks.Tasks()
+	tasks, parts, err := s.board()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskViewsOf(all), "counts": taskq.Counts(all)})
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskViewsOf(tasks, parts), "counts": taskq.Counts(tasks)})
 }
 
 // taskOf loads {id} with the whole list, or writes the error and returns false.
@@ -115,7 +147,8 @@ func (s *Server) saveTask(t store.Task) error {
 	return nil
 }
 
-// patchTask: PATCH /v1/tasks/{id} with any of {title, plan, status, afterId}.
+// patchTask: PATCH /v1/tasks/{id} with any of {title, status, afterId}. A
+// cancelled task queued again has its unbuilt parts set to start again.
 func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {
 		return
@@ -135,11 +168,59 @@ func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	if err := s.saveTask(next); err != nil {
+	if err := s.saveTaskChange(t, next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.taskViewsOf([]store.Task{next})[0])
+	writeJSON(w, http.StatusOK, map[string]any{"id": next.ID, "status": next.Status})
+}
+
+// saveTaskChange saves an edited task with what its status change means
+// for its parts: a cancel closes its Claudes now (not on the runner's next
+// pass, which a quick Remove or requeue would beat, leaving them running
+// untracked), and a cancelled task queued again gets its unbuilt parts set
+// to start again.
+func (s *Server) saveTaskChange(was, next store.Task) error {
+	parts, err := s.tasks.Parts()
+	if err != nil {
+		return err
+	}
+	var changed []store.Part
+	switch {
+	case next.Status == taskq.Cancelled && was.Status != taskq.Cancelled:
+		changed, err = s.stopWorkers(taskq.PartsOf(parts, next.ID))
+	case was.Status == taskq.Cancelled && next.Status == taskq.Waiting:
+		changed = taskq.Requeued(taskq.PartsOf(parts, next.ID))
+	}
+	if err != nil {
+		return err
+	}
+	for _, p := range changed {
+		p.UpdatedAt = s.taskNow()
+		if _, err := s.tasks.SavePart(p); err != nil {
+			return err
+		}
+	}
+	return s.saveTask(next)
+}
+
+// stopWorkers closes the Claude of every working part and returns those
+// parts stopped, to start again if the task is queued again.
+func (s *Server) stopWorkers(parts []store.Part) ([]store.Part, error) {
+	var out []store.Part
+	for _, p := range parts {
+		if p.Status != taskq.Running && p.Status != taskq.NeedsYou {
+			continue
+		}
+		if p.Worktree != "" {
+			if err := s.mgr.ClearTaskFolder(p.Worktree); err != nil {
+				return nil, fmt.Errorf("closing the %s worker: %w", filepath.Base(p.RepoPath), err)
+			}
+		}
+		p.Status, p.Note, p.PaneID = taskq.Pending, "stopped: the task was cancelled", ""
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // moveTask: POST /v1/tasks/{id}/move {dir: "up"|"down"} trades places with
@@ -180,7 +261,7 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"moved": found})
 }
 
-// deleteTask: DELETE /v1/tasks/{id}, for a done, failed or cancelled task.
+// deleteTask: DELETE /v1/tasks/{id}, for a done or cancelled task.
 func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {
 		return
@@ -192,7 +273,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !taskq.Removable(t.Status) {
-		writeError(w, http.StatusConflict, "cancel the task first; only a done, failed or cancelled task can be removed")
+		writeError(w, http.StatusConflict, "cancel the task first; only a done or cancelled task can be removed")
 		return
 	}
 	if waiters := taskq.Waiters(all, t.ID); len(waiters) > 0 {

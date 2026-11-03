@@ -142,23 +142,41 @@
   function taskHtml(t) {
     const w = L().waitsOn(t, q.tasks);
     const open = q.expanded.has(t.id);
+    const chips = (t.parts || []).map((p) =>
+      `<span class="tq-repo-chip tq-part-${esc(p.status)}" title="${esc(L().partWord(p.status))}">${esc(p.repo)}</span>`).join("");
     return `<div class="tq-task${open ? " open" : ""}" data-id="${t.id}">` +
       `<div class="tq-line" data-act="toggle"><span class="tq-id">#${t.id}</span>` +
-      `<span class="tq-repo-chip">${esc(t.repo)}</span><span class="tq-name">${esc(t.title)}</span>` +
+      `<span class="tq-name">${esc(t.title)}</span>${chips}` +
       (w ? `<span class="tq-after${w.blocked ? " blocked" : ""}">${esc(w.text)}</span>` : "") +
       (t.note ? `<span class="tq-note">${esc(t.note)}</span>` : "") + `</div>` +
       (open ? detailHtml(t) : "") + `</div>`;
   }
 
+  // draft is what is typed and not saved yet: a task's title ("t" + id) or a
+  // part's plan ("p" + id), falling back to the saved text.
+  const draft = (key, saved) => (q.drafts.has(key) ? q.drafts.get(key) : saved);
+
   function detailHtml(t) {
-    const d = q.drafts.get(t.id) || { title: t.title, plan: t.plan };
-    const text = t.editable
-      ? `<input class="tq-edit-title" data-field="title" maxlength="120" value="${esc(d.title)}">` +
-        `<textarea class="tq-edit-plan" data-field="plan" spellcheck="false">${esc(d.plan)}</textarea>`
-      : `<pre class="tq-plan">${esc(t.plan)}</pre>`;
-    const where = t.branch ? ` · branch ${esc(t.branch)}` : "";
-    return `<div class="tq-detail">${text}<div class="tq-meta">filed by ${esc(t.filedBy || "?")}${where}</div>` +
+    const title = t.editable
+      ? `<input class="tq-edit-title" data-field="title" data-key="t${t.id}" maxlength="120" value="${esc(draft("t" + t.id, t.title))}">`
+      : "";
+    return `<div class="tq-detail">${title}${(t.parts || []).map((p) => partHtml(t, p)).join("")}` +
+      `<div class="tq-meta">filed by ${esc(t.filedBy || "?")}</div>` +
       `<div class="tq-actions">${buttonsHtml(t)}</div></div>`;
+  }
+
+  function partHtml(t, p) {
+    const plan = t.editable
+      ? `<textarea class="tq-edit-plan" data-field="plan" data-key="p${p.id}" spellcheck="false">${esc(draft("p" + p.id, p.plan))}</textarea>`
+      : `<pre class="tq-plan">${esc(p.plan)}</pre>`;
+    const where = p.branch ? ` · ${esc(p.busName)} on ${esc(p.branch)}` : "";
+    const b = (act, label) => `<button type="button" data-act="${act}">${esc(label)}</button>`;
+    const buttons = (p.workspaceId ? b("session", "Open session") : "") + (p.retryable ? b("retry", "Retry") : "");
+    return `<div class="tq-part" data-part="${p.id}"><div class="tq-part-head">` +
+      `<span class="tq-repo-chip tq-part-${esc(p.status)}">${esc(p.repo)}</span>` +
+      `<span class="tq-part-status">${esc(L().partWord(p.status))}</span>` +
+      (p.note ? `<span class="tq-note">${esc(p.note)}</span>` : "") +
+      `<span class="tq-meta">${where}</span>${buttons ? `<span class="tq-actions">${buttons}</span>` : ""}</div>${plan}</div>`;
   }
 
   function buttonsHtml(t) {
@@ -166,7 +184,6 @@
     const out = [];
     if (t.editable) out.push(b("save", "Save"), b("up", "↑"), b("down", "↓"));
     if (t.afterId && t.orderable) out.push(b("unwait", `Stop waiting on #${t.afterId}`));
-    if (t.workspaceId) out.push(b("session", "Open session"));
     for (const to of t.moves || []) out.push(b("move", L().moveLabel(to), ` data-to="${to}"`));
     if (t.removable) out.push(b("remove", "Remove"));
     return out.join("");
@@ -187,19 +204,15 @@
   }
 
   function onInput(e) {
-    const field = e.target.dataset.field, el = e.target.closest(".tq-task");
-    if (!field || !el) return;
-    const id = Number(el.dataset.id), t = q.tasks.find((x) => x.id === id);
-    if (!t) return;
-    const d = q.drafts.get(id) || { title: t.title, plan: t.plan };
-    d[field] = e.target.value;
-    q.drafts.set(id, d);
+    const key = e.target.dataset.key;
+    if (key) q.drafts.set(key, e.target.value);
   }
 
   function onClick(e) {
     const btn = e.target.closest("[data-act]"), el = e.target.closest(".tq-task");
     if (!btn || !el || btn.dataset.act === "repo") return;
-    act(btn.dataset.act, Number(el.dataset.id), btn.dataset.to);
+    const part = btn.closest("[data-part]");
+    act(btn.dataset.act, Number(el.dataset.id), btn.dataset.to, part ? Number(part.dataset.part) : 0);
   }
 
   function toggle(id) {
@@ -207,22 +220,31 @@
     render();
   }
 
+  // save sends the task's typed title and every typed plan of its parts.
   async function save(id) {
-    const d = q.drafts.get(id);
-    if (d && await send(`/${id}`, "PATCH", { title: d.title, plan: d.plan })) {
-      q.drafts.delete(id);
-      status("Saved #" + id);
+    const t = q.tasks.find((x) => x.id === id);
+    if (!t) return;
+    const sends = [];
+    if (q.drafts.has("t" + id)) sends.push(["t" + id, `/${id}`, { title: q.drafts.get("t" + id) }]);
+    for (const p of t.parts || []) {
+      if (q.drafts.has("p" + p.id)) sends.push(["p" + p.id, `/${id}/parts/${p.id}`, { plan: q.drafts.get("p" + p.id) }]);
     }
+    for (const [key, path, body] of sends) {
+      if (!await send(path, "PATCH", body)) return; // the refusal is on screen; the rest stays typed
+      q.drafts.delete(key);
+    }
+    status(sends.length ? "Saved #" + id : "Nothing to save");
   }
 
   async function remove(id) {
     if (await send(`/${id}`, "DELETE")) q.expanded.delete(id);
   }
 
-  // openSession shows the worker's pane: openWorkspace leaves this view.
-  function openSession(id) {
+  // openSession shows a part's worker pane: openWorkspace leaves this view.
+  function openSession(id, _to, partId) {
     const t = q.tasks.find((x) => x.id === id);
-    if (t && t.workspaceId) openWorkspace(t.workspaceId, t.paneId);
+    const p = t && (t.parts || []).find((x) => x.id === partId);
+    if (p && p.workspaceId) openWorkspace(p.workspaceId, p.paneId);
   }
 
   // What each button does, by its data-act.
@@ -235,10 +257,11 @@
     move: (id, to) => send(`/${id}`, "PATCH", { status: to }),
     unwait: (id) => send(`/${id}`, "PATCH", { afterId: 0 }),
     session: openSession,
+    retry: (id, _to, partId) => send(`/${id}/parts/${partId}`, "PATCH", { retry: true }),
   };
 
-  function act(kind, id, to) {
-    if (Object.hasOwn(actions, kind)) actions[kind](id, to);
+  function act(kind, id, to, partId) {
+    if (Object.hasOwn(actions, kind)) actions[kind](id, to, partId);
   }
 
   window.ccmuxTasks = { refresh, row, open, close, isOpen: () => q.open };

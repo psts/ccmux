@@ -7,33 +7,24 @@ import (
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
-// Edit is a change a lens or a session asks for. A nil field is left alone.
+// Edit is a change to a task a lens or a session asks for. A nil field is
+// left alone. Plans belong to parts: EditPlan changes those.
 type Edit struct {
 	Title   *string `json:"title"`
-	Plan    *string `json:"plan"`
 	Status  *string `json:"status"`
 	AfterID *int64  `json:"afterId"`
-}
-
-// touchesText reports whether e changes what the builder will read.
-func (e Edit) touchesText() bool { return e.Title != nil || e.Plan != nil }
-
-// Orderable reports whether a task's "starts after" may change: before it
-// runs, and on a cancelled or failed one about to go back in the queue.
-func Orderable(status string) bool {
-	return Editable(status) || status == Cancelled || status == Failed
 }
 
 // Apply checks e against the task and the whole list and returns the task
 // as it would be saved. It changes nothing on a refusal.
 func Apply(t store.Task, all []store.Task, e Edit) (store.Task, error) {
-	if e.touchesText() && !Editable(t.Status) {
+	if e.Title != nil && !Editable(t.Status) {
 		return t, fmt.Errorf("task #%d is %s; only a planning or waiting task can be edited", t.ID, t.Status)
 	}
 	if e.AfterID != nil && !Orderable(t.Status) {
 		return t, fmt.Errorf("task #%d is %s; what it starts after can no longer change", t.ID, t.Status)
 	}
-	next, err := applyText(t, all, e)
+	next, err := applyFields(t, all, e)
 	if err != nil {
 		return t, err
 	}
@@ -43,44 +34,14 @@ func Apply(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 	return next, nil
 }
 
-// moveTo checks and makes a status change.
-func moveTo(t store.Task, all []store.Task, to string) (store.Task, error) {
-	if err := checkMove(t, all, to); err != nil {
-		return t, err
-	}
-	if t.Status == Failed || t.Status == Cancelled {
-		t.Note = "" // back in the queue: why it stopped last time is history
-	}
-	t.Status = to
-	return t, nil
-}
-
-// checkMove judges a status change. A task put back in the queue has its
-// "starts after" checked again: the task it waited for may have been
-// cancelled or removed while it sat out.
-func checkMove(t store.Task, all []store.Task, to string) error {
-	if !CanMove(t.Status, to) {
-		return fmt.Errorf("task #%d cannot go from %s to %s", t.ID, t.Status, to)
-	}
-	if to == Waiting {
-		if err := CheckAfter(all, t.ID, t.AfterID); err != nil {
-			return fmt.Errorf("%w; change what it starts after first", err)
-		}
-	}
-	return nil
-}
-
-// applyText applies the title, plan and "starts after" parts of e.
-func applyText(t store.Task, all []store.Task, e Edit) (store.Task, error) {
+// applyFields applies the title and "starts after" parts of e.
+func applyFields(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 	next := t
 	if e.Title != nil {
 		next.Title = strings.TrimSpace(*e.Title)
-	}
-	if e.Plan != nil {
-		next.Plan = *e.Plan
-	}
-	if err := CheckText(next.Title, next.Plan); err != nil {
-		return t, err
+		if err := CheckTitle(next.Title); err != nil {
+			return t, err
+		}
 	}
 	if e.AfterID != nil {
 		if err := CheckAfter(all, t.ID, *e.AfterID); err != nil {
@@ -89,4 +50,57 @@ func applyText(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 		next.AfterID = *e.AfterID
 	}
 	return next, nil
+}
+
+// moveTo checks and makes a status change. A task put back in the queue has
+// its "starts after" checked again (the task it waited for may have been
+// cancelled meanwhile) and loses the note on why it stopped.
+func moveTo(t store.Task, all []store.Task, to string) (store.Task, error) {
+	if !CanMove(t.Status, to) {
+		return t, fmt.Errorf("task #%d cannot go from %s to %s", t.ID, t.Status, to)
+	}
+	if to == Waiting {
+		if err := CheckAfter(all, t.ID, t.AfterID); err != nil {
+			return t, fmt.Errorf("%w; change what it starts after first", err)
+		}
+	}
+	if t.Status == Cancelled {
+		t.Note = ""
+	}
+	t.Status = to
+	return t, nil
+}
+
+// EditPlan changes a part's plan while its task has not started.
+func EditPlan(t store.Task, p store.Part, plan string) (store.Part, error) {
+	if !Editable(t.Status) {
+		return p, fmt.Errorf("task #%d is %s; plans change only before it starts", t.ID, t.Status)
+	}
+	if err := CheckPlan(plan); err != nil {
+		return p, err
+	}
+	p.Plan = plan
+	return p, nil
+}
+
+// Retry puts a failed part of a started task back to start again.
+func Retry(t store.Task, p store.Part) (store.Part, error) {
+	if p.Status != Failed || (t.Status != Running && t.Status != NeedsYou) {
+		return p, fmt.Errorf("only a failed part of a running task can be retried")
+	}
+	p.Status, p.Note = Pending, ""
+	return p, nil
+}
+
+// Requeued returns the parts to start again when a cancelled task goes back
+// in the queue: every part not already built. A built part stays built.
+func Requeued(parts []store.Part) []store.Part {
+	var out []store.Part
+	for _, p := range parts {
+		if p.Status != Ready && p.Status != Pending {
+			p.Status, p.Note = Pending, ""
+			out = append(out, p)
+		}
+	}
+	return out
 }

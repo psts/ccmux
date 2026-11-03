@@ -386,6 +386,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tasks", s.listTasks)
 	mux.HandleFunc("PATCH /v1/tasks/{id}", s.patchTask)
 	mux.HandleFunc("POST /v1/tasks/{id}/move", s.moveTask)
+	mux.HandleFunc("PATCH /v1/tasks/{id}/parts/{part}", s.patchPart)
 	mux.HandleFunc("DELETE /v1/tasks/{id}", s.deleteTask)
 	mux.HandleFunc("POST /v1/panes/{id}/tasks", s.paneTasks)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)

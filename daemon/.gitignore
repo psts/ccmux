@@ -1,5 +1,6 @@
 # built binaries
 /ccmuxd
+/ccmux-peers
 /spike-*
 cmd/**/debug
 # local registry

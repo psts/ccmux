@@ -198,39 +198,43 @@ var toolsList = []map[string]any{
 	},
 	{
 		"name":        "tasks",
-		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel) by a fresh Claude in its own git worktree of THIS repo, then merged if the checks pass. File only when the human says the plan is ready to file. The plan is all the builder gets: write it for a fresh Claude that knows this repo but not this conversation (goal, files, steps, how to verify). When a feature spans repos, each repo files its own part from its own session; if one part must land first, file that one, pass its task number to the other repo over the bus, and that repo files with after set to it. Actions: file (title + plan, optional after, draft), list (this repo's tasks), edit (id + any of title, plan, after, draft), cancel (id). A Claude started to BUILD a task uses report (status done or stuck, plus note) as its brief says.",
+		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel). A task is one feature with one part per repo; when it starts, a fresh Claude builds every part at once, each in its own git worktree of its repo, and they coordinate over the peers bus. File only when the human says the plan is ready. Each part's plan is all its builder gets: write it for a fresh Claude that knows the repo but not this conversation (goal, files, steps, how to verify). One repo: file it. Several repos: file it with draft true and this repo's part, give the task number to the other repos' sessions over the bus so each adds its own part (add_part with id and plan), then mark it ready (edit, draft false). Actions: file (title, plan, optional after, draft), add_part (id, plan: this repo's part of task id), list (tasks this repo has a part in), edit (id + any of title, plan, after, draft), cancel (id). A Claude started to BUILD a part uses report (status done or stuck, plus note) and add_part (repo, plan) as its brief says.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []string{"file", "list", "edit", "cancel", "report"},
+					"enum":        []string{"file", "add_part", "list", "edit", "cancel", "report"},
 					"description": "What to do.",
+				},
+				"id": map[string]any{
+					"type":        "integer",
+					"description": "add_part/edit/cancel: the task number.",
 				},
 				"title": map[string]any{
 					"type":        "string",
-					"description": "file/edit: a short name for the task, at most 120 characters.",
+					"description": "file/edit: a short name for the feature, at most 120 characters.",
 				},
 				"plan": map[string]any{
 					"type":        "string",
-					"description": "file/edit: the full plan the builder will follow.",
+					"description": "file/add_part/edit: the full plan for this repo's part (for a builder, the plan of the new part).",
 				},
 				"after": map[string]any{
 					"type":        "integer",
-					"description": "file/edit: a task number (any repo) that must be done and merged before this one starts. On edit, 0 removes it.",
+					"description": "file/edit: a task number that must be done and merged before this one starts. On edit, 0 removes it.",
 				},
 				"draft": map[string]any{
 					"type":        "boolean",
 					"description": "file: true files it as planning, not run until marked ready. edit: true moves it back to planning, false marks it ready to run.",
 				},
-				"id": map[string]any{
-					"type":        "integer",
-					"description": "edit/cancel: the task number.",
+				"repo": map[string]any{
+					"type":        "string",
+					"description": "add_part from a builder: the folder name of the repo the new part is for.",
 				},
 				"status": map[string]any{
 					"type":        "string",
 					"enum":        []string{"done", "stuck"},
-					"description": "report: done (work committed on the task's branch) or stuck (you need a person).",
+					"description": "report: done (your part is committed on its branch) or stuck (you need a person).",
 				},
 				"note": map[string]any{
 					"type":        "string",

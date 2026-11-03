@@ -51,10 +51,10 @@ const (
 	noteNoPane = "it lost its pane before starting"
 )
 
-// Judge reads a running or waiting-on-a-person task against its pane and
-// returns the task as it should now be saved, and whether it changed. ok is
+// Judge reads a running or waiting-on-a-person part against its pane and
+// returns the part as it should now be saved, and whether it changed. ok is
 // false when no live session holds the pane any more.
-func Judge(t store.Task, st PaneState, ok bool, now time.Time) (store.Task, bool) {
+func Judge(t store.Part, st PaneState, ok bool, now time.Time) (store.Part, bool) {
 	if t.Status != Running && t.Status != NeedsYou {
 		return t, false
 	}
@@ -72,9 +72,9 @@ func Judge(t store.Task, st PaneState, ok bool, now time.Time) (store.Task, bool
 	return judgeWaitingOnYou(t, st)
 }
 
-// judgeRunning moves a working task to "needs you" when its Claude asks
+// judgeRunning moves a working part to "needs you" when its Claude asks
 // something, or finished a turn long ago without reporting.
-func judgeRunning(t store.Task, st PaneState, now time.Time) (store.Task, bool) {
+func judgeRunning(t store.Part, st PaneState, now time.Time) (store.Part, bool) {
 	switch {
 	case st.asking():
 		t.Status, t.Note = NeedsYou, noteAsking
@@ -86,11 +86,11 @@ func judgeRunning(t store.Task, st PaneState, now time.Time) (store.Task, bool) 
 	return t, true
 }
 
-// judgeWaitingOnYou puts a task back to running once a person dealt with
+// judgeWaitingOnYou puts a part back to running once a person dealt with
 // it: they typed into its session, or answered the question it asked. Only
-// a signal newer than the task's last change counts, so the Stop that ends a
+// a signal newer than the part's last change counts, so the Stop that ends a
 // worker's own "stuck" report does not read as an answer.
-func judgeWaitingOnYou(t store.Task, st PaneState) (store.Task, bool) {
+func judgeWaitingOnYou(t store.Part, st PaneState) (store.Part, bool) {
 	if st.At <= t.UpdatedAt {
 		return t, false
 	}
@@ -102,7 +102,7 @@ func judgeWaitingOnYou(t store.Task, st PaneState) (store.Task, bool) {
 	return t, true
 }
 
-func finish(t store.Task, status, note string, now time.Time) store.Task {
+func finish(t store.Part, status, note string, now time.Time) store.Part {
 	t.Status, t.Note, t.FinishedAt = status, note, now.UnixMilli()
 	return t
 }

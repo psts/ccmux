@@ -212,17 +212,26 @@ CREATE TABLE IF NOT EXISTS agent_pages (
   scope TEXT, incident TEXT, paged_at INTEGER, by_name TEXT DEFAULT '',
   PRIMARY KEY (scope, incident)
 );
--- The task queue (internal/taskq): plans a repo's session filed to be built
--- later in a worktree. position orders the queue; after_id is "starts after"
--- (0 = none). branch, worktree and pane_id belong to the runner.
+-- The task queue (internal/taskq): a task is one feature, built by one part
+-- per repo, each part a Claude in its own worktree of that repo. position
+-- orders the queue; after_id is "starts after" another task (0 = none).
 CREATE TABLE IF NOT EXISTS tasks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, repo_path TEXT NOT NULL,
-  title TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, status TEXT NOT NULL,
   after_id INTEGER DEFAULT 0, position INTEGER DEFAULT 0,
+  note TEXT DEFAULT '', filed_by TEXT DEFAULT '',
+  created_at INTEGER, updated_at INTEGER,
+  started_at INTEGER DEFAULT 0, finished_at INTEGER DEFAULT 0
+);
+-- One part of a task: the repo it is built in, its own plan, and the
+-- runner's record of where it runs (branch, worktree, pane).
+CREATE TABLE IF NOT EXISTS task_parts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL,
+  repo_path TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL,
   note TEXT DEFAULT '', filed_by TEXT DEFAULT '',
   branch TEXT DEFAULT '', worktree TEXT DEFAULT '', pane_id TEXT DEFAULT '',
   created_at INTEGER, updated_at INTEGER,
-  started_at INTEGER DEFAULT 0, finished_at INTEGER DEFAULT 0
+  started_at INTEGER DEFAULT 0, finished_at INTEGER DEFAULT 0,
+  UNIQUE (task_id, repo_path)
 );
 -- A workspace's scratchpad: free text shared by everyone who opens it. Kept
 -- on the daemon lenses talk to (the hub), whichever host runs the workspace.
