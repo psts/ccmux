@@ -363,6 +363,23 @@ async function scratchDraftCases() {
   check("the draft is added once, not on every open", daemon.pads["ws-1"] === kept, daemon.pads["ws-1"]);
 }
 
+// The Scratchpad tab: shown for a repo session, never for an agent's or
+// with no session open.
+async function scratchTabCases() {
+  const r = run();
+  await settle();
+  const hidden = { v: null };
+  const tab = { classList: { toggle: (c, on) => { if (c === "hidden") hidden.v = on; } } };
+  r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "getElementById" ? (id) => (id === "scratch-tab" ? tab : el()) : el()) });
+  r.ctx.ccmuxScratch = { isOpen: () => false };
+  r.evalIn(`state.workspaces = [{ id: "repo" }, { id: "bot", agent: "hq" }]`);
+  const shown = (wsId) => { r.evalIn(`state.wsId = ${JSON.stringify(wsId)}; renderScratchTab()`); return hidden.v === false; };
+  check("a repo session has the Scratchpad tab", shown("repo"));
+  check("an agent's session does not", !shown("bot"));
+  check("no session, no tab", !shown(null));
+  check("a session not listed yet keeps it", shown("not-listed-yet"));
+}
+
 async function firehoseCases() {
   const r = run();
   await settle();
@@ -1551,6 +1568,7 @@ async function peersFailureCases() {
   await scratchpadCases();
   await scratchDraftCases();
   await firehoseCases();
+  await scratchTabCases();
   await pageWindowCases();
   await peersMergeCases();
   await peersFailureCases();

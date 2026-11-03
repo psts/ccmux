@@ -1660,10 +1660,12 @@ function showPane(paneId) {
 
 // renderScratchTab draws the Scratchpad tab after the pane tabs (scratchpad.js). It
 // sits outside #tabs so the drag code, which counts #tabs .tab, never sees it.
+// An agent's session has none: the notes are for people working in a repo.
 function renderScratchTab() {
   const t = $("scratch-tab");
   if (!t || !window.ccmuxScratch) return;
-  t.classList.toggle("hidden", !state.wsId);
+  const ws = state.workspaces.find((w) => w.id === state.wsId);
+  t.classList.toggle("hidden", !state.wsId || !!(ws && isAgentWs(ws)));
   t.classList.toggle("active", window.ccmuxScratch.isOpen());
 }
 
