@@ -789,11 +789,32 @@ async function handOffCases() {
   await settle();
   const b = run({ windowsReply: twoWindows, search: "?w=win-b", storage: shared, BroadcastChannel: BC });
   await settle();
-  const took = await a.ctx.clickRow("ws-2").then(() => true);
+  const bystander = run({ windowsReply: twoWindows, search: "?w=win-a", storage: shared, BroadcastChannel: BC });
+  await settle();
+  // Raced against a settle: timers are fake here, so a reply that never came
+  // would hang the run instead of failing this check.
+  const handed = await Promise.race([a.ctx.ccmuxPage.handOff("", "ws-2"), settle().then(() => "no answer")]);
   await settle();
   check("a browser window opened by hand still takes the click over the channel",
-    took && attachedTo(b).includes("ws-2") && a.ctx.ccmuxPage.current() === "win-a" && !attachedTo(a).includes("ws-2"),
-    `b attached ${attachedTo(b).join()}, a on ${a.ctx.ccmuxPage.current()}, a attached ${attachedTo(a).join()}`);
+    handed === true && attachedTo(b).includes("ws-2") && a.ctx.ccmuxPage.current() === "win-a" && !attachedTo(a).includes("ws-2"),
+    `handed ${handed}, b attached ${attachedTo(b).join()}, a on ${a.ctx.ccmuxPage.current()}, a attached ${attachedTo(a).join()}`);
+  check("only the browser window showing that window takes it",
+    !attachedTo(bystander).includes("ws-2") && bystander.ctx.ccmuxPage.current() === "win-a",
+    `bystander attached ${attachedTo(bystander).join()}, on ${bystander.ctx.ccmuxPage.current()}`);
+
+  // A crashed browser window never said goodbye, so storage still says it
+  // shows win-b. Nobody answers; once the wait is over the click opens here.
+  const ghost = { "ccmux-pages": JSON.stringify({ gone: { w: "win-b", seen: 1, closedAt: 0 } }) };
+  const lone = run({ windowsReply: twoWindows, search: "?w=win-a", storage: ghost, BroadcastChannel: sharedChannel() });
+  await settle();
+  const click = lone.ctx.clickRow("ws-2");
+  await settle();
+  lone.fireTimers();
+  await Promise.race([click, settle()]);
+  await settle();
+  check("a stale record of a window nobody shows still opens the click here after the wait",
+    lone.ctx.ccmuxPage.current() === "win-b" && attachedTo(lone).includes("ws-2"),
+    `current ${lone.ctx.ccmuxPage.current()}, attached ${attachedTo(lone).join()}`);
 
   const alone = run({ windowsReply: twoWindows, search: "?w=win-a" });
   await settle();

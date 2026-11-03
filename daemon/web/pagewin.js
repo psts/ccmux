@@ -50,15 +50,8 @@
   if (chan) {
     chan.onmessage = (e) => {
       const m = e.data || {};
-      if (m.type === "ping" && m.from !== pageId) chan.postMessage({ type: "pong", from: pageId, to: m.from });
-      if (m.type === "pong" && m.to === pageId) pongs.add(m.from);
-      if (m.type === "hello" && m.from !== pageId) joinOpener(); // the opener reloaded and forgot its kids
-      if (m.type === "take" && m.from !== pageId && m.w && m.w === current) {
-        take(m.ws);
-        try { window.focus(); } catch (_) {} // a browser allows this only sometimes
-        chan.postMessage({ type: "took", from: pageId, to: m.from, id: m.id });
-      }
-      if (m.type === "took" && m.to === pageId && takers.has(m.id)) takers.get(m.id)();
+      const on = m.from !== pageId && onMessage.get(m.type);
+      if (on) on(m);
     };
   }
 
@@ -72,6 +65,24 @@
     } catch (_) {} // an opener of another origin: nothing to join
   }
   const takers = new Map(); // hand-off id -> resolve, while waiting for "took"
+
+  // What this page does with each message from another browser window of the app.
+  const onMessage = new Map([
+    ["ping", (m) => chan.postMessage({ type: "pong", from: pageId, to: m.from })],
+    ["pong", (m) => { if (m.to === pageId) pongs.add(m.from); }],
+    ["hello", () => joinOpener()], // the opener reloaded and forgot its kids
+    ["take", onTake],
+    ["took", (m) => { const done = m.to === pageId && takers.get(m.id); if (done) done(); }],
+  ]);
+
+  // onTake: another browser window asks whoever shows window m.w to show
+  // session m.ws. Only that window answers.
+  function onTake(m) {
+    if (!m.w || m.w !== current) return;
+    take(m.ws);
+    window.focus(); // a browser may ignore this; it does not throw
+    chan.postMessage({ type: "took", from: pageId, to: m.from, id: m.id });
+  }
   function othersAlive() {
     if (!chan) return Promise.resolve(new Set());
     pongs.clear();
