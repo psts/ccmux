@@ -1,4 +1,4 @@
-// scratchpad.js: a workspace's shared notes, behind the 📝 tab after the pane
+// scratchpad.js: a workspace's shared notes, behind the Scratchpad tab after the pane
 // tabs, shown in place of the terminal. One copy per workspace, kept on the
 // daemon this page talks to (/v1/workspaces/{id}/scratchpad), the same for
 // everyone. The last save wins, as it did in the Mac app; a save made
@@ -62,7 +62,7 @@
     const box = $("scratchpad");
     if (box.dataset.built) return;
     box.dataset.built = "1";
-    box.innerHTML = `<div class="sp-head"><span class="sp-title">📝 Scratchpad</span>` +
+    box.innerHTML = `<div class="sp-head"><span class="sp-title">Scratchpad</span>` +
       `<span class="sp-note">shared with everyone in this workspace</span><span class="sp-status"></span></div>` +
       `<textarea spellcheck="false" placeholder="Notes for this workspace…"></textarea>`;
     const ta = area();
@@ -177,7 +177,7 @@
     flush();
     showing = false;
     $("app").classList.remove("scratch-open");
-    renderTabs(); // the 📝 tab lets go now, not when the re-attach answers
+    renderTabs(); // the Scratchpad tab lets go now, not when the re-attach answers
     scheduleFit(); // the terminal has its box back; nothing observes that for it
   }
 

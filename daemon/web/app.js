@@ -1658,7 +1658,7 @@ function showPane(paneId) {
   attach(state.wsId, paneId);
 }
 
-// renderScratchTab draws the 📝 tab after the pane tabs (scratchpad.js). It
+// renderScratchTab draws the Scratchpad tab after the pane tabs (scratchpad.js). It
 // sits outside #tabs so the drag code, which counts #tabs .tab, never sees it.
 function renderScratchTab() {
   const t = $("scratch-tab");
