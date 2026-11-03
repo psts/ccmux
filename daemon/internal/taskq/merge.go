@@ -129,16 +129,12 @@ func noteOf(err error) string {
 // exact commit that was checked: a commit its worker made meanwhile waits.
 func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 	trunks, revs := make([]string, len(parts)), make([]string, len(parts))
-	var gateFiles []string
 	for i, p := range parts {
-		trunk, rev, res, err := r.prepareMerge(p)
+		trunk, rev, err := r.prepareMerge(p)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", filepath.Base(p.RepoPath), err)
 		}
 		trunks[i], revs[i] = trunk, rev
-		for _, f := range res.TrunkCopies {
-			gateFiles = append(gateFiles, filepath.Base(p.RepoPath)+"/"+f)
-		}
 	}
 	// The checks took a while: a folder may have got changes meanwhile.
 	if why := r.mergeBlocked(parts); why != "" {
@@ -152,46 +148,55 @@ func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 		}
 		done = append(done, name+" into "+trunks[i])
 	}
-	return "merged " + strings.Join(done, ", ") + gateFilesNote(gateFiles), nil
-}
-
-// gateFilesNote names the gate files a feature changed: checked with the
-// trunk's copies, merged as the worker wrote them, worth a person's look.
-func gateFilesNote(files []string) string {
-	if len(files) == 0 {
-		return ""
-	}
-	return "; it changed gate files (checked with the trunk's copies, look them over): " + strings.Join(files, ", ")
+	return "merged " + strings.Join(done, ", "), nil
 }
 
 // prepareMerge refuses a part with uncommitted work, rebases it onto its
-// trunk and runs its checks there, returning the trunk, the commit checked
-// and what the checks found.
-func (r *Runner) prepareMerge(p store.Part) (string, string, CheckResult, error) {
-	var res CheckResult
+// trunk, refuses one that changes the repo's gate files, and runs its
+// checks, returning the trunk and the commit checked.
+func (r *Runner) prepareMerge(p store.Part) (string, string, error) {
 	trunk, err := r.Git.Trunk(p.RepoPath)
 	if err != nil {
-		return "", "", res, err
+		return "", "", err
 	}
 	left, err := r.MergeGit.Uncommitted(p.Worktree)
 	if err != nil {
-		return "", "", res, err
+		return "", "", err
 	}
 	if left != "" {
-		return "", "", res, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))
+		return "", "", fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))
 	}
 	rev, err := r.MergeGit.Rebase(p.Worktree, trunk)
 	if err != nil {
-		return "", "", res, err
+		return "", "", err
 	}
-	res = r.Checks.Run(p.RepoPath, p.Worktree, trunk)
+	if err := r.gateFilesUntouched(p.RepoPath, trunk, rev); err != nil {
+		return "", "", err
+	}
+	res := r.Checks.Run(p.RepoPath, p.Worktree, trunk)
 	switch {
 	case !res.Configured:
-		return "", "", res, errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
+		return "", "", errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
 	case !res.OK:
-		return "", "", res, errors.New("checks failed:\n" + res.Output)
+		return "", "", errors.New("checks failed:\n" + res.Output)
 	}
-	return trunk, rev, res, nil
+	return trunk, rev, nil
+}
+
+// gateFilesUntouched refuses a part that changes anything under .claude/,
+// where the repo keeps its gates and their data (a frozen list, say). The
+// checks a merge runs are only worth trusting if the worker being graded
+// did not write them, so such a part waits for a person to look, however
+// green it is. Workers are told to leave .claude/ alone, so this is rare.
+func (r *Runner) gateFilesUntouched(repo, trunk, rev string) error {
+	changed, err := r.MergeGit.ChangedUnder(repo, trunk, rev, ".claude")
+	if err != nil {
+		return err
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("it changes the repo's gate files (%s), so it is not merged on its own checks; look them over, then merge it by hand and Mark merged", cut(strings.Join(changed, ", "), 300))
 }
 
 // mergedSoFar names the repos already merged when a later one failed: the

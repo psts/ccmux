@@ -317,3 +317,27 @@ func TestCheckedOut(t *testing.T) {
 		t.Fatalf("TrunkBlocked on an unreadable folder = %q, no error", why)
 	}
 }
+
+// ChangedUnder sees an edited, an added and a renamed file under the
+// directory, by their real names, and nothing outside it.
+func TestExecGit_ChangedUnder(t *testing.T) {
+	repo := gitRepo(t)
+	os.MkdirAll(filepath.Join(repo, ".claude", "gates"), 0o755)
+	commitFile(t, repo, ".claude/gates/frözen.txt", "a\n")
+	commitFile(t, repo, ".claude/gates/run.sh", "true\n")
+	g := ExecGit{}
+	wt := filepath.Join(t.TempDir(), "task-1")
+	g.AddWorktree(repo, wt, "task/1-x", "main")
+	if got, err := g.ChangedUnder(repo, "main", "task/1-x", ".claude"); err != nil || len(got) != 0 {
+		t.Fatalf("untouched = %v, %v", got, err)
+	}
+	commitFile(t, wt, ".claude/gates/frözen.txt", "a\nb\n")
+	commitFile(t, wt, "src.go", "package src")
+	runGit(wt, "mv", ".claude/gates/run.sh", ".claude/gates/run2.sh")
+	runGit(wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "mv")
+	got, err := g.ChangedUnder(repo, "main", "task/1-x", ".claude")
+	want := ".claude/gates/frözen.txt,.claude/gates/run.sh,.claude/gates/run2.sh"
+	if err != nil || strings.Join(got, ",") != want {
+		t.Fatalf("changed = %v, %v; want %s", got, err, want)
+	}
+}

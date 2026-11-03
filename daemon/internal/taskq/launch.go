@@ -82,8 +82,8 @@ in your own git worktree. Nobody is watching; a person reads the result later.
 - Do not push, merge, rebase or switch branches. ccmux merges every part of
   this feature together once all of them are done.
 - Follow the repo's CLAUDE.md, run its checks, and leave them green. Do not
-  change the repo's gate files under .claude/ to get there: the merge runs the
-  checks with the trunk's copies of them.
+  change anything under .claude/ (the repo's gates live there): a part that
+  does is not merged automatically, it waits for a person.
 
 ## Your team
 

@@ -25,6 +25,8 @@ type MergeGit interface {
 	Rebase(worktree, trunk string) (string, error)
 	// FastForward moves repo's trunk to rev, never rewriting it.
 	FastForward(repo, rev, trunk string) error
+	// ChangedUnder lists the files under dir that rev changes against trunk.
+	ChangedUnder(repo, trunk, rev, dir string) ([]string, error)
 	// RemoveWorktree removes a merged part's worktree and its branch.
 	RemoveWorktree(repo, path, branch, trunk string) error
 }
@@ -164,4 +166,20 @@ func (ExecGit) RemoveWorktree(repo, path, branch, trunk string) error {
 		return fmt.Errorf("worktree removed, branch %s not deleted: %w", branch, err)
 	}
 	return nil
+}
+
+// ChangedUnder lists the files under dir that differ between trunk and rev:
+// a rename as both its paths, names as they are (unquoted).
+func (ExecGit) ChangedUnder(repo, trunk, rev, dir string) ([]string, error) {
+	out, err := runGit(repo, "diff", "--name-only", "--no-renames", "-z", trunk, rev, "--", dir)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, nil
 }

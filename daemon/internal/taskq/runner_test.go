@@ -104,22 +104,28 @@ func (h *fakeHost) TasksChanged() {
 }
 
 type fakeGit struct {
-	mu      sync.Mutex // the merge goroutine calls in while a pass runs
-	added   []string
-	blocked map[string]string // repo -> why its trunk cannot move
-	clash   map[string]bool   // repo -> its rebase clashes
-	ffErr   map[string]error  // repo -> its fast-forward fails
-	rmErr   map[string]error  // repo -> its worktree will not go
-	dirty   map[string]string // repo -> uncommitted work in its worktree
-	ffs     []string          // repos fast-forwarded, in order
-	removed []string          // worktrees removed after a merge
-	rebased int
+	mu          sync.Mutex // the merge goroutine calls in while a pass runs
+	added       []string
+	blocked     map[string]string   // repo -> why its trunk cannot move
+	clash       map[string]bool     // repo -> its rebase clashes
+	ffErr       map[string]error    // repo -> its fast-forward fails
+	rmErr       map[string]error    // repo -> its worktree will not go
+	gateChanges map[string][]string // repo -> files its branch changes under .claude
+	dirty       map[string]string   // repo -> uncommitted work in its worktree
+	ffs         []string            // repos fast-forwarded, in order
+	removed     []string            // worktrees removed after a merge
+	rebased     int
 }
 
 func (g *fakeGit) TrunkBlocked(repo, trunk string) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.blocked[repo], nil
+}
+func (g *fakeGit) ChangedUnder(repo, trunk, rev, dir string) ([]string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.gateChanges[repo], nil
 }
 func (g *fakeGit) Uncommitted(worktree string) (string, error) {
 	g.mu.Lock()
@@ -201,7 +207,8 @@ type rig struct {
 
 func newRig(t *testing.T) *rig {
 	g := &rig{st: &memStore{}, host: &fakeHost{panes: map[string]PaneState{}},
-		git:    &fakeGit{blocked: map[string]string{}, clash: map[string]bool{}, dirty: map[string]string{}, ffErr: map[string]error{}, rmErr: map[string]error{}},
+		git: &fakeGit{blocked: map[string]string{}, clash: map[string]bool{}, dirty: map[string]string{}, ffErr: map[string]error{}, rmErr: map[string]error{},
+			gateChanges: map[string][]string{}},
 		checks: &fakeChecks{results: map[string]CheckResult{}},
 		now:    time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC)}
 	g.r = &Runner{Store: g.st, Host: g.host, Git: g.git, MergeGit: g.git, Checks: g.checks,
@@ -467,17 +474,27 @@ func TestMerge_CleanupSaysWhatItLeft(t *testing.T) {
 	}
 }
 
-// Gate files a feature changed are named in the done note.
-func TestMerge_NamesChangedGateFiles(t *testing.T) {
+// A part that changes the repo's gate files is not merged on its own
+// checks, however green: the feature stops for a person, nothing moves, and
+// the note names the files. A feature that leaves them alone merges.
+func TestMerge_GateFileChangesWaitForAPerson(t *testing.T) {
 	g := newRig(t)
 	g.feature(1, 0, "app", "backend")
 	g.tick()
 	g.doneParts(1)
-	g.checks.results["/p/app"] = CheckResult{Configured: true, OK: true, TrunkCopies: []string{".claude/gates/frozen.txt"}}
+	g.git.gateChanges["/p/backend"] = []string{".claude/gates/gocyclo-frozen.txt"}
 	g.tick()
-	note := g.st.task(1).Note
-	if g.st.task(1).Status != Done || !strings.Contains(note, "it changed gate files") || !strings.Contains(note, "app/.claude/gates/frozen.txt") || strings.Contains(note, "backend/") {
-		t.Fatalf("note = %q", note)
+	got := g.st.task(1)
+	if got.Status != MergeFailed || !strings.Contains(got.Note, "backend: it changes the repo's gate files") ||
+		!strings.Contains(got.Note, "gocyclo-frozen.txt") || len(g.git.ffs) != 0 {
+		t.Fatalf("gate files changed = %+v, ffs %v", got, g.git.ffs)
+	}
+	delete(g.git.gateChanges, "/p/backend")
+	got.Status = ReadyToMerge
+	g.st.SaveTask(got)
+	g.tick()
+	if g.st.task(1).Status != Done {
+		t.Fatalf("gate files left alone = %s", g.st.task(1).Status)
 	}
 }
 
