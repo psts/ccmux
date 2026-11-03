@@ -186,6 +186,24 @@ func (m *Manager) loadTaskSignals() {
 	m.taskSigs.seed(stored)
 }
 
+// NoteTaskPrompt records that a prompt went into a task worker's pane from
+// outside its hooks (the runner's message after a failed merge), as a typed
+// prompt would: the runner then counts the worker as busy from now, not as
+// finished since its last Stop. A bus message starts a turn with no
+// user_prompt_submit hook, so without this the old Stop would stand.
+func (m *Manager) NoteTaskPrompt(paneID string) {
+	m.mu.RLock()
+	_, p := m.findPaneLocked(paneID)
+	var saved model.Pane
+	if p != nil {
+		saved = *p
+	}
+	m.mu.RUnlock()
+	if p != nil {
+		m.taskSigs.note(saved, model.AttentionIdle, model.ReasonNone)
+	}
+}
+
 func (s *taskSignals) get(paneID string) TaskSignal {
 	s.mu.Lock()
 	defer s.mu.Unlock()

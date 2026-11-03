@@ -1,14 +1,17 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/taskq"
 )
@@ -350,5 +353,63 @@ func TestTasks_EachWindowHasItsOwnQueue(t *testing.T) {
 	}
 	if fmt.Sprint(order) != "[3 2 1]" {
 		t.Fatalf("order after the move = %v, want [3 2 1] (#3 traded with #1, #2 untouched)", order)
+	}
+}
+
+// "Send back to worker" is offered only while the worker's pane is open,
+// and the route answers the rule's refusal as a conflict, not a crash; with
+// no runner it says the runner is not there.
+func TestTasks_SendBackRoute(t *testing.T) {
+	s := taskServer(t)
+	twoParts(t, s)
+	parts, _ := s.tasks.Parts()
+	parts[0].Status, parts[0].PaneID = taskq.Ready, "gone-pane"
+	s.tasks.SavePart(parts[0])
+	task, _ := s.tasks.Task(1)
+	task.Status = taskq.MergeFailed
+	s.tasks.SaveTask(*task)
+	if v := tasksOf(t, s).Tasks[0].Parts[0]; v.SendBackable {
+		t.Fatal("offered to send back to a worker whose pane is gone")
+	}
+	if rec := do(t, s, "POST", "/v1/tasks/1/parts/1/send-back", ""); rec.Code != 503 {
+		t.Fatalf("no runner = %d %s, want 503", rec.Code, rec.Body)
+	}
+	s.taskRunner = &taskq.Runner{Store: s.tasks, Host: taskHost{mgr: s.mgr}, Lock: &s.tasksMu, Now: time.Now}
+	if rec := do(t, s, "POST", "/v1/tasks/1/parts/2/send-back", ""); rec.Code != 409 || !strings.Contains(rec.Body.String(), "only a built part") {
+		t.Fatalf("unbuilt part = %d %s, want 409", rec.Code, rec.Body)
+	}
+	if rec := do(t, s, "POST", "/v1/tasks/1/parts/9/send-back", ""); rec.Code != 409 {
+		t.Fatalf("no such part = %d %s, want 409", rec.Code, rec.Body)
+	}
+	if got := tasksOf(t, s).Tasks[0]; got.Status != taskq.MergeFailed || got.Parts[1].Status != parts[1].Status {
+		t.Fatalf("a refused send-back changed the task: %+v", got)
+	}
+}
+
+// With no bus, the runner's message reaches nobody and says so.
+func TestTaskHost_TellWorkerWithoutABus(t *testing.T) {
+	s := taskServer(t)
+	if err := (taskHost{mgr: s.mgr}).TellWorker("pane-1", "hi"); err == nil {
+		t.Fatal("a message with no bus was reported delivered")
+	}
+}
+
+// The runner takes the bus when it starts, as the daemon wires them: the
+// first build started it before the bus was wired, so no worker ever heard
+// that its merge failed.
+func TestStartTaskRunner_TakesTheBus(t *testing.T) {
+	s := agentsServer(t)
+	st, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s.SetTasks(st)
+	s.EnablePeers(peers.NewService(st, s.mgr, testSecret))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir())
+	if h, ok := s.taskRunner.Host.(taskHost); !ok || h.peers == nil {
+		t.Fatalf("the runner's host has no bus: %+v", s.taskRunner.Host)
 	}
 }

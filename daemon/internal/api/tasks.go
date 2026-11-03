@@ -56,6 +56,9 @@ type partView struct {
 	BusName     string `json:"busName"`
 	WorkspaceID string `json:"workspaceId,omitempty"`
 	Retryable   bool   `json:"retryable"`
+	// SendBackable: the feature failed to merge, this part is built, and
+	// its worker's pane is still open (taskq.SendBack has the rule).
+	SendBackable bool `json:"sendBackable"`
 }
 
 func (s *Server) taskViewsOf(tasks []store.Task, parts []store.Part) []taskView {
@@ -81,6 +84,8 @@ func (s *Server) partViewOf(t store.Task, p store.Part) partView {
 	}
 	_, err := taskq.Retry(t, p)
 	v.Retryable = err == nil
+	_, _, err = taskq.SendBack(t, p, time.Now())
+	v.SendBackable = err == nil && v.WorkspaceID != ""
 	return v
 }
 

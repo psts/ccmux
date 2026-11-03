@@ -20,6 +20,7 @@ type memStore struct {
 	tasks    []store.Task
 	parts    []store.Part
 	tasksErr error
+	partErr  error // SavePart fails with it
 }
 
 func (m *memStore) Tasks() ([]store.Task, error) {
@@ -39,6 +40,9 @@ func (m *memStore) SaveTask(t store.Task) (bool, error) {
 	return false, nil
 }
 func (m *memStore) SavePart(p store.Part) (bool, error) {
+	if m.partErr != nil {
+		return false, m.partErr
+	}
 	for i := range m.parts {
 		if m.parts[i].ID == p.ID {
 			m.parts[i] = p
@@ -77,6 +81,8 @@ type fakeHost struct {
 	hostnames map[string][]model.Hostname // by repo folder name
 	nameErr   map[string]error            // by repo folder name
 	routes    map[string]int              // the last routes sent
+	told      map[string][]string         // pane → what TellWorker sent it
+	deaf      bool                        // TellWorker finds no Claude
 	domain    string
 }
 
@@ -110,6 +116,18 @@ func (h *fakeHost) TaskHostnames(repo, _ string) ([]model.Hostname, error) {
 }
 func (h *fakeHost) SetTaskRoutes(routes map[string]int) { h.routes = routes }
 func (h *fakeHost) DevDomain() string                   { return h.domain }
+func (h *fakeHost) TellWorker(paneID, text string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.deaf {
+		return errors.New("no Claude is on the bus in that pane")
+	}
+	if h.told == nil {
+		h.told = map[string][]string{}
+	}
+	h.told[paneID] = append(h.told[paneID], text)
+	return nil
+}
 func (h *fakeHost) TasksChanged() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -157,7 +175,7 @@ func (g *fakeGit) Rebase(worktree, trunk string) (string, error) {
 	g.rebased++
 	for repo, bad := range g.clash {
 		if bad && strings.Contains(worktree, filepath.Base(repo)+"-") {
-			return "", errors.New("its branch clashes with " + trunk)
+			return "", rebaseClash{trunk: trunk, err: errors.New("CONFLICT")}
 		}
 	}
 	return "rev-" + filepath.Base(filepath.Dir(worktree)), nil
@@ -351,6 +369,14 @@ func (g *rig) doneParts(id int64) {
 	}
 }
 
+// usedAutoFix spends task id's automatic send-backs, so a failure its
+// worker could fix stops for a person, which these merge tests pin.
+func (g *rig) usedAutoFix(id int64) {
+	task := g.st.task(id)
+	task.AutoFixes = maxAutoFixes
+	g.st.SaveTask(task)
+}
+
 // A built feature merges as one: every part rebased and checked, then every
 // trunk moved forward; its workers, worktrees and briefs are cleaned up, and
 // a feature that starts after it can start.
@@ -389,6 +415,7 @@ func TestMerge_ARedPartStopsTheWholeFeature(t *testing.T) {
 	g.feature(1, 0, "app", "backend")
 	g.tick()
 	g.doneParts(1)
+	g.usedAutoFix(1)
 	g.checks.results["/p/backend"] = CheckResult{Configured: true, Output: "FAIL: TestExport"}
 	g.tick()
 	got := g.st.task(1)
@@ -428,6 +455,7 @@ func TestMerge_UncommittedWorkStopsIt(t *testing.T) {
 	g.feature(1, 0, "app", "backend")
 	g.tick()
 	g.doneParts(1)
+	g.usedAutoFix(1)
 	g.git.dirty["/p/backend"] = "?? export.go"
 	g.tick()
 	got := g.st.task(1)
@@ -440,7 +468,8 @@ func TestMerge_UncommittedWorkStopsIt(t *testing.T) {
 }
 
 // A folder that got changes while the checks ran stops the merge before
-// any trunk moves; a feature whose folders stayed clean merges.
+// any trunk moves, and the feature waits, as it would before a merge; it
+// merges on its own once the folder is clean.
 func TestMerge_FolderDirtiedDuringTheChecks(t *testing.T) {
 	g := newRig(t)
 	g.feature(1, 0, "app", "backend")
@@ -453,13 +482,15 @@ func TestMerge_FolderDirtiedDuringTheChecks(t *testing.T) {
 	}
 	g.tick()
 	got := g.st.task(1)
-	if got.Status != MergeFailed || !strings.Contains(got.Note, "try the merge again when it is clean") || len(g.git.ffs) != 0 {
+	if got.Status != ReadyToMerge || got.Note != "waiting to merge: app has uncommitted changes on dev" || len(g.git.ffs) != 0 {
 		t.Fatalf("dirtied during checks = %+v, ffs %v", got, g.git.ffs)
 	}
 	g.checks.during = nil
+	g.tick()
+	if got := g.st.task(1); got.Status != ReadyToMerge || len(g.git.ffs) != 0 {
+		t.Fatalf("merged while the folder was still dirty: %+v, ffs %v", got, g.git.ffs)
+	}
 	delete(g.git.blocked, "/p/app")
-	got.Status = ReadyToMerge
-	g.st.SaveTask(got)
 	g.tick()
 	if g.st.task(1).Status != Done {
 		t.Fatalf("clean folders = %s", g.st.task(1).Status)
@@ -474,6 +505,7 @@ func TestMerge_WorktreeMovedDuringTheChecks(t *testing.T) {
 	g.feature(1, 0, "app", "backend")
 	g.tick()
 	g.doneParts(1)
+	g.usedAutoFix(1)
 	g.checks.during = func() {
 		g.git.mu.Lock()
 		g.git.moved["/p/backend"] = "tracked files changed (M export.go)"
@@ -578,6 +610,7 @@ func TestMerge_LongFailureNamesTheRepo(t *testing.T) {
 	g.feature(1, 0, "app", "backend")
 	g.tick()
 	g.doneParts(1)
+	g.usedAutoFix(1)
 	g.checks.results["/p/backend"] = CheckResult{Configured: true, Output: strings.Repeat(strings.Repeat("y", 149)+"\n", 20)}
 	g.tick()
 	if got := g.st.task(1); got.Status != MergeFailed || !strings.HasPrefix(got.Note, "backend: checks failed") {

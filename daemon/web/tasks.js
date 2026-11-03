@@ -185,7 +185,8 @@
       : `<pre class="tq-plan">${esc(p.plan)}</pre>`;
     const where = p.branch ? ` · ${esc(p.busName)} on ${esc(p.branch)}` : "";
     const b = (act, label) => `<button type="button" data-act="${act}">${esc(label)}</button>`;
-    const buttons = (p.workspaceId ? b("session", "Open session") : "") + (p.retryable ? b("retry", "Retry") : "");
+    const buttons = (p.workspaceId ? b("session", "Open session") : "") + (p.retryable ? b("retry", "Retry") : "") +
+      (p.sendBackable ? b("sendback", "Send back to worker") : "");
     return `<div class="tq-part" data-part="${p.id}"><div class="tq-part-head">` +
       `<span class="tq-repo-chip tq-part-${esc(p.status)}">${esc(p.repo)}</span>` +
       `<span class="tq-part-status">${esc(L().partWord(p.status))}</span>` +
@@ -272,6 +273,8 @@
     unwait: (id) => send(`/${id}`, "PATCH", { afterId: 0 }),
     session: openSession,
     retry: (id, _to, partId) => send(`/${id}/parts/${partId}`, "PATCH", { retry: true }),
+    // The worker gets the task's failure note and the part runs again.
+    sendback: (id, _to, partId) => send(`/${id}/parts/${partId}/send-back`, "POST"),
   };
 
   function act(kind, id, to, partId) {

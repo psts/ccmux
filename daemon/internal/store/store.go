@@ -352,6 +352,9 @@ func erroringMigrations(db *sql.DB) error {
 	if err := migrateTaskWindow(db); err != nil {
 		return err
 	}
+	if err := migrateTaskAutoFixes(db); err != nil {
+		return err
+	}
 	return migrateWindowOpenDevices(db)
 }
 

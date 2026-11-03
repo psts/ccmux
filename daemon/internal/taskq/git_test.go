@@ -1,6 +1,7 @@
 package taskq
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,8 +175,10 @@ func TestExecGit_RebaseClashIsUndone(t *testing.T) {
 	g.AddWorktree(repo, wt, "task/1-x", "main")
 	commitFile(t, wt, "same.txt", "mine")
 	commitFile(t, repo, "same.txt", "theirs")
-	if _, err := g.Rebase(wt, "main"); err == nil || !strings.Contains(err.Error(), "clashes") {
-		t.Fatalf("clash = %v", err)
+	_, err := g.Rebase(wt, "main")
+	var clash rebaseClash
+	if !errors.As(err, &clash) || !strings.Contains(err.Error(), "clashes") {
+		t.Fatalf("clash = %v, want a rebaseClash its worker can fix", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(wt, "same.txt")); string(got) != "mine" {
 		t.Fatalf("the clash was not undone: %q", got)
@@ -402,5 +405,23 @@ func TestExecGit_GitErrorsAreNotNo(t *testing.T) {
 	}
 	if !hasBranch(t, repo, "task/1-x") {
 		t.Fatal("the branch went although it could not be compared")
+	}
+}
+
+// A git index lock in the repo blocks a merge with its path; without one,
+// a clean folder on its trunk is not blocked.
+func TestExecGit_TrunkBlockedByAGitLock(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	if why, err := g.TrunkBlocked(repo, "main"); err != nil || why != "" {
+		t.Fatalf("clean folder = %q, %v", why, err)
+	}
+	lock := filepath.Join(repo, ".git", "index.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	why, err := g.TrunkBlocked(repo, "main")
+	if err != nil || !strings.Contains(why, lock) || !strings.Contains(why, "git is busy") {
+		t.Fatalf("locked folder = %q, %v", why, err)
 	}
 }

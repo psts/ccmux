@@ -52,3 +52,27 @@ func TestTaskSignalSurvivesARestart(t *testing.T) {
 		t.Fatalf("after restart: %+v, want %+v", got, heard)
 	}
 }
+
+// A prompt sent from outside the hooks (the runner's message after a failed
+// merge) replaces a worker's old Stop with "prompted now", so the runner
+// does not read the worker as finished without reporting. A person's pane,
+// or a pane the manager does not know, records nothing.
+func TestNoteTaskPrompt(t *testing.T) {
+	m, st := devhostManager(t)
+	givePanes(t, m, st, "w1", "pane-human", "pane-worker")
+	m.mu.Lock()
+	m.byID["w1"].ws.Panes[1].CreatedBy = taskRunner
+	m.mu.Unlock()
+	m.taskSigs.note(model.Pane{ID: "pane-worker", CreatedBy: taskRunner}, model.AttentionDone, model.ReasonFinished)
+	m.NoteTaskPrompt("pane-worker")
+	m.NoteTaskPrompt("pane-human")
+	m.NoteTaskPrompt("pane-unknown")
+	if got := m.taskSigs.get("pane-worker"); got.Attention != model.AttentionIdle || got.Reason != model.ReasonNone || got.At == 0 {
+		t.Fatalf("worker signal = %+v, want prompted", got)
+	}
+	for _, id := range []string{"pane-human", "pane-unknown"} {
+		if got := m.taskSigs.get(id); got.At != 0 {
+			t.Fatalf("%s recorded %+v", id, got)
+		}
+	}
+}

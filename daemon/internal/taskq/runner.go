@@ -32,6 +32,9 @@ type Host interface {
 	TaskHostnames(repo, windowID string) ([]model.Hostname, error)
 	SetTaskRoutes(routes map[string]int)
 	DevDomain() string
+	// TellWorker sends text to the Claude in a worker's pane over the bus,
+	// and errors when no Claude there can hear it (sendback.go).
+	TellWorker(paneID, text string) error
 }
 
 // Runner starts waiting tasks while slots are free (a slot is a feature:

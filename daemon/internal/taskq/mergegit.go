@@ -60,6 +60,9 @@ func checkedOut(repo string) (string, error) {
 }
 
 func (ExecGit) TrunkBlocked(repo, trunk string) (string, error) {
+	if locked, err := gitBusy(repo); err != nil || locked != "" {
+		return locked, err
+	}
 	if elsewhere, err := trunkElsewhere(repo, trunk); err != nil || elsewhere != "" {
 		return elsewhere, err
 	}
@@ -76,6 +79,24 @@ func (ExecGit) TrunkBlocked(repo, trunk string) (string, error) {
 	}
 	if out != "" {
 		return fmt.Sprintf("%s has uncommitted changes on %s", filepath.Base(repo), trunk), nil
+	}
+	return "", nil
+}
+
+// gitBusy names the repo's index lock when it exists: a git command is
+// running there, or one crashed and left it. Either way every write fails
+// until it is gone, and only a person can tell which it is.
+func gitBusy(repo string) (string, error) {
+	rel, err := runGit(repo, "rev-parse", "--git-path", "index.lock")
+	if err != nil {
+		return "", err
+	}
+	lock := rel
+	if !filepath.IsAbs(lock) {
+		lock = filepath.Join(repo, rel)
+	}
+	if _, err := os.Stat(lock); err == nil {
+		return fmt.Sprintf("git is busy in %s, or a crashed git command left %s; remove it if no git command is running", filepath.Base(repo), lock), nil
 	}
 	return "", nil
 }
@@ -121,7 +142,7 @@ func (ExecGit) Rebase(worktree, trunk string) (string, error) {
 		if _, abortErr := runGit(worktree, "rebase", "--abort"); abortErr != nil {
 			return "", fmt.Errorf("its branch clashes with %s, and undoing the rebase failed, so its worktree is mid-rebase: %w (%v)", trunk, err, abortErr)
 		}
-		return "", fmt.Errorf("its branch clashes with %s: %w", trunk, err)
+		return "", rebaseClash{trunk: trunk, err: err}
 	}
 	return runGit(worktree, "rev-parse", "HEAD")
 }

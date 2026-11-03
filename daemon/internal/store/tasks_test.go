@@ -130,3 +130,28 @@ func TestTasks_FiledWholeOrNotAtAll(t *testing.T) {
 		t.Fatalf("two-part filing = %v, %+v", err, parts)
 	}
 }
+
+// AutoFixes is the only cap on automatic send-backs after a failed merge:
+// it must survive a save and read back, start at none, and not leak to a
+// task that was not saved with it.
+func TestTasks_AutoFixesRoundTrip(t *testing.T) {
+	st := taskStore(t)
+	a, _ := addTask(st, Task{Title: "one", Status: "running"})
+	b, _ := addTask(st, Task{Title: "two", Status: "running"})
+	ta, _ := st.Task(a)
+	if ta.AutoFixes != 0 {
+		t.Fatalf("a new task starts with %d auto fixes", ta.AutoFixes)
+	}
+	ta.AutoFixes, ta.Status = 1, "running"
+	if ok, err := st.SaveTask(*ta); err != nil || !ok {
+		t.Fatalf("save = %v, %v", ok, err)
+	}
+	got, _ := st.Task(a)
+	other, _ := st.Task(b)
+	if got.AutoFixes != 1 || got.Status != "running" || other.AutoFixes != 0 {
+		t.Fatalf("after save: %+v, other task %+v", got, other)
+	}
+	if list, _ := st.Tasks(); list[0].AutoFixes != 1 || list[1].AutoFixes != 0 {
+		t.Fatalf("list reads auto fixes %d, %d", list[0].AutoFixes, list[1].AutoFixes)
+	}
+}

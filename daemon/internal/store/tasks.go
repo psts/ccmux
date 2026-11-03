@@ -10,21 +10,24 @@ import (
 // internal/taskq owns the rules: which statuses exist, which moves are
 // allowed. Times are unix milliseconds.
 type Task struct {
-	ID         int64  `json:"id"`
-	Title      string `json:"title"`
-	Status     string `json:"status"`
-	AfterID    int64  `json:"afterId,omitempty"`
-	Position   int64  `json:"position"`
-	Note       string `json:"note,omitempty"`
-	FiledBy    string `json:"filedBy,omitempty"`
-	WindowID   string `json:"windowId,omitempty"` // the ccmux window it was filed in; its queue
-	CreatedAt  int64  `json:"createdAt"`
-	UpdatedAt  int64  `json:"updatedAt"`
-	StartedAt  int64  `json:"startedAt,omitempty"`
-	FinishedAt int64  `json:"finishedAt,omitempty"`
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	AfterID  int64  `json:"afterId,omitempty"`
+	Position int64  `json:"position"`
+	Note     string `json:"note,omitempty"`
+	FiledBy  string `json:"filedBy,omitempty"`
+	WindowID string `json:"windowId,omitempty"` // the ccmux window it was filed in; its queue
+	// AutoFixes counts the times a failed merge went back to a worker on its
+	// own, without a person (taskq/sendback.go).
+	AutoFixes  int   `json:"autoFixes,omitempty"`
+	CreatedAt  int64 `json:"createdAt"`
+	UpdatedAt  int64 `json:"updatedAt"`
+	StartedAt  int64 `json:"startedAt,omitempty"`
+	FinishedAt int64 `json:"finishedAt,omitempty"`
 }
 
-const taskCols = "id,title,status,after_id,position,note,filed_by,window_id,created_at,updated_at,started_at,finished_at"
+const taskCols = "id,title,status,after_id,position,note,filed_by,window_id,auto_fixes,created_at,updated_at,started_at,finished_at"
 
 // AddTaskWithParts files a task at the back of the queue together with all
 // its parts, in one step: a task left without parts could never start, and
@@ -78,9 +81,9 @@ func (s *SQLite) Tasks() ([]Task, error) {
 // cannot undo it.
 func (s *SQLite) SaveTask(t Task) (bool, error) {
 	res, err := s.db.Exec(`
-UPDATE tasks SET title=?, status=?, after_id=?, note=?,
+UPDATE tasks SET title=?, status=?, after_id=?, note=?, auto_fixes=?,
   updated_at=?, started_at=?, finished_at=? WHERE id=?`,
-		t.Title, t.Status, t.AfterID, t.Note, t.UpdatedAt, t.StartedAt, t.FinishedAt, t.ID)
+		t.Title, t.Status, t.AfterID, t.Note, t.AutoFixes, t.UpdatedAt, t.StartedAt, t.FinishedAt, t.ID)
 	if err != nil {
 		return false, err
 	}
@@ -143,6 +146,16 @@ func migrateTaskWindow(db *sql.DB) error {
 	return nil
 }
 
+// migrateTaskAutoFixes adds the count of a task's automatic send-backs.
+// Strict: every task read selects it. Tasks from before start at none.
+func migrateTaskAutoFixes(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE tasks ADD COLUMN auto_fixes INTEGER DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate tasks.auto_fixes: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLite) queryTasks(query string, args ...any) ([]Task, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -153,7 +166,7 @@ func (s *SQLite) queryTasks(query string, args ...any) ([]Task, error) {
 	for rows.Next() {
 		var t Task
 		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &t.AfterID, &t.Position, &t.Note, &t.FiledBy,
-			&t.WindowID, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
+			&t.WindowID, &t.AutoFixes, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

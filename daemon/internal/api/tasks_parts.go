@@ -83,3 +83,27 @@ func (s *Server) savePart(p store.Part) error {
 	s.mgr.TasksChanged()
 	return nil
 }
+
+// sendBackPart: POST /v1/tasks/{id}/parts/{part}/send-back, a person's
+// "Send back to worker" on a feature that failed to merge. The runner takes
+// the queue's lock itself, so this route does not.
+func (s *Server) sendBackPart(w http.ResponseWriter, r *http.Request) {
+	if !s.tasksReady(w) {
+		return
+	}
+	if s.taskRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "the task runner is not running on this daemon")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	part, err2 := strconv.ParseInt(r.PathValue("part"), 10, 64)
+	if err != nil || err2 != nil {
+		writeError(w, http.StatusBadRequest, "bad task or part id")
+		return
+	}
+	if err := s.taskRunner.SendBackPart(id, part); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

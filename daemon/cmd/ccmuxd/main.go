@@ -220,8 +220,6 @@ func runDaemon() {
 	// A repo or agent joining or leaving a window is told to the others there.
 	mgr.OnMembershipChange = apiSrv.WindowNotice
 	apiSrv.StartScheduler(ctx, 30*time.Second)
-	// The task queue's runner: starts filed tasks in their own worktrees.
-	apiSrv.StartTaskRunner(ctx, 15*time.Second, *taskSlots, *worktreesDir)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)
@@ -232,6 +230,10 @@ func runDaemon() {
 			log.Printf("peers bus enabled (pane-less info %s)", infoPath)
 		}
 	}
+	// The task queue's runner: starts filed tasks in their own worktrees.
+	// After EnablePeers: it takes the bus when it starts, to tell a worker
+	// its merge failed (taskHost.TellWorker).
+	apiSrv.StartTaskRunner(ctx, 15*time.Second, *taskSlots, *worktreesDir)
 
 	// Bring the tailnet node up FIRST (if enabled): hub mode must be set before
 	// Handler() builds its routes (hub routes register conditionally) and before

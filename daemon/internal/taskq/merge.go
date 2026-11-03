@@ -100,8 +100,8 @@ func (r *Runner) merge(j mergeJob) {
 	r.merging = false
 	t := j.task
 	if err != nil {
-		t.Status, t.Note = MergeFailed, noteOf(err)
 		log.Printf("tasks: #%d merge failed: %v", t.ID, err)
+		t = r.settleFailed(t, err)
 	} else {
 		t.Status, t.Note, t.FinishedAt = Done, note, r.Now().UnixMilli()
 		log.Printf("tasks: #%d %s", t.ID, note)
@@ -138,7 +138,7 @@ func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 	}
 	// The checks took a while: a folder may have got changes meanwhile.
 	if why := r.mergeBlocked(parts); why != "" {
-		return "", errors.New(why + "; try the merge again when it is clean")
+		return "", folderBlocked{why: why}
 	}
 	if err := r.unmovedSinceChecks(parts, revs); err != nil {
 		return "", err
@@ -167,9 +167,13 @@ func (r *Runner) prepareMerge(p store.Part) (string, string, error) {
 		return "", "", err
 	}
 	if left != "" {
-		return "", "", fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))
+		return "", "", workerFixable{p, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))}
 	}
 	rev, err := r.MergeGit.Rebase(p.Worktree, trunk)
+	var clash rebaseClash
+	if errors.As(err, &clash) {
+		return "", "", workerFixable{p, err}
+	}
 	if err != nil {
 		return "", "", err
 	}
@@ -181,7 +185,7 @@ func (r *Runner) prepareMerge(p store.Part) (string, string, error) {
 	case !res.Configured:
 		return "", "", errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
 	case !res.OK:
-		return "", "", errors.New("checks failed:\n" + res.Output)
+		return "", "", workerFixable{p, errors.New("checks failed:\n" + res.Output)}
 	}
 	return trunk, rev, nil
 }
@@ -197,7 +201,7 @@ func (r *Runner) unmovedSinceChecks(parts []store.Part, revs []string) error {
 			return fmt.Errorf("%s: %w", filepath.Base(p.RepoPath), err)
 		}
 		if why != "" {
-			return fmt.Errorf("%s: its worktree changed while the checks ran: %s; commit or undo that, then try the merge again", filepath.Base(p.RepoPath), why)
+			return workerFixable{p, fmt.Errorf("%s: its worktree changed while the checks ran: %s; commit or undo that, then try the merge again", filepath.Base(p.RepoPath), why)}
 		}
 	}
 	return nil

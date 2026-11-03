@@ -29,3 +29,24 @@ func TestNotifyGroup_ReachesTheWindowButNotItsSubject(t *testing.T) {
 		}
 	}
 }
+
+// A pane notice reaches only the session on that pane, from the bus itself;
+// a pane with no session on the bus is an error, not a silent drop.
+func TestNotifyPane_ReachesOnlyThatPane(t *testing.T) {
+	svc, _ := newTestService(t)
+	worker := registerPane(svc, "p-worker", "/r/app-task-1")
+	other := registerPane(svc, "p-other", "/r/app")
+	if err := svc.NotifyPane("p-worker", "the merge failed"); err != nil {
+		t.Fatal(err)
+	}
+	evs, err := svc.Poll(worker.PeerID)
+	if err != nil || len(evs) != 1 || evs[0].Text != "the merge failed" || evs[0].FromName != "claude-peers" {
+		t.Fatalf("worker got %v %v", evs, err)
+	}
+	if evs, _ := svc.Poll(other.PeerID); len(evs) != 0 {
+		t.Fatalf("another pane heard it: %v", evs)
+	}
+	if err := svc.NotifyPane("p-nobody", "hello"); err == nil {
+		t.Fatal("a notice to a pane with no session was reported delivered")
+	}
+}
