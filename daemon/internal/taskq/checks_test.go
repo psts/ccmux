@@ -47,8 +47,8 @@ func TestGateChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGit(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "gates")
-	writeGates(t, repo, "true\n") // the folder's own copy is not what counts
-	os.WriteFile(filepath.Join(wt, "marker"), nil, 0o644)
+	writeGates(t, repo, "true\n")   // the folder's own copy is not what counts
+	commitFile(t, wt, "marker", "") // the checks see committed work only
 	got := g.Run(repo, wt, "main")
 	if !got.Configured || got.OK || !strings.Contains(got.Output, "two") || !strings.Contains(got.Output, "failed: echo one") {
 		t.Fatalf("failing gate = %+v", got)
@@ -110,43 +110,50 @@ func TestGateChecks_TimeoutKillsTheWholeLine(t *testing.T) {
 	}
 }
 
-// A branch that loosens a gate's data (a frozen list) or adds a gate file
-// is checked with the trunk's copies, then gets its own files back as
-// committed; a branch that leaves .claude/ alone is checked as it is.
+// A branch that loosens a gate's data (a frozen list), adds a gate file or
+// renames one is checked with the trunk's .claude/ exactly, in a copy of
+// its commit: the worker's folder is never touched, and a copy a restart
+// left behind is cleared first. A branch that leaves .claude/ alone is
+// checked as it is.
 func TestGateChecks_RunWithTheTrunksGateFiles(t *testing.T) {
 	repo := gitRepo(t)
 	commit := func(dir, msg string) {
 		runGit(dir, "add", "-A")
 		runGit(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", msg)
 	}
-	writeGates(t, repo, "! grep -q newfunc .claude/gates/frozen.txt\ntest ! -f .claude/gates/extra.sh\n")
+	writeGates(t, repo, "! grep -q newfunc .claude/gates/frözen.txt\ntest ! -f .claude/gates/extra.sh\ntest -f .claude/gates/run.sh\n")
 	os.MkdirAll(filepath.Join(repo, ".claude", "gates"), 0o755)
-	os.WriteFile(filepath.Join(repo, ".claude", "gates", "frozen.txt"), []byte("oldfunc\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, ".claude", "gates", "frözen.txt"), []byte("oldfunc\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, ".claude", "gates", "run.sh"), []byte("true\n"), 0o755)
 	commit(repo, "gates")
-	wt := filepath.Join(t.TempDir(), "task-1")
-	if err := (ExecGit{}).AddWorktree(repo, wt, "task/1-x", "main"); err != nil {
-		t.Fatal(err)
-	}
+	wt := worktreeOf(t, repo)
 	g := GateChecks{PerLine: 10 * time.Second}
 	if got := g.Run(repo, wt, "main"); !got.OK || len(got.TrunkCopies) != 0 {
 		t.Fatalf("an untouched .claude/ = %+v", got)
 	}
 
-	os.WriteFile(filepath.Join(wt, ".claude", "gates", "frozen.txt"), []byte("oldfunc\nnewfunc\n"), 0o644)
+	os.WriteFile(filepath.Join(wt, ".claude", "gates", "frözen.txt"), []byte("oldfunc\nnewfunc\n"), 0o644)
 	os.WriteFile(filepath.Join(wt, ".claude", "gates", "extra.sh"), []byte("exit 0\n"), 0o755)
+	runGit(wt, "mv", ".claude/gates/run.sh", ".claude/gates/run2.sh")
 	commit(wt, "loosen the gates")
+	os.MkdirAll(wt+".checks", 0o755) // left by a daemon that died mid-check
+	os.WriteFile(filepath.Join(wt+".checks", "stale"), nil, 0o644)
 	got := g.Run(repo, wt, "main")
-	if !got.OK || strings.Join(got.TrunkCopies, ",") != ".claude/gates/extra.sh,.claude/gates/frozen.txt" {
-		t.Fatalf("checked with the trunk's copies = %+v", got)
+	want := ".claude/gates/extra.sh,.claude/gates/frözen.txt,.claude/gates/run.sh,.claude/gates/run2.sh"
+	if !got.OK || strings.Join(got.TrunkCopies, ",") != want {
+		t.Fatalf("checked with the trunk's .claude/ = %+v", got)
 	}
-	frozen, _ := os.ReadFile(filepath.Join(wt, ".claude", "gates", "frozen.txt"))
+	frozen, _ := os.ReadFile(filepath.Join(wt, ".claude", "gates", "frözen.txt"))
 	if !strings.Contains(string(frozen), "newfunc") {
-		t.Fatalf("the branch's frozen list was not put back: %q", frozen)
-	}
-	if _, err := os.Stat(filepath.Join(wt, ".claude", "gates", "extra.sh")); err != nil {
-		t.Fatal("the branch's added gate file was not put back")
+		t.Fatal("the worker's folder was changed")
 	}
 	if left, _ := (ExecGit{}).Uncommitted(wt); left != "" {
-		t.Fatalf("the worktree is not clean after the checks: %s", left)
+		t.Fatalf("the worker's folder is not clean after the checks: %s", left)
+	}
+	if _, err := os.Stat(wt + ".checks"); !os.IsNotExist(err) {
+		t.Fatal("the check copy was left behind")
+	}
+	if list, _ := runGit(repo, "worktree", "list"); strings.Contains(list, ".checks") {
+		t.Fatalf("the check copy is still registered: %s", list)
 	}
 }

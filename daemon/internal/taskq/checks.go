@@ -31,7 +31,8 @@ type CheckResult struct {
 
 // GateChecks runs the lines of the repo's .claude/qa-gates as the trunk has
 // them (the list its human's own gates run), each in its own login shell
-// from the worktree's root, the way the qa plugin runs them. A login shell, so the tools the
+// from the root of a throwaway copy of the part (checkBox), the way the qa
+// plugin runs them. A login shell, so the tools the
 // human's profile puts on PATH are there for a daemon started without it.
 type GateChecks struct {
 	PerLine time.Duration // how long one line may run
@@ -47,67 +48,75 @@ func (g GateChecks) Run(repo, worktree, trunk string) CheckResult {
 	if len(lines) == 0 {
 		return CheckResult{} // a list of comments checks nothing
 	}
-	swapped, restore, err := useTrunkGates(worktree, trunk)
+	box, changed, drop, err := checkBox(repo, worktree, trunk)
 	if err != nil {
-		return CheckResult{Configured: true, Output: "could not put the trunk's .claude/ in place for the checks: " + err.Error()}
+		return CheckResult{Configured: true, Output: "could not set up the checks: " + err.Error()}
 	}
-	defer restore()
+	defer drop()
 	for _, line := range lines {
-		if out, err := g.runLine(worktree, line); err != nil {
-			return CheckResult{Configured: true, Output: fmt.Sprintf("%s\n(failed: %s: %v)", tail(out, 20), line, err), TrunkCopies: swapped}
+		if out, err := g.runLine(box, line); err != nil {
+			return CheckResult{Configured: true, Output: fmt.Sprintf("%s\n(failed: %s: %v)", tail(out, 20), line, err), TrunkCopies: changed}
 		}
 	}
-	return CheckResult{Configured: true, OK: true, TrunkCopies: swapped}
+	return CheckResult{Configured: true, OK: true, TrunkCopies: changed}
 }
 
-// useTrunkGates puts the trunk's version of every file under .claude/ the
-// branch changed into the worktree for the checks (removing one the trunk
-// lacks), so the gate scripts and their data (a frozen list, say) grading
-// the branch are the trunk's, not the worker's. Only working files change;
-// restore puts the branch's back from its index, which the merge checked
-// is clean, so the merge itself still takes the branch's .claude/ changes.
-func useTrunkGates(worktree, trunk string) ([]string, func(), error) {
-	out, err := runGit(worktree, "diff", "--name-only", trunk, "HEAD", "--", ".claude")
-	if err != nil || out == "" {
-		return nil, func() {}, err
+// checkBox makes the place the checks run: a throwaway worktree of the
+// part's commit with the trunk's .claude/ in it, so the gate scripts and
+// their data (a frozen list, say) grading the branch are the trunk's, not
+// the worker's. The worker's own worktree is never touched, so nothing
+// has to be put back, and a daemon that dies mid-check leaves only the box,
+// cleared the next time. Only committed work is in it, which is all the
+// merge takes. changed lists the branch's .claude/ files the trunk's
+// copies stood in for.
+func checkBox(repo, worktree, trunk string) (string, []string, func(), error) {
+	rev, err := runGit(worktree, "rev-parse", "HEAD")
+	if err != nil {
+		return "", nil, nil, err
 	}
-	paths := strings.Split(out, "\n")
-	for _, p := range paths {
-		if err := placeTrunkCopy(worktree, trunk, p); err != nil {
-			restoreBranchCopies(worktree, paths)
-			return nil, func() {}, err
-		}
+	box := worktree + ".checks"
+	dropBox(repo, box) // one a restart left behind
+	if _, err := runGit(repo, "worktree", "add", "--detach", box, rev); err != nil {
+		return "", nil, nil, err
 	}
-	return paths, func() { restoreBranchCopies(worktree, paths) }, nil
+	drop := func() { dropBox(repo, box) }
+	changed, err := changedGateFiles(repo, trunk, rev)
+	if err == nil && len(changed) > 0 {
+		_, err = runGit(box, "restore", "--source="+trunk, "--staged", "--worktree", "--", ".claude")
+	}
+	if err != nil {
+		drop()
+		return "", nil, nil, err
+	}
+	return box, changed, drop, nil
 }
 
-func placeTrunkCopy(worktree, trunk, path string) error {
-	full := filepath.Join(worktree, path)
-	text, err := runGit(worktree, "show", trunk+":"+path)
-	if err != nil { // not on the trunk: the branch added it
-		if rmErr := os.Remove(full); rmErr != nil && !os.IsNotExist(rmErr) {
-			return rmErr
+// changedGateFiles lists the files under .claude/ that differ between the
+// trunk and rev: renames as two paths, names unquoted.
+func changedGateFiles(repo, trunk, rev string) ([]string, error) {
+	out, err := runGit(repo, "diff", "--name-only", "--no-renames", "-z", trunk, rev, "--", ".claude")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			paths = append(paths, p)
 		}
-		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(full, []byte(text+"\n"), 0o755)
+	return paths, nil
 }
 
-// restoreBranchCopies puts the branch's files back as committed, and drops
-// a file the branch does not have.
-func restoreBranchCopies(worktree string, paths []string) {
-	for _, p := range paths {
-		if _, err := runGit(worktree, "cat-file", "-e", "HEAD:"+p); err == nil {
-			if _, err := runGit(worktree, "checkout", "--", p); err != nil {
-				log.Printf("tasks: %s: %s not restored after the checks: %v", worktree, p, err)
-			}
-			continue
+// dropBox removes a check box and its worktree record. The folder is the
+// runner's own, so if git will not remove it, it is deleted outright.
+func dropBox(repo, box string) {
+	if _, err := os.Stat(box); err == nil {
+		if _, err := runGit(repo, "worktree", "remove", "--force", box); err != nil {
+			log.Printf("tasks: check box %s: %v; deleting it", box, err)
+			_ = os.RemoveAll(box)
 		}
-		_ = os.Remove(filepath.Join(worktree, p))
 	}
+	_, _ = runGit(repo, "worktree", "prune")
 }
 
 // gateLines reads the checks from the trunk, never from the branch being
