@@ -212,6 +212,18 @@ CREATE TABLE IF NOT EXISTS agent_pages (
   scope TEXT, incident TEXT, paged_at INTEGER, by_name TEXT DEFAULT '',
   PRIMARY KEY (scope, incident)
 );
+-- The task queue (internal/taskq): plans a repo's session filed to be built
+-- later in a worktree. position orders the queue; after_id is "starts after"
+-- (0 = none). branch, worktree and pane_id belong to the runner.
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo_path TEXT NOT NULL,
+  title TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL,
+  after_id INTEGER DEFAULT 0, position INTEGER DEFAULT 0,
+  note TEXT DEFAULT '', filed_by TEXT DEFAULT '',
+  branch TEXT DEFAULT '', worktree TEXT DEFAULT '', pane_id TEXT DEFAULT '',
+  created_at INTEGER, updated_at INTEGER,
+  started_at INTEGER DEFAULT 0, finished_at INTEGER DEFAULT 0
+);
 -- A workspace's scratchpad: free text shared by everyone who opens it. Kept
 -- on the daemon lenses talk to (the hub), whichever host runs the workspace.
 CREATE TABLE IF NOT EXISTS scratchpads (

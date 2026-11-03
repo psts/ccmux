@@ -407,6 +407,43 @@ async function firehoseCases() {
   check("unknown kinds do nothing", r.errors.length === errs && r.evalIn(`state.attn.w1.p1`) === "done");
 }
 
+// The task queue (tasks.js over tasklist.js): its sidebar row carries the
+// counts from GET /v1/tasks, a "tasks-changed" frame reads them again, and
+// opening the view leaves the session and comes back out on openWorkspace.
+async function tasksCases() {
+  const r = run({ withBoard: true }); // the page has the board and the chat it leans on
+  await settle();
+  let reply = { tasks: [], counts: { waiting: 2, done: 3, needs_you: 1 } };
+  const reads = [];
+  r.ctx.fetch = async (u) => {
+    reads.push(String(u));
+    return { ok: true, status: 200, json: async () => reply, text: async () => "" };
+  };
+  const made = [];
+  r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "createElement"
+    ? () => { const li = { className: "", innerHTML: "", onclick: null }; made.push(li); return li; }
+    : k === "getElementById" ? () => el() : el()) });
+  for (const f of ["tasklist.js", "tasks.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), r.ctx, { filename: f });
+  }
+  await settle();
+  check("tasks.js reads the queue at load", reads.some((u) => u.startsWith("/v1/tasks?user=")), reads.join(","));
+  const row = r.ctx.ccmuxTasks.row();
+  check("the row shows waiting and done", row.innerHTML.includes("2 waiting · 3 done"), row.innerHTML);
+  check("the row counts what needs a person", row.innerHTML.includes(">1</span>") && row.className.includes("waiting"), row.className);
+  const before = reads.length;
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
+  check("a tasks-changed frame reads the queue again", reads.length > before);
+  reply = { tasks: [{ id: 1, repo: "admin", title: "x", plan: "p", status: "waiting", moves: ["planning"], editable: true }], counts: {} };
+  r.evalIn(`state.wsId = "ws-9"`);
+  r.ctx.ccmuxTasks.open();
+  await settle();
+  check("opening the task view leaves the session", r.ctx.ccmuxTasks.isOpen() && r.evalIn("state.wsId") === null);
+  r.evalIn(`openWorkspace("ws-1")`);
+  check("opening a session closes the task view", !r.ctx.ccmuxTasks.isOpen());
+}
+
 // --- the tab ×: which tabs get one, and what a click does when the close
 // works, fails at the daemon, never reaches it, or is declined. ---
 async function closeTabCases() {
@@ -1647,6 +1684,7 @@ async function peersFailureCases() {
   await scratchpadCases();
   await scratchDraftCases();
   await firehoseCases();
+  await tasksCases();
   await scratchTabCases();
   await pageWindowCases();
   await peersMergeCases();

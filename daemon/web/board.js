@@ -157,7 +157,8 @@
   function open(win) {
     if (board.win === win) return;
     if (board.win) close();
-    leaveWorkspace();
+    if (window.ccmuxTasks) window.ccmuxTasks.close();
+    leaveWorkspace(); // app.js
     board.win = win;
     state.board = win;
     document.getElementById("app").classList.add("board-mode");
@@ -184,17 +185,6 @@
     $("board").classList.add("hidden");
     $("board").innerHTML = "";
     reportBoardPresence();
-  }
-
-  // The board holds no workspace: drop whatever was attached, without the
-  // drawer-opening detachIfCurrent does for a closed session.
-  function leaveWorkspace() {
-    if (state.conn) { const c = state.conn; state.conn = null; c.close(); }
-    state.wsId = null;
-    state.paneId = null;
-    state.panes = [];
-    window.ccmuxAgentChat.hide();
-    renderTabs();
   }
 
   // With no tile active the board holds no attach socket, and presence rides

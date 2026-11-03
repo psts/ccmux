@@ -197,6 +197,41 @@ var toolsList = []map[string]any{
 		},
 	},
 	{
+		"name":        "tasks",
+		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel) by a fresh Claude in its own git worktree of THIS repo, then merged if the checks pass. File only when the human says the plan is ready to file. The plan is all the builder gets: write it for a fresh Claude that knows this repo but not this conversation (goal, files, steps, how to verify). When a feature spans repos, each repo files its own part from its own session; if one part must land first, file that one, pass its task number to the other repo over the bus, and that repo files with after set to it. Actions: file (title + plan, optional after, draft), list (this repo's tasks), edit (id + any of title, plan, after, draft), cancel (id).",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"action": map[string]any{
+					"type":        "string",
+					"enum":        []string{"file", "list", "edit", "cancel"},
+					"description": "What to do.",
+				},
+				"title": map[string]any{
+					"type":        "string",
+					"description": "file/edit: a short name for the task, at most 120 characters.",
+				},
+				"plan": map[string]any{
+					"type":        "string",
+					"description": "file/edit: the full plan the builder will follow.",
+				},
+				"after": map[string]any{
+					"type":        "integer",
+					"description": "file/edit: a task number (any repo) that must be done and merged before this one starts. On edit, 0 removes it.",
+				},
+				"draft": map[string]any{
+					"type":        "boolean",
+					"description": "file: true files it as planning, not run until marked ready. edit: true moves it back to planning, false marks it ready to run.",
+				},
+				"id": map[string]any{
+					"type":        "integer",
+					"description": "edit/cancel: the task number.",
+				},
+			},
+			"required": []string{"action"},
+		},
+	},
+	{
 		"name":        "page",
 		"description": `Page your human: one urgent push to their phone and browser, sent even while they sit at a screen. Only for security, money, or a live outage, never for routine news (use send_message for that). At most one page per incident: pass the same incident key every time you run into the same problem, and the bus refuses the repeats; a new key only for a new incident.`,
 		"inputSchema": map[string]any{
@@ -237,7 +272,9 @@ var toolsList = []map[string]any{
 // never told to make.
 //
 // The cost is real and is the reason this is a deliberate list rather than a
-// default: these six schemas sit in every session's context from startup. Drop
+// default: these schemas sit in every session's context from startup. `tasks`
+// is loaded for a near reason: a human's "file it" names no tool, and a session
+// that cannot see one will write the plan to a file instead. Drop
 // a tool from the loop below if that trade stops being worth it, but drop it
 // from the instructions in the same edit.
 func init() {
@@ -246,30 +283,27 @@ func init() {
 	}
 }
 
+// toolHandlers maps each tool in toolsList to the method that answers it.
+var toolHandlers = map[string]func(*app, json.RawMessage) any{
+	"list_peers":     (*app).toolListPeers,
+	"send_message":   (*app).toolSendMessage,
+	"delegate":       (*app).toolDelegate,
+	"update_task":    (*app).toolUpdateTask,
+	"set_summary":    (*app).toolSetSummary,
+	"check_messages": func(a *app, _ json.RawMessage) any { return a.toolCheckMessages() },
+	"schedule":       (*app).toolSchedule,
+	"tasks":          (*app).toolTasks,
+	"page":           (*app).toolPage,
+}
+
 func (a *app) callTool(name string, args json.RawMessage) any {
 	if a.peerID() == "" {
 		return toolText("Not registered with broker yet", true)
 	}
-	switch name {
-	case "list_peers":
-		return a.toolListPeers(args)
-	case "send_message":
-		return a.toolSendMessage(args)
-	case "delegate":
-		return a.toolDelegate(args)
-	case "update_task":
-		return a.toolUpdateTask(args)
-	case "set_summary":
-		return a.toolSetSummary(args)
-	case "check_messages":
-		return a.toolCheckMessages()
-	case "schedule":
-		return a.toolSchedule(args)
-	case "page":
-		return a.toolPage(args)
-	default:
-		return toolText("Unknown tool: "+name, true)
+	if h, ok := toolHandlers[name]; ok {
+		return h(a, args)
 	}
+	return toolText("Unknown tool: "+name, true)
 }
 
 type listEntry struct {

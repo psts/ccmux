@@ -59,6 +59,10 @@ type Server struct {
 	// 503 on its routes. scheduleNow is the clock, replaced in tests.
 	schedules       scheduleStore
 	scheduleCatchUp time.Duration
+	// tasks is the task queue's store (tasks.go); nil answers 503 on its
+	// routes. tasksMu serializes every read-check-write on it.
+	tasks   taskStore
+	tasksMu sync.Mutex
 	// owns keeps each repo's "owns" line for the bus (owns.go); nil shows
 	// none and answers 503 on its routes.
 	owns      *repoowns.Service
@@ -377,6 +381,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/windows/{id}/agents/{name}", s.sleepWindowAgent)
 	mux.HandleFunc("GET /v1/windows/{id}/agents/{name}/schedules", s.listWindowSchedules)
 	mux.HandleFunc("POST /v1/panes/{id}/schedules", s.paneSchedules)
+	// The task queue lives on the daemon lenses talk to (the hub), like the
+	// windows: never proxied (tasks.go).
+	mux.HandleFunc("GET /v1/tasks", s.listTasks)
+	mux.HandleFunc("PATCH /v1/tasks/{id}", s.patchTask)
+	mux.HandleFunc("POST /v1/tasks/{id}/move", s.moveTask)
+	mux.HandleFunc("DELETE /v1/tasks/{id}", s.deleteTask)
+	mux.HandleFunc("POST /v1/panes/{id}/tasks", s.paneTasks)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-ask", s.agentAsk)
 	mux.HandleFunc("POST /v1/panes/{id}/notices", s.paneNotices)

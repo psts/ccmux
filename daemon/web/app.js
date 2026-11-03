@@ -421,6 +421,7 @@ function renderList() {
   const here = pageWindow();
   const isHere = (group) => !!here && (winByName.get(group.toLowerCase()) || {}).id === here;
   grouped.sort(([a], [b]) => Number(isHere(b)) - Number(isHere(a))); // stable: the rest keep their order
+  if (window.ccmuxTasks) ul.appendChild(window.ccmuxTasks.row()); // the task queue, above every window
 
   for (const [group, list] of grouped) {
     if (group) {
@@ -523,7 +524,20 @@ function boardRow(group) {
 // on attach. The Mac app's WorkspaceWindowController.display is the same rule.
 function openWorkspace(wsId, wantPane) {
   if (window.ccmuxBoard) window.ccmuxBoard.close();
+  if (window.ccmuxTasks) window.ccmuxTasks.close();
   return attach(wsId, wantPane);
+}
+
+// leaveWorkspace is for a view that holds no session (the attention board,
+// the task queue): drop whatever was attached, without the drawer-opening
+// detachIfCurrent does for a closed session.
+function leaveWorkspace() {
+  if (state.conn) { const c = state.conn; state.conn = null; c.close(); }
+  state.wsId = null;
+  state.paneId = null;
+  state.panes = [];
+  window.ccmuxAgentChat.hide();
+  renderTabs();
 }
 
 // groupedWorkspaces buckets by the shared window name: named windows
@@ -2083,6 +2097,7 @@ const refetchWorkspaces = () => { fetchWorkspaces(); return false; };
 
 const firehoseHandlers = new Map([
   ["hello", (m) => {
+    if (window.ccmuxTasks) window.ccmuxTasks.refresh(); // changes missed while the socket was down
     state.attn = {};
     state.claims = {};
     for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state, e.reason, e.since);
@@ -2102,6 +2117,8 @@ const firehoseHandlers = new Map([
   ["workspace-git", refetchWorkspaces],
   // Someone saved a workspace's notes (scratchpad.js).
   ["workspace-scratchpad", (m) => { if (window.ccmuxScratch) window.ccmuxScratch.remote(m.workspace); return false; }],
+  // The task queue changed (tasks.js reads it again and redraws its row).
+  ["tasks-changed", () => { if (window.ccmuxTasks) window.ccmuxTasks.refresh(); return false; }],
 ]);
 
 // noteAttention records one pane's attention: the bare state the sidebar

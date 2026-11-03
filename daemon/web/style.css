@@ -737,6 +737,43 @@ body {
   margin-left: auto; background: var(--needs); color: #1c1e22; border-radius: 8px;
   font-size: 10px; font-weight: 700; padding: 0 6px;
 }
+/* task queue (tasks.js): a view that holds no session, like the board. */
+#app.tasks-mode #tabs, #app.tasks-mode #pane-add, #app.tasks-mode #presence { display: none; }
+#app.tasks-mode #main > #terminal, #app.tasks-mode #main > #agent-chat, #app.tasks-mode #main > #agent-chat-bar,
+#app.tasks-mode #main > #harness-bar, #app.tasks-mode #main > #pane-notice,
+#app.tasks-mode #main > #scratchpad, #app.tasks-mode #scratch-tab { display: none !important; }
+.ws.tasks-row .tasks-sum { margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.ws.tasks-row .tasks-sum + .board-count { margin-left: 6px; }
+.tasks { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px 24px; font-size: 13px; }
+.tq-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.tq-title { font-weight: 600; font-size: 14px; }
+.tq-repo { background: var(--bg2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font-size: 12px; padding: 2px 4px; }
+.tq-status { color: var(--muted); font-size: 12px; }
+.tq-status.bad { color: var(--needs); }
+.tq-empty { color: var(--muted); max-width: 520px; line-height: 1.5; }
+.tq-sec h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+.tq-sec.tq-needs_you h3, .tq-sec.tq-ready_to_merge h3 { color: var(--needs); }
+.tq-n { font-weight: 400; }
+.tq-task { border: 1px solid var(--line); border-radius: 6px; background: var(--bg2); margin-bottom: 6px; }
+.tq-line { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; flex-wrap: wrap; }
+.tq-id { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tq-repo-chip { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; color: var(--muted); }
+.tq-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.tq-after, .tq-note { font-size: 11px; color: var(--muted); }
+.tq-after.blocked { color: var(--needs); }
+.tq-detail { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.tq-edit-title, .tq-edit-plan {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px;
+  font: inherit; padding: 4px 6px; width: 100%; box-sizing: border-box;
+}
+.tq-edit-plan { min-height: 180px; font: 12px/1.45 ui-monospace, Menlo, monospace; resize: vertical; }
+.tq-plan { margin: 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, Menlo, monospace; max-height: 50vh; overflow: auto; }
+.tq-meta { font-size: 11px; color: var(--muted); }
+.tq-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.tq-actions button {
+  background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+  font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+}
 /* Agent editor, capabilities (agentcaps.js) */
 .cap-checks { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
 .cap-add > summary { cursor: pointer; }
