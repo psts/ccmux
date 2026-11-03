@@ -11,35 +11,25 @@ import (
 	"strings"
 )
 
-// serverInstructions goes into the session's system prompt. Most of it is
-// frozen wording that running sessions pattern-match on, but the SendMessage
-// paragraph deliberately is not: it used to say SendMessage "is for subagent
-// communication, not peer messaging", and Claude Code v2.1.224 made that false
-// by giving SendMessage cross-session delivery. The directive is unchanged and
-// still right — one bus, this one — but a true directive resting on a false
-// premise is worse than no reason at all, because the session can check the
-// premise and will then weigh the whole block accordingly.
-const serverInstructions = `You are connected to the claude-peers messaging network. Peers are named after their repo directory (e.g., "backend", "website").
+// serverInstructions goes into the session's system prompt, ahead of the
+// per-session parts (instructions()). Claude Code keeps only the first 4096
+// characters of a server's instructions, so this is kept short: every relay
+// and delegation format a session must match stays word for word, the prose
+// around them is tight, and the tool list is gone (each tool's own
+// description already says it). The SendMessage reason stays true: Claude
+// Code v2.1.224 gave SendMessage cross-session delivery, so the directive
+// rests on "it goes around this bus", never on "it cannot reach a session".
+const serverInstructions = `You are on the claude-peers bus, which connects Claude sessions. Peers are named after their repo folder (e.g. "backend").
 
-Messages arrive as <channel source="claude-peers" from_name="..." from_id="..." from_summary="..." from_cwd="...">. When you receive one, RESPOND IMMEDIATELY — pause your current work, reply, then resume. Treat it like a coworker tapping your shoulder.
+Messages arrive as <channel source="claude-peers" from_name="..." from_id="..." from_summary="..." from_cwd="...">. Respond at once: pause, reply, then resume. Reply with the send_message tool, to_id set to the tag's from_id (names can repeat, ids cannot). Do NOT use the built-in SendMessage tool, and find peers with list_peers, not ListAgents. SendMessage can reach other sessions too, but it goes around this bus: nothing is queued for a session that is not running, the human sees nothing in ccmux, and delegation tracking and the relays miss it.
 
-To reply, call the send_message tool (snake_case) with to_id set to the from_id from the channel tag. Always use to_id (not to_name) for replies — multiple peers can share a repo name, and to_id guarantees the reply reaches the specific peer that messaged you. Do NOT use the built-in SendMessage tool, and discover peers with list_peers rather than ListAgents. SendMessage can reach other Claude Code sessions, so this is not a claim that it would fail — it is that it goes around this bus: nothing is queued for a peer whose session is not running, nothing shows up in ccmux for the human, and delegation tracking and the permission relay do not see it. The correct tool for peer messaging is always send_message.
+When a peer asks you to do work, acknowledge it, do it, then send back what you did and how it went. Never make them ask for a status update.
 
-When a peer asks you to do work, acknowledge the request, do the work, and then send a completion message back to that peer summarizing what you did and the outcome (success, failure, or questions). Always close the loop — the peer that gave you the task should not have to ask for a status update.
+PERMISSION RELAY: a message starting "[claude-peers permission relay]" asks you to approve a peer's tool call. It goes to everyone who messaged that peer recently or delegated to it, so answer ONLY if you delegated that work; otherwise ignore it and send nothing. Reply with send_message, the message exactly "yes <request_id>" or "no <request_id>" (the five lowercase letters in the relay) and nothing else.
 
-PERMISSION RELAY: If you receive a message starting with "[claude-peers permission relay]", another peer needs your approval to run a tool. The relay is broadcast to everyone who has messaged that peer recently and to everyone with an open delegation to it — so it might be for work YOU delegated, or it might be for work someone else delegated. ONLY respond yes/no if you actually asked that peer to do the work in question. If you didn't delegate it, ignore the relay completely (don't send anything back). To approve work you delegated: call send_message back to that peer with the message field set to exactly "yes <request_id>" (e.g. "yes abcde"). To deny: "no <request_id>". The reply must contain only those two tokens — no greeting, no explanation. The request_id is the five lowercase letters in the relay message.
+QUESTION RELAY: a message starting "[claude-peers question relay]" is a peer's AskUserQuestion. Same rule: answer only if you delegated that work, with send_message and the message "answer <request_id> <your answer>" (an option's label or your own words; one answer covers every question on the card). The first answer it gets, yours or its human's, counts.
 
-QUESTION RELAY: If you receive a message starting with "[claude-peers question relay]", another peer is asking a question (its AskUserQuestion) and the same rule applies: ONLY answer if you delegated that work; otherwise ignore it. To answer: call send_message back to that peer with the message field set to "answer <request_id> <your answer>" — the id, then your answer in plain words (an option's label, or your own text; several questions on one card get one answer covering them all). The first answer the peer gets, from you or from its human, is the one that counts.
-
-DELEGATION TASKS: If a message starts with "[claude-peers delegation task tsk_xxxxxxxx]", you are the worker on a tracked delegation. Call update_task(task_id, status="acked") immediately, "working" when you start, and close it with status="completed" plus a result summary (or "failed" and why). Your updates reach the delegator automatically — do not also send a separate completion message. When YOU need a peer to do work whose completion you must know about, use delegate instead of send_message; you will receive "[claude-peers task update]" messages as the worker reports, and check_messages lists your open delegations. Task update messages are status notifications, not conversation: read them, act if the result requires it, and do NOT send a reply unless something is wrong. A delegator may close its own task with update_task(status="failed") to cancel it.
-
-Available tools:
-- send_message: Reply to a peer by passing to_id (from the tag's from_id) and message. For unsolicited outbound messages, pass to_name instead.
-- delegate: Send tracked work to a peer; returns a task_id whose status updates arrive automatically.
-- update_task: Report status on a delegation you received (acked/working/completed/failed).
-- list_peers: Discover other Claude Code instances in your project.
-- set_summary: Describe what you're working on (visible to peers).
-- check_messages: Manually poll for messages (usually automatic via channel push); also lists open delegations.
+DELEGATION TASKS: a message starting "[claude-peers delegation task tsk_xxxxxxxx]" makes you the worker. Call update_task(task_id, status="acked") at once, "working" when you start, then "completed" with a result (or "failed" and why). Updates reach the delegator by themselves; send no separate completion message. When you need a peer's work and its outcome, use delegate, not send_message. "[claude-peers task update]" messages are status, not conversation: act if needed, do not reply. check_messages lists your open delegations; cancel one with update_task(status="failed").
 
 On startup, call set_summary to describe your current work.`
 
@@ -284,7 +274,7 @@ var toolsList = []map[string]any{
 // and a deferred tool is not in context when the session reads its first
 // instruction. Every tool here opts out, because every one of them is named by
 // text the session is guaranteed to meet and told to act on at once:
-// serverInstructions says to answer a channel message IMMEDIATELY with
+// serverInstructions says to answer a channel message at once with
 // send_message and to call set_summary on startup, a delegation header says to
 // call update_task now, the relay text says to answer with send_message, and a
 // poll-only session has no way to collect its mail except check_messages. A
@@ -296,8 +286,8 @@ var toolsList = []map[string]any{
 // default: these schemas sit in every session's context from startup. `tasks`
 // is loaded for a near reason: a human's "file it" names no tool, and a session
 // that cannot see one will write the plan to a file instead. Drop
-// a tool from the loop below if that trade stops being worth it, but drop it
-// from the instructions in the same edit.
+// a tool from the loop below if that trade stops being worth it, but drop
+// any mention of it from the instructions in the same edit.
 func init() {
 	for _, tool := range toolsList {
 		tool["_meta"] = map[string]any{"anthropic/alwaysLoad": true}

@@ -99,6 +99,18 @@ type app struct {
 	// moveMu serializes bus moves against registration; see resolveBus.
 	moveMu sync.Mutex
 
+	// registered is closed at the first successful registration, which the
+	// handshake waits on briefly, once (instructions); nil in tests.
+	registered     chan struct{}
+	registeredOnce sync.Once
+	waitOnce       sync.Once
+	// clientReady is closed when Claude Code says the handshake is done
+	// (notifications/initialized). The push loop waits for it: a push sent
+	// before then is dropped by Claude Code, yet counted as shown and acked,
+	// so a queued delegation would be lost. nil in tests.
+	clientReady     chan struct{}
+	clientReadyOnce sync.Once
+
 	mu      sync.Mutex
 	id      string          // assigned by ccmuxd on register
 	busWarn string          // last reported bus-resolve failure, cleared on success
@@ -129,7 +141,49 @@ type app struct {
 }
 
 func (a *app) peerID() string { a.mu.Lock(); defer a.mu.Unlock(); return a.id }
-func (a *app) group() string  { a.mu.Lock(); defer a.mu.Unlock(); return a.grp }
+
+func (a *app) markClientReady() {
+	if a.clientReady != nil {
+		a.clientReadyOnce.Do(func() { close(a.clientReady) })
+	}
+}
+
+// clientReadyWait bounds the wait for notifications/initialized. A client
+// that never sends it (a protocol era without that step) must not leave the
+// session with no push channel and nothing in the log.
+var clientReadyWait = 30 * time.Second
+
+func (a *app) waitClientReady() {
+	if a.clientReady == nil {
+		return
+	}
+	select {
+	case <-a.clientReady:
+	case <-time.After(clientReadyWait):
+		logf("no notifications/initialized from the client within %s; pushing anyway", clientReadyWait)
+	}
+}
+
+func (a *app) markRegistered() {
+	if a.registered != nil {
+		a.registeredOnce.Do(func() { close(a.registered) })
+	}
+}
+
+// waitRegistered waits up to d for the first registration, and says so in
+// the log when it gives up: the session then starts without its window's
+// parts in its instructions.
+func (a *app) waitRegistered(d time.Duration) {
+	if a.registered == nil {
+		return
+	}
+	select {
+	case <-a.registered:
+	case <-time.After(d):
+		logf("not registered after %s; the instructions go out without this window's parts", d)
+	}
+}
+func (a *app) group() string { a.mu.Lock(); defer a.mu.Unlock(); return a.grp }
 
 // markShown records that seq reached the model, and reports whether that was
 // news. Out-of-order and repeat seqs are absorbed: only a forward move counts.
@@ -211,8 +265,10 @@ func main() {
 
 	a.installHandlers()
 
-	// Join the bus in the background — never block the MCP handshake. busLoop
-	// keeps us registered only while we're the pane's interactive session.
+	// Join the bus in the background. The handshake waits for that only
+	// briefly, once (instructions, registerWait), so its per-session parts can
+	// be included; busLoop keeps us registered only while we're the pane's
+	// interactive session.
 	go a.busLoop()
 	go a.busWatchdog() // a hub that appears mid-connection must still be joined
 
@@ -447,6 +503,7 @@ func (a *app) register() error {
 	a.id, a.grp = resp.PeerID, resp.Group
 	a.mu.Unlock()
 	a.name = resp.Name
+	a.markRegistered()
 	return nil
 }
 
@@ -471,7 +528,7 @@ func (a *app) installHandlers() {
 				},
 			},
 			"serverInfo":   map[string]any{"name": "claude-peers", "version": shimVersion},
-			"instructions": serverInstructions + a.windowParagraph(),
+			"instructions": a.instructions(),
 		}, nil
 	}
 	// 2026-07-28 clients probe with server/discover before falling back to the
@@ -491,7 +548,7 @@ func (a *app) installHandlers() {
 					"claude/channel/permission": map[string]any{},
 				},
 			},
-			"instructions": serverInstructions + a.windowParagraph(),
+			"instructions": a.instructions(),
 			"_meta": map[string]any{
 				"io.modelcontextprotocol/serverInfo": map[string]any{"name": "claude-peers", "version": shimVersion},
 			},
@@ -513,7 +570,7 @@ func (a *app) installHandlers() {
 		}
 		return a.callTool(in.Name, in.Args), nil
 	}
-	a.mcp.onNotify["notifications/initialized"] = func(json.RawMessage) {}
+	a.mcp.onNotify["notifications/initialized"] = func(json.RawMessage) { a.markClientReady() }
 	a.mcp.onNotify["notifications/cancelled"] = func(json.RawMessage) {}
 
 	// Claude Code opened a tool-approval dialog → hand it to ccmuxd, which

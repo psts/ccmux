@@ -115,8 +115,9 @@ type wireEvent struct {
 // On any drop it re-registers (idempotent; the daemon may have restarted)
 // and redials with backoff — cursor replay makes reconnects lossless.
 func (a *app) runPushLoop() {
+	a.waitClientReady() // a push before the handshake is done would be lost
 	delay := wsReconnectBase
-	for isBusOwner() { // yield to busLoop if this process is no longer the session
+	for ownsPaneBus() { // yield to busLoop if this process is no longer the session
 		if err := a.pushOnce(); err != nil {
 			logf("push channel: %v (reconnecting in %s)", err, delay)
 		}

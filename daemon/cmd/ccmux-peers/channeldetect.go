@@ -118,7 +118,7 @@ func valueNames(value, server string) bool {
 // the detection is worthless if the wiring quietly goes back to trusting an env
 // var, and nothing else would notice.
 func newApp() *app {
-	return &app{mcp: newMCPServer(), channelMode: resolveChannelMode()}
+	return &app{mcp: newMCPServer(), channelMode: resolveChannelMode(), registered: make(chan struct{}), clientReady: make(chan struct{})}
 }
 
 // resolveChannelMode decides whether this session will be pushed to.
