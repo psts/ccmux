@@ -17,12 +17,15 @@
   // Same order as the Mac app: a copy that carries real text (a spreadsheet,
   // a web selection with a picture in it) pastes as text, so a paste never
   // turns text into an upload by surprise. A bare image (a screenshot), or a
-  // copied image file whose only text is its own name, is the image.
+  // copied image file whose only text is its own name, is the image. Only the
+  // four kinds the daemon takes (paste.go sniffImageExt) count; any other
+  // picture pastes as the browser would rather than fail at the daemon.
+  const KINDS = /^image\/(png|jpeg|gif|webp)$/;
   function imageFrom(dt) {
     if (!dt) return null;
     const files = [...(dt.files || [])];
     const items = [...(dt.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile());
-    const img = [...files, ...items].find((f) => f && /^image\//.test(f.type));
+    const img = [...files, ...items].find((f) => f && KINDS.test(f.type));
     if (!img) return null;
     const text = ((dt.getData && dt.getData("text/plain")) || "").trim();
     return text && text !== img.name ? null : img;
@@ -67,6 +70,19 @@
       path = await upload(to.ws, img, env.fetch);
     } catch (err) {
       return env.fail("The image was not pasted: " + err.message);
+    }
+    deliver(where, to, path, env);
+  }
+
+  // deliver puts the path where the paste was made, if that pane is still the
+  // one on screen. The chat box is one textarea shared by every agent pane,
+  // and the terminal follows the open pane, so after a move either would take
+  // the path to a session whose host may not have the file. Then the path
+  // goes in a note instead, which stays until closed.
+  function deliver(where, to, path, env) {
+    const now = env.currentPane();
+    if (!now || now.ws !== to.ws || now.pane !== to.pane) {
+      return env.fail(`You left that pane before the image finished uploading, so its path was not added: ${path}`, true);
     }
     if (where.terminal) {
       if (!env.typeIntoPane(to, path + " ")) env.fail(`The session was not connected, so the image path was not typed: ${path}`, true);

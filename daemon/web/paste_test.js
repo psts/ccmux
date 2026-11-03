@@ -21,6 +21,12 @@ test("text, even with a picture riding along, pastes as text", () => {
   assert.strictEqual(P.imageFrom(clip({ text: "hello" })), null);
   assert.strictEqual(P.imageFrom(clip({ files: [png()], text: "a cell from a sheet" })), null);
   assert.strictEqual(P.imageFrom(clip({ files: [{ name: "notes.pdf", type: "application/pdf", size: 9 }] })), null);
+  for (const type of ["image/tiff", "image/svg+xml", "image/heic", "image/bmp"]) {
+    assert.strictEqual(P.imageFrom(clip({ files: [{ name: "x", type, size: 9 }] })), null, type + " is not one the daemon takes");
+  }
+  for (const type of ["image/jpeg", "image/gif", "image/webp"]) {
+    assert.ok(P.imageFrom(clip({ files: [{ name: "x", type, size: 9 }] })), type);
+  }
   assert.strictEqual(P.imageFrom(null), null);
 });
 
@@ -52,7 +58,7 @@ async function paste({ where = "terminal", data, answer = { status: 201, body: {
     fail: (m, keep) => { got.failed.push(m); got.kept.push(Boolean(keep)); },
     fetch: async (url, opts) => {
       got.posted.push({ url, opts });
-      if (switchTo) current = switchTo;
+      if (switchTo) current = switchTo.gone ? null : switchTo;
       return { status: answer.status, json: async () => answer.body };
     },
   });
@@ -70,9 +76,20 @@ test("an image pasted into a terminal uploads and types its path", async () => {
   assert.deepStrictEqual(r.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]]);
 });
 
-test("the path goes to the pane the paste was made in, or says it could not", async () => {
-  const moved = await paste({ data: clip({ files: [png()] }), switchTo: { ws: "ws-1", pane: "p2" } });
-  assert.deepStrictEqual(moved.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]], "not the pane opened during the upload");
+test("a move during the upload keeps the path out of every box, and shows it", async () => {
+  const moves = [{ ws: "ws-1", pane: "p2" }, { ws: "ws-2", pane: "p1" }, null]; // another pane, another session, the board
+  for (const where of ["terminal", "chat"]) {
+    for (const switchTo of moves) {
+      const r = await paste({ where, data: clip({ files: [png()] }), switchTo: switchTo || { gone: true } });
+      assert.deepStrictEqual(r.typed, [], `${where}: nothing typed after a move`);
+      assert.strictEqual(r.target.value, "see ", `${where}: the chat box keeps its draft`);
+      assert.match(r.failed[0], /left that pane.*paste-ab\.png/);
+      assert.deepStrictEqual(r.kept, [true]);
+    }
+  }
+});
+
+test("staying put, the path goes in, or a dropped socket says so", async () => {
   const offline = await paste({ data: clip({ files: [png()] }), connected: false });
   assert.deepStrictEqual(offline.typed, []);
   assert.match(offline.failed[0], /not connected.*\/tmp\/ccmux-paste\/paste-ab\.png/, "the path is in the note, not lost");
