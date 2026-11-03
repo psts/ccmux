@@ -186,7 +186,7 @@ test("a picture the daemon does not take is pasted as PNG, or named when it cann
 test("a HEIC sent to a host too old to convert it says so", async () => {
   const heic = { name: "IMG_0001.HEIC", type: "image/heic", size: 2 << 20 };
   const old = await paste({ data: clip({ files: [heic] }), answer: { status: 415, body: { error: "not an image" } } });
-  assert.match(old.failed[0], /machine cannot convert HEIC photos yet; update its ccmux/);
+  assert.match(old.failed[0], /not an image: .*may be too old to convert HEIC \(update its ccmux\), or the file is not a HEIC it can read/);
   const png = await paste({ data: clip({ files: [{ name: "a.png", type: "image/png", size: 9 }] }), answer: { status: 415, body: { error: "not an image" } } });
   assert.match(png.failed[0], /not pasted: not an image$/, "a non-HEIC refusal keeps the daemon's words");
   const now = await paste({ data: clip({ files: [heic] }), answer: { status: 415, body: { error: "the HEIC image could not be converted (x)" } } });

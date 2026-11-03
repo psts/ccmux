@@ -87,8 +87,11 @@
     });
     const body = await r.json().catch(() => ({}));
     if (r.status === 415 && HEIF.test(img.type) && body.error === "not an image") {
-      // A ccmux from before HEIC conversion (heic.go) says only this.
-      throw new Error("this session's machine cannot convert HEIC photos yet; update its ccmux, or copy the photo as JPEG");
+      // A ccmux from before HEIC conversion (heic.go) says only this, and so
+      // does a current one for a file that is not a HEIC it can read. Which
+      // one cannot be told from here, so both are named.
+      throw new Error("not an image: this session's machine may be too old to convert HEIC (update its ccmux), " +
+        "or the file is not a HEIC it can read; copy the photo as JPEG");
     }
     if (r.status !== 201 || !body.path) throw new Error(body.error || `the daemon answered ${r.status}`);
     return body.path;
