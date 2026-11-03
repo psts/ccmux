@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -112,8 +113,13 @@ func landPaste(ctx context.Context, b []byte) (string, int, error) {
 	sweepStalePastes(dir)
 	if ext == "" {
 		path, err := convertHEIF(ctx, dir, b)
-		if err != nil {
+		var bad heifError
+		if errors.As(err, &bad) {
 			return "", http.StatusUnsupportedMediaType, err
+		}
+		if err != nil {
+			log.Printf("paste: could not store a HEIC upload: %v", err)
+			return "", http.StatusInternalServerError, err
 		}
 		return path, 0, nil
 	}

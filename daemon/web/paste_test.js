@@ -162,14 +162,17 @@ test("a picture the daemon does not take is pasted as PNG, or named when it cann
   const asIs = await paste({ data: clip({ files: [shot] }) });
   assert.deepStrictEqual(asIs.converted, [], "a PNG is sent as it is");
   assert.strictEqual(asIs.posted[0].opts.body, shot);
-  const heic = { name: "IMG_0001.HEIC", type: "image/heic", size: 2048 };
-  const drawn = await paste({ data: clip({ files: [heic] }) });
-  assert.deepStrictEqual(drawn.converted, ["image/heic"]);
+  const heic = { name: "IMG_0001.HEIC", type: "image/heic", size: 2 << 20 };
+  for (const canDraw of [true, false]) { // Safari can open HEIC, Chrome cannot: the same either way
+    const sent = await paste({ data: clip({ files: [heic] }), canDraw });
+    assert.deepStrictEqual(sent.converted, [], "a HEIC is never redrawn: as a PNG it would pass the cap");
+    assert.strictEqual(sent.posted[0].opts.body, heic, "it goes as it is, for the host to convert");
+    assert.deepStrictEqual(sent.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]]);
+  }
+  const tiff = { name: "scan.tiff", type: "image/tiff", size: 9 };
+  const drawn = await paste({ data: clip({ files: [tiff] }) });
+  assert.deepStrictEqual(drawn.converted, ["image/tiff"], "another picture is redrawn");
   assert.strictEqual(drawn.posted[0].opts.body.type, "image/png");
-  assert.deepStrictEqual(drawn.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]]);
-  const chrome = await paste({ data: clip({ files: [heic] }), canDraw: false });
-  assert.strictEqual(chrome.posted[0].opts.body, heic, "a HEIC the browser cannot open goes as it is, for the host to convert");
-  assert.deepStrictEqual(chrome.typed, [["p1", "/tmp/ccmux-paste/paste-ab.png "]]);
   const bmp = { name: "x.bmp", type: "image/bmp", size: 9 };
   const unread = await paste({ data: clip({ files: [bmp] }), canDraw: false });
   assert.strictEqual(unread.prevented, true, "the paste is still taken, not dropped on xterm");

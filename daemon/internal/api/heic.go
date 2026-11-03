@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,10 +12,10 @@ import (
 	"time"
 )
 
-// A HEIC photo (what iPhones and Macs take) is no format Claude reads, and
-// Chrome cannot open one to redraw it as PNG the way Safari does (web/paste.js).
-// So the host converts it: the web lens sends the HEIC bytes as they are, and
-// the paste lands as a PNG made by whichever converter this host has.
+// A HEIC photo (what iPhones and Macs take) is no format Claude reads. The web
+// lens sends every HEIC as it is, never redrawn in the browser (a 2 MB HEIC is
+// 15 MB or more as a PNG, over the paste cap, and Chrome cannot open one at
+// all), and the paste lands as a PNG made by whichever converter this host has.
 
 // heifBrands are the ISO-BMFF major brands of HEIC/HEIF stills (mif1 is the
 // generic image brand, also used by AVIF, which the same tools read).
@@ -58,14 +57,32 @@ var (
 
 const heifTimeout = 20 * time.Second
 
-// errNoHEIF is what a host with no converter installed answers. The lens
-// shows it to the person who pasted, so it names the fix.
-var errNoHEIF = errors.New("this host has no HEIC converter (" + heifFix() + ")")
+// heifError is a conversion the image or this host's tools could not do,
+// answered as 415 with advice. Anything else convertHEIF returns (a write
+// that failed) is the host's own trouble, a 500.
+type heifError struct{ msg string }
 
-// heifFix is the advice for this host's system: macOS always has sips.
-func heifFix() string {
+func (e heifError) Error() string { return e.msg }
+
+// errNoHEIF is what a host with no converter installed answers. The lens
+// shows it to the person who pasted, so it names what to install: on Linux
+// a converter AND libheif's HEVC decoder, which ImageMagick needs too.
+var errNoHEIF = heifError{"this host has no HEIC converter (" + heifInstall() + ")"}
+
+// heifInstall is the advice when no converter is installed: macOS always has
+// sips; on Linux both a converter and libheif's HEVC decoder are needed.
+func heifInstall() string {
 	if runtime.GOOS == "darwin" {
 		return "sips should be in /usr/bin"
+	}
+	return "install imagemagick and libheif-plugin-libde265"
+}
+
+// heifFix is the advice once a converter ran and failed: on Linux the usual
+// cause is ImageMagick without libheif's HEVC decoder.
+func heifFix() string {
+	if runtime.GOOS == "darwin" {
+		return "check that sips can open it"
 	}
 	return "install libheif-plugin-libde265"
 }
@@ -97,8 +114,8 @@ func convertHEIF(ctx context.Context, dir string, b []byte) (string, error) {
 	}
 	// Every converter there was failed. The last one's reason goes back to
 	// the person who pasted; the rest are in the log.
-	return "", fmt.Errorf("the HEIC image could not be converted (%s); if every HEIC fails, %s",
-		failed[len(failed)-1], heifFix())
+	return "", heifError{fmt.Sprintf("the HEIC image could not be converted (%s); if every HEIC fails, %s",
+		failed[len(failed)-1], heifFix())}
 }
 
 // runHEIF runs one converter and says why it failed, or "" when out is now a

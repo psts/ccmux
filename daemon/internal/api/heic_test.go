@@ -93,7 +93,7 @@ func TestHEICWithNoConverterNamesTheFix(t *testing.T) {
 	fakeConverters(t, map[string]bool{}, func(string) []byte { return nil }, nil)
 	_, code, err := landPaste(context.Background(), heicMagic)
 	if code != http.StatusUnsupportedMediaType || err == nil || !strings.Contains(err.Error(), "no HEIC converter") ||
-		!strings.Contains(err.Error(), heifFix()) {
+		!strings.Contains(err.Error(), heifInstall()) {
 		t.Errorf("landPaste = %d, %v", code, err)
 	}
 	if files, _ := os.ReadDir(pasteDir()); len(files) != 0 {
@@ -160,5 +160,26 @@ func TestHEICWithSeveralImages(t *testing.T) {
 	}
 	if files, _ := os.ReadDir(pasteDir()); len(files) != 0 {
 		t.Errorf("left %d numbered files behind", len(files))
+	}
+}
+
+// A paste dir the daemon cannot write is the host's trouble, a 500, not a
+// HEIC the host cannot read (415).
+func TestHEICWriteFailureIsTheHosts(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only dir")
+	}
+	fakeConverters(t, map[string]bool{"convert": true}, func(string) []byte { return pngMagic }, nil)
+	if err := os.MkdirAll(pasteDir(), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(pasteDir(), 0o700) })
+	_, code, err := landPaste(context.Background(), heicMagic)
+	if code != http.StatusInternalServerError || err == nil {
+		t.Errorf("landPaste = %d, %v; want 500", code, err)
+	}
+	var bad heifError
+	if errors.As(err, &bad) {
+		t.Errorf("a write failure was reported as a conversion failure: %v", err)
 	}
 }
