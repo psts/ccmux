@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,9 +29,9 @@ func boolp(b bool) *bool    { return &b }
 func int64p(n int64) *int64 { return &n }
 
 var (
-	appRepo     = taskFiler{repo: "/p/app", session: "app"}
-	backendRepo = taskFiler{repo: "/p/backend", session: "backend"}
-	adminRepo   = taskFiler{repo: "/p/admin", session: "admin"}
+	appRepo     = taskFiler{repo: "/p/app", session: "app", window: "w1"}
+	backendRepo = taskFiler{repo: "/p/backend", session: "backend", window: "w1"}
+	adminRepo   = taskFiler{repo: "/p/admin", session: "admin", window: "w1"}
 )
 
 func call(t *testing.T, s *Server, who taskFiler, req paneTaskReq) string {
@@ -43,8 +44,8 @@ func call(t *testing.T, s *Server, who taskFiler, req paneTaskReq) string {
 }
 
 type taskList struct {
-	Tasks  []taskView     `json:"tasks"`
-	Counts map[string]int `json:"counts"`
+	Tasks  []taskView                `json:"tasks"`
+	Counts map[string]map[string]int `json:"counts"`
 }
 
 func tasksOf(t *testing.T, s *Server) taskList {
@@ -71,7 +72,7 @@ func TestTasks_LeadFilesOthersAdd(t *testing.T) {
 	call(t, s, backendRepo, paneTaskReq{Action: "add_part", ID: 1, Plan: "backend side, better"})
 	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 1, Draft: boolp(false)})
 	got := tasksOf(t, s)
-	if len(got.Tasks) != 1 || got.Tasks[0].Status != taskq.Waiting || got.Counts[taskq.Waiting] != 1 {
+	if len(got.Tasks) != 1 || got.Tasks[0].Status != taskq.Waiting || got.Counts["w1"][taskq.Waiting] != 1 {
 		t.Fatalf("tasks = %+v", got)
 	}
 	parts := got.Tasks[0].Parts
@@ -289,5 +290,49 @@ func TestTasks_EditIsAllOrNothing(t *testing.T) {
 	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 1, Plan: "second"})
 	if got := tasksOf(t, s).Tasks[0].Parts[0].Plan; got != "second" {
 		t.Fatalf("plan edit = %q", got)
+	}
+}
+
+// Each ccmux window has its own queue: a session in no window cannot file,
+// counts come per window, "starts after" and add_part stay inside the
+// window, and a move trades places only with a task of the same window.
+func TestTasks_EachWindowHasItsOwnQueue(t *testing.T) {
+	s := taskServer(t)
+	plan := "a plan long enough to say what to build"
+	if _, status, err := s.applyPaneTask(taskFiler{repo: "/p/loose", session: "loose"}, paneTaskReq{Action: "file", Title: "Loose", Plan: plan}); err == nil || status != 409 || !strings.Contains(err.Error(), "no ccmux window") {
+		t.Fatalf("filing from no window = %d %v", status, err)
+	}
+	other := taskFiler{repo: "/p/site", session: "site", window: "w2"}
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "One", Plan: plan})                       // #1 in w1
+	call(t, s, other, paneTaskReq{Action: "file", Title: "Two", Plan: plan})                         // #2 in w2
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "Three", Plan: plan, Draft: boolp(true)}) // #3 in w1
+
+	got := tasksOf(t, s)
+	if got.Counts["w1"][taskq.Waiting] != 1 || got.Counts["w1"][taskq.Planning] != 1 || got.Counts["w2"][taskq.Waiting] != 1 {
+		t.Fatalf("counts = %v", got.Counts)
+	}
+	if got.Tasks[1].WindowID != "w2" {
+		t.Fatalf("task 2 window = %q", got.Tasks[1].WindowID)
+	}
+	if _, _, err := s.applyPaneTask(appRepo, paneTaskReq{Action: "file", Title: "Four", Plan: plan, After: int64p(2)}); err == nil {
+		t.Fatal("a task started after another window's task")
+	}
+	if _, status, err := s.applyPaneTask(other, paneTaskReq{Action: "add_part", ID: 3, Plan: plan}); err == nil || status != 404 {
+		t.Fatalf("add_part to another window's task = %d %v", status, err)
+	}
+
+	// #1 waiting, #3 planning in w1: back to waiting puts #3 next to #1 in
+	// w1, and up trades with #1, never with w2's #2 sitting between them.
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 3, Draft: boolp(false)})
+	rec := do(t, s, "POST", "/v1/tasks/3/move", `{"dir":"up"}`)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"moved":true`) {
+		t.Fatalf("move = %d %s", rec.Code, rec.Body)
+	}
+	order := []int64{}
+	for _, v := range tasksOf(t, s).Tasks {
+		order = append(order, v.ID)
+	}
+	if fmt.Sprint(order) != "[3 2 1]" {
+		t.Fatalf("order after the move = %v, want [3 2 1] (#3 traded with #1, #2 untouched)", order)
 	}
 }

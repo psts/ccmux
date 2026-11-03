@@ -103,7 +103,9 @@ func (s *Server) tasksReady(w http.ResponseWriter) bool {
 	return true
 }
 
-// listTasks: GET /v1/tasks → {tasks, counts}.
+// listTasks: GET /v1/tasks → {tasks, counts}: every window's tasks, each
+// stamped with its windowId, and counts keyed by window id, so a lens draws
+// each window's own queue row.
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {
 		return
@@ -113,10 +115,17 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskViewsOf(tasks, parts), "counts": taskq.Counts(tasks)})
+	counts := map[string]map[string]int{}
+	for _, t := range tasks {
+		if _, done := counts[t.WindowID]; !done {
+			counts[t.WindowID] = taskq.Counts(taskq.InWindow(tasks, t.WindowID))
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskViewsOf(tasks, parts), "counts": counts})
 }
 
-// taskOf loads {id} with the whole list, or writes the error and returns false.
+// taskOf loads {id} with its window's queue, which its order, "starts
+// after" and waiters are all within; or writes the error and returns false.
 func (s *Server) taskOf(w http.ResponseWriter, r *http.Request) (store.Task, []store.Task, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -130,7 +139,7 @@ func (s *Server) taskOf(w http.ResponseWriter, r *http.Request) (store.Task, []s
 	}
 	for _, t := range all {
 		if t.ID == id {
-			return t, all, true
+			return t, taskq.InWindow(all, t.WindowID), true
 		}
 	}
 	writeError(w, http.StatusNotFound, "no task #"+r.PathValue("id"))

@@ -407,13 +407,14 @@ async function firehoseCases() {
   check("unknown kinds do nothing", r.errors.length === errs && r.evalIn(`state.attn.w1.p1`) === "done");
 }
 
-// The task queue (tasks.js over tasklist.js): its sidebar row carries the
-// counts from GET /v1/tasks, a "tasks-changed" frame reads them again, and
-// opening the view leaves the session and comes back out on openWorkspace.
+// The task queue (tasks.js over tasklist.js): each window's row carries that
+// window's counts from GET /v1/tasks, a "tasks-changed" frame reads them
+// again, and opening a window's queue leaves the session and comes back out
+// on openWorkspace.
 async function tasksCases() {
   const r = run({ withBoard: true }); // the page has the board and the chat it leans on
   await settle();
-  let reply = { tasks: [], counts: { waiting: 2, done: 3, needs_you: 1 } };
+  let reply = { tasks: [], counts: { "win-a": { waiting: 2, done: 3, needs_you: 1 }, "win-b": { waiting: 7 } } };
   const reads = [];
   r.ctx.fetch = async (u) => {
     reads.push(String(u));
@@ -421,27 +422,45 @@ async function tasksCases() {
   };
   const made = [];
   r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "createElement"
-    ? () => { const li = { className: "", innerHTML: "", onclick: null }; made.push(li); return li; }
+    ? () => { const li = { className: "", innerHTML: "", onclick: null, querySelector: () => el() }; made.push(li); return li; }
     : k === "getElementById" ? () => el() : el()) });
   for (const f of ["tasklist.js", "tasks.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), r.ctx, { filename: f });
   }
   await settle();
   check("tasks.js reads the queue at load", reads.some((u) => u.startsWith("/v1/tasks?user=")), reads.join(","));
-  const row = r.ctx.ccmuxTasks.row();
-  check("the row shows waiting and done", row.innerHTML.includes("2 waiting · 3 done"), row.innerHTML);
+  const winA = { id: "win-a", name: "Mixed" };
+  const row = r.ctx.ccmuxTasks.row(winA);
+  check("the row shows its window's waiting and done", row.innerHTML.includes("2 waiting · 3 done"), row.innerHTML);
   check("the row counts what needs a person", row.innerHTML.includes(">1</span>") && row.className.includes("waiting"), row.className);
+  const rowB = r.ctx.ccmuxTasks.row({ id: "win-b", name: "ChartLabs" });
+  check("another window's row has its own counts", rowB.innerHTML.includes("7 waiting") && !rowB.innerHTML.includes("done"), rowB.innerHTML);
+  check("a window with no tasks has a quiet row", !r.ctx.ccmuxTasks.row({ id: "win-c", name: "Empty" }).className.includes("waiting"));
   const before = reads.length;
   r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
   await settle();
   check("a tasks-changed frame reads the queue again", reads.length > before);
   reply = { tasks: [{ id: 1, repo: "admin", title: "x", plan: "p", status: "waiting", moves: ["planning"], editable: true }], counts: {} };
   r.evalIn(`state.wsId = "ws-9"`);
-  r.ctx.ccmuxTasks.open();
+  r.ctx.ccmuxTasks.open(winA);
   await settle();
   check("opening the task view leaves the session", r.ctx.ccmuxTasks.isOpen() && r.evalIn("state.wsId") === null);
+  check("the view holds the window it was opened for", r.ctx.ccmuxTasks.openWindow() === "win-a", r.ctx.ccmuxTasks.openWindow());
   r.evalIn(`openWorkspace("ws-1")`);
   check("opening a session closes the task view", !r.ctx.ccmuxTasks.isOpen());
+}
+
+// An open window with no session still gets its section, so its Tasks row
+// shows; a closed one does not, and AVAILABLE stays last.
+async function emptyWindowCases() {
+  const r = run();
+  await settle();
+  r.evalIn(`state.windows = [
+    { id: "win-a", name: "Mixed", open: true, openHere: true },
+    { id: "win-e", name: "Emptied", open: true, openHere: true },
+    { id: "win-c", name: "Shut", open: false, openHere: false }]`);
+  const groups = r.ctx.withEmptyWindows([["Mixed", [{ id: "ws-1" }]], ["", [{ id: "ws-9" }]]]).map(([g, l]) => `${g}:${l.length}`);
+  check("an open window with no sessions keeps a section, before AVAILABLE", groups.join(",") === "Mixed:1,Emptied:0,:1", groups.join(","));
 }
 
 // --- the tab ×: which tabs get one, and what a click does when the close
@@ -581,6 +600,16 @@ async function pageWindowCases() {
   check("switching windows closes the other window's attention board",
     !boarded.ctx.ccmuxBoard.isOpen() && boarded.ctx.ccmuxPage.current() === "win-b",
     `board open: ${boarded.ctx.ccmuxBoard.isOpen()}, current ${boarded.ctx.ccmuxPage.current()}`);
+  // Each window has its own task queue, so the old window's goes the same way.
+  for (const f of ["tasklist.js", "tasks.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), boarded.ctx, { filename: f });
+  }
+  boarded.ctx.ccmuxTasks.open({ id: "win-b", name: "ChartLabs" });
+  await boarded.ctx.ccmuxPage.enter("win-b", "");
+  check("staying in a window keeps its task queue open", boarded.ctx.ccmuxTasks.openWindow() === "win-b");
+  await boarded.ctx.ccmuxPage.enter("win-a", "");
+  check("switching windows closes the other window's task queue", !boarded.ctx.ccmuxTasks.isOpen(),
+    `tasks open for ${boarded.ctx.ccmuxTasks.openWindow()}`);
 
   // A window list that cannot be read at boot decides nothing: the tapped
   // session still opens, the address and the relaunch list stay as they were,
@@ -1685,6 +1714,7 @@ async function peersFailureCases() {
   await scratchDraftCases();
   await firehoseCases();
   await tasksCases();
+  await emptyWindowCases();
   await scratchTabCases();
   await pageWindowCases();
   await peersMergeCases();

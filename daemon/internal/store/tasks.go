@@ -1,5 +1,11 @@
 package store
 
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
 // Task is one feature in the task queue, built by its Parts (one per repo).
 // internal/taskq owns the rules: which statuses exist, which moves are
 // allowed. Times are unix milliseconds.
@@ -11,13 +17,14 @@ type Task struct {
 	Position   int64  `json:"position"`
 	Note       string `json:"note,omitempty"`
 	FiledBy    string `json:"filedBy,omitempty"`
+	WindowID   string `json:"windowId,omitempty"` // the ccmux window it was filed in; its queue
 	CreatedAt  int64  `json:"createdAt"`
 	UpdatedAt  int64  `json:"updatedAt"`
 	StartedAt  int64  `json:"startedAt,omitempty"`
 	FinishedAt int64  `json:"finishedAt,omitempty"`
 }
 
-const taskCols = "id,title,status,after_id,position,note,filed_by,created_at,updated_at,started_at,finished_at"
+const taskCols = "id,title,status,after_id,position,note,filed_by,window_id,created_at,updated_at,started_at,finished_at"
 
 // AddTaskWithPart files a task at the back of the queue together with its
 // first part, in one step: a task left without parts could never start.
@@ -27,7 +34,7 @@ func (s *SQLite) AddTaskWithPart(t Task, p Part) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.Exec(addTaskSQL, t.Title, t.Status, t.AfterID, t.Note, t.FiledBy, t.CreatedAt, t.UpdatedAt)
+	res, err := tx.Exec(addTaskSQL, t.Title, t.Status, t.AfterID, t.Note, t.FiledBy, t.WindowID, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -42,8 +49,8 @@ func (s *SQLite) AddTaskWithPart(t Task, p Part) (int64, error) {
 }
 
 const addTaskSQL = `
-INSERT INTO tasks (title,status,after_id,position,note,filed_by,created_at,updated_at)
-VALUES (?,?,?,(SELECT COALESCE(MAX(position),0)+1 FROM tasks),?,?,?,?)`
+INSERT INTO tasks (title,status,after_id,position,note,filed_by,window_id,created_at,updated_at)
+VALUES (?,?,?,(SELECT COALESCE(MAX(position),0)+1 FROM tasks),?,?,?,?,?)`
 
 // Task returns one task, or nil when there is none with that id.
 func (s *SQLite) Task(id int64) (*Task, error) {
@@ -110,6 +117,26 @@ func (s *SQLite) DeleteTask(id int64) (bool, error) {
 	return n > 0, tx.Commit()
 }
 
+// WindowHasTasks says whether the queue holds any task of window id, done
+// ones too: a window that is gone takes its Tasks row with it, and a task
+// no row shows cannot be seen, cancelled or cleared.
+func (s *SQLite) WindowHasTasks(windowID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE window_id=?`, windowID).Scan(&n)
+	return n > 0, err
+}
+
+// migrateTaskWindow adds the window a task was filed in. Strict: every
+// task read selects it. A task from before has none (the queue was empty
+// everywhere when windows came to it).
+func migrateTaskWindow(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE tasks ADD COLUMN window_id TEXT DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate tasks.window_id: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLite) queryTasks(query string, args ...any) ([]Task, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -120,7 +147,7 @@ func (s *SQLite) queryTasks(query string, args ...any) ([]Task, error) {
 	for rows.Next() {
 		var t Task
 		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &t.AfterID, &t.Position, &t.Note, &t.FiledBy,
-			&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
+			&t.WindowID, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

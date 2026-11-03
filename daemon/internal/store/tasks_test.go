@@ -87,3 +87,24 @@ func TestParts_OnePerRepoAndSave(t *testing.T) {
 		t.Fatalf("saved part = %+v", got)
 	}
 }
+
+// A task keeps the window it was filed in, and a save never moves it: only
+// filing sets the window.
+func TestTasks_KeepTheirWindow(t *testing.T) {
+	st := taskStore(t)
+	id, err := addTask(st, Task{Title: "one", Status: "waiting", WindowID: "win-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.Task(id)
+	if got == nil || got.WindowID != "win-a" {
+		t.Fatalf("filed = %+v, want window win-a", got)
+	}
+	got.WindowID, got.Title = "win-b", "renamed"
+	if _, err := st.SaveTask(*got); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := st.Task(id); again.WindowID != "win-a" || again.Title != "renamed" {
+		t.Fatalf("after a save = %+v, want renamed and still in win-a", again)
+	}
+}

@@ -11,7 +11,9 @@ import (
 // taskHost is the manager as the task runner sees it.
 type taskHost struct{ mgr *manager.Manager }
 
-func (h taskHost) TaskWorkspace(repo string) (string, error) { return h.mgr.TaskWorkspace(repo) }
+func (h taskHost) TaskWorkspace(repo, windowID string) (string, error) {
+	return h.mgr.TaskWorkspace(repo, windowID)
+}
 func (h taskHost) StartTaskPane(wsID, cwd, cmd string) (string, error) {
 	return h.mgr.StartTaskPane(wsID, cwd, cmd)
 }

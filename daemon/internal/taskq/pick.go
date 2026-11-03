@@ -34,24 +34,37 @@ func Startable(tasks []store.Task, parts []store.Part) []store.Task {
 	return out
 }
 
-// SlotsHeld counts the tasks holding a slot: those with a part at work. The
-// slots count features, not Claudes, so every part of a feature runs at
-// once. A feature whose every Claude waits on a person holds none: a
-// question asked at night must not hold up the rest of the queue.
-func SlotsHeld(tasks []store.Task, parts []store.Part) int {
+// InWindow is the tasks of one ccmux window's queue. Its order, "starts
+// after" and neighbours are all within it: each window is its own queue.
+func InWindow(tasks []store.Task, windowID string) []store.Task {
+	out := []store.Task{}
+	for _, t := range tasks {
+		if t.WindowID == windowID {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// SlotsHeld counts, per window, the tasks holding a slot: those with a part
+// at work. Each window has its own slots. The slots count features, not
+// Claudes, so every part of a feature runs at once. A feature whose every
+// Claude waits on a person holds none: a question asked at night must not
+// hold up the rest of the queue.
+func SlotsHeld(tasks []store.Task, parts []store.Part) map[string]int {
 	working := map[int64]bool{}
 	for _, p := range parts {
 		if p.Status == Running {
 			working[p.TaskID] = true
 		}
 	}
-	n := 0
+	held := map[string]int{}
 	for _, t := range tasks {
 		if working[t.ID] && (t.Status == Running || t.Status == NeedsYou) {
-			n++
+			held[t.WindowID]++
 		}
 	}
-	return n
+	return held
 }
 
 // Rollup is a started task's status from its parts: needs_you when any part

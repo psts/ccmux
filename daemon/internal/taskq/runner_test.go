@@ -73,9 +73,13 @@ type fakeHost struct {
 	panes     map[string]PaneState
 	changed   int
 	onStart   func()
+	windows   []string // the window each session lookup asked for
 }
 
-func (h *fakeHost) TaskWorkspace(repo string) (string, error) {
+func (h *fakeHost) TaskWorkspace(repo, windowID string) (string, error) {
+	h.mu.Lock()
+	h.windows = append(h.windows, windowID)
+	h.mu.Unlock()
 	if h.noSession {
 		return "", errors.New("no ccmux session for " + repo)
 	}
@@ -243,6 +247,36 @@ func (g *rig) feature(id, after int64, repos ...string) {
 }
 
 func (g *rig) partsOf(id int64) []store.Part { return PartsOf(g.st.parts, id) }
+
+// inWindow files task id in window w.
+func (g *rig) inWindow(id int64, w string) {
+	for i := range g.st.tasks {
+		if g.st.tasks[i].ID == id {
+			g.st.tasks[i].WindowID = w
+		}
+	}
+}
+
+// Each window has its own slots: a full window's next task waits while
+// another window's starts, and its worker is looked for in its own window.
+func TestRunner_SlotsArePerWindow(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.feature(3, 0, "admin")
+	g.inWindow(1, "w1")
+	g.inWindow(2, "w1")
+	g.inWindow(3, "w2")
+	g.tick()
+	if g.st.task(1).Status != Running || g.st.task(2).Status != Waiting || g.st.task(3).Status != Running {
+		t.Fatalf("statuses = %s %s %s, want running waiting running",
+			g.st.task(1).Status, g.st.task(2).Status, g.st.task(3).Status)
+	}
+	if strings.Join(g.host.windows, ",") != "w1,w2" {
+		t.Fatalf("sessions looked for in %v, want w1 then w2", g.host.windows)
+	}
+}
 
 // The slots count features: every part of a started feature starts at once,
 // each told who its teammates are, and a third feature waits.

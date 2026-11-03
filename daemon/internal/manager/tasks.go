@@ -17,29 +17,67 @@ func (m *Manager) TasksChanged() { m.events.publish(Event{Kind: "tasks-changed"}
 const taskRunner = "task-runner"
 
 // TaskWorkspace finds the session a task in repo runs in: a repo session
-// (not an agent's) on this daemon, a live one first. A closed one is
-// reopened, the way a teammate start reopens it, so a task filed in the
-// evening still runs after its session was closed for the night.
-func (m *Manager) TaskWorkspace(repo string) (string, error) {
-	var closed string
+// (not an agent's) on this daemon, one in the task's window before one in
+// another (the repo may have moved since the task was filed), and a live one
+// before a closed one. A closed one is reopened, the way a teammate start
+// reopens it, so a task filed in the evening still runs after its session
+// was closed for the night.
+func (m *Manager) TaskWorkspace(repo, windowID string) (string, error) {
+	members, err := m.windowMembers()
+	if err != nil {
+		return "", fmt.Errorf("reading which window each session is in: %w", err)
+	}
+	best, bestRank := "", -1
 	for _, ws := range m.List() {
 		if ws.RepoPath != repo || ws.Agent != "" {
 			continue
 		}
-		if m.Controller(ws.ID) != nil {
-			return ws.ID, nil
-		}
-		if closed == "" {
-			closed = ws.ID
+		if rank := m.taskSessionRank(ws.ID, windowID, members); rank > bestRank {
+			best, bestRank = ws.ID, rank
 		}
 	}
-	if closed == "" {
+	if best == "" {
 		return "", fmt.Errorf("no ccmux session for %s on this daemon", repo)
 	}
-	if _, err := m.ReviveWorkspace(closed); err != nil {
+	if m.Controller(best) != nil {
+		return best, nil
+	}
+	if _, err := m.ReviveWorkspace(best); err != nil {
 		return "", fmt.Errorf("reopening the session for %s: %w", repo, err)
 	}
-	return closed, nil
+	return best, nil
+}
+
+// taskSessionRank orders a task's candidate sessions: its own window counts
+// more than being live.
+func (m *Manager) taskSessionRank(wsID, windowID string, members map[string]string) int {
+	rank := 0
+	if windowID != "" && members[wsID] == windowID {
+		rank += 2
+	}
+	if m.Controller(wsID) != nil {
+		rank++
+	}
+	return rank
+}
+
+// WindowOfWorkspace is the id of the shared window holding wsID, "" for a
+// session in no window. Read from the store, not the cached snapshot, which
+// serves empty after a failed read: filing must never take that for "no
+// window".
+func (m *Manager) WindowOfWorkspace(wsID string) (string, error) {
+	members, err := m.windowMembers()
+	if err != nil {
+		return "", err
+	}
+	return members[wsID], nil
+}
+
+func (m *Manager) windowMembers() (map[string]string, error) {
+	if m.store == nil {
+		return map[string]string{}, nil
+	}
+	return m.store.WindowMembers()
 }
 
 // StartTaskPane adds a pane in cwd (the task's worktree) and types cmd into

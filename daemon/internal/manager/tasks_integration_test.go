@@ -50,19 +50,19 @@ func TestTaskWorkspace(t *testing.T) {
 		}
 	}
 
-	if _, err := mgr.TaskWorkspace(repo); err == nil {
+	if _, err := mgr.TaskWorkspace(repo, ""); err == nil {
 		t.Fatal("a repo with no session gave a workspace")
 	}
 	agentWS := newWS("bot")
 	mgr.Workspace(agentWS.ID).Agent = "scout"
-	if id, err := mgr.TaskWorkspace(repo); err == nil {
+	if id, err := mgr.TaskWorkspace(repo, ""); err == nil {
 		t.Fatalf("only an agent's session on the repo, got %s", id)
 	}
 
 	closed := newWS("admin")
 	closeWS(closed)
 	live := newWS("admin-2")
-	id, err := mgr.TaskWorkspace(repo)
+	id, err := mgr.TaskWorkspace(repo, "")
 	if err != nil || id != live.ID {
 		t.Fatalf("with a live session = %s, %v; want the live %s", id, err, live.ID)
 	}
@@ -70,9 +70,27 @@ func TestTaskWorkspace(t *testing.T) {
 		t.Fatal("a closed session was reopened while a live one existed")
 	}
 
+	// The task's own window wins over being live: the closed admin is in
+	// window w1, so a w1 task reopens it rather than run in admin-2.
+	if err := mgr.SeedWindowMembership(closed.ID, "w1"); err != nil {
+		t.Fatal(err)
+	}
+	members, _ := st.WindowMembers()
+	id, err = mgr.TaskWorkspace(repo, members[closed.ID])
+	if err != nil || id != closed.ID || mgr.Controller(closed.ID) == nil {
+		t.Fatalf("a task of w1 = %s, %v; want its window's session %s, reopened", id, err, closed.ID)
+	}
+	if got, _ := mgr.WindowOfWorkspace(closed.ID); got != members[closed.ID] || got == "" {
+		t.Fatalf("window of the w1 session = %q", got)
+	}
+	if got, _ := mgr.WindowOfWorkspace(live.ID); got != "" {
+		t.Fatalf("a session in no window is in %q", got)
+	}
+	closeWS(closed)
+
 	closeWS(live)
 	mgr.Workspace(live.ID).RepoPath = t.TempDir() // leave only the closed one on repo
-	id, err = mgr.TaskWorkspace(repo)
+	id, err = mgr.TaskWorkspace(repo, "")
 	if err != nil || id != closed.ID || mgr.Controller(closed.ID) == nil {
 		t.Fatalf("only a closed session = %s, %v (live=%v); want it reopened", id, err, mgr.Controller(closed.ID) != nil)
 	}

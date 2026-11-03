@@ -1,7 +1,9 @@
-// tasks.js: the task queue (daemon/internal/taskq). A repo's session files a
-// plan with the peers `tasks` tool; this page shows every repo's tasks from a
-// sidebar row with the counts, lets a person fix a plan before it runs, put
-// it in order, mark it ready, cancel it and clear it away. How the list reads
+// tasks.js: the task queue (daemon/internal/taskq). Each ccmux window has its
+// own queue: a repo's session files a plan into its window's queue with the
+// peers `tasks` tool. Each window's queue opens from a row under that window
+// (placed like its Attention row, app.js) with the counts, and lets a person
+// fix a plan before it runs, put it in order, mark it ready, cancel it and
+// clear it away. How the list reads
 // is tasklist.js; what a task may do next arrives with each task from the
 // daemon, so a button here is one the daemon accepts.
 //
@@ -13,7 +15,10 @@
 (() => {
   "use strict";
   const L = () => window.ccmuxTaskList;
-  const q = { tasks: [], counts: {}, open: false, repo: "", expanded: new Set(), drafts: new Map(), pending: false };
+  // win is the window whose queue the view shows ("" while it is closed);
+  // counts are keyed by window id.
+  const q = { tasks: [], counts: {}, win: "", winName: "", repo: "", expanded: new Set(), drafts: new Map(), pending: false };
+  const shown = () => q.tasks.filter((t) => t.windowId === q.win);
   const url = (p) => `/v1/tasks${p || ""}?user=${encodeURIComponent(getUser())}`;
   const box = () => $("tasks");
 
@@ -27,13 +32,13 @@
       body = await r.json();
     } catch (e) {
       console.warn("tasks: list unreadable:", e);
-      if (q.open) status("Couldn't read the task list: " + e.message, true);
+      if (q.win) status("Couldn't read the task list: " + e.message, true);
       return;
     }
     q.tasks = body.tasks || [];
     q.counts = body.counts || {};
     renderList();
-    if (q.open) render();
+    if (q.win) render();
   }
 
   // send makes one change and reads the list back; a refusal is shown, not
@@ -60,24 +65,29 @@
 
   // --- the sidebar row ---
 
-  function row() {
-    const s = L().summary(q.counts);
+  // row is window win's Tasks entry ({id, name}).
+  function row(win) {
+    const s = L().summary(q.counts[win.id] || {});
     const li = document.createElement("li");
-    li.className = "ws board-row tasks-row" + (q.open ? " active" : "") + (s.alert ? " waiting" : "");
+    li.className = "ws board-row tasks-row" + (q.win === win.id ? " active" : "") + (s.alert ? " waiting" : "");
     li.innerHTML = `<div class="ws-row"><span class="board-icon">☰</span><span class="name">Tasks</span>` +
       (s.text ? `<span class="tasks-sum">${esc(s.text)}</span>` : "") +
       (s.alert ? `<span class="board-count">${s.alert}</span>` : "") + `</div>`;
-    li.onclick = open;
+    li.onclick = () => open(win);
     return li;
   }
 
   // --- open / close ---
 
-  function open() {
-    if (q.open) return;
+  function open(win) {
+    if (q.win === win.id) return;
+    const wasOpen = !!q.win;
+    q.win = win.id;
+    q.winName = win.name || "";
+    q.repo = "";
+    if (wasOpen) { render(); renderList(); return; } // another window's queue, same view
     if (window.ccmuxBoard) window.ccmuxBoard.close();
     leaveWorkspace();
-    q.open = true;
     $("app").classList.add("tasks-mode");
     $("empty").style.display = "none";
     box().classList.remove("hidden");
@@ -88,8 +98,8 @@
   }
 
   function close() {
-    if (!q.open) return;
-    q.open = false;
+    if (!q.win) return;
+    q.win = "";
     $("app").classList.remove("tasks-mode");
     box().classList.add("hidden");
     box().innerHTML = "";
@@ -115,22 +125,24 @@
     }
     q.pending = false;
     wire(b);
-    const repos = L().repos(q.tasks);
+    const mine = shown();
+    const repos = L().repos(mine);
     if (q.repo && !repos.includes(q.repo)) q.repo = "";
-    const secs = L().sections(q.tasks, q.repo);
+    const secs = L().sections(mine, q.repo);
     b.innerHTML = head(repos) + (secs.length ? secs.map(sectionHtml).join("") : emptyHtml());
   }
 
   function head(repos) {
     const opts = [`<option value="">All repos</option>`]
       .concat(repos.map((r) => `<option value="${esc(r)}"${r === q.repo ? " selected" : ""}>${esc(r)}</option>`));
-    return `<div class="tq-head"><span class="tq-title">Tasks</span>` +
+    const title = "Tasks" + (q.winName ? " · " + q.winName : "");
+    return `<div class="tq-head"><span class="tq-title">${esc(title)}</span>` +
       `<select class="tq-repo" data-act="repo">${opts.join("")}</select>` +
       `<span class="tq-status"></span></div>`;
   }
 
   function emptyHtml() {
-    return `<p class="tq-empty">No tasks yet. Plan a feature with a repo's Claude, then ask it to file the plan: ` +
+    return `<p class="tq-empty">No tasks in this window yet. Plan a feature with one of its repos' Claudes, then ask it to file the plan: ` +
       `it lands here and waits for a free slot.</p>`;
   }
 
@@ -140,7 +152,7 @@
   }
 
   function taskHtml(t) {
-    const w = L().waitsOn(t, q.tasks);
+    const w = L().waitsOn(t, shown());
     const open = q.expanded.has(t.id);
     const chips = (t.parts || []).map((p) =>
       `<span class="tq-repo-chip tq-part-${esc(p.status)}" title="${esc(L().partWord(p.status))}">${esc(p.repo)}</span>`).join("");
@@ -266,6 +278,6 @@
     if (Object.hasOwn(actions, kind)) actions[kind](id, to, partId);
   }
 
-  window.ccmuxTasks = { refresh, row, open, close, isOpen: () => q.open };
+  window.ccmuxTasks = { refresh, row, open, close, isOpen: () => !!q.win, openWindow: () => q.win };
   refresh();
 })();

@@ -117,16 +117,20 @@
     renderList();
   }
 
-  // leaveBoard takes down an attention board that belongs to another window:
-  // only openWorkspace closes it otherwise, and switching windows with no
-  // session to show would leave the old window's board on screen.
-  function leaveBoard(name) {
-    const other = state.board && state.board.toLowerCase() !== String(name || "").toLowerCase();
+  // leaveBoard takes down an attention board or a task queue that belongs to
+  // another window than win (null for none): only openWorkspace closes them
+  // otherwise, and switching windows with no session to show would leave the
+  // old window's view on screen.
+  function leaveBoard(win) {
+    const name = win ? win.name : "";
+    const other = state.board && state.board.toLowerCase() !== String(name).toLowerCase();
     if (other && window.ccmuxBoard) window.ccmuxBoard.close();
+    const T = window.ccmuxTasks;
+    if (T && T.isOpen() && T.openWindow() !== (win ? win.id : "")) T.close();
   }
 
   function picker() {
-    leaveBoard("");
+    leaveBoard(null);
     if (state.wsId) detachIfCurrent(state.wsId);
     show("");
     openDrawer();
@@ -138,7 +142,7 @@
     const win = windowById(w);
     if (!win) return picker();
     if (!openHereOf(win) && !(await openWindow(win))) return picker();
-    leaveBoard(win.name);
+    leaveBoard(win);
     show(w);
     showSession(w, ws);
   }

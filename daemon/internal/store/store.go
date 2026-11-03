@@ -60,6 +60,9 @@ type Store interface {
 	CreateWindow(id, name string) error
 	RenameWindow(id, name string) error
 	DeleteWindow(id string) error
+	// WindowHasTasks: the task queue still holds a task of that window
+	// (tasks.go), so tidying must not delete it.
+	WindowHasTasks(windowID string) (bool, error)
 	AllWindows() (map[string]string, error) // id → name
 	SetWindowMember(wsID, windowID string) error
 	RemoveWindowMember(wsID string) error
@@ -219,6 +222,7 @@ CREATE TABLE IF NOT EXISTS agent_pages (
 -- The task queue (internal/taskq): a task is one feature, built by one part
 -- per repo, each part a Claude in its own worktree of that repo. position
 -- orders the queue; after_id is "starts after" another task (0 = none).
+-- window_id (added by migrateTaskWindow) is the ccmux window whose queue it is.
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, status TEXT NOT NULL,
   after_id INTEGER DEFAULT 0, position INTEGER DEFAULT 0,
@@ -343,6 +347,9 @@ func erroringMigrations(db *sql.DB) error {
 		return err
 	}
 	if err := migrateTaskSignal(db); err != nil {
+		return err
+	}
+	if err := migrateTaskWindow(db); err != nil {
 		return err
 	}
 	return migrateWindowOpenDevices(db)

@@ -411,7 +411,7 @@ const carriesBoard = (win, here) => !!win && (!here || win.id === here);
 function renderList() {
   const ul = $("ws-list");
   ul.innerHTML = "";
-  const grouped = groupedWorkspaces();
+  const grouped = withEmptyWindows(groupedWorkspaces());
   const winByName = new Map(state.windows.map((w) => [w.name.toLowerCase(), w]));
   // openHere, not open: a window another of your lenses holds is not open HERE,
   // and hiding it left it unreachable from this lens entirely. ?? open so an
@@ -421,14 +421,16 @@ function renderList() {
   const here = pageWindow();
   const isHere = (group) => !!here && (winByName.get(group.toLowerCase()) || {}).id === here;
   grouped.sort(([a], [b]) => Number(isHere(b)) - Number(isHere(a))); // stable: the rest keep their order
-  if (window.ccmuxTasks) ul.appendChild(window.ccmuxTasks.row()); // the task queue, above every window
 
   for (const [group, list] of grouped) {
     if (group) {
       const win = winByName.get(group.toLowerCase());
       if (win && !openHereOf(win)) continue; // rendered below as a closed-window row
       ul.appendChild(groupHeader(group, win, here));
-      if (carriesBoard(win, here)) ul.appendChild(boardRow(group));
+      if (carriesBoard(win, here)) {
+        ul.appendChild(boardRow(group));
+        if (window.ccmuxTasks) ul.appendChild(window.ccmuxTasks.row(win)); // the window's own task queue
+      }
     } else if (grouped.length > 1 || closed.length) {
       // Header only when there is something to separate from: a deployment
       // where nothing is grouped keeps its plain flat list.
@@ -543,6 +545,17 @@ function leaveWorkspace() {
 // groupedWorkspaces buckets by the shared window name: named windows
 // alphabetically, the ungrouped bucket ("") last; inside a bucket, repos by
 // name then agents by name.
+// withEmptyWindows adds a section for each window open here that has no
+// session: its Tasks row is the only way to its queue, and the daemon keeps
+// such a window while its queue holds a task. Before AVAILABLE, which stays last.
+function withEmptyWindows(grouped) {
+  const have = new Set(grouped.map(([g]) => g.toLowerCase()));
+  const empty = state.windows.filter((w) => openHereOf(w) && !have.has(w.name.toLowerCase())).map((w) => [w.name, []]);
+  const loose = grouped.findIndex(([g]) => g === "");
+  if (loose < 0) return grouped.concat(empty);
+  return grouped.slice(0, loose).concat(empty, grouped.slice(loose));
+}
+
 function groupedWorkspaces() {
   const byGroup = new Map();
   for (const ws of state.workspaces) {

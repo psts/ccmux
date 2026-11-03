@@ -145,14 +145,17 @@ func TestRollup(t *testing.T) {
 }
 
 func TestSlotsCountFeaturesNotClaudes(t *testing.T) {
-	tasks := list(store.Task{ID: 1, Status: Running}, store.Task{ID: 2, Status: NeedsYou}, store.Task{ID: 3, Status: NeedsYou})
+	tasks := list(store.Task{ID: 1, Status: Running, WindowID: "w1"}, store.Task{ID: 2, Status: NeedsYou, WindowID: "w1"},
+		store.Task{ID: 3, Status: NeedsYou, WindowID: "w1"}, store.Task{ID: 4, Status: Running, WindowID: "w2"})
 	parts := []store.Part{
 		{TaskID: 1, Status: Running}, {TaskID: 1, Status: Running}, {TaskID: 1, Status: Running},
 		{TaskID: 2, Status: Running}, {TaskID: 2, Status: NeedsYou},
 		{TaskID: 3, Status: NeedsYou},
+		{TaskID: 4, Status: Running},
 	}
-	if got := SlotsHeld(tasks, parts); got != 2 {
-		t.Fatalf("slots = %d, want 2 (three Claudes of one feature are one slot; a feature only waiting on you holds none)", got)
+	got := SlotsHeld(tasks, parts)
+	if got["w1"] != 2 || got["w2"] != 1 || len(got) != 2 {
+		t.Fatalf("slots = %v, want w1:2 w2:1 (three Claudes of one feature are one slot; a feature only waiting on you holds none; each window counts its own)", got)
 	}
 }
 

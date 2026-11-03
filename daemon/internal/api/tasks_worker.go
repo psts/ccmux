@@ -49,8 +49,8 @@ func (s *Server) addPartFromSession(who taskFiler, req paneTaskReq) (string, int
 	if err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	if t == nil {
-		return "", http.StatusNotFound, fmt.Errorf("no task #%d", req.ID)
+	if t == nil || t.WindowID != who.window {
+		return "", http.StatusNotFound, fmt.Errorf("no task #%d in this session's window", req.ID)
 	}
 	if !taskq.Editable(t.Status) {
 		return "", http.StatusConflict, fmt.Errorf("task #%d is %s; message its workers on the bus instead", t.ID, t.Status)

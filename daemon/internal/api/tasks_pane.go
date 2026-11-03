@@ -38,8 +38,9 @@ type paneTaskReq struct {
 }
 
 // taskFiler is who is asking: the repo, the session name stamped on what
-// it files, and the pane (a worker is known by its pane).
-type taskFiler struct{ repo, session, pane string }
+// it files, the pane (a worker is known by its pane), and the ccmux window
+// its session is in, whose queue it files into ("" for none).
+type taskFiler struct{ repo, session, pane, window string }
 
 // paneTasks: POST /v1/panes/{id}/tasks {action, ...} → {message, tasks}.
 func (s *Server) paneTasks(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +82,11 @@ func (s *Server) taskFilerOfPane(paneID string) (taskFiler, int, string) {
 	if _, err := os.Stat(filepath.Join(ws.RepoPath, ".git")); err != nil {
 		return taskFiler{}, http.StatusBadRequest, "this session is not in a git repo, so there is nothing to build a task in"
 	}
-	return taskFiler{repo: ws.RepoPath, session: ws.Name, pane: paneID}, 0, ""
+	window, err := s.mgr.WindowOfWorkspace(ws.ID)
+	if err != nil {
+		return taskFiler{}, http.StatusInternalServerError, "reading this session's window: " + err.Error()
+	}
+	return taskFiler{repo: ws.RepoPath, session: ws.Name, pane: paneID, window: window}, 0, ""
 }
 
 // repoTasks is the tasks with a part in repo.
@@ -122,6 +127,9 @@ func (s *Server) applyPaneTask(who taskFiler, req paneTaskReq) (string, int, err
 
 // fileTask files a feature with the caller's repo's part.
 func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
+	if who.window == "" {
+		return "", http.StatusConflict, errors.New("this session is in no ccmux window, and each window has its own task queue; put the session in a window first")
+	}
 	if err := firstErr(taskq.CheckTitle(req.Title), taskq.CheckPlan(req.Plan)); err != nil {
 		return "", http.StatusBadRequest, err
 	}
@@ -130,7 +138,7 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 		return "", http.StatusInternalServerError, err
 	}
 	after := deref(req.After)
-	if err := taskq.CheckAfter(all, 0, after); err != nil {
+	if err := taskq.CheckAfter(taskq.InWindow(all, who.window), 0, after); err != nil {
 		return "", http.StatusBadRequest, err
 	}
 	status := taskq.Waiting
@@ -139,7 +147,7 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	}
 	now := s.taskNow()
 	id, err := s.tasks.AddTaskWithPart(
-		store.Task{Title: strings.TrimSpace(req.Title), Status: status, AfterID: after, FiledBy: who.session, CreatedAt: now, UpdatedAt: now},
+		store.Task{Title: strings.TrimSpace(req.Title), Status: status, AfterID: after, FiledBy: who.session, WindowID: who.window, CreatedAt: now, UpdatedAt: now},
 		store.Part{RepoPath: who.repo, Plan: req.Plan, Status: taskq.Pending, FiledBy: who.session, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return "", http.StatusInternalServerError, err
@@ -244,8 +252,8 @@ func (s *Server) changeMemberTask(who taskFiler, id int64, e taskq.Edit, verb st
 	return fmt.Sprintf("%s task #%d (%s).", verb, id, next.Status), 0, nil
 }
 
-// memberTask loads task id with the whole list, if the caller's repo has a
-// part in it.
+// memberTask loads task id with its window's queue, if the caller's repo
+// has a part in it.
 func (s *Server) memberTask(who taskFiler, id int64) (store.Task, []store.Task, int, error) {
 	tasks, parts, err := s.board()
 	if err != nil {
@@ -253,7 +261,7 @@ func (s *Server) memberTask(who taskFiler, id int64) (store.Task, []store.Task, 
 	}
 	for _, t := range repoTasks(tasks, parts, who.repo) {
 		if t.ID == id {
-			return t, tasks, 0, nil
+			return t, taskq.InWindow(tasks, t.WindowID), 0, nil
 		}
 	}
 	return store.Task{}, nil, http.StatusNotFound, fmt.Errorf("no task #%d with a part in this repo", id)

@@ -135,3 +135,33 @@ func TestMigrateViewsToWindows_OpenFlagsExpireWithinADay(t *testing.T) {
 		t.Fatal("the imported flag outlives a day, so archive-on-last-close stays dead for a month")
 	}
 }
+
+// A window whose last session moved out is tidied away, unless its task
+// queue still holds a task: then it stays, empty, so its Tasks row does.
+func TestPruneKeepsAWindowWithTasks(t *testing.T) {
+	m := windowsManager(t)
+	st := m.store.(*store.SQLite)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(m.SeedWindowMembership("w1", "Busy"))
+	must(m.SeedWindowMembership("w2", "Idle"))
+	members, _, _, err := m.WindowsStrict()
+	must(err)
+	_, err = st.AddTaskWithPart(store.Task{Title: "x", Status: "done", WindowID: members["w1"]},
+		store.Part{RepoPath: "/r", Plan: "p", Status: "ready"})
+	must(err)
+	must(m.AssignWorkspace("w1", ""))
+	must(m.AssignWorkspace("w2", ""))
+	_, _, names, err := m.WindowsStrict()
+	must(err)
+	if _, ok := names[members["w1"]]; !ok {
+		t.Fatal("the window with a task was deleted")
+	}
+	if _, ok := names[members["w2"]]; ok {
+		t.Fatal("the empty window with no tasks was kept")
+	}
+}

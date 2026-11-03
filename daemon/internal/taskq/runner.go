@@ -21,7 +21,7 @@ type Store interface {
 // a worktree of past workers, starts a worker's pane, reads it back, and
 // tells the lenses something changed.
 type Host interface {
-	TaskWorkspace(repo string) (string, error)
+	TaskWorkspace(repo, windowID string) (string, error)
 	ClearTaskFolder(dir string) error
 	StartTaskPane(wsID, cwd, cmd string) (string, error)
 	TaskPane(paneID string) (PaneState, bool)
@@ -41,7 +41,7 @@ type Runner struct {
 	MergeGit MergeGit
 	Checks   Checks
 	Lock     sync.Locker
-	Slots    int    // features running at once, across every repo
+	Slots    int    // features running at once in each window, across its repos
 	Root     string // where worktrees and briefs go
 	Now      func() time.Time
 
@@ -171,8 +171,8 @@ func (r *Runner) rollup(tasks []store.Task, parts []store.Part) bool {
 }
 
 // claim starts the pending parts of started tasks (a part a worker added, or
-// a person retried) and, while slots are free, the next ready tasks with
-// every one of their parts.
+// a person retried) and, while its window has a slot free, each next ready
+// task with every one of its parts.
 func (r *Runner) claim(tasks []store.Task, parts []store.Part) []job {
 	var jobs []job
 	for _, t := range tasks {
@@ -180,17 +180,17 @@ func (r *Runner) claim(tasks []store.Task, parts []store.Part) []job {
 			jobs = append(jobs, r.claimParts(t, parts)...)
 		}
 	}
-	free := r.Slots - SlotsHeld(tasks, parts)
+	held := SlotsHeld(tasks, parts)
 	for _, t := range Startable(tasks, parts) {
-		if free <= 0 {
-			break
+		if held[t.WindowID] >= r.Slots {
+			continue
 		}
 		t.Status, t.Note, t.StartedAt, t.FinishedAt = Running, "", r.Now().UnixMilli(), 0
 		if !r.saveTask(t) {
 			continue
 		}
 		jobs = append(jobs, r.claimParts(t, parts)...)
-		free--
+		held[t.WindowID]++
 	}
 	return jobs
 }
@@ -271,7 +271,7 @@ func (r *Runner) cancelled(id int64) bool {
 
 func (r *Runner) prepareAndStart(j job, l layout) (string, error) {
 	repo := j.part.RepoPath
-	wsID, err := r.Host.TaskWorkspace(repo)
+	wsID, err := r.Host.TaskWorkspace(repo, j.task.WindowID)
 	if err != nil {
 		return "", err
 	}

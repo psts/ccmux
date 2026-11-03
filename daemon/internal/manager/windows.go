@@ -247,14 +247,22 @@ func (m *Manager) AssignWorkspace(wsID, windowName string) error {
 	return nil
 }
 
-// pruneWindowIfAbandoned deletes a window that ended up with no members and
-// no open flags — best-effort tidying, so errors are logged, never returned.
+// pruneWindowIfAbandoned deletes a window that ended up with no members, no
+// open flags and no tasks in its queue — best-effort tidying, so errors are
+// logged, never returned. A window with tasks stays, empty: its Tasks row is
+// the only way to see, cancel or clear them.
 func (m *Manager) pruneWindowIfAbandoned(windowID string) {
 	if windowID == "" {
 		return
 	}
 	members, opens, _, err := m.WindowsStrict()
 	if err != nil || len(opens[windowID]) > 0 {
+		return
+	}
+	if busy, err := m.store.WindowHasTasks(windowID); err != nil || busy {
+		if err != nil {
+			log.Printf("windows: not pruning empty window %s, its task queue is unreadable: %v", windowID, err)
+		}
 		return
 	}
 	for _, wid := range members {
