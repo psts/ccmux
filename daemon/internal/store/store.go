@@ -90,6 +90,11 @@ type Store interface {
 	PeerGroupMessages(group string, sinceMillis int64, limit int) ([]*model.PeerEvent, error)
 	PrunePeerEvents(beforeMillis int64) (int64, error)
 
+	// A workspace's shared scratchpad (scratchpad.go).
+	Scratchpad(wsID string) (*model.Scratchpad, error)
+	SaveScratchpad(wsID string, pad *model.Scratchpad) error
+	DeleteScratchpad(wsID string) error
+
 	io.Closer
 }
 
@@ -206,6 +211,12 @@ CREATE TABLE IF NOT EXISTS repo_owns (
 CREATE TABLE IF NOT EXISTS agent_pages (
   scope TEXT, incident TEXT, paged_at INTEGER, by_name TEXT DEFAULT '',
   PRIMARY KEY (scope, incident)
+);
+-- A workspace's scratchpad: free text shared by everyone who opens it. Kept
+-- on the daemon lenses talk to (the hub), whichever host runs the workspace.
+CREATE TABLE IF NOT EXISTS scratchpads (
+  ws_id TEXT PRIMARY KEY, content TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER DEFAULT 0, updated_by TEXT DEFAULT ''
 );`
 
 // Open opens (creating if needed) the registry at path.

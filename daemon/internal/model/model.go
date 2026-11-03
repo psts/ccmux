@@ -103,6 +103,14 @@ func NextClaimSince(prev Pane, att Attention, reason AttentionReason, now int64)
 	}
 }
 
+// Scratchpad is a workspace's free-text notes, one shared copy per workspace.
+// UpdatedAt (unix ms) and UpdatedBy (login) name the last save.
+type Scratchpad struct {
+	Content   string `json:"content"`
+	UpdatedAt int64  `json:"updatedAt"`
+	UpdatedBy string `json:"updatedBy"`
+}
+
 // Workspace is a project working context: one tmux session, N panes.
 type Workspace struct {
 	ID            string  `json:"id"`

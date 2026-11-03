@@ -420,6 +420,23 @@ body {
    label says it, coloured once ccmux cannot do the restart itself. */
 .tab.update-manual { color: var(--needs); }
 #terminal { flex: 1; min-height: 0; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)) 8px; }
+/* Scratchpad (scratchpad.js): a session's shared notes in place of its
+   terminal. Shown by a class on #app, not by toggling the views it covers,
+   so an attach re-deriving the terminal, the agent chat or the harness bar
+   can never draw them over it. */
+.scratchpad { display: none; flex: 1; min-height: 0; flex-direction: column; background: var(--bg); }
+#app.scratch-open .scratchpad { display: flex; }
+#app.scratch-open #terminal, #app.scratch-open #agent-chat, #app.scratch-open #agent-chat-bar,
+#app.scratch-open #harness-bar, #app.scratch-open #pane-notice { display: none !important; }
+.sp-head { display: flex; align-items: baseline; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.sp-title { font-weight: 600; }
+.sp-note { color: var(--muted); }
+.sp-status { margin-left: auto; color: var(--muted); }
+.sp-status.bad { color: #e06c75; }
+.scratchpad textarea {
+  flex: 1; min-height: 0; resize: none; border: 0; outline: none; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg); color: var(--fg); font: 13px/1.5 Menlo, Monaco, "SF Mono", monospace;
+}
 .empty {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); pointer-events: none;
@@ -558,6 +575,7 @@ body {
   #menu-toggle { width: 34px; font-size: 17px; }
   .tab { padding: 0 8px; position: relative; }
   .tab-label, .tab-close { display: none; }
+  .sp-note { display: none; }
   .tab-icon { font-size: 15px; opacity: 1; }
   .tab::before { position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; }
   #pane-add { padding: 0; font-size: 18px; }
@@ -668,7 +686,8 @@ body {
    chat) lives in #main while parked and moves into the active tile's body. */
 #app.board-mode #tabs, #app.board-mode #pane-add, #app.board-mode #presence { display: none; }
 #app.board-mode #main > #terminal, #app.board-mode #main > #agent-chat, #app.board-mode #main > #agent-chat-bar,
-#app.board-mode #main > #harness-bar, #app.board-mode #main > #pane-notice { display: none !important; }
+#app.board-mode #main > #harness-bar, #app.board-mode #main > #pane-notice,
+#app.board-mode #main > #scratchpad, #app.board-mode #scratch-tab { display: none !important; }
 .board { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6px 8px; gap: 6px; }
 .board-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
 .board-title { font-weight: 600; margin-right: 6px; }

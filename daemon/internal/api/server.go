@@ -414,6 +414,9 @@ func (s *Server) Handler() http.Handler {
 	// daemon), never proxied — the daemon the lens talks to is the window
 	// authority. Same for the windows surface below.
 	mux.HandleFunc("PUT /v1/workspaces/{id}/group", s.putGroup)
+	// The scratchpad is kept here too, for the same reason (scratchpad.go).
+	mux.HandleFunc("GET /v1/workspaces/{id}/scratchpad", s.getScratchpad)
+	mux.HandleFunc("PUT /v1/workspaces/{id}/scratchpad", s.putScratchpad)
 	mux.HandleFunc("GET /v1/windows", s.listWindows)
 	mux.HandleFunc("POST /v1/windows/open-set", s.syncWindowOpen)
 	mux.HandleFunc("POST /v1/windows/{id}/open", s.setWindowOpen(true))

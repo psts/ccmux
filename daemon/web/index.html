@@ -33,6 +33,7 @@
         <button id="menu-toggle" title="Sessions" aria-label="Sessions">&#9776;</button>
         <button id="takeover" title="Resize this session to fit your screen">&#8596; Take over</button>
         <div id="tabs"></div>
+        <button id="scratch-tab" class="tab hidden" title="Scratchpad: notes shared with everyone in this workspace" aria-label="Scratchpad"><span class="tab-icon">📝</span><span class="tab-label">Scratchpad</span></button>
         <button id="pane-add" title="New pane…">+</button>
         <div id="presence"></div>
       </div>
@@ -42,6 +43,7 @@
       <p id="pane-notice" class="pane-notice hidden"></p>
       <div id="terminal"></div>
       <div id="agent-chat" class="agent-chat hidden"></div>
+      <div id="scratchpad" class="scratchpad"></div>
       <div id="empty" class="empty">Select a workspace</div>
       <div id="board" class="board hidden"></div>
     </main>
@@ -222,6 +224,7 @@
   <script src="/touchscroll.js"></script>
   <script src="/drawerswipe.js"></script>
   <script src="/agentchat.js"></script>
+  <script src="/scratchpad.js"></script>
   <script src="/board.js"></script>
   <script src="/owns.js"></script>
   <script src="/agentcaps.js"></script>

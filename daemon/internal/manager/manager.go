@@ -759,6 +759,9 @@ func (m *Manager) KillWorkspace(wsID string) error {
 		log.Printf("windows: removing membership for deleted %s failed (ghost member until removed by hand): %v", wsID, err)
 	}
 	_ = m.store.DeleteWorkspaceViews(wsID)
+	if err := m.store.DeleteScratchpad(wsID); err != nil {
+		log.Printf("scratchpad: dropping deleted %s's failed (orphan row, harmless): %v", wsID, err)
+	}
 	m.ForgetDriver(wsID)
 	m.invalidateWindows()
 	return m.store.DeleteWorkspace(wsID)

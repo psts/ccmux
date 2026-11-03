@@ -158,6 +158,234 @@ function run(opts = {}) {
     swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts };
 }
 
+// --- scratchpad.js: a session's shared notes. A fake text box and daemon
+// stand in for the DOM and /v1/workspaces/{id}/scratchpad. ---
+// scratchEnv boots app.js and scratchpad.js over a fake text box and a fake
+// daemon (shared between envs, as one daemon is) with the given browser
+// storage, so a second env over the same storage is a reload.
+async function scratchEnv(daemon, storage) {
+  const r = run({ storage });
+  await settle();
+  const winOn = {};
+  r.ctx.addEventListener = (type, fn) => { winOn[type] = fn; };
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "scratchpad.js"), "utf8"), r.ctx, { filename: "scratchpad.js" });
+  const on = {};
+  const ta = { value: "", readOnly: false, selectionStart: 0, selectionEnd: 0, focus() {}, setSelectionRange() {},
+    addEventListener: (type, fn) => { on[type] = fn; } };
+  const line = { textContent: "", classList: { toggle() {} } };
+  const box = { dataset: {}, innerHTML: "", querySelector: (q) => (q === "textarea" ? ta : line) };
+  const appEl = el();
+  // app.js's $ is a const over document.getElementById, so the fake goes there.
+  const byId = (id) => (id === "scratchpad" ? box : id === "app" ? appEl : el());
+  r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "getElementById" ? byId : el()) });
+  r.ctx.fetch = async (u, o = {}) => {
+    const id = /workspaces\/([^/]+)\/scratchpad/.exec(String(u))[1];
+    daemon.calls.push({ method: o.method || "GET", id, body: o.body, keepalive: o.keepalive });
+    if (daemon.hold && !o.method) await daemon.hold;
+    if (daemon.down) return { ok: false, status: 503, text: async () => "unreachable" };
+    if (o.method === "PUT") daemon.pads[id] = JSON.parse(o.body).content;
+    return { ok: true, status: 200, json: async () => ({ content: daemon.pads[id] || "", updatedAt: 1, updatedBy: "p" }) };
+  };
+  const puts = () => daemon.calls.filter((c) => c.method === "PUT");
+  return { r, ta, on, winOn, line, sp: r.ctx.ccmuxScratch, puts };
+}
+
+async function scratchpadCases() {
+  const daemon = { pads: { "ws-1": "first notes" }, down: false, hold: null, calls: [] };
+  const { r, ta, on, winOn, sp, puts } = await scratchEnv(daemon, {});
+  const pads = daemon.pads, calls = daemon.calls;
+  r.evalIn(`state.wsId = "ws-1"`);
+
+  sp.show();
+  await settle();
+  check("showing the notes reads them", ta.value === "first notes" && !ta.readOnly && sp.isOpen(), ta.value);
+
+  ta.value = "first notes, more";
+  on.input();
+  r.fireTimers();
+  await settle();
+  check("typing saves after a pause", puts().length === 1 && pads["ws-1"] === "first notes, more", JSON.stringify(puts()));
+  r.fireTimers();
+  await settle();
+  check("nothing new typed, nothing sent", puts().length === 1);
+
+  // Someone else saved: a clean box takes their text, a box with unsaved
+  // typing keeps its own.
+  pads["ws-1"] = "dasha's version";
+  await sp.remote("ws-1");
+  check("a save elsewhere reaches a clean box", ta.value === "dasha's version", ta.value);
+  ta.value = "mine, unsaved";
+  pads["ws-1"] = "dasha again";
+  const gets = calls.length;
+  await sp.remote("ws-1");
+  check("a save elsewhere never overwrites unsaved typing", ta.value === "mine, unsaved" && calls.length === gets, ta.value);
+  await sp.remote("ws-2");
+  check("another session's save is not this one's", calls.length === gets);
+
+  // Re-reading after a save (this page's own echo, or someone else's) must
+  // keep the box writable, and typing done during the read wins.
+  ta.value = pads["ws-1"] = "settled";
+  on.input();
+  r.fireTimers();
+  await settle();
+  let release;
+  daemon.hold = new Promise((res) => { release = res; });
+  pads["ws-1"] = "theirs, mid-typing";
+  const reading = sp.remote("ws-1");
+  await tick();
+  check("the box stays writable while it re-reads", ta.readOnly === false);
+  ta.value = "typed while it read";
+  release();
+  daemon.hold = null;
+  await reading;
+  check("typing during a re-read is kept", ta.value === "typed while it read", ta.value);
+
+  // Leaving saves what is unsaved; only the page going away asks the
+  // request to outlive it, and never with a body a browser would refuse.
+  ta.value = "mine, unsaved";
+  sp.hide();
+  await settle();
+  const last = puts()[puts().length - 1];
+  check("leaving the notes saves them", !sp.isOpen() && pads["ws-1"] === "mine, unsaved" && !last.keepalive,
+    JSON.stringify(last));
+  sp.show();
+  await settle();
+  ta.value = "small, page closing";
+  winOn.pagehide();
+  await settle();
+  check("a closing page sends small notes with keepalive", puts()[puts().length - 1].keepalive === true);
+  ta.value = "x".repeat(70000);
+  winOn.pagehide();
+  await settle();
+  const big = puts()[puts().length - 1];
+  check("notes over 64 KB are sent without keepalive", big.keepalive === false && pads["ws-1"].length === 70000,
+    String(big.keepalive));
+  sp.hide();
+  await settle();
+
+  // A failed read must never let a blank box be saved over the real notes.
+  daemon.down = true;
+  r.evalIn(`state.wsId = "ws-3"`);
+  pads["ws-3"] = "precious";
+  sp.show();
+  await settle();
+  check("a failed read leaves the box read-only and empty", ta.readOnly && ta.value === "", `${ta.readOnly} ${ta.value}`);
+  daemon.down = false;
+  const before = puts().length;
+  on.input();
+  r.fireTimers();
+  sp.hide();
+  await settle();
+  check("a failed read saves nothing", puts().length === before && pads["ws-3"] === "precious", pads["ws-3"]);
+}
+
+// --- onFirehose: each frame kind goes to its handler; unknown kinds, and
+// names an object inherits, do nothing. ---
+// Drafts: text a failed save could not deliver is kept in this browser and
+// comes back, and saves, when those notes open again; nothing else moves.
+async function scratchDraftCases() {
+  const daemon = { pads: { "ws-1": "one", "ws-2": "two", "ws-3": "three" }, down: false, hold: null, calls: [] };
+  const storage = {};
+  const a = await scratchEnv(daemon, storage);
+  a.r.evalIn(`state.wsId = "ws-1"`);
+  a.sp.show();
+  await settle();
+  daemon.down = true;
+  a.ta.value = "one, typed while away";
+  a.on.input();
+  a.r.fireTimers();
+  await settle();
+  a.sp.hide(); // the second try fails too
+  await settle();
+  daemon.down = false;
+  a.r.evalIn(`state.wsId = "ws-2"`);
+  a.sp.show();
+  await settle();
+  check("another session's notes open untouched", a.ta.value === "two" && daemon.pads["ws-2"] === "two", a.ta.value);
+  a.sp.hide();
+  await settle();
+  check("leaving them saves nothing of theirs", !a.puts().some((p) => p.id === "ws-2"));
+
+  // A reload of the page: same browser storage, fresh page.
+  const b = await scratchEnv(daemon, storage);
+  b.r.evalIn(`state.wsId = "ws-1"`);
+  b.sp.show();
+  await settle();
+  check("the unsaved text comes back", b.ta.value === "one, typed while away", b.ta.value);
+  b.r.fireTimers();
+  await settle();
+  check("and is saved", daemon.pads["ws-1"] === "one, typed while away", daemon.pads["ws-1"]);
+  check("and the draft is gone once saved", !Object.keys(storage).some((k) => k.includes("ws-1")), JSON.stringify(storage));
+
+  // A draft the daemon already holds is just dropped: no save, no change.
+  storage["ccmux-scratch-draft:ws-3"] = JSON.stringify({ text: "three", base: "old three", at: 1 });
+  const before = b.puts().length;
+  b.r.evalIn(`state.wsId = "ws-3"`);
+  b.sp.show();
+  await settle();
+  b.r.fireTimers();
+  await settle();
+  check("a draft equal to the saved notes sends nothing", b.puts().length === before && b.ta.value === "three");
+  check("and is cleared", !("ccmux-scratch-draft:ws-3" in storage), JSON.stringify(storage));
+
+  // Someone saved after the draft was typed: their notes stay first, the
+  // draft is added below them, and it is not added again on the next open.
+  const c = await scratchEnv(daemon, storage);
+  c.r.evalIn(`state.wsId = "ws-1"`);
+  c.sp.show();
+  await settle();
+  daemon.down = true;
+  c.ta.value = "one, typed while away again";
+  c.on.input();
+  c.r.fireTimers();
+  await settle();
+  c.sp.hide();
+  await settle();
+  daemon.down = false;
+  daemon.pads["ws-1"] = "newer from dasha";
+  const d = await scratchEnv(daemon, storage);
+  d.r.evalIn(`state.wsId = "ws-1"`);
+  d.sp.show();
+  await settle();
+  d.r.fireTimers();
+  await settle();
+  const kept = daemon.pads["ws-1"];
+  check("newer notes from elsewhere are kept first", kept.startsWith("newer from dasha\n\n---- not saved from this browser"), kept);
+  check("and the draft is added below them", kept.endsWith("\none, typed while away again"), kept);
+  d.sp.hide();
+  await settle();
+  const e = await scratchEnv(daemon, storage);
+  e.r.evalIn(`state.wsId = "ws-1"`);
+  e.sp.show();
+  await settle();
+  e.r.fireTimers();
+  await settle();
+  check("the draft is added once, not on every open", daemon.pads["ws-1"] === kept, daemon.pads["ws-1"]);
+}
+
+async function firehoseCases() {
+  const r = run();
+  await settle();
+  const feed = (m) => r.ctx.onFirehose({ data: JSON.stringify(m) });
+  feed({ t: "hello", attention: [{ workspace: "w1", pane: "p1", state: "needs_input" }] });
+  check("hello seeds attention", r.evalIn(`state.attn.w1.p1`) === "needs_input");
+  feed({ t: "attention", workspace: "w1", pane: "p1", state: "done" });
+  check("attention updates a pane", r.evalIn(`state.attn.w1.p1`) === "done");
+  const reads = () => r.fetched.filter((f) => f.url.startsWith("/v1/workspaces")).length;
+  const before = reads();
+  feed({ t: "workspace-status", workspace: "w1" });
+  await settle();
+  check("a workspace change re-reads the list", reads() > before);
+  let heard = null;
+  r.ctx.ccmuxScratch = { remote: (id) => { heard = id; } };
+  feed({ t: "workspace-scratchpad", workspace: "w1" });
+  check("a scratchpad save reaches the notes", heard === "w1", String(heard));
+  const errs = r.errors.length;
+  for (const t of ["no-such-kind", "constructor", "toString", "__proto__"]) feed({ t });
+  feed("not an object");
+  check("unknown kinds do nothing", r.errors.length === errs && r.evalIn(`state.attn.w1.p1`) === "done");
+}
+
 // --- the tab ×: which tabs get one, and what a click does when the close
 // works, fails at the daemon, never reaches it, or is declined. ---
 async function closeTabCases() {
@@ -1320,6 +1548,9 @@ async function peersFailureCases() {
     ok.ctx.updateTip("failed") === "");
 
   await closeTabCases();
+  await scratchpadCases();
+  await scratchDraftCases();
+  await firehoseCases();
   await pageWindowCases();
   await peersMergeCases();
   await peersFailureCases();

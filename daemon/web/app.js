@@ -1140,6 +1140,7 @@ async function removeSession(ws) {
 // (closed/removed) — back to the empty state, so re-surface the session list.
 function detachIfCurrent(id) {
   if (state.wsId !== id) return;
+  if (window.ccmuxScratch) window.ccmuxScratch.hide();
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = null;
   state.panes = [];
@@ -1363,6 +1364,9 @@ function paneColsOf(paneId) {
 // --- attach / websocket ---
 async function attach(wsId, wantPane) {
   closeDrawer(); // selecting a session on mobile dismisses the drawer
+  // Another session: its notes are not these. A re-attach of this one (a
+  // reconnect, take over) leaves them on screen.
+  if (wsId !== state.wsId && window.ccmuxScratch) window.ccmuxScratch.hide();
   state.paneCols = 0;
   if (state.conn) { state.conn.close(); state.conn = null; }
   state.wsId = wsId;
@@ -1622,7 +1626,8 @@ function renderTabs() {
     // A dormant pane hosted a Claude session that has exited. The pane is alive,
     // which is exactly why it needs saying — nothing else tells it apart from a
     // working session.
-    b.className = "tab" + (p.id === state.paneId ? " active" : "") +
+    const scratch = window.ccmuxScratch && window.ccmuxScratch.isOpen();
+    b.className = "tab" + (p.id === state.paneId && !scratch ? " active" : "") +
       " att-" + (p.attention || "idle") + (p.dormant ? " dormant" : "") +
       (p.claudeUpdate ? " update-" + p.claudeUpdate : "");
     b.dataset.pane = p.id;
@@ -1638,11 +1643,28 @@ function renderTabs() {
     if (closableTab(p)) b.appendChild(tabClose(p));
     b.setAttribute("aria-label", label.textContent); // a phone shows the icon only
     // A drop ends with a click on the same button; that click must not switch panes.
-    b.onclick = () => { if (!state.tabDrag) attach(state.wsId, p.id); };
+    b.onclick = () => { if (!state.tabDrag) showPane(p.id); };
     b.oncontextmenu = (e) => { e.preventDefault(); if (!state.tabDrag) openPaneLLMMenu(p.id, e.clientX, e.clientY); };
     wireTabDrag(b, p.id);
     tabs.appendChild(b);
   });
+  renderScratchTab();
+}
+
+// showPane puts pane id of the open session on screen, leaving the
+// scratchpad if that is what was showing.
+function showPane(paneId) {
+  if (window.ccmuxScratch) window.ccmuxScratch.hide();
+  attach(state.wsId, paneId);
+}
+
+// renderScratchTab draws the 📝 tab after the pane tabs (scratchpad.js). It
+// sits outside #tabs so the drag code, which counts #tabs .tab, never sees it.
+function renderScratchTab() {
+  const t = $("scratch-tab");
+  if (!t || !window.ccmuxScratch) return;
+  t.classList.toggle("hidden", !state.wsId);
+  t.classList.toggle("active", window.ccmuxScratch.isOpen());
 }
 
 // closableTab says whether a tab gets the hover ×. Not the only tab: closing
@@ -1982,7 +2004,7 @@ async function spawnWebPane(body) {
   });
   if (!r.ok) { alert("new pane: " + (await r.text())); return; }
   const p = await r.json();
-  attach(state.wsId, p.id); // land on the pane just asked for
+  showPane(p.id); // land on the pane just asked for, out of the scratchpad too
 }
 
 function renderPresence(clients) {
@@ -2023,29 +2045,43 @@ function connectFirehose() {
   state.firehose = fh;
 }
 
+// onFirehose hands one firehose frame to the handler for its kind; a kind
+// this lens does not know is ignored. A handler returns true when the sidebar
+// and the attention board must redraw.
 function onFirehose(ev) {
   let m;
   try { m = JSON.parse(ev.data); } catch (_) { return; }
-  if (m.t === "hello") {
-    state.attn = {};
-    state.claims = {};
-    for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state, e.reason, e.since);
-  } else if (m.t === "attention") {
-    // A reminder re-sends a claim already showing so the daemon can push it.
-    // Redrawing for it would restart every row's pulse, so only a lens that
-    // missed the claim redraws.
-    const was = (state.attn[m.workspace] || {})[m.pane];
-    noteAttention(m.workspace, m.pane, m.state, m.reason, m.since);
-    if (m.remind && was === m.state) return;
-  } else if (m.t === "workspace-added" || m.t === "workspace-removed" || m.t === "workspace-status" || m.t === "workspace-git") {
-    fetchWorkspaces(); // a workspace changed elsewhere — refresh now, don't wait for the poll
-    return;
-  } else {
-    return;
-  }
+  const handle = firehoseHandlers.get(m.t);
+  if (!handle || !handle(m)) return;
   renderList();
   if (window.ccmuxBoard) window.ccmuxBoard.refresh();
 }
+
+// A workspace changed elsewhere: refresh now, don't wait for the poll.
+const refetchWorkspaces = () => { fetchWorkspaces(); return false; };
+
+const firehoseHandlers = new Map([
+  ["hello", (m) => {
+    state.attn = {};
+    state.claims = {};
+    for (const e of m.attention || []) noteAttention(e.workspace, e.pane, e.state, e.reason, e.since);
+    return true;
+  }],
+  // A reminder re-sends a claim already showing so the daemon can push it.
+  // Redrawing for it would restart every row's pulse, so only a lens that
+  // missed the claim redraws.
+  ["attention", (m) => {
+    const was = (state.attn[m.workspace] || {})[m.pane];
+    noteAttention(m.workspace, m.pane, m.state, m.reason, m.since);
+    return !(m.remind && was === m.state);
+  }],
+  ["workspace-added", refetchWorkspaces],
+  ["workspace-removed", refetchWorkspaces],
+  ["workspace-status", refetchWorkspaces],
+  ["workspace-git", refetchWorkspaces],
+  // Someone saved a workspace's notes (scratchpad.js).
+  ["workspace-scratchpad", (m) => { if (window.ccmuxScratch) window.ccmuxScratch.remote(m.workspace); return false; }],
+]);
 
 // noteAttention records one pane's attention: the bare state the sidebar
 // flash reads, and the claim (why, since when) the attention board sorts by.
@@ -3259,6 +3295,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeWsMen
 $("menu-toggle").onclick = toggleDrawer;
 $("drawer-backdrop").onclick = closeDrawer;
 $("takeover").onclick = takeOver;
+$("scratch-tab").onclick = () => window.ccmuxScratch && window.ccmuxScratch.show();
 identityReady.then(() => {
   clearPhoneLeftovers();
   fetchHosts().then(fetchWorkspaces).then(bootDeepLink); // hosts first so deep-link attach dials direct
