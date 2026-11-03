@@ -1307,12 +1307,22 @@ function scheduleFit() {
   fitTimer = setTimeout(doFit, 80);
 }
 
+// fitLocal sizes the terminal to its box now, telling the daemon nothing.
+function fitLocal() {
+  if (state.fit) try { state.fit.fit(); } catch (_) {}
+}
+
 function doFit() {
   if (!state.fit || !state.term) return;
-  try { state.fit.fit(); } catch (_) {}
+  const before = state.term.cols + "x" + state.term.rows;
+  fitLocal();
   const { cols, rows } = state.term;
   if (!cols || !rows || cols < MIN_COLS) return;
   send({ t: "resize", pane: state.paneId, cols, rows });
+  // Our own screen changed size. What is on it was drawn at the old size, and
+  // when the pane already had the new one the daemon sees no change and sends
+  // no fresh screen, so ask for one (it coalesces with a resize's own).
+  if (cols + "x" + rows !== before) send({ t: "repaint", pane: state.paneId });
   // We just drove the pane to our width — reflect it immediately (the daemon's
   // pane-size broadcast will confirm) so the "take over" affordance clears.
   state.paneCols = cols;
@@ -1364,6 +1374,11 @@ async function attach(wsId, wantPane) {
   $("harness-bar").classList.add("hidden"); // re-derived from the next hello
   ensureTerm();
   state.term.reset();
+  // Before the socket opens, not on its debounced fit: the first screen lands
+  // right after hello, and a fresh page's terminal is still xterm's 80x24 then.
+  // That screen stayed squeezed into 80 columns after every release, which
+  // reloads open pages (update.js), until the session was opened again.
+  fitLocal();
   renderList();
 
   // If the workspace names a host we don't know yet (joined after boot), refresh
