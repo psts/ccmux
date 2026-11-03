@@ -148,7 +148,7 @@
       `<div class="tq-line" data-act="toggle"><span class="tq-id">#${t.id}</span>` +
       `<span class="tq-name">${esc(t.title)}</span>${chips}` +
       (w ? `<span class="tq-after${w.blocked ? " blocked" : ""}">${esc(w.text)}</span>` : "") +
-      (t.note ? `<span class="tq-note">${esc(t.note)}</span>` : "") + `</div>` +
+      (t.note ? `<span class="tq-note">${esc(t.note.split("\n")[0])}</span>` : "") + `</div>` +
       (open ? detailHtml(t) : "") + `</div>`;
   }
 
@@ -160,7 +160,9 @@
     const title = t.editable
       ? `<input class="tq-edit-title" data-field="title" data-key="t${t.id}" maxlength="120" value="${esc(draft("t" + t.id, t.title))}">`
       : "";
-    return `<div class="tq-detail">${title}${(t.parts || []).map((p) => partHtml(t, p)).join("")}` +
+    // A note of several lines (a failed merge's check output) shows in full here.
+    const note = t.note && t.note.includes("\n") ? `<pre class="tq-plan tq-full-note">${esc(t.note)}</pre>` : "";
+    return `<div class="tq-detail">${title}${note}${(t.parts || []).map((p) => partHtml(t, p)).join("")}` +
       `<div class="tq-meta">filed by ${esc(t.filedBy || "?")}</div>` +
       `<div class="tq-actions">${buttonsHtml(t)}</div></div>`;
   }

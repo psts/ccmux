@@ -15,13 +15,16 @@ import (
 
 // A task's statuses. planning and waiting are the human's (a draft, or
 // ready to run); running, needs_you and ready_to_merge follow its parts
-// (Rollup); done and cancelled are a person's call.
+// (Rollup); merging and merge_failed are the runner's merge (merge.go);
+// done is merged, by the runner or by hand; cancelled is a person's call.
 const (
 	Planning     = "planning"
 	Waiting      = "waiting"
 	Running      = "running"
 	NeedsYou     = "needs_you"
 	ReadyToMerge = "ready_to_merge"
+	Merging      = "merging"
+	MergeFailed  = "merge_failed"
 	Done         = "done"
 	Cancelled    = "cancelled"
 )
@@ -34,7 +37,7 @@ const (
 )
 
 // Statuses is every task status in the order the lenses show them.
-var Statuses = []string{Planning, Waiting, Running, NeedsYou, ReadyToMerge, Done, Cancelled}
+var Statuses = []string{Planning, Waiting, Running, NeedsYou, ReadyToMerge, Merging, MergeFailed, Done, Cancelled}
 
 const (
 	MaxTitle = 120
@@ -44,13 +47,15 @@ const (
 // humanMoves is what a lens or a session may do to a task's status: file a
 // draft, pull a waiting task back to draft, cancel anything not finished
 // (a running one's Claudes are closed), put a cancelled one back in the
-// queue, and mark built work merged (by hand until the runner merges).
+// queue, mark built work merged by hand, and send a failed merge back to
+// be tried again. A merge in progress is the runner's alone.
 var humanMoves = map[string][]string{
 	Planning:     {Waiting, Cancelled},
 	Waiting:      {Planning, Cancelled},
 	Running:      {Cancelled},
 	NeedsYou:     {Cancelled},
 	ReadyToMerge: {Done, Cancelled},
+	MergeFailed:  {ReadyToMerge, Done, Cancelled},
 	Cancelled:    {Waiting},
 }
 

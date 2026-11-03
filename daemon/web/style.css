@@ -752,7 +752,8 @@ body {
 .tq-status.bad { color: var(--needs); }
 .tq-empty { color: var(--muted); max-width: 520px; line-height: 1.5; }
 .tq-sec h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
-.tq-sec.tq-needs_you h3, .tq-sec.tq-ready_to_merge h3 { color: var(--needs); }
+.tq-sec.tq-needs_you h3, .tq-sec.tq-merge_failed h3 { color: var(--needs); }
+.tq-detail > .tq-full-note { color: var(--needs); }
 .tq-n { font-weight: 400; }
 .tq-task { border: 1px solid var(--line); border-radius: 6px; background: var(--bg2); margin-bottom: 6px; }
 .tq-line { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; flex-wrap: wrap; }

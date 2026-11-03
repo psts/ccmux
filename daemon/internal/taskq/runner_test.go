@@ -65,6 +65,7 @@ func (m *memStore) part(id int64) store.Part {
 }
 
 type fakeHost struct {
+	mu        sync.Mutex // the merge goroutine reports while a pass runs
 	noSession bool
 	started   []string // commands typed, in order
 	cleared   []string // worktrees cleared of past workers
@@ -81,6 +82,8 @@ func (h *fakeHost) TaskWorkspace(repo string) (string, error) {
 	return "ws-" + filepath.Base(repo), nil
 }
 func (h *fakeHost) ClearTaskFolder(dir string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.cleared = append(h.cleared, dir)
 	return h.clearErr
 }
@@ -94,30 +97,122 @@ func (h *fakeHost) StartTaskPane(wsID, cwd, cmd string) (string, error) {
 	return id, nil
 }
 func (h *fakeHost) TaskPane(id string) (PaneState, bool) { st, ok := h.panes[id]; return st, ok }
-func (h *fakeHost) TasksChanged()                        { h.changed++ }
+func (h *fakeHost) TasksChanged() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.changed++
+}
 
-type fakeGit struct{ added []string }
+type fakeGit struct {
+	mu      sync.Mutex // the merge goroutine calls in while a pass runs
+	added   []string
+	blocked map[string]string // repo -> why its trunk cannot move
+	clash   map[string]bool   // repo -> its rebase clashes
+	ffErr   map[string]error  // repo -> its fast-forward fails
+	rmErr   map[string]error  // repo -> its worktree will not go
+	dirty   map[string]string // repo -> uncommitted work in its worktree
+	ffs     []string          // repos fast-forwarded, in order
+	removed []string          // worktrees removed after a merge
+	rebased int
+}
+
+func (g *fakeGit) TrunkBlocked(repo, trunk string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.blocked[repo], nil
+}
+func (g *fakeGit) Uncommitted(worktree string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for repo, left := range g.dirty {
+		if strings.Contains(worktree, filepath.Base(repo)+"-") {
+			return left, nil
+		}
+	}
+	return "", nil
+}
+func (g *fakeGit) Rebase(worktree, trunk string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rebased++
+	for repo, bad := range g.clash {
+		if bad && strings.Contains(worktree, filepath.Base(repo)+"-") {
+			return "", errors.New("its branch clashes with " + trunk)
+		}
+	}
+	return "rev-" + filepath.Base(filepath.Dir(worktree)), nil
+}
+func (g *fakeGit) FastForward(repo, rev, trunk string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.ffErr[repo]; err != nil {
+		return err
+	}
+	g.ffs = append(g.ffs, filepath.Base(repo)+"@"+rev)
+	return nil
+}
+func (g *fakeGit) RemoveWorktree(repo, path, branch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.rmErr[repo]; err != nil {
+		return err
+	}
+	g.removed = append(g.removed, path)
+	return nil
+}
+
+// fakeChecks answers per repo; a repo not listed passes. hold, when set,
+// keeps every run waiting until it is closed.
+type fakeChecks struct {
+	results map[string]CheckResult
+	hold    chan struct{}
+	during  func() // runs while the checks run
+}
+
+func (c *fakeChecks) Run(repo, worktree, trunk string) CheckResult {
+	if c.hold != nil {
+		<-c.hold
+	}
+	if c.during != nil {
+		c.during()
+	}
+	if res, ok := c.results[repo]; ok {
+		return res
+	}
+	return CheckResult{Configured: true, OK: true}
+}
 
 func (g *fakeGit) Trunk(string) (string, error) { return "dev", nil }
 func (g *fakeGit) AddWorktree(repo, path, branch, base string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.added = append(g.added, filepath.Base(repo)+":"+branch+"<-"+base)
 	return os.MkdirAll(path, 0o755)
 }
 
 type rig struct {
-	r    *Runner
-	st   *memStore
-	host *fakeHost
-	git  *fakeGit
-	now  time.Time
+	r      *Runner
+	st     *memStore
+	host   *fakeHost
+	git    *fakeGit
+	checks *fakeChecks
+	now    time.Time
 }
 
 func newRig(t *testing.T) *rig {
-	g := &rig{st: &memStore{}, host: &fakeHost{panes: map[string]PaneState{}}, git: &fakeGit{},
-		now: time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC)}
-	g.r = &Runner{Store: g.st, Host: g.host, Git: g.git, Lock: &sync.Mutex{}, Slots: 2,
-		Root: t.TempDir(), Now: func() time.Time { return g.now }}
+	g := &rig{st: &memStore{}, host: &fakeHost{panes: map[string]PaneState{}},
+		git:    &fakeGit{blocked: map[string]string{}, clash: map[string]bool{}, dirty: map[string]string{}, ffErr: map[string]error{}, rmErr: map[string]error{}},
+		checks: &fakeChecks{results: map[string]CheckResult{}},
+		now:    time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC)}
+	g.r = &Runner{Store: g.st, Host: g.host, Git: g.git, MergeGit: g.git, Checks: g.checks,
+		Lock: &sync.Mutex{}, Slots: 2, Root: t.TempDir(), Now: func() time.Time { return g.now }}
 	return g
+}
+
+// tick runs a pass and waits for a merge it started to finish.
+func (g *rig) tick() {
+	g.r.Tick()
+	g.r.merges.Wait()
 }
 
 // feature adds a waiting task with one pending part per repo.
@@ -180,9 +275,271 @@ func TestRunner_RollsUpParts(t *testing.T) {
 	be = g.st.part(be.ID)
 	be.Status = Ready
 	g.st.SavePart(be)
+	g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
+	g.tick()
+	if got := g.st.task(1); got.Status != ReadyToMerge || !strings.Contains(got.Note, "uncommitted") {
+		t.Fatalf("all parts done, a folder dirty = %+v", got)
+	}
+}
+
+// doneParts marks every part of task id built, as their workers' reports do.
+func (g *rig) doneParts(id int64) {
+	for _, p := range g.partsOf(id) {
+		p.Status = Ready
+		g.st.SavePart(p)
+	}
+}
+
+// A built feature merges as one: every part rebased and checked, then every
+// trunk moved forward; its workers, worktrees and briefs are cleaned up, and
+// a feature that starts after it can start.
+func TestMerge_AllPartsTogether(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.feature(2, 1, "admin")
+	g.tick()
+	g.doneParts(1)
+	cleared := len(g.host.cleared)
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != Done || got.Note != "merged app into dev, backend into dev" || got.FinishedAt == 0 {
+		t.Fatalf("merged = %+v", got)
+	}
+	// Each trunk moves to the commit the rebase ended on, the one checked.
+	if !strings.HasPrefix(strings.Join(g.git.ffs, ","), "app@rev-app-") || !strings.Contains(g.git.ffs[1], "backend@rev-backend-") || g.git.rebased != 2 {
+		t.Fatalf("ffs %v, rebased %d", g.git.ffs, g.git.rebased)
+	}
+	if len(g.git.removed) != 2 || len(g.host.cleared)-cleared != 2 {
+		t.Fatalf("cleanup: removed %v, cleared %v", g.git.removed, g.host.cleared[cleared:])
+	}
+	if _, err := os.Stat(g.partsOf(1)[0].Worktree + ".md"); !os.IsNotExist(err) {
+		t.Fatal("the brief was left behind")
+	}
+	g.tick()
+	if g.st.task(2).Status != Running {
+		t.Fatalf("the task after it = %s, want running once it merged", g.st.task(2).Status)
+	}
+}
+
+// A red check or a clash in one repo stops the whole feature before any
+// trunk moves, and says where; trying again after the fix merges it.
+func TestMerge_ARedPartStopsTheWholeFeature(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.results["/p/backend"] = CheckResult{Configured: true, Output: "FAIL: TestExport"}
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != MergeFailed || !strings.Contains(got.Note, "backend: checks failed") || !strings.Contains(got.Note, "TestExport") {
+		t.Fatalf("red check = %+v", got)
+	}
+	if len(g.git.ffs) != 0 || len(g.git.removed) != 0 {
+		t.Fatalf("a trunk moved or a worktree went on a failed merge: %v %v", g.git.ffs, g.git.removed)
+	}
+	g.tick()
+	if g.st.task(1).Status != MergeFailed {
+		t.Fatal("a failed merge was tried again on its own")
+	}
+	delete(g.checks.results, "/p/backend")
+	g.git.clash["/p/app"] = true
+	retry := g.st.task(1)
+	retry.Status = ReadyToMerge
+	g.st.SaveTask(retry)
+	g.tick()
+	if got := g.st.task(1); got.Status != MergeFailed || !strings.Contains(got.Note, "app: its branch clashes") {
+		t.Fatalf("clash = %+v", got)
+	}
+	g.git.clash["/p/app"] = false
+	retry.Status = ReadyToMerge
+	g.st.SaveTask(retry)
+	g.tick()
+	if g.st.task(1).Status != Done {
+		t.Fatalf("after the fixes = %+v", g.st.task(1))
+	}
+}
+
+// Work left uncommitted in a worktree is not merged (only commits are) and
+// would be deleted with it, so the merge stops and names it, before any
+// rebase or check runs.
+func TestMerge_UncommittedWorkStopsIt(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.git.dirty["/p/backend"] = "?? export.go"
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != MergeFailed || !strings.Contains(got.Note, "backend: uncommitted work") || !strings.Contains(got.Note, "export.go") {
+		t.Fatalf("uncommitted = %+v", got)
+	}
+	if len(g.git.ffs) != 0 || len(g.git.removed) != 0 {
+		t.Fatalf("a trunk moved or a worktree went: %v %v", g.git.ffs, g.git.removed)
+	}
+}
+
+// A folder that got changes while the checks ran stops the merge before
+// any trunk moves; a feature whose folders stayed clean merges.
+func TestMerge_FolderDirtiedDuringTheChecks(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.during = func() {
+		g.git.mu.Lock()
+		g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
+		g.git.mu.Unlock()
+	}
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != MergeFailed || !strings.Contains(got.Note, "try the merge again when it is clean") || len(g.git.ffs) != 0 {
+		t.Fatalf("dirtied during checks = %+v, ffs %v", got, g.git.ffs)
+	}
+	g.checks.during = nil
+	delete(g.git.blocked, "/p/app")
+	got.Status = ReadyToMerge
+	g.st.SaveTask(got)
+	g.tick()
+	if g.st.task(1).Status != Done {
+		t.Fatalf("clean folders = %s", g.st.task(1).Status)
+	}
+}
+
+// A later repo that will not fast-forward leaves the feature half in: the
+// note names what already merged, and nothing is cleaned up, so the
+// unmerged part's worktree and branch are still there to finish by hand.
+func TestMerge_HalfMergedIsSaidAndKept(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.git.ffErr["/p/backend"] = errors.New("dev moved since the rebase; try the merge again")
+	cleared := len(g.host.cleared)
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != MergeFailed || !strings.Contains(got.Note, "backend did not merge") ||
+		!strings.Contains(got.Note, "already merged: app into dev") {
+		t.Fatalf("half merged = %+v", got)
+	}
+	if len(g.git.ffs) != 1 || !strings.HasPrefix(g.git.ffs[0], "app@") {
+		t.Fatalf("ffs = %v, want only app", g.git.ffs)
+	}
+	if len(g.git.removed) != 0 || len(g.host.cleared) != cleared {
+		t.Fatalf("a half-merged feature was cleaned up: removed %v, cleared %v", g.git.removed, g.host.cleared[cleared:])
+	}
+}
+
+// What cleanup could not remove is named in the done note: a worker that
+// did not close keeps its worktree untouched, and a worktree git would not
+// remove stays; a part with neither problem is tidied.
+func TestMerge_CleanupSaysWhatItLeft(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend", "admin")
+	g.tick()
+	g.doneParts(1)
+	g.git.rmErr["/p/backend"] = errors.New("kept, it holds uncommitted files")
+	g.checks.during = func() {
+		g.host.mu.Lock()
+		g.host.clearErr = errors.New("pane would not close")
+		g.host.mu.Unlock()
+	}
 	g.r.Tick()
-	if got := g.st.task(1); got.Status != ReadyToMerge || got.FinishedAt == 0 {
-		t.Fatalf("all parts done = %+v", got)
+	g.r.merges.Wait()
+	// No worker closed, so no worktree may be removed, and the note says so.
+	got := g.st.task(1)
+	if got.Status != Done || !strings.Contains(got.Note, "left for you") {
+		t.Fatalf("done with leftovers = %+v", got)
+	}
+	if len(g.git.removed) != 0 {
+		t.Fatalf("a worktree whose worker did not close was removed: %v", g.git.removed)
+	}
+
+	g2 := newRig(t)
+	g2.feature(1, 0, "app", "backend")
+	g2.tick()
+	g2.doneParts(1)
+	g2.git.rmErr["/p/backend"] = errors.New("kept, it holds uncommitted files")
+	g2.tick()
+	note := g2.st.task(1).Note
+	if !strings.HasPrefix(note, "merged app into dev, backend into dev; left for you: ") ||
+		!strings.Contains(note, "uncommitted") || len(g2.git.removed) != 1 || !strings.Contains(g2.git.removed[0], "app-") {
+		t.Fatalf("note %q, removed %v", note, g2.git.removed)
+	}
+}
+
+// A failed merge with long check output still says which repo was red.
+func TestMerge_LongFailureNamesTheRepo(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.results["/p/backend"] = CheckResult{Configured: true, Output: strings.Repeat(strings.Repeat("y", 149)+"\n", 20)}
+	g.tick()
+	if got := g.st.task(1); got.Status != MergeFailed || !strings.HasPrefix(got.Note, "backend: checks failed") {
+		t.Fatalf("long failure note starts %q", got.Note[:40])
+	}
+}
+
+// A long check failure keeps its first line, which names the repo.
+func TestNoteOf_KeepsTheHeadline(t *testing.T) {
+	long := "backend: checks failed:\n" + strings.Repeat(strings.Repeat("x", 149)+"\n", 20) + "(failed: go test ./...: exit status 1)"
+	got := noteOf(errors.New(long))
+	if !strings.HasPrefix(got, "backend: checks failed:") || !strings.HasSuffix(got, "exit status 1)") || len(got) > maxNote+8 {
+		t.Fatalf("note = %q (%d bytes)", got[:60], len(got))
+	}
+	if short := noteOf(errors.New("app: its branch clashes with dev")); short != "app: its branch clashes with dev" {
+		t.Fatalf("a short note was changed: %q", short)
+	}
+}
+
+// A repo that lists no checks is never merged on trust.
+func TestMerge_NoChecksIsNoMerge(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	g.checks.results["/p/app"] = CheckResult{}
+	g.tick()
+	if got := g.st.task(1); got.Status != MergeFailed || !strings.Contains(got.Note, "merge it by hand") || len(g.git.ffs) != 0 {
+		t.Fatalf("no checks = %+v, ffs %v", got, g.git.ffs)
+	}
+}
+
+// One merge at a time: a second built feature waits for the first.
+func TestMerge_OneAtATime(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.tick()
+	g.doneParts(1)
+	g.doneParts(2)
+	g.checks.hold = make(chan struct{})
+	g.r.Tick()
+	g.r.Tick()
+	first, second := g.st.task(1).Status, g.st.task(2).Status
+	close(g.checks.hold)
+	g.r.merges.Wait()
+	if first != Merging || second != ReadyToMerge {
+		t.Fatalf("while one merges: %s, %s", first, second)
+	}
+	g.tick()
+	if g.st.task(1).Status != Done || g.st.task(2).Status != Done {
+		t.Fatalf("after: %s, %s", g.st.task(1).Status, g.st.task(2).Status)
+	}
+}
+
+// A merge the daemon dropped mid-way (it stopped) is picked up again.
+func TestMerge_ResumesAfterARestart(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	task := g.st.task(1)
+	task.Status = Merging
+	g.st.SaveTask(task)
+	g.tick()
+	if g.st.task(1).Status != Done {
+		t.Fatalf("a dropped merge = %s", g.st.task(1).Status)
 	}
 }
 

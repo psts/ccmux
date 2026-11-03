@@ -48,12 +48,12 @@ func TestCheckAfter_StopsOnACorruptLoop(t *testing.T) {
 }
 
 func TestCanMove(t *testing.T) {
-	for _, m := range [][2]string{{Planning, Waiting}, {Waiting, Planning}, {Running, Cancelled}, {NeedsYou, Cancelled}, {ReadyToMerge, Done}, {Cancelled, Waiting}} {
+	for _, m := range [][2]string{{Planning, Waiting}, {Waiting, Planning}, {Running, Cancelled}, {NeedsYou, Cancelled}, {ReadyToMerge, Done}, {Cancelled, Waiting}, {MergeFailed, ReadyToMerge}, {MergeFailed, Done}} {
 		if !CanMove(m[0], m[1]) {
 			t.Errorf("%s -> %s refused", m[0], m[1])
 		}
 	}
-	for _, m := range [][2]string{{Waiting, Done}, {Running, Waiting}, {Running, Done}, {Done, Waiting}} {
+	for _, m := range [][2]string{{Waiting, Done}, {Running, Waiting}, {Running, Done}, {Done, Waiting}, {Merging, Done}, {Merging, Cancelled}, {ReadyToMerge, Merging}} {
 		if CanMove(m[0], m[1]) {
 			t.Errorf("%s -> %s allowed by hand", m[0], m[1])
 		}

@@ -13,23 +13,24 @@ const tasks = [
   { id: 4, title: "Login", status: "needs_you", parts: [part("app", "needs_you")] },
   { id: 5, title: "Search", status: "cancelled", parts: [part("backend")] },
   { id: 6, title: "Settings", status: "planning", afterId: 5, parts: [part("admin")] },
+  { id: 7, title: "Billing", status: "merge_failed", parts: [part("backend", "ready")] },
 ];
 
 test("sections put what needs a person first and keep queue order", () => {
   const got = L.sections(tasks, "");
-  assert.deepStrictEqual(got.map((s) => s.key), ["needs_you", "waiting", "planning", "done", "cancelled"]);
-  assert.deepStrictEqual(got[1].tasks.map((t) => t.id), [2, 3]);
+  assert.deepStrictEqual(got.map((s) => s.key), ["needs_you", "merge_failed", "waiting", "planning", "done", "cancelled"]);
+  assert.deepStrictEqual(got[2].tasks.map((t) => t.id), [2, 3]);
 });
 
 test("a repo filter keeps the features with a part in that repo", () => {
   const got = L.sections(tasks, "backend");
-  assert.deepStrictEqual(got.map((s) => s.key), ["waiting", "done", "cancelled"]);
-  assert.deepStrictEqual(got[0].tasks.map((t) => t.id), [2]);
+  assert.deepStrictEqual(got.map((s) => s.key), ["merge_failed", "waiting", "done", "cancelled"]);
+  assert.deepStrictEqual(got[1].tasks.map((t) => t.id), [2]);
   assert.deepStrictEqual(L.repos(tasks), ["admin", "app", "backend"]);
 });
 
 test("the summary counts running, waiting and done, and alerts on what needs a person", () => {
-  assert.deepStrictEqual(L.summary({ running: 1, waiting: 2, done: 4, needs_you: 1, ready_to_merge: 1 }),
+  assert.deepStrictEqual(L.summary({ running: 1, waiting: 2, done: 4, needs_you: 1, merge_failed: 1, ready_to_merge: 3 }),
     { text: "1 running · 2 waiting · 4 done", alert: 2 });
   assert.deepStrictEqual(L.summary(undefined), { text: "", alert: 0 });
 });
@@ -44,4 +45,9 @@ test("waitsOn names the task it waits for and flags a dead one", () => {
 test("a part's status reads as words", () => {
   assert.strictEqual(L.partWord("ready"), "done");
   assert.strictEqual(L.partWord("odd"), "odd");
+});
+
+test("a failed merge is offered again by name", () => {
+  assert.strictEqual(L.moveLabel("ready_to_merge"), "Try merge again");
+  assert.strictEqual(L.moveLabel("done"), "Mark merged");
 });

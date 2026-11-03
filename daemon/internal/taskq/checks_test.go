@@ -1,0 +1,99 @@
+package taskq
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func writeGates(t *testing.T, dir, body string) {
+	t.Helper()
+	os.MkdirAll(filepath.Join(dir, ".claude"), 0o755)
+	if err := os.WriteFile(filepath.Join(dir, gatesFile), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGateChecks(t *testing.T) {
+	g := GateChecks{PerLine: 10 * time.Second}
+	repo, wt := gitRepo(t), t.TempDir()
+	if got := g.Run(repo, wt, "main"); got.Configured || got.OK {
+		t.Fatalf("no gates file = %+v, want not configured", got)
+	}
+
+	// A list the repo does not track is read from its folder.
+	writeGates(t, repo, "# a comment\n\ntest -d .\n")
+	if got := g.Run(repo, wt, "main"); !got.Configured || !got.OK {
+		t.Fatalf("passing untracked gates = %+v", got)
+	}
+
+	// The trunk's list wins, and each line runs from the worktree's root,
+	// stopping at the first that fails.
+	writeGates(t, repo, "test -f marker\necho one; echo two; false\necho never-reached > ran\n")
+	if _, err := runGit(repo, "add", gatesFile); err != nil {
+		t.Fatal(err)
+	}
+	runGit(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "gates")
+	writeGates(t, repo, "true\n") // the folder's own copy is not what counts
+	os.WriteFile(filepath.Join(wt, "marker"), nil, 0o644)
+	got := g.Run(repo, wt, "main")
+	if !got.Configured || got.OK || !strings.Contains(got.Output, "two") || !strings.Contains(got.Output, "failed: echo one") {
+		t.Fatalf("failing gate = %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "ran")); !os.IsNotExist(err) {
+		t.Fatal("a line after the failing one ran")
+	}
+}
+
+// A branch that edits the list does not grade itself by its own copy.
+func TestGateChecks_BranchCannotWeakenTheList(t *testing.T) {
+	repo := gitRepo(t)
+	writeGates(t, repo, "false\n")
+	runGit(repo, "add", gatesFile)
+	runGit(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "gates")
+	wt := filepath.Join(t.TempDir(), "task-1")
+	if err := (ExecGit{}).AddWorktree(repo, wt, "task/1-x", "main"); err != nil {
+		t.Fatal(err)
+	}
+	writeGates(t, wt, "true\n")
+	runGit(wt, "add", gatesFile)
+	runGit(wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "weaker gates")
+	if got := (GateChecks{PerLine: 10 * time.Second}).Run(repo, wt, "main"); got.OK {
+		t.Fatalf("the branch's own list passed it: %+v", got)
+	}
+}
+
+func TestTail(t *testing.T) {
+	if got := tail("a\nb\nc\n", 2); got != "b\nc" {
+		t.Fatalf("tail = %q", got)
+	}
+	if got := tail("a", 5); got != "a" {
+		t.Fatalf("short tail = %q", got)
+	}
+}
+
+// A list of comments only checks nothing, so it is no list at all.
+func TestGateChecks_CommentsOnlyIsNotConfigured(t *testing.T) {
+	repo, wt := t.TempDir(), t.TempDir()
+	writeGates(t, repo, "# checks\n# go test ./...\n\n")
+	if got := (GateChecks{PerLine: time.Second}).Run(repo, wt, "main"); got.Configured || got.OK {
+		t.Fatalf("comments only = %+v, want not configured", got)
+	}
+}
+
+// A line past its time is stopped with everything it started, not only
+// its shell: a child left holding the output would hang the merge.
+func TestGateChecks_TimeoutKillsTheWholeLine(t *testing.T) {
+	repo, wt := t.TempDir(), t.TempDir()
+	writeGates(t, repo, "cd . && sleep 30\n")
+	start := time.Now()
+	got := (GateChecks{PerLine: 300 * time.Millisecond}).Run(repo, wt, "main")
+	if took := time.Since(start); took > 4*time.Second {
+		t.Fatalf("a timed-out line took %v", took)
+	}
+	if got.OK || !got.Configured {
+		t.Fatalf("timed out = %+v", got)
+	}
+}

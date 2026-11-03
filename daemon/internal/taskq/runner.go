@@ -35,13 +35,18 @@ type Host interface {
 // never interleave; the slow part of a start (git, a new pane) runs outside
 // it, so a worker's report never waits on another part's checkout.
 type Runner struct {
-	Store Store
-	Host  Host
-	Git   Git
-	Lock  sync.Locker
-	Slots int    // features running at once, across every repo
-	Root  string // where worktrees and briefs go
-	Now   func() time.Time
+	Store    Store
+	Host     Host
+	Git      Git
+	MergeGit MergeGit
+	Checks   Checks
+	Lock     sync.Locker
+	Slots    int    // features running at once, across every repo
+	Root     string // where worktrees and briefs go
+	Now      func() time.Time
+
+	merging bool           // a merge is in flight; guarded by Lock
+	merges  sync.WaitGroup // the merge in flight, for tests to wait on
 }
 
 // job is one claimed part to start, with the bus names of its teammates.
@@ -68,11 +73,19 @@ func (r *Runner) Start(ctx context.Context, every time.Duration) {
 }
 
 // Tick is one pass: decide under the lock, then start the claimed parts
-// without it. (A cancel closes its task's Claudes itself, at once.)
+// without it, and hand a feature ready to merge to its own goroutine. (A
+// cancel closes its task's Claudes itself, at once.)
 func (r *Runner) Tick() {
-	jobs, changed := r.decide()
+	jobs, mj, changed := r.decide()
 	for _, j := range jobs {
 		r.start(j)
+	}
+	if mj != nil {
+		r.merges.Add(1)
+		go func() {
+			defer r.merges.Done()
+			r.merge(*mj)
+		}()
 	}
 	if changed {
 		r.Host.TasksChanged()
@@ -80,29 +93,41 @@ func (r *Runner) Tick() {
 }
 
 // decide judges every working part, rolls each started task up from its
-// parts, and claims what may start. A claimed
+// parts, claims what may start, and picks a feature to merge. A claimed
 // part is saved as running with no pane yet: a daemon that dies mid-start
 // leaves a part the next pass fails ("it lost its pane before starting")
 // instead of one started twice.
-func (r *Runner) decide() ([]job, bool) {
+func (r *Runner) decide() ([]job, *mergeJob, bool) {
 	r.Lock.Lock()
 	defer r.Lock.Unlock()
 	tasks, err := r.Store.Tasks()
 	if err != nil {
 		log.Printf("tasks: list unreadable, runner pass skipped: %v", err)
-		return nil, false
+		return nil, nil, false
 	}
 	parts, err := r.Store.Parts()
 	if err != nil {
 		log.Printf("tasks: parts unreadable, runner pass skipped: %v", err)
-		return nil, false
+		return nil, nil, false
 	}
 	changed := r.watch(parts)
 	if r.rollup(tasks, parts) {
 		changed = true
 	}
 	jobs := r.claim(tasks, parts)
-	return jobs, changed || len(jobs) > 0
+	mj, picked := r.mergeStep(tasks, parts)
+	return jobs, mj, changed || picked || len(jobs) > 0
+}
+
+// mergeStep recovers a merge the daemon dropped and picks the next one,
+// unless one is in flight.
+func (r *Runner) mergeStep(tasks []store.Task, parts []store.Part) (*mergeJob, bool) {
+	if r.merging {
+		return nil, false
+	}
+	recovered := r.recoverMerges(tasks)
+	mj, picked := r.pickMerge(tasks, parts)
+	return mj, recovered || picked
 }
 
 // watch judges every working part against its pane, updating parts in place.

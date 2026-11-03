@@ -10,7 +10,9 @@
   // then what is moving, then the queue, then history.
   const SECTIONS = [
     ["needs_you", "Needs you"],
+    ["merge_failed", "Merge failed"],
     ["ready_to_merge", "Ready to merge"],
+    ["merging", "Merging"],
     ["running", "Running"],
     ["waiting", "Waiting"],
     ["planning", "Planning"],
@@ -19,7 +21,10 @@
   ];
 
   // The words a move button carries, by the status it moves to.
-  const MOVE_LABELS = { waiting: "Ready to run", planning: "Back to planning", cancelled: "Cancel", done: "Mark merged" };
+  const MOVE_LABELS = {
+    waiting: "Ready to run", planning: "Back to planning", cancelled: "Cancel",
+    done: "Mark merged", ready_to_merge: "Try merge again",
+  };
 
   const partsOf = (t) => t.parts || [];
 
@@ -44,14 +49,15 @@
   function partWord(status) { return PART_WORDS[status] || status; }
 
   // summary is the sidebar row's line: what waits, runs and finished, and
-  // how many need a person (the row's highlighted count).
+  // how many need a person (the row's highlighted count). A built feature
+  // merges on its own now, so ready_to_merge is no longer a person's job.
   function summary(counts) {
     const c = counts || {};
     const parts = [];
     if (c.running) parts.push(`${c.running} running`);
     if (c.waiting) parts.push(`${c.waiting} waiting`);
     if (c.done) parts.push(`${c.done} done`);
-    return { text: parts.join(" · "), alert: (c.needs_you || 0) + (c.ready_to_merge || 0) };
+    return { text: parts.join(" · "), alert: (c.needs_you || 0) + (c.merge_failed || 0) };
   }
 
   // waitsOn says what a task waits for: nothing, a task still to finish, or
