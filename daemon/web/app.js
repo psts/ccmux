@@ -1274,13 +1274,18 @@ function abbrevPath(p) { return (p || "").replace(/^\/(?:Users|home)\/[^/]+/, "~
 // Aggregate a workspace's per-pane firehose attention into one row signal:
 // needs_input wins over done. Only panes the workspace still lists count, so a
 // closed pane's stale state can't keep a row lit (the 5s poll self-corrects).
+// An agent's done goes off a minute after it finished (flash.js); the 5s poll
+// redraws, so it ends within seconds of that.
 function wsAttention(ws) {
   const per = state.attn[ws.id];
   if (!per) return "";
+  const claims = state.claims[ws.id] || {};
+  const F = window.ccmuxFlash;
+  const shows = (p) => !F || F.doneShows(isAgentWs(ws), (claims[p.id] || {}).since || 0, Date.now());
   let done = false;
   for (const p of ws.panes || []) {
     if (per[p.id] === "needs_input") return "needs_input";
-    if (per[p.id] === "done") done = true;
+    if (per[p.id] === "done" && shows(p)) done = true;
   }
   return done ? "done" : "";
 }

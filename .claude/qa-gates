@@ -74,8 +74,9 @@ node daemon/web/smoke_test.js || exit 1
 # and when an open page moves onto a newer lens build (update.js), and when a
 # paste is an image that goes to the session's host (paste.js). 2026-11-03:
 # how the task queue reads on screen (tasklist.js). 2026-11-04: what
-# Shift+Enter sends in the browser terminal (keys.js).
-node --test daemon/web/route_test.js daemon/web/sw_test.js daemon/web/touchscroll_test.js daemon/web/drawerswipe_test.js daemon/web/update_test.js daemon/web/paste_test.js daemon/web/tasklist_test.js daemon/web/keys_test.js || exit 1
+# Shift+Enter sends in the browser terminal (keys.js), and how long a
+# session row flashes (flash.js).
+node --test daemon/web/route_test.js daemon/web/sw_test.js daemon/web/touchscroll_test.js daemon/web/drawerswipe_test.js daemon/web/update_test.js daemon/web/paste_test.js daemon/web/tasklist_test.js daemon/web/keys_test.js daemon/web/flash_test.js || exit 1
 
 # Go complexity, capped at 10, as a ratchet over frozen pre-existing debt.
 # See .claude/gates/gocyclo.sh for why it is a ratchet and not a wall.
