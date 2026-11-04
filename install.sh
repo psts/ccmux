@@ -40,7 +40,7 @@ case "$arch" in
 	*) die "unsupported arch: $arch" ;;
 esac
 
-# macOS builds are Apple Silicon only (matches the app's arm64-only build).
+# macOS builds are Apple Silicon only (.goreleaser.yaml skips darwin/amd64).
 if [ "$os" = darwin ] && [ "$arch" != arm64 ]; then
 	die "macOS builds are Apple Silicon (arm64) only; got $arch"
 fi

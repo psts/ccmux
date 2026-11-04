@@ -1,6 +1,6 @@
 # ccmux
 
-One view of every Claude Code session you run, from your Mac, the web, or your phone.
+One view of every Claude Code session you run, from any browser or your phone.
 
 ccmux keeps your Claude Code sessions alive in `tmux` on whatever machine they run on,
 and gives you a single interface to attach to them from anywhere on your tailnet. Sessions
@@ -17,9 +17,9 @@ ccmux is split into a **daemon** and one or more **lenses**.
   own [Tailscale](https://tailscale.com) node, so it identifies every caller by their real
   tailnet identity (`tailscale whois`) with no passwords to manage. The tailnet is the auth
   boundary.
-- **A lens** is any client that attaches to the daemon: the native macOS app, or the
-  web/PWA the daemon serves. A lens renders your sessions and streams the terminal; the work
-  itself runs in the daemon's tmux, not in the lens.
+- **The lens** is the web app (a PWA) the daemon serves. Open it in a browser, or install
+  it as an app on your computer or phone. It renders your sessions and streams the
+  terminal; the work itself runs in the daemon's tmux, not in the lens.
 
 Multiple hosts federate through a designated **hub**: one `ccmuxd` aggregates every host's
 sessions into one list, owns the peer-messaging bus, and fronts push — while the terminal
@@ -76,33 +76,28 @@ One thing remains yours either way: restart your Claude Code sessions afterwards
 `ccmux-peers` runs per session, not under the service, so every session keeps its
 old shim until it restarts.
 
-Verify: `ccmuxd version`, or `curl -s http://127.0.0.1:7890/v1/health` for the
+Verify: `ccmuxd version`, or `curl -s http://127.0.0.1:7900/v1/health` for the
 version of the *running* daemon.
 
-## Build the Mac app
+## Open the lens
 
-The lens is a native SwiftUI app (macOS 14+):
+The daemon serves the lens itself. Open the daemon's address in a browser: on a tailnet
+host that is `https://<host-label>.<tailnet>.ts.net` (the hub shows every host), locally
+the installed service's `http://127.0.0.1:7900`.
+To use it like an app, install it from the browser (Chrome: Install app; Safari: Add to
+Dock; phone: Add to Home Screen).
 
-```sh
-./build-app.sh          # → .build/release/ccmux.app
-```
-
-By default it talks to a local daemon at `http://127.0.0.1:7900`. Point it at a remote
-host (usually the hub) by setting `CCMUXD_URL`:
-
-```sh
-CCMUXD_URL=https://hub.<tailnet>.ts.net open .build/release/ccmux.app
-```
+The native macOS app was retired on 2026-11-04. Its code is kept on the
+[`mac-app`](https://github.com/psts/ccmux/tree/mac-app) branch, frozen as it was then.
 
 ## Repository layout
 
 ```
-Sources/ccmux/      native macOS lens (SwiftUI)
 daemon/             the ccmuxd daemon (Go)
   cmd/ccmuxd/         daemon entrypoint + `install`/`uninstall` subcommands
   cmd/ccmux-peers/    per-session peers MCP thin-client
   internal/           tmux control, REST/WS API, hub federation, peers, devhost, push
-  web/                the web/PWA lens the daemon serves
+  web/                the web/PWA lens the daemon serves (no build step)
   docs/               design + runbooks (multi-host, dev hostnames, peers)
 hooks/              Claude Code hook scripts (attention fan-out, co-author)
 install.sh          the curl|sh installer (downloads a release, runs `ccmuxd install`)
@@ -121,14 +116,18 @@ go test ./...                    # run the daemon test suite
 go vet ./...
 ```
 
-Run a daemon locally on the port the app expects:
+Run a daemon in the foreground, on a host with no installed one (it serves the web lens
+on the same address):
 
 ```sh
-./cmd/ccmuxd -addr 127.0.0.1:7900
+go run ./cmd/ccmuxd -addr 127.0.0.1:7900
 ```
 
-Cutting a release: push a tag (`git tag v0.1.0 && git push origin v0.1.0`) and the
-GitHub Actions workflow cross-compiles `ccmuxd` + `ccmux-peers` for darwin-arm64,
+The web lens is plain JS in `daemon/web/`, embedded into `ccmuxd` at build time, so
+rebuild the daemon to see a change.
+
+Cutting a GitHub release is by hand only since 2026-11-02 (`gh workflow run release
+--ref vX.Y.Z`; a pushed tag builds nothing). The workflow cross-compiles `ccmuxd` + `ccmux-peers` for darwin-arm64,
 linux-amd64, and linux-arm64 and publishes the tarballs `install.sh` downloads. Validate
 the release config locally first with `goreleaser check` (and dry-run with
 `goreleaser release --snapshot --clean`).

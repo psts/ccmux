@@ -1,16 +1,11 @@
-.build/
-.swiftpm/
-*.xcodeproj/
-xcuserdata/
-DerivedData/
 .DS_Store
 # GoReleaser build output
 dist/
 # Local Claude Code state (personal, not for the public repo)
 .claude/*
 # The gate definitions are the repo's, not one machine's: without them
-# qa-receipt.sh finds no test command here (go.mod is under daemon/, and it does
-# not recognise Package.swift) and refuses to sign anything.
+# qa-receipt.sh finds no test command here (go.mod is under daemon/) and refuses
+# to sign anything.
 !.claude/qa-gates
 # What /ship runs after the tag (the deploy). Same reason: the repo's, not one machine's.
 !.claude/ship-after-release
@@ -21,5 +16,3 @@ dist/
 # reverse is not needed — `.claude/*` matches one path segment only, so nothing
 # inside re-ignores itself once the directory is back.
 !.claude/gates/
-SwiftTerm/.build/
-SwiftTerm/.swiftpm/

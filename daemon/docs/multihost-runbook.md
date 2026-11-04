@@ -11,11 +11,10 @@ How to deploy the federation and what's live today. Design: `multihost-plan.md`.
 - **Version-skew handshake**: `GET /v1/health` carries `{ok, version, contract}`;
   mismatched hosts degrade to list-only + attach (mutations refused), never break
   the merged view.
-- **Direct-attach lenses**: web and Mac app attach the terminal stream straight to
-  the owning host (`wss://<host>.<tailnet>.ts.net/v1/attach`), never through the hub.
-  Web has the full host-targeted create picker + host context line; Mac has the host
-  context line and direct-attach (host-targeted create is a follow-up — it creates on
-  the hub by default).
+- **Direct-attach lens**: the web lens attaches the terminal stream straight to
+  the owning host (`wss://<host>.<tailnet>.ts.net/v1/attach`), never through the hub,
+  and has the host-targeted create picker + host context line. (The native Mac app
+  did the same until it was retired on 2026-11-04.)
 - **Cross-host peers bus** (built; validated live on a two-host fleet 2026-08-07): a
   non-hub host discovers the hub (`tag:ccmux-hub`) and points its Claude panes' bus at
   it, so a peer on host B can `send_message` to a peer on host A that shares a window
@@ -105,7 +104,6 @@ hub (superset role) — nothing else to do. Member hosts need no hub config: the
 ### 3. Point lenses at the hub
 
 - **Web / phone**: browse to `https://hub.<tailnet>.ts.net` (the hub serves the PWA).
-- **Mac app**: set `CCMUXD_URL=https://hub.<tailnet>.ts.net`.
 
 REST, events, peers, and push go to the hub; terminal attach goes direct to each
 owning host (the lens resolves `host` → address from `GET /v1/hosts`).

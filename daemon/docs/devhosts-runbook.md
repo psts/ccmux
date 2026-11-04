@@ -94,7 +94,7 @@ re-adopts them without re-registration.
   daemon refuses that route with a 503 rather than serve the other worktree's
   app. Change one of them.
 - **Upgrading from a release before listener discovery**: the daemon deploys
-  on push, the Mac app only on the release tag — rebuild the Mac app promptly.
+  on push; the web lens ships inside it, so there is nothing else to rebuild.
   The old sheet's "leave the port blank" save is rejected by the new daemon
   (port 0 is no longer "allocate one"). Panes opened before the upgrade may
   carry a COMPOSE_FILE pointing at an override the daemon deleted at startup;
