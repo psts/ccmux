@@ -76,11 +76,13 @@ body {
 .group-hdr.current { color: var(--fg); opacity: 1; font-size: 10px; }
 /* Other open windows, while this browser window shows one (app.js
    shownElsewhere): header and rows dimmed, rows shorter. A row that needs you
-   stays bright, so attention in another window is never hidden; hover brings
-   any row back. AVAILABLE is no window, so it keeps its plain look. */
+   is dimmed less, so attention in another window still shows without
+   competing with this one; hover brings any row back. AVAILABLE is no window, so it keeps its plain look. */
 .group-hdr.elsewhere { opacity: .45; margin-top: 14px; }
 .ws.elsewhere { padding: 3px 10px; font-size: 12px; opacity: .45; }
-.ws.elsewhere:hover, .ws.elsewhere.att-done, .ws.elsewhere.att-needs_input { opacity: 1; }
+/* attention in another window: brighter than its neighbours, softer than here */
+.ws.elsewhere.att-done, .ws.elsewhere.att-needs_input { opacity: .65; }
+.ws.elsewhere:hover { opacity: 1; } /* after the rule above: same specificity, so order decides */
 .group-hdr:not(.current):has(.grp-close) { cursor: pointer; }
 /* relaunch: windows the browser would not open without a click */
 #restore-bar, #update-bar, #paste-bar, #handoff-note {
