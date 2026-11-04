@@ -49,7 +49,8 @@ go build -o ~/bin/ccmux-peers ./cmd/ccmux-peers
 # restart ccmuxd however it's supervised (hosted tmux sessions survive; the
 # daemon re-adopts them on start). First start logs:
 #   peers bus enabled (pane-less info .../ccmuxd/peers.json)
-./build-app.sh                                  # rebuild + relaunch the Mac app
+# (2026-07 this step also rebuilt the Mac app, retired 2026-11-04; the web
+# lens is embedded in ccmuxd, so the builds above cover it.)
 ```
 
 ## 2. Swap the MCP server (new sessions only)

@@ -3459,9 +3459,8 @@ function renderPaneNotice() {
 // everywhere but ps. Shown only when non-zero — a permanent "0 zombies" line is
 // furniture the eye learns to skip.
 //
-// Every no-answer path hides the strip, and the Mac lens applies the identical
-// rule (Sources/ccmux/Services/DaemonHealthService.swift). That symmetry is the
-// point: keeping the last reading on a failed poll meant the strip kept saying
+// Every no-answer path hides the strip. That is the point: keeping the last
+// reading on a failed poll meant the strip kept saying
 // "restart the daemon" to someone who just had, for as long as it stayed down.
 async function fetchDaemonHealth() {
   const el = $("daemon-warning");
