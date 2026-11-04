@@ -9,8 +9,8 @@ workflow's Mac job) is kept, frozen, on the `mac-app` branch. The web lens
 update. Comments in the daemon and web code that mention the Mac app or
 SwiftTerm describe history; they are not a to-do.
 
-The daemon still runs on macOS (the `dasha-ccmux` host, darwin builds in
-`.goreleaser.yaml`, launchd in `ccmuxd install`). Only the app is gone.
+The daemon can still run on macOS (darwin builds in `.goreleaser.yaml`,
+launchd in `ccmuxd install`). Only the app is gone.
 
 ## What a signed receipt covers
 
@@ -52,8 +52,8 @@ check. The web lens is embedded in ccmuxd, so it ships with it. Never run
 `ccmuxd upgrade` without a tag here: it fetches the latest GitHub release and
 would put verkstan back on v0.1.88.
 
-verkstan is not the only daemon: the hub also federates `patric-ccmux` and
-`dasha-ccmux`, tsnet nodes on the Macs (`GET /v1/hosts`). They stay on v0.1.86
-by the user's choice (2026-11-02), so a session hosted there misses daemon-side
-changes such as agent-first tab order. Updating them needs a GitHub release run
-by hand and `POST /v1/hosts/{id}/upgrade`.
+Since 2026-11-04 verkstan is the only daemon: the two Mac daemons
+(`patric-ccmux`, `dasha-ccmux`) were uninstalled and their tailnet nodes
+deleted. Check `GET /v1/hosts` before relying on that. A host added later
+that is not verkstan is not updated by `/ship`; it needs a GitHub release run
+by hand and `POST /v1/hosts/{id}/upgrade`, or `./build-daemon.sh` on it.

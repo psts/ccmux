@@ -2,9 +2,8 @@ name: release
 
 # MANUAL ONLY since 2026-11-02 (user's call): a tag no longer builds anything
 # here. /ship deploys by building on verkstan itself (build-daemon.sh), which
-# takes seconds instead of minutes. Only verkstan is updated that way: the
-# daemons on the Macs (patric-ccmux, dasha-ccmux) stay on v0.1.86 by the
-# user's choice. The last published release is v0.1.88.
+# takes seconds instead of minutes. Only verkstan is updated that way; it has
+# been the only daemon since 2026-11-04. The last published release is v0.1.88.
 #
 # Run it by hand, from a tag, when a GitHub release is wanted again (a new
 # host's install.sh). The native Mac app job left with the app on 2026-11-04;
