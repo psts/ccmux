@@ -19,6 +19,18 @@ test("plain Enter, other modifiers and other keys stay with xterm.js", () => {
   assert.strictEqual(K.inputFor(key("a", { shiftKey: true })), null);
 });
 
+test("Cmd+Left and Cmd+Right jump a word, as in the Mac app", () => {
+  assert.strictEqual(K.inputFor(key("ArrowLeft", { metaKey: true })), "\x1bb");
+  assert.strictEqual(K.inputFor(key("ArrowRight", { metaKey: true })), "\x1bf");
+});
+
+test("arrows without Cmd alone stay with xterm.js", () => {
+  assert.strictEqual(K.inputFor(key("ArrowLeft")), null);
+  assert.strictEqual(K.inputFor(key("ArrowLeft", { altKey: true })), null);
+  assert.strictEqual(K.inputFor(key("ArrowLeft", { metaKey: true, shiftKey: true })), null);
+  assert.strictEqual(K.inputFor(key("ArrowUp", { metaKey: true })), null);
+});
+
 test("an input method still composing keeps its Enter", () => {
   assert.strictEqual(K.inputFor(key("Enter", { shiftKey: true, isComposing: true })), null);
 });
