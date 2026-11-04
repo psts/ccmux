@@ -1298,6 +1298,8 @@ function ensureTerm() {
   // mouse once they capture it (touchscroll.js).
   if (window.ccmuxTouchScroll) window.ccmuxTouchScroll.attach(state.term);
   state.term.onData((d) => sendInput(d));
+  // Shift+Enter starts a new line in Claude instead of sending (keys.js).
+  if (window.ccmuxKeys) window.ccmuxKeys.attach(state.term, sendInput);
   window.addEventListener("resize", scheduleFit);
   // visibility/focus does double duty:
   //  - push suppression: while actively watching, the daemon holds notifications;
