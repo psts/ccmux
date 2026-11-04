@@ -96,7 +96,7 @@ func gitBusy(repo string) (string, error) {
 		lock = filepath.Join(repo, rel)
 	}
 	if _, err := os.Stat(lock); err == nil {
-		return fmt.Sprintf("git is busy in %s, or a crashed git command left %s; remove it if no git command is running", filepath.Base(repo), lock), nil
+		return fmt.Sprintf("git is busy in %s (%s exists); if that lasts, a crashed git command left it: remove it once no git command is running", filepath.Base(repo), lock), nil
 	}
 	return "", nil
 }

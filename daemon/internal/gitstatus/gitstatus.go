@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -210,6 +211,13 @@ func appendFile(bucket *[]File, f File) {
 	}
 }
 
+// pollEnv is git's environment for the status poll. GIT_OPTIONAL_LOCKS=0
+// stops "git status" from taking .git/index.lock to refresh the index:
+// polling every repo every few seconds, it would otherwise hold that lock
+// often enough to make the task merge read the repo as busy, and to make
+// a person's own git command fail with "index.lock exists".
+func pollEnv() []string { return append(os.Environ(), "GIT_OPTIONAL_LOCKS=0") }
+
 // run executes git in dir with a hard timeout, returning stdout and the exit
 // code. code -1 with an error means git couldn't run at all (transient).
 func run(ctx context.Context, dir string, args ...string) (string, int, error) {
@@ -217,6 +225,7 @@ func run(ctx context.Context, dir string, args ...string) (string, int, error) {
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = pollEnv()
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {

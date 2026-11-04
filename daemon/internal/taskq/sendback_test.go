@@ -73,7 +73,7 @@ func TestSendBack_DeafWorkerStopsForAPerson(t *testing.T) {
 	g.git.clash["/p/app"] = true
 	g.tick()
 	got := g.st.task(1)
-	if got.Status != MergeFailed || got.AutoFixes != 1 || !strings.Contains(got.Note, "not sent back to its worker") {
+	if got.Status != MergeFailed || got.AutoFixes != 1 || !strings.Contains(got.Note, "send-back to its worker failed") {
 		t.Fatalf("deaf worker = %+v", got)
 	}
 	if p := g.st.part(g.partsOf(1)[0].ID); p.Status != Ready {
@@ -135,7 +135,7 @@ func TestSendBack_UnsavedIsAnError(t *testing.T) {
 	app, backend := g.partsOf(1)[0], g.partsOf(1)[1]
 	g.st.partErr = errors.New("database is locked")
 	err := g.r.SendBackPart(1, backend.ID)
-	if err == nil || !strings.Contains(err.Error(), "not saved") {
+	if err == nil || !strings.Contains(err.Error(), "nothing was saved") {
 		t.Fatalf("SendBackPart with a failing save = %v, want an error", err)
 	}
 	g.st.partErr = nil
@@ -147,5 +147,47 @@ func TestSendBack_UnsavedIsAnError(t *testing.T) {
 	}
 	if got := g.st.part(app.ID); got != app {
 		t.Fatalf("the other part changed: %+v", got)
+	}
+}
+
+// Every failure inside a part's own worktree goes back to that part's
+// worker on its own; a repo with no checks never does, its green unproven
+// by anything a worker could fix.
+func TestSendBack_EachWorkerFixableKind(t *testing.T) {
+	cases := []struct {
+		name   string
+		set    func(g *rig)
+		toWork bool
+	}{
+		{"red checks", func(g *rig) { g.checks.results["/p/backend"] = CheckResult{Configured: true, Output: "FAIL"} }, true},
+		{"clash with the trunk", func(g *rig) { g.git.clash["/p/backend"] = true }, true},
+		{"uncommitted in its worktree", func(g *rig) { g.git.dirty["/p/backend"] = "?? x.go" }, true},
+		{"worktree moved during the checks", func(g *rig) {
+			g.checks.during = func() {
+				g.git.mu.Lock()
+				g.git.moved["/p/backend"] = "a new commit"
+				g.git.mu.Unlock()
+			}
+		}, true},
+		{"no checks listed", func(g *rig) { g.checks.results["/p/backend"] = CheckResult{} }, false},
+	}
+	for _, c := range cases {
+		g := newRig(t)
+		g.feature(1, 0, "app", "backend")
+		g.tick()
+		g.doneParts(1)
+		c.set(g)
+		g.tick()
+		backend := g.partsOf(1)[1]
+		task := g.st.task(1)
+		sent := task.Status == Running && task.AutoFixes == 1 && backend.Status == Running &&
+			len(g.host.told[backend.PaneID]) == 1
+		if sent != c.toWork {
+			t.Errorf("%s: task %s (auto fixes %d), part %s, told %d; want sent back = %v",
+				c.name, task.Status, task.AutoFixes, backend.Status, len(g.host.told[backend.PaneID]), c.toWork)
+		}
+		if app := g.partsOf(1)[0]; len(g.host.told[app.PaneID]) != 0 {
+			t.Errorf("%s: the green teammate was told", c.name)
+		}
 	}
 }

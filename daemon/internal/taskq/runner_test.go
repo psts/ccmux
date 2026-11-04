@@ -51,6 +51,27 @@ func (m *memStore) SavePart(p store.Part) (bool, error) {
 	}
 	return false, nil
 }
+func (m *memStore) SaveTaskAndPart(t store.Task, p store.Part) (bool, error) {
+	if m.partErr != nil {
+		return false, m.partErr
+	}
+	ti, pi := -1, -1
+	for i := range m.tasks {
+		if m.tasks[i].ID == t.ID {
+			ti = i
+		}
+	}
+	for i := range m.parts {
+		if m.parts[i].ID == p.ID {
+			pi = i
+		}
+	}
+	if ti < 0 || pi < 0 {
+		return false, nil
+	}
+	m.tasks[ti], m.parts[pi] = t, p
+	return true, nil
+}
 func (m *memStore) task(id int64) store.Task {
 	for _, t := range m.tasks {
 		if t.ID == id {

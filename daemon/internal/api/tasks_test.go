@@ -394,9 +394,9 @@ func TestTaskHost_TellWorkerWithoutABus(t *testing.T) {
 	}
 }
 
-// The runner takes the bus when it starts, as the daemon wires them: the
-// first build started it before the bus was wired, so no worker ever heard
-// that its merge failed.
+// Started after EnablePeers, the runner holds the bus. This does not pin
+// the order main.go calls them in (only its comment there does): the first
+// build started the runner first, and no worker could ever be told.
 func TestStartTaskRunner_TakesTheBus(t *testing.T) {
 	s := agentsServer(t)
 	st, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))

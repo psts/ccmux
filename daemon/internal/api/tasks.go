@@ -28,6 +28,7 @@ type taskStore interface {
 	AddPart(store.Part) (int64, error)
 	Parts() ([]store.Part, error)
 	SavePart(store.Part) (bool, error)
+	SaveTaskAndPart(store.Task, store.Part) (bool, error)
 }
 
 // SetTasks wires the task queue's store.

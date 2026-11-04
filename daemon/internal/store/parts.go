@@ -1,5 +1,7 @@
 package store
 
+import "database/sql"
+
 // Part is one repo's share of a task: its own plan, written by that repo's
 // session, and the runner's record of where it is being built.
 type Part struct {
@@ -58,13 +60,50 @@ func (s *SQLite) Parts() ([]Part, error) {
 // SavePart writes back a part's plan and the runner's fields; false when
 // the part no longer exists.
 func (s *SQLite) SavePart(p Part) (bool, error) {
-	res, err := s.db.Exec(`
+	return execSaved(s.db, savePartSQL, partArgs(p)...)
+}
+
+const savePartSQL = `
 UPDATE task_parts SET plan=?, status=?, note=?, branch=?, worktree=?, pane_id=?,
-  updated_at=?, started_at=?, finished_at=? WHERE id=?`,
-		p.Plan, p.Status, p.Note, p.Branch, p.Worktree, p.PaneID, p.UpdatedAt, p.StartedAt, p.FinishedAt, p.ID)
+  updated_at=?, started_at=?, finished_at=? WHERE id=?`
+
+func partArgs(p Part) []any {
+	return []any{p.Plan, p.Status, p.Note, p.Branch, p.Worktree, p.PaneID, p.UpdatedAt, p.StartedAt, p.FinishedAt, p.ID}
+}
+
+// execer is what a save runs on: the database, or a transaction.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// execSaved runs one UPDATE and reports whether it matched a row.
+func execSaved(ex execer, query string, args ...any) (bool, error) {
+	res, err := ex.Exec(query, args...)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// SaveTaskAndPart writes a task and one of its parts together, or neither:
+// a part sent back to its worker must never run again under a task still
+// saved as failed, where its fix would be accepted and never merged. False
+// (and nothing written) when either row no longer exists.
+func (s *SQLite) SaveTaskAndPart(t Task, p Part) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, step := range []struct {
+		query string
+		args  []any
+	}{{saveTaskSQL, taskArgs(t)}, {savePartSQL, partArgs(p)}} {
+		ok, err := execSaved(tx, step.query, step.args...)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
 }

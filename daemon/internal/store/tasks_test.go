@@ -155,3 +155,44 @@ func TestTasks_AutoFixesRoundTrip(t *testing.T) {
 		t.Fatalf("list reads auto fixes %d, %d", list[0].AutoFixes, list[1].AutoFixes)
 	}
 }
+
+// A task and its part are saved together or not at all: with the part's row
+// gone, the task's change is rolled back too; with both rows there, both
+// land; another task is never touched.
+func TestTasks_SaveTaskAndPartIsAllOrNothing(t *testing.T) {
+	st := taskStore(t)
+	a, _ := addTask(st, Task{Title: "one", Status: "merge_failed"})
+	b, _ := addTask(st, Task{Title: "two", Status: "merge_failed"})
+	task, _ := st.Task(a)
+	var part Part
+	parts, _ := st.Parts()
+	for _, p := range parts {
+		if p.TaskID == a {
+			part = p
+		}
+	}
+	task.Status, part.Status = "running", "running"
+	missing := part
+	missing.ID = 999
+	if ok, err := st.SaveTaskAndPart(*task, missing); ok || err != nil {
+		t.Fatalf("save with a missing part = %v, %v; want false, nil", ok, err)
+	}
+	if got, _ := st.Task(a); got.Status != "merge_failed" {
+		t.Fatalf("task saved without its part: %s", got.Status)
+	}
+	if ok, err := st.SaveTaskAndPart(*task, part); !ok || err != nil {
+		t.Fatalf("save = %v, %v", ok, err)
+	}
+	got, _ := st.Task(a)
+	other, _ := st.Task(b)
+	parts, _ = st.Parts()
+	saved := ""
+	for _, p := range parts {
+		if p.ID == part.ID {
+			saved = p.Status
+		}
+	}
+	if got.Status != "running" || saved != "running" || other.Status != "merge_failed" {
+		t.Fatalf("after save: task %s, part %s, other task %s", got.Status, saved, other.Status)
+	}
+}

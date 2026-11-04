@@ -3,6 +3,7 @@ package taskq
 import (
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"time"
 
@@ -113,9 +114,11 @@ func (r *Runner) taskAndPart(taskID, partID int64) (store.Task, store.Part, erro
 
 // sendBack tells part p's worker why the merge failed and saves the part
 // and its task running again. The worker hears first: a part saved running
-// that nobody told would only sit until the watcher flags it. A save that
-// fails after that is an error, never a quiet log: the person or the note
-// must know the worker's report will bounce. Under the lock.
+// that nobody told would only sit until the watcher flags it. The part and
+// the task are saved in one step: a part running again under a task still
+// failed would have its fix accepted and never merged. A save that fails is
+// an error, never a quiet log: nothing changed, and the worker's report will
+// bounce until it is sent back again. Under the lock.
 func (r *Runner) sendBack(t store.Task, p store.Part, why string) (store.Task, error) {
 	nt, np, err := SendBack(t, p, r.Now())
 	if err != nil {
@@ -130,8 +133,11 @@ func (r *Runner) sendBack(t store.Task, p store.Part, why string) (store.Task, e
 	}
 	nt.Note = noteOf(fmt.Errorf("sent back to its worker in %s after a failed merge:\n%s",
 		filepath.Base(p.RepoPath), why))
-	if !r.savePart(np) || !r.saveTask(nt) {
-		return t, errors.New("its worker was told, but the task was not saved, so its next report will be refused; try again")
+	saveAt := r.Now().UnixMilli()
+	nt.UpdatedAt, np.UpdatedAt = saveAt, saveAt
+	if ok, err := r.Store.SaveTaskAndPart(nt, np); err != nil || !ok {
+		log.Printf("tasks: #%d sent back to its worker but not saved (found %v): %v", t.ID, ok, err)
+		return t, errors.New("its worker was told, but nothing was saved, so the queue will refuse its report; send it back again")
 	}
 	return nt, nil
 }
@@ -167,7 +173,7 @@ func (r *Runner) settleFailed(t store.Task, err error) store.Task {
 	t.AutoFixes++
 	sent, sendErr := r.sendBack(t, fix.part, t.Note)
 	if sendErr != nil {
-		t.Note = noteOf(errors.New(t.Note + "\n(not sent back to its worker: " + sendErr.Error() + ")"))
+		t.Note = noteOf(errors.New(t.Note + "\n(the send-back to its worker failed: " + sendErr.Error() + ")"))
 		return t
 	}
 	return sent

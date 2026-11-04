@@ -80,15 +80,15 @@ func (s *SQLite) Tasks() ([]Task, error) {
 // only SwapTaskPositions moves a task, so saving a copy read before a move
 // cannot undo it.
 func (s *SQLite) SaveTask(t Task) (bool, error) {
-	res, err := s.db.Exec(`
+	return execSaved(s.db, saveTaskSQL, taskArgs(t)...)
+}
+
+const saveTaskSQL = `
 UPDATE tasks SET title=?, status=?, after_id=?, note=?, auto_fixes=?,
-  updated_at=?, started_at=?, finished_at=? WHERE id=?`,
-		t.Title, t.Status, t.AfterID, t.Note, t.AutoFixes, t.UpdatedAt, t.StartedAt, t.FinishedAt, t.ID)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+  updated_at=?, started_at=?, finished_at=? WHERE id=?`
+
+func taskArgs(t Task) []any {
+	return []any{t.Title, t.Status, t.AfterID, t.Note, t.AutoFixes, t.UpdatedAt, t.StartedAt, t.FinishedAt, t.ID}
 }
 
 // SwapTaskPositions trades two tasks' places in the queue in one step, so a

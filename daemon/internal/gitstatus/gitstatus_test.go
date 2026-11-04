@@ -205,3 +205,13 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+// The poll never takes git's index lock: it runs every few seconds in every
+// repo, and a lock it holds reads as "git is busy" to the task merge.
+func TestPollEnvSkipsOptionalLocks(t *testing.T) {
+	t.Setenv("CCMUX_POLLENV_PROBE", "kept")
+	env := strings.Join(pollEnv(), "\n")
+	if !strings.Contains(env, "GIT_OPTIONAL_LOCKS=0") || !strings.Contains(env, "CCMUX_POLLENV_PROBE=kept") {
+		t.Fatalf("poll env lacks the no-lock switch or drops the daemon's own env")
+	}
+}

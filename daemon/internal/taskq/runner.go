@@ -16,6 +16,8 @@ type Store interface {
 	Parts() ([]store.Part, error)
 	SaveTask(store.Task) (bool, error)
 	SavePart(store.Part) (bool, error)
+	// SaveTaskAndPart writes both or neither (a part sent back, sendback.go).
+	SaveTaskAndPart(store.Task, store.Part) (bool, error)
 }
 
 // Host is the daemon the workers run on: it finds a repo's session, clears
