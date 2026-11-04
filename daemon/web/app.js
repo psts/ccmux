@@ -402,6 +402,15 @@ const pageWindow = () => (window.ccmuxPage ? window.ccmuxPage.current() : "");
 // carriesBoard: only the current window carries the Attention row, or every
 // open one while this browser window shows none.
 const carriesBoard = (win, here) => !!win && (!here || win.id === here);
+// shownElsewhere: win is another open window than the one this browser window
+// shows. Its header and rows are dimmed and shorter, so the current window
+// stands out; a row that needs you stays bright (style.css .elsewhere).
+const shownElsewhere = (win, here) => !!here && !!win && win.id !== here;
+// hdrClass is an open window's header classes: the current one, or one shown elsewhere.
+const hdrClass = (win, here) =>
+  "group-hdr" + (win && win.id === here ? " current" : shownElsewhere(win, here) ? " elsewhere" : "");
+// rowClass is a session row's classes: "ws" plus each flag that is set, by name.
+const rowClass = (flags) => ["ws", ...Object.keys(flags).filter((k) => flags[k])].join(" ");
 
 // renderList renders the SHARED arrangement (v2): windows you have OPEN as
 // sections, windows you have closed as one-line rows you can open, and
@@ -423,8 +432,8 @@ function renderList() {
   grouped.sort(([a], [b]) => Number(isHere(b)) - Number(isHere(a))); // stable: the rest keep their order
 
   for (const [group, list] of grouped) {
+    const win = winByName.get(group.toLowerCase()); // none for AVAILABLE ("")
     if (group) {
-      const win = winByName.get(group.toLowerCase());
       if (win && !openHereOf(win)) continue; // rendered below as a closed-window row
       ul.appendChild(groupHeader(group, win, here));
       if (carriesBoard(win, here)) {
@@ -439,7 +448,7 @@ function renderList() {
       h.innerHTML = "<span>AVAILABLE</span>";
       ul.appendChild(h);
     }
-    for (const ws of list) ul.appendChild(wsRow(ws));
+    for (const ws of list) ul.appendChild(wsRow(ws, shownElsewhere(win, here)));
   }
   appendClosedWindows(ul, closed);
 }
@@ -448,7 +457,7 @@ function renderList() {
 // switches this browser window to it; the current one is marked.
 function groupHeader(group, win, here) {
   const h = document.createElement("li");
-  h.className = "group-hdr" + (win && win.id === here ? " current" : "");
+  h.className = hdrClass(win, here);
   h.innerHTML = `<span>${esc(group.toUpperCase())}</span>` +
     (win && !phoneLens ? `<button class="grp-close" title="Close window">–</button>` : "") +
     `<button class="grp-msgs" title="Peer messages in ${esc(group)}">💬</button>` +
@@ -665,7 +674,8 @@ function openRow(id) {
   return openWorkspace(id, null);
 }
 
-function wsRow(ws) {
+// wsRow is one session's row; elsewhere marks a session of another open window.
+function wsRow(ws, elsewhere) {
   const active = ws.id === state.wsId && !state.board;
   const agent = isAgentWs(ws);
   // Suppress the flash on the workspace you're already watching (mirrors the
@@ -677,7 +687,7 @@ function wsRow(ws) {
   const cold = ws.status === "cold";
   const label = ownerLabel(ws);
   const li = document.createElement("li");
-  li.className = "ws" + (active ? " active" : "") + (att ? " att-" + att : "") + (cold ? " cold" : "");
+  li.className = rowClass({ active, ["att-" + att]: !!att, cold, elsewhere });
   li.innerHTML =
     `<div class="ws-row">` +
     (agent ? `<span class="exp none"></span>` : `<span class="exp${open ? " open" : " closed"}"></span>`) +

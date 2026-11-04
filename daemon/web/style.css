@@ -59,7 +59,7 @@ body {
   font-size: 10px; opacity: 0.55; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; max-width: 40%;
 }
-.ws.closed-window { opacity: 0.7; }
+.ws.closed-window { opacity: 0.45; } /* no brighter than an open window shown elsewhere */
 .group-hdr .grp-close {
   background: none; border: none; color: var(--muted); cursor: pointer;
   font-size: 12px; opacity: 0.6; padding: 0 4px;
@@ -73,7 +73,14 @@ body {
 }
 .group-hdr:first-child { margin-top: 2px; }
 /* the window THIS browser window shows (pagewin.js); others switch to on click */
-.group-hdr.current { color: var(--fg); opacity: 1; }
+.group-hdr.current { color: var(--fg); opacity: 1; font-size: 10px; }
+/* Other open windows, while this browser window shows one (app.js
+   shownElsewhere): header and rows dimmed, rows shorter. A row that needs you
+   stays bright, so attention in another window is never hidden; hover brings
+   any row back. AVAILABLE is no window, so it keeps its plain look. */
+.group-hdr.elsewhere { opacity: .45; margin-top: 14px; }
+.ws.elsewhere { padding: 3px 10px; font-size: 12px; opacity: .45; }
+.ws.elsewhere:hover, .ws.elsewhere.att-done, .ws.elsewhere.att-needs_input { opacity: 1; }
 .group-hdr:not(.current):has(.grp-close) { cursor: pointer; }
 /* relaunch: windows the browser would not open without a click */
 #restore-bar, #update-bar, #paste-bar, #handoff-note {
