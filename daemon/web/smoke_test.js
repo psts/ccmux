@@ -39,8 +39,21 @@ const el = () => new Proxy(function () {}, {
 // The daemon the fake browser talks to. windowsReply lets a case control each
 // /v1/windows answer in turn, and gate lets it hold one open so two reads can
 // resolve OUT OF ORDER. `book` is the bookkeeping the cases read back.
-function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null, whoami = null,
-  whoamiGate = null, workspacesReply = null, lastSession = "" }, book) {
+// wakeRoute answers the window open and the session wakes the way a case asks
+// (windowWakeCases), or undefined to leave the request to fakeFetch.
+const isOpen = (u) => /^\/v1\/windows\/[^/]+\/open\?/.test(u);
+function wakeRoute(u, { openReply = null, reviveFails = false, reviveThrows = [], openDenied = false }) {
+  if (reviveFails && u.includes("/revive")) return { ok: false, status: 502, text: async () => "host unreachable" };
+  if ((reviveThrows || []).some((id) => u === `/v1/workspaces/${id}/revive`)) throw new TypeError("Failed to fetch");
+  if (openDenied && isOpen(u)) return { ok: false, status: 403, text: async () => "not a member" };
+  if (!openReply || !isOpen(u)) return undefined;
+  const json = async () => { if (openReply === "garbled") throw new SyntaxError("not JSON"); return openReply; };
+  return { ok: true, status: 200, json };
+}
+
+function fakeFetch(opts0, book) {
+  const { windowsOk = true, windowsOkFor = null, windowsReply = null, gate = null, whoami = null,
+    whoamiGate = null, workspacesReply = null, lastSession = "" } = opts0;
   // A fetch that never settles, unless its abort signal fires — the shape of
   // a half-open connection.
   const hang = (signal) => new Promise((_, reject) => {
@@ -49,6 +62,8 @@ function fakeFetch({ windowsOk = true, windowsOkFor = null, windowsReply = null,
   return async (url, opts) => {
     const u = String(url);
     book.fetched.push({ url: u, method: (opts && opts.method) || "GET", body: opts && opts.body });
+    const woke = wakeRoute(u, opts0);
+    if (woke) return woke;
     if (u.startsWith("/v1/me/last-session")) return { ok: true, status: 200, json: async () => ({ workspaceId: lastSession }) };
     if (u.startsWith("/v1/workspaces")) return { ok: true, status: 200, json: async () => (workspacesReply ? workspacesReply() : []) };
     if (u.startsWith("/v1/whoami")) {
@@ -124,7 +139,7 @@ function makeContext(opts, book) {
     }) },
     setInterval: () => 0, setTimeout: (fn) => { book.timers.push(fn); return book.timers.length; }, clearInterval() {}, clearTimeout() {},
     addEventListener() {}, matchMedia: () => ({ matches: !!opts.phone, addEventListener() {} }),
-    prompt: () => { book.prompts++; return "Patric"; }, alert() {}, confirm: () => true,
+    prompt: () => { book.prompts++; return "Patric"; }, alert: (m) => { book.alerts.push(String(m)); }, confirm: () => true,
     AbortController: function () { const s = { onabort: null }; this.signal = s; this.abort = () => { if (s.onabort) s.onabort(); }; },
     Notification: { permission: "default" },
     URLSearchParams, URL, TextEncoder, TextDecoder,
@@ -138,12 +153,13 @@ function makeContext(opts, book) {
 function run(opts = {}) {
   const { withPush = false, withBoard = false } = opts;
   const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0,
-    addresses: [], opened: [], swListeners: [], cacheDeletes: [], cachePuts: [], focused: 0 };
+    addresses: [], opened: [], swListeners: [], cacheDeletes: [], cachePuts: [], focused: 0, alerts: [] };
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
-  // Same order as index.html: app.js, then the per-window glue that boots it.
-  for (const f of ["app.js", "route.js", "pagewin.js"]) {
+  // Same order as index.html: app.js, then the per-window glue that boots it,
+  // and windowwake.js, which a window's open and close call (app.js).
+  for (const f of ["app.js", "route.js", "pagewin.js", "windowwake.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), ctx, { filename: f });
   }
   if (withPush) vm.runInContext(fs.readFileSync(path.join(__dirname, "push.js"), "utf8"), ctx, { filename: "push.js" });
@@ -158,6 +174,7 @@ function run(opts = {}) {
   const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
   return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
     sockets: book.sockets, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened,
+    alerts: book.alerts,
     swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts,
     focused: () => book.focused };
 }
@@ -506,6 +523,86 @@ const twoWindows = () => [
 const attachedTo = (r) => r.sockets.filter((u) => u.includes("/v1/attach"))
   .map((u) => (/workspace=([^&]+)/.exec(u) || [])[1]).filter(Boolean);
 const lastAddress = (r) => r.addresses[r.addresses.length - 1] || "";
+
+// A closed window comes back as it was left (windowwake.js): the close says
+// which sessions are awake, and the open after it wakes only what the daemon
+// hands back.
+async function windowWakeCases() {
+  const win = { id: "win-a", name: "A", workspaceIds: ["ws-1", "ws-2", "ws-3"], openBy: [], open: false, openHere: false };
+  const ws = (id, status) => ({ id, name: id, repoPath: "/r/" + id, status, panes: [] });
+  const r = run({
+    windowsReply: () => [win],
+    workspacesReply: () => [ws("ws-1", "live"), ws("ws-2", "cold"), ws("ws-3", "cold")],
+    openReply: { wake: ["ws-2"] },
+  });
+  await r.ctx.fetchWorkspaces();
+  await settle();
+  await r.ctx.closeWindow(win);
+  const close = r.fetched.find((f) => f.method === "POST" && f.url.startsWith("/v1/windows/win-a/close?"));
+  check("a window's close says which of its sessions are awake",
+    !!close && JSON.parse(close.body).awake.join() === "ws-1", close ? String(close.body) : "no close sent");
+  await r.ctx.openWindow(win);
+  const woke = r.fetched.filter((f) => f.method === "POST" && f.url.includes("/revive")).map((f) => f.url);
+  check("a reopened window wakes only what was awake at its last close",
+    woke.join() === "/v1/workspaces/ws-2/revive", woke.join(" ") || "nothing woken");
+
+  // An answer the lens cannot read wakes nothing: waking everything could
+  // start sessions someone left asleep.
+  const garbled = run({ windowsReply: () => [win], workspacesReply: () => [ws("ws-1", "live"), ws("ws-2", "cold")], openReply: "garbled" });
+  await garbled.ctx.fetchWorkspaces();
+  await settle();
+  const garbledOpen = await garbled.ctx.openWindow(win);
+  const garbledWoke = garbled.fetched.filter((f) => f.url.includes("/revive")).length;
+  check("an unreadable open answer still opens the window, wakes nothing, and says so",
+    garbledOpen === true && garbledWoke === 0 && garbled.alerts.length === 1,
+    `open ${garbledOpen}, ${garbledWoke} woken, alerts ${JSON.stringify(garbled.alerts)}`);
+
+  // A session that will not wake is that, not a failed open: the open landed
+  // and the lens says which, once, and stays open.
+  const stuck = run({
+    windowsReply: () => [win],
+    workspacesReply: () => [ws("ws-2", "cold"), ws("ws-3", "cold")],
+    openReply: { wake: ["ws-2", "ws-3"] }, reviveFails: true,
+  });
+  await stuck.ctx.fetchWorkspaces();
+  await settle();
+  const stuckOpen = await stuck.ctx.openWindow(win);
+  const tried = stuck.fetched.filter((f) => f.url.includes("/revive")).length;
+  check("a session that will not wake leaves the window open, tries the rest, and says so once",
+    stuckOpen === true && tried === 2 && stuck.alerts.length === 1 && /did not wake/.test(stuck.alerts[0] || ""),
+    `open ${stuckOpen}, ${tried} tried, alerts ${JSON.stringify(stuck.alerts)}`);
+  await windowWakeFailureCases(win, ws);
+}
+
+// A wake whose request fails outright (a dropped connection) is a session
+// that did not wake, not a failed open; an open the daemon refuses is a
+// failed open and wakes nothing.
+async function windowWakeFailureCases(win, ws) {
+  const dropped = run({
+    windowsReply: () => [win],
+    workspacesReply: () => [ws("ws-2", "cold"), ws("ws-3", "cold")],
+    openReply: { wake: ["ws-2", "ws-3"] }, reviveThrows: ["ws-2"],
+  });
+  await dropped.ctx.fetchWorkspaces();
+  await settle();
+  const before = dropped.fetched.length;
+  const droppedOpen = await dropped.ctx.openWindow(win);
+  const after = dropped.fetched.slice(before);
+  const tried = after.filter((f) => f.url.includes("/revive")).length;
+  const reread = after.some((f) => f.url.startsWith("/v1/workspaces") && !f.url.includes("/revive"));
+  check("a wake whose request fails leaves the window open, tries the rest, says which, and reads the list again",
+    droppedOpen === true && tried === 2 && dropped.alerts.length === 1 && /ws-2/.test(dropped.alerts[0] || "") && reread,
+    `open ${droppedOpen}, ${tried} tried, reread ${reread}, alerts ${JSON.stringify(dropped.alerts)}`);
+
+  const denied = run({ windowsReply: () => [win], workspacesReply: () => [ws("ws-2", "cold")], openDenied: true });
+  await denied.ctx.fetchWorkspaces();
+  await settle();
+  const deniedOpen = await denied.ctx.openWindow(win);
+  const deniedWoke = denied.fetched.filter((f) => f.url.includes("/revive")).length;
+  check("an open the daemon refuses is a failed open and wakes nothing",
+    deniedOpen === false && deniedWoke === 0 && denied.alerts.length === 1 && /open failed/.test(denied.alerts[0] || ""),
+    `open ${deniedOpen}, ${deniedWoke} woken, alerts ${JSON.stringify(denied.alerts)}`);
+}
 
 async function pageWindowCases() {
   const link = run({ windowsReply: twoWindows, search: "?ws=ws-2" });
@@ -1717,6 +1814,7 @@ async function peersFailureCases() {
   await emptyWindowCases();
   await scratchTabCases();
   await pageWindowCases();
+  await windowWakeCases();
   await peersMergeCases();
   await peersFailureCases();
   await boardCases();

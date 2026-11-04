@@ -78,6 +78,11 @@ type Store interface {
 	// window exists: a size for an unknown id lands nowhere.
 	SetWindowSize(id string, size WindowSize) (bool, error)
 	WindowSizes() (map[string]WindowSize, error) // window id → size
+	// Wake marks: the sessions awake when their window was last closed
+	// (windowwake.go).
+	SetWakeMarks(members, awake []string) error
+	WakeMarks(ids []string) ([]string, error)
+	ClearWakeMark(wsID string) error
 
 	// Push notification subscriptions (transport-generic, keyed by login).
 	SavePushSubscription(*model.PushSubscription) error
@@ -194,6 +199,9 @@ CREATE TABLE IF NOT EXISTS windows (
 CREATE UNIQUE INDEX IF NOT EXISTS windows_by_name ON windows(lower(name));
 CREATE TABLE IF NOT EXISTS window_sizes (
   window_id TEXT PRIMARY KEY, width INTEGER NOT NULL, height INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_wake (
+  ws_id TEXT PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS window_members (
   ws_id TEXT PRIMARY KEY, window_id TEXT NOT NULL

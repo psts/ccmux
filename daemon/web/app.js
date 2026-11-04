@@ -589,26 +589,57 @@ function ownerLabel(ws) {
   return (ws.owner || "").split("@")[0];
 }
 
-// openWindow marks the shared window open for this login and wakes its cold
-// members — opening a sleeping window is how it comes back everywhere. True
-// when the window is now open here (a member that would not wake still is).
+const wsById = (id) => state.workspaces.find((w) => w.id === id);
+
+// openWindow marks the shared window open for this login and wakes the
+// members the daemon has marked awake from the window's last close that are
+// asleep now (windowwake.js) — opening a sleeping window is how it comes back
+// everywhere. A window with no marks (closed before marks existed, or from
+// the Mac app) wakes nothing. True when the window is now open here (a member
+// that would not wake still is).
 async function openWindow(win) {
+  let r;
   try {
-    const r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(windowDevice)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
-    if (!r.ok) { alert("open failed: " + (await r.text())); return false; }
-    for (const wsId of win.workspaceIds || []) {
-      const ws = state.workspaces.find((w) => w.id === wsId);
-      if (ws && ws.status === "cold") {
-        const rr = await fetch(`/v1/workspaces/${wsId}/revive`, { method: "POST" });
-        if (!rr.ok) alert(`could not wake ${ws.name || wsId}: ` + (await rr.text()));
-      }
-    }
+    r = await fetch(`/v1/windows/${win.id}/open?device=${encodeURIComponent(windowDevice)}&deviceLabel=${encodeURIComponent(deviceLabel())}`, { method: "POST" });
   } catch (e) {
     alert("open failed: " + e.message);
     return false;
   }
+  if (!r.ok) { alert("open failed: " + (await r.text().catch(() => r.status))); return false; }
+  // The open landed: from here a failure is a session that did not wake,
+  // never a failed open.
+  await wakeMembers(win, await openAnswer(r, win));
   await fetchWorkspaces();
   return true;
+}
+
+// openAnswer reads what an open says to wake. An answer the lens cannot read
+// wakes nothing and says so: the marks stay on the daemon, so nothing is
+// lost, but the sessions stay asleep until woken from the sidebar.
+async function openAnswer(r, win) {
+  try {
+    return await r.json();
+  } catch (e) {
+    console.error("window open: unreadable answer, waking nothing:", win.id, e);
+    alert(`${win.name || "The window"} opened, but ccmux could not read which sessions to wake. Wake them from the sidebar.`);
+    return { wake: [] };
+  }
+}
+
+// wakeMembers wakes what the open's answer names (windowwake.js), each on
+// its own, and says once which would not wake.
+async function wakeMembers(win, answer) {
+  const failed = [];
+  for (const wsId of window.ccmuxWindowWake.toWake(answer, win.workspaceIds, wsById)) {
+    const name = (wsById(wsId) || {}).name || wsId;
+    try {
+      const rr = await fetch(`/v1/workspaces/${wsId}/revive`, { method: "POST" });
+      if (!rr.ok) failed.push(`${name}: ${await rr.text()}`);
+    } catch (e) {
+      failed.push(`${name}: ${e.message}`);
+    }
+  }
+  if (failed.length) alert("The window opened, but these sessions did not wake:\n" + failed.join("\n"));
 }
 
 // closeWindow clears this login's open flag; when that was the LAST opener,
@@ -616,7 +647,11 @@ async function openWindow(win) {
 // which is the model's own permission).
 async function closeWindow(win) {
   try {
-    const r = await fetch(`/v1/windows/${win.id}/close?device=${encodeURIComponent(windowDevice)}`, { method: "POST" });
+    // The sessions awake now, so the next open wakes only those (windowwake.js).
+    const awake = window.ccmuxWindowWake.awakeAt(win.workspaceIds, wsById);
+    const r = await fetch(`/v1/windows/${win.id}/close?device=${encodeURIComponent(windowDevice)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ awake }),
+    });
     if (!r.ok) { alert("close failed: " + (await r.text())); return; }
     const out = await r.json();
     if (out.last) {

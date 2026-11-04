@@ -424,7 +424,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workspaces/{id}/panes", s.scoped(s.spawnPane))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/panes/{paneId}", s.scoped(s.killPane))
 	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveGuard(s.scoped(s.archiveWorkspace)))
-	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.scoped(s.reviveWorkspace))
+	mux.HandleFunc("POST /v1/workspaces/{id}/revive", s.reviveClearsWake(s.scoped(s.reviveWorkspace)))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/layout", s.scoped(s.putLayout))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/pane-order", s.scoped(s.putPaneOrder))
 	// group is the SHARED window assignment: handled HERE (hub or lone

@@ -230,36 +230,13 @@ func (s *Server) syncWindowOpen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// setWindowOpen serves POST /v1/windows/{id}/open and /close. A close answers
-// {last, members}: when the caller was the final opener, the LENS archives
-// the members — the agreed model is that a window nobody has open goes to
-// sleep, and the lens already owns the archive loop.
+// setWindowOpen serves POST /v1/windows/{id}/open and /close
+// (windowwake.go holds both).
 func (s *Server) setWindowOpen(open bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		login := s.resolveIdentity(r).Login
-		// Device and label come from the lens. A lens that sends neither keeps
-		// the old row scoping — one row per login, and a close clears every row
-		// for that login and window — but not the old lifetime: every open now
-		// stamps last_seen, and such a lens has no way to re-assert, so a window
-		// it leaves open ages out after the TTL.
-		last, members, err := s.mgr.SetWindowOpen(store.WindowOpenFlag{
-			Login:    login,
-			WindowID: r.PathValue("id"),
-			Device:   r.URL.Query().Get("device"),
-			Label:    r.URL.Query().Get("deviceLabel"),
-		}, open)
-		if err != nil {
-			// 404 only for what the caller got wrong; a store failure is a
-			// 503, or a lens takes the wrong branch off the status code.
-			if errors.Is(err, manager.ErrUnknownWindow) {
-				writeError(w, http.StatusNotFound, err.Error())
-			} else {
-				writeError(w, http.StatusServiceUnavailable, err.Error())
-			}
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"last": last, "members": members})
+	if open {
+		return s.windowOpenRoute
 	}
+	return s.windowCloseRoute
 }
 
 // renameWindow serves PUT /v1/windows/{id}: a shared rename, refused on a
