@@ -7,6 +7,9 @@
 (() => {
   const modes = new Map(); // paneId → "chat" | "terminal"
   let cur = null; // the pane being shown: { paneId, wsRec, sock, turns, els, perms, busy }
+  // How long the chat socket waits before it dials again: longer after each
+  // failure in a row, from 2s up to 30s (retry.js).
+  const retry = window.ccmuxRetry.backoff();
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -162,6 +165,7 @@
     const { paneId, wsRec } = cur;
     const sock = new WebSocket(`${attachOrigin(wsRec)}/v1/panes/${encodeURIComponent(paneId)}/agent/ws`);
     cur.sock = sock;
+    sock.onopen = () => retry.ok();
     sock.onmessage = (ev) => {
       let f;
       try { f = JSON.parse(ev.data); } catch (e) { console.warn("agent chat: unreadable frame", e, ev.data.slice(0, 120)); return; }
@@ -171,7 +175,7 @@
       if (!cur || cur.sock !== sock) return; // superseded or hidden
       cur.sock = null;
       setState("reconnecting", "");
-      setTimeout(() => { if (cur && cur.paneId === paneId && !cur.sock) connect(); }, 2000);
+      setTimeout(() => { if (cur && cur.paneId === paneId && !cur.sock) connect(); }, retry.next());
     };
   }
 

@@ -28,6 +28,9 @@
   // left from an earlier open would otherwise dial for the next one, before
   // its first read is in (and after a failed one, when no stream may open).
   let redialTimer = null;
+  // How long the messages socket waits before it dials again: longer after
+  // each failure in a row, from 2s up to 30s (retry.js).
+  const retry = window.ccmuxRetry.backoff();
   // Whether a history read has succeeded since this open. Before one, a
   // failed read is the panel's error, shown plainly, and the stream is never
   // opened (the Mac shows its error banner and does not listen); after one,
@@ -196,6 +199,7 @@
     const tok = viewer.bus && viewer.token ? "&viewer_token=" + encodeURIComponent(viewer.token) : "";
     const ws = new WebSocket(
       `${proto}://${location.host}${viewer.bus}/v1/peers/ws?mode=listen&group=${encodeURIComponent(group)}${tok}`);
+    ws.onopen = () => retry.ok();
     ws.onmessage = (ev) => {
       let m;
       try { m = JSON.parse(ev.data); } catch (_) { return; }
@@ -216,7 +220,7 @@
     ws.onclose = () => {
       if (ws !== sock) return; // superseded or modal closed
       sock = null;
-      redialTimer = setTimeout(() => { redialTimer = null; if (group) connect(); }, 2000);
+      redialTimer = setTimeout(() => { redialTimer = null; if (group) connect(); }, retry.next());
     };
     sock = ws;
   }

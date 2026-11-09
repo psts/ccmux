@@ -155,7 +155,7 @@ function makeContext(opts, book) {
       delete: async (k) => { book.cacheDeletes.push(k); if (k === "/__ccmux_pending_nav") stash = null; return true; },
       put: async (k, v) => { book.cachePuts.push([k, v && v.body]); return true; },
     }) },
-    setInterval: () => 0, setTimeout: (fn) => { book.timers.push(fn); return book.timers.length; }, clearInterval() {}, clearTimeout() {},
+    setInterval: () => 0, setTimeout: (fn, ms) => { book.timers.push(fn); book.delays.push(ms); return book.timers.length; }, clearInterval() {}, clearTimeout() {},
     addEventListener() {}, matchMedia: () => ({ matches: !!opts.phone, addEventListener() {} }),
     prompt: () => { book.prompts++; return "Patric"; }, alert: (m) => { book.alerts.push(String(m)); }, confirm: () => true,
     AbortController: function () { const s = { onabort: null }; this.signal = s; this.abort = () => { if (s.onabort) s.onabort(); }; },
@@ -170,14 +170,15 @@ function makeContext(opts, book) {
 // back the handles the cases assert on.
 function run(opts = {}) {
   const { withPush = false, withBoard = false } = opts;
-  const book = { fetched: [], errors: [], sockets: [], live: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0,
+  const book = { fetched: [], errors: [], sockets: [], live: [], timers: [], delays: [], swRegistrations: 0, reads: 0, prompts: 0,
     addresses: [], opened: [], swListeners: [], cacheDeletes: [], cachePuts: [], focused: 0, alerts: [] };
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
-  // Same order as index.html: app.js, then the per-window glue that boots it,
-  // and windowwake.js, which a window's open and close call (app.js).
-  for (const f of ["app.js", "route.js", "pagewin.js", "windowwake.js"]) {
+  // Same order as index.html: retry.js, which app.js reads at load, app.js,
+  // then the per-window glue that boots it, and windowwake.js, which a
+  // window's open and close call (app.js).
+  for (const f of ["retry.js", "app.js", "route.js", "pagewin.js", "windowwake.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), ctx, { filename: f });
   }
   if (withPush) vm.runInContext(fs.readFileSync(path.join(__dirname, "push.js"), "utf8"), ctx, { filename: "push.js" });
@@ -191,7 +192,7 @@ function run(opts = {}) {
   const evalIn = (code) => vm.runInContext(code, ctx);
   const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
   return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
-    sockets: book.sockets, live: book.live, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened,
+    sockets: book.sockets, live: book.live, delays: book.delays, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened,
     alerts: book.alerts,
     swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts,
     focused: () => book.focused };
@@ -1521,10 +1522,30 @@ class PeersEl {
 
 // One panel against a fake bus: `replies` answers history reads in turn (a
 // `gate` holds one open, `fail` refuses it), and the socket is driven by hand.
+// The peer messages socket waits longer after each failure too (retry.js).
+async function peersRetryCases() {
+  const s = runPeers();
+  s.open("Mixed");
+  await settle();
+  const waits = [];
+  for (let i = 0; i < 4; i++) {
+    s.drop();
+    waits.push(s.delays[s.delays.length - 1]);
+    s.timers.splice(0).forEach((f) => f());
+    await settle();
+  }
+  s.connected();
+  s.drop();
+  waits.push(s.delays[s.delays.length - 1]);
+  check("peer messages wait longer after each failure, and start over once connected",
+    waits.join() === "2000,4000,8000,16000,2000", waits.join());
+}
+
 function runPeers() {
   const els = {};
   const sockets = [];
   const timers = [];
+  const delays = [];
   const replies = [];
   const warns = [];
   class FakeWS { constructor(url) { this.url = url; sockets.push(this); } close() { this.closed = true; } }
@@ -1538,7 +1559,7 @@ function runPeers() {
   const ctx = {
     console: { ...console, warn: (...a) => warns.push(a) },
     location: { protocol: "http:", host: "lens" },
-    setTimeout: (f) => { timers.push(f); return f; },
+    setTimeout: (f, ms) => { timers.push(f); delays.push(ms); return f; },
     clearTimeout: (f) => { const i = timers.indexOf(f); if (i >= 0) timers.splice(i, 1); },
     WebSocket: FakeWS,
     document: { getElementById: (id) => els[id] || (els[id] = new PeersEl()), createElement: () => new PeersEl() },
@@ -1551,10 +1572,12 @@ function runPeers() {
   };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "peers.js"), "utf8"), ctx, { filename: "peers.js" });
+  for (const f of ["retry.js", "peers.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), ctx, { filename: f });
   const sock = () => sockets[sockets.length - 1];
   return {
-    replies, timers,
+    replies, timers, delays,
+    drop: () => sock().onclose(),
+    connected: () => sock().onopen(),
     open: (g) => ctx.ccmuxPeers.open(g),
     close: () => els["peers-close"].onclick(),
     hello: () => sock().onmessage({ data: '{"type":"hello"}' }),
@@ -1614,6 +1637,45 @@ async function peersMergeCases() {
   const r = p.rows();
   check("peers: a full read drops the rows older than it and keeps the newer live one",
     r[0] === 1001 && r[r.length - 1] === 1201 && r.length === 201, `first ${r[0]}, last ${r[r.length - 1]}, ${r.length} rows`);
+}
+
+// A connection that keeps failing waits longer before each redial (retry.js):
+// 2s doubling to 30s, and 2s again once it connects. Every socket used to
+// redial every 2s, and Chrome then held back the page's other connections.
+// redials drops a socket n times, firing its redial each time, and returns
+// the wait each drop asked for; then it connects and drops once more.
+async function redials(r, part, n) {
+  const last = () => r.live[r.sockets.map((u, i) => [u, i]).filter(([u]) => u.includes(part)).pop()[1]];
+  const waits = [];
+  for (let i = 0; i < n; i++) {
+    last().onclose();
+    waits.push(r.delays[r.delays.length - 1]);
+    r.fireTimers();
+    await settle();
+  }
+  last().onopen();
+  last().onclose();
+  waits.push(r.delays[r.delays.length - 1]);
+  return waits;
+}
+
+async function retryCases() {
+  const want = "2000,4000,8000,16000,2000";
+  const ws = (id) => ({ id, name: id, repoPath: "/r/" + id, status: "live", panes: [{ id: "p-" + id }] });
+  const r = run({ workspacesReply: () => [ws("ws-a")], withBoard: true });
+  await r.ctx.fetchWorkspaces();
+  await settle();
+  await r.ctx.openWorkspace("ws-a", null);
+  await settle();
+  r.ctx.ccmuxAgentChat = r.ctx.ccmuxAgentChat || { show() {}, hide() {} };
+  // The terminal does not back off: while it is down, typing goes nowhere.
+  const term = await redials(r, "/v1/attach", 4);
+  check("the terminal keeps redialing every 2s", term.join() === "2000,2000,2000,2000,2000", term.join());
+  const feed = await redials(r, "/v1/events", 4);
+  check("the sidebar feed waits longer after each failure, and starts over once connected", feed.join() === want, feed.join());
+  r.ctx.ccmuxAgentChat.show({ id: "p-ag", agent: "helper" }, ws("ws-ag"));
+  const chat = await redials(r, "/agent/ws", 4);
+  check("an agent's chat waits longer after each failure, and starts over once connected", chat.join() === want, chat.join());
 }
 
 async function peersFailureCases() {
@@ -1967,6 +2029,8 @@ async function peersFailureCases() {
   await asleepCases();
   await peersMergeCases();
   await peersFailureCases();
+  await retryCases();
+  await peersRetryCases();
   await boardCases();
   await boardChatTileCases();
   await ownsEditorCases();

@@ -1510,6 +1510,11 @@ function paneColsOf(paneId) {
 }
 
 // --- attach / websocket ---
+// How long the sidebar feed waits before it dials again: longer after each
+// failure in a row, from 2s up to 30s (retry.js). The terminal socket does
+// not back off; see attach's onclose.
+const feedRetry = window.ccmuxRetry.backoff();
+
 // isAsleep: the daemon lists the session as sleeping (cold), so it has no
 // panes to attach to and refuses an attach with 409.
 const isAsleep = (id) => (wsById(id) || {}).status === "cold";
@@ -1596,6 +1601,9 @@ async function attach(wsId, wantPane) {
   conn.onclose = () => {
     if (state.conn !== conn) return; // superseded by a newer attach
     state.conn = null;
+    // A flat 2s, not retry.js's backoff: while this socket is down every
+    // keystroke is dropped with nothing on screen to say so, so it must come
+    // back fast. A sleeping session never gets here (showAsleep).
     setTimeout(() => { if (!state.conn && state.wsId === wsId) attach(wsId, state.paneId); }, 2000);
   };
   conn.onerror = (e) => console.debug("attach socket failed", wsId, e);
@@ -2241,8 +2249,8 @@ function connectFirehose() {
   fh.onmessage = onFirehose;
   // Presence lives per connection on the daemon, so a fresh stream starts
   // as nobody-at-a-screen: the attention board says it again (board.js).
-  fh.onopen = () => { if (window.ccmuxBoard) window.ccmuxBoard.reportPresence(); };
-  fh.onclose = () => { state.firehose = null; setTimeout(connectFirehose, 2000); };
+  fh.onopen = () => { feedRetry.ok(); if (window.ccmuxBoard) window.ccmuxBoard.reportPresence(); };
+  fh.onclose = () => { state.firehose = null; setTimeout(connectFirehose, feedRetry.next()); };
   state.firehose = fh;
 }
 
