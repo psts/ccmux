@@ -524,6 +524,24 @@ const attachedTo = (r) => r.sockets.filter((u) => u.includes("/v1/attach"))
   .map((u) => (/workspace=([^&]+)/.exec(u) || [])[1]).filter(Boolean);
 const lastAddress = (r) => r.addresses[r.addresses.length - 1] || "";
 
+// attachOrigin: a session on the daemon serving this page connects through
+// the page's own address. Dialing the host's tailnet name instead cost a fresh
+// name lookup on every session switch, measured at 1.5s on a Mac after a few
+// idle minutes. A session on another host still goes straight to that host.
+function attachOriginCases() {
+  const r = run();
+  r.evalIn(`state.hosts = {
+    me: { id: "me", addr: "me.tail.ts.net", self: true },
+    other: { id: "other", addr: "other.tail.ts.net" },
+  }`);
+  const origin = (host) => r.evalIn(`attachOrigin({ host: ${JSON.stringify(host)} })`);
+  check("a session on this daemon connects through the page's own address",
+    origin("me") === "ws://x", origin("me"));
+  check("a session on another host connects straight to it",
+    origin("other") === "ws://other.tail.ts.net", origin("other"));
+  check("a session with no host stays on the page's address", origin("") === "ws://x", origin(""));
+}
+
 // A closed window comes back as it was left (windowwake.js): the close says
 // which sessions are awake, and the open after it wakes only what the daemon
 // hands back.
@@ -1815,6 +1833,7 @@ async function peersFailureCases() {
   await scratchTabCases();
   await pageWindowCases();
   await windowWakeCases();
+  attachOriginCases();
   await peersMergeCases();
   await peersFailureCases();
   await boardCases();

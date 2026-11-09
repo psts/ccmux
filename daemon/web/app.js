@@ -350,12 +350,15 @@ async function fetchHosts() {
 
 // attachOrigin returns the WS origin for a workspace's terminal stream. Terminal
 // bytes go DIRECT to the owning host (never relayed through the hub), so a
-// host-stamped workspace dials wss://<host.addr>; an empty/unknown host (single-
-// host, or the hub's own sessions) stays same-origin.
+// workspace on another host dials wss://<host.addr>; one on the daemon serving
+// this page (self), or with no known host, stays same-origin. Self matters: its
+// sessions are stamped with its own id, and dialing its tailnet name from a page
+// opened under another name (ccmux.dev...) cost a fresh name lookup per session
+// switch, measured at 1.5s on a Mac after a few idle minutes.
 function attachOrigin(ws) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const h = ws && ws.host && state.hosts[ws.host];
-  if (h && h.addr) return `${proto}://${h.addr}`;
+  if (h && h.addr && !h.self) return `${proto}://${h.addr}`;
   return `${proto}://${location.host}`;
 }
 
