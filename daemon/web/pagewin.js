@@ -5,7 +5,7 @@
 //
 // The Mac app's WorkspaceWindowController is the same idea: one window, one
 // ccmux window, its sessions first in the sidebar, the last one shown again.
-// Runs after app.js and uses its globals (state, openWorkspace, openWindow,
+// Runs after app.js and uses its globals (state, showWorkspace, openWindow,
 // openHereOf, openDrawer, renderList, detachIfCurrent, $) at call time.
 (function () {
   "use strict";
@@ -118,7 +118,7 @@
   }
 
   // leaveBoard takes down an attention board or a task queue that belongs to
-  // another window than win (null for none): only openWorkspace closes them
+  // another window than win (null for none): only showing a session closes them
   // otherwise, and switching windows with no session to show would leave the
   // old window's view on screen.
   function leaveBoard(win) {
@@ -153,7 +153,7 @@
   function showSession(w, ws) {
     const pick = [ws, R.recall(store, w)].find((id) => showable(w, id));
     if (pick === state.wsId && pick) return onAttach(pick); // already on screen (opened while boot waited)
-    if (pick) return openWorkspace(pick, null);
+    if (pick) return showWorkspace(pick, null);
     if (state.wsId && !showable(w, state.wsId)) return detachIfCurrent(state.wsId);
     openDrawer();
   }
@@ -166,20 +166,35 @@
   // session whose window is CLOSED for them counts as none: the phone mirrors
   // what is open and must not reopen, and wake, a window closed on a computer.
   async function launchPhone(open) {
-    let ws = "";
+    const start = phoneStart(open, await lastSessionOf());
+    if (start.target) return enter(start.target, start.ws);
+    return start.loose ? showWorkspace(start.ws, null) : picker();
+  }
+
+  // lastSessionOf asks which session this person last typed in, on any lens;
+  // "" when the daemon cannot say.
+  async function lastSessionOf() {
     try {
       // ?user= as attach sends it: a phone the tailnet does not vouch for is
       // known by the name it typed under, and without it the daemon asks as "anon".
-      ws = (await (await fetch("/v1/me/last-session?user=" + encodeURIComponent(getUser()))).json()).workspaceId || "";
+      const r = await fetch("/v1/me/last-session?user=" + encodeURIComponent(getUser()));
+      return (await r.json()).workspaceId || "";
     } catch (e) {
       console.warn("phone: last session unreadable; starting in the first open window:", e);
+      return "";
     }
-    const known = !!ws && (state.workspaces || []).some((x) => x.id === ws);
-    const home = known ? R.windowOf(state.windows, ws) : "";
-    if (home && !open.includes(home)) ws = ""; // its window is closed: not reopened
-    const target = (home && open.includes(home) && home) || open[0] || "";
-    if (target) return enter(target, ws && known ? ws : "");
-    return known && !home ? openWorkspace(ws, null) : picker();
+  }
+
+  // phoneStart picks where a phone starts, from the open windows and the last
+  // session: the window to enter (target) and the session to show in it (ws),
+  // or, with no window open, a session in no window shown on its own (loose).
+  function phoneStart(open, last) {
+    const known = !!last && (state.workspaces || []).some((x) => x.id === last);
+    const home = known ? R.windowOf(state.windows, last) : "";
+    if (!home) return { target: open[0] || "", ws: known ? last : "", loose: known };
+    // Its window is closed for them: not reopened, and the session not shown.
+    if (!open.includes(home)) return { target: open[0] || "", ws: "", loose: false };
+    return { target: home, ws: last, loose: false };
   }
 
   // A launch with no window in the address: Cmd+N while others are open, or a
@@ -228,7 +243,7 @@
   // opens on its own, as old ?ws= links did, and the address stays untouched.
   async function boot() {
     if (!state.windowsKnown) {
-      if (!waiting) opened.ws ? openWorkspace(opened.ws, null) : openDrawer();
+      if (!waiting) opened.ws ? showWorkspace(opened.ws, null) : openDrawer();
       waiting = true;
       return;
     }
@@ -243,7 +258,7 @@
     if (!ws) return launch();
     // No window to show: the session alone (already on screen when a tap
     // opened it while the page was starting).
-    if (ws !== state.wsId) openWorkspace(ws, null);
+    if (ws !== state.wsId) showWorkspace(ws, null);
   }
 
   // onAttach follows a session into its window: a click on another window's

@@ -290,6 +290,25 @@ function bytesToB64(u8) {
 let windowsSeq = 0;
 let windowsApplied = 0;
 let windowsReadFailing = false;
+// readWindows reads the window list, or null on a failed read. Keep the last
+// list on a failed read (503 = tables unreadable, per the daemon): blanking it
+// would make every window look closed and feed wrong close decisions. Same
+// fallback the Mac lens used. Logged on the way INTO failure only: this runs
+// every 5s and on every firehose frame, so logging each miss would bury the
+// line that explains it.
+async function readWindows(winr) {
+  if (!winr.ok) {
+    const body = await winr.text();
+    if (!windowsReadFailing) console.error("window list read failed:", winr.status, body);
+    windowsReadFailing = true;
+    return null;
+  }
+  const windows = (await winr.json()) || [];
+  if (windowsReadFailing) console.warn("window list read recovered");
+  windowsReadFailing = false;
+  return windows;
+}
+
 async function fetchWorkspaces() {
   const seq = ++windowsSeq;
   try {
@@ -302,21 +321,7 @@ async function fetchWorkspaces() {
     // Parse BEFORE the staleness test: the bodies have to be consumed either
     // way, and the test has to sit as close to the write as possible.
     const workspaces = (await wr.json()) || [];
-    // Keep the last window list on a failed read (503 = tables unreadable,
-    // per the daemon) — blanking it would make every window look closed and
-    // feed wrong close decisions. Same fallback the Mac lens uses. Logged on
-    // the way INTO failure only: this runs every 5s and on every firehose
-    // frame, so logging each miss would bury the line that explains it.
-    let windows = null;
-    if (winr.ok) {
-      windows = (await winr.json()) || [];
-      if (windowsReadFailing) console.warn("window list read recovered");
-      windowsReadFailing = false;
-    } else {
-      const body = await winr.text();
-      if (!windowsReadFailing) console.error("window list read failed:", winr.status, body);
-      windowsReadFailing = true;
-    }
+    const windows = await readWindows(winr);
     if (seq <= windowsApplied) return; // something newer already landed
     windowsApplied = seq;
     state.workspaces = workspaces;
@@ -328,6 +333,7 @@ async function fetchWorkspaces() {
   } catch (_) {
     state.workspaces = [];
   }
+  resumeIfAwake();
   syncPaneTitles();
   renderList();
   if (window.ccmuxBoard) window.ccmuxBoard.refresh();
@@ -536,10 +542,29 @@ function boardRow(group) {
 // attach alone does not, because the board's active tile attaches through it
 // too. Re-attaches of the session on show (tabs, take over, a reconnect) stay
 // on attach. The Mac app's WorkspaceWindowController.display is the same rule.
+// openWorkspace is a deliberate open: its row, a menu, a task, a
+// notification tap. A sleeping session is woken first.
 function openWorkspace(wsId, wantPane) {
+  closeSessionlessViews();
+  if (isAsleep(wsId)) return reviveWorkspace(wsId, wantPane);
+  return attach(wsId, wantPane);
+}
+
+// showWorkspace is the page putting back what it showed: a reload (also the
+// automatic one after a deploy), a relaunch, a window switch, a phone launch.
+// It never wakes anything: a sleeping session shows asleep (attach), so a
+// closed session stays closed and a reopened window wakes only what the
+// daemon marked awake at its close.
+function showWorkspace(wsId, wantPane) {
+  closeSessionlessViews();
+  return attach(wsId, wantPane);
+}
+
+// closeSessionlessViews takes down the attention board and the task queue,
+// which hold no session, before one is shown.
+function closeSessionlessViews() {
   if (window.ccmuxBoard) window.ccmuxBoard.close();
   if (window.ccmuxTasks) window.ccmuxTasks.close();
-  return attach(wsId, wantPane);
 }
 
 // leaveWorkspace is for a view that holds no session (the attention board,
@@ -704,11 +729,9 @@ async function clickRow(id) {
   openRow(id);
 }
 
-// openRow shows a session the way its row does: a cold one has nothing to
-// attach to, so it is revived in place. pagewin.js calls it for a hand-off.
+// openRow shows a session the way its row does (openWorkspace wakes a
+// sleeping one). pagewin.js calls it for a hand-off.
 function openRow(id) {
-  const ws = state.workspaces.find((w) => w.id === id);
-  if (ws && ws.status === "cold") return reviveWorkspace(id);
   return openWorkspace(id, null);
 }
 
@@ -784,30 +807,33 @@ function openWsMenu(ws, x, y) {
   // An agent's session owns no repo; its description says what it does.
   if (!isAgentWs(ws)) add("What It Owns…", () => window.ccmuxOwns.open(ws));
   sep();
-  if (ws.status === "cold") {
-    add("Revive", () => reviveWorkspace(ws.id));
-  } else {
-    add("Hostnames…", () => openHostnamesModal(ws));
-    const hostnames = ws.hostnames || [];
-    if (hostnames.length) {
-      // "Running" is the pane existing AND the port answering — same rule as
-      // the Mac lens's ▶/■. A crashed server's pane survives at a shell, so
-      // both entries show there (Start re-types the command into that pane,
-      // daemon-side). A server started by hand keeps Start visible too.
-      const paneRunning = (ws.panes || []).some((p) => p.devServer);
-      const listening = hostnames.some((h) => h.listening);
-      if (!(paneRunning && listening)) add("Start Dev Server", () => setDevServer(ws.id, true));
-      if (paneRunning) add("Stop Dev Server", () => setDevServer(ws.id, false));
-    }
-    for (const h of hostnames.filter((h) => h.url)) {
-      add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}${hostnameWhere(h)}`, () => window.open(h.url, "_blank"));
-    }
-    sep();
-    add("Close Session", () => closeSession(ws.id));
-  }
+  if (ws.status === "cold") add("Revive", () => openWorkspace(ws.id, null));
+  else addLiveEntries(add, sep, ws);
   add("Remove Session…", () => removeSession(ws), "danger");
 
   showMenuAt(menu, x, y);
+}
+
+// addLiveEntries adds an awake session's rows to its menu: hostnames, the dev
+// server, and Close Session.
+function addLiveEntries(add, sep, ws) {
+  add("Hostnames…", () => openHostnamesModal(ws));
+  const hostnames = ws.hostnames || [];
+  if (hostnames.length) {
+    // "Running" is the pane existing AND the port answering — same rule as
+    // the Mac lens's ▶/■. A crashed server's pane survives at a shell, so
+    // both entries show there (Start re-types the command into that pane,
+    // daemon-side). A server started by hand keeps Start visible too.
+    const paneRunning = (ws.panes || []).some((p) => p.devServer);
+    const listening = hostnames.some((h) => h.listening);
+    if (!(paneRunning && listening)) add("Start Dev Server", () => setDevServer(ws.id, true));
+    if (paneRunning) add("Stop Dev Server", () => setDevServer(ws.id, false));
+  }
+  for (const h of hostnames.filter((h) => h.url)) {
+    add(`${h.listening ? "●" : "○"} ${h.name} : ${h.port}${hostnameWhere(h)}`, () => window.open(h.url, "_blank"));
+  }
+  sep();
+  add("Close Session", () => closeSession(ws.id));
 }
 
 // showMenuAt shows a context menu first so it has a size, then clamps it
@@ -853,23 +879,26 @@ async function appendWindowAgentEntries(menu, slot, win) {
     b.onclick = () => { closeWsMenu(); fn(); };
     slot.appendChild(b);
   };
-  for (const a of list) {
-    // No stand-in glyph for an icon-less base (same rule as the session name).
-    const title = a.icon ? `${a.icon} ${a.name}` : a.name;
-    if (a.state === "running") {
-      add(`● ${title} — open`, () => openWorkspace(a.workspace, a.pane));
-      add(`■ ${title} — sleep`, () => sleepAgent(win.id, a.name));
-      continue;
-    }
-    const mark = a.state === "asleep" ? "○" : "+";
-    const verb = a.state === "asleep" ? "wake…" : "add…";
-    add(`${mark} ${title} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
-      const text = prompt(`Message ${a.name} (empty = just start it):`, "");
-      if (text === null) return;
-      const p = await wakeAgent(win.id, a.name, text.trim());
-      if (p && p.id) openWorkspace(p.workspaceId, p.id);
-    });
+  for (const a of list) addAgentEntries(add, a, win);
+}
+
+// addAgentEntries adds one agent's rows to the window menu: open and sleep
+// for a running one, wake or add for the rest.
+function addAgentEntries(add, a, win) {
+  // No stand-in glyph for an icon-less base (same rule as the session name).
+  const title = a.icon ? `${a.icon} ${a.name}` : a.name;
+  if (a.state === "running") {
+    add(`● ${title} — open`, () => openWorkspace(a.workspace, a.pane));
+    add(`■ ${title} — sleep`, () => sleepAgent(win.id, a.name));
+    return;
   }
+  const mark = a.state === "asleep" ? "○" : "+";
+  const verb = a.state === "asleep" ? "wake…" : "add…";
+  add(`${mark} ${title} — ${verb}` + (a.drift ? " ↻" : ""), async () => {
+    const text = prompt(`Message ${a.name} (empty = just start it):`, "");
+    if (text === null) return;
+    await wakeAndOpen(win.id, a.name, text.trim());
+  });
 }
 
 async function sleepAgent(winId, name) {
@@ -1139,11 +1168,29 @@ async function saveHostnames() {
   fetchWorkspaces();
 }
 
-async function reviveWorkspace(id) {
-  const r = await fetch(`/v1/workspaces/${id}/revive`, { method: "POST" });
-  if (!r.ok) { alert("revive failed: " + (await r.text())); return; }
+// reviveWorkspace wakes a sleeping session, then attaches it. A wake that
+// fails says so, in the daemon's words, and leaves the session shown asleep:
+// never a retry loop.
+async function reviveWorkspace(id, wantPane) {
+  const name = (wsById(id) || {}).name || id;
+  try {
+    const r = await fetch(`/v1/workspaces/${id}/revive`, { method: "POST" });
+    if (!r.ok) throw new Error(await refusalOf(r));
+  } catch (e) {
+    alert(`Could not wake ${name}: ${e.message}`);
+    return attach(id, wantPane);
+  }
   await fetchWorkspaces();
-  openWorkspace(id, null);
+  // Already attached when it was on screen asleep: the read above resumed it.
+  if (state.wsId === id && !state.asleepWait) return;
+  return attach(id, wantPane);
+}
+
+// refusalOf is the reason in a refused answer: the daemon sends
+// {"error": "..."}, anything else is shown as it came.
+async function refusalOf(r) {
+  const body = await r.text();
+  try { return JSON.parse(body).error || body; } catch (_) { return body; }
 }
 
 // putGroup writes YOUR view row: which of your windows the session sits in.
@@ -1463,16 +1510,58 @@ function paneColsOf(paneId) {
 }
 
 // --- attach / websocket ---
-async function attach(wsId, wantPane) {
-  closeDrawer(); // selecting a session on mobile dismisses the drawer
+// isAsleep: the daemon lists the session as sleeping (cold), so it has no
+// panes to attach to and refuses an attach with 409.
+const isAsleep = (id) => (wsById(id) || {}).status === "cold";
+
+// showAsleep is the view of a session that fell asleep while it was shown:
+// put to sleep from another lens, or cooled by a blip the daemon heals within
+// 30s. It is not dialed (the daemon refuses an attach with 409, and a refused
+// retry every 2s made Chrome hold back every new connection from the windows
+// sharing this process) and not woken behind anyone's back. The terminal says
+// so; resumeIfAwake attaches again once the daemon lists it awake, and a click
+// on its row wakes it now.
+function showAsleep(wsId) {
+  state.asleepWait = true;
+  state.panes = [];
+  state.paneId = null;
+  if (window.ccmuxAgentChat) window.ccmuxAgentChat.hide();
+  renderTabs();
+  $("harness-bar").classList.add("hidden");
+  $("empty").style.display = "none";
+  ensureTerm();
+  state.term.reset();
+  const name = (wsById(wsId) || {}).name || wsId;
+  state.term.write(`\r\n  ${name} is asleep. Click its row in the list to wake it.\r\n`);
+  console.info("ccmux: not attaching, the session is asleep:", wsId);
+  renderList();
+}
+
+// resumeIfAwake attaches the session showAsleep is waiting on once the daemon
+// lists it awake again. Runs after every list read.
+function resumeIfAwake() {
+  if (state.asleepWait && state.wsId && wsById(state.wsId) && !isAsleep(state.wsId)) attach(state.wsId, state.wantPane);
+}
+
+// leaveForAttach puts down what the page holds before attaching wsId.
+function leaveForAttach(wsId) {
   // Another session: its notes are not these. A re-attach of this one (a
   // reconnect, take over) leaves them on screen.
   if (wsId !== state.wsId && window.ccmuxScratch) window.ccmuxScratch.hide();
   state.paneCols = 0;
   if (state.conn) { state.conn.close(); state.conn = null; }
+}
+
+async function attach(wsId, wantPane) {
+  closeDrawer(); // selecting a session on mobile dismisses the drawer
+  leaveForAttach(wsId);
   state.wsId = wsId;
   state.wantPane = wantPane;
   if (window.ccmuxPage) window.ccmuxPage.onAttach(wsId);
+  // The reconnect below comes back through here, so a session that fell
+  // asleep ends its retry loop too.
+  if (isAsleep(wsId)) return showAsleep(wsId);
+  state.asleepWait = false;
   if (state.iconsFor !== wsId) loadHarnessIcons(wsId);
   if (!state.board) delete state.attn[wsId]; // opening it marks its attention seen; a board tile does not
   $("empty").style.display = "none";
@@ -2050,6 +2139,15 @@ async function fetchWindowAgents(winId) {
     Object.assign(agentCatalog, { winId, list: [], at: Date.now(), error: e.message });
     return [];
   }
+}
+
+// wakeAndOpen wakes an agent and shows its pane. The list is read again
+// first: it still says the session is asleep, and attach refuses a sleeping one.
+async function wakeAndOpen(winId, name, prompt) {
+  const p = await wakeAgent(winId, name, prompt);
+  if (!p || !p.id) return;
+  await fetchWorkspaces();
+  openWorkspace(p.workspaceId, p.id);
 }
 
 async function wakeAgent(winId, name, prompt) {
@@ -3368,7 +3466,7 @@ wireSettingsTabs();
 function bootDeepLink() {
   if (window.ccmuxPage) return window.ccmuxPage.boot(); // pagewin.js: this window's ccmux window
   const ws = new URLSearchParams(location.search).get("ws");
-  if (ws) openWorkspace(ws, null);
+  if (ws) showWorkspace(ws, null);
   else openDrawer();
 }
 

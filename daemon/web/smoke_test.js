@@ -42,9 +42,20 @@ const el = () => new Proxy(function () {}, {
 // wakeRoute answers the window open and the session wakes the way a case asks
 // (windowWakeCases), or undefined to leave the request to fakeFetch.
 const isOpen = (u) => /^\/v1\/windows\/[^/]+\/open\?/.test(u);
-function wakeRoute(u, { openReply = null, reviveFails = false, reviveThrows = [], openDenied = false }) {
-  if (reviveFails && u.includes("/revive")) return { ok: false, status: 502, text: async () => "host unreachable" };
+function wakeRoute(u, { openReply = null, reviveFails = false, reviveThrows = [], openDenied = false, agentWake = null, onRevive = null }) {
+  // An agent's wake (POST /v1/windows/{id}/agents/{name}): agentWake() wakes it
+  // on the fake daemon and returns the pane the route answers with.
+  if (agentWake && /^\/v1\/windows\/[^/]+\/agents\//.test(u)) {
+    const pane = agentWake();
+    return { ok: true, status: 200, json: async () => pane };
+  }
+  // The daemon's error body, as writeError sends it.
+  const refusal = JSON.stringify({ error: "host unreachable" });
+  if (reviveFails && u.includes("/revive")) return { ok: false, status: 502, text: async () => refusal, json: async () => JSON.parse(refusal) };
   if ((reviveThrows || []).some((id) => u === `/v1/workspaces/${id}/revive`)) throw new TypeError("Failed to fetch");
+  // onRevive wakes the session on the fake daemon, as the real route does
+  // before it answers.
+  if (onRevive && u.includes("/revive")) { onRevive(u); return { ok: true, status: 200, text: async () => "", json: async () => ({}) }; }
   if (openDenied && isOpen(u)) return { ok: false, status: 403, text: async () => "not a member" };
   if (!openReply || !isOpen(u)) return undefined;
   const json = async () => { if (openReply === "garbled") throw new SyntaxError("not JSON"); return openReply; };
@@ -127,7 +138,14 @@ function makeContext(opts, book) {
       register: () => { book.swRegistrations++; return Promise.resolve({ pushManager: { getSubscription: async () => null } }); },
       addEventListener: (type, fn) => { if (type === "message") book.swListeners.push(fn); },
     } },
-    WebSocket: function (url) { book.sockets.push(String(url)); return el(); },
+    // A socket keeps the handlers the page assigns (onclose and the like), so
+    // a case can close it; anything else reads as a permissive element.
+    WebSocket: function (url) {
+      book.sockets.push(String(url));
+      const kept = {};
+      book.live.push(kept);
+      return new Proxy(kept, { get: (t, k) => (k in t ? t[k] : el()), set: (t, k, v) => { t[k] = v; return true; } });
+    },
     PushManager: function () {},
     // xterm.js, for the deep-link attach case: a terminal that accepts anything.
     Terminal: function () { return el(); },
@@ -152,7 +170,7 @@ function makeContext(opts, book) {
 // back the handles the cases assert on.
 function run(opts = {}) {
   const { withPush = false, withBoard = false } = opts;
-  const book = { fetched: [], errors: [], sockets: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0,
+  const book = { fetched: [], errors: [], sockets: [], live: [], timers: [], swRegistrations: 0, reads: 0, prompts: 0,
     addresses: [], opened: [], swListeners: [], cacheDeletes: [], cachePuts: [], focused: 0, alerts: [] };
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
@@ -173,7 +191,7 @@ function run(opts = {}) {
   const evalIn = (code) => vm.runInContext(code, ctx);
   const fireTimers = () => { const due = book.timers.splice(0); for (const fn of due) fn(); };
   return { ctx, fetched: book.fetched, errors: book.errors, evalIn, prompts: () => book.prompts, fireTimers,
-    sockets: book.sockets, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened,
+    sockets: book.sockets, live: book.live, swRegistrations: () => book.swRegistrations, addresses: book.addresses, opened: book.opened,
     alerts: book.alerts,
     swListeners: book.swListeners, cacheDeletes: book.cacheDeletes, cachePuts: book.cachePuts,
     focused: () => book.focused };
@@ -540,6 +558,118 @@ function attachOriginCases() {
   check("a session on another host connects straight to it",
     origin("other") === "ws://other.tail.ts.net", origin("other"));
   check("a session with no host stays on the page's address", origin("") === "ws://x", origin(""));
+}
+
+// A sleeping session has nothing to attach to: the daemon refuses with 409.
+// A window that kept one on screen retried every 2s for as long as it was
+// open, and Chrome then held back every new connection from the windows that
+// share its process (measured: session switches took 1.5 to 10s). Opening a
+// sleeping session wakes it first. One that falls asleep while shown is not
+// dialed and not woken behind anyone's back: it waits, and comes back when the
+// daemon says it is awake (a short blip heals itself within 30s).
+async function asleepCases() {
+  const ws = (id, status) => ({ id, name: id, repoPath: "/r/" + id, status, panes: [{ id: "p-" + id }] });
+  let reply = [ws("ws-on", "live"), ws("ws-off", "cold")];
+  const revived = [];
+  const r = run({
+    workspacesReply: () => reply,
+    onRevive: (u) => { revived.push(u); reply = reply.map((x) => (u.includes(x.id) ? { ...x, status: "live" } : x)); },
+  });
+  await r.ctx.fetchWorkspaces();
+  await settle();
+  await r.ctx.openWorkspace("ws-off", null);
+  await settle();
+  check("opening a sleeping session wakes it", revived.join() === "/v1/workspaces/ws-off/revive", revived.join() || "no wake");
+  check("a woken session is dialed and shown", attachedTo(r).includes("ws-off") && r.evalIn("state.wsId") === "ws-off",
+    `${attachedTo(r).join(" ")} / ${r.evalIn("state.wsId")}`);
+
+  // ws-on falls asleep while shown (another lens, or a blip): its socket
+  // closes and the reconnect fires before any list refresh says so.
+  // A hello lands in the agent chat module (show or hide), which this page
+  // does not load; a stand-in records nothing and draws nothing.
+  r.ctx.ccmuxAgentChat = { show() {}, hide() {} };
+  const hello = (sk) => sk.onmessage({ data: JSON.stringify({ t: "hello", panes: [{ id: "p1" }, { id: "p2" }] }) });
+  await r.ctx.openWorkspace("ws-on", "p2");
+  await settle();
+  const sock = r.live[r.live.length - 1];
+  hello(sock);
+  r.evalIn(`wsById("ws-on").status = "cold"`);
+  const dials = attachedTo(r).length;
+  const wakes = revived.length;
+  sock.onclose();
+  r.fireTimers();
+  await settle();
+  check("a session that fell asleep is not dialed again", attachedTo(r).length === dials, attachedTo(r).join(" "));
+  check("a session that fell asleep is not woken behind anyone's back", revived.length === wakes, revived.join(" "));
+  check("a session that fell asleep stays the one on screen", r.evalIn("state.wsId") === "ws-on", String(r.evalIn("state.wsId")));
+  r.fireTimers();
+  await settle();
+  check("a waiting session runs no retry loop", attachedTo(r).length === dials, attachedTo(r).join(" "));
+
+  reply = [ws("ws-on", "live"), ws("ws-off", "live")];
+  await r.ctx.fetchWorkspaces();
+  await settle();
+  check("a waiting session comes back by itself once awake", attachedTo(r).length === dials + 1 &&
+    attachedTo(r)[attachedTo(r).length - 1] === "ws-on", attachedTo(r).join(" "));
+  hello(r.live[r.live.length - 1]);
+  check("a session that comes back is on the tab it was on", r.evalIn("state.paneId") === "p2", String(r.evalIn("state.paneId")));
+
+  // The page restoring what it showed never wakes anything: a reload (also
+  // the automatic one after a deploy), a relaunch, a window switch. Only a
+  // deliberate open does, so a closed session stays closed.
+  const winA = () => [{ id: "win-a", name: "A", workspaceIds: ["ws-x", "ws-y"], openBy: ["p"], open: true, openHere: true }];
+  for (const [what, id, opts] of [
+    ["a reload on a sleeping session", "ws-x", { search: "?w=win-a&ws=ws-x" }],
+    ["a window whose last session is asleep", "ws-x", { search: "?w=win-a", storage: { "ccmux-last-ws:win-a": "ws-x" } }],
+    ["a link to a sleeping session in no window", "ws-z", { search: "?ws=ws-z" }],
+    ["a link read before the window list", "ws-x", { search: "?w=win-a&ws=ws-x", windowsOkFor: (n) => n > 0 }],
+    ["a phone whose last session is asleep", "ws-x", { phone: true, lastSession: "ws-x" }],
+    ["a phone whose last session is asleep and in no window", "ws-z", { phone: true, lastSession: "ws-z" }],
+    ["a phone with no window open and its last session asleep", "ws-z", { phone: true, lastSession: "ws-z", windowsReply: () => [] }],
+  ]) {
+    const woken = [];
+    const status = { "ws-x": "cold", "ws-y": "live", "ws-z": "cold" };
+    const b = run({
+      windowsReply: winA, workspacesReply: () => Object.keys(status).map((k) => ws(k, status[k])),
+      onRevive: (u) => { woken.push(u); status[id] = "live"; }, ...opts,
+    });
+    await settle();
+    check(`${what} does not wake it`, woken.length === 0, woken.join(" "));
+    check(`${what} shows it asleep, not dialed`, b.evalIn("state.wsId") === id && b.evalIn("state.asleepWait") === true &&
+      !attachedTo(b).includes(id), `${b.evalIn("state.wsId")} / ${attachedTo(b).join(" ")}; errors: ${b.errors.join(" | ")}`);
+    if (woken.length) continue;
+    // Its row, clicked on that same page, does wake it, and dials it once.
+    await b.ctx.openRow(id);
+    await settle();
+    check(`${what}: its row wakes it`, woken.join() === `/v1/workspaces/${id}/revive`, woken.join(" ") || "no wake");
+    check(`${what}: its row dials it once`, attachedTo(b).filter((x) => x === id).length === 1, attachedTo(b).join(" "));
+  }
+
+
+  // A wake that fails says so and leaves the session waiting, not dialed.
+  const f = run({ workspacesReply: () => [ws("ws-off", "cold")], reviveFails: true });
+  await f.ctx.fetchWorkspaces();
+  await settle();
+  await f.ctx.openWorkspace("ws-off", null);
+  await settle();
+  check("a failed wake says so, in the daemon's words", f.alerts.some((m) => m.includes("ws-off") && m.includes("host unreachable") &&
+    !m.includes("{")), f.alerts.join(" | ") || "no alert");
+  check("a failed wake does not dial", !attachedTo(f).includes("ws-off"), attachedTo(f).join(" "));
+
+  // Waking an agent opens it, though the list still said asleep when the wake
+  // was asked for: the daemon's answer, not the old list, decides.
+  let agentReply = [ws("ws-on", "live"), ws("ws-agent", "cold")];
+  const w = run({
+    workspacesReply: () => agentReply,
+    agentWake: () => { agentReply = [ws("ws-on", "live"), ws("ws-agent", "live")]; return { id: "p-ws-agent", workspaceId: "ws-agent" }; },
+  });
+  await w.ctx.fetchWorkspaces();
+  await settle();
+  await w.ctx.openWorkspace("ws-on", null);
+  await w.ctx.wakeAndOpen("win-a", "helper", "");
+  await settle();
+  check("a woken agent is dialed", attachedTo(w).includes("ws-agent"), attachedTo(w).join(" "));
+  check("a woken agent is the session on screen", w.evalIn("state.wsId") === "ws-agent", String(w.evalIn("state.wsId")));
 }
 
 // A closed window comes back as it was left (windowwake.js): the close says
@@ -1834,6 +1964,7 @@ async function peersFailureCases() {
   await pageWindowCases();
   await windowWakeCases();
   attachOriginCases();
+  await asleepCases();
   await peersMergeCases();
   await peersFailureCases();
   await boardCases();
