@@ -15,7 +15,9 @@
   const MAX_MS = 30000;
 
   // backoff counts one connection's failures in a row: next() is the wait
-  // before its next dial, ok() starts the count over once it has connected.
+  // before its next dial, ok() starts the count over, once it has connected
+  // or when the page moves on to another connection (a different agent's
+  // chat, another opening of the messages panel).
   function backoff() {
     let failures = 0;
     return {

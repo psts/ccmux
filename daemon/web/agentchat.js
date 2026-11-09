@@ -118,6 +118,7 @@
     build();
     if (cur && cur.paneId === pane.id) { applyMode(); return; }
     close();
+    retry.ok(); // another agent's chat is a new connection: it counts its own failures
     cur = { paneId: pane.id, wsRec, sock: null, turns: new Map(), els: new Map(), perms: new Map(), busy: false, agent: pane.agent };
     $("agent-chat").querySelector(".ac-title").textContent = "⚙ " + pane.agent;
     $("agent-chat-bar").querySelector(".ac-bar-label").textContent = "⚙ " + pane.agent + " · terminal";

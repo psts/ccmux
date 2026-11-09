@@ -1539,6 +1539,15 @@ async function peersRetryCases() {
   waits.push(s.delays[s.delays.length - 1]);
   check("peer messages wait longer after each failure, and start over once connected",
     waits.join() === "2000,4000,8000,16000,2000", waits.join());
+
+  // Each opening counts its own failures: a run of them in one group does
+  // not make the next group's first redial wait long.
+  s.drop(); s.timers.splice(0).forEach((f) => f()); await settle();
+  s.drop(); s.timers.splice(0).forEach((f) => f()); await settle();
+  s.open("ChartLabs");
+  await settle();
+  s.drop();
+  check("another group's messages start at 2s", s.delays[s.delays.length - 1] === 2000, s.delays.slice(-3).join());
 }
 
 function runPeers() {
@@ -1676,6 +1685,18 @@ async function retryCases() {
   r.ctx.ccmuxAgentChat.show({ id: "p-ag", agent: "helper" }, ws("ws-ag"));
   const chat = await redials(r, "/agent/ws", 4);
   check("an agent's chat waits longer after each failure, and starts over once connected", chat.join() === want, chat.join());
+
+  // Each chat counts its own failures: a run of them on one agent's chat
+  // does not make the next agent's first redial wait long. Showing the same
+  // chat again is not a new connection, so its count goes on.
+  const lastChat = () => r.live[r.sockets.map((u, i) => [u, i]).filter(([u]) => u.includes("/agent/ws")).pop()[1]];
+  const dropChat = () => { lastChat().onclose(); const d = r.delays[r.delays.length - 1]; r.fireTimers(); return d; };
+  r.ctx.ccmuxAgentChat.show({ id: "p-ag2", agent: "other" }, ws("ws-ag2"));
+  dropChat(); dropChat();
+  r.ctx.ccmuxAgentChat.show({ id: "p-ag2", agent: "other" }, ws("ws-ag2"));
+  check("showing the same chat again keeps its count", dropChat() === 8000, r.delays.slice(-3).join());
+  r.ctx.ccmuxAgentChat.show({ id: "p-ag3", agent: "third" }, ws("ws-ag3"));
+  check("another agent's chat starts at 2s", dropChat() === 2000, r.delays.slice(-3).join());
 }
 
 async function peersFailureCases() {

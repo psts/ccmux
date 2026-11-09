@@ -45,6 +45,7 @@
     group = g;
     clearTimeout(redialTimer);
     redialTimer = null;
+    retry.ok(); // each opening is a new connection: it counts its own failures
     readGen++;
     loaded = false;
     note("");
