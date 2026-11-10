@@ -20,7 +20,9 @@ body {
 
 /* sidebar */
 #sidebar {
-  width: 240px; flex: 0 0 240px;
+  /* --sidebar-w is the width a drag on the grip left (sidebarresize.js). */
+  width: var(--sidebar-w, 240px); flex: 0 0 var(--sidebar-w, 240px); max-width: 50vw;
+  position: relative;
   background: var(--bg2);
   border-right: 1px solid var(--line);
   display: flex; flex-direction: column;
@@ -33,6 +35,12 @@ body {
   padding: calc(12px + env(safe-area-inset-top)) 14px 12px;
   border-bottom: 1px solid var(--line);
 }
+#sidebar-grip {
+  position: absolute; top: 0; right: -3px; width: 6px; height: 100%;
+  cursor: col-resize; z-index: 5; touch-action: none;
+}
+#sidebar-grip:hover, body.sidebar-resizing #sidebar-grip { background: var(--accent); opacity: .5; }
+body.sidebar-resizing { cursor: col-resize; user-select: none; }
 .logo { font-weight: 600; letter-spacing: .04em; }
 .hdr-actions { display: flex; gap: 6px; align-items: center; }
 .hdr-actions button {
@@ -567,6 +575,7 @@ body {
     box-shadow: 2px 0 24px rgba(0, 0, 0, .5);
   }
   #app.drawer-open #sidebar { transform: translateX(0); }
+  #sidebar-grip { display: none; } /* the drawer has its own width */
   #drawer-backdrop {
     position: fixed; inset: 0; z-index: 25;
     background: rgba(0, 0, 0, .5);

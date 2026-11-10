@@ -65,8 +65,9 @@ node daemon/web/smoke_test.js || exit 1
 # Shift+Enter sends in the browser terminal (keys.js), and how long a
 # session row flashes (flash.js), and which sessions a reopened window
 # wakes (windowwake.js). 2026-11-09: how long a dropped connection waits
-# before it dials again (retry.js).
-node --test daemon/web/route_test.js daemon/web/sw_test.js daemon/web/touchscroll_test.js daemon/web/drawerswipe_test.js daemon/web/update_test.js daemon/web/paste_test.js daemon/web/tasklist_test.js daemon/web/keys_test.js daemon/web/flash_test.js daemon/web/windowwake_test.js daemon/web/retry_test.js || exit 1
+# before it dials again (retry.js). 2026-11-10: how wide a drag leaves
+# the left menu (sidebarresize.js).
+node --test daemon/web/route_test.js daemon/web/sw_test.js daemon/web/touchscroll_test.js daemon/web/drawerswipe_test.js daemon/web/update_test.js daemon/web/paste_test.js daemon/web/tasklist_test.js daemon/web/keys_test.js daemon/web/flash_test.js daemon/web/windowwake_test.js daemon/web/retry_test.js daemon/web/sidebarresize_test.js || exit 1
 
 # Go complexity, capped at 10, as a ratchet over frozen pre-existing debt.
 # See .claude/gates/gocyclo.sh for why it is a ratchet and not a wall.
