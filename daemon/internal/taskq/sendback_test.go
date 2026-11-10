@@ -191,3 +191,152 @@ func TestSendBack_EachWorkerFixableKind(t *testing.T) {
 		}
 	}
 }
+
+// With the window's one slot taken (#2 started while #1 merged), #1's red
+// check waits instead of going straight back to its worker: it stays merge
+// failed, says it waits for a slot, and its worker hears nothing yet. Once
+// #2 stops building, the send-back goes out, ahead of waiting #3.
+func TestSendBack_WaitsForAFreeSlot(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.feature(3, 0, "admin")
+	g.tick() // #1 builds
+	g.doneParts(1)
+	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute"}
+	g.tick() // #1 merges and fails; #2 took the slot
+	one, app := g.st.task(1), g.partsOf(1)[0]
+	if g.st.task(2).Status != Running {
+		t.Fatalf("#2 = %s, want running in the slot #1 left", g.st.task(2).Status)
+	}
+	if one.Status != MergeFailed || one.FixPart != app.ID || !strings.Contains(one.Note, "waiting for a free slot") {
+		t.Fatalf("#1 with no slot = %s fix %d note %q", one.Status, one.FixPart, one.Note)
+	}
+	if len(g.host.told[app.PaneID]) != 0 || app.Status != Ready {
+		t.Fatalf("worker told %v, part %s; want untold and still built", g.host.told[app.PaneID], app.Status)
+	}
+
+	g.doneParts(2)
+	g.tick() // #2 leaves its slot: #1 goes back to its worker, #3 waits
+	one, app = g.st.task(1), g.partsOf(1)[0]
+	if one.Status != Running || one.FixPart != 0 || app.Status != Running {
+		t.Fatalf("#1 once a slot freed = %s fix %d part %s", one.Status, one.FixPart, app.Status)
+	}
+	told := g.host.told[app.PaneID]
+	if len(told) != 1 || !strings.Contains(told[0], "TestRoute") || strings.Contains(told[0], "waiting for a free slot") {
+		t.Fatalf("worker was told %q", told)
+	}
+	if g.st.task(3).Status != Waiting {
+		t.Fatalf("#3 = %s, want waiting behind the send-back", g.st.task(3).Status)
+	}
+}
+
+// A person's "Send back to worker" on a failed merge still waiting for a
+// slot sends it now and spends the wait: the worker reads why without the
+// waiting line, and nothing goes back a second time on a later pass.
+func TestSendBack_PersonSendsAWaitingFixNow(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute"}
+	g.tick()
+	app := g.partsOf(1)[0]
+	if g.st.task(1).FixPart != app.ID {
+		t.Fatalf("setup: #1 is not waiting to send back: %+v", g.st.task(1))
+	}
+	if err := g.r.SendBackPart(1, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	g.doneParts(2)
+	g.tick()
+	told := g.host.told[app.PaneID]
+	if g.st.task(1).FixPart != 0 || len(told) != 1 || strings.Contains(told[0], "waiting for a free slot") {
+		t.Fatalf("fix %d, told %q; want the wait spent and one clean send-back", g.st.task(1).FixPart, told)
+	}
+}
+
+// waitingFix leaves #1 merge failed with its send-back waiting for the one
+// slot #2 holds, and returns #1's part.
+func waitingFix(t *testing.T, g *rig) store.Part {
+	t.Helper()
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute"}
+	g.tick()
+	app := g.partsOf(1)[0]
+	if g.st.task(1).FixPart != app.ID {
+		t.Fatalf("setup: #1 is not waiting to send back: %+v", g.st.task(1))
+	}
+	return app
+}
+
+// A person tries the merge again while the send-back waits, and it fails
+// again: that second failure is a person's (the one automatic try is
+// spent), so nothing goes to the worker, now or when a slot frees.
+func TestSendBack_NewFailureSpendsAWaitingFix(t *testing.T) {
+	g := newRig(t)
+	app := waitingFix(t, g)
+	one := g.st.task(1)
+	one.Status = ReadyToMerge
+	g.st.SaveTask(one)
+	g.tick()
+	if got := g.st.task(1); got.Status != MergeFailed || got.FixPart != 0 {
+		t.Fatalf("after a second failure = %s fix %d, want merge failed and no wait", got.Status, got.FixPart)
+	}
+	g.doneParts(2)
+	g.tick()
+	if told := g.host.told[app.PaneID]; len(told) != 0 {
+		t.Fatalf("the worker was told %q after a person's failure", told)
+	}
+}
+
+// Unreadable window numbers hold a waiting send-back (no panic, no
+// message, the wait kept); a window paused at 0 holds it too; a window
+// with room sends it.
+func TestSendBack_WaitingFixFollowsTheWindowsNumber(t *testing.T) {
+	g := newRig(t)
+	app := waitingFix(t, g)
+	g.doneParts(2) // #2 leaves its slot
+	g.r.WindowSlots = func() (map[string]int, error) { return nil, errors.New("database is locked") }
+	g.tick()
+	if g.st.task(1).FixPart != app.ID || len(g.host.told[app.PaneID]) != 0 {
+		t.Fatalf("unreadable numbers: fix %d told %v; want held", g.st.task(1).FixPart, g.host.told[app.PaneID])
+	}
+	g.r.WindowSlots = func() (map[string]int, error) { return map[string]int{"": 0}, nil }
+	g.tick()
+	if g.st.task(1).FixPart != app.ID || len(g.host.told[app.PaneID]) != 0 {
+		t.Fatalf("paused window: fix %d told %v; want held", g.st.task(1).FixPart, g.host.told[app.PaneID])
+	}
+	g.r.WindowSlots = func() (map[string]int, error) { return map[string]int{"": 1}, nil }
+	g.tick()
+	if g.st.task(1).Status != Running || len(g.host.told[app.PaneID]) != 1 {
+		t.Fatalf("window with room: %s told %d; want sent back", g.st.task(1).Status, len(g.host.told[app.PaneID]))
+	}
+}
+
+// A waiting send-back that cannot be delivered once a slot frees stops for
+// a person: merge failed, the wait spent, the note says why, the part still
+// built, and later passes leave it alone.
+func TestSendBack_UndeliveredWaitingFixStopsForAPerson(t *testing.T) {
+	g := newRig(t)
+	app := waitingFix(t, g)
+	g.host.deaf = true
+	g.doneParts(2)
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != MergeFailed || got.FixPart != 0 || !strings.Contains(got.Note, "send-back to its worker failed") ||
+		strings.Contains(got.Note, "waiting for a free slot") || g.st.part(app.ID).Status != Ready {
+		t.Fatalf("undelivered = %s fix %d part %s note %q", got.Status, got.FixPart, g.st.part(app.ID).Status, got.Note)
+	}
+	g.tick()
+	if again := g.st.task(1); again.Note != got.Note || again.FixPart != 0 {
+		t.Fatalf("a later pass changed it: %+v", again)
+	}
+}

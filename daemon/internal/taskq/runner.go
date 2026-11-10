@@ -132,9 +132,9 @@ func (r *Runner) decide() ([]job, *mergeJob, bool) {
 	if r.rollup(tasks, parts) {
 		changed = true
 	}
-	jobs := r.claim(tasks, parts)
+	jobs, sent := r.claim(tasks, parts)
 	mj, picked := r.mergeStep(tasks, parts)
-	return jobs, mj, changed || picked || len(jobs) > 0
+	return jobs, mj, changed || sent || picked || len(jobs) > 0
 }
 
 // mergeStep recovers a merge the daemon dropped and picks the next one,
@@ -193,14 +193,17 @@ func (r *Runner) rollup(tasks []store.Task, parts []store.Part) bool {
 // task with every one of its parts. A started task already at work holds its
 // slot, so its new part starts at once; one with nothing at work (every part
 // failed or retried) needs a free slot like a new task, and gets it first.
-func (r *Runner) claim(tasks []store.Task, parts []store.Part) []job {
+// Ahead of both, a failed merge waiting for a slot goes back to its worker
+// (claimFixes). It reports whether such a send-back went out.
+func (r *Runner) claim(tasks []store.Task, parts []store.Part) ([]job, bool) {
 	limit, ok := r.slotLimit()
 	held := SlotsHeld(tasks, parts)
+	sent := r.claimFixes(tasks, parts, held, limit)
 	jobs := r.claimStarted(tasks, parts, held, limit)
 	if !ok {
-		return jobs
+		return jobs, sent
 	}
-	return append(jobs, r.claimNew(tasks, parts, held, limit)...)
+	return append(jobs, r.claimNew(tasks, parts, held, limit)...), sent
 }
 
 // claimStarted starts the pending parts of running and needs-you tasks: at

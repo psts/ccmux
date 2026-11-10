@@ -196,3 +196,28 @@ func TestTasks_SaveTaskAndPartIsAllOrNothing(t *testing.T) {
 		t.Fatalf("after save: task %s, part %s, other task %s", got.Status, saved, other.Status)
 	}
 }
+
+// FixPart, the part a failed merge waits to send back to its worker, saves
+// and reads back, starts at none, clears to none, and stays on its own task.
+func TestTasks_FixPartRoundTrip(t *testing.T) {
+	st := taskStore(t)
+	a, _ := addTask(st, Task{Title: "one", Status: "merge_failed"})
+	b, _ := addTask(st, Task{Title: "two", Status: "merge_failed"})
+	ta, _ := st.Task(a)
+	if ta.FixPart != 0 {
+		t.Fatalf("a new task waits to send back part %d", ta.FixPart)
+	}
+	ta.FixPart = 7
+	if ok, err := st.SaveTask(*ta); err != nil || !ok {
+		t.Fatalf("save = %v, %v", ok, err)
+	}
+	if list, _ := st.Tasks(); list[0].FixPart != 7 || list[1].FixPart != 0 {
+		t.Fatalf("list reads fix parts %d, %d", list[0].FixPart, list[1].FixPart)
+	}
+	ta.FixPart = 0
+	st.SaveTask(*ta)
+	if got, _ := st.Task(a); got.FixPart != 0 {
+		t.Fatalf("cleared fix part reads %d", got.FixPart)
+	}
+	_ = b
+}

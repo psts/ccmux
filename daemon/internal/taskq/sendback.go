@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
@@ -70,7 +71,7 @@ func SendBack(t store.Task, p store.Part, now time.Time) (store.Task, store.Part
 		return t, p, errors.New("this part has no worker to send it back to")
 	}
 	p.Status, p.Note, p.StartedAt, p.FinishedAt = Running, noteSentBack, now.UnixMilli(), 0
-	t.Status, t.FinishedAt = Running, 0
+	t.Status, t.FinishedAt, t.FixPart = Running, 0, 0
 	return t, p, nil
 }
 
@@ -83,7 +84,7 @@ func (r *Runner) SendBackPart(taskID, partID int64) error {
 	if err != nil {
 		return err
 	}
-	if _, err := r.sendBack(t, p, t.Note); err != nil {
+	if _, err := r.sendBack(t, p, strings.TrimSuffix(t.Note, noteWaitsForSlot)); err != nil {
 		return err
 	}
 	r.Host.TasksChanged()
@@ -160,6 +161,7 @@ what you need.`, taskID, why, trunk, trunk, trunk)
 // settleFailed decides where a failed merge goes, by its kind. Under the
 // lock; t is the task as it was claimed for the merge.
 func (r *Runner) settleFailed(t store.Task, err error) store.Task {
+	t.FixPart = 0 // a send-back still waiting from an earlier failure is spent
 	var blocked folderBlocked
 	if errors.As(err, &blocked) {
 		t.Status, t.Note = ReadyToMerge, blocked.why
@@ -171,10 +173,72 @@ func (r *Runner) settleFailed(t store.Task, err error) store.Task {
 		return t
 	}
 	t.AutoFixes++
-	sent, sendErr := r.sendBack(t, fix.part, t.Note)
-	if sendErr != nil {
-		t.Note = noteOf(errors.New(t.Note + "\n(the send-back to its worker failed: " + sendErr.Error() + ")"))
+	if !r.slotFree(t.WindowID) {
+		t.FixPart = fix.part.ID
+		t.Note = noteOf(errors.New(t.Note + noteWaitsForSlot))
+		return t
+	}
+	return r.autoSendBack(t, fix.part, t.Note)
+}
+
+// noteWaitsForSlot ends the note of a failed merge whose send-back waits for
+// a free slot; it is cut off again before the worker reads why.
+const noteWaitsForSlot = "\n(waiting for a free slot to send it back to its worker)"
+
+// autoSendBack sends part p back to its worker with why, or keeps the
+// failure for a person with the reason it could not. Under the lock.
+func (r *Runner) autoSendBack(t store.Task, p store.Part, why string) store.Task {
+	t.FixPart = 0
+	sent, err := r.sendBack(t, p, why)
+	if err != nil {
+		t.Note = noteOf(errors.New(why + "\n(the send-back to its worker failed: " + err.Error() + ")"))
 		return t
 	}
 	return sent
+}
+
+// slotFree reports whether window w may start one more feature now. An
+// unreadable queue or numbers count as no: the send-back then waits.
+func (r *Runner) slotFree(w string) bool {
+	limit, ok := r.slotLimit()
+	if !ok {
+		return false
+	}
+	tasks, err := r.Store.Tasks()
+	if err != nil {
+		return false
+	}
+	parts, err := r.Store.Parts()
+	if err != nil {
+		return false
+	}
+	return SlotsHeld(tasks, parts)[w] < limit(w)
+}
+
+// claimFixes sends back the failed merges waiting for a slot (FixPart), in
+// queue order, while their window has one free: first in line, since the
+// feature is nearly done. It counts what it takes in held. Under the lock.
+func (r *Runner) claimFixes(tasks []store.Task, parts []store.Part, held map[string]int, limit func(string) int) bool {
+	changed := false
+	for _, t := range tasks {
+		if t.Status != MergeFailed || t.FixPart == 0 || limit == nil || held[t.WindowID] >= limit(t.WindowID) {
+			continue
+		}
+		var p store.Part
+		for _, o := range PartsOf(parts, t.ID) {
+			if o.ID == t.FixPart {
+				p = o
+			}
+		}
+		next := r.autoSendBack(t, p, strings.TrimSuffix(t.Note, noteWaitsForSlot))
+		if next.Status == Running {
+			held[t.WindowID]++
+			changed = true
+			continue
+		}
+		if r.saveTask(next) {
+			changed = true
+		}
+	}
+	return changed
 }
