@@ -190,19 +190,48 @@ func (r *Runner) rollup(tasks []store.Task, parts []store.Part) bool {
 
 // claim starts the pending parts of started tasks (a part a worker added, or
 // a person retried) and, while its window has a slot free, each next ready
-// task with every one of its parts.
+// task with every one of its parts. A started task already at work holds its
+// slot, so its new part starts at once; one with nothing at work (every part
+// failed or retried) needs a free slot like a new task, and gets it first.
 func (r *Runner) claim(tasks []store.Task, parts []store.Part) []job {
-	var jobs []job
-	for _, t := range tasks {
-		if t.Status == Running || t.Status == NeedsYou {
-			jobs = append(jobs, r.claimParts(t, parts)...)
-		}
-	}
 	limit, ok := r.slotLimit()
+	held := SlotsHeld(tasks, parts)
+	jobs := r.claimStarted(tasks, parts, held, limit)
 	if !ok {
 		return jobs
 	}
-	held := SlotsHeld(tasks, parts)
+	return append(jobs, r.claimNew(tasks, parts, held, limit)...)
+}
+
+// claimStarted starts the pending parts of running and needs-you tasks: at
+// once for a task already at work, else only into a free slot (none while
+// limit is nil, the numbers being unreadable). It counts what it takes in held.
+func (r *Runner) claimStarted(tasks []store.Task, parts []store.Part, held map[string]int, limit func(string) int) []job {
+	working := Working(parts)
+	var jobs []job
+	for _, t := range tasks {
+		if t.Status != Running && t.Status != NeedsYou {
+			continue
+		}
+		if working[t.ID] {
+			jobs = append(jobs, r.claimParts(t, parts)...)
+			continue
+		}
+		if limit == nil || held[t.WindowID] >= limit(t.WindowID) {
+			continue
+		}
+		if mine := r.claimParts(t, parts); len(mine) > 0 {
+			jobs = append(jobs, mine...)
+			held[t.WindowID]++
+		}
+	}
+	return jobs
+}
+
+// claimNew starts each next ready task, with every one of its parts, while
+// its window has a slot free.
+func (r *Runner) claimNew(tasks []store.Task, parts []store.Part, held map[string]int, limit func(string) int) []job {
+	var jobs []job
 	for _, t := range Startable(tasks, parts) {
 		if held[t.WindowID] >= limit(t.WindowID) {
 			continue

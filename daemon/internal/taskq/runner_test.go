@@ -355,16 +355,18 @@ func TestRunner_UnreadableWindowSlotsStartNothingNew(t *testing.T) {
 	g.r.WindowSlots = func() (map[string]int, error) { return nil, errors.New("database is locked") }
 	g.feature(1, 0, "app")
 	g.feature(2, 0, "app")
-	g.feature(3, 0, "backend")
+	g.feature(3, 0, "backend", "admin")
 	g.inWindow(1, "w1")
 	g.inWindow(2, "w2")
 	g.inWindow(3, "w3")
 	g.st.tasks[2].Status = Running
+	g.st.parts[2].Status, g.st.parts[2].PaneID = Running, "busy" // #3's backend part is at work, so #3 holds its slot
+	g.host.panes["busy"] = PaneState{Attention: model.AttentionRunning, At: 1}
 	g.tick()
 	if g.st.task(1).Status != Waiting || g.st.task(2).Status != Waiting {
 		t.Fatalf("statuses = %s %s, want both still waiting", g.st.task(1).Status, g.st.task(2).Status)
 	}
-	if len(g.host.started) != 1 || g.partsOf(3)[0].Status != Running {
+	if len(g.host.started) != 1 || g.partsOf(3)[1].Status != Running {
 		t.Fatalf("started %v, want only running #3's pending part", g.host.started)
 	}
 }
@@ -765,6 +767,72 @@ func TestRunner_AddedPartStartsWithoutASlot(t *testing.T) {
 	brief, _ := os.ReadFile(g.st.part(99).Worktree + ".md")
 	if !strings.Contains(string(brief), "app-task-1") {
 		t.Fatalf("the added part does not know its team: %q", brief)
+	}
+}
+
+// A retried part of a feature that holds no slot (none of its parts at
+// work) waits for a free one like a new feature, retries ahead of new work:
+// with one slot, #1's retry starts, #2's waits, and waiting #3 stays put. A
+// retry on a feature already at work (#4 in a full window) still starts.
+func TestRunner_RetryWaitsForASlot(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "app")
+	g.feature(3, 0, "app")
+	g.feature(4, 0, "app", "backend")
+	g.inWindow(4, "w2")
+	for _, id := range []int64{1, 2} {
+		g.st.tasks[id-1].Status = NeedsYou
+		g.st.parts[id-1].Status = Pending // what Retry leaves on a failed part
+	}
+	g.st.tasks[3].Status = Running
+	g.st.parts[3].Status, g.st.parts[3].PaneID = Running, "busy" // #4's app part at work holds w2's slot
+	g.host.panes["busy"] = PaneState{Attention: model.AttentionRunning, At: 1}
+	g.st.parts[4].Status = Pending // #4's backend part retried
+	g.tick()
+	if g.partsOf(1)[0].Status != Running || g.partsOf(2)[0].Status != Pending || g.st.task(3).Status != Waiting {
+		t.Fatalf("#1 part %s, #2 part %s, #3 %s; want running, pending, waiting",
+			g.partsOf(1)[0].Status, g.partsOf(2)[0].Status, g.st.task(3).Status)
+	}
+	if g.partsOf(4)[1].Status != Running {
+		t.Fatalf("#4's retried part = %s, want running: its feature already holds a slot", g.partsOf(4)[1].Status)
+	}
+}
+
+// Unreadable window numbers hold a retry on a feature with nothing at work
+// (#1, which would otherwise take w1's free slot), while a retry on one at
+// work (#2) still starts.
+func TestRunner_UnreadableSlotsHoldARetry(t *testing.T) {
+	g := newRig(t)
+	g.r.WindowSlots = func() (map[string]int, error) { return nil, errors.New("database is locked") }
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "app", "backend")
+	g.inWindow(2, "w2")
+	g.st.tasks[0].Status, g.st.tasks[1].Status = NeedsYou, Running
+	g.st.parts[1].Status, g.st.parts[1].PaneID = Running, "busy"
+	g.host.panes["busy"] = PaneState{Attention: model.AttentionRunning, At: 1}
+	g.tick()
+	if g.partsOf(1)[0].Status != Pending || g.partsOf(2)[1].Status != Running || len(g.host.started) != 1 {
+		t.Fatalf("#1 part %s, #2 retried part %s, started %v; want pending, running, one start",
+			g.partsOf(1)[0].Status, g.partsOf(2)[1].Status, g.host.started)
+	}
+}
+
+// A feature waiting on a person, with nothing to retry, holds no slot: the
+// next task in its window starts. A question asked at night must not stall
+// the window.
+func TestRunner_QuestionWithNothingToRetryLeavesTheSlot(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "app")
+	g.st.tasks[0].Status = NeedsYou
+	g.st.parts[0].Status, g.st.parts[0].PaneID, g.st.parts[0].Note = NeedsYou, "asking", noteAsking
+	g.host.panes["asking"] = PaneState{Attention: model.AttentionNeedsInput, Reason: model.ReasonQuestion, At: 1}
+	g.tick()
+	if g.st.task(2).Status != Running || g.partsOf(1)[0].Status != NeedsYou {
+		t.Fatalf("#2 %s, #1 part %s; want #2 running and #1 left to its person", g.st.task(2).Status, g.partsOf(1)[0].Status)
 	}
 }
 

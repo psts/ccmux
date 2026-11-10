@@ -52,12 +52,7 @@ func InWindow(tasks []store.Task, windowID string) []store.Task {
 // Claude waits on a person holds none: a question asked at night must not
 // hold up the rest of the queue.
 func SlotsHeld(tasks []store.Task, parts []store.Part) map[string]int {
-	working := map[int64]bool{}
-	for _, p := range parts {
-		if p.Status == Running {
-			working[p.TaskID] = true
-		}
-	}
+	working := Working(parts)
 	held := map[string]int{}
 	for _, t := range tasks {
 		if working[t.ID] && (t.Status == Running || t.Status == NeedsYou) {
@@ -65,6 +60,17 @@ func SlotsHeld(tasks []store.Task, parts []store.Part) map[string]int {
 		}
 	}
 	return held
+}
+
+// Working is the tasks with a part at work, by id: the ones holding a slot.
+func Working(parts []store.Part) map[int64]bool {
+	working := map[int64]bool{}
+	for _, p := range parts {
+		if p.Status == Running {
+			working[p.TaskID] = true
+		}
+	}
+	return working
 }
 
 // Rollup is a started task's status from its parts: needs_you when any part
