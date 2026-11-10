@@ -31,10 +31,17 @@ func (s *Server) patchPart(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	next, err := changePart(t, p, req.Plan, req.Retry)
-	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+	if req.Retry {
+		s.retryPart(w, t, p)
 		return
+	}
+	next := p
+	if req.Plan != nil {
+		var err error
+		if next, err = taskq.EditPlan(t, p, *req.Plan); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 	}
 	if err := s.savePart(next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -43,14 +50,37 @@ func (s *Server) patchPart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.partViewOf(t, next))
 }
 
-func changePart(t store.Task, p store.Part, plan *string, retry bool) (store.Part, error) {
-	if retry {
-		return taskq.Retry(t, p)
+// retryPart starts failed part p again (taskq.RetryTask): a feature with
+// nothing else at work or asking goes back in the queue as Waiting with
+// every failed part, so it waits its turn and shows as waiting.
+func (s *Server) retryPart(w http.ResponseWriter, t store.Task, p store.Part) {
+	all, err := s.tasks.Parts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	if plan == nil {
-		return p, nil
+	next, again, err := taskq.RetryTask(t, taskq.PartsOf(all, t.ID), p)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
 	}
-	return taskq.EditPlan(t, p, *plan)
+	view := p
+	for _, o := range again {
+		if err := s.savePart(o); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if o.ID == p.ID {
+			view = o
+		}
+	}
+	if next.Status != t.Status {
+		if err := s.saveTask(next); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, s.partViewOf(next, view))
 }
 
 // partOf loads {part} of task taskID, or writes the error and returns false.

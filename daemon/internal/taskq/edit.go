@@ -92,6 +92,32 @@ func Retry(t store.Task, p store.Part) (store.Part, error) {
 	return p, nil
 }
 
+// RetryTask is what Retry on part p does to its feature, given all its
+// parts. While another part is at work or asking a person, only p goes back
+// to start (it waits for a slot unless the feature holds one). When every
+// unbuilt part has failed, the feature goes back in the queue as Waiting
+// with each failed part to start again: it then shows, and starts, as a
+// waiting task when its window has a slot free. The worktree is kept, so a
+// restarted part carries on from its work.
+func RetryTask(t store.Task, mine []store.Part, p store.Part) (store.Task, []store.Part, error) {
+	next, err := Retry(t, p)
+	if err != nil {
+		return t, nil, err
+	}
+	var again []store.Part
+	for _, o := range mine {
+		switch o.Status {
+		case Running, NeedsYou:
+			return t, []store.Part{next}, nil
+		case Failed:
+			o.Status, o.Note = Pending, ""
+			again = append(again, o)
+		}
+	}
+	t.Status, t.Note = Waiting, ""
+	return t, again, nil
+}
+
 // Requeued returns the parts to start again when a cancelled task goes back
 // in the queue: every part not already built. A built part stays built.
 func Requeued(parts []store.Part) []store.Part {

@@ -490,3 +490,34 @@ func TestStartTaskRunner_ReadsEachWindowsNumber(t *testing.T) {
 		t.Fatalf("runner reads a number for BETA, which nobody set: %v", own)
 	}
 }
+
+// Retry on a feature whose parts all failed lists it as Waiting with both
+// parts to start again (one press retries the feature); a feature with a
+// part still at work keeps its status and only the pressed part restarts.
+func TestTasks_RetryAnIdleFeatureLiningItUpAsWaiting(t *testing.T) {
+	s := taskServer(t)
+	twoParts(t, s) // #1: parts 1 (app) and 2 (backend)
+	twoParts(t, s) // #2: parts 3 and 4
+	parts, _ := s.tasks.Parts()
+	for i, st := range []string{taskq.Failed, taskq.Failed, taskq.Running, taskq.Failed} {
+		parts[i].Status = st
+		s.tasks.SavePart(parts[i])
+	}
+	for _, id := range []int64{1, 2} {
+		task, _ := s.tasks.Task(id)
+		task.Status = taskq.NeedsYou
+		s.tasks.SaveTask(*task)
+	}
+	for _, path := range []string{"/v1/tasks/1/parts/2", "/v1/tasks/2/parts/4"} {
+		if rec := do(t, s, "PATCH", path, `{"retry":true}`); rec.Code != 200 {
+			t.Fatalf("retry %s = %d %s", path, rec.Code, rec.Body)
+		}
+	}
+	got := tasksOf(t, s).Tasks
+	if got[0].Status != taskq.Waiting || got[0].Parts[0].Status != taskq.Pending || got[0].Parts[1].Status != taskq.Pending {
+		t.Fatalf("#1 = %s with %s/%s, want waiting with both parts pending", got[0].Status, got[0].Parts[0].Status, got[0].Parts[1].Status)
+	}
+	if got[1].Status != taskq.NeedsYou || got[1].Parts[0].Status != taskq.Running || got[1].Parts[1].Status != taskq.Pending {
+		t.Fatalf("#2 = %s with %s/%s, want needs_you, running part untouched, retried part pending", got[1].Status, got[1].Parts[0].Status, got[1].Parts[1].Status)
+	}
+}

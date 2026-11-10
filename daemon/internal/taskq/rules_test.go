@@ -247,3 +247,36 @@ func TestNeighbour_WaitingStaysInItsPlaceInLine(t *testing.T) {
 		}
 	}
 }
+
+// Retry on a feature with nothing at work puts it back in the queue as
+// Waiting with every unbuilt part to start again, so it waits its turn like
+// any task; a built part stays built. With another part at work, only the
+// retried part goes back to start and the feature keeps its status.
+func TestRetryTask(t *testing.T) {
+	failed := store.Part{ID: 2, TaskID: 1, Status: Failed, Note: "its session closed"}
+	built := store.Part{ID: 1, TaskID: 1, Status: Ready}
+	other := store.Part{ID: 3, TaskID: 1, Status: Failed}
+	task, parts, err := RetryTask(store.Task{ID: 1, Status: NeedsYou}, []store.Part{built, failed, other}, failed)
+	if err != nil || task.Status != Waiting {
+		t.Fatalf("idle feature: status %s err %v, want waiting", task.Status, err)
+	}
+	if len(parts) != 2 || parts[0].ID != 2 || parts[1].ID != 3 || parts[0].Status != Pending || parts[0].Note != "" || parts[1].Status != Pending {
+		t.Fatalf("idle feature parts = %+v, want #2 and #3 pending, #1 untouched", parts)
+	}
+
+	busy := store.Part{ID: 4, TaskID: 1, Status: Running}
+	task, parts, err = RetryTask(store.Task{ID: 1, Status: NeedsYou}, []store.Part{busy, failed, other}, failed)
+	if err != nil || task.Status != NeedsYou || len(parts) != 1 || parts[0].ID != 2 || parts[0].Status != Pending {
+		t.Fatalf("busy feature: %s %+v %v, want needs_you with only #2 pending", task.Status, parts, err)
+	}
+
+	asking := store.Part{ID: 5, TaskID: 1, Status: NeedsYou}
+	task, parts, _ = RetryTask(store.Task{ID: 1, Status: NeedsYou}, []store.Part{asking, failed}, failed)
+	if task.Status != NeedsYou || len(parts) != 1 || parts[0].ID != 2 {
+		t.Fatalf("feature with a part asking: %s %+v, want needs_you and only #2 back to start", task.Status, parts)
+	}
+
+	if _, _, err := RetryTask(store.Task{ID: 1, Status: NeedsYou}, []store.Part{built}, built); err == nil {
+		t.Fatal("a built part was retried")
+	}
+}
