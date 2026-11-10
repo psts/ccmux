@@ -452,3 +452,41 @@ func TestTasks_ArrowsFollowThePlaceInLine(t *testing.T) {
 		t.Fatalf("queue after ↑ on #4 = %v, want [1 2 4 3] (#2 untouched)", order)
 	}
 }
+
+// The started runner reads the numbers the lens stores: a window paused
+// through the manager reads 0 in the runner, and a window nobody set has no
+// number there (it runs the default). Without this wiring the lens would
+// show Paused while the window kept starting tasks.
+func TestStartTaskRunner_ReadsEachWindowsNumber(t *testing.T) {
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true},
+		&model.Workspace{ID: "w1"}, &model.Workspace{ID: "w2"})
+	st, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s.SetTasks(st)
+	_ = putGroupReq(t, s, "w1", "ALPHA")
+	_ = putGroupReq(t, s, "w2", "BETA")
+	a, _ := s.mgr.WindowByName("ALPHA")
+	b, _ := s.mgr.WindowByName("BETA")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir())
+	if err := s.mgr.SetWindowSlots(a, 0); err != nil {
+		t.Fatal(err)
+	}
+	if s.taskRunner.WindowSlots == nil {
+		t.Fatal("the started runner reads no window numbers")
+	}
+	own, err := s.taskRunner.WindowSlots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := own[a]; !ok || n != 0 {
+		t.Fatalf("runner reads ALPHA as %d %v, want 0", n, ok)
+	}
+	if _, ok := own[b]; ok {
+		t.Fatalf("runner reads a number for BETA, which nobody set: %v", own)
+	}
+}
