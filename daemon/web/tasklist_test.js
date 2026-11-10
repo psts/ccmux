@@ -74,20 +74,18 @@ test("done lists the latest finished first", () => {
   assert.deepStrictEqual(done.tasks.map((t) => t.id), [2, 3, 1]);
 });
 
-test("waiting lists the next to start first: fewer unfinished tasks ahead, then queue order", () => {
-  // 10 runs; 11 and 13 wait on it; 12 waits on 11; 14 waits on a cancelled
-  // task, so it starts only once a person acts and goes last; 15 waits on
-  // nothing and can start now.
+test("waiting lists the next to start first: the daemon's ahead, then queue order", () => {
+  // ahead is what the daemon sends (taskq.Ahead): 0 can start now, -1 holds
+  // until a person acts and goes last.
   const ts = [
-    { id: 10, status: "running" },
-    { id: 9, status: "cancelled" },
-    { id: 11, status: "waiting", afterId: 10 },
-    { id: 12, status: "waiting", afterId: 11 },
-    { id: 14, status: "waiting", afterId: 9 },
-    { id: 13, status: "waiting", afterId: 10 },
-    { id: 15, status: "waiting" },
-    { id: 16, status: "waiting", afterId: 7 },
-    { id: 7, status: "done", finishedAt: 1 },
+    { id: 10, status: "running", ahead: 0 },
+    { id: 11, status: "waiting", ahead: 1 },
+    { id: 12, status: "waiting", ahead: 2 },
+    { id: 14, status: "waiting", ahead: -1 },
+    { id: 13, status: "waiting", ahead: 1 },
+    { id: 15, status: "waiting", ahead: 0 },
+    { id: 16, status: "waiting", ahead: 0 },
+    { id: 7, status: "done", finishedAt: 1, ahead: 0 },
   ];
   const waiting = L.sections(ts, "").find((s) => s.key === "waiting");
   assert.deepStrictEqual(waiting.tasks.map((t) => t.id), [15, 16, 11, 13, 12, 14]);

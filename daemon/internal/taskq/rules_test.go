@@ -189,3 +189,61 @@ func TestNeighbour_SkipsOtherStatuses(t *testing.T) {
 		t.Fatal("down from the last waiting task found something")
 	}
 }
+
+// Ahead counts the unfinished tasks a task waits on through its "starts
+// after" chain, and -1 when the chain reaches a cancelled or removed task
+// or loops: it then holds until a person acts.
+func TestAhead(t *testing.T) {
+	all := []store.Task{
+		{ID: 7, Status: Done},
+		{ID: 9, Status: Cancelled},
+		{ID: 10, Status: Running},
+		{ID: 11, Status: Waiting, AfterID: 10},
+		{ID: 12, Status: Waiting, AfterID: 11},
+		{ID: 14, Status: Waiting, AfterID: 9},
+		{ID: 15, Status: Waiting},
+		{ID: 16, Status: Waiting, AfterID: 7},
+		{ID: 17, Status: Waiting, AfterID: 99},
+		{ID: 18, Status: Waiting, AfterID: 19},
+		{ID: 19, Status: Waiting, AfterID: 18},
+	}
+	want := map[int64]int{11: 1, 12: 2, 14: -1, 15: 0, 16: 0, 17: -1, 18: -1, 19: -1}
+	for id, n := range want {
+		if got := Ahead(all, id); got != n {
+			t.Errorf("Ahead(%d) = %d, want %d", id, got, n)
+		}
+	}
+}
+
+// A waiting task trades places only with the nearest waiting task as far
+// from starting as it is: the one next to it in a list sorted by Ahead, so
+// the move shows. Planning tasks keep plain queue order.
+func TestNeighbour_WaitingStaysInItsPlaceInLine(t *testing.T) {
+	all := []store.Task{
+		{ID: 1, Status: Running},
+		{ID: 2, Status: Waiting, AfterID: 1}, // one ahead
+		{ID: 3, Status: Waiting},             // can start
+		{ID: 4, Status: Planning},
+		{ID: 5, Status: Waiting},             // can start
+		{ID: 6, Status: Waiting, AfterID: 1}, // one ahead
+		{ID: 8, Status: Planning, AfterID: 1},
+	}
+	cases := []struct {
+		id   int64
+		up   bool
+		want int64 // 0: no move
+	}{
+		{5, true, 3}, {3, false, 5}, {3, true, 0}, {5, false, 0},
+		{6, true, 2}, {2, false, 6}, {2, true, 0},
+		{8, true, 4}, {4, false, 8},
+	}
+	for _, c := range cases {
+		got, ok := Neighbour(all, c.id, c.up)
+		if c.want == 0 && ok {
+			t.Errorf("Neighbour(%d, up=%v) = #%d, want none", c.id, c.up, got.ID)
+		}
+		if c.want != 0 && (!ok || got.ID != c.want) {
+			t.Errorf("Neighbour(%d, up=%v) = #%d %v, want #%d", c.id, c.up, got.ID, ok, c.want)
+		}
+	}
+}

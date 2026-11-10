@@ -46,6 +46,13 @@ type taskView struct {
 	Editable  bool       `json:"editable"`
 	Orderable bool       `json:"orderable"`
 	Removable bool       `json:"removable"`
+	// Ahead: unfinished tasks this one waits on through its "starts after"
+	// chain, -1 when it holds until a person acts (taskq.Ahead). Lenses
+	// list Waiting by it. CanUp and CanDown say whether ↑/↓ move it: the
+	// move trades with the row next to it in that list (taskq.Neighbour).
+	Ahead   int  `json:"ahead"`
+	CanUp   bool `json:"canUp"`
+	CanDown bool `json:"canDown"`
 }
 
 // partView is a part with its repo's short name, its Claude's bus name, and
@@ -65,10 +72,15 @@ type partView struct {
 func (s *Server) taskViewsOf(tasks []store.Task, parts []store.Part) []taskView {
 	out := make([]taskView, 0, len(tasks))
 	for _, t := range tasks {
+		queue := taskq.InWindow(tasks, t.WindowID)
 		v := taskView{
 			Task: t, Parts: []partView{}, Moves: taskq.Moves(t.Status),
 			Editable: taskq.Editable(t.Status), Orderable: taskq.Orderable(t.Status),
-			Removable: taskq.Removable(t.Status),
+			Removable: taskq.Removable(t.Status), Ahead: taskq.Ahead(queue, t.ID),
+		}
+		if v.Editable {
+			_, v.CanUp = taskq.Neighbour(queue, t.ID, true)
+			_, v.CanDown = taskq.Neighbour(queue, t.ID, false)
 		}
 		for _, p := range taskq.PartsOf(parts, t.ID) {
 			v.Parts = append(v.Parts, s.partViewOf(t, p))

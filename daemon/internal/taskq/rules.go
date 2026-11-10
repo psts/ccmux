@@ -140,9 +140,11 @@ func Counts(all []store.Task) map[string]int {
 	return out
 }
 
-// Neighbour finds the nearest task with the same status before (up) or after
-// id in queue order, the one a move trades places with. Same status, so a
-// move is always visible in a list the lenses split by status.
+// Neighbour finds the task id trades places with on a move up or down: the
+// nearest one before (up) or after it in queue order with the same status,
+// and for a waiting task the same Ahead as well. Lenses list Waiting by
+// Ahead, then queue order, so that neighbour is the row next to it on
+// screen and the move always shows.
 func Neighbour(all []store.Task, id int64, up bool) (store.Task, bool) {
 	at := -1
 	for i, t := range all {
@@ -157,12 +159,38 @@ func Neighbour(all []store.Task, id int64, up bool) (store.Task, bool) {
 	if up {
 		step = -1
 	}
+	same := func(o store.Task) bool {
+		return o.Status == all[at].Status && (o.Status != Waiting || Ahead(all, o.ID) == Ahead(all, id))
+	}
 	for i := at + step; i >= 0 && i < len(all); i += step {
-		if all[i].Status == all[at].Status {
+		if same(all[i]) {
 			return all[i], true
 		}
 	}
 	return store.Task{}, false
+}
+
+// Ahead counts the unfinished tasks id waits on through its "starts after"
+// chain: 0 can start as soon as a slot frees. -1 when the chain reaches a
+// cancelled or removed task, or loops: it holds until a person acts.
+func Ahead(all []store.Task, id int64) int {
+	byID := make(map[int64]store.Task, len(all))
+	for _, t := range all {
+		byID[t.ID] = t
+	}
+	n, seen := 0, map[int64]bool{id: true}
+	for next := byID[id].AfterID; next != 0; next = byID[next].AfterID {
+		dep, ok := byID[next]
+		if !ok || dep.Status == Cancelled || seen[next] {
+			return -1
+		}
+		if dep.Status == Done {
+			return n
+		}
+		seen[next] = true
+		n++
+	}
+	return n
 }
 
 // Waiters lists the tasks still to run that start after id. A task with

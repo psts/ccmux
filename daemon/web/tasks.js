@@ -228,7 +228,9 @@
   function buttonsHtml(t) {
     const b = (act, label, extra) => `<button type="button" data-act="${act}"${extra || ""}>${esc(label)}</button>`;
     const out = [];
-    if (t.editable) out.push(b("save", "Save"), b("up", "↑"), b("down", "↓"));
+    if (t.editable) out.push(b("save", "Save"));
+    if (t.canUp) out.push(b("up", "↑"));
+    if (t.canDown) out.push(b("down", "↓"));
     if (t.afterId && t.orderable) out.push(b("unwait", `Stop waiting on #${t.afterId}`));
     for (const to of t.moves || []) out.push(b("move", L().moveLabel(to), ` data-to="${to}"`));
     if (t.removable) out.push(b("remove", "Remove"));

@@ -413,3 +413,42 @@ func TestStartTaskRunner_TakesTheBus(t *testing.T) {
 		t.Fatalf("the runner's host has no bus: %+v", s.taskRunner.Host)
 	}
 }
+
+// Each task carries its place in line and the arrows a lens may draw: a
+// waiting task's ↑/↓ trade with the row next to it in a list sorted by
+// Ahead, so #4 (can start) moves up past #2 (one ahead) to trade with #3.
+func TestTasks_ArrowsFollowThePlaceInLine(t *testing.T) {
+	s := taskServer(t)
+	add := func(status string, after int64) {
+		t.Helper()
+		if _, err := s.tasks.AddTaskWithParts(store.Task{Title: "t", Status: status, AfterID: after, WindowID: "w1", FiledBy: "app"},
+			[]store.Part{{RepoPath: "/p/app", Plan: "p", Status: taskq.Pending}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(taskq.Running, 0) // #1
+	add(taskq.Waiting, 1) // #2, one ahead
+	add(taskq.Waiting, 0) // #3
+	add(taskq.Waiting, 0) // #4
+	byID := map[int64]taskView{}
+	for _, v := range tasksOf(t, s).Tasks {
+		byID[v.ID] = v
+	}
+	if byID[2].Ahead != 1 || byID[3].Ahead != 0 || byID[2].CanUp || byID[2].CanDown {
+		t.Fatalf("#2 = ahead %d up %v down %v, #3 ahead %d; want 1, no arrows, 0",
+			byID[2].Ahead, byID[2].CanUp, byID[2].CanDown, byID[3].Ahead)
+	}
+	if byID[3].CanUp || !byID[3].CanDown || !byID[4].CanUp || byID[4].CanDown || byID[1].CanUp || byID[1].CanDown {
+		t.Fatalf("arrows #3 %v/%v #4 %v/%v #1 %v/%v", byID[3].CanUp, byID[3].CanDown, byID[4].CanUp, byID[4].CanDown, byID[1].CanUp, byID[1].CanDown)
+	}
+	if rec := do(t, s, "POST", "/v1/tasks/4/move", `{"dir":"up"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"moved":true`) {
+		t.Fatalf("move = %d %s", rec.Code, rec.Body)
+	}
+	var order []int64
+	for _, v := range tasksOf(t, s).Tasks {
+		order = append(order, v.ID)
+	}
+	if fmt.Sprint(order) != "[1 2 4 3]" {
+		t.Fatalf("queue after ↑ on #4 = %v, want [1 2 4 3] (#2 untouched)", order)
+	}
+}
