@@ -137,8 +137,39 @@
       .concat(repos.map((r) => `<option value="${esc(r)}"${r === q.repo ? " selected" : ""}>${esc(r)}</option>`));
     const title = "Tasks" + (q.winName ? " · " + q.winName : "");
     return `<div class="tq-head"><span class="tq-title">${esc(title)}</span>` +
-      `<select class="tq-repo" data-act="repo">${opts.join("")}</select>` +
+      `<select class="tq-repo" data-act="repo">${opts.join("")}</select>` + slotsHtml() +
       `<span class="tq-status"></span></div>`;
+  }
+
+  // slotsHtml is the picker for how many of this window's tasks build at
+  // once, read from the window list app.js keeps (GET /v1/windows).
+  function slotsHtml() {
+    const win = (state.windows || []).find((w) => w.id === q.win);
+    const choices = L().slotChoices(win && win.taskSlots);
+    if (!choices.length) return "";
+    const opts = choices.map((c) => `<option value="${c.value}"${c.selected ? " selected" : ""}>${esc(c.label)}</option>`);
+    return `<select class="tq-repo tq-slots" data-act="slots" title="How many of this window's tasks build at once">${opts.join("")}</select>`;
+  }
+
+  // setSlots stores the window's number; the runner uses it on its next pass.
+  // The local window list takes it at once, so the picker does not flick back
+  // before app.js next reads the list.
+  async function setSlots(n) {
+    const id = q.win;
+    try {
+      const r = await fetch(`/v1/windows/${encodeURIComponent(id)}/slots`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slots: n }),
+      });
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    } catch (e) {
+      render(); // the picker goes back to the stored number, then says why
+      status("Couldn't change how many run at once: " + e.message, true);
+      return;
+    }
+    const win = (state.windows || []).find((w) => w.id === id);
+    if (win) win.taskSlots = n;
+    render();
+    status(n === 0 ? "Paused: nothing new starts in this window" : `Up to ${n} at a time`);
   }
 
   function emptyHtml() {
@@ -214,6 +245,7 @@
     b.addEventListener("input", onInput);
     b.addEventListener("change", (e) => {
       if (e.target.dataset.act === "repo") { q.repo = e.target.value; render(); }
+      if (e.target.dataset.act === "slots") setSlots(Number(e.target.value));
     });
     b.addEventListener("focusout", () => setTimeout(() => { if (q.pending) render(); }, 0));
   }
@@ -225,7 +257,7 @@
 
   function onClick(e) {
     const btn = e.target.closest("[data-act]"), el = e.target.closest(".tq-task");
-    if (!btn || !el || btn.dataset.act === "repo") return;
+    if (!btn || !el || btn.dataset.act === "repo" || btn.dataset.act === "slots") return;
     const part = btn.closest("[data-part]");
     act(btn.dataset.act, Number(el.dataset.id), btn.dataset.to, part ? Number(part.dataset.part) : 0);
   }

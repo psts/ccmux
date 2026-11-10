@@ -134,6 +134,9 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		// The size a Mac last had the window at; absent when nobody has.
 		Width  int `json:"width,omitempty"`
 		Height int `json:"height,omitempty"`
+		// How many queued tasks the window builds at once: its own number,
+		// else the daemon's default. Absent when no task runner runs here.
+		TaskSlots *int `json:"taskSlots,omitempty"`
 	}
 	windows, err := s.mgr.WindowsListStrict()
 	if err != nil {
@@ -153,11 +156,13 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sizes := s.mgr.WindowSizes()
+	slots := s.taskSlotsOf()
 	out := make([]windowResp, 0, len(windows))
 	for _, win := range windows {
 		size := sizes[win.ID]
 		wr := windowResp{ID: win.ID, Name: win.Name, WorkspaceIDs: win.WorkspaceIDs,
-			OpenBy: win.OpenBy, OpenHere: here[win.ID], Width: size.Width, Height: size.Height}
+			OpenBy: win.OpenBy, OpenHere: here[win.ID], Width: size.Width, Height: size.Height,
+			TaskSlots: slots(win.ID)}
 		for _, l := range win.OpenBy {
 			if l == login {
 				wr.Open = true
@@ -275,6 +280,55 @@ func (s *Server) setWindowSize(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, manager.ErrUnknownWindow):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, manager.ErrBadWindowSize):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	}
+}
+
+// taskSlotsOf answers each window's task slots for the list: its own
+// number, else the runner's default, or nil when no runner runs here or the
+// numbers are unreadable (the lens then hides the picker rather than show a
+// default over a window someone paused).
+func (s *Server) taskSlotsOf() func(windowID string) *int {
+	none := func(string) *int { return nil }
+	if s.taskRunner == nil {
+		return none
+	}
+	own, err := s.mgr.WindowSlots()
+	if err != nil {
+		log.Printf("windows: task slots unreadable (%v); serving without", err)
+		return none
+	}
+	return func(windowID string) *int {
+		n, ok := own[windowID]
+		if !ok {
+			n = s.taskRunner.Slots
+		}
+		return &n
+	}
+}
+
+// setWindowSlots serves PUT /v1/windows/{id}/slots ({"slots": n}): how many
+// queued tasks the window builds at once, from the Tasks header's picker.
+func (s *Server) setWindowSlots(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Slots *int `json:"slots"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Slots == nil {
+		writeError(w, http.StatusBadRequest, "slots is required")
+		return
+	}
+	err := s.mgr.SetWindowSlots(r.PathValue("id"), *req.Slots)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, manager.ErrUnknownWindow):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, manager.ErrBadTaskSlots):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		writeError(w, http.StatusServiceUnavailable, err.Error())

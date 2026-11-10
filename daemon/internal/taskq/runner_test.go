@@ -326,6 +326,49 @@ func TestRunner_SlotsArePerWindow(t *testing.T) {
 	}
 }
 
+// A window's own number beats the default: w1 set 2 runs two, w2 set 0 is
+// paused and starts nothing, and w3 with no number of its own runs the
+// default one.
+func TestRunner_WindowsOwnSlotsBeatTheDefault(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.r.WindowSlots = func() (map[string]int, error) { return map[string]int{"w1": 2, "w2": 0}, nil }
+	for i, w := range []string{"w1", "w1", "w1", "w2", "w3", "w3"} {
+		g.feature(int64(i+1), 0, "app")
+		g.inWindow(int64(i+1), w)
+	}
+	g.tick()
+	want := map[int64]string{1: Running, 2: Running, 3: Waiting, 4: Waiting, 5: Running, 6: Waiting}
+	for id, st := range want {
+		if got := g.st.task(id).Status; got != st {
+			t.Errorf("task %d = %s, want %s", id, got, st)
+		}
+	}
+}
+
+// Unreadable window numbers start nothing new: not the paused window's task,
+// and not a task in a window with no number either. A part a running
+// feature already holds a slot for still starts.
+func TestRunner_UnreadableWindowSlotsStartNothingNew(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.r.WindowSlots = func() (map[string]int, error) { return nil, errors.New("database is locked") }
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "app")
+	g.feature(3, 0, "backend")
+	g.inWindow(1, "w1")
+	g.inWindow(2, "w2")
+	g.inWindow(3, "w3")
+	g.st.tasks[2].Status = Running
+	g.tick()
+	if g.st.task(1).Status != Waiting || g.st.task(2).Status != Waiting {
+		t.Fatalf("statuses = %s %s, want both still waiting", g.st.task(1).Status, g.st.task(2).Status)
+	}
+	if len(g.host.started) != 1 || g.partsOf(3)[0].Status != Running {
+		t.Fatalf("started %v, want only running #3's pending part", g.host.started)
+	}
+}
+
 // The slots count features: every part of a started feature starts at once,
 // each told who its teammates are, and a third feature waits.
 func TestRunner_StartsWholeFeatures(t *testing.T) {

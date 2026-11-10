@@ -54,8 +54,9 @@ func (h taskHost) TaskPane(paneID string) (taskq.PaneState, bool) {
 	return taskq.PaneState{Attention: sig.Attention, Reason: sig.Reason, At: sig.At, AtShell: st.AtShell}, ok
 }
 
-// StartTaskRunner starts the task queue's runner: up to slots tasks at once,
-// each built in a worktree under root, checked every `every`. It shares the
+// StartTaskRunner starts the task queue's runner: up to slots tasks at once
+// in a window with no number of its own (PUT /v1/windows/{id}/slots sets
+// one), each built in a worktree under root, checked every `every`. It shares the
 // routes' lock, so a person's edit never lands in the middle of a pass.
 // slots 0 (or no task store) runs nothing: filed tasks just wait. Call it
 // after EnablePeers: the runner takes the bus here, once, and without it no
@@ -67,7 +68,7 @@ func (s *Server) StartTaskRunner(ctx context.Context, every time.Duration, slots
 	r := &taskq.Runner{
 		Store: s.tasks, Host: taskHost{mgr: s.mgr, peers: s.peersSvc}, Git: taskq.ExecGit{}, MergeGit: taskq.ExecGit{},
 		Checks: taskq.GateChecks{PerLine: 20 * time.Minute}, Lock: &s.tasksMu,
-		Slots: slots, Root: root, Now: time.Now,
+		Slots: slots, WindowSlots: s.mgr.WindowSlots, Root: root, Now: time.Now,
 	}
 	s.taskRunner = r
 	r.Start(ctx, every)

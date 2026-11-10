@@ -51,3 +51,14 @@ test("a failed merge is offered again by name", () => {
   assert.strictEqual(L.moveLabel("ready_to_merge"), "Try merge again");
   assert.strictEqual(L.moveLabel("done"), "Mark merged");
 });
+
+test("the slots picker offers Paused to 3 and marks the window's number", () => {
+  assert.deepStrictEqual(L.slotChoices(0).map((c) => [c.value, c.label, c.selected]),
+    [[0, "Paused", true], [1, "1 at a time", false], [2, "2 at a time", false], [3, "3 at a time", false]]);
+  assert.deepStrictEqual(L.slotChoices(2).filter((c) => c.selected).map((c) => c.value), [2]);
+});
+
+test("a window with no number from the daemon gets no picker", () => {
+  assert.deepStrictEqual(L.slotChoices(undefined), []);
+  assert.deepStrictEqual(L.slotChoices(null), []);
+});

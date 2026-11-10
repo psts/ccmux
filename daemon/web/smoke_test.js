@@ -451,15 +451,23 @@ async function tasksCases() {
   const r = run({ withBoard: true }); // the page has the board and the chat it leans on
   await settle();
   let reply = { tasks: [], counts: { "win-a": { waiting: 2, done: 3, needs_you: 1 }, "win-b": { waiting: 7 } } };
-  const reads = [];
-  r.ctx.fetch = async (u) => {
+  const reads = [], puts = [];
+  r.ctx.fetch = async (u, opts) => {
     reads.push(String(u));
+    if (opts && opts.method === "PUT") puts.push([String(u), opts.body]);
     return { ok: true, status: 200, json: async () => reply, text: async () => "" };
   };
   const made = [];
+  // The queue's own box keeps what is drawn into it and the handlers hung on it.
+  // A redraw replaces the status line, as innerHTML does in a browser.
+  const on = {}, line = { textContent: "", classList: { toggle() {} } };
+  let html = "";
+  const box = { dataset: {}, classList: { add() {}, remove() {}, toggle() {} },
+    get innerHTML() { return html; }, set innerHTML(v) { html = v; line.textContent = ""; },
+    contains: () => false, querySelector: (sel) => (sel === ".tq-status" ? line : null), addEventListener: (t, f) => { on[t] = f; } };
   r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "createElement"
     ? () => { const li = { className: "", innerHTML: "", onclick: null, querySelector: () => el() }; made.push(li); return li; }
-    : k === "getElementById" ? () => el() : el()) });
+    : k === "getElementById" ? (id) => (id === "tasks" ? box : el()) : el()) });
   for (const f of ["tasklist.js", "tasks.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), r.ctx, { filename: f });
   }
@@ -478,8 +486,23 @@ async function tasksCases() {
   check("a tasks-changed frame reads the queue again", reads.length > before);
   reply = { tasks: [{ id: 1, repo: "admin", title: "x", plan: "p", status: "waiting", moves: ["planning"], editable: true }], counts: {} };
   r.evalIn(`state.wsId = "ws-9"`);
+  r.evalIn(`state.windows = [{ id: "win-a", name: "Mixed", taskSlots: 1 }]`);
   r.ctx.ccmuxTasks.open(winA);
   await settle();
+  check("the header offers how many run at once, at the window's number",
+    /data-act="slots"[^]*<option value="1" selected>1 at a time/.test(box.innerHTML), box.innerHTML.slice(0, 600));
+  on.change({ target: { dataset: { act: "slots" }, value: "0" } });
+  await settle();
+  check("picking Paused stores 0 for that window",
+    puts.some(([u, b]) => u === "/v1/windows/win-a/slots" && JSON.parse(b).slots === 0), JSON.stringify(puts));
+  check("the picker then shows Paused", /<option value="0" selected>Paused/.test(box.innerHTML), box.innerHTML.slice(0, 600));
+  const okFetch = r.ctx.fetch;
+  r.ctx.fetch = async (u, opts) => { if (opts && opts.method === "PUT") throw new Error("network down"); return okFetch(u, opts); };
+  on.change({ target: { dataset: { act: "slots" }, value: "2" } });
+  await settle();
+  check("a failed change keeps saying why", line.textContent.includes("Couldn't change how many run at once"), line.textContent);
+  check("and the picker stays at the stored number", /<option value="0" selected>Paused/.test(box.innerHTML), box.innerHTML.slice(0, 600));
+  r.ctx.fetch = okFetch;
   check("opening the task view leaves the session", r.ctx.ccmuxTasks.isOpen() && r.evalIn("state.wsId") === null);
   check("the view holds the window it was opened for", r.ctx.ccmuxTasks.openWindow() === "win-a", r.ctx.ccmuxTasks.openWindow());
   r.evalIn(`openWorkspace("ws-1")`);

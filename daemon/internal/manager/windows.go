@@ -29,7 +29,13 @@ var (
 	ErrUnknownWindow = errors.New("unknown window")
 	ErrNameTaken     = errors.New("window name already taken")
 	ErrBadWindowSize = errors.New("window size out of range")
+	ErrBadTaskSlots  = errors.New("task slots out of range")
 )
+
+// MaxTaskSlots is the most queued tasks a window may build at once: the
+// lens offers Paused (0) to this. Three heavy builds on one window already
+// ran the host out of memory (2026-11-10), so more is not offered.
+const MaxTaskSlots = 3
 
 // WindowInfo is one shared window as lenses see it (GET /v1/windows).
 type WindowInfo struct {
@@ -422,6 +428,36 @@ func (m *Manager) SetWindowSize(id string, size store.WindowSize) error {
 		return fmt.Errorf("%w: %s", ErrUnknownWindow, id)
 	}
 	return nil
+}
+
+// SetWindowSlots records how many queued tasks a window builds at once
+// (0 holds its queue). Nothing is published: the runner reads the numbers
+// on its next pass, and lenses on their next windows read.
+func (m *Manager) SetWindowSlots(id string, slots int) error {
+	if m.store == nil {
+		return errors.New("no store: windows are not available")
+	}
+	if slots < 0 || slots > MaxTaskSlots {
+		return fmt.Errorf("%w: %d (0 to %d)", ErrBadTaskSlots, slots, MaxTaskSlots)
+	}
+	ok, err := m.store.SetWindowSlots(id, slots)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrUnknownWindow, id)
+	}
+	return nil
+}
+
+// WindowSlots returns the windows that have their own task slots. The
+// error is the caller's to act on: the runner starts nothing, the windows
+// list serves no number, since a default in place of a stored 0 un-pauses.
+func (m *Manager) WindowSlots() (map[string]int, error) {
+	if m.store == nil {
+		return map[string]int{}, nil
+	}
+	return m.store.WindowSlots()
 }
 
 // WindowSizes returns every shared window's stored size. Best effort, unlike

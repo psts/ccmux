@@ -78,6 +78,11 @@ type Store interface {
 	// window exists: a size for an unknown id lands nowhere.
 	SetWindowSize(id string, size WindowSize) (bool, error)
 	WindowSizes() (map[string]WindowSize, error) // window id → size
+	// How many queued tasks a window builds at once, for the windows that
+	// have their own number (0 holds the queue). Reports whether the window
+	// exists, like SetWindowSize.
+	SetWindowSlots(id string, slots int) (bool, error)
+	WindowSlots() (map[string]int, error) // window id → slots
 	// Wake marks: the sessions awake when their window was last closed
 	// (windowwake.go).
 	SetWakeMarks(members, awake []string) error
@@ -199,6 +204,9 @@ CREATE TABLE IF NOT EXISTS windows (
 CREATE UNIQUE INDEX IF NOT EXISTS windows_by_name ON windows(lower(name));
 CREATE TABLE IF NOT EXISTS window_sizes (
   window_id TEXT PRIMARY KEY, width INTEGER NOT NULL, height INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS window_slots (
+  window_id TEXT PRIMARY KEY, slots INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS session_wake (
   ws_id TEXT PRIMARY KEY
@@ -719,7 +727,8 @@ func (s *SQLite) RenameWindow(id, name string) error {
 	return err
 }
 
-// DeleteWindow removes a window entity plus its membership, open flags and size.
+// DeleteWindow removes a window entity plus its membership, open flags, size
+// and task slots.
 func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_members WHERE window_id=?`, id); err != nil {
 		return err
@@ -727,12 +736,16 @@ func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_open WHERE window_id=?`, id); err != nil {
 		return err
 	}
-	// The window before its size: a SetWindowSize landing between the two
-	// then either finds no window, or writes a row the second delete takes.
+	// The window before its size and slots: a SetWindowSize or
+	// SetWindowSlots landing in between then either finds no window, or
+	// writes a row the later delete takes.
 	if _, err := s.db.Exec(`DELETE FROM windows WHERE id=?`, id); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM window_sizes WHERE window_id=?`, id)
+	if _, err := s.db.Exec(`DELETE FROM window_sizes WHERE window_id=?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM window_slots WHERE window_id=?`, id)
 	return err
 }
 
@@ -779,6 +792,40 @@ func (s *SQLite) WindowSizes() (map[string]WindowSize, error) {
 			return nil, err
 		}
 		out[id] = size
+	}
+	return out, rows.Err()
+}
+
+// SetWindowSlots upserts a window's task slots, only while the window
+// exists, in one statement for the same reason as SetWindowSize.
+func (s *SQLite) SetWindowSlots(id string, slots int) (bool, error) {
+	res, err := s.db.Exec(`
+INSERT INTO window_slots (window_id, slots)
+SELECT ?, ? WHERE EXISTS (SELECT 1 FROM windows WHERE id=?)
+ON CONFLICT(window_id) DO UPDATE SET slots=excluded.slots`,
+		id, slots, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// WindowSlots returns every window's own task slots, id → slots.
+func (s *SQLite) WindowSlots() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT window_id, slots FROM window_slots`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
 	}
 	return out, rows.Err()
 }

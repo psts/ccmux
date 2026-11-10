@@ -52,9 +52,14 @@ type Runner struct {
 	MergeGit MergeGit
 	Checks   Checks
 	Lock     sync.Locker
-	Slots    int    // features running at once in each window, across its repos
-	Root     string // where worktrees and briefs go
-	Now      func() time.Time
+	Slots    int // features running at once in a window with no number of its own
+	// WindowSlots returns the windows that have their own number, window id
+	// -> features at once (0 holds that window's queue). Nil means every
+	// window runs Slots. An error starts nothing new that pass: falling back
+	// to Slots would start a task in a window someone paused.
+	WindowSlots func() (map[string]int, error)
+	Root        string // where worktrees and briefs go
+	Now         func() time.Time
 
 	merging bool           // a merge is in flight; guarded by Lock
 	merges  sync.WaitGroup // the merge in flight, for tests to wait on
@@ -193,9 +198,13 @@ func (r *Runner) claim(tasks []store.Task, parts []store.Part) []job {
 			jobs = append(jobs, r.claimParts(t, parts)...)
 		}
 	}
+	limit, ok := r.slotLimit()
+	if !ok {
+		return jobs
+	}
 	held := SlotsHeld(tasks, parts)
 	for _, t := range Startable(tasks, parts) {
-		if held[t.WindowID] >= r.Slots {
+		if held[t.WindowID] >= limit(t.WindowID) {
 			continue
 		}
 		t.Status, t.Note, t.StartedAt, t.FinishedAt = Running, "", r.Now().UnixMilli(), 0
@@ -206,6 +215,26 @@ func (r *Runner) claim(tasks []store.Task, parts []store.Part) []job {
 		held[t.WindowID]++
 	}
 	return jobs
+}
+
+// slotLimit reads every window's own number once per pass and answers how
+// many features a window may run: its own number, or Slots without one. It
+// reports false when the numbers are unreadable.
+func (r *Runner) slotLimit() (func(windowID string) int, bool) {
+	var own map[string]int
+	if r.WindowSlots != nil {
+		var err error
+		if own, err = r.WindowSlots(); err != nil {
+			log.Printf("tasks: window slots unreadable, nothing new starts this pass: %v", err)
+			return nil, false
+		}
+	}
+	return func(windowID string) int {
+		if n, ok := own[windowID]; ok {
+			return n
+		}
+		return r.Slots
+	}, true
 }
 
 // claimParts marks a task's pending parts running and returns them as jobs.

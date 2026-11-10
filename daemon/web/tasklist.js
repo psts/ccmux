@@ -76,7 +76,21 @@
 
   function moveLabel(to) { return MOVE_LABELS[to] || to; }
 
-  const api = { sections, repos, summary, waitsOn, moveLabel, partWord, SECTIONS };
+  // slotChoices is the Tasks header's "how many at once" picker for a window
+  // whose number is n: Paused (0) to MAX_SLOTS, the daemon's own bound
+  // (manager.MaxTaskSlots). No number (no task runner on the daemon) means
+  // no picker.
+  const MAX_SLOTS = 3;
+  function slotChoices(n) {
+    if (typeof n !== "number") return [];
+    const out = [];
+    for (let v = 0; v <= MAX_SLOTS; v++) {
+      out.push({ value: v, label: v === 0 ? "Paused" : `${v} at a time`, selected: v === n });
+    }
+    return out;
+  }
+
+  const api = { sections, repos, summary, waitsOn, moveLabel, partWord, slotChoices, SECTIONS };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxTaskList = api;
 })(typeof window !== "undefined" ? window : this);
