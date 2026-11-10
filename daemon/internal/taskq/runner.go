@@ -58,8 +58,11 @@ type Runner struct {
 	// window runs Slots. An error starts nothing new that pass: falling back
 	// to Slots would start a task in a window someone paused.
 	WindowSlots func() (map[string]int, error)
-	Root        string // where worktrees and briefs go
-	Now         func() time.Time
+	// TotalSlots returns the most features at once across every window, 0
+	// for no cap. Nil means no cap. An error starts nothing new that pass.
+	TotalSlots func() (int, error)
+	Root       string // where worktrees and briefs go
+	Now        func() time.Time
 
 	merging bool           // a merge is in flight; guarded by Lock
 	merges  sync.WaitGroup // the merge in flight, for tests to wait on
@@ -196,20 +199,19 @@ func (r *Runner) rollup(tasks []store.Task, parts []store.Part) bool {
 // Ahead of both, a failed merge waiting for a slot goes back to its worker
 // (claimFixes). It reports whether such a send-back went out.
 func (r *Runner) claim(tasks []store.Task, parts []store.Part) ([]job, bool) {
-	limit, ok := r.slotLimit()
-	held := SlotsHeld(tasks, parts)
-	sent := r.claimFixes(tasks, parts, held, limit)
-	jobs := r.claimStarted(tasks, parts, held, limit)
-	if !ok {
+	book := r.slotBook(tasks, parts)
+	sent := r.claimFixes(tasks, parts, book)
+	jobs := r.claimStarted(tasks, parts, book)
+	if book == nil {
 		return jobs, sent
 	}
-	return append(jobs, r.claimNew(tasks, parts, held, limit)...), sent
+	return append(jobs, r.claimNew(tasks, parts, book)...), sent
 }
 
 // claimStarted starts the pending parts of running and needs-you tasks: at
 // once for a task already at work, else only into a free slot (none while
-// limit is nil, the numbers being unreadable). It counts what it takes in held.
-func (r *Runner) claimStarted(tasks []store.Task, parts []store.Part, held map[string]int, limit func(string) int) []job {
+// book is nil, the numbers being unreadable). It counts what it takes.
+func (r *Runner) claimStarted(tasks []store.Task, parts []store.Part, book *slotBook) []job {
 	working := Working(parts)
 	var jobs []job
 	for _, t := range tasks {
@@ -220,23 +222,23 @@ func (r *Runner) claimStarted(tasks []store.Task, parts []store.Part, held map[s
 			jobs = append(jobs, r.claimParts(t, parts)...)
 			continue
 		}
-		if limit == nil || held[t.WindowID] >= limit(t.WindowID) {
+		if !book.free(t.WindowID) {
 			continue
 		}
 		if mine := r.claimParts(t, parts); len(mine) > 0 {
 			jobs = append(jobs, mine...)
-			held[t.WindowID]++
+			book.take(t.WindowID)
 		}
 	}
 	return jobs
 }
 
 // claimNew starts each next ready task, with every one of its parts, while
-// its window has a slot free.
-func (r *Runner) claimNew(tasks []store.Task, parts []store.Part, held map[string]int, limit func(string) int) []job {
+// its window and the daemon have a slot free.
+func (r *Runner) claimNew(tasks []store.Task, parts []store.Part, book *slotBook) []job {
 	var jobs []job
 	for _, t := range Startable(tasks, parts) {
-		if held[t.WindowID] >= limit(t.WindowID) {
+		if !book.free(t.WindowID) {
 			continue
 		}
 		t.Status, t.Note, t.StartedAt, t.FinishedAt = Running, "", r.Now().UnixMilli(), 0
@@ -244,29 +246,9 @@ func (r *Runner) claimNew(tasks []store.Task, parts []store.Part, held map[strin
 			continue
 		}
 		jobs = append(jobs, r.claimParts(t, parts)...)
-		held[t.WindowID]++
+		book.take(t.WindowID)
 	}
 	return jobs
-}
-
-// slotLimit reads every window's own number once per pass and answers how
-// many features a window may run: its own number, or Slots without one. It
-// reports false when the numbers are unreadable.
-func (r *Runner) slotLimit() (func(windowID string) int, bool) {
-	var own map[string]int
-	if r.WindowSlots != nil {
-		var err error
-		if own, err = r.WindowSlots(); err != nil {
-			log.Printf("tasks: window slots unreadable, nothing new starts this pass: %v", err)
-			return nil, false
-		}
-	}
-	return func(windowID string) int {
-		if n, ok := own[windowID]; ok {
-			return n
-		}
-		return r.Slots
-	}, true
 }
 
 // claimParts marks a task's pending parts running and returns them as jobs.

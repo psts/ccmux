@@ -1070,3 +1070,41 @@ func TestSlug(t *testing.T) {
 		}
 	}
 }
+
+// The machine-wide cap holds across windows: each window may run one, but
+// with a total of 2 only the first two windows' tasks start; the third
+// waits for a slot anywhere. No cap (0) leaves the windows alone, and an
+// unreadable cap starts nothing new.
+func TestRunner_TotalCapAcrossWindows(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.r.TotalSlots = func() (int, error) { return 2, nil }
+	for i, w := range []string{"w1", "w2", "w3"} {
+		g.feature(int64(i+1), 0, "app")
+		g.inWindow(int64(i+1), w)
+	}
+	g.tick()
+	if g.st.task(1).Status != Running || g.st.task(2).Status != Running || g.st.task(3).Status != Waiting {
+		t.Fatalf("with a total of 2: %s %s %s, want running running waiting",
+			g.st.task(1).Status, g.st.task(2).Status, g.st.task(3).Status)
+	}
+	// A later pass starts from what earlier ones left running: #4 arrives
+	// in a fourth window with room of its own, and the cap still holds it.
+	g.feature(4, 0, "app")
+	g.inWindow(4, "w4")
+	g.tick()
+	if g.st.task(1).Status != Running || g.st.task(2).Status != Running || g.st.task(3).Status != Waiting || g.st.task(4).Status != Waiting {
+		t.Fatalf("next pass at a full cap: %s %s %s %s, want running running waiting waiting",
+			g.st.task(1).Status, g.st.task(2).Status, g.st.task(3).Status, g.st.task(4).Status)
+	}
+	g.r.TotalSlots = func() (int, error) { return 0, errors.New("database is locked") }
+	g.tick()
+	if g.st.task(3).Status != Waiting {
+		t.Fatalf("unreadable cap started #3: %s", g.st.task(3).Status)
+	}
+	g.r.TotalSlots = func() (int, error) { return 0, nil }
+	g.tick()
+	if g.st.task(3).Status != Running {
+		t.Fatalf("no cap: #3 = %s, want running in its own window's slot", g.st.task(3).Status)
+	}
+}

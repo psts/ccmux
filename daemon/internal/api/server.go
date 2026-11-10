@@ -671,6 +671,15 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// alone answer the question you'd read this for: is my lens aliased or not.
 		"identityAliasNames": aliasNames(s.mgr.IdentityAliases()),
 	}
+	// The most queued tasks built at once across every window, 0 for none.
+	// Strict like the harness list below: a picker that read 0 from a failed
+	// read and saved would quietly lift the cap.
+	taskCap, err := s.mgr.TaskSlotsTotal()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	resp["taskSlotsTotal"] = taskCap
 	if !s.addLLMSettings(w, resp) {
 		return
 	}
@@ -738,6 +747,8 @@ type settingsRequest struct {
 	// startupCommand/startupRules keys decode into nothing here and are
 	// silently ignored — the compat contract an old lens's saves rely on.
 	HarnessRules *[]harness.Rule `json:"harnessRules"`
+	// The most queued tasks built at once across every window; 0 for none.
+	TaskSlotsTotal *int `json:"taskSlotsTotal"`
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -749,11 +760,30 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if err := taskCapOf(req, manager.ValidateTaskSlotsTotal); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.applySettings(req); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := taskCapOf(req, s.mgr.SetTaskSlotsTotal); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	s.getSettings(w, r)
+}
+
+// taskCapOf hands the request's cap across windows to do (validate, then
+// store), or does nothing when the request leaves the cap alone. It sits
+// outside rejectSettings and applySettings, which are frozen over the
+// complexity cap.
+func taskCapOf(req settingsRequest, do func(int) error) error {
+	if req.TaskSlotsTotal == nil {
+		return nil
+	}
+	return do(*req.TaskSlotsTotal)
 }
 
 // rejectSettings validates the request against the state it would produce,

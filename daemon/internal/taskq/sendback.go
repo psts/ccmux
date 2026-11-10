@@ -197,13 +197,10 @@ func (r *Runner) autoSendBack(t store.Task, p store.Part, why string) store.Task
 	return sent
 }
 
-// slotFree reports whether window w may start one more feature now. An
-// unreadable queue or numbers count as no: the send-back then waits.
+// slotFree reports whether window w, and the daemon, may start one more
+// feature now. An unreadable queue or numbers count as no: the send-back
+// then waits.
 func (r *Runner) slotFree(w string) bool {
-	limit, ok := r.slotLimit()
-	if !ok {
-		return false
-	}
 	tasks, err := r.Store.Tasks()
 	if err != nil {
 		return false
@@ -212,16 +209,16 @@ func (r *Runner) slotFree(w string) bool {
 	if err != nil {
 		return false
 	}
-	return SlotsHeld(tasks, parts)[w] < limit(w)
+	return r.slotBook(tasks, parts).free(w)
 }
 
 // claimFixes sends back the failed merges waiting for a slot (FixPart), in
 // queue order, while their window has one free: first in line, since the
-// feature is nearly done. It counts what it takes in held. Under the lock.
-func (r *Runner) claimFixes(tasks []store.Task, parts []store.Part, held map[string]int, limit func(string) int) bool {
+// feature is nearly done. It counts what it takes in book. Under the lock.
+func (r *Runner) claimFixes(tasks []store.Task, parts []store.Part, book *slotBook) bool {
 	changed := false
 	for _, t := range tasks {
-		if t.Status != MergeFailed || t.FixPart == 0 || limit == nil || held[t.WindowID] >= limit(t.WindowID) {
+		if t.Status != MergeFailed || t.FixPart == 0 || !book.free(t.WindowID) {
 			continue
 		}
 		var p store.Part
@@ -232,7 +229,7 @@ func (r *Runner) claimFixes(tasks []store.Task, parts []store.Part, held map[str
 		}
 		next := r.autoSendBack(t, p, strings.TrimSuffix(t.Note, noteWaitsForSlot))
 		if next.Status == Running {
-			held[t.WindowID]++
+			book.take(t.WindowID)
 			changed = true
 			continue
 		}

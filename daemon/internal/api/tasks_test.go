@@ -521,3 +521,32 @@ func TestTasks_RetryAnIdleFeatureLiningItUpAsWaiting(t *testing.T) {
 		t.Fatalf("#2 = %s with %s/%s, want needs_you, running part untouched, retried part pending", got[1].Status, got[1].Parts[0].Status, got[1].Parts[1].Status)
 	}
 }
+
+// The started runner reads the cap across windows from the same place the
+// Settings page saves it. A runner built without that reads no cap at all,
+// and the page would go on showing, saving and reading back a number that
+// holds nothing.
+func TestStartTaskRunner_ReadsTheCapAcrossWindows(t *testing.T) {
+	s := windowsFixture(t, fakeResolver{login: "patric@x.com", ok: true}, &model.Workspace{ID: "w1"})
+	st, err := store.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	s.SetTasks(st)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir())
+	if s.taskRunner.TotalSlots == nil {
+		t.Fatal("the started runner reads no cap across windows")
+	}
+	if n, err := s.taskRunner.TotalSlots(); n != 0 || err != nil {
+		t.Fatalf("with no cap set the runner reads %d %v, want 0 (none)", n, err)
+	}
+	if err := s.mgr.SetTaskSlotsTotal(2); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.taskRunner.TotalSlots(); n != 2 || err != nil {
+		t.Fatalf("after the cap is set to 2 the runner reads %d %v", n, err)
+	}
+}

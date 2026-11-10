@@ -68,7 +68,7 @@ func (s *Server) StartTaskRunner(ctx context.Context, every time.Duration, slots
 	r := &taskq.Runner{
 		Store: s.tasks, Host: taskHost{mgr: s.mgr, peers: s.peersSvc}, Git: taskq.ExecGit{}, MergeGit: taskq.ExecGit{},
 		Checks: taskq.GateChecks{PerLine: 20 * time.Minute}, Lock: &s.tasksMu,
-		Slots: slots, WindowSlots: s.mgr.WindowSlots, Root: root, Now: time.Now,
+		Slots: slots, WindowSlots: s.mgr.WindowSlots, TotalSlots: s.mgr.TaskSlotsTotal, Root: root, Now: time.Now,
 	}
 	s.taskRunner = r
 	r.Start(ctx, every)
