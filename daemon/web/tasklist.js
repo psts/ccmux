@@ -28,16 +28,45 @@
 
   const partsOf = (t) => t.parts || [];
 
-  // sections splits the tasks by status in queue order, keeping those with a
-  // part in repo when repo is set, and drops the empty lists.
+  // sections splits the tasks by status, keeping those with a part in repo
+  // when repo is set, and drops the empty lists. Done reads newest first and
+  // Waiting next-to-start first (SORTS); the rest keep queue order.
   function sections(tasks, repo) {
     const out = [];
     for (const [key, title] of SECTIONS) {
       const list = tasks.filter((t) => t.status === key && (!repo || partsOf(t).some((p) => p.repo === repo)));
+      if (SORTS[key]) SORTS[key](list, tasks);
       if (list.length) out.push({ key, title, tasks: list });
     }
     return out;
   }
+
+  // ahead counts the unfinished tasks a task waits on through its "starts
+  // after" chain: 0 can start now. A chain that reaches a cancelled or
+  // removed task (or loops) holds until a person acts: Infinity.
+  function ahead(task, byId) {
+    let n = 0;
+    const seen = new Set([task.id]);
+    for (let id = task.afterId; id; ) {
+      const dep = byId.get(id);
+      if (!dep || dep.status === "cancelled" || seen.has(id)) return Infinity;
+      if (dep.status === "done") return n;
+      seen.add(id);
+      n++;
+      id = dep.afterId;
+    }
+    return n;
+  }
+
+  // Array.prototype.sort is stable, so ties keep queue order.
+  const SORTS = {
+    done: (list) => list.sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0)),
+    waiting: (list, all) => {
+      const byId = new Map(all.map((t) => [t.id, t]));
+      const n = new Map(list.map((t) => [t.id, ahead(t, byId)]));
+      list.sort((a, b) => (n.get(a.id) === n.get(b.id) ? 0 : n.get(a.id) - n.get(b.id)));
+    },
+  };
 
   // repos lists the repos that have a part in any task, by name.
   function repos(tasks) {
