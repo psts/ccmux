@@ -29,9 +29,10 @@ test("a repo filter keeps the features with a part in that repo", () => {
   assert.deepStrictEqual(L.repos(tasks), ["admin", "app", "backend"]);
 });
 
-test("the summary counts running, waiting and done, and alerts on what needs a person", () => {
-  assert.deepStrictEqual(L.summary({ running: 1, waiting: 2, done: 4, needs_you: 1, merge_failed: 1, ready_to_merge: 3 }),
-    { text: "1 running · 2 waiting · 4 done", alert: 2 });
+test("the summary counts running, merging, waiting and done, and alerts on what needs a person", () => {
+  assert.deepStrictEqual(L.summary({ running: 1, waiting: 2, done: 4, needs_you: 1, merge_failed: 1, ready_to_merge: 2, merging: 1 }),
+    { text: "1 running · 3 merging · 2 waiting · 4 done", alert: 2 });
+  assert.deepStrictEqual(L.summary({ waiting: 2, merging: 1 }), { text: "1 merging · 2 waiting", alert: 0 });
   assert.deepStrictEqual(L.summary(undefined), { text: "", alert: 0 });
 });
 

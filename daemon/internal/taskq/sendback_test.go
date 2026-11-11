@@ -192,33 +192,62 @@ func TestSendBack_EachWorkerFixableKind(t *testing.T) {
 	}
 }
 
-// With the window's one slot taken (#2 started while #1 merged), #1's red
-// check waits instead of going straight back to its worker: it stays merge
-// failed, says it waits for a slot, and its worker hears nothing yet. Once
-// #2 stops building, the send-back goes out, ahead of waiting #3.
-func TestSendBack_WaitsForAFreeSlot(t *testing.T) {
+// A failed merge goes straight back to its worker in the slot its feature
+// still held: with one slot, nothing else started while it merged, so
+// nothing is in its way, and the next feature goes on waiting.
+func TestSendBack_AFailedMergeKeepsItsOwnSlot(t *testing.T) {
 	g := newRig(t)
 	g.r.Slots = 1
 	g.feature(1, 0, "app")
 	g.feature(2, 0, "backend")
-	g.feature(3, 0, "admin")
 	g.tick() // #1 builds
 	g.doneParts(1)
 	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute"}
-	g.tick() // #1 merges and fails; #2 took the slot
+	g.tick() // #1 merges and fails
 	one, app := g.st.task(1), g.partsOf(1)[0]
-	if g.st.task(2).Status != Running {
-		t.Fatalf("#2 = %s, want running in the slot #1 left", g.st.task(2).Status)
+	if one.Status != Running || one.FixPart != 0 || app.Status != Running || len(g.host.told[app.PaneID]) != 1 {
+		t.Fatalf("#1 = %s fix %d, part %s, told %d; want back with its worker at once", one.Status, one.FixPart, app.Status, len(g.host.told[app.PaneID]))
 	}
-	if one.Status != MergeFailed || one.FixPart != app.ID || !strings.Contains(one.Note, "waiting for a free slot") {
-		t.Fatalf("#1 with no slot = %s fix %d note %q", one.Status, one.FixPart, one.Note)
+	if strings.Contains(one.Note, "waiting for a free slot") {
+		t.Fatalf("#1 says it waits for a slot it holds: %q", one.Note)
+	}
+	g.tick()
+	if g.st.task(2).Status != Waiting || len(g.host.started) != 1 {
+		t.Fatalf("#2 = %s, %d workers started; want waiting behind #1's fix", g.st.task(2).Status, len(g.host.started))
+	}
+}
+
+// With the window over its number (#1 and #2 started while it ran two at
+// once, then it was set to one), #1's red check waits instead of going
+// straight back to its worker: it stays merge failed, says it waits for a
+// slot, and its worker hears nothing yet. #2 keeps the slot until it is
+// merged; then the send-back goes out, ahead of waiting #3.
+func TestSendBack_WaitsForAFreeSlot(t *testing.T) {
+	g := newRig(t)
+	app := waitingFix(t, g)
+	g.feature(3, 0, "admin")
+	one := g.st.task(1)
+	if g.st.task(2).Status != Running {
+		t.Fatalf("#2 = %s, want still running", g.st.task(2).Status)
+	}
+	if one.Status != MergeFailed || !strings.Contains(one.Note, "waiting for a free slot") {
+		t.Fatalf("#1 with no slot = %s note %q", one.Status, one.Note)
 	}
 	if len(g.host.told[app.PaneID]) != 0 || app.Status != Ready {
 		t.Fatalf("worker told %v, part %s; want untold and still built", g.host.told[app.PaneID], app.Status)
 	}
 
 	g.doneParts(2)
-	g.tick() // #2 leaves its slot: #1 goes back to its worker, #3 waits
+	g.checks.hold = make(chan struct{})
+	g.r.Tick() // #2 is built and merging: it still holds the slot
+	held := g.st.task(1).Status
+	close(g.checks.hold)
+	g.r.merges.Wait()
+	g.checks.hold = nil
+	if held != MergeFailed || len(g.host.told[app.PaneID]) != 0 {
+		t.Fatalf("while #2 merges: #1 %s, told %v; want still waiting", held, g.host.told[app.PaneID])
+	}
+	g.tick() // #2 is merged: #1 goes back to its worker, #3 waits
 	one, app = g.st.task(1), g.partsOf(1)[0]
 	if one.Status != Running || one.FixPart != 0 || app.Status != Running {
 		t.Fatalf("#1 once a slot freed = %s fix %d part %s", one.Status, one.FixPart, app.Status)
@@ -237,21 +266,12 @@ func TestSendBack_WaitsForAFreeSlot(t *testing.T) {
 // waiting line, and nothing goes back a second time on a later pass.
 func TestSendBack_PersonSendsAWaitingFixNow(t *testing.T) {
 	g := newRig(t)
-	g.r.Slots = 1
-	g.feature(1, 0, "app")
-	g.feature(2, 0, "backend")
-	g.tick()
-	g.doneParts(1)
-	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute"}
-	g.tick()
-	app := g.partsOf(1)[0]
-	if g.st.task(1).FixPart != app.ID {
-		t.Fatalf("setup: #1 is not waiting to send back: %+v", g.st.task(1))
-	}
+	app := waitingFix(t, g)
 	if err := g.r.SendBackPart(1, app.ID); err != nil {
 		t.Fatal(err)
 	}
 	g.doneParts(2)
+	g.tick()
 	g.tick()
 	told := g.host.told[app.PaneID]
 	if g.st.task(1).FixPart != 0 || len(told) != 1 || strings.Contains(told[0], "waiting for a free slot") {
@@ -259,14 +279,16 @@ func TestSendBack_PersonSendsAWaitingFixNow(t *testing.T) {
 	}
 }
 
-// waitingFix leaves #1 merge failed with its send-back waiting for the one
-// slot #2 holds, and returns #1's part.
+// waitingFix leaves #1 merge failed with its send-back waiting for a slot:
+// #1 and #2 started while the window ran two at once, it was then set to
+// one, and #2 is still at work when #1's merge fails. It returns #1's part.
 func waitingFix(t *testing.T, g *rig) store.Part {
 	t.Helper()
-	g.r.Slots = 1
+	g.r.Slots = 2
 	g.feature(1, 0, "app")
 	g.feature(2, 0, "backend")
 	g.tick()
+	g.r.Slots = 1
 	g.doneParts(1)
 	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute"}
 	g.tick()
@@ -292,6 +314,7 @@ func TestSendBack_NewFailureSpendsAWaitingFix(t *testing.T) {
 	}
 	g.doneParts(2)
 	g.tick()
+	g.tick()
 	if told := g.host.told[app.PaneID]; len(told) != 0 {
 		t.Fatalf("the worker was told %q after a person's failure", told)
 	}
@@ -303,7 +326,11 @@ func TestSendBack_NewFailureSpendsAWaitingFix(t *testing.T) {
 func TestSendBack_WaitingFixFollowsTheWindowsNumber(t *testing.T) {
 	g := newRig(t)
 	app := waitingFix(t, g)
-	g.doneParts(2) // #2 leaves its slot
+	g.doneParts(2)
+	g.tick() // #2 merges, holding its slot to the end: the fix can go from the next pass
+	if g.st.task(2).Status != Done || g.st.task(1).FixPart != app.ID {
+		t.Fatalf("setup: #2 %s, #1 fix %d; want #2 merged and #1 still waiting", g.st.task(2).Status, g.st.task(1).FixPart)
+	}
 	g.r.WindowSlots = func() (map[string]int, error) { return nil, errors.New("database is locked") }
 	g.tick()
 	if g.st.task(1).FixPart != app.ID || len(g.host.told[app.PaneID]) != 0 {
@@ -329,7 +356,8 @@ func TestSendBack_UndeliveredWaitingFixStopsForAPerson(t *testing.T) {
 	app := waitingFix(t, g)
 	g.host.deaf = true
 	g.doneParts(2)
-	g.tick()
+	g.tick() // #2 merges
+	g.tick() // the slot is free: the send-back is tried
 	got := g.st.task(1)
 	if got.Status != MergeFailed || got.FixPart != 0 || !strings.Contains(got.Note, "send-back to its worker failed") ||
 		strings.Contains(got.Note, "waiting for a free slot") || g.st.part(app.ID).Status != Ready {

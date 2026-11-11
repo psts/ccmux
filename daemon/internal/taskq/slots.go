@@ -11,8 +11,8 @@ import (
 // where both its window and the daemon have room. A nil book means the
 // numbers were unreadable: nothing takes a slot that pass.
 type slotBook struct {
-	held  map[string]int          // features at work, per window (SlotsHeld)
-	total int                     // features at work, every window
+	held  map[string]int          // features holding a slot, per window (SlotsHeld)
+	total int                     // features holding a slot, every window
 	limit func(window string) int // the window's own number, or Runner.Slots
 	cap   int                     // the most at once across windows; 0 for none
 }
@@ -43,7 +43,7 @@ func (r *Runner) slotBook(tasks []store.Task, parts []store.Part) *slotBook {
 			return nil
 		}
 	}
-	b := &slotBook{held: SlotsHeld(tasks, parts)}
+	b := &slotBook{held: SlotsHeld(tasks, parts, r.parked)}
 	if r.TotalSlots != nil {
 		var err error
 		if b.cap, err = r.TotalSlots(); err != nil {

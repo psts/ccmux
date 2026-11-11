@@ -165,6 +165,7 @@ func (r *Runner) settleFailed(t store.Task, err error) store.Task {
 	var blocked folderBlocked
 	if errors.As(err, &blocked) {
 		t.Status, t.Note = ReadyToMerge, blocked.why
+		r.park(t.ID)
 		return t
 	}
 	t.Status, t.Note = MergeFailed, noteOf(err)
@@ -173,7 +174,7 @@ func (r *Runner) settleFailed(t store.Task, err error) store.Task {
 		return t
 	}
 	t.AutoFixes++
-	if !r.slotFree(t.WindowID) {
+	if !r.slotFreeFor(t) {
 		t.FixPart = fix.part.ID
 		t.Note = noteOf(errors.New(t.Note + noteWaitsForSlot))
 		return t
@@ -197,19 +198,25 @@ func (r *Runner) autoSendBack(t store.Task, p store.Part, why string) store.Task
 	return sent
 }
 
-// slotFree reports whether window w, and the daemon, may start one more
-// feature now. An unreadable queue or numbers count as no: the send-back
-// then waits.
-func (r *Runner) slotFree(w string) bool {
+// slotFreeFor reports whether t's window, and the daemon, have room for t
+// to go back to work, with t counted as it is about to be saved: the store
+// still has it merging, holding the very slot it would go back into. An
+// unreadable queue or numbers count as no: the send-back then waits.
+func (r *Runner) slotFreeFor(t store.Task) bool {
 	tasks, err := r.Store.Tasks()
 	if err != nil {
 		return false
+	}
+	for i := range tasks {
+		if tasks[i].ID == t.ID {
+			tasks[i] = t
+		}
 	}
 	parts, err := r.Store.Parts()
 	if err != nil {
 		return false
 	}
-	return r.slotBook(tasks, parts).free(w)
+	return r.slotBook(tasks, parts).free(t.WindowID)
 }
 
 // claimFixes sends back the failed merges waiting for a slot (FixPart), in

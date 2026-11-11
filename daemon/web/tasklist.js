@@ -62,13 +62,17 @@
   const PART_WORDS = { pending: "not started", running: "working", needs_you: "needs you", ready: "done", failed: "failed" };
   function partWord(status) { return PART_WORDS[status] || status; }
 
-  // summary is the sidebar row's line: what waits, runs and finished, and
-  // how many need a person (the row's highlighted count). A built feature
-  // merges on its own now, so ready_to_merge is no longer a person's job.
+  // summary is the sidebar row's line: what runs, merges, waits and
+  // finished, and how many need a person (the row's highlighted count). A
+  // built feature merges on its own, so it is no person's job, but it keeps
+  // its window's slot until it is merged: without "merging" a row would read
+  // "2 waiting" with nothing at work while the checks run.
   function summary(counts) {
     const c = counts || {};
     const parts = [];
+    const merging = (c.ready_to_merge || 0) + (c.merging || 0);
     if (c.running) parts.push(`${c.running} running`);
+    if (merging) parts.push(`${merging} merging`);
     if (c.waiting) parts.push(`${c.waiting} waiting`);
     if (c.done) parts.push(`${c.done} done`);
     return { text: parts.join(" · "), alert: (c.needs_you || 0) + (c.merge_failed || 0) };

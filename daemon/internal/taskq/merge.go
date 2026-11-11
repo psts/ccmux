@@ -44,7 +44,8 @@ func (r *Runner) recoverMerges(tasks []store.Task) bool {
 }
 
 // pickMerge claims the first built feature whose repos' folders allow a
-// merge now; one that has to wait says why in its note. Under the lock.
+// merge now; one that has to wait says why in its note, and is parked: it
+// gives its slot up until the folder is clean. Under the lock.
 func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, bool) {
 	changed := false
 	for i, t := range tasks {
@@ -53,6 +54,7 @@ func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, b
 		}
 		mine := PartsOf(parts, t.ID)
 		if why := r.mergeBlocked(mine); why != "" {
+			r.park(t.ID)
 			if t.Note != why {
 				t.Note = why
 				changed = r.saveTask(t) || changed
@@ -60,6 +62,7 @@ func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, b
 			}
 			continue
 		}
+		delete(r.parked, t.ID)
 		t.Status, t.Note = Merging, ""
 		if !r.saveTask(t) {
 			continue
@@ -69,6 +72,31 @@ func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, b
 		return &mergeJob{task: t, parts: mine}, true
 	}
 	return nil, changed
+}
+
+// park records that built feature id waits on a person's folder, so it
+// holds no slot meanwhile. Under the lock.
+func (r *Runner) park(id int64) {
+	if r.parked == nil {
+		r.parked = map[int64]bool{}
+	}
+	r.parked[id] = true
+}
+
+// forgetParked drops the folder waits of features no longer in line to
+// merge (merged by hand, cancelled, sent back): one built again later holds
+// its slot until pickMerge has looked at its folder afresh. Under the lock.
+func (r *Runner) forgetParked(tasks []store.Task) {
+	if len(r.parked) == 0 {
+		return
+	}
+	waiting := map[int64]bool{}
+	for _, t := range tasks {
+		if t.Status == ReadyToMerge && r.parked[t.ID] {
+			waiting[t.ID] = true
+		}
+	}
+	r.parked = waiting
 }
 
 // mergeBlocked says why the feature cannot merge now, "" when it can.

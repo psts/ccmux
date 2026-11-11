@@ -46,23 +46,45 @@ func InWindow(tasks []store.Task, windowID string) []store.Task {
 	return out
 }
 
-// SlotsHeld counts, per window, the tasks holding a slot: those with a part
-// at work. Each window has its own slots. The slots count features, not
-// Claudes, so every part of a feature runs at once. A feature whose every
-// Claude waits on a person holds none: a question asked at night must not
-// hold up the rest of the queue.
-func SlotsHeld(tasks []store.Task, parts []store.Part) map[string]int {
+// SlotsHeld counts, per window, the tasks holding a slot. Each window has
+// its own slots. The slots count features, not Claudes, so every part of a
+// feature runs at once. A feature holds its slot from its start until it is
+// merged: while a part is at work, and then while it waits its turn to merge
+// and its checks run. The checks are as heavy as the build was, and the next
+// feature should start from a trunk that has this one in it; a slot given up
+// at "done" started the next build on top of the checks, which then failed
+// on tests that only lose to a busy machine.
+//
+// Two kinds of waiting on a person hold none, so a night is never lost to
+// one: a feature whose every Claude waits on a person (a question), and a
+// built one in parked, which waits on a person's own folder (pickMerge). A
+// failed merge holds none either: it takes a slot again when it goes back
+// to its worker.
+func SlotsHeld(tasks []store.Task, parts []store.Part, parked map[int64]bool) map[string]int {
 	working := Working(parts)
 	held := map[string]int{}
 	for _, t := range tasks {
-		if working[t.ID] && (t.Status == Running || t.Status == NeedsYou) {
+		if holdsSlot(t, working[t.ID], parked[t.ID]) {
 			held[t.WindowID]++
 		}
 	}
 	return held
 }
 
-// Working is the tasks with a part at work, by id: the ones holding a slot.
+// holdsSlot is the rule for one task: at work, or built and on its way in.
+func holdsSlot(t store.Task, working, parked bool) bool {
+	switch t.Status {
+	case Running, NeedsYou:
+		return working
+	case ReadyToMerge:
+		return !parked
+	case Merging:
+		return true
+	}
+	return false
+}
+
+// Working is the tasks with a part at work, by id.
 func Working(parts []store.Part) map[int64]bool {
 	working := map[int64]bool{}
 	for _, p := range parts {

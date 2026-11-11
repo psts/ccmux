@@ -40,8 +40,9 @@ type Host interface {
 }
 
 // Runner starts waiting tasks while slots are free (a slot is a feature:
-// every part of it starts at once), keeps each part's status true to its
-// pane, and each task's status true to its parts. It decides under Lock,
+// every part of it starts at once, and it keeps the slot until it is
+// merged), keeps each part's status true to its pane, and each task's
+// status true to its parts. It decides under Lock,
 // the lock the lens and tool routes take, so a person's edit and the runner
 // never interleave; the slow part of a start (git, a new pane) runs outside
 // it, so a worker's report never waits on another part's checkout.
@@ -66,6 +67,11 @@ type Runner struct {
 
 	merging bool           // a merge is in flight; guarded by Lock
 	merges  sync.WaitGroup // the merge in flight, for tests to wait on
+	// parked is the built features waiting on a person's own folder (its
+	// trunk has uncommitted changes, say), by id: they hold no slot
+	// (SlotsHeld). Guarded by Lock. Empty after a restart, so such a
+	// feature holds its slot for the one pass it takes to look again.
+	parked map[int64]bool
 }
 
 // job is one claimed part to start, with its teammates' parts and bus names.
@@ -113,7 +119,7 @@ func (r *Runner) Tick() {
 }
 
 // decide judges every working part, rolls each started task up from its
-// parts, claims what may start, and picks a feature to merge. A claimed
+// parts, picks a feature to merge, and claims what may start. A claimed
 // part is saved as running with no pane yet: a daemon that dies mid-start
 // leaves a part the next pass fails ("it lost its pane before starting")
 // instead of one started twice.
@@ -130,13 +136,16 @@ func (r *Runner) decide() ([]job, *mergeJob, bool) {
 		log.Printf("tasks: parts unreadable, runner pass skipped: %v", err)
 		return nil, nil, false
 	}
+	r.forgetParked(tasks)
 	changed := r.watch(parts)
 	r.publishRoutes(tasks, parts)
 	if r.rollup(tasks, parts) {
 		changed = true
 	}
-	jobs, sent := r.claim(tasks, parts)
+	// The merge step goes first: the slots are then handed out knowing what
+	// this pass put into the merge line and what it parked.
 	mj, picked := r.mergeStep(tasks, parts)
+	jobs, sent := r.claim(tasks, parts)
 	return jobs, mj, changed || sent || picked || len(jobs) > 0
 }
 
@@ -196,6 +205,8 @@ func (r *Runner) rollup(tasks []store.Task, parts []store.Part) bool {
 // task with every one of its parts. A started task already at work holds its
 // slot, so its new part starts at once; one with nothing at work (every part
 // failed or retried) needs a free slot like a new task, and gets it first.
+// A built task on its way into the trunk still holds its slot (SlotsHeld),
+// so nothing new starts on top of its merge.
 // Ahead of both, a failed merge waiting for a slot goes back to its worker
 // (claimFixes). It reports whether such a send-back went out.
 func (r *Runner) claim(tasks []store.Task, parts []store.Part) ([]job, bool) {

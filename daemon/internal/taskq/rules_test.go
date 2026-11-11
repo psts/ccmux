@@ -153,9 +153,31 @@ func TestSlotsCountFeaturesNotClaudes(t *testing.T) {
 		{TaskID: 3, Status: NeedsYou},
 		{TaskID: 4, Status: Running},
 	}
-	got := SlotsHeld(tasks, parts)
+	got := SlotsHeld(tasks, parts, nil)
 	if got["w1"] != 2 || got["w2"] != 1 || len(got) != 2 {
 		t.Fatalf("slots = %v, want w1:2 w2:1 (three Claudes of one feature are one slot; a feature only waiting on you holds none; each window counts its own)", got)
+	}
+}
+
+// A built feature keeps its slot until it is merged: while it waits its
+// turn to merge and while its checks run. One waiting on a person's own
+// folder (parked) holds none, and neither does one whose merge failed, is
+// done, or was cancelled.
+func TestSlotsAreHeldUntilMerged(t *testing.T) {
+	tasks := list(
+		store.Task{ID: 1, Status: ReadyToMerge, WindowID: "w1"},
+		store.Task{ID: 2, Status: Merging, WindowID: "w1"},
+		store.Task{ID: 3, Status: ReadyToMerge, WindowID: "w2"}, // parked
+		store.Task{ID: 4, Status: MergeFailed, WindowID: "w2"},
+		store.Task{ID: 5, Status: Done, WindowID: "w2"},
+		store.Task{ID: 6, Status: Cancelled, WindowID: "w2"},
+		store.Task{ID: 7, Status: Waiting, WindowID: "w2"},
+	)
+	parts := []store.Part{{TaskID: 1, Status: Ready}, {TaskID: 2, Status: Ready}, {TaskID: 3, Status: Ready},
+		{TaskID: 4, Status: Ready}, {TaskID: 5, Status: Ready}, {TaskID: 6, Status: Pending}, {TaskID: 7, Status: Pending}}
+	got := SlotsHeld(tasks, parts, map[int64]bool{3: true})
+	if got["w1"] != 2 || got["w2"] != 0 {
+		t.Fatalf("slots = %v, want w1:2 w2:0 (ready to merge and merging hold; parked, failed, done, cancelled and waiting do not)", got)
 	}
 }
 

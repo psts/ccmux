@@ -736,6 +736,132 @@ func TestMerge_OneAtATime(t *testing.T) {
 	}
 }
 
+// A feature keeps its slot until it is merged: with one slot, the next
+// feature does not start when the first reports done, nor while its checks
+// run, only once it is in the trunk. The checks and the next build never
+// share the machine, and the next build starts from a trunk that has the
+// first feature in it.
+func TestRunner_KeepsItsSlotUntilMerged(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.hold = make(chan struct{})
+	g.r.Tick() // #1 is built: its merge starts
+	g.r.Tick() // a pass while its checks run
+	first, second, started := g.st.task(1).Status, g.st.task(2).Status, len(g.host.started)
+	close(g.checks.hold)
+	g.r.merges.Wait()
+	if first != Merging || second != Waiting || started != 1 {
+		t.Fatalf("while #1's checks run: #1 %s, #2 %s, %d workers started; want merging, waiting, 1", first, second, started)
+	}
+	g.tick()
+	if g.st.task(1).Status != Done || g.st.task(2).Status != Running {
+		t.Fatalf("after the merge: #1 %s, #2 %s; want done, running", g.st.task(1).Status, g.st.task(2).Status)
+	}
+}
+
+// A built feature that waits on a person's own folder (uncommitted changes
+// on the trunk) gives its slot up: someone's work in progress must not stop
+// the queue for the night. It merges once the folder is clean.
+func TestRunner_ABuiltFeatureWaitingOnAFolderLeavesItsSlot(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.tick()
+	g.doneParts(1)
+	g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
+	g.tick() // #1 is built and found waiting on the folder
+	g.tick()
+	if one := g.st.task(1); one.Status != ReadyToMerge || !strings.Contains(one.Note, "uncommitted") {
+		t.Fatalf("#1 = %+v, want ready to merge and saying why it waits", one)
+	}
+	if g.st.task(2).Status != Running {
+		t.Fatalf("#2 = %s, want running in the slot #1 gave up", g.st.task(2).Status)
+	}
+	delete(g.git.blocked, "/p/app")
+	g.tick()
+	if g.st.task(1).Status != Done {
+		t.Fatalf("#1 once the folder was clean = %s, want done", g.st.task(1).Status)
+	}
+}
+
+// A folder that turns dirty while the checks run sends the feature back to
+// wait for it, and that wait holds no slot either.
+func TestRunner_AFolderDirtiedDuringTheChecksLeavesTheSlot(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.during = func() {
+		g.git.mu.Lock()
+		g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
+		g.git.mu.Unlock()
+	}
+	g.tick() // #1's checks pass, the folder is dirty by then
+	g.tick()
+	if g.st.task(1).Status != ReadyToMerge || g.st.task(2).Status != Running {
+		t.Fatalf("#1 %s, #2 %s; want ready to merge and #2 running", g.st.task(1).Status, g.st.task(2).Status)
+	}
+}
+
+// A feature that leaves its wait on a folder merges alone too. The pass
+// that finds the folder clean starts its merge before it hands out slots,
+// so a task filed meanwhile does not start beside the checks.
+func TestRunner_AFeatureLeavingAFolderWaitMergesAlone(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
+	g.tick() // #1 waits on the folder, holding no slot
+	delete(g.git.blocked, "/p/app")
+	g.feature(2, 0, "backend")
+	g.checks.hold = make(chan struct{})
+	g.r.Tick() // the folder is clean and #2 is new, in one pass
+	first, second, started := g.st.task(1).Status, g.st.task(2).Status, len(g.host.started)
+	close(g.checks.hold)
+	g.r.merges.Wait()
+	if first != Merging || second != Waiting || started != 1 {
+		t.Fatalf("#1 %s, #2 %s, %d workers started; want merging, waiting, 1", first, second, started)
+	}
+}
+
+// A wait on a folder is forgotten once the feature leaves it: built again
+// later (cancelled and queued again, say), it holds its slot like any other
+// until the runner has looked at its folder afresh.
+func TestRunner_AnOldFolderWaitIsForgotten(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
+	g.tick() // #1 waits on the folder, and gives its slot up
+	one := g.st.task(1)
+	one.Status = Cancelled
+	g.st.SaveTask(one)
+	g.tick() // a pass sees it out of the merge line
+	delete(g.git.blocked, "/p/app")
+	one.Status = ReadyToMerge // built again
+	g.st.SaveTask(one)
+	g.feature(2, 0, "backend")
+	g.checks.hold = make(chan struct{})
+	g.r.Tick()
+	first, second := g.st.task(1).Status, g.st.task(2).Status
+	close(g.checks.hold)
+	g.r.merges.Wait()
+	if first != Merging || second != Waiting {
+		t.Fatalf("#1 %s, #2 %s; want merging and waiting: #1 holds the one slot again", first, second)
+	}
+}
+
 // A merge the daemon dropped mid-way (it stopped) is picked up again.
 func TestMerge_ResumesAfterARestart(t *testing.T) {
 	g := newRig(t)
