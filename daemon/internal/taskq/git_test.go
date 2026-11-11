@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func gitRepo(t *testing.T) string {
@@ -423,5 +424,18 @@ func TestExecGit_TrunkBlockedByAGitLock(t *testing.T) {
 	why, err := g.TrunkBlocked(repo, "main")
 	if err != nil || !strings.Contains(why, lock) || !strings.Contains(why, "git is busy") {
 		t.Fatalf("locked folder = %q, %v", why, err)
+	}
+}
+
+// A git command past its time says so: "signal: killed" alone read as a
+// folder that would not go, when the removal had only run out of time.
+func TestRunGitFor_SaysItTimedOut(t *testing.T) {
+	repo := gitRepo(t)
+	_, err := runGitFor(time.Nanosecond, repo, "status")
+	if err == nil || !errors.Is(err, errGitTimeout) || !strings.Contains(err.Error(), "took longer than") {
+		t.Fatalf("timed-out git = %v", err)
+	}
+	if _, err := runGitFor(time.Minute, repo, "status"); err != nil {
+		t.Fatalf("git inside its time = %v", err)
 	}
 }

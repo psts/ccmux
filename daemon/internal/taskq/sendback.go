@@ -151,11 +151,13 @@ func sendBackText(taskID int64, trunk, why string) string {
 %s
 
 The merge rebases your branch onto %s before it runs the checks, so your
-branch may already sit on top of %s (git log shows it). Fix this in your
-worktree. For this fix you may rebase onto %s, the one exception to your
-brief. Commit, run the repo's checks, then call the tasks tool with action
-"report", status "done" again. If you cannot fix it, report "stuck" with
-what you need.`, taskID, why, trunk, trunk, trunk)
+branch may already sit on top of %s (git log shows it). A failed check was
+run twice before it came to you, and where a file is named above it holds
+that check's whole output: read it first. Fix this in your worktree. For
+this fix you may rebase onto %s, the one exception to your brief. Commit,
+run the repo's checks, then call the tasks tool with action "report",
+status "done" again. If you cannot fix it, report "stuck" with what you
+need.`, taskID, why, trunk, trunk, trunk)
 }
 
 // settleFailed decides where a failed merge goes, by its kind. Under the

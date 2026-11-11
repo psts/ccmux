@@ -168,6 +168,7 @@ type fakeGit struct {
 	ffs         []string            // repos fast-forwarded, in order
 	removed     []string            // worktrees removed after a merge
 	rebased     int
+	onRemove    func() // runs as a merged part's worktree is removed
 }
 
 func (g *fakeGit) TrunkBlocked(repo, trunk string) (string, error) {
@@ -221,6 +222,9 @@ func (g *fakeGit) FastForward(repo, rev, trunk string) error {
 	return nil
 }
 func (g *fakeGit) RemoveWorktree(repo, path, branch, trunk string) error {
+	if g.onRemove != nil {
+		g.onRemove()
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.rmErr[repo]; err != nil {
@@ -833,6 +837,34 @@ func TestRunner_AFeatureLeavingAFolderWaitMergesAlone(t *testing.T) {
 	}
 }
 
+// A merged feature is done before its tidy-up starts: removing a worktree
+// can take minutes, and a daemon stopped in the middle (every deploy stops
+// it) must not find the feature still merging and merge it a second time,
+// against a folder half gone. What the tidy-up left is added to the note.
+func TestMerge_IsDoneBeforeTheTidyUp(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	var during store.Task
+	g.git.onRemove = func() { during = g.st.task(1) }
+	g.git.rmErr["/p/app"] = errors.New("left half removed")
+	g.tick()
+	if during.Status != Done || during.Note != "merged app into dev" || during.FinishedAt == 0 {
+		t.Fatalf("while the worktree is removed: %+v, want done and saying what merged", during)
+	}
+	if got := g.st.task(1); got.Status != Done || !strings.Contains(got.Note, "left for you") || !strings.Contains(got.Note, "left half removed") {
+		t.Fatalf("after the tidy-up: %+v, want done and saying what was left", got)
+	}
+	g.feature(2, 0, "backend")
+	g.doneParts(1)
+	g.tick()
+	g.tick()
+	if g.st.task(2).Status != Running && g.st.task(2).Status != ReadyToMerge {
+		t.Fatalf("the merge lane was not freed after the tidy-up: #2 %s", g.st.task(2).Status)
+	}
+}
+
 // A wait on a folder is forgotten once the feature leaves it: built again
 // later (cancelled and queued again, say), it holds its slot like any other
 // until the runner has looked at its folder afresh.
@@ -859,6 +891,153 @@ func TestRunner_AnOldFolderWaitIsForgotten(t *testing.T) {
 	g.r.merges.Wait()
 	if first != Merging || second != Waiting {
 		t.Fatalf("#1 %s, #2 %s; want merging and waiting: #1 holds the one slot again", first, second)
+	}
+}
+
+// built reports part p done at the rig's clock, as its worker's own report
+// does (Report), and leaves its pane showing st.
+func (g *rig) built(p store.Part, st PaneState) {
+	next, err := Report(p, "done", "built", g.now.UnixMilli())
+	if err != nil {
+		panic(err)
+	}
+	g.st.SavePart(next)
+	g.host.panes[p.PaneID] = st
+}
+
+// The merge waits for the worker's turn to end. A worker that says done is
+// often sent straight back to work by its own Stop hook (a receipt to sign:
+// the whole test suite again, in the worktree the merge is about to check),
+// and the two runs then fail each other. So a Stop is not enough: the checks
+// start once Claude's idle reminder says the turn really ended. The feature
+// keeps its slot while it waits.
+func TestMerge_WaitsForTheWorkersTurnToEnd(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.tick()
+	app := g.partsOf(1)[0]
+	g.built(app, PaneState{Attention: model.AttentionDone, Reason: model.ReasonFinished, At: g.now.UnixMilli()})
+	g.tick()
+	g.tick()
+	one := g.st.task(1)
+	if one.Status != ReadyToMerge || one.Note != noteSettling || g.git.rebased != 0 {
+		t.Fatalf("right after the report: %s note %q, %d rebases; want waiting on its worker, nothing touched", one.Status, one.Note, g.git.rebased)
+	}
+	if g.st.task(2).Status != Waiting {
+		t.Fatalf("#2 = %s, want waiting: #1 holds the slot while its worker winds down", g.st.task(2).Status)
+	}
+	g.now = g.now.Add(61 * time.Second)
+	g.host.panes[app.PaneID] = PaneState{Attention: model.AttentionNeedsInput, Reason: model.ReasonFinished, At: g.now.UnixMilli()}
+	g.tick()
+	if got := g.st.task(1); got.Status != Done || got.Note != "merged app into dev" {
+		t.Fatalf("after the idle reminder = %s note %q, want merged", got.Status, got.Note)
+	}
+}
+
+// A worker that never sends the reminder does not hold its feature for
+// good: after SettleLimit with no sign the merge goes ahead.
+func TestMerge_AWorkerThatNeverGoesQuietIsNotWaitedOnForGood(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	app := g.partsOf(1)[0]
+	g.built(app, PaneState{Attention: model.AttentionDone, Reason: model.ReasonFinished, At: g.now.UnixMilli()})
+	g.now = g.now.Add(SettleLimit - time.Second)
+	g.tick()
+	if got := g.st.task(1).Status; got != ReadyToMerge {
+		t.Fatalf("inside the limit = %s, want still waiting", got)
+	}
+	g.now = g.now.Add(2 * time.Second)
+	g.tick()
+	if got := g.st.task(1).Status; got != Done {
+		t.Fatalf("past the limit = %s, want merged", got)
+	}
+}
+
+func TestSettled(t *testing.T) {
+	now := time.Date(2026, 11, 11, 23, 0, 0, 0, time.UTC)
+	ms := func(d time.Duration) int64 { return now.Add(d).UnixMilli() }
+	p := store.Part{Status: Ready, PaneID: "p", FinishedAt: ms(-2 * time.Minute)}
+	reminder := func(at int64) PaneState {
+		return PaneState{Attention: model.AttentionNeedsInput, Reason: model.ReasonFinished, At: at}
+	}
+	cases := []struct {
+		name string
+		p    store.Part
+		st   PaneState
+		ok   bool
+		want bool
+	}{
+		{"idle reminder since the report", p, reminder(ms(-time.Minute)), true, true},
+		{"an idle reminder from before the report", p, reminder(ms(-3 * time.Minute)), true, false},
+		{"only a Stop since the report", p, PaneState{Attention: model.AttentionDone, Reason: model.ReasonFinished, At: ms(-time.Minute)}, true, false},
+		{"prompted since the report (a review woke it)", p, PaneState{Attention: model.AttentionIdle, At: ms(-time.Minute)}, true, false},
+		{"asking since the report", p, PaneState{Attention: model.AttentionNeedsInput, Reason: model.ReasonPermission, At: ms(-time.Minute)}, true, false},
+		{"no sign since long before the limit", store.Part{Status: Ready, PaneID: "p", FinishedAt: ms(-SettleLimit - time.Minute)}, PaneState{}, true, true},
+		{"a sign inside the limit restarts the wait", store.Part{Status: Ready, PaneID: "p", FinishedAt: ms(-SettleLimit - time.Minute)},
+			PaneState{Attention: model.AttentionDone, At: ms(-time.Minute)}, true, false},
+		{"its session closed", p, PaneState{}, false, true},
+		{"Claude exited", p, PaneState{AtShell: true}, true, true},
+		{"no worker", store.Part{Status: Ready, FinishedAt: ms(-time.Second)}, PaneState{}, true, true},
+	}
+	for _, c := range cases {
+		if got := Settled(c.p, c.st, c.ok, now); got != c.want {
+			t.Errorf("%s: settled = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A check that fails leaves its whole output in a file beside the worktree
+// for the worker to read (the last lines of a test run are often a summary
+// table, not the failure), and the failure names the file. A later green
+// run removes it, and so does the clean-up after the merge.
+func TestMerge_AFailedCheckLeavesItsWholeOutput(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	g.usedAutoFix(1)
+	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "the summary table", Full: "FAIL: TestRoute at line 111\nthe summary table"}
+	g.tick()
+	app := g.partsOf(1)[0]
+	logFile := app.Worktree + ".check.log"
+	got, err := os.ReadFile(logFile)
+	if err != nil || !strings.Contains(string(got), "TestRoute at line 111") {
+		t.Fatalf("check log = %q, %v", got, err)
+	}
+	// The file is named after the failure, not in its first line: a lens row
+	// shows only that line, and a long path there hides what failed.
+	if note := g.st.task(1).Note; !strings.HasPrefix(note, "app: checks failed:\n") || !strings.Contains(note, "the summary table") ||
+		!strings.HasSuffix(note, "(the whole output is in "+logFile+")") {
+		t.Fatalf("the failure does not name the file last: %q", note)
+	}
+	delete(g.checks.results, "/p/app")
+	one := g.st.task(1)
+	one.Status = ReadyToMerge
+	g.st.SaveTask(one)
+	g.tick()
+	if g.st.task(1).Status != Done {
+		t.Fatalf("second try = %s", g.st.task(1).Status)
+	}
+	if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+		t.Fatalf("the old check log is still there after a green merge: %v", err)
+	}
+}
+
+// A check that passed only on its second run still merges, and the done
+// note says which, so a test that fails now and then is seen.
+func TestMerge_SaysWhichChecksNeededASecondRun(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.tick()
+	g.doneParts(1)
+	g.checks.results["/p/backend"] = CheckResult{Configured: true, OK: true, Reran: []string{"npm test"}}
+	g.tick()
+	got := g.st.task(1)
+	if got.Status != Done || got.Note != "merged app into dev, backend into dev; backend: npm test failed once and passed when run again" {
+		t.Fatalf("merged after a second run = %s note %q", got.Status, got.Note)
 	}
 }
 

@@ -24,12 +24,31 @@ type Git interface {
 // ExecGit runs the git binary.
 type ExecGit struct{}
 
-const gitTimeout = time.Minute
+const (
+	gitTimeout = time.Minute
+	// removeTimeout is for removing a worktree: git deletes the folder
+	// itself, and a JS repo's worktree holds a node_modules of a gigabyte
+	// or two. At gitTimeout it was killed half way on a busy disk, leaving
+	// a folder git no longer knew and a branch nobody deleted.
+	removeTimeout = 10 * time.Minute
+)
+
+// errGitTimeout marks a git command stopped for taking too long.
+var errGitTimeout = errors.New("git took too long")
 
 func runGit(dir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	return runGitFor(gitTimeout, dir, args...)
+}
+
+// runGitFor is runGit with its own time limit. A command stopped at the
+// limit says so: git's own "signal: killed" names no cause.
+func runGitFor(limit time.Duration, dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil && ctx.Err() != nil {
+		return "", fmt.Errorf("git %s took longer than %s and was stopped: %w", strings.Join(args, " "), limit, errGitTimeout)
+	}
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

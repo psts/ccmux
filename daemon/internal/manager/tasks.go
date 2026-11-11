@@ -154,6 +154,18 @@ func (s *taskSignals) note(p model.Pane, att model.Attention, reason model.Atten
 	}
 }
 
+// remind keeps Claude's idle reminder as a worker's last signal: the proof
+// that its turn really ended, which a Stop alone is not. A worker that is
+// asking something keeps that instead: the reminder only comes at the
+// prompt, but if one ever arrived late it must not take a question off the
+// list of what needs a person.
+func (s *taskSignals) remind(p model.Pane) {
+	if last := s.get(p.ID); last.Attention == model.AttentionNeedsInput && last.Reason != model.ReasonFinished {
+		return
+	}
+	s.note(p, model.AttentionNeedsInput, model.ReasonFinished)
+}
+
 // seed loads the saved signals at start, keeping any already noted.
 func (s *taskSignals) seed(stored map[string]TaskSignal) {
 	s.mu.Lock()

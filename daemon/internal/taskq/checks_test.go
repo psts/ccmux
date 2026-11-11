@@ -50,8 +50,11 @@ func TestGateChecks(t *testing.T) {
 	writeGates(t, repo, "true\n")   // the folder's own copy is not what counts
 	commitFile(t, wt, "marker", "") // the checks see committed work only
 	got := g.Run(repo, wt, "main")
-	if !got.Configured || got.OK || !strings.Contains(got.Output, "two") || !strings.Contains(got.Output, "failed: echo one") {
+	if !got.Configured || got.OK || !strings.Contains(got.Output, "two") || !strings.Contains(got.Output, "failed twice: echo one") {
 		t.Fatalf("failing gate = %+v", got)
+	}
+	if !strings.Contains(got.Full, "one\ntwo") {
+		t.Fatalf("the whole output was not kept: %q", got.Full)
 	}
 	if _, err := os.Stat(filepath.Join(wt, "ran")); !os.IsNotExist(err) {
 		t.Fatal("a line after the failing one ran")
@@ -118,7 +121,37 @@ func TestGateChecks_TimeoutKillsTheWholeLine(t *testing.T) {
 	if took := time.Since(start); took > 4*time.Second {
 		t.Fatalf("a timed-out line took %v", took)
 	}
-	if got.OK || !got.Configured || !strings.Contains(got.Output, "failed: cd . && sleep 30") {
+	if got.OK || !got.Configured || !strings.Contains(got.Output, "failed: cd . && sleep 30") || !strings.Contains(got.Output, "timed out") {
 		t.Fatalf("timed out = %+v", got)
+	}
+}
+
+// A line that fails is run once more: a test that only loses to a busy
+// machine passes then, and the result says which line needed it. A line
+// that fails both times fails the checks, and one that timed out is not
+// run again (it would only take its whole time twice).
+func TestGateChecks_AFailedLineRunsOnceMore(t *testing.T) {
+	repo := gitRepo(t)
+	wt := worktreeOf(t, repo)
+	// Fails the first time it runs in a folder, passes the second.
+	writeGates(t, repo, "true\ntest -f seen || { touch seen; echo flaky; false; }\n")
+	got := (GateChecks{PerLine: 10 * time.Second}).Run(repo, wt, "main")
+	if !got.OK || len(got.Reran) != 1 || !strings.HasPrefix(got.Reran[0], "test -f seen") {
+		t.Fatalf("flaky line = %+v, want green with the line named", got)
+	}
+
+	writeGates(t, repo, "echo run >> runs; false\n")
+	got = (GateChecks{PerLine: 10 * time.Second}).Run(repo, wt, "main")
+	runs, _ := os.ReadFile(filepath.Join(wt, "runs"))
+	if got.OK || len(got.Reran) != 0 || strings.Count(string(runs), "run") != 2 {
+		t.Fatalf("always-failing line = %+v after %q, want red after two runs", got, runs)
+	}
+
+	os.Remove(filepath.Join(wt, "runs"))
+	writeGates(t, repo, "echo run >> runs; sleep 30\n")
+	got = (GateChecks{PerLine: 300 * time.Millisecond}).Run(repo, wt, "main")
+	runs, _ = os.ReadFile(filepath.Join(wt, "runs"))
+	if got.OK || strings.Count(string(runs), "run") != 1 {
+		t.Fatalf("timed-out line = %+v after %q, want red after one run", got, runs)
 	}
 }

@@ -23,6 +23,11 @@ type CheckResult struct {
 	Configured bool
 	OK         bool
 	Output     string // the failing line's output, cut to its last lines
+	// Full is the failing line's whole output. The last lines of a test
+	// run are often a summary table, not the failure.
+	Full string
+	// Reran is the lines that failed once and passed when run again.
+	Reran []string
 }
 
 // GateChecks runs the lines of the repo's .claude/qa-gates as the trunk has
@@ -32,6 +37,14 @@ type CheckResult struct {
 // login shell, so the tools the human's profile puts on PATH are there for a
 // daemon started without it. A branch that changed the gate files is never
 // checked here: the merge stops it first (merge.go).
+//
+// A line that fails is run once more before it counts. In one batch of
+// twenty tasks, twelve merges failed on a check and went back to a worker,
+// and not one was the branch's doing: a 250 ms timing test and a suite's
+// per-test limit, losing to whatever else the machine was running. A second
+// run costs minutes; the worker's loop it saves cost a quarter of an hour
+// and often a person. A line that needed it is named in the result, so a
+// test that fails now and then stays seen.
 type GateChecks struct {
 	PerLine time.Duration // how long one line may run
 }
@@ -46,12 +59,24 @@ func (g GateChecks) Run(repo, worktree, trunk string) CheckResult {
 	if len(lines) == 0 {
 		return CheckResult{} // a list of comments checks nothing
 	}
+	res := CheckResult{Configured: true}
 	for _, line := range lines {
-		if out, err := g.runLine(worktree, line); err != nil {
-			return CheckResult{Configured: true, Output: fmt.Sprintf("%s\n(failed: %s: %v)", tail(out, 20), line, err)}
+		run := g.runLine(worktree, line)
+		failed := "failed"
+		if run.err != nil && !run.timedOut {
+			if run = g.runLine(worktree, line); run.err == nil {
+				res.Reran = append(res.Reran, line)
+			}
+			failed = "failed twice"
+		}
+		if run.err != nil {
+			res.Output = fmt.Sprintf("%s\n(%s: %s: %v)", tail(run.out, 20), failed, line, run.err)
+			res.Full = run.out
+			return res
 		}
 	}
-	return CheckResult{Configured: true, OK: true}
+	res.OK = true
+	return res
 }
 
 // gateLines reads the checks from the trunk, never from the branch being
@@ -86,10 +111,17 @@ func trunkGates(repo, trunk string) (string, error) {
 	return string(data), err
 }
 
+// lineRun is how one run of one line went.
+type lineRun struct {
+	out      string
+	err      error
+	timedOut bool // stopped at PerLine: running it again would only take as long
+}
+
 // runLine runs one line in its own process group. On time out the whole
 // group is killed: killing bash alone leaves what it started (go test, a
 // server) holding the output open, and the run would hang past its limit.
-func (g GateChecks) runLine(dir, line string) (string, error) {
+func (g GateChecks) runLine(dir, line string) lineRun {
 	ctx, cancel := context.WithTimeout(context.Background(), g.PerLine)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-lc", line)
@@ -98,7 +130,12 @@ func (g GateChecks) runLine(dir, line string) (string, error) {
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	run := lineRun{out: string(out), err: err}
+	if err != nil && ctx.Err() != nil {
+		run.timedOut = true
+		run.err = fmt.Errorf("timed out after %s: %w", g.PerLine, err)
+	}
+	return run
 }
 
 // tail keeps the last n lines of s.

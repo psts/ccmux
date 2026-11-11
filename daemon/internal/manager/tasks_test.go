@@ -76,3 +76,38 @@ func TestNoteTaskPrompt(t *testing.T) {
 		}
 	}
 }
+
+// Claude's idle reminder is the runner's proof that a worker's turn really
+// ended (a Stop alone can be one its own hooks sent it back to work from),
+// so it is kept as the worker's last signal even when the pane claims
+// nothing any more: a lens looking at the session retires the claim, and
+// the merge must not wait on that. A person's pane records nothing.
+func TestRemind_IsKeptAsATaskWorkersSignal(t *testing.T) {
+	m, st := devhostManager(t)
+	givePanes(t, m, st, "w1", "pane-human", "pane-worker")
+	m.mu.Lock()
+	m.byID["w1"].ws.Panes[1].CreatedBy = taskRunner
+	m.mu.Unlock()
+	if m.Remind("pane-worker") {
+		t.Fatal("a pane that claims nothing was alerted")
+	}
+	got := m.taskSigs.get("pane-worker")
+	if got.Attention != model.AttentionNeedsInput || got.Reason != model.ReasonFinished || got.At == 0 {
+		t.Fatalf("worker signal after the reminder = %+v, want needs-input/finished", got)
+	}
+	// A reminder never replaces a question: the runner must go on showing
+	// a worker that asks, whatever arrives after.
+	worker := model.Pane{ID: "pane-worker", CreatedBy: taskRunner}
+	m.taskSigs.note(worker, model.AttentionNeedsInput, model.ReasonQuestion)
+	m.Remind("pane-worker")
+	if got := m.taskSigs.get("pane-worker"); got.Reason != model.ReasonQuestion {
+		t.Fatalf("a reminder replaced a question: %+v", got)
+	}
+	m.Remind("pane-human")
+	m.Remind("pane-unknown")
+	for _, id := range []string{"pane-human", "pane-unknown"} {
+		if got := m.taskSigs.get(id); got.At != 0 {
+			t.Fatalf("%s recorded %+v", id, got)
+		}
+	}
+}

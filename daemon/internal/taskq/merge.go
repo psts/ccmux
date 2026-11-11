@@ -43,9 +43,8 @@ func (r *Runner) recoverMerges(tasks []store.Task) bool {
 	return changed
 }
 
-// pickMerge claims the first built feature whose repos' folders allow a
-// merge now; one that has to wait says why in its note, and is parked: it
-// gives its slot up until the folder is clean. Under the lock.
+// pickMerge claims the first built feature that can merge now; one that
+// has to wait says why in its note (mergeWait). Under the lock.
 func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, bool) {
 	changed := false
 	for i, t := range tasks {
@@ -53,16 +52,10 @@ func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, b
 			continue
 		}
 		mine := PartsOf(parts, t.ID)
-		if why := r.mergeBlocked(mine); why != "" {
-			r.park(t.ID)
-			if t.Note != why {
-				t.Note = why
-				changed = r.saveTask(t) || changed
-				tasks[i] = t
-			}
+		if why := r.mergeWait(t.ID, mine); why != "" {
+			changed = r.noteWait(tasks, i, why) || changed
 			continue
 		}
-		delete(r.parked, t.ID)
 		t.Status, t.Note = Merging, ""
 		if !r.saveTask(t) {
 			continue
@@ -72,6 +65,41 @@ func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, b
 		return &mergeJob{task: t, parts: mine}, true
 	}
 	return nil, changed
+}
+
+// mergeWait says why built feature id cannot merge this pass, "" when it
+// can. A wait on a person's own folder parks it: it gives its slot up
+// until the folder is clean. A wait on its own worker's turn to end
+// (Settled) does not: that is a minute or so, and the slot is what keeps
+// the next build off the checks about to run. Under the lock.
+func (r *Runner) mergeWait(id int64, mine []store.Part) string {
+	if why := r.mergeBlocked(mine); why != "" {
+		r.park(id)
+		return why
+	}
+	delete(r.parked, id)
+	now := r.Now()
+	for _, p := range mine {
+		st, ok := r.Host.TaskPane(p.PaneID)
+		if !Settled(p, st, ok, now) {
+			return noteSettling
+		}
+	}
+	return ""
+}
+
+// noteWait saves why tasks[i] waits to merge, when that changed.
+func (r *Runner) noteWait(tasks []store.Task, i int, why string) bool {
+	t := tasks[i]
+	if t.Note == why {
+		return false
+	}
+	t.Note = why
+	if !r.saveTask(t) {
+		return false
+	}
+	tasks[i] = t
+	return true
 }
 
 // park records that built feature id waits on a person's folder, so it
@@ -117,25 +145,42 @@ func (r *Runner) mergeBlocked(parts []store.Part) string {
 	return ""
 }
 
-// merge runs one feature's merge, tidies up after a success, and records
-// how it went: a done note also names anything the tidy-up had to leave.
+// merge runs one feature's merge and records how it went. A merged feature
+// is saved done before its tidy-up, which can take minutes (a worktree with
+// a node_modules in it): a daemon stopped meanwhile then finds work that is
+// in the trunks marked as such, not a merge to run again against a folder
+// half removed. The merge line stays taken until the tidy-up ends, and
+// what it had to leave is added to the done note.
 func (r *Runner) merge(j mergeJob) {
 	note, err := r.mergeParts(j.parts)
-	if err == nil {
-		note += r.cleanUp(j)
+	if err != nil {
+		log.Printf("tasks: #%d merge failed: %v", j.task.ID, err)
+		r.Lock.Lock()
+		r.merging = false
+		saved := r.saveTask(r.settleFailed(j.task, err))
+		r.Lock.Unlock()
+		r.changed(saved)
+		return
 	}
+	done := j.task
+	done.Status, done.Note, done.FinishedAt = Done, note, r.Now().UnixMilli()
+	log.Printf("tasks: #%d %s", done.ID, note)
+	r.Lock.Lock()
+	saved := r.saveTask(done)
+	r.Lock.Unlock()
+	r.changed(saved)
+
+	left := r.cleanUp(j)
+	done.Note += left
 	r.Lock.Lock()
 	r.merging = false
-	t := j.task
-	if err != nil {
-		log.Printf("tasks: #%d merge failed: %v", t.ID, err)
-		t = r.settleFailed(t, err)
-	} else {
-		t.Status, t.Note, t.FinishedAt = Done, note, r.Now().UnixMilli()
-		log.Printf("tasks: #%d %s", t.ID, note)
-	}
-	saved := r.saveTask(t)
+	saved = left != "" && r.saveTask(done)
 	r.Lock.Unlock()
+	r.changed(saved)
+}
+
+// changed tells the lenses the queue changed, when something was saved.
+func (r *Runner) changed(saved bool) {
 	if saved {
 		r.Host.TasksChanged()
 	}
@@ -153,16 +198,23 @@ func noteOf(err error) string {
 	return head + "\n" + cut(rest, maxNote-len(head)-1)
 }
 
+// checked is a part ready to land: its trunk, the commit its checks ran
+// on, and the checks that passed only on a second run.
+type checked struct {
+	trunk, rev string
+	reran      []string
+}
+
 // mergeParts rebases and checks every part, then moves every trunk to the
 // exact commit that was checked: a commit its worker made meanwhile waits.
 func (r *Runner) mergeParts(parts []store.Part) (string, error) {
-	trunks, revs := make([]string, len(parts)), make([]string, len(parts))
+	oks, revs := make([]checked, len(parts)), make([]string, len(parts))
 	for i, p := range parts {
-		trunk, rev, err := r.prepareMerge(p)
+		ok, err := r.prepareMerge(p)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", filepath.Base(p.RepoPath), err)
 		}
-		trunks[i], revs[i] = trunk, rev
+		oks[i], revs[i] = ok, ok.rev
 	}
 	// The checks took a while: a folder may have got changes meanwhile.
 	if why := r.mergeBlocked(parts); why != "" {
@@ -174,48 +226,101 @@ func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 	var done []string
 	for i, p := range parts {
 		name := filepath.Base(p.RepoPath)
-		if err := r.MergeGit.FastForward(p.RepoPath, revs[i], trunks[i]); err != nil {
+		if err := r.MergeGit.FastForward(p.RepoPath, oks[i].rev, oks[i].trunk); err != nil {
 			return "", fmt.Errorf("%s did not merge: %v%s", name, err, mergedSoFar(done))
 		}
-		done = append(done, name+" into "+trunks[i])
+		done = append(done, name+" into "+oks[i].trunk)
 	}
-	return "merged " + strings.Join(done, ", "), nil
+	return "merged " + strings.Join(done, ", ") + rerunNote(parts, oks), nil
+}
+
+// rerunNote names the checks that failed once and passed when run again,
+// per repo, for the done note: a test that fails now and then is merged,
+// and still seen. "" when every check passed first time.
+func rerunNote(parts []store.Part, oks []checked) string {
+	var out strings.Builder
+	for i, p := range parts {
+		if len(oks[i].reran) > 0 {
+			fmt.Fprintf(&out, "; %s: %s failed once and passed when run again", filepath.Base(p.RepoPath), strings.Join(oks[i].reran, ", "))
+		}
+	}
+	return out.String()
 }
 
 // prepareMerge refuses a part with uncommitted work, rebases it onto its
 // trunk, refuses one that changes the repo's gate files, and runs its
-// checks, returning the trunk and the commit checked.
-func (r *Runner) prepareMerge(p store.Part) (string, string, error) {
+// checks, returning what was checked.
+func (r *Runner) prepareMerge(p store.Part) (checked, error) {
 	trunk, err := r.Git.Trunk(p.RepoPath)
 	if err != nil {
-		return "", "", err
+		return checked{}, err
 	}
 	left, err := r.MergeGit.Uncommitted(p.Worktree)
 	if err != nil {
-		return "", "", err
+		return checked{}, err
 	}
 	if left != "" {
-		return "", "", workerFixable{p, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))}
+		return checked{}, workerFixable{p, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))}
 	}
 	rev, err := r.MergeGit.Rebase(p.Worktree, trunk)
 	var clash rebaseClash
 	if errors.As(err, &clash) {
-		return "", "", workerFixable{p, err}
+		return checked{}, workerFixable{p, err}
 	}
 	if err != nil {
-		return "", "", err
+		return checked{}, err
 	}
 	if err := r.gateFilesUntouched(p.RepoPath, trunk, rev); err != nil {
-		return "", "", err
+		return checked{}, err
 	}
+	reran, err := r.checkPart(p, trunk)
+	if err != nil {
+		return checked{}, err
+	}
+	return checked{trunk: trunk, rev: rev, reran: reran}, nil
+}
+
+// maxCheckLog is the most of a failed check's output kept in its file: the
+// end of it, where a test run lists what failed.
+const maxCheckLog = 4 << 20
+
+// checkLog is where a part's failed check leaves its whole output: beside
+// the worktree, like the brief, where its worker can read it and no check
+// or commit ever sees it.
+func checkLog(p store.Part) string { return p.Worktree + ".check.log" }
+
+// checkPart runs the repo's checks in the part's worktree and returns the
+// lines that needed a second run. A red run goes back to its worker with
+// the last lines of the failure and the file holding all of it; a green
+// one removes the file an earlier failure left.
+func (r *Runner) checkPart(p store.Part, trunk string) ([]string, error) {
 	res := r.Checks.Run(p.RepoPath, p.Worktree, trunk)
 	switch {
 	case !res.Configured:
-		return "", "", errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
+		return nil, errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
 	case !res.OK:
-		return "", "", workerFixable{p, errors.New("checks failed:\n" + res.Output)}
+		return nil, workerFixable{p, errors.New("checks failed:\n" + res.Output + r.keepCheckOutput(p, res.Full))}
 	}
-	return trunk, rev, nil
+	if err := os.Remove(checkLog(p)); err != nil && !os.IsNotExist(err) {
+		log.Printf("tasks: #%d: old check output %s not removed: %v", p.TaskID, checkLog(p), err)
+	}
+	return res.Reran, nil
+}
+
+// keepCheckOutput writes a failed check's whole output to the part's file
+// and returns the line that names it, "" when there is nothing to keep or
+// it could not be written (the failure's last lines still go out). The
+// line ends the failure: its first line is what a lens row shows.
+func (r *Runner) keepCheckOutput(p store.Part, full string) string {
+	if full == "" || p.Worktree == "" {
+		return ""
+	}
+	path := checkLog(p)
+	if err := os.WriteFile(path, []byte(cut(full, maxCheckLog)), 0o644); err != nil {
+		log.Printf("tasks: #%d: check output not kept in %s: %v", p.TaskID, path, err)
+		return ""
+	}
+	return "\n(the whole output is in " + path + ")"
 }
 
 // unmovedSinceChecks refuses a feature whose worker folder changed while
@@ -282,8 +387,8 @@ func (r *Runner) cleanUp(j mergeJob) string {
 	return "; left for you: " + strings.Join(left, "; ")
 }
 
-// tidyPart closes one part's worker and removes its worktree, branch and
-// brief, saying what it had to leave ("" when nothing).
+// tidyPart closes one part's worker and removes its worktree, branch, brief
+// and any check output, saying what it had to leave ("" when nothing).
 func (r *Runner) tidyPart(p store.Part) string {
 	if err := r.Host.ClearTaskFolder(p.Worktree); err != nil {
 		return fmt.Sprintf("%s (its worker did not close: %v)", p.Worktree, err)
@@ -295,8 +400,10 @@ func (r *Runner) tidyPart(p store.Part) string {
 	if err := r.MergeGit.RemoveWorktree(p.RepoPath, p.Worktree, p.Branch, trunk); err != nil {
 		return fmt.Sprintf("%s (%v)", p.Worktree, err)
 	}
-	if err := os.Remove(p.Worktree + ".md"); err != nil && !os.IsNotExist(err) {
-		log.Printf("tasks: brief %s.md not removed: %v", p.Worktree, err)
+	for _, f := range []string{p.Worktree + ".md", checkLog(p)} {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			log.Printf("tasks: %s not removed: %v", f, err)
+		}
 	}
 	return ""
 }

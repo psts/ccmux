@@ -952,18 +952,24 @@ func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason mode
 // It re-sends the claim a pane still makes, marked Remind, so the alert that
 // waits for the turn to really end can go out (notifyState). A pane that
 // claims nothing (someone looked, or nothing ever finished) gets nothing, and
-// false says so. Nothing is stored, and the per-workspace attach sockets get
-// no frame: they would only redraw what they already show.
+// false says so. Nothing a lens shows is stored, and the per-workspace attach
+// sockets get no frame: they would only redraw what they already show.
 func (m *Manager) Remind(paneID string) bool {
 	m.restart.clocks.reminder(paneID, time.Now())
 	m.mu.Lock()
 	e, p := m.findPaneLocked(paneID)
-	if p == nil || !p.Attention.Claims() {
+	if p == nil {
 		m.mu.Unlock()
 		return false
 	}
 	wsID, saved := e.ws.ID, *p
 	m.mu.Unlock()
+	// A task worker's reminder is the runner's proof that its turn really
+	// ended (taskq.Settled), kept whether or not the pane still claims.
+	m.taskSigs.remind(saved)
+	if !saved.Attention.Claims() {
+		return false
+	}
 	m.events.publish(Event{Kind: "attention", WorkspaceID: wsID, PaneID: saved.ID,
 		Attention: saved.Attention, Reason: saved.AttentionReason, Since: saved.AttentionSince, Remind: true})
 	return true

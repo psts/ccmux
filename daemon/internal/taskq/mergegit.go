@@ -201,7 +201,9 @@ func (ExecGit) RemoveWorktree(repo, path, branch, trunk string) error {
 	if err := dropCopiedSettings(path); err != nil {
 		return fmt.Errorf("kept: %w", err)
 	}
-	if _, err := runGit(repo, "worktree", "remove", path); err != nil {
+	if _, err := runGitFor(removeTimeout, repo, "worktree", "remove", path); errors.Is(err, errGitTimeout) {
+		return fmt.Errorf("left half removed: %w", err)
+	} else if err != nil {
 		return fmt.Errorf("kept, it holds uncommitted files: %w", err)
 	}
 	merged, err := gitYes(repo, "merge-base", "--is-ancestor", branch, trunk)

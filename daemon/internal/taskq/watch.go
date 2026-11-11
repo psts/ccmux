@@ -31,6 +31,13 @@ func (st PaneState) finished() bool {
 // prompted is a prompt submitted to it: a person typed into the session.
 func (st PaneState) prompted() bool { return st.Attention == model.AttentionIdle && st.At != 0 }
 
+// reminded is Claude's idle reminder, sent a minute after a turn really
+// ended. A Stop alone does not say that: another Stop hook (a receipt to
+// sign) can send the worker straight back to work, with no sign of it here.
+func (st PaneState) reminded() bool {
+	return st.Attention == model.AttentionNeedsInput && st.Reason == model.ReasonFinished
+}
+
 const (
 	// StartGrace is how long a new pane may sit at a shell before Claude
 	// is counted as gone: the command is typed into a shell and Claude
@@ -45,6 +52,11 @@ const (
 	// so silence this long means it is stuck on a screen nothing answers,
 	// or the daemon restarted and forgot what it last heard.
 	SilentLimit = 10 * time.Minute
+	// SettleLimit is how long a merge waits for a built part's worker to
+	// end its turn when no idle reminder comes (a hook dropped, subagents
+	// still counted as running). Longer than a full run of a repo's checks,
+	// which is what a worker sent back to work by its Stop hook is doing.
+	SettleLimit = 10 * time.Minute
 )
 
 // Notes the watcher writes. The worker's own report notes replace them.
@@ -56,6 +68,10 @@ const (
 	noteNoPane = "it lost its pane before starting"
 	noteSilent = "no sign of its Claude working; open its session to see why"
 )
+
+// noteSettling is a built feature's note while its merge waits for a
+// worker's turn to end (Settled).
+const noteSettling = "waiting for its worker to end its turn before the checks run"
 
 // Judge reads a running or waiting-on-a-person part against its pane and
 // returns the part as it should now be saved, and whether it changed. ok is
@@ -110,6 +126,27 @@ func judgeWaitingOnYou(t store.Part, st PaneState) (store.Part, bool) {
 	}
 	t.Status, t.Note = Running, ""
 	return t, true
+}
+
+// Settled reports whether a built part's worker has ended the turn it
+// reported in, so a merge may run the repo's checks in its worktree: the
+// idle reminder came since the report, or its Claude is gone, or it gave no
+// sign for SettleLimit. Until then the worker may be running the same
+// checks there itself, and two runs at once fail each other on tests that
+// only lose to a busy machine. ok is false when no live session holds the
+// pane.
+func Settled(p store.Part, st PaneState, ok bool, now time.Time) bool {
+	if p.PaneID == "" || !ok || st.AtShell {
+		return true
+	}
+	if st.reminded() && st.At >= p.FinishedAt {
+		return true
+	}
+	last := p.FinishedAt
+	if st.At > last {
+		last = st.At
+	}
+	return now.Sub(time.UnixMilli(last)) > SettleLimit
 }
 
 func finish(t store.Part, status, note string, now time.Time) store.Part {
