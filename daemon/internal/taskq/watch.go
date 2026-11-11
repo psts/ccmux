@@ -1,6 +1,7 @@
 package taskq
 
 import (
+	"fmt"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/model"
@@ -44,18 +45,32 @@ const (
 	// takes a moment to replace it.
 	StartGrace = 2 * time.Minute
 	// QuietLimit is how long a worker may sit finished without reporting
-	// before the task asks for a person. A worker reports the moment it is
-	// done, so a turn that ended this long ago without one ended unasked.
+	// before the runner asks it to report, and after that once more before
+	// the task asks for a person. A worker reports the moment it is done,
+	// so a turn that ended this long ago without one ended unasked.
 	QuietLimit = 10 * time.Minute
 	// SilentLimit is how long a worker may give no sign at all before the
 	// part asks for a person. Its first prompt fires a hook within seconds,
 	// so silence this long means it is stuck on a screen nothing answers,
 	// or the daemon restarted and forgot what it last heard.
 	SilentLimit = 10 * time.Minute
+	// NudgeLimit is how long a worker asked to report (Runner.nudge) may
+	// give no sign at all before the part asks for a person. The message
+	// counts as a prompt, and a prompted worker is otherwise never timed:
+	// a long turn sends nothing until it ends. So this has to outlast the
+	// longest thing the message can start, a full run of the repo's checks
+	// (one line may take twenty minutes). Silence past it means the
+	// message never reached a Claude, and without a limit the part would
+	// read as at work for good, holding its slot. Only the nudge's own
+	// prompt is timed: once a person types into the session, or a turn
+	// ends, the worker is alive and this no longer applies.
+	NudgeLimit = 3 * QuietLimit
 	// SettleLimit is how long a merge waits for a built part's worker to
 	// end its turn when no idle reminder comes (a hook dropped, subagents
-	// still counted as running). Longer than a full run of a repo's checks,
-	// which is what a worker sent back to work by its Stop hook is doing.
+	// still counted as running). A worker sent back to work by its Stop
+	// hook is running the repo's checks once more: three to nine minutes
+	// in the two repos measured. A run longer than this is merged under,
+	// as every run was before the wait existed.
 	SettleLimit = 10 * time.Minute
 )
 
@@ -67,7 +82,33 @@ const (
 	noteQuiet  = "stopped without reporting; open its session to see why"
 	noteNoPane = "it lost its pane before starting"
 	noteSilent = "no sign of its Claude working; open its session to see why"
+	// noteUnanswered: the runner asked a quiet worker to report and heard
+	// nothing for NudgeLimit.
+	noteUnanswered = "stopped without reporting, and gave no sign when asked to; open its session to see why"
 )
+
+// noteNudged is a working part's note once the runner has asked its quiet
+// worker to report (Runner.nudge). The worker's report, or a send-back,
+// replaces it.
+const noteNudged = "stopped without reporting; ccmux asked it to report"
+
+// nudgeText is what a worker reads when it ended its turn long ago without
+// reporting. Most such workers are waiting for something to wake them that
+// never will: a commit review that found nothing sends no message.
+func nudgeText(taskID int64) string {
+	return fmt.Sprintf(`[ccmux] Task #%d: you ended your turn a while ago without reporting, and
+nothing is going to wake you: a clean review sends no message, and nobody
+is watching this session. Do one of these now:
+
+- Your part is done, committed and its checks are green: call the tasks
+  tool with action "report", status "done".
+- You were waiting for something (a review, an install, a test run): look
+  at it yourself now, finish, then report.
+- You cannot go on: report "stuck" with exactly what you need.
+
+This is the only reminder. If you stop again without a report, the task
+waits for a person.`, taskID)
+}
 
 // noteSettling is a built feature's note while its merge waits for a
 // worker's turn to end (Settled).
@@ -95,7 +136,8 @@ func Judge(t store.Part, st PaneState, ok bool, now time.Time) (store.Part, bool
 }
 
 // judgeRunning moves a working part to "needs you" when its Claude asks
-// something, finished a turn long ago without reporting, or never gave a sign.
+// something, finished a turn long ago without reporting, never gave a sign,
+// or was asked to report and gave none since.
 func judgeRunning(t store.Part, st PaneState, now time.Time) (store.Part, bool) {
 	switch {
 	case st.asking():
@@ -104,10 +146,20 @@ func judgeRunning(t store.Part, st PaneState, now time.Time) (store.Part, bool) 
 		t.Status, t.Note = NeedsYou, noteQuiet
 	case st.At == 0 && now.Sub(time.UnixMilli(t.StartedAt)) > SilentLimit:
 		t.Status, t.Note = NeedsYou, noteSilent
+	case unanswered(t, st) && now.Sub(time.UnixMilli(st.At)) > NudgeLimit:
+		t.Status, t.Note = NeedsYou, noteUnanswered
 	default:
 		return t, false
 	}
 	return t, true
+}
+
+// unanswered reports whether a part asked to report has shown nothing
+// since: its pane's last sign is still the nudge's own prompt, which was
+// noted just before the part was saved as asked. Any later sign (a person
+// typing, a turn ending) is newer than that save.
+func unanswered(t store.Part, st PaneState) bool {
+	return t.Note == noteNudged && st.prompted() && st.At <= t.UpdatedAt
 }
 
 // judgeWaitingOnYou puts a part back to running once a person dealt with

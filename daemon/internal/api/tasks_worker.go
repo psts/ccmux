@@ -134,5 +134,15 @@ func (s *Server) reportPart(who taskFiler, req paneTaskReq) (string, int, error)
 	if err := s.savePart(next); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	return fmt.Sprintf("Reported your part of task #%d as %s. You can stop now.", mine.TaskID, next.Status), 0, nil
+	return reportReply(mine.TaskID, next.Status), 0, nil
+}
+
+// reportReply is what a worker reads back after a report. A built part is
+// about to be checked where it stands, so its worker is told to stop there:
+// one that went on to run the repo's checks again failed its own merge.
+func reportReply(taskID int64, status string) string {
+	if status == taskq.Ready {
+		return fmt.Sprintf("Reported your part of task #%d as %s. Stop now and run nothing more in this folder: ccmux runs the repo's checks here once your turn has ended.", taskID, status)
+	}
+	return fmt.Sprintf("Reported your part of task #%d as %s. You can stop now.", taskID, status)
 }

@@ -127,24 +127,29 @@ func TestGateChecks_TimeoutKillsTheWholeLine(t *testing.T) {
 }
 
 // A line that fails is run once more: a test that only loses to a busy
-// machine passes then, and the result says which line needed it. A line
-// that fails both times fails the checks, and one that timed out is not
-// run again (it would only take its whole time twice).
+// machine passes then, and the result names the line and keeps what its
+// failed run printed (the line alone does not say which test it was). A
+// line that fails both times fails the checks with both runs kept, and one
+// that timed out is not run again (it would only take its whole time twice).
 func TestGateChecks_AFailedLineRunsOnceMore(t *testing.T) {
 	repo := gitRepo(t)
 	wt := worktreeOf(t, repo)
 	// Fails the first time it runs in a folder, passes the second.
-	writeGates(t, repo, "true\ntest -f seen || { touch seen; echo flaky; false; }\n")
+	writeGates(t, repo, "true\ntest -f seen || { touch seen; echo which-test-flaked; false; }\n")
 	got := (GateChecks{PerLine: 10 * time.Second}).Run(repo, wt, "main")
-	if !got.OK || len(got.Reran) != 1 || !strings.HasPrefix(got.Reran[0], "test -f seen") {
-		t.Fatalf("flaky line = %+v, want green with the line named", got)
+	if !got.OK || len(got.Flaked) != 1 || !strings.HasPrefix(got.Flaked[0].Line, "test -f seen") ||
+		!strings.Contains(got.Flaked[0].Output, "which-test-flaked") {
+		t.Fatalf("flaky line = %+v, want green with the line named and its failed output kept", got)
 	}
 
-	writeGates(t, repo, "echo run >> runs; false\n")
+	writeGates(t, repo, "echo run >> runs; echo out-of-run-$(wc -l < runs); false\n")
 	got = (GateChecks{PerLine: 10 * time.Second}).Run(repo, wt, "main")
 	runs, _ := os.ReadFile(filepath.Join(wt, "runs"))
-	if got.OK || len(got.Reran) != 0 || strings.Count(string(runs), "run") != 2 {
+	if got.OK || len(got.Flaked) != 0 || strings.Count(string(runs), "run") != 2 || !strings.Contains(got.Output, "failed twice") {
 		t.Fatalf("always-failing line = %+v after %q, want red after two runs", got, runs)
+	}
+	if !strings.Contains(got.Full, "out-of-run-1") || !strings.Contains(got.Full, "out-of-run-2") {
+		t.Fatalf("both runs' output must be kept: %q", got.Full)
 	}
 
 	os.Remove(filepath.Join(wt, "runs"))
@@ -153,5 +158,29 @@ func TestGateChecks_AFailedLineRunsOnceMore(t *testing.T) {
 	runs, _ = os.ReadFile(filepath.Join(wt, "runs"))
 	if got.OK || strings.Count(string(runs), "run") != 1 {
 		t.Fatalf("timed-out line = %+v after %q, want red after one run", got, runs)
+	}
+}
+
+// A line that fails and then only times out when run again is reported by
+// its first run, the one that says what is wrong, and not as two failures.
+func TestGateChecks_ARealFailureThenATimeoutShowsTheFailure(t *testing.T) {
+	repo := gitRepo(t)
+	wt := worktreeOf(t, repo)
+	writeGates(t, repo, "if test -f seen; then sleep 30; else touch seen; echo the-real-failure; false; fi\n")
+	got := (GateChecks{PerLine: 400 * time.Millisecond}).Run(repo, wt, "main")
+	if got.OK || !strings.Contains(got.Output, "the-real-failure") || !strings.Contains(got.Output, "timed out") ||
+		strings.Contains(got.Output, "failed twice") || !strings.Contains(got.Full, "the-real-failure") {
+		t.Fatalf("failure then timeout = %+v, want the first run shown and the timeout said", got)
+	}
+}
+
+// A line that flaked is still named when a later line fails the checks.
+func TestGateChecks_AFlakeBeforeAFailureIsKept(t *testing.T) {
+	repo := gitRepo(t)
+	wt := worktreeOf(t, repo)
+	writeGates(t, repo, "test -f seen || { touch seen; echo flaked-here; false; }\necho broken; false\n")
+	got := (GateChecks{PerLine: 10 * time.Second}).Run(repo, wt, "main")
+	if got.OK || len(got.Flaked) != 1 || !strings.Contains(got.Flaked[0].Output, "flaked-here") || !strings.Contains(got.Output, "broken") {
+		t.Fatalf("flake then failure = %+v, want red with the flake kept", got)
 	}
 }

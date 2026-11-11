@@ -162,6 +162,42 @@ func TestTasks_Worker(t *testing.T) {
 	}
 }
 
+// A worker that reports done is told to stop and run nothing more where it
+// stands: the merge is about to check that folder, and a worker that ran
+// the repo's checks again beside it failed its own merge. One that reports
+// stuck is not about to be merged, so it is only told it can stop. Each
+// reply names the worker's own task.
+func TestTasks_ReportReplySaysWhatComesNext(t *testing.T) {
+	s := taskServer(t)
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "one", Plan: "p"})
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "two", Plan: "p"})
+	parts, _ := s.tasks.Parts()
+	for i, pane := range []string{"pane-done", "pane-stuck"} {
+		task, _ := s.tasks.Task(parts[i].TaskID)
+		task.Status = taskq.Running
+		s.tasks.SaveTask(*task)
+		parts[i].Status, parts[i].PaneID = taskq.Running, pane
+		s.tasks.SavePart(parts[i])
+	}
+	report := func(pane, status string) string {
+		t.Helper()
+		who := appRepo
+		who.pane = pane
+		msg, _, err := s.applyPaneTask(who, paneTaskReq{Action: "report", Status: status, Note: "a note"})
+		if err != nil {
+			t.Fatalf("%s report from %s: %v", status, pane, err)
+		}
+		return msg
+	}
+	const order = "run nothing more in this folder"
+	if msg := report("pane-done", "done"); !strings.Contains(msg, order) || !strings.Contains(msg, "task #1 as ready") {
+		t.Fatalf("done reply = %q, want its task named and the order to run nothing more", msg)
+	}
+	if msg := report("pane-stuck", "stuck"); strings.Contains(msg, order) || !strings.Contains(msg, "task #2 as needs_you") || !strings.Contains(msg, "You can stop now") {
+		t.Fatalf("stuck reply = %q, want its task named and no order about a merge that is not coming", msg)
+	}
+}
+
 func TestRepoNamed(t *testing.T) {
 	app := t.TempDir()
 	os.Mkdir(filepath.Join(app, ".git"), 0o755)

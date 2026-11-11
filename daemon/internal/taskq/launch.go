@@ -97,20 +97,77 @@ Your name on the peers bus is %s. %s
   on it at once, as %s.
 
 %s
-## When you are done
-
-- When your part is done and committed, call the tasks tool with action "report",
-  status "done", and a note: a few lines on what you built and how you checked it.
-- If you cannot go on (a choice only a person can make, missing access, checks you
-  cannot fix), commit what you have, call the tasks tool with action "report",
-  status "stuck" and a note saying what you need, then stop.
-
-## Your plan
-
-%s
 `, t.ID, t.Title, filepath.Base(p.RepoPath), l.worktree, l.branch, trunk, l.busName,
-		teamLine(team), BusName("<repo>", t.ID), servers, p.Plan)
+		teamLine(team), BusName("<repo>", t.ID), servers) + briefDecisions + briefDone + "\n## Your plan\n\n" + p.Plan + "\n"
 }
+
+// briefDecisions is the brief's rule for a choice the plan did not settle,
+// or settled with "stop and ask". In the first forty tasks workers stopped
+// eleven times for a person; each time they had a recommendation and the
+// person took it, after hours. So the worker decides and says so, and
+// stops only for what cannot be undone or guessed. It comes before the
+// plan and names the plan's own stop rules, because the plan is what told
+// those workers to stop.
+const briefDecisions = `## Decisions are yours
+
+A question here costs hours: nobody is there to answer, and the tasks
+queued behind this one wait with it. It is almost always a question you
+can answer yourself. You have a recommendation, and the person would take
+it.
+
+So when you reach a choice and you have a recommendation:
+take it, and go on. This holds where your plan says to stop, to ask, or to
+report stuck (a STOP condition, a "hard rule", a file outside its list, a
+file it says to leave alone) and the fix you recommend needs exactly that:
+the plan was written before anyone saw what you see now. Keep the change
+as small as the fix needs. Then tell the person: start your report's note
+with "DECISIONS I MADE" and one line for each, saying what the plan said,
+what you did, and why. All of it is commits on this branch, which a person
+can read and undo. The same goes when a review of your commit tells you to
+stop and propose a redesign: choose the one you would propose, build it,
+and list it.
+
+Report stuck only when:
+- the choice cannot be undone from this branch: spending money, deleting
+  or changing real data, applying a migration, sending anything to people,
+  or changing anything outside your worktree;
+- you lack access you cannot get yourself (a secret, a login, a service);
+- you have no recommendation: you would be guessing at what the person
+  wants;
+- the checks stay red after you tried to fix them.
+
+The rules of this brief itself are not yours to waive: no push, nothing
+under .claude/, the shared database, the person's servers.
+Do not ask with a question card (AskUserQuestion): nobody sees it. Decide,
+or report stuck.
+
+`
+
+// briefDone is the brief's rules for the end of the work. Their order is
+// the point: everything first, the report last, nothing after. A worker
+// that reported and then ran the checks again (its Stop hook asking for a
+// receipt) failed its own merge, and one that ended its turn to wait for a
+// review that found nothing sat for five hours.
+const briefDone = `## When you are done
+
+- Finish everything before you report. Commit, run the repo's checks, and
+  if the repo wants a signed receipt for a green run (its Stop hook says
+  so), sign it before you report, not after.
+- If something reviews your commits in the background, wait for it
+  yourself: look whether it is still running, and deal with what it finds.
+  A clean review sends you nothing, so never end your turn to wait for
+  one. End your turn to wait only for what will surely wake you (a
+  background command you started does, when it exits).
+- Then report, as the last thing you do: call the tasks tool with action
+  "report", status "done", and a note. Your decisions first, if you made
+  any, then a few lines on what you built and how you checked it.
+- After the report, run nothing in this folder: no tests, no checks, no
+  commits. ccmux runs the repo's checks here once your turn has ended,
+  and a second run beside them makes both fail.
+- If you cannot go on, for one of the reasons above, commit what you have,
+  call the tasks tool with action "report", status "stuck" and a note
+  saying exactly what you need, then stop.
+`
 
 // teamLine names the other parts' Claudes, or says there are none yet.
 func teamLine(team []string) string {

@@ -166,6 +166,10 @@ func (r *Runner) settleFailed(t store.Task, err error) store.Task {
 	t.FixPart = 0 // a send-back still waiting from an earlier failure is spent
 	var blocked folderBlocked
 	if errors.As(err, &blocked) {
+		// Parked here, not left for the next pass to find: pickMerge stops
+		// at the first feature it can merge, and no pass looks at the rest
+		// while that merge runs, so this one would hold its slot for all
+		// of another feature's checks while it waits on a person's folder.
 		t.Status, t.Note = ReadyToMerge, blocked.why
 		r.park(t.ID)
 		return t

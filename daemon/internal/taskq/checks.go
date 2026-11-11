@@ -23,11 +23,21 @@ type CheckResult struct {
 	Configured bool
 	OK         bool
 	Output     string // the failing line's output, cut to its last lines
-	// Full is the failing line's whole output. The last lines of a test
-	// run are often a summary table, not the failure.
+	// Full is the failing line's whole output, of both runs when it was run
+	// twice. The last lines of a test run are often a summary table, not
+	// the failure.
 	Full string
-	// Reran is the lines that failed once and passed when run again.
-	Reran []string
+	// Flaked is the lines that failed once and passed when run again. Set
+	// on a red result too: a later line may be the one that failed.
+	Flaked []Flake
+}
+
+// Flake is a gate line that failed once and passed when run again, with
+// what its failed run printed: the line alone ("npm test") does not say
+// which test it was, and nothing else would.
+type Flake struct {
+	Line   string
+	Output string
 }
 
 // GateChecks runs the lines of the repo's .claude/qa-gates as the trunk has
@@ -43,8 +53,8 @@ type CheckResult struct {
 // and not one was the branch's doing: a 250 ms timing test and a suite's
 // per-test limit, losing to whatever else the machine was running. A second
 // run costs minutes; the worker's loop it saves cost a quarter of an hour
-// and often a person. A line that needed it is named in the result, so a
-// test that fails now and then stays seen.
+// and often a person. A line that needed it is in the result with what its
+// failed run printed, so a test that fails now and then stays seen, by name.
 type GateChecks struct {
 	PerLine time.Duration // how long one line may run
 }
@@ -61,22 +71,43 @@ func (g GateChecks) Run(repo, worktree, trunk string) CheckResult {
 	}
 	res := CheckResult{Configured: true}
 	for _, line := range lines {
-		run := g.runLine(worktree, line)
-		failed := "failed"
-		if run.err != nil && !run.timedOut {
-			if run = g.runLine(worktree, line); run.err == nil {
-				res.Reran = append(res.Reran, line)
-			}
-			failed = "failed twice"
-		}
+		run, first := g.checkLine(worktree, line)
 		if run.err != nil {
-			res.Output = fmt.Sprintf("%s\n(%s: %s: %v)", tail(run.out, 20), failed, line, run.err)
-			res.Full = run.out
+			res.Output, res.Full = failureOf(line, run, first)
 			return res
+		}
+		if first != nil {
+			res.Flaked = append(res.Flaked, Flake{Line: line, Output: first.out})
 		}
 	}
 	res.OK = true
 	return res
+}
+
+// checkLine runs one gate line, and once more when it failed (not when it
+// timed out: it would only take its whole time twice). It returns the run
+// that counts and, when there were two, the first as well.
+func (g GateChecks) checkLine(dir, line string) (lineRun, *lineRun) {
+	run := g.runLine(dir, line)
+	if run.err == nil || run.timedOut {
+		return run, nil
+	}
+	return g.runLine(dir, line), &run
+}
+
+// failureOf is a failed line's last lines with what happened, and its whole
+// output. After two runs both are kept. When the second run only timed out,
+// the first is the one that says what is wrong, so its last lines are the
+// ones shown, and it is not called two failures.
+func failureOf(line string, run lineRun, first *lineRun) (string, string) {
+	if first == nil {
+		return fmt.Sprintf("%s\n(failed: %s: %v)", tail(run.out, 20), line, run.err), run.out
+	}
+	full := first.out + "\n--- the same line, run again ---\n" + run.out
+	if run.timedOut {
+		return fmt.Sprintf("%s\n(failed: %s: %v; run again, it %v)", tail(first.out, 20), line, first.err, run.err), full
+	}
+	return fmt.Sprintf("%s\n(failed twice: %s: %v)", tail(run.out, 20), line, run.err), full
 }
 
 // gateLines reads the checks from the trunk, never from the branch being

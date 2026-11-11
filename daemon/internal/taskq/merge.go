@@ -149,8 +149,10 @@ func (r *Runner) mergeBlocked(parts []store.Part) string {
 // is saved done before its tidy-up, which can take minutes (a worktree with
 // a node_modules in it): a daemon stopped meanwhile then finds work that is
 // in the trunks marked as such, not a merge to run again against a folder
-// half removed. The merge line stays taken until the tidy-up ends, and
-// what it had to leave is added to the done note.
+// half removed. The merge line stays taken until the tidy-up ends. The
+// note says the tidy-up is not finished until it is, then what it had to
+// leave; that last save always runs, so a first one that failed gets a
+// second go.
 func (r *Runner) merge(j mergeJob) {
 	note, err := r.mergeParts(j.parts)
 	if err != nil {
@@ -163,21 +165,26 @@ func (r *Runner) merge(j mergeJob) {
 		return
 	}
 	done := j.task
-	done.Status, done.Note, done.FinishedAt = Done, note, r.Now().UnixMilli()
+	done.Status, done.Note, done.FinishedAt = Done, note+noteTidying, r.Now().UnixMilli()
 	log.Printf("tasks: #%d %s", done.ID, note)
 	r.Lock.Lock()
 	saved := r.saveTask(done)
 	r.Lock.Unlock()
 	r.changed(saved)
 
-	left := r.cleanUp(j)
-	done.Note += left
+	done.Note = note + r.cleanUp(j)
 	r.Lock.Lock()
 	r.merging = false
-	saved = left != "" && r.saveTask(done)
+	saved = r.saveTask(done)
 	r.Lock.Unlock()
 	r.changed(saved)
 }
+
+// noteTidying ends a merged feature's note while its tidy-up runs. A
+// tidy-up cut short (the daemon stopped) leaves it there, the one sign that
+// a worktree, a branch or a worker may still be around: nothing takes a
+// tidy-up up again.
+const noteTidying = "; tidy-up not finished"
 
 // changed tells the lenses the queue changed, when something was saved.
 func (r *Runner) changed(saved bool) {
@@ -199,10 +206,11 @@ func noteOf(err error) string {
 }
 
 // checked is a part ready to land: its trunk, the commit its checks ran
-// on, and the checks that passed only on a second run.
+// on, and what to say of checks that passed only on a second run ("" for
+// none).
 type checked struct {
 	trunk, rev string
-	reran      []string
+	flaked     string
 }
 
 // mergeParts rebases and checks every part, then moves every trunk to the
@@ -234,14 +242,14 @@ func (r *Runner) mergeParts(parts []store.Part) (string, error) {
 	return "merged " + strings.Join(done, ", ") + rerunNote(parts, oks), nil
 }
 
-// rerunNote names the checks that failed once and passed when run again,
-// per repo, for the done note: a test that fails now and then is merged,
-// and still seen. "" when every check passed first time.
+// rerunNote says, per repo, which checks failed once and passed when run
+// again, for the done note: a test that fails now and then is merged, and
+// still seen. "" when every check passed first time.
 func rerunNote(parts []store.Part, oks []checked) string {
 	var out strings.Builder
 	for i, p := range parts {
-		if len(oks[i].reran) > 0 {
-			fmt.Fprintf(&out, "; %s: %s failed once and passed when run again", filepath.Base(p.RepoPath), strings.Join(oks[i].reran, ", "))
+		if oks[i].flaked != "" {
+			fmt.Fprintf(&out, "; %s: %s", filepath.Base(p.RepoPath), oks[i].flaked)
 		}
 	}
 	return out.String()
@@ -273,11 +281,11 @@ func (r *Runner) prepareMerge(p store.Part) (checked, error) {
 	if err := r.gateFilesUntouched(p.RepoPath, trunk, rev); err != nil {
 		return checked{}, err
 	}
-	reran, err := r.checkPart(p, trunk)
+	flaked, err := r.checkPart(p, trunk)
 	if err != nil {
 		return checked{}, err
 	}
-	return checked{trunk: trunk, rev: rev, reran: reran}, nil
+	return checked{trunk: trunk, rev: rev, flaked: flaked}, nil
 }
 
 // maxCheckLog is the most of a failed check's output kept in its file: the
@@ -289,22 +297,53 @@ const maxCheckLog = 4 << 20
 // or commit ever sees it.
 func checkLog(p store.Part) string { return p.Worktree + ".check.log" }
 
-// checkPart runs the repo's checks in the part's worktree and returns the
-// lines that needed a second run. A red run goes back to its worker with
-// the last lines of the failure and the file holding all of it; a green
-// one removes the file an earlier failure left.
-func (r *Runner) checkPart(p store.Part, trunk string) ([]string, error) {
+// flakeLog is where a part's checks that failed once and then passed leave
+// what the failed runs printed. It stays after the tidy-up: the feature is
+// merged, and this is all that says which test it was.
+func flakeLog(p store.Part) string { return p.Worktree + ".flaky.log" }
+
+// checkPart runs the repo's checks in the part's worktree and returns what
+// to say of lines that needed a second run ("" for none). A red run goes
+// back to its worker with the last lines of the failure and the file
+// holding all of it; a green one removes the file an earlier failure left.
+func (r *Runner) checkPart(p store.Part, trunk string) (string, error) {
 	res := r.Checks.Run(p.RepoPath, p.Worktree, trunk)
+	flaked := r.keepFlakes(p, res.Flaked)
 	switch {
 	case !res.Configured:
-		return nil, errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
+		return "", errors.New("lists no checks (.claude/qa-gates), so nothing shows it is green; merge it by hand")
 	case !res.OK:
-		return nil, workerFixable{p, errors.New("checks failed:\n" + res.Output + r.keepCheckOutput(p, res.Full))}
+		return "", workerFixable{p, errors.New("checks failed:\n" + res.Output + r.keepCheckOutput(p, res.Full))}
 	}
 	if err := os.Remove(checkLog(p)); err != nil && !os.IsNotExist(err) {
 		log.Printf("tasks: #%d: old check output %s not removed: %v", p.TaskID, checkLog(p), err)
 	}
-	return res.Reran, nil
+	return flaked, nil
+}
+
+// keepFlakes records the checks that failed once and passed when run again:
+// a log line each, and what their failed runs printed in the part's flaky
+// file. It returns the words for the done note, "" for no flakes. Called
+// for a red result too, where a later line failed: the flake is then on
+// record, though no done note will carry it.
+func (r *Runner) keepFlakes(p store.Part, flakes []Flake) string {
+	if len(flakes) == 0 {
+		return ""
+	}
+	var lines []string
+	var out strings.Builder
+	for _, f := range flakes {
+		log.Printf("tasks: #%d part in %s: check %q failed once and passed when run again", p.TaskID, p.RepoPath, f.Line)
+		lines = append(lines, f.Line)
+		fmt.Fprintf(&out, "=== %s (failed, then passed when run again) ===\n%s\n", f.Line, f.Output)
+	}
+	said := strings.Join(lines, ", ") + " failed once and passed when run again"
+	path := flakeLog(p)
+	if err := os.WriteFile(path, []byte(cut(out.String(), maxCheckLog)), 0o644); err != nil {
+		log.Printf("tasks: #%d: failed runs' output not kept in %s: %v", p.TaskID, path, err)
+		return said
+	}
+	return said + " (the failed output: " + path + ")"
 }
 
 // keepCheckOutput writes a failed check's whole output to the part's file

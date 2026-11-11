@@ -169,12 +169,35 @@ func (r *Runner) watch(parts []store.Part) bool {
 			continue
 		}
 		st, ok := r.Host.TaskPane(p.PaneID)
-		if next, moved := Judge(p, st, ok, now); moved && r.savePart(next) {
+		next, moved := Judge(p, st, ok, now)
+		if moved && next.Note == noteQuiet {
+			next = r.nudge(p, next)
+		}
+		if moved && r.savePart(next) {
 			parts[i] = next
 			changed = true
 		}
 	}
 	return changed
+}
+
+// nudge stands between a quiet worker and a person, once per run of a
+// part: was is the part at work, quiet is what Judge made of it (waiting on
+// a person, "stopped without reporting"). The first time, the worker is
+// asked over the bus to report and the part stays at work, marked as
+// asked; the message counts as a prompt, so its old Stop no longer reads
+// as quiet. A worker already asked, or one nobody can reach, is the
+// person's. Under the lock.
+func (r *Runner) nudge(was, quiet store.Part) store.Part {
+	if was.Note == noteNudged {
+		return quiet
+	}
+	if err := r.Host.TellWorker(was.PaneID, nudgeText(was.TaskID)); err != nil {
+		log.Printf("tasks: #%d part in %s stopped without reporting and could not be asked: %v", was.TaskID, was.RepoPath, err)
+		return quiet
+	}
+	was.Note = noteNudged
+	return was
 }
 
 // rollup sets each started task's status from its parts.

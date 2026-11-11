@@ -814,6 +814,45 @@ func TestRunner_AFolderDirtiedDuringTheChecksLeavesTheSlot(t *testing.T) {
 	}
 }
 
+// A feature whose folder turned dirty during its checks gives its slot up
+// at once, also while another feature's merge keeps every pass from looking
+// at it: with #1 merging, #2 (waiting on a person's folder since its own
+// checks) holds nothing, and the next task in its window starts.
+func TestRunner_AFolderDirtiedDuringTheChecksIsParkedAtOnce(t *testing.T) {
+	g := newRig(t)
+	g.r.Slots = 1
+	g.feature(1, 0, "app")
+	g.feature(2, 0, "backend")
+	g.inWindow(1, "w1")
+	g.inWindow(2, "w2")
+	g.tick() // one feature builds in each window
+	g.doneParts(1)
+	g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
+	g.tick() // #1 waits on its folder
+	g.doneParts(2)
+	g.checks.during = func() {
+		g.git.mu.Lock()
+		g.git.blocked["/p/backend"] = "backend has uncommitted changes on dev"
+		g.git.mu.Unlock()
+	}
+	g.tick() // #2's checks pass, its folder is dirty by then
+	g.checks.during = nil
+	if two := g.st.task(2); two.Status != ReadyToMerge || !strings.Contains(two.Note, "backend has uncommitted") {
+		t.Fatalf("setup: #2 = %s note %q, want back in line waiting on its folder", two.Status, two.Note)
+	}
+	delete(g.git.blocked, "/p/app") // #1's folder is clean; #2's is not
+	g.feature(3, 0, "admin")
+	g.inWindow(3, "w2")
+	g.checks.hold = make(chan struct{})
+	g.r.Tick() // #1 is picked to merge: the pass never gets to #2
+	first, second, third := g.st.task(1).Status, g.st.task(2).Status, g.st.task(3).Status
+	close(g.checks.hold)
+	g.r.merges.Wait()
+	if first != Merging || second != ReadyToMerge || third != Running {
+		t.Fatalf("#1 %s, #2 %s, #3 %s; want merging, ready to merge, and #3 running in the slot #2 gave up", first, second, third)
+	}
+}
+
 // A feature that leaves its wait on a folder merges alone too. The pass
 // that finds the folder clean starts its merge before it hands out slots,
 // so a task filed meanwhile does not start beside the checks.
@@ -840,7 +879,9 @@ func TestRunner_AFeatureLeavingAFolderWaitMergesAlone(t *testing.T) {
 // A merged feature is done before its tidy-up starts: removing a worktree
 // can take minutes, and a daemon stopped in the middle (every deploy stops
 // it) must not find the feature still merging and merge it a second time,
-// against a folder half gone. What the tidy-up left is added to the note.
+// against a folder half gone. Its note says the tidy-up is not finished
+// until it is, so one cut short stays visible; then the note says what was
+// left. The merge line is taken until the tidy-up ends, and free after.
 func TestMerge_IsDoneBeforeTheTidyUp(t *testing.T) {
 	g := newRig(t)
 	g.feature(1, 0, "app")
@@ -850,47 +891,58 @@ func TestMerge_IsDoneBeforeTheTidyUp(t *testing.T) {
 	g.git.onRemove = func() { during = g.st.task(1) }
 	g.git.rmErr["/p/app"] = errors.New("left half removed")
 	g.tick()
-	if during.Status != Done || during.Note != "merged app into dev" || during.FinishedAt == 0 {
-		t.Fatalf("while the worktree is removed: %+v, want done and saying what merged", during)
+	if during.Status != Done || during.Note != "merged app into dev; tidy-up not finished" || during.FinishedAt == 0 {
+		t.Fatalf("while the worktree is removed: %+v, want done, saying what merged and that the tidy-up is not finished", during)
 	}
-	if got := g.st.task(1); got.Status != Done || !strings.Contains(got.Note, "left for you") || !strings.Contains(got.Note, "left half removed") {
+	got := g.st.task(1)
+	if got.Status != Done || !strings.Contains(got.Note, "left for you") || !strings.Contains(got.Note, "left half removed") ||
+		strings.Contains(got.Note, "tidy-up not finished") {
 		t.Fatalf("after the tidy-up: %+v, want done and saying what was left", got)
 	}
+	// The next feature merges: the line was freed although something was left.
+	g.git.onRemove = nil
 	g.feature(2, 0, "backend")
-	g.doneParts(1)
 	g.tick()
+	g.doneParts(2)
 	g.tick()
-	if g.st.task(2).Status != Running && g.st.task(2).Status != ReadyToMerge {
-		t.Fatalf("the merge lane was not freed after the tidy-up: #2 %s", g.st.task(2).Status)
+	if two := g.st.task(2); two.Status != Done || two.Note != "merged backend into dev" {
+		t.Fatalf("the next feature = %s note %q, want merged with a clean note", two.Status, two.Note)
 	}
 }
 
-// A wait on a folder is forgotten once the feature leaves it: built again
-// later (cancelled and queued again, say), it holds its slot like any other
-// until the runner has looked at its folder afresh.
+// A wait on a folder is forgotten once the feature leaves it. Built again
+// later (cancelled and queued again, say) while another window's merge is
+// in flight, nobody looks at its folder that pass, and it must hold its
+// slot like any other built feature rather than count as still waiting.
 func TestRunner_AnOldFolderWaitIsForgotten(t *testing.T) {
 	g := newRig(t)
 	g.r.Slots = 1
 	g.feature(1, 0, "app")
-	g.tick()
+	g.feature(9, 0, "admin")
+	g.inWindow(1, "w1")
+	g.inWindow(9, "w2")
+	g.tick() // one feature builds in each window
 	g.doneParts(1)
 	g.git.blocked["/p/app"] = "app has uncommitted changes on dev"
-	g.tick() // #1 waits on the folder, and gives its slot up
+	g.tick() // #1 waits on the folder, and gives w1's slot up
 	one := g.st.task(1)
 	one.Status = Cancelled
 	g.st.SaveTask(one)
 	g.tick() // a pass sees it out of the merge line
+	g.doneParts(9)
+	g.checks.hold = make(chan struct{})
+	g.r.Tick() // w2's feature is merging: the merge line is taken
 	delete(g.git.blocked, "/p/app")
-	one.Status = ReadyToMerge // built again
+	one.Status = ReadyToMerge // #1 is built again
 	g.st.SaveTask(one)
 	g.feature(2, 0, "backend")
-	g.checks.hold = make(chan struct{})
-	g.r.Tick()
-	first, second := g.st.task(1).Status, g.st.task(2).Status
+	g.inWindow(2, "w1")
+	g.r.Tick() // no merge step looks at #1 this pass
+	nine, first, second := g.st.task(9).Status, g.st.task(1).Status, g.st.task(2).Status
 	close(g.checks.hold)
 	g.r.merges.Wait()
-	if first != Merging || second != Waiting {
-		t.Fatalf("#1 %s, #2 %s; want merging and waiting: #1 holds the one slot again", first, second)
+	if nine != Merging || first != ReadyToMerge || second != Waiting {
+		t.Fatalf("#9 %s, #1 %s, #2 %s; want merging, ready to merge, and #2 waiting: #1 holds w1's slot again", nine, first, second)
 	}
 }
 
@@ -1026,18 +1078,52 @@ func TestMerge_AFailedCheckLeavesItsWholeOutput(t *testing.T) {
 	}
 }
 
-// A check that passed only on its second run still merges, and the done
-// note says which, so a test that fails now and then is seen.
+// A check that passed only on its second run still merges. The done note
+// names it and the file that holds what its failed run printed, and that
+// file outlives the tidy-up: a test that fails now and then is merged, and
+// can still be found.
 func TestMerge_SaysWhichChecksNeededASecondRun(t *testing.T) {
 	g := newRig(t)
 	g.feature(1, 0, "app", "backend")
 	g.tick()
 	g.doneParts(1)
-	g.checks.results["/p/backend"] = CheckResult{Configured: true, OK: true, Reran: []string{"npm test"}}
+	g.checks.results["/p/backend"] = CheckResult{Configured: true, OK: true,
+		Flaked: []Flake{{Line: "npm test", Output: "FAIL redact.test.ts:111"}, {Line: "bun test", Output: "(fail) corpus > slow"}}}
+	backend := g.partsOf(1)[1]
+	flaky := backend.Worktree + ".flaky.log"
 	g.tick()
 	got := g.st.task(1)
-	if got.Status != Done || got.Note != "merged app into dev, backend into dev; backend: npm test failed once and passed when run again" {
-		t.Fatalf("merged after a second run = %s note %q", got.Status, got.Note)
+	want := "merged app into dev, backend into dev; backend: npm test, bun test failed once and passed when run again (the failed output: " + flaky + ")"
+	if got.Status != Done || got.Note != want {
+		t.Fatalf("merged after a second run = %s note %q, want %q", got.Status, got.Note, want)
+	}
+	kept, err := os.ReadFile(flaky)
+	if err != nil || !strings.Contains(string(kept), "redact.test.ts:111") || !strings.Contains(string(kept), "corpus > slow") ||
+		!strings.Contains(string(kept), "npm test") {
+		t.Fatalf("the failed runs' output after the tidy-up = %q, %v", kept, err)
+	}
+	if _, err := os.Stat(g.partsOf(1)[0].Worktree + ".flaky.log"); !os.IsNotExist(err) {
+		t.Fatalf("the part whose checks passed first time got a flaky file: %v", err)
+	}
+}
+
+// A check that flaked is kept and logged even when a later check fails the
+// merge: the failure goes to the worker, the flake is still on record.
+func TestMerge_AFlakeIsKeptWhenALaterCheckFails(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	g.usedAutoFix(1)
+	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute",
+		Flaked: []Flake{{Line: "npm test", Output: "FAIL redact.test.ts:111"}}}
+	g.tick()
+	app := g.partsOf(1)[0]
+	if got := g.st.task(1); got.Status != MergeFailed || !strings.Contains(got.Note, "TestRoute") {
+		t.Fatalf("task = %s note %q, want merge failed on the later check", got.Status, got.Note)
+	}
+	if kept, err := os.ReadFile(app.Worktree + ".flaky.log"); err != nil || !strings.Contains(string(kept), "redact.test.ts:111") {
+		t.Fatalf("the flake's output = %q, %v; want it kept", kept, err)
 	}
 }
 
@@ -1305,6 +1391,118 @@ type probeLock struct{ held bool }
 func (p *probeLock) Lock()   { p.held = true }
 func (p *probeLock) Unlock() { p.held = false }
 
+// A worker that ended its turn long ago without reporting is asked once,
+// over the bus, to report: most often it is waiting for something that
+// never wakes it (a clean commit review sends nothing). It stays running
+// meanwhile. Only a second quiet spell asks for a person.
+func TestRunner_AQuietWorkerIsNudgedOnceBeforeAPerson(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	app := g.partsOf(1)[0]
+	stop := func() {
+		g.host.panes[app.PaneID] = PaneState{Attention: model.AttentionDone, Reason: model.ReasonFinished, At: g.now.UnixMilli()}
+		g.now = g.now.Add(QuietLimit + time.Minute)
+	}
+	stop()
+	g.tick()
+	got, told := g.st.part(app.ID), g.host.told[app.PaneID]
+	if got.Status != Running || got.Note != noteNudged || g.st.task(1).Status != Running {
+		t.Fatalf("quiet once: part %s note %q, task %s; want still running, nudged", got.Status, got.Note, g.st.task(1).Status)
+	}
+	if len(told) != 1 || !strings.Contains(told[0], "Task #1") || !strings.Contains(told[0], `"report"`) || !strings.Contains(told[0], "nothing is going to wake you") {
+		t.Fatalf("the worker was told %q", told)
+	}
+	// The message starts a turn; a pass during it changes nothing.
+	g.host.panes[app.PaneID] = PaneState{Attention: model.AttentionIdle, At: g.now.UnixMilli()}
+	g.tick()
+	if got := g.st.part(app.ID); got.Status != Running || len(g.host.told[app.PaneID]) != 1 {
+		t.Fatalf("while it answers: part %s, told %d times", got.Status, len(g.host.told[app.PaneID]))
+	}
+	stop() // it stopped again, still without a report
+	g.tick()
+	got = g.st.part(app.ID)
+	if got.Status != NeedsYou || got.Note != noteQuiet || len(g.host.told[app.PaneID]) != 1 || g.st.task(1).Status != NeedsYou {
+		t.Fatalf("quiet twice: part %s note %q, told %d, task %s; want needs you, told once", got.Status, got.Note, len(g.host.told[app.PaneID]), g.st.task(1).Status)
+	}
+}
+
+// A quiet worker nobody can reach on the bus asks for a person at once.
+func TestRunner_AQuietWorkerNobodyCanReachNeedsAPerson(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	app := g.partsOf(1)[0]
+	g.host.deaf = true
+	g.host.panes[app.PaneID] = PaneState{Attention: model.AttentionDone, Reason: model.ReasonFinished, At: g.now.UnixMilli()}
+	g.now = g.now.Add(QuietLimit + time.Minute)
+	g.tick()
+	if got := g.st.part(app.ID); got.Status != NeedsYou || got.Note != noteQuiet {
+		t.Fatalf("deaf quiet worker: %s note %q, want needs you", got.Status, got.Note)
+	}
+}
+
+// A nudged worker that reports done merges like any other, and after a
+// failed merge sent it back it may be nudged again: the note that held the
+// nudge is gone.
+func TestRunner_ANudgeIsPerRun(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	app := g.partsOf(1)[0]
+	quiet := func() {
+		g.host.panes[app.PaneID] = PaneState{Attention: model.AttentionDone, Reason: model.ReasonFinished, At: g.now.UnixMilli()}
+		g.now = g.now.Add(QuietLimit + time.Minute)
+		g.tick()
+	}
+	quiet()
+	g.checks.results["/p/app"] = CheckResult{Configured: true, Output: "FAIL: TestRoute"}
+	g.doneParts(1)
+	g.tick() // merges, fails, goes back to its worker
+	if got := g.st.part(app.ID); got.Status != Running || got.Note != noteSentBack {
+		t.Fatalf("after the failed merge: %s note %q, want sent back", got.Status, got.Note)
+	}
+	quiet()
+	if got, told := g.st.part(app.ID), g.host.told[app.PaneID]; got.Status != Running || got.Note != noteNudged || len(told) != 3 {
+		t.Fatalf("quiet after a send-back: %s note %q, told %d times; want nudged again (nudge, send-back, nudge)", got.Status, got.Note, len(told))
+	}
+}
+
+// The brief tells a worker to take its own recommendation and say so, to
+// stop only for what cannot be undone or guessed, to finish everything
+// before it reports, and to run nothing after. These lines are the policy
+// the queue's hands-off running rests on; the plan comes last, under them.
+func TestBrief_DecideReportLastRunNothingAfter(t *testing.T) {
+	task := store.Task{ID: 7, Title: "Export"}
+	part := store.Part{ID: 3, TaskID: 7, RepoPath: "/p/app", Plan: "HARD RULE: if the test needs an edit, report stuck."}
+	l := layoutOf("/root", task, part)
+	brief := briefText(task, part, l, "dev", nil, "")
+	for _, want := range []string{
+		"take it, and go on",
+		"DECISIONS I MADE",
+		"stop and propose a redesign: choose the one you would propose",
+		"Report stuck only when",
+		"cannot be undone from this branch",
+		"you have no recommendation",
+		"Do not ask with a question card",
+		"not yours to waive",
+		"sign it before you report",
+		"A clean review sends you nothing",
+		"After the report, run nothing in this folder",
+		`status "stuck"`,
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief lacks %q", want)
+		}
+	}
+	if d, plan := strings.Index(brief, "## Decisions are yours"), strings.Index(brief, "HARD RULE"); d < 0 || plan < d {
+		t.Fatalf("the decisions section (at %d) must come before the plan (at %d)", d, plan)
+	}
+	if strings.Contains(brief, "%!") {
+		t.Fatalf("a format verb went wrong:\n%s", brief)
+	}
+}
+
 func TestJudge(t *testing.T) {
 	now := time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC)
 	ms := func(d time.Duration) int64 { return now.Add(d).UnixMilli() }
@@ -1336,6 +1534,15 @@ func TestJudge(t *testing.T) {
 		{"a person typed to a stuck worker", stuck, PaneState{Attention: model.AttentionIdle, At: ms(-time.Minute)}, true, Running, true},
 		{"a signal older than the last change", stuck, PaneState{Attention: model.AttentionIdle, At: ms(-10 * time.Minute)}, true, NeedsYou, false},
 		{"a built part is left alone", store.Part{Status: Ready, PaneID: "p"}, PaneState{}, false, Ready, false},
+		{"asked to report, answering", store.Part{Status: Running, PaneID: "p", Note: noteNudged, StartedAt: ms(-time.Hour), UpdatedAt: ms(-NudgeLimit + time.Minute)},
+			PaneState{Attention: model.AttentionIdle, At: ms(-NudgeLimit + time.Minute)}, true, Running, false},
+		{"asked to report, no sign since", store.Part{Status: Running, PaneID: "p", Note: noteNudged, StartedAt: ms(-2 * time.Hour), UpdatedAt: ms(-NudgeLimit - time.Minute)},
+			PaneState{Attention: model.AttentionIdle, At: ms(-NudgeLimit - time.Minute)}, true, NeedsYou, true},
+		{"asked to report long ago, then a person typed and a long turn runs: not timed",
+			store.Part{Status: Running, PaneID: "p", Note: noteNudged, StartedAt: ms(-5 * time.Hour), UpdatedAt: ms(-4 * time.Hour)},
+			PaneState{Attention: model.AttentionIdle, At: ms(-NudgeLimit - time.Minute)}, true, Running, false},
+		{"a person typed long ago, a long turn since: never timed", store.Part{Status: Running, PaneID: "p", StartedAt: ms(-3 * time.Hour)},
+			PaneState{Attention: model.AttentionIdle, At: ms(-2 * time.Hour)}, true, Running, false},
 	}
 	for _, c := range cases {
 		got, changed := Judge(c.task, c.st, c.ok, now)
