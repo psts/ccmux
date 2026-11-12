@@ -34,6 +34,7 @@ type toolTask struct {
 	Title    string     `json:"title"`
 	Status   string     `json:"status"`
 	AfterIDs []int64    `json:"afterIds,omitempty"`
+	Look     bool       `json:"look,omitempty"`
 	Note     string     `json:"note,omitempty"`
 	Parts    []toolPart `json:"parts"`
 }
@@ -93,7 +94,7 @@ func toolAnswerOf(mine []store.Task, parts []store.Part, shows toolShows) toolAn
 	listed, older := toolListed(mine, shows.only)
 	out := toolAnswer{Tasks: make([]toolTask, 0, len(listed)), Older: older}
 	for _, t := range listed {
-		v := toolTask{ID: t.ID, Title: t.Title, Status: t.Status, AfterIDs: t.AfterIDs,
+		v := toolTask{ID: t.ID, Title: t.Title, Status: t.Status, AfterIDs: t.AfterIDs, Look: t.Look,
 			Note: toolNote(t.ID, t.Note, shows.whole), Parts: []toolPart{}}
 		for _, p := range taskq.PartsOf(parts, t.ID) {
 			v.Parts = append(v.Parts, toolPart{Repo: filepath.Base(p.RepoPath), Status: p.Status,

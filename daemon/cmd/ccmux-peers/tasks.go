@@ -12,6 +12,7 @@ type queuedTask struct {
 	Title    string       `json:"title"`
 	Status   string       `json:"status"`
 	AfterIDs []int64      `json:"afterIds"`
+	Look     bool         `json:"look"`
 	Note     string       `json:"note"`
 	Parts    []queuedPart `json:"parts"`
 }
@@ -66,6 +67,9 @@ func taskListText(message string, tasks []queuedTask, older int) string {
 		fmt.Fprintf(&b, "- #%d  %s  [%s]", t.ID, t.Title, t.Status)
 		if len(t.AfterIDs) > 0 {
 			b.WriteString("  after " + taskNumbers(t.AfterIDs))
+		}
+		if t.Look {
+			b.WriteString("  (a person reads it before it ships)")
 		}
 		b.WriteString("\n")
 		for _, p := range t.Parts {

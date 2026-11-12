@@ -27,14 +27,19 @@ type Task struct {
 	AutoFixes int `json:"autoFixes,omitempty"`
 	// FixPart is the part a failed merge is waiting to send back to its
 	// worker until the window has a slot free (taskq/sendback.go); 0 for none.
-	FixPart    int64 `json:"fixPart,omitempty"`
+	FixPart int64 `json:"fixPart,omitempty"`
+	// Look marks the task for a person to read its work before it ships:
+	// its planner set it (a migration, access rules). It changes nothing
+	// about how the task waits, builds or merges. SetTaskLook writes it,
+	// never SaveTask.
+	Look       bool  `json:"look,omitempty"`
 	CreatedAt  int64 `json:"createdAt"`
 	UpdatedAt  int64 `json:"updatedAt"`
 	StartedAt  int64 `json:"startedAt,omitempty"`
 	FinishedAt int64 `json:"finishedAt,omitempty"`
 }
 
-const taskCols = "id,title,status,after_ids,position,note,filed_by,window_id,auto_fixes,fix_part,created_at,updated_at,started_at,finished_at"
+const taskCols = "id,title,status,after_ids,position,note,filed_by,window_id,auto_fixes,fix_part,look,created_at,updated_at,started_at,finished_at"
 
 // AddTaskWithParts files a task at the back of the queue together with all
 // its parts, in one step: a task left without parts could never start, and
@@ -48,7 +53,7 @@ func (s *SQLite) AddTaskWithParts(t Task, parts []Part) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.Exec(addTaskSQL, t.Title, t.Status, idsText(t.AfterIDs), t.Note, t.FiledBy, t.WindowID, t.CreatedAt, t.UpdatedAt)
+	res, err := tx.Exec(addTaskSQL, t.Title, t.Status, idsText(t.AfterIDs), t.Note, t.FiledBy, t.WindowID, t.Look, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -65,8 +70,8 @@ func (s *SQLite) AddTaskWithParts(t Task, parts []Part) (int64, error) {
 }
 
 const addTaskSQL = `
-INSERT INTO tasks (title,status,after_ids,position,note,filed_by,window_id,created_at,updated_at)
-VALUES (?,?,?,(SELECT COALESCE(MAX(position),0)+1 FROM tasks),?,?,?,?,?)`
+INSERT INTO tasks (title,status,after_ids,position,note,filed_by,window_id,look,created_at,updated_at)
+VALUES (?,?,?,(SELECT COALESCE(MAX(position),0)+1 FROM tasks),?,?,?,?,?,?)`
 
 // Task returns one task, or nil when there is none with that id.
 func (s *SQLite) Task(id int64) (*Task, error) {
@@ -85,7 +90,7 @@ func (s *SQLite) Tasks() ([]Task, error) {
 // SaveTask writes back the fields a lens or the runner may change. It
 // reports false when the task no longer exists. Position is not one of them:
 // only SwapTaskPositions moves a task, so saving a copy read before a move
-// cannot undo it.
+// cannot undo it. Nor is Look, for the same reason: SetTaskLook.
 func (s *SQLite) SaveTask(t Task) (bool, error) {
 	return execSaved(s.db, saveTaskSQL, taskArgs(t)...)
 }
@@ -96,6 +101,15 @@ UPDATE tasks SET title=?, status=?, after_ids=?, note=?, auto_fixes=?, fix_part=
 
 func taskArgs(t Task) []any {
 	return []any{t.Title, t.Status, idsText(t.AfterIDs), t.Note, t.AutoFixes, t.FixPart, t.UpdatedAt, t.StartedAt, t.FinishedAt, t.ID}
+}
+
+// SetTaskLook sets or clears a task's mark for a person to read its work;
+// false when there is no such task. It is a write of its own because the
+// runner saves copies of a task it read minutes earlier, all through a
+// build and a merge: with the mark in SaveTask, one of those would put
+// back a mark a person had just cleared.
+func (s *SQLite) SetTaskLook(id int64, look bool) (bool, error) {
+	return execSaved(s.db, `UPDATE tasks SET look=? WHERE id=?`, look, id)
 }
 
 // SwapTaskPositions trades two tasks' places in the queue in one step, so a
@@ -173,6 +187,16 @@ func migrateTaskFixPart(db *sql.DB) error {
 	return nil
 }
 
+// migrateTaskLook adds the mark for a person to read a task's work.
+// Strict: every task read selects it. Tasks from before carry none.
+func migrateTaskLook(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE tasks ADD COLUMN look INTEGER DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate tasks.look: %w", err)
+	}
+	return nil
+}
+
 // migrateTaskAfterIDs adds the list of tasks a task starts after, and
 // carries over the one task each could name before (after_id, which stays
 // where it is and is no longer read or written). Strict: every task read
@@ -237,7 +261,7 @@ func (s *SQLite) queryTasks(query string, args ...any) ([]Task, error) {
 		var t Task
 		var after string
 		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &after, &t.Position, &t.Note, &t.FiledBy,
-			&t.WindowID, &t.AutoFixes, &t.FixPart, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
+			&t.WindowID, &t.AutoFixes, &t.FixPart, &t.Look, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
 			return nil, err
 		}
 		if t.AfterIDs, err = idsOf(after); err != nil {

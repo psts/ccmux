@@ -99,6 +99,42 @@ func TestTasks_PreMigrationTaskKeepsWhatItStartsAfter(t *testing.T) {
 	}
 }
 
+// The mark that asks a person to read a task's work is filed with it and
+// changed by its own write. A save of a copy read earlier does not put a
+// cleared mark back: the runner saves such copies all through a build and
+// a merge, minutes after it read them.
+func TestTasks_LookIsNotUndoneByAStaleSave(t *testing.T) {
+	st := taskStore(t)
+	id, err := addTask(st, Task{Title: "risky", Status: "waiting", Look: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := addTask(st, Task{Title: "plain", Status: "waiting"})
+	stale, _ := st.Task(id)
+	if other, _ := st.Task(plain); !stale.Look || other.Look {
+		t.Fatalf("filed marks = %v and %v, want true and false", stale.Look, other.Look)
+	}
+	if ok, err := st.SetTaskLook(id, false); !ok || err != nil {
+		t.Fatalf("clear = %v, %v", ok, err)
+	}
+	stale.Status = "done"
+	if ok, err := st.SaveTask(*stale); !ok || err != nil {
+		t.Fatalf("save = %v, %v", ok, err)
+	}
+	if got, _ := st.Task(id); got.Look || got.Status != "done" {
+		t.Fatalf("after a stale save = look %v, %s; want the mark still cleared and the save applied", got.Look, got.Status)
+	}
+	if ok, err := st.SetTaskLook(id, true); !ok || err != nil {
+		t.Fatalf("set = %v, %v", ok, err)
+	}
+	if got, _ := st.Task(id); !got.Look {
+		t.Fatal("the mark was not set again")
+	}
+	if ok, _ := st.SetTaskLook(999, true); ok {
+		t.Fatal("marking a task that is not there reported a change")
+	}
+}
+
 func TestTasks_SaveSwapDelete(t *testing.T) {
 	st := taskStore(t)
 	a, _ := addTask(st, Task{Title: "one", Status: "waiting"})

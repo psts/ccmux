@@ -552,6 +552,34 @@ async function taskAfterChecks(r, box, on, setReply) {
   r.ctx.fetch = okFetch;
   check("stopping one wait keeps the other",
     sent.length === 1 && sent[0][0] === "/v1/tasks/2" && JSON.stringify(JSON.parse(sent[0][1]).afterIds) === "[8]", JSON.stringify(sent));
+  await taskLookChecks(r, box, on, setReply);
+}
+
+// A task its planner marked for a person to read says so on its row,
+// merged or not, and "Mark as read" clears the mark and nothing else. A
+// task without the mark shows neither. Runs on the same open queue, task
+// #2 expanded.
+async function taskLookChecks(r, box, on, setReply) {
+  const task = (look) => ({ id: 2, title: "y", status: "done", windowId: "win-a", moves: [], removable: true, look,
+    parts: [{ id: 5, repo: "app", status: "ready", plan: "p", busName: "app-task-2" }] });
+  setReply({ tasks: [task(false)], counts: {} });
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
+  check("a task with no mark shows none", !box.innerHTML.includes("tq-look") && !box.innerHTML.includes("Mark as read"), box.innerHTML.slice(0, 900));
+  setReply({ tasks: [task(true)], counts: {} });
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
+  check("a marked task says a person should read it before it ships",
+    box.innerHTML.includes('class="tq-look"') && box.innerHTML.includes(">read before shipping</span>"), box.innerHTML.slice(0, 900));
+  check("and offers to clear the mark", box.innerHTML.includes('data-act="read">Mark as read<'), box.innerHTML.slice(0, 1500));
+  const sent = [], okFetch = r.ctx.fetch;
+  r.ctx.fetch = async (u, opts) => { if (opts && opts.method === "PATCH") sent.push([String(u).split("?")[0], opts.body]); return okFetch(u, opts); };
+  const button = { dataset: { act: "read" }, closest: () => null };
+  on.click({ target: { closest: (sel) => (sel === "[data-act]" ? button : sel === ".tq-task" ? { dataset: { id: "2" } } : null) } });
+  await settle();
+  r.ctx.fetch = okFetch;
+  check("Mark as read clears the mark and sends nothing else",
+    sent.length === 1 && sent[0][0] === "/v1/tasks/2" && sent[0][1] === '{"look":false}', JSON.stringify(sent));
 }
 
 // An open window with no session still gets its section, so its Tasks row

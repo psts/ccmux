@@ -359,7 +359,7 @@ func erroringMigrations(db *sql.DB) error {
 	for _, migrate := range []func(*sql.DB) error{
 		migrateAgentColumns, migrateAttentionClaim, migratePaneActivity, migrateTaskSignal,
 		migrateTaskWindow, migrateTaskAutoFixes, migrateTaskFixPart, migrateTaskAfterIDs,
-		migratePartRun, migrateWindowOpenDevices,
+		migrateTaskLook, migratePartRun, migrateWindowOpenDevices,
 	} {
 		if err := migrate(db); err != nil {
 			return err

@@ -264,6 +264,54 @@ func TestTasks_LensRoutes(t *testing.T) {
 	}
 }
 
+// A planner marks a task for a person to read before it ships. The mark is
+// only a mark: the task waits, builds and merges like any other. It shows
+// in the tool's list and on the lens, a person clears it once they have
+// read the work, whatever the task's status by then, and the planner can
+// set or drop it too.
+func TestTasks_LookMark(t *testing.T) {
+	s := taskServer(t)
+	msg := call(t, s, appRepo, paneTaskReq{Action: "file", Title: "migration", Plan: "p", Look: boolp(true)})
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "plain", Plan: "p"})
+	if !strings.Contains(msg, "marked for a person to read before it ships") {
+		t.Fatalf("file message = %q, want it to confirm the mark", msg)
+	}
+	looks := func() string {
+		t.Helper()
+		got := tasksOf(t, s).Tasks
+		return fmt.Sprintf("%v %v %s", got[0].Look, got[1].Look, got[0].Status)
+	}
+	if looks() != "true false waiting" {
+		t.Fatalf("filed = %s, want the first marked, the second not, and the first waiting like any task", looks())
+	}
+	tasks, parts, _ := s.board()
+	if listed := toolAnswerOf(tasks, parts, toolShows{}).Tasks; !listed[0].Look || listed[1].Look {
+		t.Fatalf("the tool lists look = %v, %v", listed[0].Look, listed[1].Look)
+	}
+
+	done, _ := s.tasks.Task(1)
+	done.Status = taskq.Done
+	s.tasks.SaveTask(*done)
+	if rec := do(t, s, "PATCH", "/v1/tasks/1", `{"look":false}`); rec.Code != 200 || looks() != "false false done" {
+		t.Fatalf("a person clearing the mark on a merged task = %d %s, now %s", rec.Code, rec.Body, looks())
+	}
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 2, Look: boolp(true)})
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 2, Title: "renamed"}) // no look: left alone
+	if looks() != "false true done" {
+		t.Fatalf("after the planner marked #2 = %s", looks())
+	}
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 2, Look: boolp(false)})
+	if looks() != "false false done" {
+		t.Fatalf("after the planner dropped the mark = %s", looks())
+	}
+	if _, status, _ := s.applyPaneTask(adminRepo, paneTaskReq{Action: "edit", ID: 2, Look: boolp(true)}); status != 404 || looks() != "false false done" {
+		t.Fatalf("a repo with no part marked it: %d, now %s", status, looks())
+	}
+	if rec := do(t, s, "PATCH", "/v1/tasks/9", `{"look":true}`); rec.Code != 404 {
+		t.Fatalf("marking a task that is not there = %d, want 404", rec.Code)
+	}
+}
+
 // The tool's after is a list of task numbers, and still takes the one
 // number (0 for none) that a session's older tool sends until it restarts.
 // The task starts after all of them, and the answer names them.

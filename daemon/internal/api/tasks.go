@@ -23,6 +23,7 @@ type taskStore interface {
 	Task(id int64) (*store.Task, error)
 	Tasks() ([]store.Task, error)
 	SaveTask(store.Task) (bool, error)
+	SetTaskLook(id int64, look bool) (bool, error)
 	SwapTaskPositions(a, b store.Task) error
 	DeleteTask(id int64) (bool, error)
 	AddPart(store.Part) (int64, error)
@@ -174,14 +175,23 @@ func (s *Server) saveTask(t store.Task) error {
 	return nil
 }
 
-// patchTask: PATCH /v1/tasks/{id} with any of {title, status, afterIds}. A
-// cancelled task queued again has its unbuilt parts set to start again.
+// taskPatch is what a lens may change on a task: what the rules judge
+// (taskq.Edit), and the mark for a person to read its work, which a person
+// clears once they have, whatever the task's status by then.
+type taskPatch struct {
+	taskq.Edit
+	Look *bool `json:"look"`
+}
+
+// patchTask: PATCH /v1/tasks/{id} with any of {title, status, afterIds,
+// look}. A cancelled task queued again has its unbuilt parts set to start
+// again.
 func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {
 		return
 	}
-	var e taskq.Edit
-	if !decodeJSON(w, r, &e) {
+	var p taskPatch
+	if !decodeJSON(w, r, &p) {
 		return
 	}
 	s.tasksMu.Lock()
@@ -190,16 +200,46 @@ func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	next, err := taskq.Apply(t, all, e)
+	next, status, err := s.applyTaskPatch(t, all, p)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if err := s.saveTaskChange(t, next); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, status, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": next.ID, "status": next.Status})
+}
+
+// applyTaskPatch makes p's changes to t: the edit first, which the rules
+// may refuse, and then nothing has changed; then the mark. A patch that
+// only marks saves nothing else, so reading a finished task's work does
+// not make it look changed.
+func (s *Server) applyTaskPatch(t store.Task, all []store.Task, p taskPatch) (store.Task, int, error) {
+	next := t
+	if p.Edit != (taskq.Edit{}) {
+		var err error
+		if next, err = taskq.Apply(t, all, p.Edit); err != nil {
+			return t, http.StatusConflict, err
+		}
+		if err := s.saveTaskChange(t, next); err != nil {
+			return t, http.StatusInternalServerError, err
+		}
+	}
+	if err := s.markLook(t.ID, p.Look); err != nil {
+		return t, http.StatusInternalServerError, err
+	}
+	return next, 0, nil
+}
+
+// markLook sets or clears task id's mark for a person to read its work, and
+// tells the lenses. nil leaves the mark as it is.
+func (s *Server) markLook(id int64, look *bool) error {
+	if look == nil {
+		return nil
+	}
+	if _, err := s.tasks.SetTaskLook(id, *look); err != nil {
+		return err
+	}
+	s.mgr.TasksChanged()
+	return nil
 }
 
 // saveTaskChange saves an edited task with what its status change means

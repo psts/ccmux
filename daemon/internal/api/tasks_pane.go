@@ -45,6 +45,9 @@ type paneTaskReq struct {
 	// stronger model (taskq.HardRun): this repo's part on a filing, the one
 	// an edit's plan would go to on an edit, where nil leaves it as it is.
 	Hard *bool `json:"hard"`
+	// Look marks the task for a person to read its work before it ships
+	// (store.Task.Look); on an edit, nil leaves the mark as it is.
+	Look *bool `json:"look"`
 }
 
 // afterList is the tool's "after": a list of task numbers. A session still
@@ -198,13 +201,13 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 		parts[i].Status, parts[i].FiledBy, parts[i].CreatedAt, parts[i].UpdatedAt = taskq.Pending, who.session, now, now
 	}
 	id, err := s.tasks.AddTaskWithParts(
-		store.Task{Title: strings.TrimSpace(req.Title), Status: taskq.Waiting, AfterIDs: after, FiledBy: who.session, WindowID: who.window, CreatedAt: now, UpdatedAt: now},
+		store.Task{Title: strings.TrimSpace(req.Title), Status: taskq.Waiting, AfterIDs: after, Look: deref(req.Look), FiledBy: who.session, WindowID: who.window, CreatedAt: now, UpdatedAt: now},
 		parts)
 	if err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	s.mgr.TasksChanged()
-	return fileMessage(id, parts, after), 0, nil
+	return fileMessage(id, parts, after, deref(req.Look)), 0, nil
 }
 
 // partsToFile is a feature's parts: this repo's, always (the filing session
@@ -245,7 +248,7 @@ func (s *Server) partsToFile(who taskFiler, req paneTaskReq) ([]store.Part, erro
 	return out, nil
 }
 
-func fileMessage(id int64, parts []store.Part, after []int64) string {
+func fileMessage(id int64, parts []store.Part, after []int64, look bool) string {
 	names := make([]string, len(parts))
 	for i, p := range parts {
 		names[i] = filepath.Base(p.RepoPath)
@@ -253,6 +256,9 @@ func fileMessage(id int64, parts []store.Part, after []int64) string {
 	msg := fmt.Sprintf("Filed task #%d with parts for %s: it waits in the queue for a free slot", id, strings.Join(names, ", "))
 	if len(after) > 0 {
 		msg += fmt.Sprintf(", and will not start before %s done and merged", tasksAre(after))
+	}
+	if look {
+		return msg + ". It is marked for a person to read before it ships; it still merges on its own."
 	}
 	return msg + "."
 }
@@ -270,9 +276,10 @@ func tasksAre(ids []int64) string {
 }
 
 // editPaneTask changes a task this repo has a part in: its title, what it
-// starts after, and one part's plan and whether it is hard (this repo's
-// part, or the one req.Repo names). Everything is checked before anything
-// is saved, so a refused edit changes nothing.
+// starts after, its mark for a person to read it, and one part's plan and
+// whether it is hard (this repo's part, or the one req.Repo names).
+// Everything is checked before anything is saved, so a refused edit
+// changes nothing.
 func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	t, all, status, err := s.memberTask(who, req.ID)
 	if err != nil {
@@ -292,6 +299,9 @@ func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, erro
 		}
 	}
 	if err := s.saveTaskChange(t, next); err != nil {
+		return "", http.StatusInternalServerError, err
+	}
+	if err := s.markLook(t.ID, req.Look); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	return fmt.Sprintf("Updated task #%d (%s).", t.ID, next.Status), 0, nil

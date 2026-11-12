@@ -780,6 +780,7 @@ body.sidebar-resizing { cursor: col-resize; user-select: none; }
 .tq-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
 .tq-after, .tq-note { font-size: 11px; color: var(--muted); }
 .tq-after.blocked { color: var(--needs); }
+.tq-look { font-size: 11px; color: var(--needs); border: 1px solid var(--needs); border-radius: 4px; padding: 0 6px; white-space: nowrap; }
 .tq-detail { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .tq-edit-title, .tq-edit-plan {
   background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px;

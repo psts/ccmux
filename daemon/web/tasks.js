@@ -191,6 +191,7 @@
       `<div class="tq-line" data-act="toggle"><span class="tq-id">#${t.id}</span>` +
       `<span class="tq-name">${esc(t.title)}</span>${chips}` +
       (w ? `<span class="tq-after${w.blocked ? " blocked" : ""}">${esc(w.text)}</span>` : "") +
+      (t.look ? `<span class="tq-look" title="Its plan asks a person to read this work before it ships. It merges on its own all the same.">read before shipping</span>` : "") +
       (t.note ? `<span class="tq-note">${esc(t.note.split("\n")[0])}</span>` : "") + `</div>` +
       (open ? detailHtml(t) : "") + `</div>`;
   }
@@ -234,6 +235,7 @@
     if (t.canUp) out.push(b("up", "↑"));
     if (t.canDown) out.push(b("down", "↓"));
     for (const dep of (t.orderable && t.afterIds) || []) out.push(b("unwait", `Stop waiting on #${dep}`, ` data-to="${dep}"`));
+    if (t.look) out.push(b("read", "Mark as read"));
     for (const to of t.moves || []) out.push(b("move", L().moveLabel(to), ` data-to="${to}"`));
     if (t.removable) out.push(b("remove", "Remove"));
     return out.join("");
@@ -314,6 +316,8 @@
     down: (id) => send(`/${id}/move`, "POST", { dir: "down" }),
     move: (id, to) => send(`/${id}`, "PATCH", { status: to }),
     unwait,
+    // A person has read the work its plan asked them to: the mark goes.
+    read: (id) => send(`/${id}`, "PATCH", { look: false }),
     session: openSession,
     retry: (id, _to, partId) => send(`/${id}/parts/${partId}`, "PATCH", { retry: true }),
     // The worker gets the task's failure note and the part runs again.
