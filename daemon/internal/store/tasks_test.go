@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"database/sql"
+	"path/filepath"
+	"testing"
+)
 
 // addTask files a task with one part in /r/app, the only way tasks are made.
 func addTask(st *SQLite, t Task) (int64, error) {
@@ -13,7 +17,7 @@ func TestTasks_AddQueuesAtTheBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := addTask(st, Task{Title: "two", Status: "waiting", AfterID: a, CreatedAt: 2, UpdatedAt: 2})
+	b, err := addTask(st, Task{Title: "two", Status: "waiting", AfterIDs: []int64{a, 99}, CreatedAt: 2, UpdatedAt: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,8 +28,74 @@ func TestTasks_AddQueuesAtTheBack(t *testing.T) {
 	if len(list) != 2 || list[0].ID != a || list[1].ID != b || list[0].Position >= list[1].Position {
 		t.Fatalf("order = %+v", list)
 	}
-	if list[1].AfterID != a {
-		t.Fatalf("after = %d, want %d", list[1].AfterID, a)
+	if got := list[1].AfterIDs; len(got) != 2 || got[0] != a || got[1] != 99 || list[0].AfterIDs != nil {
+		t.Fatalf("after = %v and %v, want [%d 99] and none", got, list[0].AfterIDs, a)
+	}
+	list[1].AfterIDs = []int64{a}
+	if ok, err := st.SaveTask(list[1]); !ok || err != nil {
+		t.Fatalf("save = %v, %v", ok, err)
+	}
+	if saved, _ := st.Task(b); len(saved.AfterIDs) != 1 || saved.AfterIDs[0] != a {
+		t.Fatalf("after a save = %v, want [%d]", saved.AfterIDs, a)
+	}
+}
+
+// A registry from before a task could start after several opens with each
+// task's one link carried over. Every task read selects the list, so a
+// missed migration would stop the whole queue, and a link lost on the way
+// would start a waiting task before the one it waits for.
+func TestTasks_PreMigrationTaskKeepsWhatItStartsAfter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, status TEXT NOT NULL,
+			after_id INTEGER DEFAULT 0, position INTEGER DEFAULT 0, note TEXT DEFAULT '', filed_by TEXT DEFAULT '',
+			created_at INTEGER, updated_at INTEGER, started_at INTEGER DEFAULT 0, finished_at INTEGER DEFAULT 0)`,
+		`INSERT INTO tasks (title, status, position, created_at, updated_at) VALUES ('first', 'running', 1, 1, 1)`,
+		`INSERT INTO tasks (title, status, after_id, position, created_at, updated_at) VALUES ('second', 'waiting', 1, 2, 1, 1)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	open := func() *SQLite {
+		t.Helper()
+		st, err := Open(path)
+		if err != nil {
+			t.Fatalf("open a pre-migration registry: %v", err)
+		}
+		return st
+	}
+	second := func(st *SQLite) Task {
+		t.Helper()
+		list, err := st.Tasks()
+		if err != nil || len(list) != 2 || list[0].AfterIDs != nil {
+			t.Fatalf("tasks = %+v, %v", list, err)
+		}
+		return list[1]
+	}
+
+	st := open()
+	task := second(st)
+	if len(task.AfterIDs) != 1 || task.AfterIDs[0] != 1 {
+		t.Fatalf("carried over = %v, want [1]", task.AfterIDs)
+	}
+	// The carry-over runs once: a link cleared since stays cleared.
+	task.AfterIDs = nil
+	if ok, err := st.SaveTask(task); !ok || err != nil {
+		t.Fatalf("save = %v, %v", ok, err)
+	}
+	st.Close()
+
+	st = open()
+	defer st.Close()
+	if got := second(st).AfterIDs; got != nil {
+		t.Fatalf("a cleared link came back on the next start: %v", got)
 	}
 }
 

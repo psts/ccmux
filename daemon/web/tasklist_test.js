@@ -8,11 +8,11 @@ const L = require("./tasklist.js");
 const part = (repo, status) => ({ repo, status: status || "pending" });
 const tasks = [
   { id: 1, title: "Export route", status: "done", parts: [part("backend", "ready")] },
-  { id: 2, title: "Export", status: "waiting", afterId: 1, parts: [part("app"), part("backend")] },
+  { id: 2, title: "Export", status: "waiting", afterIds: [1], parts: [part("app"), part("backend")] },
   { id: 3, title: "Dark mode", status: "waiting", parts: [part("app")] },
   { id: 4, title: "Login", status: "needs_you", parts: [part("app", "needs_you")] },
   { id: 5, title: "Search", status: "cancelled", parts: [part("backend")] },
-  { id: 6, title: "Settings", status: "planning", afterId: 5, parts: [part("admin")] },
+  { id: 6, title: "Settings", status: "planning", afterIds: [5], parts: [part("admin")] },
   { id: 7, title: "Billing", status: "merge_failed", parts: [part("backend", "ready")] },
 ];
 
@@ -38,9 +38,17 @@ test("the summary counts running, merging, waiting and done, and alerts on what 
 
 test("waitsOn names the task it waits for and flags a dead one", () => {
   assert.strictEqual(L.waitsOn(tasks[2], tasks), null);
+  assert.strictEqual(L.waitsOn({ afterIds: [] }, tasks), null);
   assert.deepStrictEqual(L.waitsOn(tasks[1], tasks), { text: "after #1 Export route (done)", blocked: false });
   assert.deepStrictEqual(L.waitsOn(tasks[5], tasks), { text: "blocked: #5 Search is cancelled", blocked: true });
-  assert.deepStrictEqual(L.waitsOn({ afterId: 9 }, tasks), { text: "after #9 (removed)", blocked: true });
+  assert.deepStrictEqual(L.waitsOn({ afterIds: [9] }, tasks), { text: "blocked: #9 (removed)", blocked: true });
+});
+
+test("a task that starts after several names them all, and only the dead ones once one is", () => {
+  assert.deepStrictEqual(L.waitsOn({ afterIds: [1, 3, 4] }, tasks),
+    { text: "after #1 Export route (done), #3 Dark mode, #4 Login", blocked: false });
+  assert.deepStrictEqual(L.waitsOn({ afterIds: [3, 5, 9] }, tasks),
+    { text: "blocked: #5 Search is cancelled, #9 (removed)", blocked: true });
 });
 
 test("a part's status reads as words", () => {

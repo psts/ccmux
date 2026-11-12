@@ -10,11 +10,13 @@ func TestTaskListText(t *testing.T) {
 			{Repo: "app", Status: "running", BusName: "app-task-2"},
 			{Repo: "backend", Status: "ready", BusName: "backend-task-2", Note: "route added", Model: "fable", Effort: "high"},
 		}},
-		{ID: 3, Title: "Settings", Status: "planning", AfterID: 2},
+		{ID: 3, Title: "Settings", Status: "planning", AfterIDs: []int64{2}},
+		{ID: 4, Title: "Billing", Status: "waiting", AfterIDs: []int64{3, 1}},
 	}, 0)
 	want := "Filed task #3.\nTasks with a part in this repo:\n" +
 		"- #2  Export  [running]\n    app: running (app-task-2)\n    backend: ready (backend-task-2)  built with fable, high effort  route added\n" +
-		"- #3  Settings  [planning]  after #2"
+		"- #3  Settings  [planning]  after #2\n" +
+		"- #4  Billing  [waiting]  after #3, #1"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}

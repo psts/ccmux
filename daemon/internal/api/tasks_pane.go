@@ -8,6 +8,7 @@ package api
 // the other repos are only ever ones in the same ccmux window.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -24,9 +25,10 @@ type paneTaskReq struct {
 	ID     int64  `json:"id"`
 	Title  string `json:"title"`
 	Plan   string `json:"plan"`
-	// After is "starts after" this task number; on an edit, nil leaves it
-	// alone and 0 clears it.
-	After *int64 `json:"after"`
+	// After is "starts after": the tasks that must all be merged before
+	// this one starts. On an edit, nil leaves them alone and an empty list
+	// clears them.
+	After *afterList `json:"after"`
 	// Parts are the other repos' parts of a feature being filed.
 	Parts []partReq `json:"parts"`
 	// Draft is only read to refuse it: a session still holding the old tool
@@ -43,6 +45,25 @@ type paneTaskReq struct {
 	// stronger model (taskq.HardRun): this repo's part on a filing, the one
 	// an edit's plan would go to on an edit, where nil leaves it as it is.
 	Hard *bool `json:"hard"`
+}
+
+// afterList is the tool's "after": a list of task numbers. A session still
+// running the tool from before a task could wait on several sends one
+// number, 0 for none, and it stays on that tool until it restarts.
+type afterList []int64
+
+func (a *afterList) UnmarshalJSON(b []byte) error {
+	var one int64
+	if json.Unmarshal(b, &one) == nil {
+		*a = afterList{one}
+		return nil
+	}
+	var many []int64
+	if err := json.Unmarshal(b, &many); err != nil {
+		return errors.New("after must be a list of task numbers")
+	}
+	*a = many
+	return nil
 }
 
 // partReq is one other repo's part of a feature being filed, hard to
@@ -168,7 +189,7 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	if err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	after := deref(req.After)
+	after := taskq.AfterList(deref(req.After))
 	if err := taskq.CheckAfter(taskq.InWindow(all, who.window), 0, after); err != nil {
 		return "", http.StatusBadRequest, err
 	}
@@ -177,7 +198,7 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 		parts[i].Status, parts[i].FiledBy, parts[i].CreatedAt, parts[i].UpdatedAt = taskq.Pending, who.session, now, now
 	}
 	id, err := s.tasks.AddTaskWithParts(
-		store.Task{Title: strings.TrimSpace(req.Title), Status: taskq.Waiting, AfterID: after, FiledBy: who.session, WindowID: who.window, CreatedAt: now, UpdatedAt: now},
+		store.Task{Title: strings.TrimSpace(req.Title), Status: taskq.Waiting, AfterIDs: after, FiledBy: who.session, WindowID: who.window, CreatedAt: now, UpdatedAt: now},
 		parts)
 	if err != nil {
 		return "", http.StatusInternalServerError, err
@@ -224,16 +245,28 @@ func (s *Server) partsToFile(who taskFiler, req paneTaskReq) ([]store.Part, erro
 	return out, nil
 }
 
-func fileMessage(id int64, parts []store.Part, after int64) string {
+func fileMessage(id int64, parts []store.Part, after []int64) string {
 	names := make([]string, len(parts))
 	for i, p := range parts {
 		names[i] = filepath.Base(p.RepoPath)
 	}
 	msg := fmt.Sprintf("Filed task #%d with parts for %s: it waits in the queue for a free slot", id, strings.Join(names, ", "))
-	if after != 0 {
-		msg += fmt.Sprintf(", and will not start before task #%d is done and merged", after)
+	if len(after) > 0 {
+		msg += fmt.Sprintf(", and will not start before %s done and merged", tasksAre(after))
 	}
 	return msg + "."
+}
+
+// tasksAre names tasks for a sentence: "task #5 is", "tasks #5, #6 and #7 are".
+func tasksAre(ids []int64) string {
+	names := make([]string, len(ids))
+	for i, id := range ids {
+		names[i] = fmt.Sprintf("#%d", id)
+	}
+	if len(names) == 1 {
+		return "task " + names[0] + " is"
+	}
+	return "tasks " + strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1] + " are"
 }
 
 // editPaneTask changes a task this repo has a part in: its title, what it
@@ -266,7 +299,11 @@ func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, erro
 
 // taskEditOf is the task-level part of an edit request.
 func taskEditOf(req paneTaskReq) taskq.Edit {
-	e := taskq.Edit{AfterID: req.After}
+	var e taskq.Edit
+	if req.After != nil {
+		afters := []int64(*req.After)
+		e.AfterIDs = &afters
+	}
 	if req.Title != "" {
 		e.Title = &req.Title
 	}

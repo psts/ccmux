@@ -174,7 +174,7 @@ func (s *Server) saveTask(t store.Task) error {
 	return nil
 }
 
-// patchTask: PATCH /v1/tasks/{id} with any of {title, status, afterId}. A
+// patchTask: PATCH /v1/tasks/{id} with any of {title, status, afterIds}. A
 // cancelled task queued again has its unbuilt parts set to start again.
 func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {

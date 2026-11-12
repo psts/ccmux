@@ -8,12 +8,12 @@ import (
 
 // queuedTask is the part of a daemon task the tool shows.
 type queuedTask struct {
-	ID      int64        `json:"id"`
-	Title   string       `json:"title"`
-	Status  string       `json:"status"`
-	AfterID int64        `json:"afterId"`
-	Note    string       `json:"note"`
-	Parts   []queuedPart `json:"parts"`
+	ID       int64        `json:"id"`
+	Title    string       `json:"title"`
+	Status   string       `json:"status"`
+	AfterIDs []int64      `json:"afterIds"`
+	Note     string       `json:"note"`
+	Parts    []queuedPart `json:"parts"`
 }
 
 // queuedPart is one repo's part of a task, as the tool shows it. Model and
@@ -64,8 +64,8 @@ func taskListText(message string, tasks []queuedTask, older int) string {
 	b.WriteString("Tasks with a part in this repo:\n")
 	for _, t := range tasks {
 		fmt.Fprintf(&b, "- #%d  %s  [%s]", t.ID, t.Title, t.Status)
-		if t.AfterID != 0 {
-			fmt.Fprintf(&b, "  after #%d", t.AfterID)
+		if len(t.AfterIDs) > 0 {
+			b.WriteString("  after " + taskNumbers(t.AfterIDs))
 		}
 		b.WriteString("\n")
 		for _, p := range t.Parts {
@@ -76,6 +76,15 @@ func taskListText(message string, tasks []queuedTask, older int) string {
 		fmt.Fprintf(&b, "(%d older finished tasks are not listed; list with an id shows one whole.)", older)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// taskNumbers names tasks in a row: "#58, #71".
+func taskNumbers(ids []int64) string {
+	names := make([]string, len(ids))
+	for i, id := range ids {
+		names[i] = fmt.Sprintf("#%d", id)
+	}
+	return strings.Join(names, ", ")
 }
 
 // partLine is one part in the list: its repo, status and builder's bus

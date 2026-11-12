@@ -2,6 +2,7 @@ package taskq
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -115,7 +116,7 @@ func TestSendBack_Rule(t *testing.T) {
 		"no worker pane":     {failed, store.Part{Status: Ready}},
 	} {
 		gt, gp, err := SendBack(c.t, c.p, now)
-		if err == nil || gt != c.t || gp != c.p {
+		if err == nil || !reflect.DeepEqual(gt, c.t) || gp != c.p {
 			t.Errorf("%s: SendBack = %+v %+v %v, want refused and unchanged", name, gt, gp, err)
 		}
 	}

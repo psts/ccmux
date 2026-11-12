@@ -237,8 +237,11 @@ CREATE TABLE IF NOT EXISTS agent_pages (
 );
 -- The task queue (internal/taskq): a task is one feature, built by one part
 -- per repo, each part a Claude in its own worktree of that repo. position
--- orders the queue; after_id is "starts after" another task (0 = none).
--- window_id (added by migrateTaskWindow) is the ccmux window whose queue it is.
+-- orders the queue. "Starts after" is after_ids (added by
+-- migrateTaskAfterIDs): the tasks that must be merged first, as "58,71".
+-- after_id held the one task that could be named before that, and is no
+-- longer read. window_id (added by migrateTaskWindow) is the ccmux window
+-- whose queue it is.
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, status TEXT NOT NULL,
   after_id INTEGER DEFAULT 0, position INTEGER DEFAULT 0,
@@ -353,31 +356,16 @@ func Open(path string) (*SQLite, error) {
 // these report through a return value, so Open gets one error path for both
 // rather than one apiece.
 func erroringMigrations(db *sql.DB) error {
-	if err := migrateAgentColumns(db); err != nil {
-		return err
+	for _, migrate := range []func(*sql.DB) error{
+		migrateAgentColumns, migrateAttentionClaim, migratePaneActivity, migrateTaskSignal,
+		migrateTaskWindow, migrateTaskAutoFixes, migrateTaskFixPart, migrateTaskAfterIDs,
+		migratePartRun, migrateWindowOpenDevices,
+	} {
+		if err := migrate(db); err != nil {
+			return err
+		}
 	}
-	if err := migrateAttentionClaim(db); err != nil {
-		return err
-	}
-	if err := migratePaneActivity(db); err != nil {
-		return err
-	}
-	if err := migrateTaskSignal(db); err != nil {
-		return err
-	}
-	if err := migrateTaskWindow(db); err != nil {
-		return err
-	}
-	if err := migrateTaskAutoFixes(db); err != nil {
-		return err
-	}
-	if err := migrateTaskFixPart(db); err != nil {
-		return err
-	}
-	if err := migratePartRun(db); err != nil {
-		return err
-	}
-	return migrateWindowOpenDevices(db)
+	return nil
 }
 
 // migrateAttentionClaim adds why and since when to a pane's attention, the

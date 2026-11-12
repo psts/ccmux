@@ -223,8 +223,9 @@ var toolsList = []map[string]any{
 					},
 				},
 				"after": map[string]any{
-					"type":        "integer",
-					"description": "file/edit: a task number that must be done and merged before this one starts. On edit, 0 removes it.",
+					"type":        "array",
+					"items":       map[string]any{"type": "integer"},
+					"description": "file/edit: the numbers of the tasks that must all be done and merged before this one starts. Name every one it needs, not only the last. On edit, the list replaces the old one and an empty list removes it.",
 				},
 				"repo": map[string]any{
 					"type":        "string",

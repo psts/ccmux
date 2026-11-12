@@ -233,7 +233,7 @@
     if (t.editable) out.push(b("save", "Save"));
     if (t.canUp) out.push(b("up", "↑"));
     if (t.canDown) out.push(b("down", "↓"));
-    if (t.afterId && t.orderable) out.push(b("unwait", `Stop waiting on #${t.afterId}`));
+    for (const dep of (t.orderable && t.afterIds) || []) out.push(b("unwait", `Stop waiting on #${dep}`, ` data-to="${dep}"`));
     for (const to of t.moves || []) out.push(b("move", L().moveLabel(to), ` data-to="${to}"`));
     if (t.removable) out.push(b("remove", "Remove"));
     return out.join("");
@@ -291,6 +291,13 @@
     if (await send(`/${id}`, "DELETE")) q.expanded.delete(id);
   }
 
+  // unwait drops one task (the button's data-to) from what a task starts
+  // after. The rest of the list stays: it still waits on those.
+  function unwait(id, dep) {
+    const t = q.tasks.find((x) => x.id === id);
+    if (t) send(`/${id}`, "PATCH", { afterIds: (t.afterIds || []).filter((a) => a !== Number(dep)) });
+  }
+
   // openSession shows a part's worker pane: openWorkspace leaves this view.
   function openSession(id, _to, partId) {
     const t = q.tasks.find((x) => x.id === id);
@@ -306,7 +313,7 @@
     up: (id) => send(`/${id}/move`, "POST", { dir: "up" }),
     down: (id) => send(`/${id}/move`, "POST", { dir: "down" }),
     move: (id, to) => send(`/${id}`, "PATCH", { status: to }),
-    unwait: (id) => send(`/${id}`, "PATCH", { afterId: 0 }),
+    unwait,
     session: openSession,
     retry: (id, _to, partId) => send(`/${id}/parts/${partId}`, "PATCH", { retry: true }),
     // The worker gets the task's failure note and the part runs again.

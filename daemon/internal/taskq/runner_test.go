@@ -291,7 +291,7 @@ func (g *rig) tick() {
 
 // feature adds a waiting task with one pending part per repo.
 func (g *rig) feature(id, after int64, repos ...string) {
-	g.st.tasks = append(g.st.tasks, store.Task{ID: id, Title: fmt.Sprintf("Feature %d", id), Status: Waiting, AfterID: after})
+	g.st.tasks = append(g.st.tasks, store.Task{ID: id, Title: fmt.Sprintf("Feature %d", id), Status: Waiting, AfterIDs: AfterList([]int64{after})})
 	for _, r := range repos {
 		g.st.parts = append(g.st.parts, store.Part{ID: int64(len(g.st.parts) + 1), TaskID: id,
 			RepoPath: "/p/" + r, Plan: r + " plan", Status: Pending})

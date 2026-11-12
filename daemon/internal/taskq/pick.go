@@ -18,16 +18,24 @@ func PartsOf(parts []store.Part, taskID int64) []store.Part {
 }
 
 // Startable lists the waiting tasks free to start, in queue order: those with
-// at least one part that start after nothing, or after a task that is done.
+// at least one part whose every "starts after" task is done. One that was
+// removed is not done, so its waiter holds until a person acts.
 func Startable(tasks []store.Task, parts []store.Part) []store.Task {
 	status := make(map[int64]string, len(tasks))
 	for _, t := range tasks {
 		status[t.ID] = t.Status
 	}
+	free := func(t store.Task) bool {
+		for _, after := range t.AfterIDs {
+			if status[after] != Done {
+				return false
+			}
+		}
+		return true
+	}
 	var out []store.Task
 	for _, t := range tasks {
-		free := t.AfterID == 0 || status[t.AfterID] == Done
-		if t.Status == Waiting && free && len(PartsOf(parts, t.ID)) > 0 {
+		if t.Status == Waiting && free(t) && len(PartsOf(parts, t.ID)) > 0 {
 			out = append(out, t)
 		}
 	}

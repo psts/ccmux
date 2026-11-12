@@ -28,8 +28,8 @@ func taskServer(t *testing.T) *Server {
 	return s
 }
 
-func int64p(n int64) *int64 { return &n }
-func boolp(b bool) *bool    { return &b }
+func afterp(ids ...int64) *afterList { l := afterList(ids); return &l }
+func boolp(b bool) *bool             { return &b }
 
 var (
 	appRepo     = taskFiler{repo: "/p/app", session: "app", window: "w1"}
@@ -96,7 +96,7 @@ func TestTasks_FileRefusals(t *testing.T) {
 	cases := []paneTaskReq{
 		{Action: "file", Title: "", Plan: "p"},
 		{Action: "file", Title: "t", Plan: " "},
-		{Action: "file", Title: "t", Plan: "p", After: int64p(9)},
+		{Action: "file", Title: "t", Plan: "p", After: afterp(9)},
 		{Action: "file", Title: "t", Plan: "p", Parts: []partReq{{Repo: "elsewhere", Plan: "p"}}}, // not in this window
 		{Action: "file", Title: "t", Parts: []partReq{{Repo: "", Plan: "p"}}},
 		{Action: "file", Title: "t", Parts: []partReq{{Repo: "backend", Plan: "p"}}}, // no part of its own
@@ -244,16 +244,73 @@ func TestTasks_LensRoutes(t *testing.T) {
 	if rec := do(t, s, "PATCH", "/v1/tasks/2/parts/1", `{"plan":"x"}`); rec.Code != 404 {
 		t.Fatalf("another task's part = %d, want 404", rec.Code)
 	}
-	if rec := do(t, s, "PATCH", "/v1/tasks/2", `{"afterId":1}`); rec.Code != 200 {
+	if rec := do(t, s, "PATCH", "/v1/tasks/2", `{"afterIds":[3,1]}`); rec.Code != 200 {
 		t.Fatalf("set after = %d %s", rec.Code, rec.Body)
 	}
 	do(t, s, "PATCH", "/v1/tasks/1", `{"status":"cancelled"}`)
 	if rec := do(t, s, "DELETE", "/v1/tasks/1", ""); rec.Code != 409 || !strings.Contains(rec.Body.String(), "#2") {
 		t.Fatalf("delete with a waiter = %d %s", rec.Code, rec.Body)
 	}
-	do(t, s, "PATCH", "/v1/tasks/2", `{"afterId":0}`)
+	// "Stop waiting on #1" sends the list without it: #2 still waits on #3.
+	do(t, s, "PATCH", "/v1/tasks/2", `{"afterIds":[3]}`)
 	if rec := do(t, s, "DELETE", "/v1/tasks/1", ""); rec.Code != 204 {
 		t.Fatalf("delete = %d %s", rec.Code, rec.Body)
+	}
+	if left := tasksOf(t, s).Tasks[1]; left.ID != 2 || fmt.Sprint(left.AfterIDs) != "[3]" || left.Ahead != 1 {
+		t.Fatalf("#2 after the edit = #%d after %v, %d ahead; want it to wait on #3 alone", left.ID, left.AfterIDs, left.Ahead)
+	}
+	if rec := do(t, s, "PATCH", "/v1/tasks/2", `{"afterIds":[]}`); rec.Code != 200 || tasksOf(t, s).Tasks[1].AfterIDs != nil {
+		t.Fatalf("clear after = %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The tool's after is a list of task numbers, and still takes the one
+// number (0 for none) that a session's older tool sends until it restarts.
+// The task starts after all of them, and the answer names them.
+func TestTasks_AfterSeveral(t *testing.T) {
+	s := taskServer(t)
+	send := func(body string) (string, error) {
+		t.Helper()
+		var req paneTaskReq
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			return "", err
+		}
+		msg, _, err := s.applyPaneTask(appRepo, req)
+		return msg, err
+	}
+	after := func(id int64) string {
+		t.Helper()
+		task, _ := s.tasks.Task(id)
+		return fmt.Sprint(task.AfterIDs)
+	}
+	for _, title := range []string{"one", "two"} {
+		call(t, s, appRepo, paneTaskReq{Action: "file", Title: title, Plan: "p"})
+	}
+	msg, err := send(`{"action":"file","title":"three","plan":"p","after":[2,1,2]}`)
+	if err != nil || !strings.Contains(msg, "will not start before tasks #2 and #1 are done and merged") || after(3) != "[2 1]" {
+		t.Fatalf("file after two = %q, %v, saved %s", msg, err, after(3))
+	}
+	if msg, err := send(`{"action":"file","title":"four","plan":"p","after":3}`); err != nil ||
+		!strings.Contains(msg, "before task #3 is done and merged") || after(4) != "[3]" {
+		t.Fatalf("file after one number = %q, %v, saved %s", msg, err, after(4))
+	}
+	for _, c := range []struct{ body, want string }{
+		{`{"action":"edit","id":3,"title":"renamed"}`, "[2 1]"}, // no after: left alone
+		{`{"action":"edit","id":3,"after":[1]}`, "[1]"},
+		{`{"action":"edit","id":3,"after":2}`, "[2]"},
+		{`{"action":"edit","id":3,"after":0}`, "[]"},
+		{`{"action":"edit","id":3,"after":[1,2]}`, "[1 2]"},
+		{`{"action":"edit","id":3,"after":[]}`, "[]"},
+	} {
+		if _, err := send(c.body); err != nil || after(3) != c.want {
+			t.Errorf("%s: after = %s, %v; want %s", c.body, after(3), err, c.want)
+		}
+	}
+	if _, err := send(`{"action":"edit","id":3,"after":[1,4]}`); err == nil || !strings.Contains(err.Error(), "loop") {
+		t.Errorf("#3 after #4, which waits on #3 = %v, want a loop refused", err)
+	}
+	if _, err := send(`{"action":"edit","id":3,"after":"2"}`); err == nil || !strings.Contains(err.Error(), "list of task numbers") {
+		t.Errorf("after as text = %v, want it refused", err)
 	}
 }
 
@@ -418,7 +475,7 @@ func TestTasks_EachWindowHasItsOwnQueue(t *testing.T) {
 	if got.Tasks[1].WindowID != "w2" {
 		t.Fatalf("task 2 window = %q", got.Tasks[1].WindowID)
 	}
-	if _, _, err := s.applyPaneTask(appRepo, paneTaskReq{Action: "file", Title: "Four", Plan: plan, After: int64p(2)}); err == nil {
+	if _, _, err := s.applyPaneTask(appRepo, paneTaskReq{Action: "file", Title: "Four", Plan: plan, After: afterp(2)}); err == nil {
 		t.Fatal("a task started after another window's task")
 	}
 
@@ -502,7 +559,7 @@ func TestTasks_ArrowsFollowThePlaceInLine(t *testing.T) {
 	s := taskServer(t)
 	add := func(status string, after int64) {
 		t.Helper()
-		if _, err := s.tasks.AddTaskWithParts(store.Task{Title: "t", Status: status, AfterID: after, WindowID: "w1", FiledBy: "app"},
+		if _, err := s.tasks.AddTaskWithParts(store.Task{Title: "t", Status: status, AfterIDs: taskq.AfterList([]int64{after}), WindowID: "w1", FiledBy: "app"},
 			[]store.Part{{RepoPath: "/p/app", Plan: "p", Status: taskq.Pending}}); err != nil {
 			t.Fatal(err)
 		}

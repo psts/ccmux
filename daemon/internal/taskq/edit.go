@@ -10,9 +10,10 @@ import (
 // Edit is a change to a task a lens or a session asks for. A nil field is
 // left alone. Plans belong to parts: EditPlan changes those.
 type Edit struct {
-	Title   *string `json:"title"`
-	Status  *string `json:"status"`
-	AfterID *int64  `json:"afterId"`
+	Title  *string `json:"title"`
+	Status *string `json:"status"`
+	// AfterIDs replaces the tasks it starts after; an empty list clears them.
+	AfterIDs *[]int64 `json:"afterIds"`
 }
 
 // Apply checks e against the task and the whole list and returns the task
@@ -21,7 +22,7 @@ func Apply(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 	if e.Title != nil && !Editable(t.Status) {
 		return t, fmt.Errorf("task #%d is %s; only a planning or waiting task can be edited", t.ID, t.Status)
 	}
-	if e.AfterID != nil && !Orderable(t.Status) {
+	if e.AfterIDs != nil && !Orderable(t.Status) {
 		return t, fmt.Errorf("task #%d is %s; what it starts after can no longer change", t.ID, t.Status)
 	}
 	next, err := applyFields(t, all, e)
@@ -43,11 +44,12 @@ func applyFields(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 			return t, err
 		}
 	}
-	if e.AfterID != nil {
-		if err := CheckAfter(all, t.ID, *e.AfterID); err != nil {
+	if e.AfterIDs != nil {
+		afters := AfterList(*e.AfterIDs)
+		if err := CheckAfter(all, t.ID, afters); err != nil {
 			return t, err
 		}
-		next.AfterID = *e.AfterID
+		next.AfterIDs = afters
 	}
 	return next, nil
 }
@@ -60,7 +62,7 @@ func moveTo(t store.Task, all []store.Task, to string) (store.Task, error) {
 		return t, fmt.Errorf("task #%d cannot go from %s to %s", t.ID, t.Status, to)
 	}
 	if to == Waiting {
-		if err := CheckAfter(all, t.ID, t.AfterID); err != nil {
+		if err := CheckAfter(all, t.ID, t.AfterIDs); err != nil {
 			return t, fmt.Errorf("%w; change what it starts after first", err)
 		}
 	}

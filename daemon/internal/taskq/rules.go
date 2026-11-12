@@ -8,6 +8,7 @@ package taskq
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"ccmux.dev/ccmuxd/internal/store"
@@ -78,7 +79,7 @@ func CanMove(from, to string) bool {
 // moved under it.
 func Editable(status string) bool { return status == Planning || status == Waiting }
 
-// Orderable reports whether what a task starts after may change: before it
+// Orderable reports whether the tasks a task starts after may change: before it
 // runs, and on a cancelled one about to go back in the queue.
 func Orderable(status string) bool { return Editable(status) || status == Cancelled }
 
@@ -101,31 +102,66 @@ func CheckPlan(plan string) error {
 	return nil
 }
 
-// CheckAfter judges "task id starts after task after" against the whole list
-// (id 0 for a task not filed yet). It refuses a missing or cancelled task and
-// any chain that leads back to id, so the runner can never wait on a loop.
-func CheckAfter(all []store.Task, id, after int64) error {
-	if after == 0 {
-		return nil
+// AfterList tidies a "starts after" list as it was asked for: no 0 (the
+// one-number way to say "none") and each task once, in the order given.
+func AfterList(ids []int64) []int64 {
+	var out []int64
+	for _, id := range ids {
+		if id != 0 && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
 	}
+	return out
+}
+
+// CheckAfter judges "task id starts after every task in afters" against the
+// whole list (id 0 for a task not filed yet). It refuses a missing or
+// cancelled task and any chain that leads back to id, so the runner can
+// never wait on a loop.
+func CheckAfter(all []store.Task, id int64, afters []int64) error {
+	byID := tasksByID(all)
+	for _, after := range afters {
+		dep, ok := byID[after]
+		if !ok {
+			return fmt.Errorf("there is no task #%d to start after", after)
+		}
+		if dep.Status == Cancelled {
+			return fmt.Errorf("task #%d is cancelled, so nothing can wait for it", after)
+		}
+	}
+	if loops(byID, afters, map[int64]bool{id: true}, map[int64]bool{}) {
+		return errors.New("that order makes a loop: these tasks would wait for each other forever")
+	}
+	return nil
+}
+
+// loops reports whether following "starts after" from ids comes back to a
+// task whose own links are still being followed (on): a loop. cleared
+// holds the tasks already followed to the end, so two tasks that wait on
+// the same third are not taken for one.
+func loops(byID map[int64]store.Task, ids []int64, on, cleared map[int64]bool) bool {
+	for _, id := range ids {
+		if on[id] {
+			return true
+		}
+		if cleared[id] {
+			continue
+		}
+		on[id] = true
+		if loops(byID, byID[id].AfterIDs, on, cleared) {
+			return true
+		}
+		on[id], cleared[id] = false, true
+	}
+	return false
+}
+
+func tasksByID(all []store.Task) map[int64]store.Task {
 	byID := make(map[int64]store.Task, len(all))
 	for _, t := range all {
 		byID[t.ID] = t
 	}
-	dep, ok := byID[after]
-	if !ok {
-		return fmt.Errorf("there is no task #%d to start after", after)
-	}
-	if dep.Status == Cancelled {
-		return fmt.Errorf("task #%d is cancelled, so nothing can wait for it", after)
-	}
-	for seen := 0; dep.ID != 0; seen++ {
-		if dep.ID == id || seen > len(all) {
-			return errors.New("that order makes a loop: these tasks would wait for each other forever")
-		}
-		dep = byID[dep.AfterID]
-	}
-	return nil
+	return byID
 }
 
 // Counts tallies the tasks by status, every status present even at zero.
@@ -170,27 +206,44 @@ func Neighbour(all []store.Task, id int64, up bool) (store.Task, bool) {
 	return store.Task{}, false
 }
 
-// Ahead counts the unfinished tasks id waits on through its "starts after"
-// chain: 0 can start as soon as a slot frees. -1 when the chain reaches a
-// cancelled or removed task, or loops: it holds until a person acts.
+// Ahead counts the unfinished tasks id waits on: the ones it starts after,
+// the ones those start after, and so on, each once. 0 can start as soon as
+// a slot frees. -1 when that reaches a cancelled or removed task, or loops:
+// it holds until a person acts.
 func Ahead(all []store.Task, id int64) int {
-	byID := make(map[int64]store.Task, len(all))
-	for _, t := range all {
-		byID[t.ID] = t
+	w := aheadWalk{byID: tasksByID(all), on: map[int64]bool{id: true}, counted: map[int64]bool{}}
+	if !w.follow(w.byID[id].AfterIDs) {
+		return -1
 	}
-	n, seen := 0, map[int64]bool{id: true}
-	for next := byID[id].AfterID; next != 0; next = byID[next].AfterID {
-		dep, ok := byID[next]
-		if !ok || dep.Status == Cancelled || seen[next] {
-			return -1
+	return len(w.counted)
+}
+
+// aheadWalk follows "starts after" from one task: on is the tasks whose
+// own links are being followed now, counted the unfinished ones met.
+type aheadWalk struct {
+	byID        map[int64]store.Task
+	on, counted map[int64]bool
+}
+
+// follow walks ids and what they wait on in turn, stopping at a done task:
+// nothing behind it is waited for. False when a task on the way is gone or
+// cancelled, or the walk comes back to one it is still following.
+func (w *aheadWalk) follow(ids []int64) bool {
+	for _, id := range ids {
+		dep, ok := w.byID[id]
+		if !ok || dep.Status == Cancelled || w.on[id] {
+			return false
 		}
-		if dep.Status == Done {
-			return n
+		if dep.Status == Done || w.counted[id] {
+			continue
 		}
-		seen[next] = true
-		n++
+		w.on[id], w.counted[id] = true, true
+		if !w.follow(dep.AfterIDs) {
+			return false
+		}
+		w.on[id] = false
 	}
-	return n
+	return true
 }
 
 // Waiters lists the tasks still to run that start after id. A task with
@@ -198,7 +251,7 @@ func Ahead(all []store.Task, id int64) int {
 func Waiters(all []store.Task, id int64) []int64 {
 	var out []int64
 	for _, t := range all {
-		if t.AfterID == id && !Removable(t.Status) {
+		if slices.Contains(t.AfterIDs, id) && !Removable(t.Status) {
 			out = append(out, t.ID)
 		}
 	}

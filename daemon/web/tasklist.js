@@ -86,18 +86,24 @@
     return { text: parts.join(" · "), alert: (c.needs_you || 0) + (c.merge_failed || 0) };
   }
 
-  // waitsOn says what a task waits for: nothing, a task still to finish, or
-  // one that was cancelled, which holds it until someone acts.
+  // waitsOn says what a task waits for: nothing, the tasks it starts after
+  // (all of them have to finish), or the ones among them that were
+  // cancelled or removed, which hold it until someone acts.
   function waitsOn(task, tasks) {
-    if (!task.afterId) return null;
-    const dep = tasks.find((t) => t.id === task.afterId);
-    if (!dep) return { text: `after #${task.afterId} (removed)`, blocked: true };
+    const deps = (task.afterIds || []).map((id) => depOf(id, tasks));
+    if (!deps.length) return null;
+    const dead = deps.filter((d) => d.blocked);
+    if (dead.length) return { text: "blocked: " + dead.map((d) => d.text).join(", "), blocked: true };
+    return { text: "after " + deps.map((d) => d.text).join(", "), blocked: false };
+  }
+
+  // depOf is one task another starts after, as its label names it.
+  function depOf(id, tasks) {
+    const dep = tasks.find((t) => t.id === id);
+    if (!dep) return { text: `#${id} (removed)`, blocked: true };
     const label = `#${dep.id} ${dep.title}`;
-    if (dep.status === "done") return { text: `after ${label} (done)`, blocked: false };
-    if (dep.status === "cancelled") {
-      return { text: `blocked: ${label} is ${dep.status}`, blocked: true };
-    }
-    return { text: `after ${label}`, blocked: false };
+    if (dep.status === "cancelled") return { text: `${label} is cancelled`, blocked: true };
+    return { text: dep.status === "done" ? `${label} (done)` : label, blocked: false };
   }
 
   function moveLabel(to) { return MOVE_LABELS[to] || to; }

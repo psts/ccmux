@@ -529,6 +529,29 @@ async function taskPartChecks(r, box, on, setReply) {
   check("an opened task's part says what it is built with", box.innerHTML.includes(">fable · high effort</span>"), box.innerHTML.slice(0, 1200));
   check("a part with no model says nothing about one",
     box.innerHTML.includes('data-part="6"') && box.innerHTML.split("Claude starts with").length === 2, box.innerHTML.slice(0, 1200));
+  await taskAfterChecks(r, box, on, setReply);
+}
+
+// A task that starts after several tasks has a "Stop waiting on" button
+// for each, and pressing one sends the list without that task: it goes on
+// waiting for the rest. Runs on the queue taskPartChecks left open, task #2
+// expanded.
+async function taskAfterChecks(r, box, on, setReply) {
+  setReply({ tasks: [{ id: 2, title: "y", status: "waiting", windowId: "win-a", moves: [], editable: true, orderable: true,
+    afterIds: [7, 8], parts: [{ id: 5, repo: "app", status: "pending", plan: "p", busName: "app-task-2" }] }], counts: {} });
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
+  check("a task that starts after two offers to stop waiting on each",
+    box.innerHTML.includes('data-to="7">Stop waiting on #7<') && box.innerHTML.includes('data-to="8">Stop waiting on #8<'), box.innerHTML.slice(0, 1500));
+  check("its row flags both as gone", box.innerHTML.includes("blocked: #7 (removed), #8 (removed)"), box.innerHTML.slice(0, 600));
+  const sent = [], okFetch = r.ctx.fetch;
+  r.ctx.fetch = async (u, opts) => { if (opts && opts.method === "PATCH") sent.push([String(u).split("?")[0], opts.body]); return okFetch(u, opts); };
+  const button = { dataset: { act: "unwait", to: "7" }, closest: () => null };
+  on.click({ target: { closest: (sel) => (sel === "[data-act]" ? button : sel === ".tq-task" ? { dataset: { id: "2" } } : null) } });
+  await settle();
+  r.ctx.fetch = okFetch;
+  check("stopping one wait keeps the other",
+    sent.length === 1 && sent[0][0] === "/v1/tasks/2" && JSON.stringify(JSON.parse(sent[0][1]).afterIds) === "[8]", JSON.stringify(sent));
 }
 
 // An open window with no session still gets its section, so its Tasks row

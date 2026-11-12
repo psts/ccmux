@@ -12,22 +12,29 @@ func list(ts ...store.Task) []store.Task { return ts }
 func TestCheckAfter(t *testing.T) {
 	all := list(
 		store.Task{ID: 1, Status: Waiting},
-		store.Task{ID: 2, Status: Waiting, AfterID: 1},
+		store.Task{ID: 2, Status: Waiting, AfterIDs: []int64{1}},
 		store.Task{ID: 3, Status: Cancelled},
 		store.Task{ID: 4, Status: Done},
+		store.Task{ID: 5, Status: Waiting, AfterIDs: []int64{1}},
 	)
 	cases := []struct {
-		name      string
-		id, after int64
-		wantErr   string
+		name    string
+		id      int64
+		after   []int64
+		wantErr string
 	}{
-		{"none", 5, 0, ""},
-		{"new task after a waiting one", 0, 2, ""},
-		{"after a done task", 0, 4, ""},
-		{"missing", 0, 9, "no task #9"},
-		{"cancelled", 0, 3, "cancelled"},
-		{"itself", 1, 1, "loop"},
-		{"two-step loop", 1, 2, "loop"},
+		{"none", 6, nil, ""},
+		{"new task after a waiting one", 0, []int64{2}, ""},
+		{"after a done task", 0, []int64{4}, ""},
+		{"missing", 0, []int64{9}, "no task #9"},
+		{"cancelled", 0, []int64{3}, "cancelled"},
+		{"itself", 1, []int64{1}, "loop"},
+		{"two-step loop", 1, []int64{2}, "loop"},
+		{"after two tasks", 0, []int64{2, 4}, ""},
+		{"after two that wait on the same task", 0, []int64{2, 5}, ""},
+		{"the second of two is missing", 0, []int64{2, 9}, "no task #9"},
+		{"the second of two is cancelled", 0, []int64{4, 3}, "cancelled"},
+		{"a loop through the second of two", 1, []int64{4, 5}, "loop"},
 	}
 	for _, c := range cases {
 		err := CheckAfter(all, c.id, c.after)
@@ -41,9 +48,20 @@ func TestCheckAfter(t *testing.T) {
 }
 
 func TestCheckAfter_StopsOnACorruptLoop(t *testing.T) {
-	all := list(store.Task{ID: 1, AfterID: 2}, store.Task{ID: 2, AfterID: 1})
-	if err := CheckAfter(all, 0, 1); err == nil {
+	all := list(store.Task{ID: 1, AfterIDs: []int64{2}}, store.Task{ID: 2, AfterIDs: []int64{1}})
+	if err := CheckAfter(all, 0, []int64{1}); err == nil {
 		t.Fatal("a stored loop was accepted")
+	}
+}
+
+// A list as it was asked for is tidied before it is checked or saved: 0
+// was the one-number way to say "none", and a task named twice is one wait.
+func TestAfterList(t *testing.T) {
+	if got := AfterList([]int64{0, 2, 2, 1, 0}); len(got) != 2 || got[0] != 2 || got[1] != 1 {
+		t.Fatalf("AfterList = %v, want [2 1]", got)
+	}
+	if got := AfterList(nil); len(got) != 0 {
+		t.Fatalf("AfterList(nil) = %v", got)
 	}
 }
 
@@ -86,14 +104,14 @@ func TestApply(t *testing.T) {
 // which may have been cancelled while it sat out, and loses its old note.
 func TestApply_RequeueRechecksAfter(t *testing.T) {
 	dep := store.Task{ID: 1, Status: Cancelled}
-	task := store.Task{ID: 2, Title: "t", Status: Cancelled, AfterID: 1, Note: "why it stopped"}
+	task := store.Task{ID: 2, Title: "t", Status: Cancelled, AfterIDs: []int64{1}, Note: "why it stopped"}
 	waiting := Waiting
 	if _, err := Apply(task, list(dep, task), Edit{Status: &waiting}); err == nil || !strings.Contains(err.Error(), "change what it starts after") {
 		t.Fatalf("requeue after a cancelled task = %v", err)
 	}
-	none := int64(0)
-	got, err := Apply(task, list(dep, task), Edit{Status: &waiting, AfterID: &none})
-	if err != nil || got.Status != Waiting || got.AfterID != 0 || got.Note != "" {
+	none := []int64{}
+	got, err := Apply(task, list(dep, task), Edit{Status: &waiting, AfterIDs: &none})
+	if err != nil || got.Status != Waiting || len(got.AfterIDs) != 0 || got.Note != "" {
 		t.Fatalf("requeue that clears after = %+v, %v", got, err)
 	}
 }
@@ -184,7 +202,7 @@ func TestSlotsAreHeldUntilMerged(t *testing.T) {
 func TestStartable(t *testing.T) {
 	tasks := list(
 		store.Task{ID: 1, Status: Waiting},
-		store.Task{ID: 2, Status: Waiting, AfterID: 1},
+		store.Task{ID: 2, Status: Waiting, AfterIDs: []int64{1}},
 		store.Task{ID: 3, Status: Waiting},
 		store.Task{ID: 4, Status: Planning},
 	)
@@ -192,6 +210,45 @@ func TestStartable(t *testing.T) {
 	got := Startable(tasks, parts)
 	if len(got) != 1 || got[0].ID != 1 {
 		t.Fatalf("startable = %+v, want only #1 (#2 waits on #1, #3 has no parts, #4 is a draft)", got)
+	}
+}
+
+// A task that starts after several tasks starts when the last of them is
+// merged, not the first: kullio's #74 needed both #71 and #58 in the trunk.
+func TestStartable_WaitsForEveryTaskItStartsAfter(t *testing.T) {
+	parts := []store.Part{{TaskID: 74}}
+	waits := store.Task{ID: 74, Status: Waiting, AfterIDs: []int64{71, 58}}
+	for _, c := range []struct {
+		first, second string
+		want          int
+	}{
+		{Done, Running, 0}, {ReadyToMerge, Done, 0}, {Done, Merging, 0}, {Done, Done, 1},
+	} {
+		tasks := list(store.Task{ID: 58, Status: c.first}, store.Task{ID: 71, Status: c.second}, waits)
+		if got := Startable(tasks, parts); len(got) != c.want {
+			t.Errorf("with #58 %s and #71 %s: startable = %+v, want %d", c.first, c.second, got, c.want)
+		}
+	}
+	if got := Startable(list(store.Task{ID: 58, Status: Done}, waits), parts); len(got) != 0 {
+		t.Errorf("with #71 removed: startable = %+v, want none (it holds until a person acts)", got)
+	}
+}
+
+// A task with unfinished tasks waiting on it is not removed, whichever
+// place it has in their lists.
+func TestWaiters(t *testing.T) {
+	all := list(
+		store.Task{ID: 1, Status: Done},
+		store.Task{ID: 2, Status: Waiting, AfterIDs: []int64{3, 1}},
+		store.Task{ID: 3, Status: Running},
+		store.Task{ID: 4, Status: Done, AfterIDs: []int64{1}},
+		store.Task{ID: 5, Status: Waiting, AfterIDs: []int64{1}},
+	)
+	if got := Waiters(all, 1); len(got) != 2 || got[0] != 2 || got[1] != 5 {
+		t.Fatalf("Waiters(1) = %v, want [2 5] (#4 is finished)", got)
+	}
+	if got := Waiters(all, 2); len(got) != 0 {
+		t.Fatalf("Waiters(2) = %v, want none", got)
 	}
 }
 
@@ -212,24 +269,31 @@ func TestNeighbour_SkipsOtherStatuses(t *testing.T) {
 	}
 }
 
-// Ahead counts the unfinished tasks a task waits on through its "starts
-// after" chain, and -1 when the chain reaches a cancelled or removed task
-// or loops: it then holds until a person acts.
+// Ahead counts the unfinished tasks a task waits on, through everything
+// they wait on in turn and each once, and -1 when that reaches a cancelled
+// or removed task or loops: it then holds until a person acts.
 func TestAhead(t *testing.T) {
 	all := []store.Task{
 		{ID: 7, Status: Done},
 		{ID: 9, Status: Cancelled},
 		{ID: 10, Status: Running},
-		{ID: 11, Status: Waiting, AfterID: 10},
-		{ID: 12, Status: Waiting, AfterID: 11},
-		{ID: 14, Status: Waiting, AfterID: 9},
+		{ID: 11, Status: Waiting, AfterIDs: []int64{10}},
+		{ID: 12, Status: Waiting, AfterIDs: []int64{11}},
+		{ID: 14, Status: Waiting, AfterIDs: []int64{9}},
 		{ID: 15, Status: Waiting},
-		{ID: 16, Status: Waiting, AfterID: 7},
-		{ID: 17, Status: Waiting, AfterID: 99},
-		{ID: 18, Status: Waiting, AfterID: 19},
-		{ID: 19, Status: Waiting, AfterID: 18},
+		{ID: 16, Status: Waiting, AfterIDs: []int64{7}},
+		{ID: 17, Status: Waiting, AfterIDs: []int64{99}},
+		{ID: 18, Status: Waiting, AfterIDs: []int64{19}},
+		{ID: 19, Status: Waiting, AfterIDs: []int64{18}},
+		{ID: 20, Status: Waiting, AfterIDs: []int64{10, 11}}, // #11 waits on #10 too: counted once
+		{ID: 21, Status: Waiting, AfterIDs: []int64{7, 10}},  // one of two is done
+		{ID: 22, Status: Waiting, AfterIDs: []int64{10, 9}},  // one of two is cancelled
+		{ID: 23, Status: Waiting, AfterIDs: []int64{11, 12}}, // #12, #11, #10
+		{ID: 24, Status: Waiting, AfterIDs: []int64{7, 16}},  // #16 only: #7 is done
+		{ID: 25, Status: Waiting, AfterIDs: []int64{15, 18}}, // a loop further down
 	}
-	want := map[int64]int{11: 1, 12: 2, 14: -1, 15: 0, 16: 0, 17: -1, 18: -1, 19: -1}
+	want := map[int64]int{11: 1, 12: 2, 14: -1, 15: 0, 16: 0, 17: -1, 18: -1, 19: -1,
+		20: 2, 21: 1, 22: -1, 23: 3, 24: 1, 25: -1}
 	for id, n := range want {
 		if got := Ahead(all, id); got != n {
 			t.Errorf("Ahead(%d) = %d, want %d", id, got, n)
@@ -243,12 +307,12 @@ func TestAhead(t *testing.T) {
 func TestNeighbour_WaitingStaysInItsPlaceInLine(t *testing.T) {
 	all := []store.Task{
 		{ID: 1, Status: Running},
-		{ID: 2, Status: Waiting, AfterID: 1}, // one ahead
-		{ID: 3, Status: Waiting},             // can start
+		{ID: 2, Status: Waiting, AfterIDs: []int64{1}}, // one ahead
+		{ID: 3, Status: Waiting},                       // can start
 		{ID: 4, Status: Planning},
-		{ID: 5, Status: Waiting},             // can start
-		{ID: 6, Status: Waiting, AfterID: 1}, // one ahead
-		{ID: 8, Status: Planning, AfterID: 1},
+		{ID: 5, Status: Waiting},                       // can start
+		{ID: 6, Status: Waiting, AfterIDs: []int64{1}}, // one ahead
+		{ID: 8, Status: Planning, AfterIDs: []int64{1}},
 	}
 	cases := []struct {
 		id   int64
