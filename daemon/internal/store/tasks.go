@@ -53,7 +53,7 @@ func (s *SQLite) AddTaskWithParts(t Task, parts []Part) (int64, error) {
 		return 0, err
 	}
 	for _, p := range parts {
-		if _, err := tx.Exec(addPartSQL, id, p.RepoPath, p.Plan, p.Status, p.Note, p.FiledBy, p.CreatedAt, p.UpdatedAt); err != nil {
+		if _, err := tx.Exec(addPartSQL, addPartArgs(id, p)...); err != nil {
 			return 0, err
 		}
 	}

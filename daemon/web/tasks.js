@@ -215,12 +215,14 @@
       ? `<textarea class="tq-edit-plan" data-field="plan" data-key="p${p.id}" spellcheck="false">${esc(draft("p" + p.id, p.plan))}</textarea>`
       : `<pre class="tq-plan">${esc(p.plan)}</pre>`;
     const where = p.branch ? ` · ${esc(p.busName)} on ${esc(p.branch)}` : "";
+    const run = L().builtWith(p);
     const b = (act, label) => `<button type="button" data-act="${act}">${esc(label)}</button>`;
     const buttons = (p.workspaceId ? b("session", "Open session") : "") + (p.retryable ? b("retry", "Retry") : "") +
       (p.sendBackable ? b("sendback", "Send back to worker") : "");
     return `<div class="tq-part" data-part="${p.id}"><div class="tq-part-head">` +
       `<span class="tq-repo-chip tq-part-${esc(p.status)}">${esc(p.repo)}</span>` +
       `<span class="tq-part-status">${esc(L().partWord(p.status))}</span>` +
+      (run ? `<span class="tq-meta" title="The model and effort this part's Claude starts with">${esc(run)}</span>` : "") +
       (p.note ? `<span class="tq-note">${esc(p.note)}</span>` : "") +
       `<span class="tq-meta">${where}</span>${buttons ? `<span class="tq-actions">${buttons}</span>` : ""}</div>${plan}</div>`;
   }

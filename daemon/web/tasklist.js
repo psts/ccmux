@@ -62,6 +62,14 @@
   const PART_WORDS = { pending: "not started", running: "working", needs_you: "needs you", ready: "done", failed: "failed" };
   function partWord(status) { return PART_WORDS[status] || status; }
 
+  // builtWith says what a part's Claude is started with, from the model and
+  // effort the daemon saves on the part (taskq.Run): "" for a part from
+  // before parts had them.
+  function builtWith(part) {
+    if (!part.model) return "";
+    return part.effort ? `${part.model} · ${part.effort} effort` : part.model;
+  }
+
   // summary is the sidebar row's line: what runs, merges, waits and
   // finished, and how many need a person (the row's highlighted count). A
   // built feature merges on its own, so it is no person's job, but it keeps
@@ -108,7 +116,7 @@
     return out;
   }
 
-  const api = { sections, repos, summary, waitsOn, moveLabel, partWord, slotChoices, SECTIONS };
+  const api = { sections, repos, summary, waitsOn, moveLabel, partWord, builtWith, slotChoices, SECTIONS };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxTaskList = api;
 })(typeof window !== "undefined" ? window : this);

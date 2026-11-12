@@ -327,7 +327,8 @@ func teamOf(taskID int64, mates []store.Part) []string {
 // where it runs, or fails the part with the reason.
 func (r *Runner) start(j job) {
 	l := layoutOf(r.Root, j.task, j.part)
-	paneID, err := r.prepareAndStart(j, l)
+	run := RunOf(j.part)
+	paneID, err := r.prepareAndStart(j, l, run)
 	r.Lock.Lock()
 	defer r.Lock.Unlock()
 	p := j.part
@@ -346,6 +347,9 @@ func (r *Runner) start(j job) {
 	// The start-up grace and the silence limit count from the pane, not
 	// the claim: a slow pass of starts must not use up a later part's grace.
 	p.PaneID, p.Branch, p.Worktree, p.StartedAt = paneID, l.branch, l.worktree, r.Now().UnixMilli()
+	// What it was started with, so a part filed before parts had a model
+	// shows the one it got.
+	p.Model, p.Effort = run.Model, run.Effort
 	if r.savePart(p) {
 		log.Printf("tasks: #%d part started on %s in %s", j.task.ID, l.branch, l.worktree)
 	}
@@ -369,7 +373,7 @@ func (r *Runner) cancelled(id int64) bool {
 	return true // removed
 }
 
-func (r *Runner) prepareAndStart(j job, l layout) (string, error) {
+func (r *Runner) prepareAndStart(j job, l layout, run Run) (string, error) {
 	repo := j.part.RepoPath
 	wsID, err := r.Host.TaskWorkspace(repo, j.task.WindowID)
 	if err != nil {
@@ -397,7 +401,7 @@ func (r *Runner) prepareAndStart(j job, l layout) (string, error) {
 	if err := writeBrief(j.task, j.part, l, trunk, j.team, servers); err != nil {
 		return "", err
 	}
-	return r.Host.StartTaskPane(wsID, l.worktree, launchCommand(l))
+	return r.Host.StartTaskPane(wsID, l.worktree, launchCommand(l, run))
 }
 
 func (r *Runner) saveTask(t store.Task) bool {

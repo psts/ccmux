@@ -74,13 +74,16 @@ func (s *Server) joinPart(who taskFiler, mine store.Part, repo, plan string) (st
 		fmt.Sprintf("Added a part in %s. A Claude starts on it within a minute as %s; tell it what you need from it.", filepath.Base(repo), name))
 }
 
+// newPart adds a part to task t. It is built as a normal part: only the
+// session that planned a feature says which of its parts are hard.
 func (s *Server) newPart(t store.Task, repo, plan, status, by, msg string) (string, int, error) {
 	if err := taskq.CheckPlan(plan); err != nil {
 		return "", http.StatusBadRequest, err
 	}
 	now := s.taskNow()
-	if _, err := s.tasks.AddPart(store.Part{TaskID: t.ID, RepoPath: repo, Plan: plan, Status: status,
-		FiledBy: by, CreatedAt: now, UpdatedAt: now}); err != nil {
+	part := taskq.WithRun(store.Part{TaskID: t.ID, RepoPath: repo, Plan: plan, Status: status,
+		FiledBy: by, CreatedAt: now, UpdatedAt: now}, false)
+	if _, err := s.tasks.AddPart(part); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	s.mgr.TasksChanged()

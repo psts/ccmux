@@ -443,6 +443,21 @@ async function firehoseCases() {
   check("unknown kinds do nothing", r.errors.length === errs && r.evalIn(`state.attn.w1.p1`) === "done");
 }
 
+// taskBox stands in for the queue's own box and the page around it: the box
+// keeps what is drawn into it and the handlers hung on it. A redraw
+// replaces the status line, as innerHTML does in a browser.
+function taskBox(r) {
+  const on = {}, line = { textContent: "", classList: { toggle() {} } };
+  let html = "";
+  const box = { dataset: {}, classList: { add() {}, remove() {}, toggle() {} },
+    get innerHTML() { return html; }, set innerHTML(v) { html = v; line.textContent = ""; },
+    contains: () => false, querySelector: (sel) => (sel === ".tq-status" ? line : null), addEventListener: (t, f) => { on[t] = f; } };
+  r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "createElement"
+    ? () => ({ className: "", innerHTML: "", onclick: null, querySelector: () => el() })
+    : k === "getElementById" ? (id) => (id === "tasks" ? box : el()) : el()) });
+  return { box, on, line };
+}
+
 // The task queue (tasks.js over tasklist.js): each window's row carries that
 // window's counts from GET /v1/tasks, a "tasks-changed" frame reads them
 // again, and opening a window's queue leaves the session and comes back out
@@ -457,17 +472,7 @@ async function tasksCases() {
     if (opts && opts.method === "PUT") puts.push([String(u), opts.body]);
     return { ok: true, status: 200, json: async () => reply, text: async () => "" };
   };
-  const made = [];
-  // The queue's own box keeps what is drawn into it and the handlers hung on it.
-  // A redraw replaces the status line, as innerHTML does in a browser.
-  const on = {}, line = { textContent: "", classList: { toggle() {} } };
-  let html = "";
-  const box = { dataset: {}, classList: { add() {}, remove() {}, toggle() {} },
-    get innerHTML() { return html; }, set innerHTML(v) { html = v; line.textContent = ""; },
-    contains: () => false, querySelector: (sel) => (sel === ".tq-status" ? line : null), addEventListener: (t, f) => { on[t] = f; } };
-  r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "createElement"
-    ? () => { const li = { className: "", innerHTML: "", onclick: null, querySelector: () => el() }; made.push(li); return li; }
-    : k === "getElementById" ? (id) => (id === "tasks" ? box : el()) : el()) });
+  const { box, on, line } = taskBox(r);
   for (const f of ["tasklist.js", "tasks.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), r.ctx, { filename: f });
   }
@@ -503,10 +508,27 @@ async function tasksCases() {
   check("a failed change keeps saying why", line.textContent.includes("Couldn't change how many run at once"), line.textContent);
   check("and the picker stays at the stored number", /<option value="0" selected>Paused/.test(box.innerHTML), box.innerHTML.slice(0, 600));
   r.ctx.fetch = okFetch;
+  await taskPartChecks(r, box, on, (v) => { reply = v; });
   check("opening the task view leaves the session", r.ctx.ccmuxTasks.isOpen() && r.evalIn("state.wsId") === null);
   check("the view holds the window it was opened for", r.ctx.ccmuxTasks.openWindow() === "win-a", r.ctx.ccmuxTasks.openWindow());
   r.evalIn(`openWorkspace("ws-1")`);
   check("opening a session closes the task view", !r.ctx.ccmuxTasks.isOpen());
+}
+
+// An opened task draws its parts: each says what its Claude is started with
+// (the model and effort the daemon saves on it), and a part from before
+// parts had them says nothing. Runs inside tasksCases, on its open queue.
+async function taskPartChecks(r, box, on, setReply) {
+  setReply({ tasks: [{ id: 2, title: "y", status: "waiting", windowId: "win-a", moves: [], editable: true, parts: [
+    { id: 5, repo: "app", status: "pending", plan: "p", busName: "app-task-2", model: "fable", effort: "high" },
+    { id: 6, repo: "api", status: "pending", plan: "p", busName: "api-task-2" }] }], counts: {} });
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
+  const taskLine = { dataset: { act: "toggle" }, closest: () => null };
+  on.click({ target: { closest: (sel) => (sel === "[data-act]" ? taskLine : sel === ".tq-task" ? { dataset: { id: "2" } } : null) } });
+  check("an opened task's part says what it is built with", box.innerHTML.includes(">fable · high effort</span>"), box.innerHTML.slice(0, 1200));
+  check("a part with no model says nothing about one",
+    box.innerHTML.includes('data-part="6"') && box.innerHTML.split("Claude starts with").length === 2, box.innerHTML.slice(0, 1200));
 }
 
 // An open window with no session still gets its section, so its Tasks row

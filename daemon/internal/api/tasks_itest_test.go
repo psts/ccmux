@@ -83,8 +83,12 @@ func TestTasks_WorkerAddsPartsOnlyInItsWindow(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "backend-task-1") {
 		t.Fatalf("a repo in the same window = %d %s", rec.Code, rec.Body)
 	}
-	if got, _ := st.Parts(); len(got) != 2 {
+	got, _ := st.Parts()
+	if len(got) != 2 {
 		t.Fatalf("parts after a same-window add = %d, want 2", len(got))
+	}
+	if taskq.RunOf(got[1]) != taskq.NormalRun || got[1].Model == "" {
+		t.Fatalf("a worker's added part = %+v, want a normal part saved with its model", got[1])
 	}
 }
 
@@ -157,7 +161,7 @@ func TestTasks_LeadFilesEveryPart(t *testing.T) {
 	}
 
 	rec = do(t, s, "POST", "/v1/panes/"+lead+"/tasks",
-		`{"action":"file","title":"Export","plan":"`+plan+`","parts":[{"repo":"backend","plan":"the endpoint, `+plan+`"}]}`)
+		`{"action":"file","title":"Export","plan":"`+plan+`","parts":[{"repo":"backend","plan":"the endpoint, `+plan+`","hard":true}]}`)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "parts for app, backend") {
 		t.Fatalf("filing a two-repo feature = %d %s", rec.Code, rec.Body)
 	}
@@ -166,5 +170,8 @@ func TestTasks_LeadFilesEveryPart(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Status != taskq.Waiting || tasks[0].WindowID == "" || len(parts) != 2 ||
 		filepath.Base(parts[1].RepoPath) != "backend" || !strings.HasPrefix(parts[1].Plan, "the endpoint") || parts[1].FiledBy != "app" {
 		t.Fatalf("filed = %+v, parts %+v", tasks, parts)
+	}
+	if taskq.RunOf(parts[0]) != taskq.NormalRun || taskq.RunOf(parts[1]) != taskq.HardRun {
+		t.Fatalf("runs = %+v / %+v, want only the part filed as hard on the stronger model", parts[0], parts[1])
 	}
 }

@@ -39,12 +39,18 @@ type paneTaskReq struct {
 	// Status and Note are a worker's report on its own part.
 	Status string `json:"status"`
 	Note   string `json:"note"`
+	// Hard says a part is hard to build, so its Claude starts with the
+	// stronger model (taskq.HardRun): this repo's part on a filing, the one
+	// an edit's plan would go to on an edit, where nil leaves it as it is.
+	Hard *bool `json:"hard"`
 }
 
-// partReq is one other repo's part of a feature being filed.
+// partReq is one other repo's part of a feature being filed, hard to
+// build or not (paneTaskReq.Hard).
 type partReq struct {
 	Repo string `json:"repo"`
 	Plan string `json:"plan"`
+	Hard bool   `json:"hard"`
 }
 
 // taskFiler is who is asking: the repo, the session name stamped on what
@@ -177,11 +183,11 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 // partsToFile is a feature's parts: this repo's, always (the filing session
 // reaches its task through its own part: list, edit, cancel), then each
 // named repo's, found among the sessions in this one's window. One part per
-// repo, each with a plan.
+// repo, each with a plan and what its Claude starts with (taskq.WithRun).
 func (s *Server) partsToFile(who taskFiler, req paneTaskReq) ([]store.Part, error) {
 	var out []store.Part
 	seen := map[string]bool{}
-	add := func(repo, plan string) error {
+	add := func(repo, plan string, hard bool) error {
 		name := filepath.Base(repo)
 		if seen[repo] {
 			return fmt.Errorf("%s has two parts; give each repo one plan", name)
@@ -190,10 +196,10 @@ func (s *Server) partsToFile(who taskFiler, req paneTaskReq) ([]store.Part, erro
 			return fmt.Errorf("%s's part: %w", name, err)
 		}
 		seen[repo] = true
-		out = append(out, store.Part{RepoPath: repo, Plan: plan})
+		out = append(out, taskq.WithRun(store.Part{RepoPath: repo, Plan: plan}, hard))
 		return nil
 	}
-	if err := add(who.repo, req.Plan); err != nil {
+	if err := add(who.repo, req.Plan, deref(req.Hard)); err != nil {
 		return nil, err
 	}
 	if len(req.Parts) == 0 {
@@ -205,7 +211,7 @@ func (s *Server) partsToFile(who taskFiler, req paneTaskReq) ([]store.Part, erro
 		if err != nil {
 			return nil, fmt.Errorf("%w (a feature's parts are repos in this session's ccmux window)", err)
 		}
-		if err := add(repo, p.Plan); err != nil {
+		if err := add(repo, p.Plan, p.Hard); err != nil {
 			return nil, err
 		}
 	}
@@ -225,8 +231,9 @@ func fileMessage(id int64, parts []store.Part, after int64) string {
 }
 
 // editPaneTask changes a task this repo has a part in: its title, what it
-// starts after, and one part's plan (this repo's, or the one req.Repo names). Everything is
-// checked before anything is saved, so a refused edit changes nothing.
+// starts after, and one part's plan and whether it is hard (this repo's
+// part, or the one req.Repo names). Everything is checked before anything
+// is saved, so a refused edit changes nothing.
 func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	t, all, status, err := s.memberTask(who, req.ID)
 	if err != nil {
@@ -236,7 +243,7 @@ func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, erro
 	if err != nil {
 		return "", http.StatusConflict, err
 	}
-	part, status, err := s.planEditOf(t, partRepoOf(who, req), req.Plan)
+	part, status, err := s.partEditOf(t, partRepoOf(who, req), req)
 	if err != nil {
 		return "", status, err
 	}
@@ -260,8 +267,8 @@ func taskEditOf(req paneTaskReq) taskq.Edit {
 	return e
 }
 
-// partRepoOf is the folder name of the part an edit's plan is for: the one
-// named, else the caller's own repo's.
+// partRepoOf is the folder name of the part an edit is for: the one named,
+// else the caller's own repo's.
 func partRepoOf(who taskFiler, req paneTaskReq) string {
 	if name := strings.TrimSpace(req.Repo); name != "" {
 		return name
@@ -269,27 +276,42 @@ func partRepoOf(who taskFiler, req paneTaskReq) string {
 	return filepath.Base(who.repo)
 }
 
-// planEditOf checks a new plan for the part of task t in the repo whose
-// folder is named name; nil when the edit carries no plan.
-func (s *Server) planEditOf(t store.Task, name, plan string) (*store.Part, int, error) {
-	if plan == "" {
+// partEditOf checks an edit's changes to one part of task t, the one in
+// the repo whose folder is named name: a new plan, and whether the part is
+// hard. nil when the edit carries neither.
+func (s *Server) partEditOf(t store.Task, name string, req paneTaskReq) (*store.Part, int, error) {
+	if req.Plan == "" && req.Hard == nil {
 		return nil, 0, nil
 	}
-	parts, err := s.tasks.Parts()
+	next, status, err := s.partNamed(t, name)
 	if err != nil {
-		return nil, http.StatusInternalServerError, err
+		return nil, status, err
 	}
-	for _, p := range taskq.PartsOf(parts, t.ID) {
-		if filepath.Base(p.RepoPath) != name {
-			continue
-		}
-		next, err := taskq.EditPlan(t, p, plan)
-		if err != nil {
+	if req.Plan != "" {
+		if next, err = taskq.EditPlan(t, next, req.Plan); err != nil {
 			return nil, http.StatusConflict, err
 		}
-		return &next, 0, nil
 	}
-	return nil, http.StatusNotFound, fmt.Errorf("task #%d has no part in %s", t.ID, name)
+	if req.Hard != nil {
+		if next, err = taskq.EditRun(t, next, *req.Hard); err != nil {
+			return nil, http.StatusConflict, err
+		}
+	}
+	return &next, 0, nil
+}
+
+// partNamed is the part of task t in the repo whose folder is named name.
+func (s *Server) partNamed(t store.Task, name string) (store.Part, int, error) {
+	parts, err := s.tasks.Parts()
+	if err != nil {
+		return store.Part{}, http.StatusInternalServerError, err
+	}
+	for _, p := range taskq.PartsOf(parts, t.ID) {
+		if filepath.Base(p.RepoPath) == name {
+			return p, 0, nil
+		}
+	}
+	return store.Part{}, http.StatusNotFound, fmt.Errorf("task #%d has no part in %s", t.ID, name)
 }
 
 // changeMemberTask applies e to a task the caller's repo has a part in.

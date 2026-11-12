@@ -403,6 +403,29 @@ func TestRunner_StartsWholeFeatures(t *testing.T) {
 	}
 }
 
+// Each part's Claude starts with the model and effort its part was filed
+// with. A part filed before parts had one starts as a normal part, and is
+// saved with what it got.
+func TestRunner_StartsEachPartOnItsRun(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app", "backend")
+	g.st.parts[1] = WithRun(g.st.parts[1], true)
+	g.r.Tick()
+	if len(g.host.started) != 2 {
+		t.Fatalf("started %d Claudes, want 2", len(g.host.started))
+	}
+	if cmd := g.host.started[0]; !strings.Contains(cmd, "--model 'opus' --effort 'medium'") {
+		t.Fatalf("a part filed with no model started as %s", cmd)
+	}
+	if cmd := g.host.started[1]; !strings.Contains(cmd, "--model 'fable' --effort 'high'") {
+		t.Fatalf("a hard part started as %s", cmd)
+	}
+	app, be := g.partsOf(1)[0], g.partsOf(1)[1]
+	if RunOf(app) != NormalRun || app.Model == "" || RunOf(be) != HardRun || be.PaneID == "" {
+		t.Fatalf("saved parts = %+v %+v", app, be)
+	}
+}
+
 // A feature is ready to merge only when every part reported done; until
 // then it runs, and a part needing a person shows on the feature.
 func TestRunner_RollsUpParts(t *testing.T) {

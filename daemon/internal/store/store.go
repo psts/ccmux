@@ -374,6 +374,9 @@ func erroringMigrations(db *sql.DB) error {
 	if err := migrateTaskFixPart(db); err != nil {
 		return err
 	}
+	if err := migratePartRun(db); err != nil {
+		return err
+	}
 	return migrateWindowOpenDevices(db)
 }
 

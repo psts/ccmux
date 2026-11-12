@@ -352,6 +352,51 @@ func TestTasks_EditIsAllOrNothing(t *testing.T) {
 	}
 }
 
+// A part is filed to start with the normal model unless its planner calls
+// it hard. An edit changes that for one part and leaves its plan alone,
+// and, like a plan, only before the task starts.
+func TestTasks_HardPartsStartOnTheStrongerModel(t *testing.T) {
+	s := taskServer(t)
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "plain", Plan: "p"})
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "tricky", Plan: "p", Hard: boolp(true)})
+	runOf := func(task, part int) taskq.Run { return taskq.RunOf(tasksOf(t, s).Tasks[task].Parts[part].Part) }
+	if runOf(0, 0) != taskq.NormalRun || runOf(1, 0) != taskq.HardRun {
+		t.Fatalf("filed runs = %+v %+v, want normal then hard", runOf(0, 0), runOf(1, 0))
+	}
+	if p := tasksOf(t, s).Tasks[0].Parts[0]; p.Model != taskq.NormalRun.Model || p.Effort != taskq.NormalRun.Effort {
+		t.Fatalf("a normal part is saved without its model: %+v", p.Part)
+	}
+
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 1, Hard: boolp(true)})
+	if p := tasksOf(t, s).Tasks[0].Parts[0]; taskq.RunOf(p.Part) != taskq.HardRun || p.Plan != "p" {
+		t.Fatalf("an edit to hard = %+v", p.Part)
+	}
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 1, Title: "renamed"})
+	if runOf(0, 0) != taskq.HardRun {
+		t.Fatalf("an edit that says nothing about hard changed it: %+v", runOf(0, 0))
+	}
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 1, Hard: boolp(false)})
+	if runOf(0, 0) != taskq.NormalRun {
+		t.Fatalf("an edit back to normal = %+v", runOf(0, 0))
+	}
+
+	twoParts(t, s) // #3: app and backend, filed before parts had a model
+	call(t, s, appRepo, paneTaskReq{Action: "edit", ID: 3, Repo: "backend", Hard: boolp(true)})
+	if parts := tasksOf(t, s).Tasks[2].Parts; parts[0].Model != "" || taskq.RunOf(parts[1].Part) != taskq.HardRun {
+		t.Fatalf("a named part's edit = %+v / %+v, want only backend changed", parts[0].Part, parts[1].Part)
+	}
+
+	task, _ := s.tasks.Task(1)
+	task.Status = taskq.Running
+	s.tasks.SaveTask(*task)
+	if _, status, _ := s.applyPaneTask(appRepo, paneTaskReq{Action: "edit", ID: 1, Hard: boolp(true)}); status != 409 {
+		t.Fatalf("a started task's part was made hard: %d, want 409", status)
+	}
+	if runOf(0, 0) != taskq.NormalRun {
+		t.Fatalf("a refused edit changed the part: %+v", runOf(0, 0))
+	}
+}
+
 // Each ccmux window has its own queue: a session in no window cannot file,
 // counts come per window, "starts after" stays inside the window, and a
 // move trades places only with a task of the same window.

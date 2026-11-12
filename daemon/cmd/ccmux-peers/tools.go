@@ -188,7 +188,7 @@ var toolsList = []map[string]any{
 	},
 	{
 		"name":        "tasks",
-		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel). Each ccmux window has its own queue; a task goes into this session's window's queue (a session in no window cannot file). A task is one feature with one part per repo; when it starts, a fresh Claude builds every part at once, each in its own git worktree of its repo, and they coordinate over the peers bus. File only when the human says the plan is ready, and always from this session: one file call holds the whole feature, this repo's part (plan) and every other repo's part (parts, repos in this window only), and it waits in the queue at once. You write every part's plan yourself. If you need a fact about another repo to write its plan, ask that repo's session over the bus first (send_message), then file. Each plan is all its builder gets: write it for a fresh Claude that knows its repo but not this conversation (goal, files, steps, how to verify, what it needs from the other parts). Actions: file (title, plan, parts, optional after), list (tasks this repo has a part in), edit (id + any of title, after, plan; plan with repo changes that repo's part), cancel (id). A Claude started to BUILD a part uses report (status done or stuck, plus note) and add_part (repo, plan) as its brief says.",
+		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel). Each ccmux window has its own queue; a task goes into this session's window's queue (a session in no window cannot file). A task is one feature with one part per repo; when it starts, a fresh Claude builds every part at once, each in its own git worktree of its repo, and they coordinate over the peers bus. File only when the human says the plan is ready, and always from this session: one file call holds the whole feature, this repo's part (plan) and every other repo's part (parts, repos in this window only), and it waits in the queue at once. You write every part's plan yourself. If you need a fact about another repo to write its plan, ask that repo's session over the bus first (send_message), then file. Each plan is all its builder gets: write it for a fresh Claude that knows its repo but not this conversation (goal, files, steps, how to verify, what it needs from the other parts). Actions: file (title, plan, parts, optional after and hard), list (tasks this repo has a part in), edit (id + any of title, after, plan, hard; plan and hard with repo change that repo's part), cancel (id). A Claude started to BUILD a part uses report (status done or stuck, plus note) and add_part (repo, plan) as its brief says.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -217,6 +217,7 @@ var toolsList = []map[string]any{
 						"properties": map[string]any{
 							"repo": map[string]any{"type": "string", "description": "The repo's folder name."},
 							"plan": map[string]any{"type": "string", "description": "The full plan for that repo's part."},
+							"hard": map[string]any{"type": "boolean", "description": "true if that repo's part is hard to build; see hard."},
 						},
 						"required": []string{"repo", "plan"},
 					},
@@ -228,6 +229,10 @@ var toolsList = []map[string]any{
 				"repo": map[string]any{
 					"type":        "string",
 					"description": "edit: the folder name of the repo whose part the plan replaces (default this repo). add_part from a builder: the repo the new part is for.",
+				},
+				"hard": map[string]any{
+					"type":        "boolean",
+					"description": "file/edit: true has this repo's part (on edit, the part in repo) built by the strongest model, which is slower and costs more. Leave it out for most parts: the default model builds a part well from a full plan. Set it only when the part stays hard with the plan in hand: a design the plan leaves open, concurrency, or a change many files must agree on. A long plan is not a reason. On edit, false makes the part a normal one again.",
 				},
 				"status": map[string]any{
 					"type":        "string",

@@ -64,6 +64,13 @@ test("a window with no number from the daemon gets no picker", () => {
   assert.deepStrictEqual(L.slotChoices(null), []);
 });
 
+test("a part says what it is built with, and one from before says nothing", () => {
+  assert.strictEqual(L.builtWith({ repo: "app", model: "opus", effort: "medium" }), "opus · medium effort");
+  assert.strictEqual(L.builtWith({ repo: "app", model: "fable", effort: "high" }), "fable · high effort");
+  assert.strictEqual(L.builtWith({ repo: "app", model: "opus" }), "opus");
+  assert.strictEqual(L.builtWith(part("app")), "");
+});
+
 test("done lists the latest finished first", () => {
   const ts = [
     { id: 1, status: "done", finishedAt: 100 },

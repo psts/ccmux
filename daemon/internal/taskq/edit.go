@@ -83,6 +83,15 @@ func EditPlan(t store.Task, p store.Part, plan string) (store.Part, error) {
 	return p, nil
 }
 
+// EditRun marks a part hard or normal (WithRun) while its task has not
+// started: a worker already at work keeps the model it was started with.
+func EditRun(t store.Task, p store.Part, hard bool) (store.Part, error) {
+	if !Editable(t.Status) {
+		return p, fmt.Errorf("task #%d is %s; what a part is built with changes only before it starts", t.ID, t.Status)
+	}
+	return WithRun(p, hard), nil
+}
+
 // Retry puts a failed part of a started task back to start again.
 func Retry(t store.Task, p store.Part) (store.Part, error) {
 	if p.Status != Failed || (t.Status != Running && t.Status != NeedsYou) {

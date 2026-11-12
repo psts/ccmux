@@ -1,9 +1,16 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+)
 
 // Part is one repo's share of a task: its own plan, written by that repo's
-// session, and the runner's record of where it is being built.
+// session, and the runner's record of where it is being built. Model and
+// Effort are what its Claude is started with: set when the part is filed
+// (taskq.WithRun) and saved again by the runner when it starts, empty on a
+// part from before parts had them.
 type Part struct {
 	ID         int64  `json:"id"`
 	TaskID     int64  `json:"taskId"`
@@ -15,6 +22,8 @@ type Part struct {
 	Branch     string `json:"branch,omitempty"`
 	Worktree   string `json:"worktree,omitempty"`
 	PaneID     string `json:"paneId,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Effort     string `json:"effort,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	UpdatedAt  int64  `json:"updatedAt"`
 	StartedAt  int64  `json:"startedAt,omitempty"`
@@ -22,16 +31,21 @@ type Part struct {
 }
 
 const addPartSQL = `
-INSERT INTO task_parts (task_id,repo_path,plan,status,note,filed_by,created_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?)`
+INSERT INTO task_parts (task_id,repo_path,plan,status,note,filed_by,model,effort,created_at,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?)`
 
-const partCols = "id,task_id,repo_path,plan,status,note,filed_by,branch,worktree,pane_id,created_at,updated_at,started_at,finished_at"
+// addPartArgs is addPartSQL's values for p as a part of task taskID. Both
+// ways a part is added go through it, so neither can fall a column behind.
+func addPartArgs(taskID int64, p Part) []any {
+	return []any{taskID, p.RepoPath, p.Plan, p.Status, p.Note, p.FiledBy, p.Model, p.Effort, p.CreatedAt, p.UpdatedAt}
+}
+
+const partCols = "id,task_id,repo_path,plan,status,note,filed_by,branch,worktree,pane_id,model,effort,created_at,updated_at,started_at,finished_at"
 
 // AddPart inserts a part. A task has at most one part per repo, so a second
 // one for the same repo is an error.
 func (s *SQLite) AddPart(p Part) (int64, error) {
-	res, err := s.db.Exec(addPartSQL,
-		p.TaskID, p.RepoPath, p.Plan, p.Status, p.Note, p.FiledBy, p.CreatedAt, p.UpdatedAt)
+	res, err := s.db.Exec(addPartSQL, addPartArgs(p.TaskID, p)...)
 	if err != nil {
 		return 0, err
 	}
@@ -49,7 +63,8 @@ func (s *SQLite) Parts() ([]Part, error) {
 	for rows.Next() {
 		var p Part
 		if err := rows.Scan(&p.ID, &p.TaskID, &p.RepoPath, &p.Plan, &p.Status, &p.Note, &p.FiledBy,
-			&p.Branch, &p.Worktree, &p.PaneID, &p.CreatedAt, &p.UpdatedAt, &p.StartedAt, &p.FinishedAt); err != nil {
+			&p.Branch, &p.Worktree, &p.PaneID, &p.Model, &p.Effort,
+			&p.CreatedAt, &p.UpdatedAt, &p.StartedAt, &p.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -65,10 +80,23 @@ func (s *SQLite) SavePart(p Part) (bool, error) {
 
 const savePartSQL = `
 UPDATE task_parts SET plan=?, status=?, note=?, branch=?, worktree=?, pane_id=?,
-  updated_at=?, started_at=?, finished_at=? WHERE id=?`
+  model=?, effort=?, updated_at=?, started_at=?, finished_at=? WHERE id=?`
 
 func partArgs(p Part) []any {
-	return []any{p.Plan, p.Status, p.Note, p.Branch, p.Worktree, p.PaneID, p.UpdatedAt, p.StartedAt, p.FinishedAt, p.ID}
+	return []any{p.Plan, p.Status, p.Note, p.Branch, p.Worktree, p.PaneID, p.Model, p.Effort,
+		p.UpdatedAt, p.StartedAt, p.FinishedAt, p.ID}
+}
+
+// migratePartRun adds the model and effort a part's Claude starts with.
+// Strict: every part read selects them. A part from before has neither.
+func migratePartRun(db *sql.DB) error {
+	for _, col := range []string{"model", "effort"} {
+		_, err := db.Exec(`ALTER TABLE task_parts ADD COLUMN ` + col + ` TEXT DEFAULT ''`)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate task_parts.%s: %w", col, err)
+		}
+	}
+	return nil
 }
 
 // execer is what a save runs on: the database, or a transaction.

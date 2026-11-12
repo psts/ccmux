@@ -2,16 +2,18 @@ package main
 
 import "testing"
 
+// A part shows what it is built with once it has one; a part from before
+// parts had a model shows as it always did.
 func TestTaskListText(t *testing.T) {
 	got := taskListText("Filed task #3.", []queuedTask{
 		{ID: 2, Title: "Export", Status: "running", Parts: []queuedPart{
 			{Repo: "app", Status: "running", BusName: "app-task-2"},
-			{Repo: "backend", Status: "ready", BusName: "backend-task-2", Note: "route added"},
+			{Repo: "backend", Status: "ready", BusName: "backend-task-2", Note: "route added", Model: "fable", Effort: "high"},
 		}},
 		{ID: 3, Title: "Settings", Status: "planning", AfterID: 2},
 	})
 	want := "Filed task #3.\nTasks with a part in this repo:\n" +
-		"- #2  Export  [running]\n    app: running (app-task-2)\n    backend: ready (backend-task-2)  route added\n" +
+		"- #2  Export  [running]\n    app: running (app-task-2)\n    backend: ready (backend-task-2)  built with fable, high effort  route added\n" +
 		"- #3  Settings  [planning]  after #2"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)

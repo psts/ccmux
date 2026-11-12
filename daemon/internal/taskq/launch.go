@@ -186,13 +186,16 @@ func writeBrief(t store.Task, p store.Part, l layout, trunk string, team []strin
 }
 
 // launchCommand starts the worker's Claude: on the peers bus under its own
-// name (so the repo's own session keeps the repo's name), in auto mode
-// because nobody is there to answer a permission prompt, allowed to read
-// its brief beside the worktree, and told to begin with it.
-func launchCommand(l layout) string {
+// name (so the repo's own session keeps the repo's name), with the model
+// and effort its part was filed with, in auto mode because nobody is there
+// to answer a permission prompt, allowed to read its brief beside the
+// worktree, and told to begin with it. Every flag comes before the "--":
+// what follows it is the prompt.
+func launchCommand(l layout, run Run) string {
 	prompt := fmt.Sprintf("Read %s and carry out the task it describes.", l.brief)
 	return "env -u CLAUDE_PEERS_PROJECT CLAUDE_PEERS_NAME=" + shellQuote(l.busName) +
 		" claude --dangerously-load-development-channels server:claude-peers" +
+		" --model " + shellQuote(run.Model) + " --effort " + shellQuote(run.Effort) +
 		" --permission-mode auto --add-dir " + shellQuote(l.dir) + " -- " + shellQuote(prompt)
 }
 
