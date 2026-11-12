@@ -11,15 +11,26 @@ func TestTaskListText(t *testing.T) {
 			{Repo: "backend", Status: "ready", BusName: "backend-task-2", Note: "route added", Model: "fable", Effort: "high"},
 		}},
 		{ID: 3, Title: "Settings", Status: "planning", AfterID: 2},
-	})
+	}, 0)
 	want := "Filed task #3.\nTasks with a part in this repo:\n" +
 		"- #2  Export  [running]\n    app: running (app-task-2)\n    backend: ready (backend-task-2)  built with fable, high effort  route added\n" +
 		"- #3  Settings  [planning]  after #2"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
-	if got := taskListText("", nil); got != "No tasks with a part in this repo." {
+	if got := taskListText("", nil, 0); got != "No tasks with a part in this repo." {
 		t.Fatalf("empty = %q", got)
+	}
+}
+
+// The daemon lists only the latest finished tasks; the answer ends by
+// saying how many it left out and how to see one.
+func TestTaskListText_SaysWhatIsNotListed(t *testing.T) {
+	got := taskListText("", []queuedTask{{ID: 30, Title: "Export", Status: "done"}}, 23)
+	want := "Tasks with a part in this repo:\n- #30  Export  [done]\n" +
+		"(23 older finished tasks are not listed; list with an id shows one whole.)"
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
 }
 

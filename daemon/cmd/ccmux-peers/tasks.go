@@ -41,14 +41,18 @@ func (a *app) toolTasks(args json.RawMessage) any {
 	var resp struct {
 		Message string       `json:"message"`
 		Tasks   []queuedTask `json:"tasks"`
+		Older   int          `json:"older"`
 	}
 	if err := a.daemon.post("/v1/panes/"+a.paneID+"/tasks", in, &resp); err != nil {
 		return toolText("Tasks failed: "+err.Error(), true)
 	}
-	return toolText(taskListText(resp.Message, resp.Tasks), false)
+	return toolText(taskListText(resp.Message, resp.Tasks, resp.Older), false)
 }
 
-func taskListText(message string, tasks []queuedTask) string {
+// taskListText is the tool's answer: the action's message, then the tasks
+// the daemon chose to list (its short list: open tasks and the latest
+// finished, notes cut), then how many older finished ones it left out.
+func taskListText(message string, tasks []queuedTask, older int) string {
 	var b strings.Builder
 	if message != "" {
 		b.WriteString(message + "\n")
@@ -67,6 +71,9 @@ func taskListText(message string, tasks []queuedTask) string {
 		for _, p := range t.Parts {
 			b.WriteString(partLine(p) + "\n")
 		}
+	}
+	if older > 0 {
+		fmt.Fprintf(&b, "(%d older finished tasks are not listed; list with an id shows one whole.)", older)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

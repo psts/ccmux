@@ -58,7 +58,8 @@ type partReq struct {
 // its session is in, whose queue it files into ("" for none).
 type taskFiler struct{ repo, session, pane, window string }
 
-// paneTasks: POST /v1/panes/{id}/tasks {action, ...} → {message, tasks}.
+// paneTasks: POST /v1/panes/{id}/tasks {action, ...} → {message, tasks,
+// older}: the action's own message, then the short list of tasks_toollist.go.
 func (s *Server) paneTasks(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {
 		return
@@ -79,13 +80,18 @@ func (s *Server) paneTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
+	shows, status, err := s.toolShowsFor(who, req)
+	if err != nil {
+		writeError(w, status, err.Error())
+		return
+	}
 	tasks, parts, err := s.board()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	mine := repoTasks(tasks, parts, who.repo)
-	writeJSON(w, http.StatusOK, map[string]any{"message": message, "tasks": s.taskViewsOf(mine, parts)})
+	answer := toolAnswerOf(repoTasks(tasks, parts, who.repo), parts, shows)
+	writeJSON(w, http.StatusOK, map[string]any{"message": message, "tasks": answer.Tasks, "older": answer.Older})
 }
 
 // taskFilerOfPane names the repo a pane's session works in. A session on
