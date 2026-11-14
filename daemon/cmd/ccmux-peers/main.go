@@ -515,98 +515,112 @@ func (a *app) register() error {
 	return nil
 }
 
+// installHandlers wires each MCP method to its handler.
 func (a *app) installHandlers() {
-	a.mcp.onRequest["initialize"] = func(params json.RawMessage) (any, *rpcError) {
-		var in struct {
-			ProtocolVersion string `json:"protocolVersion"`
-		}
-		_ = json.Unmarshal(params, &in)
-		agreed := negotiateProtocolVersion(in.ProtocolVersion)
-		if in.ProtocolVersion != agreed {
-			logf("client offered MCP %q; answering with %s (newest this server speaks)",
-				in.ProtocolVersion, agreed)
-		}
-		return map[string]any{
-			"protocolVersion": agreed,
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-				"experimental": map[string]any{
-					"claude/channel":            map[string]any{},
-					"claude/channel/permission": map[string]any{},
-				},
-			},
-			"serverInfo":   map[string]any{"name": "claude-peers", "version": shimVersion},
-			"instructions": a.instructions(),
-		}, nil
-	}
-	// 2026-07-28 clients probe with server/discover before falling back to the
-	// legacy handshake. Answering it honestly — these legacy revisions, nothing
-	// newer — turns that probe into a clean fallback instead of a method-not-found.
-	// Flipping the bus to the modern era later is a supportedVersions change here,
-	// made only alongside the code that implements the era's semantics.
-	a.mcp.onRequest["server/discover"] = func(json.RawMessage) (any, *rpcError) {
-		logf("client probed server/discover; advertising legacy revisions %v", supportedProtocolVersions)
-		return map[string]any{
-			"resultType":        "complete",
-			"supportedVersions": supportedProtocolVersions,
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-				"experimental": map[string]any{
-					"claude/channel":            map[string]any{},
-					"claude/channel/permission": map[string]any{},
-				},
-			},
-			"instructions": a.instructions(),
-			"_meta": map[string]any{
-				"io.modelcontextprotocol/serverInfo": map[string]any{"name": "claude-peers", "version": shimVersion},
-			},
-		}, nil
-	}
+	a.mcp.onRequest["initialize"] = a.handleInitialize
+	a.mcp.onRequest["server/discover"] = a.handleDiscover
 	a.mcp.onRequest["ping"] = func(json.RawMessage) (any, *rpcError) {
 		return map[string]any{}, nil
 	}
 	a.mcp.onRequest["tools/list"] = func(json.RawMessage) (any, *rpcError) {
 		return map[string]any{"tools": toolsList}, nil
 	}
-	a.mcp.onRequest["tools/call"] = func(params json.RawMessage) (any, *rpcError) {
-		defer a.markClientListening() // the model is at work: Claude Code hears pushes now
-		var in struct {
-			Name string          `json:"name"`
-			Args json.RawMessage `json:"arguments"`
-		}
-		if err := json.Unmarshal(params, &in); err != nil {
-			return nil, &rpcError{Code: -32602, Message: err.Error()}
-		}
-		return a.callTool(in.Name, in.Args), nil
-	}
+	a.mcp.onRequest["tools/call"] = a.handleToolCall
 	a.mcp.onNotify["notifications/initialized"] = func(json.RawMessage) { a.markClientReady() }
 	a.mcp.onNotify["notifications/cancelled"] = func(json.RawMessage) {}
+	a.mcp.onNotify["notifications/claude/channel/permission_request"] = a.relayPermissionRequest
+}
 
-	// Claude Code opened a tool-approval dialog → hand it to ccmuxd, which
-	// relays to whoever delegated work to this session recently.
-	a.mcp.onNotify["notifications/claude/channel/permission_request"] = func(params json.RawMessage) {
-		var in struct {
-			RequestID    string `json:"request_id"`
-			ToolName     string `json:"tool_name"`
-			Description  string `json:"description"`
-			InputPreview string `json:"input_preview"`
-		}
-		if err := json.Unmarshal(params, &in); err != nil || a.peerID() == "" {
-			return
-		}
-		var resp struct {
-			RelayedTo int `json:"relayed_to"`
-		}
-		if err := a.daemon.post("/v1/peers/permission-request", map[string]any{
-			"peer_id": a.peerID(), "request_id": in.RequestID,
-			"tool_name": in.ToolName, "description": in.Description,
-			"input_preview": in.InputPreview,
-		}, &resp); err != nil {
-			logf("permission relay failed: %v", err)
-			return
-		}
-		logf("relayed permission_request %s (%s) to %d recent sender(s)", in.RequestID, in.ToolName, resp.RelayedTo)
+// serverCapabilities is what both handshake answers declare: tools, the push
+// channel, and the permission relay over it. Claude Code registers the
+// session's channel off these keys, so the two answers must never differ.
+func serverCapabilities() map[string]any {
+	return map[string]any{
+		"tools": map[string]any{},
+		"experimental": map[string]any{
+			"claude/channel":            map[string]any{},
+			"claude/channel/permission": map[string]any{},
+		},
 	}
+}
+
+// handleInitialize answers the legacy handshake at the newest revision this
+// server and the client both speak.
+func (a *app) handleInitialize(params json.RawMessage) (any, *rpcError) {
+	var in struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	_ = json.Unmarshal(params, &in)
+	agreed := negotiateProtocolVersion(in.ProtocolVersion)
+	if in.ProtocolVersion != agreed {
+		logf("client offered MCP %q; answering with %s (newest this server speaks)",
+			in.ProtocolVersion, agreed)
+	}
+	return map[string]any{
+		"protocolVersion": agreed,
+		"capabilities":    serverCapabilities(),
+		"serverInfo":      map[string]any{"name": "claude-peers", "version": shimVersion},
+		"instructions":    a.instructions(),
+	}, nil
+}
+
+// handleDiscover answers the probe a 2026-07-28 client sends before falling
+// back to the legacy handshake. Answering it honestly — these legacy
+// revisions, nothing newer — turns that probe into a clean fallback instead of
+// a method-not-found. Flipping the bus to the modern era later is a
+// supportedVersions change here, made only alongside the code that implements
+// the era's semantics.
+func (a *app) handleDiscover(json.RawMessage) (any, *rpcError) {
+	logf("client probed server/discover; advertising legacy revisions %v", supportedProtocolVersions)
+	return map[string]any{
+		"resultType":        "complete",
+		"supportedVersions": supportedProtocolVersions,
+		"capabilities":      serverCapabilities(),
+		"instructions":      a.instructions(),
+		"_meta": map[string]any{
+			"io.modelcontextprotocol/serverInfo": map[string]any{"name": "claude-peers", "version": shimVersion},
+		},
+	}, nil
+}
+
+// handleToolCall runs the named tool. Answering one is also what tells the
+// push loop that Claude Code hears channel messages now (listening.go).
+func (a *app) handleToolCall(params json.RawMessage) (any, *rpcError) {
+	defer a.markClientListening() // the model is at work: Claude Code hears pushes now
+	var in struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(params, &in); err != nil {
+		return nil, &rpcError{Code: -32602, Message: err.Error()}
+	}
+	return a.callTool(in.Name, in.Args), nil
+}
+
+// relayPermissionRequest: Claude Code opened a tool-approval dialog → hand it
+// to ccmuxd, which relays to whoever delegated work to this session recently.
+func (a *app) relayPermissionRequest(params json.RawMessage) {
+	var in struct {
+		RequestID    string `json:"request_id"`
+		ToolName     string `json:"tool_name"`
+		Description  string `json:"description"`
+		InputPreview string `json:"input_preview"`
+	}
+	if err := json.Unmarshal(params, &in); err != nil || a.peerID() == "" {
+		return
+	}
+	var resp struct {
+		RelayedTo int `json:"relayed_to"`
+	}
+	if err := a.daemon.post("/v1/peers/permission-request", map[string]any{
+		"peer_id": a.peerID(), "request_id": in.RequestID,
+		"tool_name": in.ToolName, "description": in.Description,
+		"input_preview": in.InputPreview,
+	}, &resp); err != nil {
+		logf("permission relay failed: %v", err)
+		return
+	}
+	logf("relayed permission_request %s (%s) to %d recent sender(s)", in.RequestID, in.ToolName, resp.RelayedTo)
 }
 
 // keepRegistered is the poll-only session's substitute for the push loop's
