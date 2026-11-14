@@ -232,42 +232,7 @@ func main() {
 	a.paneID = os.Getenv("CCMUX_PANE_ID")
 	a.localPaneID = localPaneID(os.Getenv("CCMUX_CMD_FILE"))
 
-	// The local daemon is always where we START. Which bus we END UP on is asked
-	// for, not inherited: resolveBus queries this daemon's live tag:ccmux-hub
-	// discovery before every registration. CCMUX_PEERS_URL is only still read so
-	// a new shim keeps working against an older daemon that stamps it; it is no
-	// longer written, because a value frozen into pane env at session-creation
-	// time cannot follow a hub that appears later.
-	url := os.Getenv("CCMUX_DAEMON_URL")
-	token := os.Getenv("CCMUX_PANE_TOKEN")
-	a.localURL, a.localToken = url, token
-	if legacy := os.Getenv("CCMUX_PEERS_URL"); legacy != "" {
-		// Older daemon: it stamped the hub AND minted a hub token, so the token
-		// we have is not valid against the local daemon. Use what it gave us and
-		// ask nobody — clearing localURL disables resolution for this process.
-		url = legacy
-		a.localURL, a.localToken = "", ""
-	}
-	if a.paneID == "" || url == "" || token == "" {
-		// Not a fully-tokened hosted pane → register pane-less (dirname fallback
-		// group) with the daemon-info file's shared credentials.
-		a.paneID = ""
-		url, token = readDaemonInfo()
-		if legacyURL := os.Getenv("CCMUX_PEERS_URL"); legacyURL == "" {
-			// Those same credentials authorize the bus question, so a pane-less
-			// session asks it too and joins whatever bus its panes are on. It
-			// used to be excluded here, and the result was a Claude in a plain
-			// terminal sitting alone on its host's local bus while every pane
-			// beside it — same project, same group — was on the hub's.
-			a.localURL, a.localToken = url, token
-		} else {
-			a.localURL, a.localToken = "", ""
-		}
-	}
-	if url == "" {
-		logf("no ccmuxd found (env or daemon-info file) — tools will error until it appears")
-		url, token = "http://127.0.0.1:7890", ""
-	}
+	url, token := a.startTarget()
 	a.daemon = newDaemonClient(url, token)
 	logf("cwd=%s git_root=%s pane=%s daemon=%s channel=%v", a.cwd, a.gitRoot, orID(a.paneID, "(none)"), url, a.channelMode)
 
@@ -285,6 +250,51 @@ func main() {
 	a.mcp.Serve()
 	_ = a.unregister()
 	logf("stdin closed, exiting")
+}
+
+// startTarget is where this process starts: which daemon, with which token.
+// It also settles whom resolveBus will ask afterwards (localURL, localToken),
+// and drops the pane id of a session that is not a fully-tokened hosted pane.
+//
+// The local daemon is always where we START. Which bus we END UP on is asked
+// for, not inherited: resolveBus queries this daemon's live tag:ccmux-hub
+// discovery before every registration. CCMUX_PEERS_URL is only still read so
+// a new shim keeps working against an older daemon that stamps it; it is no
+// longer written, because a value frozen into pane env at session-creation
+// time cannot follow a hub that appears later.
+func (a *app) startTarget() (url, token string) {
+	url = os.Getenv("CCMUX_DAEMON_URL")
+	token = os.Getenv("CCMUX_PANE_TOKEN")
+	a.localURL, a.localToken = url, token
+	legacy := os.Getenv("CCMUX_PEERS_URL")
+	if legacy != "" {
+		// Older daemon: it stamped the hub AND minted a hub token, so the token
+		// we have is not valid against the local daemon. Use what it gave us and
+		// ask nobody — clearing localURL disables resolution for this process.
+		url = legacy
+		a.localURL, a.localToken = "", ""
+	}
+	if a.paneID == "" || url == "" || token == "" {
+		// Not a fully-tokened hosted pane → register pane-less (dirname fallback
+		// group) with the daemon-info file's shared credentials.
+		a.paneID = ""
+		url, token = readDaemonInfo()
+		if legacy == "" {
+			// Those same credentials authorize the bus question, so a pane-less
+			// session asks it too and joins whatever bus its panes are on. It
+			// used to be excluded here, and the result was a Claude in a plain
+			// terminal sitting alone on its host's local bus while every pane
+			// beside it — same project, same group — was on the hub's.
+			a.localURL, a.localToken = url, token
+		} else {
+			a.localURL, a.localToken = "", ""
+		}
+	}
+	if url == "" {
+		logf("no ccmuxd found (env or daemon-info file) — tools will error until it appears")
+		url, token = "http://127.0.0.1:7890", ""
+	}
+	return url, token
 }
 
 // busLoop keeps this process registered and connected to the peers bus only
@@ -350,6 +360,22 @@ func (a *app) resolveBus() bool {
 	// for its whole life.
 	a.moveMu.Lock()
 	defer a.moveMu.Unlock()
+	url, token, ok := a.askBus()
+	if !ok {
+		return false
+	}
+	curURL, curToken := a.daemon.target()
+	if curURL == strings.TrimRight(url, "/") && curToken == token {
+		return false
+	}
+	a.moveBus(url, token, curURL)
+	return true
+}
+
+// askBus asks this pane's own daemon which bus to be on: the hub it has
+// discovered, or that daemon itself when there is none. ok is false when it
+// could not be asked, which is logged once per distinct failure.
+func (a *app) askBus() (url, token string, ok bool) {
 	local := newDaemonClient(a.localURL, a.localToken)
 	var resp struct {
 		URL   string `json:"url"`
@@ -373,19 +399,20 @@ func (a *app) resolveBus() bool {
 		if !repeat {
 			logf("bus resolve failed (%v) — staying on %s; a hub, if one appears, will not be joined", err, a.localURL)
 		}
-		return false
+		return "", "", false
 	}
 	a.mu.Lock()
 	a.busWarn = ""
 	a.mu.Unlock()
-	url, token := resp.URL, resp.Token
-	if url == "" { // no hub discovered — our own daemon is the bus
-		url, token = a.localURL, a.localToken
+	if resp.URL == "" { // no hub discovered — our own daemon is the bus
+		return a.localURL, a.localToken, true
 	}
-	curURL, curToken := a.daemon.target()
-	if curURL == strings.TrimRight(url, "/") && curToken == token {
-		return false
-	}
+	return resp.URL, resp.Token, true
+}
+
+// moveBus leaves the bus at from for the one at url: releases the registration
+// there, retargets the client, and starts the new bus's bookkeeping clean.
+func (a *app) moveBus(url, token, from string) {
 	// Unregister BEFORE moving: a.unregister posts through a.daemon, so once the
 	// client is retargeted the request would go to the bus we are joining rather
 	// than the one we are leaving, and the old one would keep listing us until
@@ -394,7 +421,7 @@ func (a *app) resolveBus() bool {
 		// The likeliest reason we are moving is that the old bus became
 		// unreachable, which is also when this fails — so the stale listing the
 		// ordering above exists to prevent happens anyway. Say so.
-		logf("bus move: could not release the registration on %s (%v) — it stays listed there until that bus reaps it", curURL, err)
+		logf("bus move: could not release the registration on %s (%v) — it stays listed there until that bus reaps it", from, err)
 	}
 	a.daemon.retarget(url, token)
 	a.mu.Lock()
@@ -410,7 +437,6 @@ func (a *app) resolveBus() bool {
 	a.busEpoch++
 	a.mu.Unlock()
 	logf("bus moved to %s — re-registering", url)
-	return true
 }
 
 // busWatchdog re-asks where the bus is on a timer, and cuts the push channel

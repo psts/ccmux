@@ -371,3 +371,69 @@ func TestMarkShown_StaleEpochCannotResurrectOldBusSeq(t *testing.T) {
 		t.Error("seq 1 on the new bus should be news")
 	}
 }
+
+// A failed resolve is remembered by its MESSAGE, not by a flag: the same
+// failure is said once, and a different one later is said too. That is the
+// case the log exists for: a 404 while the daemon comes up, then a 401 from a
+// rotated secret, which would otherwise be silenced for the pane's whole life.
+// An answer clears it, so a pane that recovered reports its next failure.
+func TestResolveBus_AFailureIsLatchedByItsMessageAndClearedOnAnAnswer(t *testing.T) {
+	stub := &busStub{wantToken: "local-tok", status: http.StatusNotFound}
+	ts := stub.server(t)
+	a := newResolveApp(t, ts.URL)
+	warn := func() string { a.mu.Lock(); defer a.mu.Unlock(); return a.busWarn }
+
+	if a.resolveBus() || warn() == "" {
+		t.Fatalf("a refused resolve must stay put and be remembered, got warn %q", warn())
+	}
+	first := warn()
+	if a.resolveBus() || warn() != first {
+		t.Fatalf("the same failure again must keep the same latch: %q then %q", first, warn())
+	}
+	stub.wantToken = "rotated" // the daemon now refuses our token: another failure, another message
+	if a.resolveBus() || warn() == first || warn() == "" {
+		t.Fatalf("a different failure must replace the latch, still %q", warn())
+	}
+	stub.wantToken = "local-tok"
+	stub.mu.Lock()
+	stub.status = 0
+	stub.mu.Unlock()
+	if a.resolveBus() || warn() != "" {
+		t.Fatalf("an answer (no hub: stay) must clear the latch, still %q", warn())
+	}
+	if url, token := a.daemon.target(); url != ts.URL || token != "local-tok" {
+		t.Fatalf("none of this is a move, yet the target is now %s/%s", url, token)
+	}
+}
+
+// The likeliest reason to move is that the bus we are on went away, and that
+// is also when it cannot be told goodbye. The move happens anyway: the client
+// is retargeted, the peer id is dropped so busLoop registers on the new bus,
+// and connections dialled before the move are refused. The goodbye is for the
+// bus we were on, never for the daemon that was only asked.
+func TestResolveBus_MovesEvenWhenTheOldBusCannotBeToldGoodbye(t *testing.T) {
+	stub := &busStub{wantToken: "local-tok"}
+	ts := stub.server(t)
+	a := newResolveApp(t, ts.URL)
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close()
+	a.daemon = newDaemonClient(gone.URL, "old-tok")
+	a.mu.Lock()
+	a.id = "peer-1"
+	a.mu.Unlock()
+	before := a.busEpochNow()
+
+	stub.answer("https://hub.ts.net", "hub-tok")
+	if !a.resolveBus() {
+		t.Fatal("an unreachable old bus stopped the move")
+	}
+	if url, token := a.daemon.target(); url != "https://hub.ts.net" || token != "hub-tok" {
+		t.Errorf("target = %s/%s, want the hub", url, token)
+	}
+	if a.peerID() != "" || a.busEpochNow() != before+1 {
+		t.Errorf("peer id %q, epoch %d (was %d): want the id dropped and the epoch moved once", a.peerID(), a.busEpochNow(), before)
+	}
+	if _, unreg := stub.counts(); unreg != 0 {
+		t.Errorf("the daemon that was only asked got %d unregister(s)", unreg)
+	}
+}
