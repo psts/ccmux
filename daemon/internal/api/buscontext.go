@@ -12,7 +12,8 @@ import (
 // its agents. This is
 // the opencode carrier: opencode ignores an MCP server's instructions, so
 // the ccmux plugin fetches this at every turn and appends it to the system
-// prompt (Claude Code gets the same text through the peers shim). Loopback
+// prompt (Claude Code gets it through the peers shim, made shorter when it
+// would not fit there: buscontext.Fit). Loopback
 // only, like agent-signal: the plugin runs on this host with the pane's own
 // environment. A pane outside any window answers an empty body; an
 // unreadable window table is a refusal, never "nothing here".

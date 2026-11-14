@@ -14,7 +14,7 @@ import (
 // that the shim carries both lists and says nothing outside a window.
 func TestWindowParagraphAndSectionWithoutADaemon(t *testing.T) {
 	a := &app{}
-	if a.windowParagraph() != "" || a.windowSection() != "" {
+	if a.windowLists(a.sessions(), instructionsCap) != "" || a.windowSection() != "" {
 		t.Fatal("no daemon: nothing appended")
 	}
 	if !strings.Contains(strings.ToLower(serverInstructions), "peer") {
@@ -39,17 +39,17 @@ func TestWindowParagraphFollowsTheReader(t *testing.T) {
 	defer srv.Close()
 	a := &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1"}
 
-	for _, text := range []string{a.windowParagraph(), a.windowSection()} {
+	for _, text := range []string{a.windowLists(a.sessions(), instructionsCap), a.windowSection()} {
 		if !strings.Contains(text, "/r/backend") || !strings.Contains(text, "owns API") {
 			t.Fatalf("a role agent gets the folders and the owns lines:\n%s", text)
 		}
 	}
-	if !strings.Contains(a.windowParagraph(), "read there") {
+	if !strings.Contains(a.windowLists(a.sessions(), instructionsCap), "read there") {
 		t.Fatal("a role agent may read the repos it reaches")
 	}
 
 	reader = `{"agent":false,"self":"frontend"}`
-	for _, text := range []string{a.windowParagraph(), a.windowSection()} {
+	for _, text := range []string{a.windowLists(a.sessions(), instructionsCap), a.windowSection()} {
 		if strings.Contains(text, "/r/") || !strings.Contains(text, "frontend (you)") || !strings.Contains(text, "delegate") {
 			t.Fatalf("a repo session gets no folders, itself marked, and the hand-over rule:\n%s", text)
 		}
@@ -108,7 +108,7 @@ func TestTaskQueueRuleOnlyWhereFilingWorks(t *testing.T) {
 
 // Claude Code keeps only the first instructionsCap characters. The fixed
 // rules and the task-queue rule must end inside that, and stay ahead of the
-// window's lists however long those get, so a long list loses only its tail.
+// window's lists however long those get.
 func TestInstructionsKeepTheRulesInsideTheCap(t *testing.T) {
 	var list []string
 	for i := 0; i < 12; i++ {
@@ -124,6 +124,57 @@ func TestInstructionsKeepTheRulesInsideTheCap(t *testing.T) {
 	}
 	if !strings.Contains(got, "PROJECT SESSIONS IN THIS WINDOW") || strings.Index(got, "PROJECT SESSIONS") < end {
 		t.Fatal("the window's lists must come after the rules")
+	}
+}
+
+// The window's lists get what the rules leave of the cap, and are made
+// shorter to fit it instead of being cut by Claude Code: a cut loses the end
+// of the lists (the shared folder and every agent, in most windows) without
+// a word. Shortened, every session and the shared folder are still there,
+// the agents are at least counted, and the text says where the rest is.
+func TestInstructionsFitTheWindowsListsInsideTheCap(t *testing.T) {
+	var sessions, agents []string
+	for i := 0; i < 8; i++ {
+		sessions = append(sessions, fmt.Sprintf(`{"name":"repo-%d","repoPath":"/r/repo-%d","owns":"a long description of what this repo owns and serves","status":"cold"}`, i, i))
+		agents = append(agents, fmt.Sprintf(`{"name":"agent-%d","description":"Reads the project's outside sources each weekday morning and files what it finds.","state":"absent"}`, i))
+	}
+	reader := `{"agent":false,"self":"repo-0"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/peers/sessions":
+			fmt.Fprintf(w, `{"sessions":[%s],"shared":"/shared/proj","reader":%s}`, strings.Join(sessions, ","), reader)
+		case "/v1/peers/agents":
+			fmt.Fprintf(w, `[%s]`, strings.Join(agents, ","))
+		default:
+			fmt.Fprint(w, `[]`)
+		}
+	}))
+	defer srv.Close()
+	a := &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1", paneID: "pane-1"}
+
+	check := func(who, rules string) {
+		t.Helper()
+		got := a.instructions()
+		if len(got) > instructionsCap || !strings.HasPrefix(got, rules) || !strings.HasSuffix(got, "\n") {
+			t.Fatalf("%s: %d chars for a cap of %d, the rules first and a whole last line:\n%s", who, len(got), instructionsCap, got)
+		}
+		lists := got[len(rules):]
+		if strings.Contains(lists, "files what it finds") {
+			t.Fatalf("%s: this window's long form cannot fit, yet it was sent", who)
+		}
+		for _, want := range []string{"repo-0", "repo-7", "SHARED FOLDER of this window: /shared/proj.", "AGENTS ON THIS BUS", "list_peers"} {
+			if !strings.Contains(lists, want) {
+				t.Fatalf("%s: the shortened lists lost %q:\n%s", who, want, lists)
+			}
+		}
+	}
+	check("a repo session", serverInstructions+taskQueueRule)
+	// A role agent has no task-queue rule, so more room: it keeps the folders
+	// it reads the code at.
+	reader = `{"agent":true}`
+	check("a role agent", serverInstructions)
+	if got := a.instructions(); !strings.Contains(got, "/r/repo-7") || !strings.Contains(got, "agent-7") {
+		t.Fatalf("a role agent's room holds the folders and the agents' names:\n%s", got[len(serverInstructions):])
 	}
 }
 

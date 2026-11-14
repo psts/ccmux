@@ -9,8 +9,9 @@
 //   - appends the window context (the project's repo sessions and its
 //     agents) to the system prompt at every turn. Claude Code reads that
 //     from the peers shim's MCP instructions; opencode ignores those, so the
-//     plugin fetches the same text from the daemon instead. Fetched live, not
-//     cached: sessions and agents come and go.
+//     plugin fetches the text from the daemon instead, whole: nothing cuts
+//     it here, where the shim has to fit it into what Claude Code keeps.
+//     Fetched live, not cached: sessions and agents come and go.
 //
 // Written by ccmuxd into the agents root and listed in every instance's
 // opencode.jsonc. It only speaks to the daemon on loopback, using the pane

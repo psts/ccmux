@@ -1,9 +1,11 @@
 // Package buscontext renders what every session in a shared window is told
 // about that window: the repo sessions it is made of and the role agents
 // that can be reached there. One renderer, two carriers: the peers shim
-// appends Paragraph to its MCP instructions (which Claude Code reads) and
+// appends the paragraph to its MCP instructions (which Claude Code reads) and
 // Section to list_peers; the daemon serves Paragraph on a pane-keyed route
-// for the opencode plugin, because opencode ignores MCP instructions.
+// for the opencode plugin, because opencode ignores MCP instructions. The
+// shim's carrier is cut at a fixed length, so it sends Fit: Paragraph when
+// that fits, and otherwise the same lists made shorter (fit.go).
 package buscontext
 
 import (
@@ -123,10 +125,7 @@ func sessionLine(r Reader, e Session) string {
 	if state == "cold" {
 		state = "archived; starts on contact"
 	}
-	name := e.Name
-	if r.Self != "" && e.Name == r.Self {
-		name += " (you)"
-	}
+	name := sessionName(r, e)
 	var about []string
 	if e.Owns != "" {
 		about = append(about, "owns "+e.Owns)
@@ -138,6 +137,14 @@ func sessionLine(r Reader, e Session) string {
 		return fmt.Sprintf("- %s [%s]\n", name, state)
 	}
 	return fmt.Sprintf("- %s: %s [%s]\n", name, strings.Join(about, "; "), state)
+}
+
+// sessionName is a session's name, marked when it is the reader's own.
+func sessionName(r Reader, e Session) string {
+	if r.Self != "" && e.Name == r.Self {
+		return e.Name + " (you)"
+	}
+	return e.Name
 }
 
 // agentsParagraph says how an agent differs from a teammate: it exists

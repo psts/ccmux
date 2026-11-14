@@ -50,17 +50,22 @@ func (a *app) windowList(path string, out any) {
 	}
 }
 
-// windowParagraph is what initialize appends after the frozen server
-// instructions: the window's repo sessions, its shared folder, then its
-// agents. An agent's own
-// folder holds only its memory; this paragraph is how it learns where the
-// project's code is without anyone writing paths into its instructions.
-func (a *app) windowParagraph() string {
-	return a.windowParagraphOf(a.sessions())
-}
-
-func (a *app) windowParagraphOf(w windowSessions) string {
-	return buscontext.Paragraph(w.Reader, w.Sessions, w.Shared, a.agents())
+// windowLists is what initialize appends after the rules: the window's repo
+// sessions, its shared folder, then its agents. An agent's own folder holds
+// only its memory; this is how it learns where the project's code is without
+// anyone writing paths into its instructions. room is what the rules left of
+// instructionsCap: the lists go out in the longest form that fits it
+// (buscontext.Fit), and the log says when that was not the whole one.
+func (a *app) windowLists(w windowSessions, room int) string {
+	agents := a.agents()
+	out := buscontext.Fit(w.Reader, w.Sessions, w.Shared, agents, room)
+	switch whole := len(buscontext.Paragraph(w.Reader, w.Sessions, w.Shared, agents)); {
+	case len(out) > room:
+		logf("this window's lists are %d chars at their shortest and the rules leave %d of the %d Claude Code keeps: their end does not reach the session", len(out), room, instructionsCap)
+	case len(out) < whole:
+		logf("this window's lists went out shortened, %d chars of %d, to fit the %d Claude Code keeps: list_peers has them whole", len(out), whole, instructionsCap)
+	}
+	return out
 }
 
 // instructionsCap is how much of a server's instructions Claude Code keeps;
@@ -77,9 +82,8 @@ const registerWait = 2 * time.Second
 
 // instructions is what initialize and server/discover send: the fixed rules,
 // then the task-queue rule, then the window's lists, in that order, so the
-// rules are always inside instructionsCap and only the window's lists are cut,
-// from the end: in a window with a shared folder that is often its notes and
-// the agents list. The log says when.
+// rules are always inside instructionsCap. The lists get what is left of it,
+// made shorter to fit rather than cut by Claude Code (windowLists).
 func (a *app) instructions() string {
 	// Only the pane's own session ever registers (a subagent or a warm spare
 	// sharing the pane never does), and only the first handshake request
@@ -88,11 +92,8 @@ func (a *app) instructions() string {
 		a.waitOnce.Do(func() { a.waitRegistered(registerWait) })
 	}
 	w := a.sessions()
-	out := serverInstructions + a.taskQueueParagraph(w) + a.windowParagraphOf(w)
-	if len(out) > instructionsCap {
-		logf("instructions are %d chars and Claude Code keeps %d: the end of this window's lists does not reach the session", len(out), instructionsCap)
-	}
-	return out
+	rules := serverInstructions + a.taskQueueParagraph(w)
+	return rules + a.windowLists(w, instructionsCap-len(rules))
 }
 
 // taskQueueParagraph is the build-or-file rule, only for a session that can
