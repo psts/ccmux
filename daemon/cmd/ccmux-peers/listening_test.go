@@ -266,6 +266,33 @@ func TestListening_AClientThatNeverFinishesTheHandshakeIsHeardOnceItIsGivenUpOn(
 	}
 }
 
+// Every real session marks the gate open many times: each later tool call
+// does, and so does the settle clock after the handshake. A second mark must
+// be nothing. A second close of the same channel panics, the shim recovers
+// from nothing, and the session would lose its bus on its second tool call.
+// The marks are also one session's own: another app's gate stays shut.
+func TestListening_TheGateOpensOnceHoweverOftenItIsMarked(t *testing.T) {
+	settleFor(t, 20*time.Millisecond)
+	a, other := newApp(), newApp()
+	a.installHandlers()
+	other.installHandlers()
+
+	a.mcp.onNotify["notifications/initialized"](nil)
+	firstToolCall(t, a)
+	firstToolCall(t, a)               // a later tool call marks an open gate
+	time.Sleep(80 * time.Millisecond) // and the settle clock fires on it too
+	a.mcp.onNotify["notifications/initialized"](nil)
+	a.waitClientListening()
+
+	shut := make(chan struct{})
+	go func() { other.waitClientListening(); close(shut) }()
+	select {
+	case <-shut:
+		t.Fatal("one session's tool calls opened another's gate")
+	case <-time.After(60 * time.Millisecond):
+	}
+}
+
 // An app built without the gate (most tests) is never held.
 func TestListening_NoGateNoWait(t *testing.T) {
 	done := make(chan struct{})
