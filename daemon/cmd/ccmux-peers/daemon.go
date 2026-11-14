@@ -112,6 +112,8 @@ type wireEvent struct {
 
 // runPushLoop keeps the peer WebSocket alive for the process lifetime:
 // dial → (server replays past the cursor) → dispatch each frame → ack.
+// The dial waits for the handshake; the first dispatch waits, further, for
+// Claude Code to be listening (pushOnce).
 // On any drop it re-registers (idempotent; the daemon may have restarted)
 // and redials with backoff — cursor replay makes reconnects lossless.
 func (a *app) runPushLoop() {
@@ -161,6 +163,9 @@ func (a *app) pushOnce() error {
 		if err := conn.ReadJSON(&ev); err != nil {
 			return err
 		}
+		// Held until Claude Code can hear it: written sooner, it is dropped
+		// there and acked here, and lost for good (listening.go).
+		a.waitClientListening()
 		if !a.dispatchEvent(ev, epoch) {
 			continue // notification failed — leave unacked so it replays
 		}

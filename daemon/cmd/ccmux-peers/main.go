@@ -110,6 +110,12 @@ type app struct {
 	// so a queued delegation would be lost. nil in tests.
 	clientReady     chan struct{}
 	clientReadyOnce sync.Once
+	// clientListening is closed when Claude Code can be taken to hear a
+	// channel message, which is later than the handshake (listening.go). The
+	// push loop holds each frame until then. nil in tests.
+	clientListening     chan struct{}
+	clientListeningOnce sync.Once
+	listenSettleOnce    sync.Once
 
 	mu      sync.Mutex
 	id      string          // assigned by ccmuxd on register
@@ -146,6 +152,7 @@ func (a *app) markClientReady() {
 	if a.clientReady != nil {
 		a.clientReadyOnce.Do(func() { close(a.clientReady) })
 	}
+	a.startListenSettle()
 }
 
 // clientReadyWait bounds the wait for notifications/initialized. A client
@@ -161,6 +168,7 @@ func (a *app) waitClientReady() {
 	case <-a.clientReady:
 	case <-time.After(clientReadyWait):
 		logf("no notifications/initialized from the client within %s; pushing anyway", clientReadyWait)
+		a.startListenSettle() // no handshake to count from, so from here
 	}
 }
 
@@ -561,6 +569,7 @@ func (a *app) installHandlers() {
 		return map[string]any{"tools": toolsList}, nil
 	}
 	a.mcp.onRequest["tools/call"] = func(params json.RawMessage) (any, *rpcError) {
+		defer a.markClientListening() // the model is at work: Claude Code hears pushes now
 		var in struct {
 			Name string          `json:"name"`
 			Args json.RawMessage `json:"arguments"`
