@@ -13,7 +13,8 @@ import (
 
 // serverInstructions goes into the session's system prompt, ahead of the
 // per-session parts (instructions()). Claude Code keeps only the first 4096
-// characters of a server's instructions, so this is kept short: every relay
+// characters of a server's instructions unless told otherwise (ccmux tells it
+// in its own panes, instructionsCap), so this is kept short: every relay
 // and delegation format a session must match stays word for word, the prose
 // around them is tight, and the tool list is gone (each tool's own
 // description already says it). The SendMessage reason stays true: Claude

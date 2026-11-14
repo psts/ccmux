@@ -17,6 +17,7 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/autoconfirm"
+	"ccmux.dev/ccmuxd/internal/buscontext"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
@@ -1214,6 +1215,9 @@ func (m *Manager) paneEnv(ws *model.Workspace, paneID string) map[string]string 
 		log.Printf("pane %s: shell integration not installed (%v) — command capture is off for it", paneID, err)
 	}
 	env := shellint.EnvForPane(paneID)
+	// Claude Code is told to keep more of an MCP server's instructions than its
+	// default, which cut the bus's window lists short (see buscontext.CapEnv).
+	env[buscontext.CapEnv] = buscontext.RaisedCapValue
 	if m.LocalURL != "" {
 		env["CCMUX_DAEMON_URL"] = m.LocalURL
 		// Every pane's LLM traffic flows through the daemon's routing proxy.

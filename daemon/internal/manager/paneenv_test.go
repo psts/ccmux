@@ -3,6 +3,7 @@ package manager
 import (
 	"testing"
 
+	"ccmux.dev/ccmuxd/internal/buscontext"
 	"ccmux.dev/ccmuxd/internal/shellint"
 )
 
@@ -62,5 +63,23 @@ func TestManager_PaneEnv_AssumesFirstPartyWithTheProxy(t *testing.T) {
 		t.Errorf("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = %q, want \"1\"; without it the "+
 			"proxy base URL costs the pane its model catalog and 1M context",
 			env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"])
+	}
+}
+
+// TestManager_PaneEnv_RaisesClaudeCodesInstructionsCap: Claude Code keeps
+// only so much of an MCP server's instructions, and at its default the peers
+// bus's window lists were cut out of nearly every session. Every pane's
+// Claude Code is told to keep the raised length, with or without the proxy
+// (the cap has nothing to do with it), and in the form the shim reads back.
+func TestManager_PaneEnv_RaisesClaudeCodesInstructionsCap(t *testing.T) {
+	const paneID = "pane-cap-test"
+	t.Cleanup(func() { shellint.Cleanup(paneID) })
+
+	for _, m := range []*Manager{{}, {LocalURL: "http://127.0.0.1:7900"}} {
+		env := m.paneEnv(nil, paneID)
+		if got := buscontext.Cap(env[buscontext.CapEnv]); got != buscontext.RaisedCap {
+			t.Fatalf("%s = %q, which reads back as a cap of %d, want %d (daemon URL %q)",
+				buscontext.CapEnv, env[buscontext.CapEnv], got, buscontext.RaisedCap, m.LocalURL)
+		}
 	}
 }

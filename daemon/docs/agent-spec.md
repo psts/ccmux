@@ -16,10 +16,14 @@ and its agents reach every session as one paragraph, rendered by
 instructions and as a `list_peers` footer; opencode ignores MCP
 instructions, so the ccmux opencode plugin fetches the same text from
 `GET /v1/panes/{id}/bus-context` at every turn and appends it to the system
-prompt. Claude Code keeps only 4096 characters of a server's instructions, so
-the shim sends the paragraph whole only when it fits after the bus rules, and
-otherwise a shorter form of the same lists that names `list_peers` for the
-rest (`buscontext.Fit`, 2026-11-14). So an agent reads the code at those folders or messages the session
+prompt. Claude Code keeps only 4096 characters of a server's instructions by
+default, which is less than the bus rules and a window's lists together, so
+since 2026-11-14 the daemon raises that to 16384 in every pane it starts
+(`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`, `buscontext.CapEnv`) and the shim
+reads the same variable to know its room. Where the paragraph still does not
+fit (a session started outside ccmux, a pane older than the change) the shim
+sends a shorter form of the same lists that names `list_peers` for the rest
+(`buscontext.Fit`). So an agent reads the code at those folders or messages the session
 by name, and nobody writes repo paths into its instructions. A claude agent additionally
 gets each folder as `--add-dir` (its base's permissions say whether it may
 edit there, and the defaults allow edits). Its folder lives beside the bases,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/buscontext"
@@ -61,16 +62,21 @@ func (a *app) windowLists(w windowSessions, room int) string {
 	out := buscontext.Fit(w.Reader, w.Sessions, w.Shared, agents, room)
 	switch whole := len(buscontext.Paragraph(w.Reader, w.Sessions, w.Shared, agents)); {
 	case len(out) > room:
-		logf("this window's lists are %d chars at their shortest and the rules leave %d of the %d Claude Code keeps: their end does not reach the session", len(out), room, instructionsCap)
+		logf("this window's lists are %d chars at their shortest and the rules leave %d of the %d Claude Code keeps: their end does not reach the session", len(out), room, instructionsCap())
 	case len(out) < whole:
-		logf("this window's lists went out shortened, %d chars of %d, to fit the %d Claude Code keeps: list_peers has them whole", len(out), whole, instructionsCap)
+		logf("this window's lists went out shortened, %d chars of %d, to fit the %d Claude Code keeps: list_peers has them whole", len(out), whole, instructionsCap())
 	}
 	return out
 }
 
 // instructionsCap is how much of a server's instructions Claude Code keeps;
-// anything past it never reaches the session.
-const instructionsCap = 4096
+// anything past it never reaches the session. Claude Code takes the length
+// from its environment, which it starts this process with, so the shim reads
+// the same variable: raised in a pane ccmux started, Claude Code's own
+// default anywhere else (buscontext.Cap).
+func instructionsCap() int {
+	return buscontext.Cap(os.Getenv(buscontext.CapEnv))
+}
 
 // ownsPaneBus is isBusOwner, swapped in tests (a test run has no pane).
 var ownsPaneBus = isBusOwner
@@ -93,7 +99,7 @@ func (a *app) instructions() string {
 	}
 	w := a.sessions()
 	rules := serverInstructions + a.taskQueueParagraph(w)
-	return rules + a.windowLists(w, instructionsCap-len(rules))
+	return rules + a.windowLists(w, instructionsCap()-len(rules))
 }
 
 // taskQueueParagraph is the build-or-file rule, only for a session that can

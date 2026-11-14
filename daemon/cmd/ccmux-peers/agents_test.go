@@ -8,13 +8,15 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ccmux.dev/ccmuxd/internal/buscontext"
 )
 
 // The rendering lives in internal/buscontext and is tested there; this pins
 // that the shim carries both lists and says nothing outside a window.
 func TestWindowParagraphAndSectionWithoutADaemon(t *testing.T) {
 	a := &app{}
-	if a.windowLists(a.sessions(), instructionsCap) != "" || a.windowSection() != "" {
+	if a.windowLists(a.sessions(), instructionsCap()) != "" || a.windowSection() != "" {
 		t.Fatal("no daemon: nothing appended")
 	}
 	if !strings.Contains(strings.ToLower(serverInstructions), "peer") {
@@ -39,17 +41,17 @@ func TestWindowParagraphFollowsTheReader(t *testing.T) {
 	defer srv.Close()
 	a := &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1"}
 
-	for _, text := range []string{a.windowLists(a.sessions(), instructionsCap), a.windowSection()} {
+	for _, text := range []string{a.windowLists(a.sessions(), instructionsCap()), a.windowSection()} {
 		if !strings.Contains(text, "/r/backend") || !strings.Contains(text, "owns API") {
 			t.Fatalf("a role agent gets the folders and the owns lines:\n%s", text)
 		}
 	}
-	if !strings.Contains(a.windowLists(a.sessions(), instructionsCap), "read there") {
+	if !strings.Contains(a.windowLists(a.sessions(), instructionsCap()), "read there") {
 		t.Fatal("a role agent may read the repos it reaches")
 	}
 
 	reader = `{"agent":false,"self":"frontend"}`
-	for _, text := range []string{a.windowLists(a.sessions(), instructionsCap), a.windowSection()} {
+	for _, text := range []string{a.windowLists(a.sessions(), instructionsCap()), a.windowSection()} {
 		if strings.Contains(text, "/r/") || !strings.Contains(text, "frontend (you)") || !strings.Contains(text, "delegate") {
 			t.Fatalf("a repo session gets no folders, itself marked, and the hand-over rule:\n%s", text)
 		}
@@ -110,6 +112,7 @@ func TestTaskQueueRuleOnlyWhereFilingWorks(t *testing.T) {
 // rules and the task-queue rule must end inside that, and stay ahead of the
 // window's lists however long those get.
 func TestInstructionsKeepTheRulesInsideTheCap(t *testing.T) {
+	t.Setenv(buscontext.CapEnv, "")
 	var list []string
 	for i := 0; i < 12; i++ {
 		list = append(list, fmt.Sprintf(`{"name":"repo-%d","repoPath":"/r/repo-%d","owns":"a long description of what this repo owns and serves","status":"live"}`, i, i))
@@ -119,47 +122,62 @@ func TestInstructionsKeepTheRulesInsideTheCap(t *testing.T) {
 	a := &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1", paneID: "pane-1"}
 	got := a.instructions()
 	end := strings.Index(got, taskQueueRule) + len(taskQueueRule)
-	if strings.Index(got, taskQueueRule) != len(serverInstructions) || end > instructionsCap {
-		t.Fatalf("the task-queue rule ends at %d (cap %d), right after the fixed rules: %v", end, instructionsCap, strings.Index(got, taskQueueRule) == len(serverInstructions))
+	if strings.Index(got, taskQueueRule) != len(serverInstructions) || end > buscontext.DefaultCap {
+		t.Fatalf("the task-queue rule ends at %d (cap %d), right after the fixed rules: %v", end, buscontext.DefaultCap, strings.Index(got, taskQueueRule) == len(serverInstructions))
 	}
 	if !strings.Contains(got, "PROJECT SESSIONS IN THIS WINDOW") || strings.Index(got, "PROJECT SESSIONS") < end {
 		t.Fatal("the window's lists must come after the rules")
 	}
 }
 
-// The window's lists get what the rules leave of the cap, and are made
-// shorter to fit it instead of being cut by Claude Code: a cut loses the end
-// of the lists (the shared folder and every agent, in most windows) without
-// a word. Shortened, every session and the shared folder are still there,
-// the agents are at least counted, and the text says where the rest is.
-func TestInstructionsFitTheWindowsListsInsideTheCap(t *testing.T) {
+// bigWindowApp is a session in a window like the ones in use: eight repos
+// that say what they own, a shared folder, eight agents with a sentence
+// each. Its whole paragraph is some 3,500 characters; reader is read at each
+// request.
+func bigWindowApp(t *testing.T, reader *string) *app {
+	t.Helper()
 	var sessions, agents []string
 	for i := 0; i < 8; i++ {
 		sessions = append(sessions, fmt.Sprintf(`{"name":"repo-%d","repoPath":"/r/repo-%d","owns":"a long description of what this repo owns and serves","status":"cold"}`, i, i))
 		agents = append(agents, fmt.Sprintf(`{"name":"agent-%d","description":"Reads the project's outside sources each weekday morning and files what it finds.","state":"absent"}`, i))
 	}
-	reader := `{"agent":false,"self":"repo-0"}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/peers/sessions":
-			fmt.Fprintf(w, `{"sessions":[%s],"shared":"/shared/proj","reader":%s}`, strings.Join(sessions, ","), reader)
+			fmt.Fprintf(w, `{"sessions":[%s],"shared":"/shared/proj","reader":%s}`, strings.Join(sessions, ","), *reader)
 		case "/v1/peers/agents":
 			fmt.Fprintf(w, `[%s]`, strings.Join(agents, ","))
 		default:
 			fmt.Fprint(w, `[]`)
 		}
 	}))
-	defer srv.Close()
-	a := &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1", paneID: "pane-1"}
+	t.Cleanup(srv.Close)
+	return &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1", paneID: "pane-1"}
+}
+
+// agentDoes is in the window's paragraph only while it is whole: the
+// shortened forms give up what each agent does first.
+const agentDoes = "files what it finds"
+
+// A session started outside ccmux has Claude Code's own cap. The window's
+// lists get what the rules leave of it, and are made shorter to fit instead
+// of being cut by Claude Code: a cut loses the end of the lists (the shared
+// folder and every agent, in most windows) without a word. Shortened, every
+// session and the shared folder are still there, the agents are at least
+// counted, and the text says where the rest is.
+func TestInstructionsFitTheWindowsListsInsideTheCap(t *testing.T) {
+	t.Setenv(buscontext.CapEnv, "")
+	reader := `{"agent":false,"self":"repo-0"}`
+	a := bigWindowApp(t, &reader)
 
 	check := func(who, rules string) {
 		t.Helper()
 		got := a.instructions()
-		if len(got) > instructionsCap || !strings.HasPrefix(got, rules) || !strings.HasSuffix(got, "\n") {
-			t.Fatalf("%s: %d chars for a cap of %d, the rules first and a whole last line:\n%s", who, len(got), instructionsCap, got)
+		if len(got) > buscontext.DefaultCap || !strings.HasPrefix(got, rules) || !strings.HasSuffix(got, "\n") {
+			t.Fatalf("%s: %d chars for a cap of %d, the rules first and a whole last line:\n%s", who, len(got), buscontext.DefaultCap, got)
 		}
 		lists := got[len(rules):]
-		if strings.Contains(lists, "files what it finds") {
+		if strings.Contains(lists, agentDoes) {
 			t.Fatalf("%s: this window's long form cannot fit, yet it was sent", who)
 		}
 		for _, want := range []string{"repo-0", "repo-7", "SHARED FOLDER of this window: /shared/proj.", "AGENTS ON THIS BUS", "list_peers"} {
@@ -175,6 +193,29 @@ func TestInstructionsFitTheWindowsListsInsideTheCap(t *testing.T) {
 	check("a role agent", serverInstructions)
 	if got := a.instructions(); !strings.Contains(got, "/r/repo-7") || !strings.Contains(got, "agent-7") {
 		t.Fatalf("a role agent's room holds the folders and the agents' names:\n%s", got[len(serverInstructions):])
+	}
+}
+
+// ccmux raises Claude Code's cap in every pane it starts, and Claude Code
+// starts the shim with that same environment. The shim must use the room it
+// was given: with the raised cap the same window's lists go out whole, and a
+// value Claude Code would not take as a length leaves its default in force.
+func TestInstructionsUseTheCapClaudeCodeWasGiven(t *testing.T) {
+	reader := `{"agent":false,"self":"repo-0"}`
+	a := bigWindowApp(t, &reader)
+
+	t.Setenv(buscontext.CapEnv, buscontext.RaisedCapValue)
+	if instructionsCap() != buscontext.RaisedCap {
+		t.Fatalf("cap = %d with %s=%s", instructionsCap(), buscontext.CapEnv, buscontext.RaisedCapValue)
+	}
+	got := a.instructions()
+	if len(got) > buscontext.RaisedCap || strings.Count(got, agentDoes) != 8 || !strings.Contains(got, "Its .env is loaded") {
+		t.Fatalf("with the raised cap the whole paragraph fits (%d chars), yet it was shortened:\n%s", len(got), got[len(serverInstructions)+len(taskQueueRule):])
+	}
+
+	t.Setenv(buscontext.CapEnv, "plenty")
+	if got := a.instructions(); instructionsCap() != buscontext.DefaultCap || len(got) > buscontext.DefaultCap {
+		t.Fatalf("a value that is no length: cap %d, %d chars sent", instructionsCap(), len(got))
 	}
 }
 
