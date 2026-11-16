@@ -44,7 +44,10 @@ for f in daemon/web/*.js; do node --check "$f" || exit 1; done
 # so no node_modules is needed here; serve.mjs, the entry point that imports the SDK
 # and only wires the others together, is parse-checked only.
 for f in daemon/internal/agent/claudeserve/*.mjs; do node --check "$f" || exit 1; done
-node --test daemon/internal/agent/claudeserve/args.test.mjs daemon/internal/agent/claudeserve/translate.test.mjs daemon/internal/agent/claudeserve/routes.test.mjs daemon/internal/agent/claudeserve/agent.test.mjs daemon/internal/agent/claudeserve/mcp.test.mjs daemon/internal/agent/claudeserve/walls.test.mjs daemon/internal/agent/claudeserve/runnerstate.test.mjs daemon/internal/agent/claudeserve/runnerturns.test.mjs || exit 1
+# 2026-11-16: every *.test.mjs by glob, not by name. Task builders may not edit
+# this file (a merge refuses changes under .claude/), so a named list left each
+# new test file unrun until a person added it.
+node --test daemon/internal/agent/claudeserve/*.test.mjs || exit 1
 
 # Web lens smoke test. Added 2026-09-11 because the parse above is not enough:
 # a const declared inside a function and referenced from module scope passes
@@ -68,7 +71,9 @@ node daemon/web/smoke_test.js || exit 1
 # before it dials again (retry.js). 2026-11-10: how wide a drag leaves
 # the left menu (sidebarresize.js), and what the cap across windows on
 # the Settings page offers (tasksettings.js).
-node --test daemon/web/route_test.js daemon/web/sw_test.js daemon/web/touchscroll_test.js daemon/web/drawerswipe_test.js daemon/web/update_test.js daemon/web/paste_test.js daemon/web/tasklist_test.js daemon/web/keys_test.js daemon/web/flash_test.js daemon/web/windowwake_test.js daemon/web/retry_test.js daemon/web/sidebarresize_test.js daemon/web/tasksettings_test.js || exit 1
+# 2026-11-16: every *_test.js by glob, for the same reason as the sidecar line
+# above. smoke_test.js is left out: it is a plain script and runs on its own.
+node --test $(ls daemon/web/*_test.js | grep -v '/smoke_test\.js$') || exit 1
 
 # Go complexity, capped at 10, as a ratchet over frozen pre-existing debt.
 # See .claude/gates/gocyclo.sh for why it is a ratchet and not a wall.
