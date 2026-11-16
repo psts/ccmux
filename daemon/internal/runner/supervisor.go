@@ -351,6 +351,13 @@ func (s *Supervisor) ReplyCard(ctx context.Context, sessionID string, r CardRepl
 	return s.dial(s.paths.Socket(sessionID)).ReplyCard(ctx, r)
 }
 
+// Runner is the client for a session's runner socket, for what the thread
+// page asks of it directly (its conversation, its events, a card's answer,
+// Stop). Nothing connects until a call; a runner that is down fails there.
+func (s *Supervisor) Runner(sessionID string) *Client {
+	return s.dial(s.paths.Socket(sessionID))
+}
+
 // ErrSessionDone is a prompt for a session that has ended: nothing would
 // ever deliver it.
 var ErrSessionDone = errors.New("this session has ended; start a new one")

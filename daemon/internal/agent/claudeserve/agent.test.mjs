@@ -618,7 +618,7 @@ test("a runner numbers its events for a reader that reconnects", () => {
   assert.ok(events.length >= 2);
   assert.deepEqual(events.map((x) => x.seq), events.map((_, i) => i + 1));
   assert.equal(agent.hello().seq, events.length);
-  assert.equal(agent.hello().protocol, 1);
+  assert.equal(agent.hello().protocol, 2);
 });
 
 test("a runner being stopped never says idle: nothing between turns, stopped when a turn was cut off", async () => {
@@ -630,4 +630,34 @@ test("a runner being stopped never says idle: nothing between turns, stopped whe
   await mid.agent.shutdown();
   assert.deepEqual(mid.signals, ["busy", "stopped"], "mid-turn: the turn is gone, and so is any card it had up");
   assert.ok(mid.agent.abort.signal.aborted);
+});
+
+test("a snapshot is the conversation and the number of the last event in it", () => {
+  const { agent } = runnerAgent();
+  agent.prompt("hi", "p1");
+  const snap = agent.snapshot();
+  assert.equal(snap.seq, agent.events.seq, "the events after seq are exactly the ones not in the snapshot");
+  assert.equal(snap.boot, agent.boot);
+  assert.equal(snap.session, agent.sid);
+  assert.equal(snap.busy, true);
+  assert.equal(snap.messages.length, 1);
+  assert.equal(snap.messages[0].parts[0].text, "hi");
+  assert.deepEqual([snap.permissions, snap.questions], [[], []]);
+  // Read in one go: an event sent right after is numbered above the
+  // snapshot, and is not in it.
+  agent.prompt("again", "p2");
+  assert.equal(agent.events.after(snap.seq).events.length > 0, true);
+  assert.equal(snap.messages.length, 1);
+});
+
+test("a snapshot carries the cards that wait", async () => {
+  const { agent } = runnerAgent();
+  agent.prompt("go", "p1");
+  const asked = agent.canUseTool("Bash", { command: "rm -rf x" }, { toolUseID: "c1" });
+  const snap = agent.snapshot();
+  assert.equal(snap.permissions.length, 1);
+  assert.equal(snap.permissions[0].permission, "Bash");
+  agent.replyPermission(snap.permissions[0].id, "reject");
+  await asked;
+  assert.equal(agent.snapshot().permissions.length, 0);
 });

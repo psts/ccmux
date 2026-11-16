@@ -187,6 +187,27 @@ func ClaudeOfflineTranscript(ctx context.Context, root, dir, sessionID string) (
 	return NormalizeExport(out)
 }
 
+// ClaudeOfflineMessages is one conversation through the sidecar's export, as
+// the sidecar wrote it: the JSON list of {info, parts} a runner's snapshot
+// holds, for the thread page of a session whose runner is down. Extra flags
+// (the session's media folder) go to the export as they are.
+func ClaudeOfflineMessages(ctx context.Context, root, dir, sessionID string, extra ...string) (json.RawMessage, error) {
+	out, err := runClaudeServe(ctx, root, append([]string{"export", "--dir", dir, "--session", sessionID}, extra...)...)
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return nil, fmt.Errorf("claude export: %w", err)
+	}
+	if len(doc.Messages) == 0 {
+		return json.RawMessage("[]"), nil
+	}
+	return doc.Messages, nil
+}
+
 func runClaudeServe(ctx context.Context, root string, args ...string) ([]byte, error) {
 	script := ClaudeServeScript(root)
 	if _, err := os.Stat(script); err != nil {

@@ -39,6 +39,7 @@ type runnerRows interface {
 	RunnerSession(id string) (*store.RunnerSession, error)
 	UndeliveredPrompts(sessionID string) ([]store.InboxPrompt, error)
 	OpenSessionCards(sessionID string) ([]store.SessionCard, error)
+	SetSessionCardState(sessionID, id, state string, now int64) error
 }
 
 // SetRunners turns the session routes on.
@@ -78,6 +79,11 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/model", s.setRunnerModel)
 	mux.HandleFunc("POST /v1/sessions/{id}/restart", s.restartRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/acted", s.actedRunnerSession)
+	// The thread page (sessionstream.go, sessioncards.go).
+	mux.HandleFunc("GET /v1/sessions/{id}/ws", s.streamRunnerSession)
+	mux.HandleFunc("GET /v1/sessions/{id}/messages", s.runnerSessionMessages)
+	mux.HandleFunc("POST /v1/sessions/{id}/cards/{card}", s.answerRunnerCard)
+	mux.HandleFunc("POST /v1/sessions/{id}/abort", s.abortRunnerSession)
 }
 
 func (s *Server) runnersReady(w http.ResponseWriter) bool {

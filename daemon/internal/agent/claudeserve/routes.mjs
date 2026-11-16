@@ -49,6 +49,9 @@ export const handlers = {
   // versions at connect, prompts by inbox id, model switches, and which
   // prompts Claude already has.
   "GET hello": (a) => [200, a.hello()],
+  // The conversation and where the event log stands, in one answer, for a
+  // reader that then follows /event?after=<seq> (the thread page's relay).
+  "GET snapshot": (a) => [200, a.snapshot()],
   "POST prompt": (a, id, body) => {
     const text = String(body.text || "");
     if (!text.trim()) return [400, { error: "empty prompt" }];
@@ -95,11 +98,13 @@ export function send(res, status, body) {
 // line, kept open until the client leaves. Whoever broadcasts writes to
 // every response in agent.clients.
 // A runner's reader passes ?after=N to get the numbered events it missed
-// first (and gap: true in the connected event when some were dropped).
+// first (and gap: true in the connected event when some were dropped). The
+// connected event names this process too (boot), so a reader that asked for
+// events after N of an earlier process sees it is talking to another one.
 function eventStream(agent, req, res, after) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
   const replay = after == null || !agent.events ? null : agent.events.after(after);
-  const props = replay ? { gap: replay.gap, seq: agent.events.seq } : {};
+  const props = replay ? { gap: replay.gap, seq: agent.events.seq, boot: agent.boot } : {};
   res.write("data: " + JSON.stringify({ type: "server.connected", properties: props }) + "\n\n");
   for (const x of replay ? replay.events : []) res.write("id: " + x.seq + "\ndata: " + JSON.stringify(x.ev) + "\n\n");
   agent.clients.add(res);

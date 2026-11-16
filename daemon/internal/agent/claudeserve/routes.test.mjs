@@ -179,3 +179,19 @@ test("the runner routes: hello, prompts by inbox id, delivered, and a replay aft
     assert.doesNotMatch(text, /"type":"a"/, "only events after 1");
   });
 });
+
+test("the snapshot route, and the event stream naming its process", async () => {
+  await withServer(async (agent, call, base) => {
+    const { EventLog } = await import("./runnerstate.mjs");
+    agent.events = new EventLog();
+    agent.events.push({ type: "a" });
+    agent.boot = "boot-7";
+    agent.snapshot = () => ({ boot: agent.boot, seq: agent.events.seq, messages: [{ info: { id: "m1" }, parts: [] }] });
+    assert.deepEqual((await call("GET", "/snapshot")).body, { boot: "boot-7", seq: 1, messages: [{ info: { id: "m1" }, parts: [] }] });
+    const ctl = new AbortController();
+    const r = await fetch(base + "/event?after=1", { signal: ctl.signal });
+    const first = new TextDecoder().decode((await r.body.getReader().read()).value);
+    ctl.abort();
+    assert.match(first, /"type":"server.connected","properties":\{"gap":false,"seq":1,"boot":"boot-7"\}/);
+  });
+});

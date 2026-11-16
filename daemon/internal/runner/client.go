@@ -14,7 +14,13 @@ import (
 // Protocol is the runner surface this daemon speaks (RUNNER_PROTOCOL in
 // claudeserve/runnerstate.mjs). A runner saying another is restarted on
 // the installed sidecar between turns.
-const Protocol = 1
+//
+//	1  hello, prompts by inbox id, delivered, cards, numbered events
+//	2  the snapshot route and the boot id on the event stream's opening
+//	   line (the thread page's relay), images on a prompt, and the fuller
+//	   translation the page draws (diffs, to-dos, images, what the session
+//	   says of itself, each turn's cost)
+const Protocol = 2
 
 // Hello is what a runner says at connect.
 type Hello struct {

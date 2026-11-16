@@ -95,6 +95,8 @@ type Server struct {
 	sidecars   sidecarSupervisor
 	runners    runnerSupervisor // session runners (sessions.go); nil turns their routes off
 	runnerRows runnerRows
+	doors      RunnerDoors   // the thread page's way to a session's runner (sessionstream.go)
+	streamPace time.Duration // how often a session stream looks at a session it is not following; 0 = a second
 
 	// agents is the base-agent folder store, wired by SetAgents; nil means
 	// the /v1/agents routes answer 503.

@@ -67,9 +67,14 @@ func TestASessionsChangeMovesItsPaneAndItsPeer(t *testing.T) {
 	bus := peers.NewService(st, mgr, []byte("test-secret-test-secret-test-sec"))
 	bus.RunnerPane = runnerPaneForBus(mgr)
 	changed := sessionChanged(mgr, bus)
+	sub, events := mgr.SubscribeEvents()
+	defer mgr.UnsubscribeEvents(sub)
 
 	sess := store.RunnerSession{ID: "0a1b2c3d-0000-0000-0000-000000000001", Cwd: "/r/app", Wanted: store.SessionAsleep, PaneID: "run1", WorkspaceID: "ws"}
 	changed(sess)
+	if ev := <-events; ev.Kind != "sessions-changed" || ev.WorkspaceID != "ws" {
+		t.Fatalf("every lens is told the workspace's sessions changed, so a page listing them reads again: %+v", ev)
+	}
 	if bus.PeerForPane("run1") == "" {
 		t.Fatal("an asleep session is on the bus: a message is what wakes it")
 	}

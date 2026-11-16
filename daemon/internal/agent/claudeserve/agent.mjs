@@ -401,6 +401,17 @@ export class Agent {
     };
   }
 
+  // snapshot is the conversation as it stands, with the number of the last
+  // event already in it: a reader shows this, then follows the events after
+  // seq, and has missed nothing and seen nothing twice. Everything here is
+  // read in one go, with no await between the number and the conversation.
+  snapshot() {
+    return {
+      protocol: RUNNER_PROTOCOL, boot: this.boot, seq: this.events.seq, session: this.sid, busy: this.busy,
+      messages: this.transcript.messages(), permissions: this.pendingPermissions(), questions: this.pendingQuestions(),
+    };
+  }
+
   // delivered is the subset of ids Claude has.
   delivered(ids) {
     return (ids || []).filter((id) => this.state.isDelivered(id));

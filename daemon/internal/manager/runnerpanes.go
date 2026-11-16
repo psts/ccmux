@@ -227,6 +227,15 @@ func (m *Manager) RunnerPane(paneID string) (RunnerPaneInfo, bool) {
 	return RunnerPaneInfo{}, false
 }
 
+// SessionsChanged tells every lens that a runner session of workspace wsID
+// was made, changed (woken, put to sleep, renamed) or ended, so a page that
+// lists sessions reads them again. What changed is not said: the list is
+// small and the rows are the truth. A session's attention has its own
+// event.
+func (m *Manager) SessionsChanged(wsID string) {
+	m.events.publish(Event{Kind: "sessions-changed", WorkspaceID: wsID})
+}
+
 // RunnerPanes is a copy of every runner pane, for the attention snapshot a
 // lens gets at connect.
 func (m *Manager) RunnerPanes() []model.Pane {

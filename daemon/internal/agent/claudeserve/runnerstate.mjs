@@ -7,7 +7,7 @@
 // RUNNER_PROTOCOL is the version of the runner's HTTP surface the daemon
 // checks at connect (GET hello). Raise it on any change the daemon must
 // know about; an old runner then gets restarted on the new one.
-export const RUNNER_PROTOCOL = 1;
+export const RUNNER_PROTOCOL = 2;
 
 // deliveredCap bounds the ids kept as delivered. The daemon asks about the
 // prompts it still holds as undelivered, which are the newest few, so the

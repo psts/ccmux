@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -74,6 +75,14 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		}
 	}
 	w.api.SetRunners(sup, w.st)
+	w.api.SetRunnerDoors(api.RunnerDoors{
+		Dial: func(sessionID string) api.SessionRunner { return sup.Runner(sessionID) },
+		// A session whose runner is down is read from Claude Code's own store,
+		// through the sidecar's export (it lands with the first session).
+		History: func(ctx context.Context, sess store.RunnerSession) (json.RawMessage, error) {
+			return agent.ClaudeOfflineMessages(ctx, w.agents.Root, sess.Cwd, sess.ID)
+		},
+	})
 	go sup.Run(ctx)
 }
 
@@ -85,6 +94,7 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 func sessionChanged(mgr *manager.Manager, bus *peers.Service) func(store.RunnerSession) {
 	return func(sess store.RunnerSession) {
 		mgr.SyncRunnerPane(sess)
+		mgr.SessionsChanged(sess.WorkspaceID)
 		switch {
 		case bus == nil || sess.PaneID == "":
 		case sess.Wanted == store.SessionDone:

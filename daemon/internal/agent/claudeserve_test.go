@@ -139,10 +139,27 @@ else { console.error("bad verb " + a[0]); process.exit(2); }
 	if len(turns) != 2 || turns[0].Parts[0].Text != "asked new" || turns[1].Parts[0].Tool != "Bash" || turns[1].Parts[0].Output != "a.go" {
 		t.Fatalf("transcript: %+v", turns)
 	}
+	// The thread page reads the same export as the sidecar wrote it, nothing
+	// dropped: fields the chat view's reader does not know stay in.
+	raw, err := ClaudeOfflineMessages(ctx, root, dir, "new", "--media", "/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"asked new"`) || !strings.Contains(string(raw), `"messageID":"a1"`) || raw[0] != '[' {
+		t.Fatalf("raw messages: %s", raw)
+	}
 	// A verb the stub refuses surfaces its stderr, not a silent empty answer.
 	os.WriteFile(script, []byte(`console.error("store locked"); process.exit(3);`), 0o644)
 	if _, err := ClaudeOfflineSessions(ctx, root, dir); err == nil || !strings.Contains(err.Error(), "store locked") {
 		t.Fatalf("stderr must reach the caller: %v", err)
+	}
+	if _, err := ClaudeOfflineMessages(ctx, root, dir, "new"); err == nil || !strings.Contains(err.Error(), "store locked") {
+		t.Fatalf("stderr must reach the caller: %v", err)
+	}
+	// A conversation with nothing in it is an empty list, not null.
+	os.WriteFile(script, []byte(`console.log("{}")`), 0o644)
+	if raw, err := ClaudeOfflineMessages(ctx, root, dir, "new"); err != nil || string(raw) != "[]" {
+		t.Fatalf("an empty export: %s %v", raw, err)
 	}
 }
 
