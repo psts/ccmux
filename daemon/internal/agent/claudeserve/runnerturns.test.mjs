@@ -61,3 +61,15 @@ test("a prompt sent twice is open once", () => {
   t.sent("p1", "x");
   assert.equal(state.open.length, 1);
 });
+
+test("a prompt Claude Code says it is done with closes, whatever the replies named", () => {
+  const state = new RunnerState();
+  const turns = new RunnerTurns(state);
+  turns.sent("a", "first");
+  turns.sent("b", "folded into the first one's turn");
+  assert.equal(turns.completed("b"), true);
+  assert.deepEqual(state.open.map((p) => p.id), ["a"]);
+  assert.equal(turns.completed("b"), false, "already closed");
+  assert.equal(turns.completed("never-sent"), false);
+  assert.equal(turns.busy(), true, "the other prompt is still open");
+});

@@ -43,6 +43,7 @@ test("before any turn a query says its commands and the models to pick from", ()
   assert.deepEqual(self.models, [{ value: "default", name: "Default (recommended)", model: "claude-opus-5-5" }, { value: "haiku", name: "Haiku 5.5", model: "claude-haiku-5-5" }]);
   assert.equal(self.commands[0].description, "Say hello");
   assert.deepEqual(fromInitialization({}), { commands: [], models: [] });
+  assert.equal(fromInitialization({ claude_code_version: "2.1.326" }).claudeCode, "2.1.326");
 });
 
 test("a result is the turn's bill", () => {

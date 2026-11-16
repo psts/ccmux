@@ -89,6 +89,7 @@ export class Agent {
     this.feed = null; // the running query's prompt queue (see input)
     this.q = null;
     this.busy = false;
+    this.turnLive = false; // a runner's turn is producing output (between its first reply and its result)
     this.interrupting = false;
     this.abort = new AbortController();
     this.daemon = deps.env.CCMUX_DAEMON_URL;
@@ -320,21 +321,47 @@ export class Agent {
   onMessage(m) {
     if (m.type === "assistant") this.resume = true; // a reply is on disk: this conversation can be continued
     this.noteDelivered(m);
+    if (m.type === "command_lifecycle") {
+      this.onLifecycle(m);
+      return;
+    }
     if (m.type === "system") {
       this.onSystem(m);
       return;
     }
     if (m.type === "result") {
+      this.turnLive = false;
       this.onResult(m);
       return;
     }
     // A runner's turn that no prompt of ours opened (a background hook woke
     // the session with its findings) is still a turn: busy until its result,
     // so its page shows it working and Stop reaches it.
-    if (this.turns && !this.busy && (m.type === "assistant" || m.type === "stream_event")) this.setBusy(true);
+    if (this.turns && (m.type === "assistant" || m.type === "stream_event")) {
+      this.turnLive = true;
+      this.setBusy(true);
+    }
     const events = this.transcript.apply(m);
     this.emit(events);
     this.print(m);
+  }
+
+  // onLifecycle is Claude Code saying where one prompt stands: started (it
+  // has it) and completed (it is done with it). A runner counts on this for
+  // a prompt that arrived while a turn was running: Claude Code folds that
+  // one into the running turn, and nothing else ever names it, neither a
+  // reply nor a line of the transcript. Without it the daemon would hold
+  // the prompt as undelivered for good, and send it again, to run a second
+  // time, after the next restart.
+  onLifecycle(m) {
+    if (!this.turns || !m.command_uuid) return;
+    const done = m.state === "completed";
+    let changed = done || m.state === "started" ? this.state.markDelivered([m.command_uuid]) : false;
+    if (done) changed = this.turns.completed(m.command_uuid) || changed;
+    if (changed) this.persist();
+    // Said after the turn's result (its usual place): nothing further will
+    // settle the busy flag, so this does.
+    if (done && !this.turnLive) this.setBusy(this.turns.busy());
   }
 
   // onSystem is Claude Code speaking beside the conversation. The terminal
@@ -491,7 +518,7 @@ export class Agent {
     return {
       protocol: RUNNER_PROTOCOL, boot: this.boot, seq: this.events.seq, session: this.sid, busy: this.busy,
       messages: this.transcript.messages(), permissions: this.pendingPermissions(), questions: this.pendingQuestions(),
-      info: this.info, result: this.result, todos: this.transcript.todos || [],
+      info: this.info, result: this.result, todos: this.transcript.todos || [], sdk: this.sdk.sdkVersion || "",
     };
   }
 

@@ -794,3 +794,70 @@ test("an agent pane, which keeps no images, sends the words and says the picture
   await tick();
   assert.match(sdk.queries[0].sent[0].message.content, /^look\n\[ccmux: 1 image/);
 });
+
+const lifecycle = (id, state) => ({ type: "command_lifecycle", command_uuid: id, state });
+
+test("a prompt folded into a running turn is delivered and done by Claude Code's word alone", async () => {
+  // The order SDK 0.3.311 sends (recorded 2026-11-16): B arrives while A's
+  // turn runs, the replies to B name no prompt, B completes, then the
+  // result, then A completes.
+  const { agent, signals, files } = runnerAgent();
+  agent.prompt("run the build", "A");
+  agent.onMessage(lifecycle("A", "queued"));
+  agent.onMessage(lifecycle("A", "started"));
+  agent.onMessage({ type: "assistant", user_message_uuid: "A", message: { id: "m1", content: [{ type: "text", text: "building" }] } });
+  agent.prompt("also run the tests", "B");
+  agent.onMessage(lifecycle("B", "queued"));
+  assert.deepEqual(agent.delivered(["A", "B"]), ["A"], "queued is not yet with Claude");
+  agent.onMessage(lifecycle("B", "started"));
+  assert.deepEqual(agent.delivered(["A", "B"]), ["A", "B"]);
+  agent.onMessage({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "tests too" }] } });
+  agent.onMessage(lifecycle("B", "completed"));
+  assert.equal(agent.busy, true, "A's turn is still going");
+  agent.onMessage({ type: "result", subtype: "success" });
+  agent.onMessage(lifecycle("A", "completed"));
+  await tick();
+  assert.equal(agent.busy, false);
+  assert.equal(agent.hello().turnOpen, false);
+  assert.deepEqual(JSON.parse(files["/st/s.json"]).open, [], "nothing left open for a restart to send again or call cut off");
+  assert.deepEqual(signals, ["busy", "idle"]);
+});
+
+test("a prompt whose completion comes after the result settles the busy flag then", async () => {
+  // A result that closed nothing (its replies named no prompt): the prompt's
+  // own completion is the last word.
+  const { agent, signals } = runnerAgent();
+  agent.prompt("go", "A");
+  agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "done" }] } });
+  agent.onMessage({ type: "result", subtype: "success" });
+  await tick();
+  assert.equal(agent.busy, true, "still open by every other sign");
+  agent.onMessage(lifecycle("A", "completed"));
+  await tick();
+  assert.equal(agent.busy, false);
+  assert.deepEqual(signals, ["busy", "idle"]);
+});
+
+test("a prompt still queued behind a turn keeps the runner busy when another completes", async () => {
+  const { agent } = runnerAgent();
+  agent.prompt("one", "A");
+  agent.prompt("two", "B");
+  agent.onMessage({ type: "assistant", user_message_uuid: "A", message: { id: "m1", content: [{ type: "text", text: "1" }] } });
+  agent.onMessage({ type: "result", subtype: "success" });
+  agent.onMessage(lifecycle("A", "completed"));
+  await tick();
+  assert.equal(agent.busy, true, "B has not run yet");
+  assert.deepEqual(agent.delivered(["B"]), []);
+});
+
+test("an agent pane takes no notice of a prompt's lifecycle", async () => {
+  const { agent, events, signals } = makeAgent();
+  agent.prompt("hi");
+  await tick();
+  const before = events.length;
+  agent.onMessage(lifecycle("x", "started"));
+  agent.onMessage(lifecycle("x", "completed"));
+  await tick();
+  assert.equal(events.length, before);
+  assert.deepEqual(signals, ["busy"]);
+});

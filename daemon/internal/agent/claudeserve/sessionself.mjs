@@ -35,9 +35,12 @@ export function fromInit(m, have = {}) {
 }
 
 // fromInitialization is what a query says before any turn: its commands
-// with their descriptions, and the models this login may pick from.
+// with their descriptions, the models this login may pick from, and Claude
+// Code's version when it says it.
 export function fromInitialization(r) {
+  const self = r.claude_code_version ? { claudeCode: String(r.claude_code_version) } : {};
   return {
+    ...self,
     commands: commandList(r.commands),
     models: (r.models || []).map((x) => ({ value: String(x.value || ""), name: String(x.displayName || x.value || ""), model: String(x.resolvedModel || "") })),
   };

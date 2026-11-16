@@ -3,12 +3,15 @@
 // panes keep their own simpler rule in agent.mjs; this is the runner's,
 // kept pure (runnerturns.test.mjs) and saved through RunnerState.
 //
-// A prompt is open from the moment it is sent until a result ends the turn
-// that answered it. Claude names the prompts a turn answers on its replies
-// (user_message_uuid, and user_message_uuids for prompts folded into a
-// running turn), so a result closes exactly those. Prompts queued behind a
-// running turn stay open, so the session stays busy and a crash during
-// them is still caught.
+// A prompt is open from the moment it is sent until Claude is done with it.
+// Two things say so. Claude names the prompt a turn answers on its replies
+// (user_message_uuid), so a result closes exactly those; prompts queued
+// behind a running turn stay open, so the session stays busy and a crash
+// during them is still caught. And Claude Code reports each prompt's own
+// lifecycle (completed closes it), which is the only word there is for a
+// prompt it folded into a turn already running: the replies to that one
+// name no prompt at all (seen on SDK 0.3.311, Claude Code 2.1.326), and
+// without this it stayed open for good, the session busy with it.
 
 const noticeHead = "[ccmux] This session was restarted while a turn was running, so that turn was cut off.";
 
@@ -40,6 +43,14 @@ export class RunnerTurns {
       if (i >= 0) this.state.open.splice(i, 1);
     }
     this.answering.clear();
+    return this.state.open.length !== before;
+  }
+
+  // completed closes one prompt Claude Code says it is done with, and
+  // reports whether it was open.
+  completed(id) {
+    const before = this.state.open.length;
+    this.state.open = this.state.open.filter((p) => p.id !== id);
     return this.state.open.length !== before;
   }
 
