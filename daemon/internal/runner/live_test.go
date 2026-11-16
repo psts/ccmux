@@ -278,4 +278,7 @@ func TestLiveFailureTable(t *testing.T) {
 
 	// Its own scratch daemon and its own unit template (live_bus_test.go).
 	t.Run("a bus message reaches a session as a prompt, wakes it asleep, and its reply comes back", liveBusRow)
+	// The thread page's stream, through the same kind of scratch daemon
+	// (live_stream_test.go).
+	t.Run("a follower of the session's stream has every event once and in order through a daemon restart and a runner kill", liveStreamRow)
 }

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ccmux threads</title>
+  <meta name="theme-color" content="#EDEDE8">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/threads.css">
+</head>
+<body>
+  <!-- The thread page: runner sessions (Claude on the Agent SDK) worked with
+       as conversations, no terminal. Its own page beside the lens
+       (index.html), which is unchanged; threads.js is its controller. -->
+  <div id="page">
+    <nav id="side" aria-label="Threads">
+      <div class="side-head">
+        <a class="logo" href="/" title="Back to the terminal lens">ccmux</a>
+        <button id="new-thread" type="button" title="A new thread in the repo you are in">New thread</button>
+      </div>
+      <div id="tree"></div>
+      <div id="side-foot" class="side-foot"></div>
+    </nav>
+
+    <main id="main">
+      <header id="head">
+        <button id="side-toggle" type="button" aria-label="Threads">&#9776;</button>
+        <div class="head-title">
+          <h1 id="title">Threads</h1>
+          <div id="meta" class="meta"></div>
+        </div>
+        <span id="state" class="badge hidden"></span>
+        <label id="model-box" class="model hidden">Model
+          <select id="model"></select>
+        </label>
+        <button id="restart-later" class="apply hidden" type="button"></button>
+        <button id="stop" class="plain hidden" type="button" title="Stop the running turn">Stop</button>
+        <details id="more" class="more hidden">
+          <summary title="More">&#8943;</summary>
+          <div class="more-menu">
+            <button id="rename" type="button">Rename</button>
+            <button id="sleep" type="button">Put to sleep</button>
+            <button id="end" type="button">End this session</button>
+          </div>
+        </details>
+      </header>
+
+      <div id="model-bar" class="bar blue hidden" role="status">
+        <span id="model-bar-text" class="grow"></span>
+        <button id="restart-now" class="primary" type="button">Restart now</button>
+        <button id="later" class="plain" type="button">Later</button>
+      </div>
+      <div id="restarted-bar" class="bar green hidden" role="status"></div>
+      <div id="notice-bar" class="bar amber hidden" role="status"></div>
+      <div id="error-bar" class="bar red hidden" role="alert"></div>
+
+      <div id="goal" class="goal hidden">
+        <span class="goal-label">Goal</span>
+        <span id="goal-text"></span>
+      </div>
+
+      <div id="stream" class="stream">
+        <div id="blocks" class="blocks"></div>
+        <div id="cards" class="cards"></div>
+        <div id="empty" class="empty">Pick a repo on the left to talk to its lead, or start a thread.</div>
+      </div>
+
+      <form id="composer" class="composer ac-compose hidden">
+        <label for="input">Message the lead, or type / for commands</label>
+        <div id="attached" class="attached"></div>
+        <textarea id="input" rows="2" autocomplete="off" spellcheck="true"></textarea>
+        <div id="commands" class="commands hidden"></div>
+        <div class="composer-row">
+          <button id="attach" class="icon" type="button" aria-label="Attach image" title="Attach an image (or paste one)">
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+          </button>
+          <input id="file" type="file" accept="image/*" multiple class="hidden">
+          <button id="slash" class="mono" type="button">/ commands</button>
+          <span id="hint" class="hint grow">Lands as the next turn if Claude is busy</span>
+          <button id="send" class="primary" type="submit">Send</button>
+        </div>
+      </form>
+    </main>
+
+    <aside id="detail" aria-label="Thread details">
+      <div class="tabs" role="tablist">
+        <button class="tab on" role="tab" data-tab="changes" type="button">Changes</button>
+        <button class="tab" role="tab" data-tab="todo" type="button">To-do</button>
+      </div>
+      <div id="tab-changes" class="tab-body"></div>
+      <div id="tab-todo" class="tab-body hidden"></div>
+    </aside>
+  </div>
+
+  <script src="/retry.js"></script>
+  <script src="/route.js"></script>
+  <script src="/agentchat.js"></script>
+  <script src="/threadmodel.js"></script>
+  <script src="/threadstream.js"></script>
+  <script src="/threadwork.js"></script>
+  <script src="/threadmd.js"></script>
+  <script src="/threadimage.js"></script>
+  <script src="/threadview.js"></script>
+  <script src="/threads.js"></script>
+  <script src="/build.js"></script>
+  <script src="/update.js"></script>
+</body>
+</html>

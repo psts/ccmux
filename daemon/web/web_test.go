@@ -111,6 +111,37 @@ func TestEveryLensFileIsServed(t *testing.T) {
 	}
 }
 
+// The thread page is its own document beside the lens: it and every file it
+// loads must be embedded too, or the page opens blank on a deployed daemon.
+func TestEveryThreadPageFileIsServed(t *testing.T) {
+	html, err := os.ReadFile("threads.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := matches(`(?:src|href)="(/[^"]+)"`, html)
+	if len(page) < 12 {
+		t.Fatalf("found %d paths in threads.html; the pattern no longer matches the file", len(page))
+	}
+	for _, p := range append(page, "/threads.html") {
+		if p == "/" {
+			continue // the link back to the lens
+		}
+		resp := get(t, p, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s = %d", p, resp.StatusCode)
+		}
+		if tag := resp.Header.Get("ETag"); tag != `"`+Build+`"` {
+			t.Errorf("GET %s ETag = %s, want the build", p, tag)
+		}
+	}
+	// Every script of the page is one it shares with the lens or one of its
+	// own; a script tag with a relative path would slip past the pattern
+	// above and 404 only in a browser.
+	if rel := matches(`(?:src|href)="([^/"#][^"]*)"`, html); len(rel) != 0 {
+		t.Errorf("threads.html loads by relative path, which nothing checks: %v", rel)
+	}
+}
+
 func matches(pattern string, b []byte) []string {
 	var out []string
 	for _, m := range regexp.MustCompile(pattern).FindAllSubmatch(b, -1) {

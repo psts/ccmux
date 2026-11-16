@@ -160,3 +160,23 @@ test("another window shows w only while it is open and says so", () => {
   assert.strictEqual(R.othersShow(s, "me", "chartlabs"), false);
   assert.strictEqual(R.othersShow(s, "me", ""), false);
 });
+
+test("the thread page's address names a session, or a lead or thread not made yet", () => {
+  assert.strictEqual(R.threadHref({ kind: "session", id: "0a1b" }), "/threads.html?s=0a1b");
+  assert.strictEqual(R.threadHref({ kind: "draft", ws: "ws1", as: "thread" }), "/threads.html?ws=ws1&new=thread");
+  assert.strictEqual(R.threadHref({ kind: "draft", ws: "ws1", as: "lead" }), "/threads.html?ws=ws1&new=lead");
+  assert.strictEqual(R.threadHref({ kind: "none" }), "/threads.html");
+  assert.strictEqual(R.threadHref(null), "/threads.html");
+  for (const sel of [{ kind: "session", id: "0a1b" }, { kind: "draft", ws: "ws1", as: "thread" }, { kind: "draft", ws: "ws1", as: "lead" }, { kind: "none" }]) {
+    assert.deepStrictEqual(R.parseThread(R.threadHref(sel).split("?")[1] || ""), sel);
+  }
+});
+
+test("a thread address that names nothing, or the lens's own fields, shows no session", () => {
+  assert.deepStrictEqual(R.parseThread(""), { kind: "none" });
+  assert.deepStrictEqual(R.parseThread("?w=mixed&ws="), { kind: "none" }, "an empty ws is not a workspace");
+  assert.deepStrictEqual(R.parseThread("?ws=ws1&new=something"), { kind: "draft", ws: "ws1", as: "lead" });
+  assert.deepStrictEqual(R.parseThread("?s=abc&ws=ws1"), { kind: "session", id: "abc" }, "a session wins over a draft");
+  // And the lens's own parse is as it was: it reads w and ws, nothing else.
+  assert.deepStrictEqual(R.parse("?s=abc"), { w: "", ws: "" });
+});

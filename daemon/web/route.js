@@ -35,6 +35,30 @@
     return "/" + (s ? "?" + s : "");
   }
 
+  // The thread page (threads.html) has its own address: it shows runner
+  // sessions, which are not tmux sessions and belong to no browser-window
+  // rule above. /threads.html?s=<session> is one session. A lead or a thread
+  // that is not made yet (it is made by its first message) is
+  // ?ws=<workspace>&new=lead or &new=thread.
+  const THREADS = "/threads.html";
+
+  function threadHref(sel) {
+    const p = new URLSearchParams();
+    if (sel && sel.kind === "session" && sel.id) p.set("s", sel.id);
+    if (sel && sel.kind === "draft" && sel.ws) { p.set("ws", sel.ws); p.set("new", sel.as === "thread" ? "thread" : "lead"); }
+    const q = p.toString();
+    return THREADS + (q ? "?" + q : "");
+  }
+
+  // parseThread reads that address back. Anything it does not hold is
+  // {kind: "none"}: the page then shows its sidebar and waits for a pick.
+  function parseThread(search) {
+    const p = new URLSearchParams(search || "");
+    if (p.get("s")) return { kind: "session", id: p.get("s") };
+    if (p.get("ws")) return { kind: "draft", ws: p.get("ws"), as: p.get("new") === "thread" ? "thread" : "lead" };
+    return { kind: "none" };
+  }
+
   // bootTarget is the window a page opened at w/ws should show, "" for none.
   // A browser window keeps its own window unless the session it is asked to
   // show belongs to a different one: the window in a link can be out of date
@@ -190,8 +214,8 @@
 
   const api = {
     parse, href, windowOf, bootTarget, takesNav, remember, recall, known, beat, ended, takeRestoreSet, launchSet,
-    othersShow, reachable, showing,
-    BURST_MS, NAV_TTL_MS,
+    othersShow, reachable, showing, threadHref, parseThread,
+    BURST_MS, NAV_TTL_MS, THREADS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxRoute = api;

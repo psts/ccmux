@@ -186,7 +186,7 @@ func (s *Server) answerLead(w http.ResponseWriter, wsID string) bool {
 }
 
 // maxSessionTitle bounds a title: it is one line in a sidebar row.
-const maxSessionTitle = 80
+const maxSessionTitle = 60
 
 // sessionTitle is a title as it is kept: its first line, trimmed and cut.
 func sessionTitle(text string) string {

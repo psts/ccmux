@@ -34,6 +34,11 @@ type busLive struct {
 	repo  string
 	token string // the scratch bus's pane-less token
 	me    string // the tester's peer id
+	// The scratch daemon's process and how it was started, so a row can stop
+	// it and start it again over the same root (a daemon restart).
+	cmd    *exec.Cmd
+	argv   []string
+	socket string
 }
 
 func freePort(t *testing.T) int {
@@ -112,21 +117,17 @@ func startBusLive(t *testing.T) *busLive {
 		t.Fatal(err)
 	}
 
-	port, socket := freePort(t), "ccmux-"+filepath.Base(root)
+	port := freePort(t)
+	b.socket = "ccmux-" + filepath.Base(root)
 	b.base = fmt.Sprintf("http://127.0.0.1:%d", port)
-	cmd := exec.Command(os.Getenv("CCMUX_RUNNER_EXEC"),
-		"-socket", socket, "-addr", fmt.Sprintf("127.0.0.1:%d", port),
+	b.argv = []string{
+		"-socket", b.socket, "-addr", fmt.Sprintf("127.0.0.1:%d", port),
 		"-projects-root", root, "-agents-dir", filepath.Join(root, "agents"), "-worktrees-dir", filepath.Join(root, "wt"),
-		"-task-slots", "0", "-runner-unit-prefix", busPrefix, "-peers-shim", shim)
-	cmd.Env = append(os.Environ(), "CCMUXD_ROOT="+root, "CCMUX_HOOK_TRACE="+filepath.Join(root, "hooks.jsonl"))
-	logFile, _ := os.Create(filepath.Join(root, "daemon.log"))
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+		"-task-slots", "0", "-runner-unit-prefix", busPrefix, "-peers-shim", shim,
 	}
-	t.Cleanup(func() { b.stop(cmd, socket) })
+	b.startDaemon()
+	t.Cleanup(b.stop)
 
-	b.wait("the scratch daemon to answer", 30*time.Second, func() bool { return b.call("GET", "/v1/workspaces", "", nil, nil) == 200 })
 	if code := b.call("POST", "/v1/workspaces", "", map[string]string{"name": "repo", "repoPath": b.repo, "cwd": b.repo, "createdBy": "live-test", "group": b.group}, nil); code != 201 {
 		t.Fatalf("opening the repo session: HTTP %d", code)
 	}
@@ -147,19 +148,39 @@ func startBusLive(t *testing.T) *busLive {
 	return b
 }
 
-// stop ends everything the row started: its sessions' units, the daemon, its
-// tmux server, its unit template and its folder.
-func (b *busLive) stop(cmd *exec.Cmd, socket string) {
-	exec.Command("systemctl", "--user", "stop", busPrefix+"@*.service").Run()
-	cmd.Process.Signal(os.Interrupt)
+// startDaemon starts the scratch daemon over the row's root and waits for it
+// to answer. Called again after stopDaemon, it is the daemon coming back.
+func (b *busLive) startDaemon() {
+	b.t.Helper()
+	b.cmd = exec.Command(os.Getenv("CCMUX_RUNNER_EXEC"), b.argv...)
+	b.cmd.Env = append(os.Environ(), "CCMUXD_ROOT="+b.root, "CCMUX_HOOK_TRACE="+filepath.Join(b.root, "hooks.jsonl"))
+	logFile, _ := os.OpenFile(filepath.Join(b.root, "daemon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	b.cmd.Stdout, b.cmd.Stderr = logFile, logFile
+	if err := b.cmd.Start(); err != nil {
+		b.t.Fatal(err)
+	}
+	b.wait("the scratch daemon to answer", 30*time.Second, func() bool { return b.call("GET", "/v1/workspaces", "", nil, nil) == 200 })
+}
+
+// stopDaemon ends the daemon process and leaves everything else (its
+// sessions' units most of all) as it is.
+func (b *busLive) stopDaemon() {
+	b.cmd.Process.Signal(os.Interrupt)
 	done := make(chan struct{})
-	go func() { cmd.Wait(); close(done) }()
+	go func() { b.cmd.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		cmd.Process.Kill()
+		b.cmd.Process.Kill()
 	}
-	exec.Command("tmux", "-L", socket, "kill-server").Run()
+}
+
+// stop ends everything the row started: its sessions' units, the daemon, its
+// tmux server, its unit template and its folder.
+func (b *busLive) stop() {
+	exec.Command("systemctl", "--user", "stop", busPrefix+"@*.service").Run()
+	b.stopDaemon()
+	exec.Command("tmux", "-L", b.socket, "kill-server").Run()
 	home, _ := os.UserHomeDir()
 	os.Remove(filepath.Join(home, ".config", "systemd", "user", busPrefix+"@.service"))
 	Systemctl{}.Reload()
