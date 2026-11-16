@@ -17,7 +17,6 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/autoconfirm"
-	"ccmux.dev/ccmuxd/internal/buscontext"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/session"
@@ -40,6 +39,9 @@ const maxCols, maxRows = 10000, 10000
 type entry struct {
 	ws   *model.Workspace
 	ctrl *session.Controller // nil when cold
+	// runners are the workspace's runner sessions' panes, held beside
+	// ws.Panes, which stays tmux's own list (runnerpanes.go).
+	runners []*model.Pane
 }
 
 // Manager is the daemon's core. Safe for concurrent use.
@@ -129,6 +131,13 @@ type Manager struct {
 	// makes revive treat every pane as legacy (autoconfirm armed).
 	Harnesses *harness.Service
 
+	// RunnerLiveness asks the session supervisor where a runner session is
+	// ("running", "asleep", "done"); nil, or an error from it, answers from
+	// the pane's last row. EndRunnerSession ends one, for a workspace deleted
+	// under it. Both are wired at startup when session runners are on.
+	RunnerLiveness   func(sessionID string) (string, error)
+	EndRunnerSession func(sessionID string)
+
 	// OnDevhostChange, when set, is invoked (on its own goroutine) after any
 	// dev-hostname or dev-setting mutation so the devhost server reconciles.
 	// Set once at startup. Nil = no dev serving.
@@ -140,6 +149,12 @@ type Manager struct {
 
 	mu   sync.RWMutex
 	byID map[string]*entry
+	// runnerIDs is every pane id a runner session has or had, ended ones
+	// included (runnerpanes.go). Guarded by mu.
+	runnerIDs map[string]bool
+	// runnerReminders are the runner panes' pending idle reminders
+	// (runnerremind.go).
+	runnerReminders reminders
 
 	// viewsMu guards windowCache — the store-backed snapshot the group
 	// resolver reads, kept so resolution never does I/O under the peers bus
@@ -152,7 +167,7 @@ type Manager struct {
 func New(ctx context.Context, server *tmux.Server, st store.Store) *Manager {
 	m := &Manager{
 		server: server, store: st, ctx: ctx, events: newFirehose(),
-		byID: map[string]*entry{}, paneTitleDefaults: defaultPaneTitles(),
+		byID: map[string]*entry{}, paneTitleDefaults: defaultPaneTitles(), runnerIDs: map[string]bool{},
 	}
 	m.activity.save = m.persistActivity
 	m.taskSigs.save = m.persistTaskSignal
@@ -290,7 +305,7 @@ func (m *Manager) registerWorkspace(ws *model.Workspace, ctrl *session.Controlle
 		return err
 	}
 	for _, p := range ws.Panes {
-		_ = m.store.SavePane(p)
+		_ = m.savePane(p)
 	}
 	m.mu.Lock()
 	m.byID[ws.ID] = &entry{ws: ws, ctrl: ctrl}
@@ -375,7 +390,7 @@ func (m *Manager) startInPane(paneID string, h harness.Harness, persist, deliver
 	ordered := renumber(e.ws.Panes)
 	saved := *p
 	m.mu.Unlock()
-	_ = m.store.SavePane(&saved)
+	_ = m.savePane(&saved)
 	if err := m.store.UpdatePanePositions(wsID, ordered); err != nil {
 		log.Printf("workspace %s: pane order not persisted (lenses still follow it until restart): %v", wsID, err)
 	}
@@ -491,7 +506,7 @@ func (m *Manager) spawnPane(wsID, cwd, persistCmd, deliverCmd, createdBy, harnes
 	e.ws.Panes = agentsFirst(append(e.ws.Panes, p))
 	ordered := renumber(e.ws.Panes)
 	m.mu.Unlock()
-	_ = m.store.SavePane(p)
+	_ = m.savePane(p)
 	if err := m.store.UpdatePanePositions(wsID, ordered); err != nil {
 		log.Printf("workspace %s: pane order not persisted (lenses still follow it until restart): %v", wsID, err)
 	}
@@ -585,7 +600,7 @@ func (m *Manager) commitRevive(e *entry, ws *model.Workspace, ctrl *session.Cont
 		// leaves cols/rows alone (see its doc), and revive needs no size write
 		// anyway: `applied` only ever holds what the registry already said, or the
 		// default standing in for a row that says "never sized".
-		if err := m.store.SavePane(&saved[i]); err != nil {
+		if err := m.savePane(&saved[i]); err != nil {
 			log.Printf("revive %s: persist pane %s: %v", ws.ID, saved[i].ID, err)
 		}
 	}
@@ -750,8 +765,10 @@ func (m *Manager) KillWorkspace(wsID string) error {
 	session := e.ws.TmuxSession
 	delete(m.byID, wsID)
 	panes, group := append([]*model.Pane(nil), e.ws.Panes...), e.ws.Group
+	runners := append([]*model.Pane(nil), e.runners...)
 	gone := changeOf(e.ws)
 	m.mu.Unlock()
+	m.endRunnerSessions(runners)
 	// Its window, read before the membership row goes below.
 	gone.From = m.windowSnapshot().resolve(wsID, "")
 	defer m.membershipLeft(gone)
@@ -846,12 +863,20 @@ func (m *Manager) Workspace(wsID string) *model.Workspace {
 // CCMUX_PANE_ID the hook inherited; otherwise fall back to the pane whose CWD is
 // the longest prefix of the hook's cwd (port of the app's longest-repo-prefix
 // resolution). Returns "" if nothing matches.
+//
+// A hook that names a runner session's pane never takes the folder fallback:
+// a runner works in the same folder as its repo's tmux session, so a hook from
+// one that has ended would land on that session's pane. The fallback only ever
+// considers tmux panes, for the same reason.
 func (m *Manager) ResolvePane(paneID, cwd string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if paneID != "" {
 		if _, p := m.findPaneLocked(paneID); p != nil {
 			return paneID
+		}
+		if m.runnerIDs[paneID] {
+			return ""
 		}
 	}
 	best, bestLen := "", -1
@@ -937,14 +962,25 @@ func (m *Manager) markHostedClaude(paneID string) {
 	p.Dormant = isDormant(p)
 	wsID, saved := e.ws.ID, *p
 	m.mu.Unlock()
-	_ = m.store.SavePane(&saved)
+	_ = m.savePane(&saved)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 }
 
 // ApplyAttention sets a pane's attention state, persists it, and broadcasts the
 // change to every lens attached to its workspace. For an agent pane the
 // lifecycle state (agentStateFor) is noted alongside.
+//
+// This is the hooks' entry, and a runner session's attention is not theirs to
+// set: its runner reports busy, idle and every card itself (ApplyAgentSignal),
+// knowing which card is up and when the turn really ended. The same session's
+// hooks would say it a second time, less exactly, and UserPromptSubmit would
+// turn a running session idle the moment its turn began. Its hooks still
+// carry what only they know: the session's life (ApplySession) and the idle
+// reminder (Remind).
 func (m *Manager) ApplyAttention(paneID string, att model.Attention, reason model.AttentionReason) {
+	if _, runner := m.RunnerPane(paneID); runner {
+		return
+	}
 	m.applyAttention(paneID, att, reason)
 }
 
@@ -1003,9 +1039,21 @@ func (m *Manager) applyAttention(paneID string, att model.Attention, reason mode
 		// the lifecycle's state; agentStateFor reads it.
 		m.activity.note(paneID, agentStateFor(att, reason), time.Now())
 	}
+	if saved.Runtime == model.RuntimeRunner {
+		// No terminal lens shows this pane, so the workspace's attach sockets
+		// get no frame for it, and a lens looking at the workspace's terminal
+		// has not seen it: its claim stays until someone deals with it
+		// (MarkActed). The firehose carries it, as for any pane.
+		m.publishAttention(nil, wsID, saved)
+		if err := m.savePane(&saved); err != nil {
+			log.Printf("runner pane %s: attention not saved (a daemon restart forgets it): %v", paneID, err)
+		}
+		m.remindRunnerLater(saved) // the idle reminder Claude Code does not send here (runnerremind.go)
+		return true
+	}
 
 	m.publishAttention(ctrl, wsID, saved)
-	_ = m.store.SavePane(&saved)
+	_ = m.savePane(&saved)
 	// Then, if someone is already looking, take the flash straight back
 	// (attention_seen.go). After the broadcast, so pushes still see the hook.
 	m.retireIfWatched(wsID, att)
@@ -1034,12 +1082,17 @@ func (m *Manager) publishAttention(ctrl *session.Controller, wsID string, p mode
 		Attention: p.Attention, Reason: p.AttentionReason, Since: p.AttentionSince})
 }
 
+// findPaneLocked finds a pane by id among the tmux panes and the runner
+// sessions' panes of every workspace.
 func (m *Manager) findPaneLocked(paneID string) (*entry, *model.Pane) {
 	for _, e := range m.byID {
 		for _, p := range e.ws.Panes {
 			if p.ID == paneID {
 				return e, p
 			}
+		}
+		if p := runnerPaneIn(e, paneID); p != nil {
+			return e, p
 		}
 	}
 	return nil, nil
@@ -1215,53 +1268,12 @@ func (m *Manager) paneEnv(ws *model.Workspace, paneID string) map[string]string 
 		log.Printf("pane %s: shell integration not installed (%v) — command capture is off for it", paneID, err)
 	}
 	env := shellint.EnvForPane(paneID)
-	// Claude Code is told to keep more of an MCP server's instructions than its
-	// default, which cut the bus's window lists short (see buscontext.CapEnv).
-	env[buscontext.CapEnv] = buscontext.RaisedCapValue
+	m.claudeEnv(env, paneID) // the daemon, the proxy route, the hooks socket, the bus token (runnerpanes.go)
 	if m.LocalURL != "" {
-		env["CCMUX_DAEMON_URL"] = m.LocalURL
-		// Every pane's LLM traffic flows through the daemon's routing proxy.
-		// The URL is decision-free on purpose: pane env freezes here and tmux
-		// sessions outlive daemon restarts, so WHICH upstream answers is
-		// resolved per request from settings (internal/llmproxy). Unrouted,
-		// the proxy is a pure Anthropic pass-through — auth untouched, so a
-		// Max OAuth login behaves exactly as without it. Injected even into
-		// plain shells: a claude started by hand in a hosted pane should route
-		// the same as one ccmux started. The trade: while the daemon is down,
-		// pane LLM calls fail instead of reaching Anthropic directly. The off
-		// switch is the shell itself — an `export ANTHROPIC_BASE_URL=…` in the
-		// user's rc runs after tmux stamps this and wins.
-		env["ANTHROPIC_BASE_URL"] = m.LocalURL + "/llm/pane/" + paneID
-		// Claude Code gates its model catalog and the 1M-context beta on the
-		// base URL being api.anthropic.com. Pointing it at our loopback proxy
-		// silently downgraded every hosted pane: a static built-in model list
-		// instead of the account's real one, and a 200k window instead of 1M.
-		// This flag is the CLI's own escape hatch — it short-circuits that host
-		// check (verified in the 2.1.251 binary, where the three "first party"
-		// reasons are this var, a first-party host, and an unset base URL).
-		//
-		// Set whenever the proxy URL is, and blind to which upstream answers:
-		// pane env freezes here, while the upstream is resolved per request
-		// from settings, so there is no route to condition on that stays true. It is honest for the default,
-		// keyless pass-through to Anthropic, which is what nearly every pane
-		// is. Route a pane to a non-Anthropic upstream and the claim goes
-		// stale: the CLI sends first-party-only betas and asks for a catalog
-		// that upstream has never heard of. Both degrade (headers ignored,
-		// catalog falls back to the static list) rather than break, which is
-		// the better trade than downgrading every pane all the time.
-		env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"] = "1"
 		// opencode reads its provider setup from config, not from
 		// ANTHROPIC_BASE_URL alone; this inline layer points its anthropic
 		// provider at the same pane proxy (see opencode.go).
 		env["OPENCODE_CONFIG_CONTENT"] = opencodeConfigContent(env["ANTHROPIC_BASE_URL"], m.opencodePlugin())
-	}
-	if m.HooksSocket != "" {
-		env["CCMUX_HOOKS_SOCK"] = m.HooksSocket
-	}
-	if m.ExtraPaneEnv != nil {
-		for k, v := range m.ExtraPaneEnv(paneID) {
-			env[k] = v
-		}
 	}
 	return env
 }

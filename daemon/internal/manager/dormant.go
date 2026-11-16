@@ -119,7 +119,7 @@ func (m *Manager) clearHostedClaude(paneID string) {
 	p.Dormant = false
 	wsID, saved := e.ws.ID, *p
 	m.mu.Unlock()
-	_ = m.store.SavePane(&saved)
+	_ = m.savePane(&saved)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 }
 

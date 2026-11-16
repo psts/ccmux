@@ -22,6 +22,11 @@ import (
 type Store interface {
 	SaveWorkspace(*model.Workspace) error
 	SavePane(*model.Pane) error
+	// Runner sessions' panes (sessions.go): the rows a daemon start rebuilds
+	// them from, every pane id one ever had, and a pane's attention.
+	RunnerSessions() ([]RunnerSession, error)
+	RunnerPaneIDs() ([]string, error)
+	SaveRunnerAttention(paneID, attention, reason string, since int64) error
 	UpdatePaneSize(paneID string, cols, rows int) error
 	// An agent pane's lifecycle reading (paneactivity.go): written on its
 	// own, read once at start so a restart keeps every idle clock.
@@ -359,7 +364,7 @@ func erroringMigrations(db *sql.DB) error {
 	for _, migrate := range []func(*sql.DB) error{
 		migrateAgentColumns, migrateAttentionClaim, migratePaneActivity, migrateTaskSignal,
 		migrateTaskWindow, migrateTaskAutoFixes, migrateTaskFixPart, migrateTaskAfterIDs,
-		migrateTaskLook, migratePartRun, migrateWindowOpenDevices,
+		migrateTaskLook, migratePartRun, migrateWindowOpenDevices, migrateSessionPanes,
 	} {
 		if err := migrate(db); err != nil {
 			return err

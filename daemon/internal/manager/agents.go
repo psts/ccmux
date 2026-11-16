@@ -254,7 +254,7 @@ func (m *Manager) stampAgent(paneID string, l AgentLaunch) *model.Pane {
 	saved := *p
 	wsID := e.ws.ID
 	m.mu.Unlock()
-	if err := m.store.SavePane(&saved); err != nil {
+	if err := m.savePane(&saved); err != nil {
 		log.Printf("agent %s pane %s: stamp not persisted (%v); a daemon restart forgets it is an agent pane", l.Name, paneID, err)
 	}
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})

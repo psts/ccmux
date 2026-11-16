@@ -162,6 +162,6 @@ func (m *Manager) applyPaneTitleSignal(wsID, paneID, kind, value string) {
 	if !changed {
 		return
 	}
-	_ = m.store.SavePane(&saved)
+	_ = m.savePane(&saved)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 }

@@ -335,10 +335,24 @@ const (
 	PeerEventAnswer  = "question_answer"
 )
 
-// Pane is one terminal (a tmux window with a single pane).
+// RuntimeRunner is the Runtime of a pane with no tmux window behind it: a
+// session runner (internal/runner), a Claude session on the Agent SDK in its
+// own systemd service. "" is a tmux pane, which is every other pane.
+const RuntimeRunner = "runner"
+
+// Pane is one terminal (a tmux window with a single pane), or, with Runtime
+// "runner", a runner session's place in its repo's workspace.
 type Pane struct {
-	ID             string `json:"id"` // stable uuid → tmux @ccmux_pane_id
-	WorkspaceID    string `json:"workspaceId"`
+	ID          string `json:"id"` // stable uuid → tmux @ccmux_pane_id
+	WorkspaceID string `json:"workspaceId"`
+	// Runtime says what runs behind the pane: "" a tmux window, RuntimeRunner
+	// a session runner, whose session row SessionID names. A runner pane keeps
+	// everything keyed on a pane id working for the session (its bus peer and
+	// token, its window group, its attention and alerts, its LLM route) and
+	// is held beside the workspace's Panes, never in them: that list is what
+	// tmux bookkeeping and the terminal lens walk (manager/runnerpanes.go).
+	Runtime        string `json:"runtime,omitempty"`
+	SessionID      string `json:"sessionId,omitempty"`
 	TmuxWindow     string `json:"tmuxWindow,omitempty"` // @N, runtime-only
 	TmuxPane       string `json:"tmuxPane,omitempty"`   // %N, runtime-only
 	Title          string `json:"title"`

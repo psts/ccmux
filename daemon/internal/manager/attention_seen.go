@@ -43,6 +43,9 @@ func (m *Manager) MarkSeen(wsID string) {
 // there proves nothing, and two panes of one repo waiting side by side must
 // not leave together because one of them was answered. An empty pane id, or
 // one not in this workspace, retires nothing.
+//
+// It is also the only way a runner session's claim is retired: MarkSeen is a
+// lens looking at the workspace's terminal, which never shows a runner.
 func (m *Manager) MarkActed(wsID, paneID string) {
 	if paneID != "" {
 		m.retire(wsID, paneID)
@@ -59,7 +62,7 @@ func (m *Manager) retire(wsID, paneID string) {
 		return
 	}
 	var cleared []model.Pane
-	for _, p := range e.ws.Panes {
+	for _, p := range retirable(e, paneID) {
 		if !p.Attention.Claims() || (paneID != "" && p.ID != paneID) {
 			continue
 		}
@@ -70,9 +73,22 @@ func (m *Manager) retire(wsID, paneID string) {
 	m.mu.Unlock()
 	for i := range cleared {
 		p := &cleared[i]
-		m.publishAttention(ctrl, wsID, *p)
-		if err := m.store.SavePane(p); err != nil {
+		if p.Runtime == model.RuntimeRunner {
+			m.publishAttention(nil, wsID, *p) // no terminal lens holds this pane
+		} else {
+			m.publishAttention(ctrl, wsID, *p)
+		}
+		if err := m.savePane(p); err != nil {
 			log.Printf("pane %s: seen not persisted (the flash returns after a restart): %v", p.ID, err)
 		}
 	}
+}
+
+// retirable is the panes a retire may clear: the workspace's tmux panes,
+// and its runner sessions' panes only when one pane is named (MarkActed).
+func retirable(e *entry, paneID string) []*model.Pane {
+	if paneID == "" {
+		return e.ws.Panes
+	}
+	return append(append([]*model.Pane(nil), e.ws.Panes...), e.runners...)
 }

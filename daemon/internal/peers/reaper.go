@@ -76,6 +76,8 @@ func (s *Service) ReapOnce() {
 			s.dropPeerLocked(id)
 		}
 	}
+	// A runner session's message that its inbox refused is tried again here.
+	s.drainRunnersLocked()
 }
 
 // CollectMailboxes erases database state for mailboxes nothing can ever collect:

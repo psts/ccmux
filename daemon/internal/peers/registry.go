@@ -83,14 +83,7 @@ func (s *Service) RegisterFrom(req RegisterReq, originIP string) RegisterResp {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	name := req.Name
-	if name == "" {
-		base := req.GitRoot
-		if base == "" {
-			base = req.CWD
-		}
-		name = filepath.Base(base)
-	}
+	name := registeredName(req)
 
 	// The owning host, resolved before anything compares pids: on the hub, two
 	// member hosts each have a pid 1234, and every pid rule below is only true
@@ -123,13 +116,28 @@ func (s *Service) RegisterFrom(req RegisterReq, originIP string) RegisterResp {
 		ShimVersion: req.ShimVersion,
 	}
 	peer.Host = host
+	// A runner session's name is the daemon's to give, not its shim's.
+	s.stampRunnerLocked(peer)
 	s.peers[id] = peer
 	// Record what this mailbox hangs off, so the collector can tell a mailbox
 	// waiting for a returning session from one whose pane is long gone.
 	_ = s.st.TouchPeerMailbox(id, substrateKey(peer), now)
 
 	s.fulfillPendingSpawnLocked(peer)
-	return RegisterResp{PeerID: id, Name: name, Group: s.groupOfLocked(peer)}
+	return RegisterResp{PeerID: id, Name: peer.Name, Group: s.groupOfLocked(peer)}
+}
+
+// registeredName is the name a registration asks for: the one it sent, else
+// its repo's folder (or its working folder, outside a repo).
+func registeredName(req RegisterReq) string {
+	if req.Name != "" {
+		return req.Name
+	}
+	base := req.GitRoot
+	if base == "" {
+		base = req.CWD
+	}
+	return filepath.Base(base)
 }
 
 // originHostLocked names the host a registration belongs to, "" off the hub (or
@@ -385,6 +393,12 @@ func (s *Service) listEntryLocked(p *Peer) ListEntry {
 // Hooks settle it first; only then does the socket decide, and a peer that left
 // cleanly or stopped proving itself within the grace window is not present.
 func (s *Service) presentLocked(p *Peer) bool {
+	// A runner session reads its messages as prompts and is woken by one, so
+	// it is there for as long as it has not ended (runnerpeer.go). No socket
+	// and no hook decides it.
+	if s.runnerPeerLocked(p) {
+		return true
+	}
 	if p.PaneID != "" && s.paneSessionDeadLocked(p.PaneID) {
 		return false
 	}

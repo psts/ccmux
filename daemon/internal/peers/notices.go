@@ -9,12 +9,16 @@ import (
 // group except those named except (a session never hears about its own
 // joining). It reaches sessions on the bus now; one that starts later reads
 // the window's members at start instead. Returns how many it reached.
+//
+// An asleep runner session is present, since a message wakes it, but this
+// is not a message to it: like an asleep agent, it is left asleep and reads
+// the window's members when it next starts.
 func (s *Service) NotifyGroup(group, except, text string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for _, p := range s.peers {
-		if p.Name == except || !s.presentLocked(p) || s.groupOfLocked(p) != group {
+		if p.Name == except || !s.noticeableLocked(p) || s.groupOfLocked(p) != group {
 			continue
 		}
 		if err := s.deliverLocked(systemEvent(p, group, text)); err != nil {
@@ -24,6 +28,12 @@ func (s *Service) NotifyGroup(group, except, text string) int {
 		n++
 	}
 	return n
+}
+
+// noticeableLocked reports a session a group notice should reach: on the
+// bus now, and not a runner session that is asleep.
+func (s *Service) noticeableLocked(p *Peer) bool {
+	return s.presentLocked(p) && !s.asleepRunnerLocked(p)
 }
 
 // NotifyPane sends text, from the bus itself, to the session registered on

@@ -201,6 +201,18 @@ type Service struct {
 	// nil, or ErrNoPanePush from it, means the pane has no such server.
 	ReplyToPane func(paneID string, reply PaneReply) error
 
+	// RunnerPane says whether a pane is a runner session's (runnerpeer.go),
+	// with the bus name the daemon gives it, its workspace's repo folder and
+	// whether it is asleep.
+	// Asked under the bus lock: it must read memory only. RunnerInbox queues
+	// a bus message as a prompt for that pane's session, waking it when it
+	// is asleep; promptID names the prompt, and the same id queued twice
+	// runs once. ErrInboxClosed from it means the session has ended. Both
+	// are wired at startup when session runners are on; nil means there are
+	// none.
+	RunnerPane  func(paneID string) (RunnerInfo, bool)
+	RunnerInbox func(paneID, promptID, text, sender string) error
+
 	// SpawnTimeout is how long a spawned teammate has to register before its
 	// requester gets an "unreachable" notice. Exported for tests.
 	SpawnTimeout time.Duration

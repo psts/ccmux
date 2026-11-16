@@ -385,12 +385,20 @@ func (s *Service) deliverLocked(ev *model.PeerEvent) error {
 // (its shim's push goes to a client that ignores them), so the daemon types
 // the message into its TUI through the instance's server. Off the lock and
 // best-effort: the mailbox still holds the message for check_messages.
+//
+// A runner session's mailbox is drained into its inbox instead, whatever the
+// event: messages become prompts there, and the cursor moves past the rest
+// (runnerpeer.go).
 func (s *Service) pushToPaneLocked(ev *model.PeerEvent) {
-	if s.PushToPane == nil || ev.Kind != model.PeerEventMessage {
-		return
-	}
 	target := s.peers[ev.ToID]
 	if target == nil || target.PaneID == "" {
+		return
+	}
+	if s.runnerPeerLocked(target) {
+		go s.drainInbox(target.ID, target.PaneID)
+		return
+	}
+	if s.PushToPane == nil || ev.Kind != model.PeerEventMessage {
 		return
 	}
 	paneID, text := target.PaneID, pushText(ev)
@@ -456,31 +464,53 @@ func pushText(ev *model.PeerEvent) string {
 func (s *Service) Poll(peerID string) ([]*model.PeerEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.peers[peerID] == nil {
+	p := s.peers[peerID]
+	if p == nil {
 		return nil, fmt.Errorf("peer %s is not registered", peerID)
 	}
 	s.touchLocked(peerID)
-	cursor, err := s.st.PeerCursor(peerID)
+	evs, err := s.takeMailboxLocked(p)
 	if err != nil {
 		return nil, err
 	}
-	evs, err := s.st.PeerEventsAfter(peerID, cursor)
+	return s.withNoticesLocked(peerID, evs), nil
+}
+
+// takeMailboxLocked is the events past a peer's cursor, with the cursor moved
+// past them. A runner session gets none this way: its mailbox goes to its
+// inbox as prompts (runnerpeer.go), and handing the same messages to
+// check_messages would show the model each one twice. Asking does start a
+// drain, so a message still waiting is on its way.
+func (s *Service) takeMailboxLocked(p *Peer) ([]*model.PeerEvent, error) {
+	if s.runnerPeerLocked(p) {
+		go s.drainInbox(p.ID, p.PaneID)
+		return nil, nil
+	}
+	cursor, err := s.st.PeerCursor(p.ID)
 	if err != nil {
 		return nil, err
 	}
-	if len(evs) > 0 {
-		if err := s.st.AdvancePeerCursor(peerID, evs[len(evs)-1].Seq); err != nil {
-			return nil, err
-		}
+	evs, err := s.st.PeerEventsAfter(p.ID, cursor)
+	if err != nil || len(evs) == 0 {
+		return nil, err
 	}
+	if err := s.st.AdvancePeerCursor(p.ID, evs[len(evs)-1].Seq); err != nil {
+		return nil, err
+	}
+	return evs, nil
+}
+
+// withNoticesLocked adds a peer's waiting quiet notices to what a poll
+// returns, and marks them handed over.
+func (s *Service) withNoticesLocked(peerID string, evs []*model.PeerEvent) []*model.PeerEvent {
 	// Waiting quiet notices are handed over here too: asking is reading.
 	notices, err := s.st.PendingNotices(peerID)
 	if err != nil {
 		log.Printf("peers: quiet notices for %s unreadable (%v); they wait for the next delivery", peerID, err)
-		return evs, nil
+		return evs
 	}
 	if len(notices) == 0 {
-		return evs, nil
+		return evs
 	}
 	s.markNoticesLocked(peerID, notices[len(notices)-1].Seq)
 	// Handed over without their seq: it is older than what the shim has
@@ -488,7 +518,7 @@ func (s *Service) Poll(peerID string) ([]*model.PeerEvent, error) {
 	for _, n := range notices {
 		n.Seq = 0
 	}
-	return append(evs, notices...), nil
+	return append(evs, notices...)
 }
 
 // GroupHistory is the read-only viewer's message list, oldest first, with

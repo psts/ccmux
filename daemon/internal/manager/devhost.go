@@ -340,7 +340,7 @@ func (m *Manager) StartDevServer(wsID string) (*model.Workspace, error) {
 	pane.DevServer = true
 	pane.Title = "dev ▸ " + command
 	m.mu.Unlock()
-	_ = m.store.SavePane(pane)
+	_ = m.savePane(pane)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return m.Workspace(wsID), nil
 }
@@ -377,7 +377,7 @@ func (m *Manager) restartDevServer(wsID string, pane *model.Pane) (*model.Worksp
 	pane.Title = "dev ▸ " + command
 	saved := *pane
 	m.mu.Unlock()
-	_ = m.store.SavePane(&saved)
+	_ = m.savePane(&saved)
 	m.deliverStartup(ctrl, pane.ID, command, false)
 	m.events.publish(Event{Kind: "workspace-status", WorkspaceID: wsID})
 	return m.Workspace(wsID), nil

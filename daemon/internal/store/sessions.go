@@ -6,7 +6,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -52,15 +54,28 @@ const (
 )
 
 // RunnerSession is one row of sessions. Times are unix milliseconds.
+//
+// PaneID and WorkspaceID are the session's place in ccmux: the pane id the
+// bus, the alerts, the hooks and the LLM proxy know it by, and the repo
+// workspace it belongs to (manager/runnerpanes.go). Both are "" on a session
+// with no workspace, which runs but is on no bus and raises no alert.
+// Attention, AttentionReason and AttentionSince are that pane's attention
+// (model.Pane's), kept here so it outlives a daemon restart; the manager
+// writes them (SaveRunnerAttention), nothing else does.
 type RunnerSession struct {
-	ID        string `json:"id"`
-	Name      string `json:"name,omitempty"`
-	Cwd       string `json:"cwd"`
-	Model     string `json:"model,omitempty"`
-	Wanted    string `json:"wanted"`
-	Note      string `json:"note,omitempty"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	ID              string `json:"id"`
+	Name            string `json:"name,omitempty"`
+	Cwd             string `json:"cwd"`
+	Model           string `json:"model,omitempty"`
+	Wanted          string `json:"wanted"`
+	Note            string `json:"note,omitempty"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	PaneID          string `json:"paneId,omitempty"`
+	WorkspaceID     string `json:"workspaceId,omitempty"`
+	Attention       string `json:"attention,omitempty"`
+	AttentionReason string `json:"attentionReason,omitempty"`
+	AttentionSince  int64  `json:"attentionSince,omitempty"`
 }
 
 // InboxPrompt is one prompt waiting for, or delivered to, a session.
@@ -86,13 +101,60 @@ type SessionCard struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
-const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at"
+const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at,pane_id,workspace_id,attention,attention_reason,attention_since"
+
+// migrateSessionPanes gives a session row its pane: the pane id and the
+// workspace it belongs to, and that pane's attention. Strict, like the
+// panes columns in Open: the widened SELECT (sessionCols) needs every one,
+// and a column missing for any other reason (a locked or read-only
+// database) must say so here, not as "no such column" from a later read.
+// Rows from before this have no pane and stay off the bus.
+func migrateSessionPanes(db *sql.DB) error {
+	for _, col := range []string{
+		"pane_id TEXT DEFAULT ''", "workspace_id TEXT DEFAULT ''", "attention TEXT DEFAULT ''",
+		"attention_reason TEXT DEFAULT ''", "attention_since INTEGER DEFAULT 0",
+	} {
+		_, err := db.Exec(`ALTER TABLE sessions ADD COLUMN ` + col)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate sessions.%s: %w", strings.Fields(col)[0], err)
+		}
+	}
+	return nil
+}
 
 // AddRunnerSession inserts a new session row.
 func (s *SQLite) AddRunnerSession(r RunnerSession) error {
-	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?)`,
-		r.ID, r.Name, r.Cwd, r.Model, r.Wanted, r.Note, r.CreatedAt, r.UpdatedAt)
+	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.Name, r.Cwd, r.Model, r.Wanted, r.Note, r.CreatedAt, r.UpdatedAt,
+		r.PaneID, r.WorkspaceID, r.Attention, r.AttentionReason, r.AttentionSince)
 	return err
+}
+
+// RunnerPaneIDs is every pane id a session ever had, ended ones included:
+// a hook from a session that has ended still names its pane, and must not
+// be pinned on another pane in the same folder (manager.ResolvePane).
+func (s *SQLite) RunnerPaneIDs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT pane_id FROM sessions WHERE pane_id<>''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SaveRunnerAttention records a session pane's attention. A pane with no
+// row (the session was deleted under it) is ErrNoSession.
+func (s *SQLite) SaveRunnerAttention(paneID, attention, reason string, since int64) error {
+	return s.updateSession(`UPDATE sessions SET attention=?, attention_reason=?, attention_since=? WHERE pane_id=?`,
+		attention, reason, since, paneID)
 }
 
 // RunnerSession is one session by id, or nil when there is none.
@@ -118,7 +180,8 @@ func (s *SQLite) querySessions(q string, args ...any) ([]RunnerSession, error) {
 	var out []RunnerSession
 	for rows.Next() {
 		var r RunnerSession
-		if err := rows.Scan(&r.ID, &r.Name, &r.Cwd, &r.Model, &r.Wanted, &r.Note, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Cwd, &r.Model, &r.Wanted, &r.Note, &r.CreatedAt, &r.UpdatedAt,
+			&r.PaneID, &r.WorkspaceID, &r.Attention, &r.AttentionReason, &r.AttentionSince); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -179,6 +242,17 @@ VALUES (?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM session_inbox WHERE session_id=?
 		}
 	}
 	return tx.Commit()
+}
+
+// HasInboxPrompt reports whether a prompt with this id was ever queued,
+// delivered or not. The bus names each message's prompt after the message
+// (peers/runnerpeer.go) and hands it over again after a crash between its
+// two writes; the supervisor asks this first, so the second hand-over
+// queues nothing.
+func (s *SQLite) HasInboxPrompt(id string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM session_inbox WHERE id=?`, id).Scan(&n)
+	return n > 0, err
 }
 
 // UndeliveredPrompts is a session's prompts Claude does not have yet, in
