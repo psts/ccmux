@@ -415,6 +415,17 @@ test("the base's mcp.json reaches the SDK as servers, expanded from the environm
   assert.throws(() => makeAgent({ mcpFiles: ["/base/mcp.json"], readFile: denied }), /EACCES/);
 });
 
+test("a runner with a pane starts the shim as its pane's bus owner; one without a pane, and an agent pane, do not", () => {
+  const shim = (opts) => {
+    const { agent, sdk } = makeAgent({ peersCommand: "/bin/ccmux-peers", ...opts });
+    agent.ensureQuery();
+    return sdk.queries[0].options.mcpServers["claude-peers"];
+  };
+  assert.deepEqual(shim({ socket: "/run/s.sock" }).env, { CCMUX_BUS_OWNER: "1" });
+  assert.equal(shim({ socket: "/run/s.sock", env: { CCMUX_PANE_ID: "" } }).env, undefined, "no pane: nothing on the bus to own");
+  assert.equal(shim({}).env, undefined, "an agent pane's shim owns by its terminal");
+});
+
 test("an isolated start names its setting sources, every plugin folder and its skills; any other start sends none of them", () => {
   const { agent, sdk } = makeAgent({ pluginDirs: ["/base", "/plugins/kb"], settingSources: ["project"], skills: ["radar:scan"], peersCommand: "/bin/ccmux-peers" });
   agent.prompt("hi");
@@ -610,3 +621,13 @@ test("a runner numbers its events for a reader that reconnects", () => {
   assert.equal(agent.hello().protocol, 1);
 });
 
+test("a runner being stopped never says idle: nothing between turns, stopped when a turn was cut off", async () => {
+  const quiet = runnerAgent();
+  await quiet.agent.shutdown();
+  assert.deepEqual(quiet.signals, [], "between turns: what it last said stands, and a sleep is not a finished turn");
+  const mid = runnerAgent();
+  mid.agent.prompt("count to a thousand");
+  await mid.agent.shutdown();
+  assert.deepEqual(mid.signals, ["busy", "stopped"], "mid-turn: the turn is gone, and so is any card it had up");
+  assert.ok(mid.agent.abort.signal.aborted);
+});

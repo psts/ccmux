@@ -42,6 +42,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/push"
 	"ccmux.dev/ccmuxd/internal/repoowns"
+	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/internal/tmux"
@@ -83,6 +84,8 @@ func runDaemon() {
 	taskSlots := flag.Int("task-slots", 1, "queued tasks built at once in a ccmux window that has not picked its own number (the Tasks header sets one); 0 stops the task runner")
 	agentsMax := flag.Int("agents-max", 6, "how many agent instances may run at once on this daemon (0 = no cap); asleep instances do not count")
 	agentsModel := flag.String("agents-model", agent.DefaultModel, "model an agent instance runs on when its base pins none (opencode provider/model form; the anthropic provider rides the pane proxy)")
+	runnerPrefix := flag.String("runner-unit-prefix", runner.DefaultPrefix, "name of the systemd user unit template session runners start under (<prefix>@.service); a scratch daemon passes its own so the live daemon's template is never rewritten")
+	peersShimPath := flag.String("peers-shim", "", "ccmux-peers binary session runners load as their bus shim (default: the one beside this binary, else on the PATH)")
 	hubEnabled := flag.Bool("hub", false, "run hub-role services: aggregate every tag:ccmux host into one lens surface, own the peers bus + dev registrar + push (requires -tsnet)")
 	flag.Parse()
 
@@ -146,6 +149,7 @@ func runDaemon() {
 		mgr.SessionSink = peersSvc.NoteSession
 		mgr.SessionLiveFn = peersSvc.PaneHasLiveSession
 		mgr.OpenTasksForPane = peersSvc.OpenTaskCountForPane // agents that owe a delegator work are never put to sleep
+		peersSvc.RunnerPane = runnerPaneForBus(mgr)          // a runner session's peer is named and kept present by the daemon
 		peersSvc.Start(ctx)
 	}
 
@@ -159,6 +163,9 @@ func runDaemon() {
 	if err := mgr.MigrateViewsToWindows(); err != nil {
 		log.Printf("windows: migrating view rows failed (will retry next start): %v", err)
 	}
+	// Runner sessions' panes, before the hooks socket opens below: a hook
+	// naming one must find it rather than fall back to the folder.
+	loadRunnerPanes(mgr)
 	// Daemon-side git dashboard (branch/ahead-behind/changed files) for every
 	// live workspace — lenses render it; they can't read the daemon's repos.
 	mgr.StartGitStatus(5 * time.Second)
@@ -206,7 +213,7 @@ func runDaemon() {
 	agentStore := agent.NewStore(*agentsDir)
 	agentStore.AskNPMForLatestSDK() // the lenses' "agents on X, latest Y"
 	apiSrv.SetAgents(agentStore, *agentsMax)
-	wireRunners(ctx, st, agentStore, apiSrv)
+	wireRunners(ctx, runnerWiring{st: st, agents: agentStore, api: apiSrv, mgr: mgr, peers: peersSvc, prefix: *runnerPrefix, shim: *peersShimPath})
 	// Repo sessions write their own shared/<repo>/ folder without asking;
 	// joins after this are granted as they happen (window notices).
 	go apiSrv.GrantSharedFolders()
@@ -224,6 +231,7 @@ func runDaemon() {
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)
+		registerRunnerPeers(mgr, peersSvc) // after the bus has its inbox hook, so what waits is handed over
 		infoPath := filepath.Join(configDir(), "peers.json")
 		if err := peers.WriteDaemonInfo(infoPath, loopbackURL(*addr), peersSvc.PanelessToken()); err != nil {
 			log.Printf("peers daemon-info write failed (pane-less sessions won't connect): %v", err)
@@ -730,11 +738,24 @@ func removeComposeOverrides() {
 // the per-user answer where systemd provides it; macOS's TempDir is already
 // per-user, and the uid suffix keeps the invariant explicit either way.
 func runtimeDir() string {
+	if root := scratchRoot(); root != "" {
+		return filepath.Join(root, "run")
+	}
 	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
 		return filepath.Join(d, "ccmuxd")
 	}
 	return filepath.Join(os.TempDir(), fmt.Sprintf("ccmuxd-%d", os.Getuid()))
 }
+
+// scratchRoot is CCMUXD_ROOT: one folder a second daemon on this host (a
+// test's, a scratch one) keeps ALL of its own files under: its config
+// folder (the registry, peers.json, the peers secret), its runtime folder
+// (tmux.conf, the clipboard helper, the hooks and session sockets) and its
+// sessions' state. Without it those are the user's own folders, which the
+// live daemon is using: a second daemon there rewrites the live one's
+// tmux.conf, clipboard token and peers.json. The XDG variables could move
+// them too, but a session inherits those, and Claude Code reads them.
+func scratchRoot() string { return os.Getenv("CCMUXD_ROOT") }
 
 // defaultProjectsRoot is the daemon user's home — a server deployment narrows it
 // with -projects-root (e.g. /srv/projects).
@@ -767,6 +788,9 @@ func defaultWorktreesDir() string {
 }
 
 func configDir() string {
+	if root := scratchRoot(); root != "" {
+		return filepath.Join(root, "config")
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		dir = os.TempDir()

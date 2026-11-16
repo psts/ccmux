@@ -64,7 +64,8 @@ export class Agent {
     this.systemPrompt = o.systemPromptFile ? deps.readFile(o.systemPromptFile, "utf8") : "";
     // The base's MCP servers, same rule: read once, fail the start when the
     // file is unreadable. A base without the file has no servers.
-    this.mcp = mcpFromFiles(o.mcpFiles.map((f) => readIfPresent(deps.readFile, f)), deps.env, o.peersCommand);
+    // A runner with a pane starts the shim as its pane's bus owner (mcp.mjs).
+    this.mcp = mcpFromFiles(o.mcpFiles.map((f) => readIfPresent(deps.readFile, f)), deps.env, o.peersCommand, !!o.socket && !!deps.env.CCMUX_PANE_ID);
     // Said at start: the SDK's init line reports only "failed" for a server
     // whose url or token came out of an unset variable.
     for (const [name, vars] of Object.entries(this.mcp.unresolved)) {
@@ -566,10 +567,17 @@ export class Agent {
   }
 
   // shutdown ends the SDK session and the event streams; the caller exits.
+  // An agent pane says idle as it goes: its lifecycle clock reads that. A
+  // runner does not: to the daemon idle is a finished turn, which flashes
+  // and, a minute on, alerts, and a session put to sleep or restarted has
+  // finished nothing. One stopped between turns has nothing new to say
+  // (what it last said stands); one stopped mid-turn says so, since that
+  // turn, and any card it had up, is gone.
   async shutdown() {
     this.log("⚙ ending the session");
     this.abort.abort();
     for (const res of this.clients) res.end();
-    await this.signal("idle");
+    if (!this.turns) await this.signal("idle");
+    else if (this.busy) await this.signal("stopped");
   }
 }

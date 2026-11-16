@@ -114,7 +114,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// currentAttention snapshots the attention of every pane in every live workspace.
+// currentAttention snapshots the attention of every pane in every live
+// workspace, and of every runner session's pane whatever its workspace's
+// state: a runner runs in its own service, so its repo's terminal session
+// being closed says nothing about it. A lens that shows no runner sessions
+// keeps those entries and draws nothing for them (it flashes only the panes
+// its workspace list holds).
 func currentAttention(mgr *manager.Manager) []attnEntry {
 	var out []attnEntry
 	for _, ws := range mgr.List() {
@@ -125,6 +130,10 @@ func currentAttention(mgr *manager.Manager) []attnEntry {
 			out = append(out, attnEntry{Workspace: ws.ID, Pane: p.ID, State: p.Attention,
 				Reason: p.AttentionReason, Since: p.AttentionSince})
 		}
+	}
+	for _, p := range mgr.RunnerPanes() {
+		out = append(out, attnEntry{Workspace: p.WorkspaceID, Pane: p.ID, State: p.Attention,
+			Reason: p.AttentionReason, Since: p.AttentionSince})
 	}
 	return out
 }

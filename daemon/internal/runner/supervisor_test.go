@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -19,14 +20,16 @@ import (
 
 // fakeUnits is systemd as the supervisor sees it.
 type fakeUnits struct {
-	mu       sync.Mutex
-	active   map[string]bool
-	result   map[string]string // systemd's Result, by unit
-	onActive func(unit string) // runs at each Active call, before it answers
-	stopErr  error
-	calls    []string
-	onStart  func(unit string)
-	reloaded int
+	mu        sync.Mutex
+	active    map[string]bool
+	result    map[string]string // systemd's Result, by unit
+	onActive  func(unit string) // runs at each Active call, before it answers
+	stopErr   error
+	calls     []string
+	onStart   func(unit string)
+	onRestart func(unit string) // runs at each Restart call
+	activeErr error             // what Active fails with, when set
+	reloaded  int
 }
 
 func (f *fakeUnits) log(verb, unit string) {
@@ -53,8 +56,14 @@ func (f *fakeUnits) Stop(u string) error {
 	f.set(u, false)
 	return nil
 }
-func (f *fakeUnits) Restart(u string) error { f.log("restart", u); return nil }
-func (f *fakeUnits) Reload() error          { f.reloaded++; return nil }
+func (f *fakeUnits) Restart(u string) error {
+	f.log("restart", u)
+	if f.onRestart != nil {
+		f.onRestart(u)
+	}
+	return nil
+}
+func (f *fakeUnits) Reload() error { f.reloaded++; return nil }
 func (f *fakeUnits) ResetFailed(u string) error {
 	f.log("reset-failed", u)
 	f.mu.Lock()
@@ -73,6 +82,9 @@ func (f *fakeUnits) Active(u string) (bool, error) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.activeErr != nil {
+		return false, f.activeErr
+	}
 	return f.active[u], nil
 }
 func (f *fakeUnits) set(u string, v bool) { f.mu.Lock(); f.active[u] = v; f.mu.Unlock() }
@@ -98,7 +110,18 @@ type fakeRunner struct {
 	sent       []string        // prompt ids, in order
 	transcript map[string]bool // ids Claude has
 	cards      []map[string]string
+	questions  []map[string]any
+	replies    []string // "<path> <body>" of each card reply, in order
 	srv        *http.Server
+}
+
+// reply records a card reply and answers 200.
+func (r *fakeRunner) reply(w http.ResponseWriter, req *http.Request) {
+	body, _ := io.ReadAll(req.Body)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replies = append(r.replies, req.URL.Path+" "+string(body))
+	w.Write([]byte("{}"))
 }
 
 func (r *fakeRunner) handler() http.Handler {
@@ -134,7 +157,13 @@ func (r *fakeRunner) handler() http.Handler {
 		defer r.mu.Unlock()
 		json.NewEncoder(w).Encode(append([]map[string]string{}, r.cards...))
 	})
-	mux.HandleFunc("GET /question", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("[]")) })
+	mux.HandleFunc("GET /question", func(w http.ResponseWriter, _ *http.Request) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		json.NewEncoder(w).Encode(append([]map[string]any{}, r.questions...))
+	})
+	mux.HandleFunc("POST /permission/{id}/reply", r.reply)
+	mux.HandleFunc("POST /question/{id}/reply", r.reply)
 	return mux
 }
 
@@ -188,6 +217,7 @@ func newRig(t *testing.T) *rig {
 	r.sup = New(st, r.units, r.paths, cfg)
 	r.clock = &stepClock{at: time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)}
 	r.sup.now = r.clock.now
+	r.sup.soon = func(string) {} // the tests reconcile by hand, in a known order
 	r.units.onStart = r.bootRunner
 	return r
 }
@@ -219,7 +249,7 @@ func (r *rig) reconcile() { r.sup.Reconcile(context.Background()) }
 
 func TestCreateWritesTheSpecAndStartsTheUnit(t *testing.T) {
 	r := newRig(t)
-	sess, err := r.sup.Create("/r/app", "", "opus")
+	sess, err := r.sup.Create(NewSession{Cwd: "/r/app", Model: "opus"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +273,7 @@ func TestCreateWritesTheSpecAndStartsTheUnit(t *testing.T) {
 
 func TestAPromptIsSentUntilTheTranscriptHasIt(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	id, err := r.sup.Send(sess.ID, "fix the build", "you")
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +300,7 @@ func TestAPromptIsSentUntilTheTranscriptHasIt(t *testing.T) {
 
 func TestACrashedRunnerIsStartedAgainAndGetsWhatItLost(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	id, _ := r.sup.Send(sess.ID, "commit it", "you")
 	r.reconcile() // sent, but the runner dies before Claude writes it down
 	r.units.set(r.paths.Unit(sess.ID), false)
@@ -286,7 +316,7 @@ func TestACrashedRunnerIsStartedAgainAndGetsWhatItLost(t *testing.T) {
 
 func TestANewSupervisorPicksUpWhereTheLastStopped(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	id, _ := r.sup.Send(sess.ID, "go on", "you")
 	// The daemon restarts: a new supervisor over the same rows, and the
 	// runner kept running all along.
@@ -302,7 +332,7 @@ func TestANewSupervisorPicksUpWhereTheLastStopped(t *testing.T) {
 
 func TestCardsExpireWithTheirRunnerAndCloseWhenAnswered(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	fr := r.run[sess.ID]
 	fr.cards = []map[string]string{{"id": "abcde", "permission": "Bash"}, {"id": "fghij", "permission": "Edit"}}
 	r.reconcile()
@@ -322,7 +352,7 @@ func TestCardsExpireWithTheirRunnerAndCloseWhenAnswered(t *testing.T) {
 
 func TestAnOldRunnerIsRestartedBetweenTurns(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	fr := r.run[sess.ID]
 	fr.protocol, fr.busy = Protocol+1, true
 	r.reconcile()
@@ -338,8 +368,8 @@ func TestAnOldRunnerIsRestartedBetweenTurns(t *testing.T) {
 
 func TestAsleepAndDoneSessionsAreStopped(t *testing.T) {
 	r := newRig(t)
-	a, _ := r.sup.Create("/r/a", "", "")
-	b, _ := r.sup.Create("/r/b", "", "")
+	a, _ := r.sup.Create(NewSession{Cwd: "/r/a"})
+	b, _ := r.sup.Create(NewSession{Cwd: "/r/b"})
 	if err := r.sup.SetWanted(a.ID, store.SessionAsleep); err != nil {
 		t.Fatal(err)
 	}
@@ -390,8 +420,8 @@ func TestTemplateIsWrittenOnceAndReloaded(t *testing.T) {
 
 func TestASessionPastTheStartLimitIsPutToSleepAndAPromptWakesIt(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
-	other, _ := r.sup.Create("/r/api", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	other, _ := r.sup.Create(NewSession{Cwd: "/r/api"})
 	unit := r.paths.Unit(sess.ID)
 	r.units.set(unit, false)
 	r.units.result[unit] = "start-limit-hit"
@@ -426,7 +456,7 @@ func TestAFailedFirstStartStillHandsBackTheSession(t *testing.T) {
 		}
 		return "/sc/serve.mjs", "/bin/node", nil
 	}
-	sess, err := r.sup.Create("/r/app", "", "")
+	sess, err := r.sup.Create(NewSession{Cwd: "/r/app"})
 	if err != nil || sess.ID == "" || !strings.Contains(sess.Note, "registry unreachable") {
 		t.Fatalf("the caller gets the id and why it is not up yet: %+v %v", sess, err)
 	}
@@ -445,8 +475,8 @@ func TestAFailedFirstStartStillHandsBackTheSession(t *testing.T) {
 // the two is seen, because each step reads its row fresh.
 func TestAStopDuringAReconcilePassIsNotUndone(t *testing.T) {
 	r := newRig(t)
-	a, _ := r.sup.Create("/r/a", "", "")
-	b, _ := r.sup.Create("/r/b", "", "")
+	a, _ := r.sup.Create(NewSession{Cwd: "/r/a"})
+	b, _ := r.sup.Create(NewSession{Cwd: "/r/b"})
 	r.units.set(r.paths.Unit(b.ID), false) // b's runner died: this pass would start it
 	ended := false
 	r.units.onActive = func(unit string) {
@@ -468,7 +498,7 @@ func TestAStopDuringAReconcilePassIsNotUndone(t *testing.T) {
 
 func TestDoneIsFinalAndOnlyAfterTheStop(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	r.units.stopErr = errors.New("bus timeout")
 	if err := r.sup.SetWanted(sess.ID, store.SessionDone); err == nil {
 		t.Fatal("a failed stop is an error")
@@ -490,9 +520,9 @@ func TestDoneIsFinalAndOnlyAfterTheStop(t *testing.T) {
 
 func TestStartsThatFailBeforeSystemdAreCountedAndCapped(t *testing.T) {
 	r := newRig(t)
-	ok, _ := r.sup.Create("/r/ok", "", "")
+	ok, _ := r.sup.Create(NewSession{Cwd: "/r/ok"})
 	r.sup.cfg.Sidecar = func() (string, string, error) { return "", "", errors.New("no node on this host") }
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	for i := 0; i < startLimitBurst; i++ {
 		r.reconcile()
 	}
@@ -518,7 +548,7 @@ func (r *rig) failSidecar() {
 func TestAWakeAfterTheFailureCapGivesAFreshCount(t *testing.T) {
 	r := newRig(t)
 	r.failSidecar()
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	for i := 0; i < startLimitBurst; i++ {
 		r.reconcile()
 	}
@@ -536,7 +566,7 @@ func TestAWakeAfterTheFailureCapGivesAFreshCount(t *testing.T) {
 func TestOldFailuresDropOutOfTheWindow(t *testing.T) {
 	r := newRig(t)
 	r.failSidecar()
-	sess, _ := r.sup.Create("/r/app", "", "") // failure 1
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"}) // failure 1
 	for i := 0; i < 3; i++ {
 		r.reconcile() // failures 2 to 4
 	}
@@ -557,7 +587,7 @@ func TestARunnerThatCameUpStartsTheCountOver(t *testing.T) {
 		}
 		return "/sc/serve.mjs", "/bin/node", nil
 	}
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	for i := 0; i < 3; i++ {
 		r.reconcile() // four failures in all
 	}
@@ -574,7 +604,7 @@ func TestARunnerThatCameUpStartsTheCountOver(t *testing.T) {
 
 func TestAnEndedSessionTakesNoModel(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "opus")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app", Model: "opus"})
 	r.sup.SetWanted(sess.ID, store.SessionDone)
 	if err := r.sup.SetModel(sess.ID, "haiku"); !errors.Is(err, ErrSessionDone) {
 		t.Fatalf("409, like a prompt to it: %v", err)
@@ -585,7 +615,7 @@ func TestAnEndedSessionTakesNoModel(t *testing.T) {
 // for the pass's step, then stops what it started: the lock, not luck.
 func TestEndingASessionMidStepWaitsForTheStep(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	unit := r.paths.Unit(sess.ID)
 	r.units.set(unit, false) // the pass will start it again
 	done := make(chan error, 1)
@@ -619,7 +649,7 @@ func (storeDown) AddInboxPromptAndWake(store.InboxPrompt, bool, int64) error {
 
 func TestSendIsAllOrNothing(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	r.sup.SetWanted(sess.ID, store.SessionAsleep)
 	r.sup.st = storeDown{r.st}
 	if id, err := r.sup.Send(sess.ID, "hello", "you"); err == nil || id != "" {
@@ -641,7 +671,7 @@ func TestSendIsAllOrNothing(t *testing.T) {
 
 func TestASessionPutToSleepStaysAsleep(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	r.sup.Send(sess.ID, "work", "you")
 	r.sup.SetWanted(sess.ID, store.SessionAsleep)
 	for i := 0; i < 3; i++ {
@@ -657,7 +687,7 @@ func TestASessionPutToSleepStaysAsleep(t *testing.T) {
 
 func TestRestartNowAppliesTheModel(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "opus")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app", Model: "opus"})
 	r.sup.SetModel(sess.ID, "haiku")
 	if err := r.sup.Restart(sess.ID); err != nil {
 		t.Fatal(err)
@@ -666,7 +696,7 @@ func TestRestartNowAppliesTheModel(t *testing.T) {
 	if r.units.count("restart "+r.paths.Unit(sess.ID)) != 1 || !strings.Contains(strings.Join(sp.Args, " "), "--model haiku") {
 		t.Fatalf("restarted on the new model: %v %v", r.units.calls, sp.Args)
 	}
-	other, _ := r.sup.Create("/r/quiet", "", "")
+	other, _ := r.sup.Create(NewSession{Cwd: "/r/quiet"})
 	r.sup.SetWanted(other.ID, store.SessionAsleep)
 	if err := r.sup.Restart(other.ID); err != nil {
 		t.Fatal(err)
@@ -682,7 +712,7 @@ func TestRestartNowAppliesTheModel(t *testing.T) {
 
 func TestAModelIsSavedForTheNextStartAndNeverSentLive(t *testing.T) {
 	r := newRig(t)
-	sess, _ := r.sup.Create("/r/app", "", "opus")
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app", Model: "opus"})
 	if err := r.sup.SetModel(sess.ID, "haiku"); err != nil {
 		t.Fatal(err)
 	}

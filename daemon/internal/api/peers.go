@@ -20,6 +20,7 @@ import (
 func (s *Server) EnablePeers(svc *peers.Service) {
 	s.peersSvc = svc
 	s.wirePeersAgents()
+	s.wirePeersRunners()
 }
 
 func (s *Server) peersEnabled(w http.ResponseWriter) bool {

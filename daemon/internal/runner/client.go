@@ -124,3 +124,55 @@ func (c *Client) Cards(ctx context.Context) (map[string][]Card, error) {
 	}
 	return out, nil
 }
+
+// CardReply answers one pending card: Kind "permission" with Allow, or
+// Kind "question" with Answer, the one text put under every question on
+// the card.
+type CardReply struct {
+	Kind   string
+	ID     string
+	Allow  bool
+	Answer string
+}
+
+// ReplyCard answers a pending card. answered is false when the runner
+// holds no such card any more (answered elsewhere first, or it died with
+// an earlier runner process): the first answer wins, and that is not an
+// error. A permission is allowed once, never as a rule.
+func (c *Client) ReplyCard(ctx context.Context, r CardReply) (answered bool, err error) {
+	pending, err := c.Cards(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, card := range pending[r.Kind] {
+		if card.ID != r.ID {
+			continue
+		}
+		path, body := "/permission/"+r.ID+"/reply", any(map[string]string{"reply": permissionReply(r.Allow)})
+		if r.Kind == "question" {
+			path, body = "/question/"+r.ID+"/reply", map[string]any{"answers": answersFor(card.Body, r.Answer)}
+		}
+		return true, c.do(ctx, http.MethodPost, path, body, nil)
+	}
+	return false, nil
+}
+
+func permissionReply(allow bool) string {
+	if allow {
+		return "once"
+	}
+	return "reject"
+}
+
+// answersFor puts the one answer under each question the card asks.
+func answersFor(card json.RawMessage, answer string) [][]string {
+	var head struct {
+		Questions []json.RawMessage `json:"questions"`
+	}
+	_ = json.Unmarshal(card, &head)
+	out := make([][]string, max(len(head.Questions), 1))
+	for i := range out {
+		out[i] = []string{answer}
+	}
+	return out
+}

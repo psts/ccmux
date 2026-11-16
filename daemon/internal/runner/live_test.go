@@ -166,7 +166,7 @@ func (l *live) delivered(sessionID string) bool {
 func TestLiveFailureTable(t *testing.T) {
 	l := newLive(t)
 	work := t.TempDir()
-	sess, err := l.sup.Create(work, "live", "haiku")
+	sess, err := l.sup.Create(NewSession{Cwd: work, Name: "live", Model: "haiku"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,4 +275,7 @@ func TestLiveFailureTable(t *testing.T) {
 			t.Fatal("still running")
 		}
 	})
+
+	// Its own scratch daemon and its own unit template (live_bus_test.go).
+	t.Run("a bus message reaches a session as a prompt, wakes it asleep, and its reply comes back", liveBusRow)
 }

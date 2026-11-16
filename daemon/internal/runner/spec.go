@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -62,6 +63,16 @@ type Config struct {
 	Claude string
 	// Env is the environment a runner starts with, before the session's own.
 	Env func() []string
+	// SessionEnv is one session's own variables: its pane's identity and
+	// the daemon's addresses, the set a tmux pane's shell is given
+	// (manager.RunnerEnv). They replace the same names in Env. Nil, or a
+	// session with no pane, adds none.
+	SessionEnv func(store.RunnerSession) map[string]string
+	// Peers is the bus shim (ccmux-peers) a session with a pane loads, as
+	// its claude-peers MCP server in place of the one the user's own config
+	// names: that one is whatever was last installed, and it joins the bus
+	// only from a terminal. "" leaves the user's config to decide.
+	Peers string
 }
 
 // settingSources loads the user's own settings: their plugins, hooks,
@@ -84,7 +95,10 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if sess.Model != "" {
 		args = append(args, "--model", sess.Model)
 	}
-	return Spec{Node: node, Script: script, Args: args, Dir: sess.Cwd, Env: c.env()}, nil
+	if c.Peers != "" && sess.PaneID != "" {
+		args = append(args, "--peers-command", c.Peers)
+	}
+	return Spec{Node: node, Script: script, Args: args, Dir: sess.Cwd, Env: c.env(sess)}, nil
 }
 
 func sessionLabel(sess store.RunnerSession) string {
@@ -95,20 +109,45 @@ func sessionLabel(sess store.RunnerSession) string {
 }
 
 // dropEnv are variables of the daemon's own process that must not reach a
-// session: a tmux pane's identity, and Claude Code's markers of running
-// inside another Claude.
-var dropEnv = []string{"CLAUDECODE=", "CLAUDE_CODE_ENTRYPOINT=", "CCMUX_PANE_ID=", "CCMUX_PANE_TOKEN=", "CCMUX_CMD_FILE=", "TMUX=", "TMUX_PANE="}
+// session: a tmux pane's identity and the addresses that go with it (the
+// daemon, its hooks socket, its LLM proxy route), the bus shim's switches,
+// and Claude Code's markers of running inside another Claude. A daemon
+// started from a ccmux pane (a test, a scratch daemon) carries all of them,
+// and a session that kept them would report to, and bill, that pane. The
+// session's own values are set after (Config.SessionEnv).
+var dropEnv = []string{
+	"CLAUDECODE=", "CLAUDE_CODE_ENTRYPOINT=", "TMUX=", "TMUX_PANE=",
+	"CCMUX_PANE_ID=", "CCMUX_PANE_TOKEN=", "CCMUX_CMD_FILE=", "CCMUX_DAEMON_URL=", "CCMUX_HOOKS_SOCK=",
+	"CCMUX_PEERS_URL=", "CCMUX_PEERS_CHANNEL=", "CCMUX_BUS_OWNER=", "CLAUDE_PEERS_NAME=",
+	"ANTHROPIC_BASE_URL=", "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=", "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=",
+	"OPENCODE_CONFIG_CONTENT=", "ZDOTDIR=",
+}
 
-func (c Config) env() []string {
+// env is a session's whole environment: the daemon's, without what must
+// not leak, then the session's own, each name once.
+func (c Config) env(sess store.RunnerSession) []string {
 	var base []string
 	if c.Env != nil {
 		base = c.Env()
 	}
-	out := make([]string, 0, len(base))
+	var own map[string]string
+	if c.SessionEnv != nil && sess.PaneID != "" {
+		own = c.SessionEnv(sess)
+	}
+	out := make([]string, 0, len(base)+len(own))
 	for _, kv := range base {
-		if !dropped(kv) {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, replaced := own[name]; !replaced && !dropped(kv) {
 			out = append(out, kv)
 		}
+	}
+	names := make([]string, 0, len(own))
+	for name := range own {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		out = append(out, name+"="+own[name])
 	}
 	return out
 }

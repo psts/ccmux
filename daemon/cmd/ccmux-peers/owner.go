@@ -26,10 +26,32 @@ func ownsBus(hasControllingTTY bool, fgPgrp, myPgrp, parentPgrp int) bool {
 	return fgPgrp == myPgrp || fgPgrp == parentPgrp
 }
 
+// ownsRunnerBus is the rule for a session with no terminal at all: a runner
+// session (the daemon's internal/runner), a Claude on the Agent SDK under
+// systemd. Its runner starts this shim itself, as the session's claude-peers
+// server, with CCMUX_BUS_OWNER=1 in THIS process's environment only (the MCP
+// server entry's own env; claudeserve/mcp.mjs). That is what a child does not
+// inherit: a `claude -p` the session starts gets the session's environment,
+// pane id and token included, but loads its shim from the user's config,
+// where nothing sets the mark, so it stays as dormant as a sub-agent's.
+//
+// The mark counts only with the whole pane identity beside it. Missing any of
+// the three, startTarget falls back to registering pane-less from the
+// daemon-info file, and a marked pane-less shim would join the bus under the
+// plain repo name: the name the repo's own tmux session answers to.
+func ownsRunnerBus(env func(string) string) bool {
+	return env("CCMUX_BUS_OWNER") == "1" && env("CCMUX_PANE_ID") != "" &&
+		env("CCMUX_DAEMON_URL") != "" && env("CCMUX_PANE_TOKEN") != ""
+}
+
 // isBusOwner probes the live terminal state and applies ownsBus. Opening
 // /dev/tty fails with ENXIO when there is no controlling terminal, which is the
-// detached sub-agent/spare (and headless non-interactive) case.
+// detached sub-agent/spare (and headless non-interactive) case. A runner
+// session's own shim owns its pane's inbox with no terminal (ownsRunnerBus).
 func isBusOwner() bool {
+	if ownsRunnerBus(os.Getenv) {
+		return true
+	}
 	tty, err := os.Open("/dev/tty")
 	if err != nil {
 		return false

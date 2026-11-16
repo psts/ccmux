@@ -2,7 +2,7 @@
 // servers and the allow rules for their tools.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { expand, mcpFromFiles, mcpFromNeutral, PEERS_RULE } from "./mcp.mjs";
+import { BUS_OWNER, expand, mcpFromFiles, mcpFromNeutral, PEERS_RULE } from "./mcp.mjs";
 
 test("${VAR} expands from the environment, an unset one stays as written, nothing else is a reference", () => {
   const env = { X_MCP_URL: "http://100.100.67.87:8931/mcp", EMPTY: "" };
@@ -60,4 +60,13 @@ test("several files merge, a later one winning a name; the peers shim is added o
   assert.deepEqual(m.unresolved, { door: ["T"] });
   assert.deepEqual(mcpFromFiles([base], {}, undefined).servers, { kb: { type: "stdio", command: "kb-old", args: [] } }, "no command: the user's config brings the shim");
   assert.deepEqual(mcpFromFiles([], {}, ""), { servers: {}, allow: [PEERS_RULE], unresolved: {} });
+});
+
+test("a session runner's shim is marked as its pane's bus owner, in the shim's own environment only", () => {
+  const runner = mcpFromFiles([], {}, "/bin/ccmux-peers", true);
+  assert.deepEqual(runner.servers["claude-peers"], { type: "stdio", command: "/bin/ccmux-peers", args: [], env: { CCMUX_BUS_OWNER: "1" } });
+  runner.servers["claude-peers"].env.CCMUX_BUS_OWNER = "changed";
+  assert.deepEqual(BUS_OWNER, { CCMUX_BUS_OWNER: "1" }, "each entry gets its own copy");
+  assert.equal(mcpFromFiles([], {}, "/bin/ccmux-peers").servers["claude-peers"].env, undefined, "an agent pane's shim finds its terminal: no mark");
+  assert.deepEqual(mcpFromFiles([], {}, "", true).servers, {}, "no command, no entry to mark");
 });

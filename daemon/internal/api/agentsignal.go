@@ -24,6 +24,9 @@ import (
 //	needs-input  either, unsaid (an agent    → needs_input, no reason, waiting
 //	             started before the two above existed keeps sending this)
 //	replied      that dialog was answered    → running, busy
+//	stopped      a session runner was stopped → idle (claims nothing): the turn
+//	             mid-turn (put to sleep,       was cut off, not finished, and a
+//	             restarted)                    card it had up died with it
 //
 // The lifecycle state comes from the attention through agentStateFor, the
 // same rule a Claude pane's hooks go through. Waiting takes no pushed
@@ -42,7 +45,7 @@ func (s *Server) agentSignal(w http.ResponseWriter, r *http.Request) {
 	}
 	out, ok := agentSignals[req.State]
 	if !ok {
-		writeError(w, http.StatusBadRequest, `state must be one of "busy", "idle", "permission", "question", "needs-input", "replied"`)
+		writeError(w, http.StatusBadRequest, `state must be one of "busy", "idle", "permission", "question", "needs-input", "replied", "stopped"`)
 		return
 	}
 	// One manager call, so the busy clock gets a single write: the old two
@@ -69,4 +72,5 @@ var agentSignals = map[string]agentSignalOutcome{
 	"permission":  {model.AttentionNeedsInput, model.ReasonPermission},
 	"question":    {model.AttentionNeedsInput, model.ReasonQuestion},
 	"needs-input": {model.AttentionNeedsInput, model.ReasonNone},
+	"stopped":     {model.AttentionIdle, model.ReasonNone},
 }

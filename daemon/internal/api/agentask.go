@@ -94,7 +94,13 @@ func decodeAsk(w http.ResponseWriter, r *http.Request) (askReq, bool) {
 // ErrNoPanePush. Both paths list the pending cards first: a card the chat
 // answered already, or that died with a restarted sidecar, is gone from
 // the list, and the reply is dropped with one log line. First answer wins.
+//
+// A runner session's card is answered through its runner's socket
+// (replyToRunner), by the same first-answer-wins rule.
 func (s *Server) replyToAgentPane(paneID string, reply peers.PaneReply) error {
+	if info, ok := s.mgr.RunnerPane(paneID); ok && s.runners != nil {
+		return s.replyToRunner(paneID, info.SessionID, reply)
+	}
 	p := s.mgr.PaneByID(paneID)
 	if p == nil {
 		return peers.ErrNoPanePush

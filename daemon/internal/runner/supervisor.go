@@ -22,6 +22,7 @@ type Store interface {
 	SetRunnerSessionModel(id, model string, now int64) error
 	SetRunnerSessionNote(id, note string, now int64) error
 	AddInboxPromptAndWake(p store.InboxPrompt, wake bool, now int64) error
+	HasInboxPrompt(id string) (bool, error)
 	UndeliveredPrompts(sessionID string) ([]store.InboxPrompt, error)
 	MarkPromptsDelivered(ids []string, now int64) error
 	UpsertSessionCard(store.SessionCard) error
@@ -48,11 +49,38 @@ type Supervisor struct {
 	loop  sync.Mutex // one reconcile pass at a time
 	locks sync.Map   // session id → *sync.Mutex
 	fails failures   // starts that failed before systemd saw them
+	// soon tends one session off the caller's goroutine, right after a
+	// prompt was queued for it (tendSoon); a test swaps it for nothing and
+	// reconciles by hand.
+	soon func(sessionID string)
+
+	// Changed hears a session's row each time what it wants changes (made,
+	// woken, put to sleep, ended), with the row as it now is. The daemon
+	// keeps the session's pane in step with it (manager/runnerpanes.go).
+	// Called with the session's lock held: it must not call back in. Set
+	// before Run; nil hears nothing.
+	Changed func(store.RunnerSession)
 }
 
 // New makes a supervisor. Run starts its loop.
 func New(st Store, units Units, paths Paths, cfg Config) *Supervisor {
-	return &Supervisor{st: st, units: units, paths: paths, cfg: cfg, dial: Dial, now: time.Now, every: 10 * time.Second, kick: make(chan struct{}, 1), fails: failures{seen: map[string][]time.Time{}}}
+	s := &Supervisor{st: st, units: units, paths: paths, cfg: cfg, dial: Dial, now: time.Now, every: 10 * time.Second, kick: make(chan struct{}, 1), fails: failures{seen: map[string][]time.Time{}}}
+	s.soon = s.tendSoon
+	return s
+}
+
+// announce tells Changed what a session's row now says. A row that cannot
+// be read is logged: the next change, or the daemon's next start, says it.
+func (s *Supervisor) announce(sessionID string) {
+	if s.Changed == nil {
+		return
+	}
+	sess, err := s.row(sessionID)
+	if err != nil {
+		log.Printf("runner: session %s: its change was not passed on: %v", short(sessionID), err)
+		return
+	}
+	s.Changed(*sess)
 }
 
 // lock takes one session's lock and returns its release.
@@ -97,17 +125,31 @@ func (s *Supervisor) Kick() {
 	}
 }
 
+// NewSession is what a session is made from. WorkspaceID is the repo
+// workspace it belongs to; with one, the session gets a pane id, which is
+// what puts it on the bus and behind the alerts, the hooks and the proxy.
+// Without one it runs alone, as every session did before panes.
+type NewSession struct {
+	Cwd, Name, Model, WorkspaceID string
+}
+
 // Create records a new session and starts it. Once the row exists the
 // session is the caller's: a first start that fails is said in its note
 // and tried again by reconcile (up to the start limit), never reported as
 // a failed create the caller would retry into a second session.
-func (s *Supervisor) Create(cwd, name, model string) (store.RunnerSession, error) {
+func (s *Supervisor) Create(n NewSession) (store.RunnerSession, error) {
 	now := s.millis()
-	sess := store.RunnerSession{ID: uuid.NewString(), Name: name, Cwd: cwd, Model: model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now}
+	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID}
+	if n.WorkspaceID != "" {
+		sess.PaneID = uuid.NewString()
+	}
 	defer s.lock(sess.ID)()
 	if err := s.st.AddRunnerSession(sess); err != nil {
 		return sess, err
 	}
+	// Before the start: the runner's first hook and its bus registration
+	// name the pane, which must be there to take them.
+	s.announce(sess.ID)
 	if err := s.start(sess); err != nil {
 		sess.Note = s.startFailed(sess, err)
 	}
@@ -119,6 +161,15 @@ func (s *Supervisor) Create(cwd, name, model string) (store.RunnerSession, error
 // either both happened or neither did: an error means nothing was queued
 // and sending again is safe.
 func (s *Supervisor) Send(sessionID, text, sender string) (string, error) {
+	return s.SendAs(sessionID, uuid.NewString(), text, sender)
+}
+
+// SendAs is Send for a caller that names the prompt itself (a UUID, since
+// it becomes the prompt's id in the transcript). The same id sent again
+// queues nothing and is not an error: the bus names a message's prompt
+// after the message and hands it over again after a crash, and it must
+// run once.
+func (s *Supervisor) SendAs(sessionID, promptID, text, sender string) (string, error) {
 	defer s.lock(sessionID)()
 	sess, err := s.row(sessionID)
 	if err != nil {
@@ -127,16 +178,36 @@ func (s *Supervisor) Send(sessionID, text, sender string) (string, error) {
 	if sess.Wanted == store.SessionDone {
 		return "", ErrSessionDone
 	}
+	if had, err := s.st.HasInboxPrompt(promptID); err != nil || had {
+		return promptID, err
+	}
 	asleep := sess.Wanted == store.SessionAsleep
-	p := store.InboxPrompt{ID: uuid.NewString(), SessionID: sessionID, Text: text, Sender: sender, CreatedAt: s.millis()}
+	p := store.InboxPrompt{ID: promptID, SessionID: sessionID, Text: text, Sender: sender, CreatedAt: s.millis()}
 	if err := s.st.AddInboxPromptAndWake(p, asleep, s.millis()); err != nil {
 		return "", err
 	}
 	if asleep {
 		s.freshStarts(sessionID)
+		s.announce(sessionID)
 	}
 	s.Kick()
+	s.soon(sessionID)
 	return p.ID, nil
+}
+
+// tendSoon delivers one session's inbox now, on its own goroutine, rather
+// than when the reconcile pass reaches it: the pass handles every session
+// in turn, and one runner slow to answer would hold up a prompt for
+// another. It waits for the session's lock like any other change; a
+// session that is not up yet is left to the pass, which starts it.
+func (s *Supervisor) tendSoon(sessionID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.reconcileID(ctx, sessionID); err != nil {
+			log.Printf("runner: session %s: %v", short(sessionID), err)
+		}
+	}()
 }
 
 // SetWanted sets what a session should be at and acts on it soon. Ending
@@ -155,23 +226,25 @@ func (s *Supervisor) SetWanted(sessionID, wanted string) error {
 		}
 		return ErrSessionDone
 	}
+	if err := s.want(sessionID, wanted); err != nil {
+		return err
+	}
+	s.announce(sessionID)
+	s.Kick()
+	return nil
+}
+
+// want is SetWanted's change itself, for a session that has not ended.
+func (s *Supervisor) want(sessionID, wanted string) error {
 	switch wanted {
 	case store.SessionDone:
 		if err := s.units.Stop(s.paths.Unit(sessionID)); err != nil {
 			return err
 		}
-		return s.st.SetRunnerSessionWanted(sessionID, store.SessionDone, s.millis())
 	case store.SessionRunning:
-		if err := s.wake(sessionID); err != nil {
-			return err
-		}
-	default:
-		if err := s.st.SetRunnerSessionWanted(sessionID, wanted, s.millis()); err != nil {
-			return err
-		}
+		return s.wake(sessionID)
 	}
-	s.Kick()
-	return nil
+	return s.st.SetRunnerSessionWanted(sessionID, wanted, s.millis())
 }
 
 // wake makes a session want to run with a fresh count of starts: systemd's
@@ -222,7 +295,9 @@ func (s *Supervisor) SetModel(sessionID, model string) error {
 // Restart starts a session again now, from its row as it is (its model,
 // most of all), and resumes its conversation. A turn that was running is
 // cut off, and the resumed session is told so and checks before redoing
-// anything. An asleep session is woken, which starts it the same way.
+// anything. An asleep session is woken, which starts it the same way. A
+// session whose unit is down is started once: systemd's restart starts a
+// stopped unit, so nothing starts it first.
 func (s *Supervisor) Restart(sessionID string) error {
 	defer s.lock(sessionID)()
 	sess, err := s.row(sessionID)
@@ -236,13 +311,44 @@ func (s *Supervisor) Restart(sessionID string) error {
 		if err := s.wake(sessionID); err != nil {
 			return err
 		}
+		s.announce(sessionID)
 		s.Kick()
 		return nil
 	}
-	if err := s.start(*sess); err != nil { // the spec, fresh from the row
-		return err
+	return s.restart(*sess)
+}
+
+// Liveness says where a session is: running (it should run and its unit is
+// up or coming up), asleep (put to sleep, or it should run and its unit is
+// down until the next reconcile starts it), or done (ended, or no such
+// session). The row says what should be, systemd what is. When either
+// cannot be asked it is an error, never an answer: a registry that is
+// locked for a moment must not read as a session that has ended.
+func (s *Supervisor) Liveness(sessionID string) (string, error) {
+	sess, err := s.row(sessionID)
+	switch {
+	case errors.Is(err, store.ErrNoSession):
+		return store.SessionDone, nil
+	case err != nil:
+		return "", err
+	case sess.Wanted != store.SessionRunning:
+		return sess.Wanted, nil
 	}
-	return s.units.Restart(s.paths.Unit(sessionID))
+	active, err := s.units.Active(s.paths.Unit(sessionID))
+	if err != nil {
+		return "", err
+	}
+	if !active {
+		return store.SessionAsleep, nil
+	}
+	return store.SessionRunning, nil
+}
+
+// ReplyCard answers a card a session's runner has pending (Client.ReplyCard).
+// It changes no row, so it takes no lock: the runner settles the card, and
+// the next reconcile records that.
+func (s *Supervisor) ReplyCard(ctx context.Context, sessionID string, r CardReply) (bool, error) {
+	return s.dial(s.paths.Socket(sessionID)).ReplyCard(ctx, r)
 }
 
 // ErrSessionDone is a prompt for a session that has ended: nothing would
@@ -349,20 +455,37 @@ func (s *Supervisor) park(id, text string) error {
 		return err
 	}
 	s.note(id, text)
+	s.announce(id)
 	return nil
 }
 
-// start writes the session's spec fresh (the sidecar or model may have
-// changed) and starts its unit. The runner resumes its transcript itself.
-func (s *Supervisor) start(sess store.RunnerSession) error {
+// writeSpec writes the session's spec fresh from its row (the sidecar, the
+// model or the session's own environment may have changed).
+func (s *Supervisor) writeSpec(sess store.RunnerSession) error {
 	sp, err := s.cfg.BuildSpec(sess, s.paths)
 	if err != nil {
 		return err
 	}
-	if err := WriteSpec(s.paths.SpecFile(sess.ID), sp); err != nil {
+	return WriteSpec(s.paths.SpecFile(sess.ID), sp)
+}
+
+// start writes the spec and starts the session's unit. The runner resumes
+// its transcript itself.
+func (s *Supervisor) start(sess store.RunnerSession) error {
+	if err := s.writeSpec(sess); err != nil {
 		return err
 	}
 	return s.units.Start(s.paths.Unit(sess.ID))
+}
+
+// restart writes the spec and restarts the session's unit, in that order:
+// the new process must read the new spec, and a spec that cannot be built
+// leaves the running one alone.
+func (s *Supervisor) restart(sess store.RunnerSession) error {
+	if err := s.writeSpec(sess); err != nil {
+		return err
+	}
+	return s.units.Restart(s.paths.Unit(sess.ID))
 }
 
 // tend is a running session's upkeep: check its protocol, settle its
@@ -390,10 +513,7 @@ func (s *Supervisor) restartStale(sess store.RunnerSession, h Hello) error {
 	if h.Busy {
 		return fmt.Errorf("runner speaks protocol %d, this daemon %d; restarting it once its turn ends", h.Protocol, Protocol)
 	}
-	if err := s.start(sess); err != nil {
-		return err
-	}
-	return s.units.Restart(s.paths.Unit(sess.ID))
+	return s.restart(sess)
 }
 
 // flush delivers a session's inbox: prompts Claude already has are marked,

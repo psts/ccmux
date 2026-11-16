@@ -13,15 +13,32 @@ import (
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/harness"
+	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
 )
+
+// runnerWiring is what wireRunners connects the session supervisor to.
+type runnerWiring struct {
+	st     *store.SQLite
+	agents *agent.Store
+	api    *api.Server
+	mgr    *manager.Manager
+	peers  *peers.Service // nil when the bus is off
+	// prefix names the systemd unit template (-runner-unit-prefix): a scratch
+	// daemon passes its own, so it never rewrites the one the live daemon's
+	// sessions run under.
+	prefix string
+	// shim is the bus shim sessions load (-peers-shim); "" finds it.
+	shim string
+}
 
 // wireRunners starts the session-runner supervisor (internal/runner): Claude
 // sessions on the Agent SDK, each in its own systemd user service. Linux
 // only, since it rides on systemd; anywhere else, or when systemd cannot be
 // reached, the routes answer that runners are off and the daemon goes on.
-func wireRunners(ctx context.Context, st *store.SQLite, agents *agent.Store, apiSrv *api.Server) {
+func wireRunners(ctx context.Context, w runnerWiring) {
 	if runtime.GOOS != "linux" {
 		return
 	}
@@ -29,7 +46,7 @@ func wireRunners(ctx context.Context, st *store.SQLite, agents *agent.Store, api
 		log.Printf("session runners off: no systemctl on this host")
 		return
 	}
-	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s")}
+	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s"), Prefix: w.prefix}
 	units := runner.Systemctl{}
 	if err := runner.EnsureTemplate(systemdUserDir(), selfExecutable(), paths, units); err != nil {
 		log.Printf("session runners off: unit template: %v", err)
@@ -41,15 +58,95 @@ func wireRunners(ctx context.Context, st *store.SQLite, agents *agent.Store, api
 		// may not be the version the terminal runs.
 		log.Printf("session runners: no claude on this host (%v); sessions use the SDK's bundled Claude Code", err)
 	}
-	cfg := runner.Config{Sidecar: agents.EnsureClaudeServe, Claude: claude, Env: runnerEnv}
-	sup := runner.New(st, units, paths, cfg)
-	apiSrv.SetRunners(sup, st)
+	cfg := runner.Config{
+		Sidecar: w.agents.EnsureClaudeServe, Claude: claude, Env: runnerEnv, Peers: peersShim(w.shim),
+		// A session's own identity: what a tmux pane's shell is given that
+		// applies to Claude (its pane id and bus token, the daemon, its
+		// hooks socket and its route through the LLM proxy).
+		SessionEnv: func(sess store.RunnerSession) map[string]string { return w.mgr.RunnerEnv(sess.PaneID) },
+	}
+	sup := runner.New(w.st, units, paths, cfg)
+	sup.Changed = sessionChanged(w.mgr, w.peers)
+	w.mgr.RunnerLiveness = sup.Liveness
+	w.mgr.EndRunnerSession = func(id string) {
+		if err := sup.SetWanted(id, store.SessionDone); err != nil {
+			log.Printf("session runners: session %s of a deleted workspace was not ended: %v", id, err)
+		}
+	}
+	w.api.SetRunners(sup, w.st)
 	go sup.Run(ctx)
+}
+
+// sessionChanged is what the supervisor calls when a session's row changes:
+// the session's pane follows the row (made, renamed, gone with an ended
+// session), and a session that is not done has its peer on the bus, which
+// is what lets a message reach, and wake, one that is asleep. An ended
+// session's peer leaves the bus at once, with its mailbox.
+func sessionChanged(mgr *manager.Manager, bus *peers.Service) func(store.RunnerSession) {
+	return func(sess store.RunnerSession) {
+		mgr.SyncRunnerPane(sess)
+		switch {
+		case bus == nil || sess.PaneID == "":
+		case sess.Wanted == store.SessionDone:
+			bus.ForgetRunnerPeer(sess.PaneID)
+		default:
+			bus.EnsureRunnerPeer(sess.PaneID, sess.Cwd)
+		}
+	}
+}
+
+// loadRunnerPanes rebuilds the runner sessions' panes from their rows, right
+// after the manager has its workspaces and before the hooks socket opens.
+func loadRunnerPanes(mgr *manager.Manager) {
+	if err := mgr.LoadRunnerPanes(); err != nil {
+		log.Printf("session runners: panes not rebuilt, sessions stay off the bus until the daemon restarts: %v", err)
+	}
+}
+
+// runnerPaneForBus is the bus's question about a pane, answered by the
+// manager from memory (the bus asks under its own lock).
+func runnerPaneForBus(mgr *manager.Manager) func(paneID string) (peers.RunnerInfo, bool) {
+	return func(paneID string) (peers.RunnerInfo, bool) {
+		info, ok := mgr.RunnerPane(paneID)
+		return peers.RunnerInfo{Name: info.Name, Repo: info.Repo, Asleep: info.Asleep}, ok
+	}
+}
+
+// registerRunnerPeers puts every runner session that has not ended on the
+// bus at daemon start: the bus keeps its peers in memory, and an asleep
+// session has no shim to register it again.
+func registerRunnerPeers(mgr *manager.Manager, bus *peers.Service) {
+	for _, p := range mgr.RunnerPanes() {
+		bus.EnsureRunnerPeer(p.ID, p.CWD)
+	}
+}
+
+// peersShim is the bus shim a session loads as its claude-peers server: the
+// one named, else the ccmux-peers beside this binary (the pair one build
+// installs together), else the one on the PATH. With none, a session falls
+// back to what the user's Claude config names, which joins the bus only
+// from a terminal: the session runs, off the bus, and the log says so.
+func peersShim(named string) string {
+	if named != "" {
+		return named
+	}
+	beside := filepath.Join(filepath.Dir(selfExecutable()), "ccmux-peers")
+	if fi, err := os.Stat(beside); err == nil && !fi.IsDir() {
+		return beside
+	}
+	if found, err := harness.LookPath("ccmux-peers"); err == nil {
+		return found
+	}
+	log.Printf("session runners: no ccmux-peers beside %s or on the PATH; sessions will not join the peers bus", selfExecutable())
+	return ""
 }
 
 // runnerStateDir holds each session's spec and state file. It must outlive
 // a reboot, so it is not under the runtime folder.
 func runnerStateDir() string {
+	if root := scratchRoot(); root != "" {
+		return filepath.Join(root, "state", "sessions")
+	}
 	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
 		return filepath.Join(d, "ccmux", "sessions")
 	}

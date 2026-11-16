@@ -76,18 +76,33 @@ export function mcpFromNeutral(text, env) {
   return { servers, allow, unresolved };
 }
 
+// BUS_OWNER marks the peers shim a session runner starts as the one that
+// owns its pane's place on the bus. A runner has no terminal, which is how
+// the shim tells the pane's own session from a child's (ccmux-peers
+// owner.go), so its runner says so instead: in the shim's own environment,
+// the server entry's env, which a `claude -p` the session starts does not
+// inherit (it gets the session's environment and loads its shim from the
+// user's config).
+export const BUS_OWNER = { CCMUX_BUS_OWNER: "1" };
+
 // mcpFromFiles merges the servers of every --mcp-file (the base's, then an
 // isolated agent's capabilities), a later file winning a shared name, and
-// adds the peers shim when the daemon names its command. Same result shape
-// as mcpFromNeutral, the peers rule once.
-export function mcpFromFiles(texts, env, peersCommand) {
+// adds the peers shim when the daemon names its command: marked as the bus
+// owner for a session runner (owner), plain for an agent pane, whose shim
+// finds its terminal. An entry passed this way replaces the one of the same
+// name in the user's own Claude config (seen with SDK 0.3.311 and Claude
+// Code 2.1.325). Same result shape as mcpFromNeutral, the peers rule once.
+export function mcpFromFiles(texts, env, peersCommand, owner = false) {
   const out = { servers: {}, allow: [PEERS_RULE], unresolved: {} };
   for (const text of texts) {
     const m = mcpFromNeutral(text, env);
     Object.assign(out.servers, m.servers);
     Object.assign(out.unresolved, m.unresolved);
   }
-  if (peersCommand) out.servers[PEERS_SERVER] = { type: "stdio", command: peersCommand, args: [] };
+  if (peersCommand) {
+    out.servers[PEERS_SERVER] = { type: "stdio", command: peersCommand, args: [] };
+    if (owner) out.servers[PEERS_SERVER].env = { ...BUS_OWNER };
+  }
   for (const name of Object.keys(out.servers)) {
     if (name !== PEERS_SERVER) out.allow.push(`mcp__${name}`);
   }
