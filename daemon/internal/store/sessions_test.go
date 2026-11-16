@@ -188,3 +188,63 @@ func TestHasInboxPromptKnowsDeliveredOnesToo(t *testing.T) {
 		t.Fatalf("a delivered prompt was still queued once: %v %v", had, err)
 	}
 }
+
+func TestAPromptKeepsItsAttachments(t *testing.T) {
+	st := openSessions(t)
+	names := []string{"0123456789abcdef0123456789abcdef.png", "fedcba9876543210fedcba9876543210.jpg"}
+	if err := st.AddInboxPromptAndWake(InboxPrompt{ID: "p1", SessionID: "s1", Text: "look", Attachments: names, CreatedAt: 1}, false, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddInboxPromptAndWake(InboxPrompt{ID: "p2", SessionID: "s1", Text: "plain", CreatedAt: 1}, false, 1); err != nil {
+		t.Fatal(err)
+	}
+	open, err := st.UndeliveredPrompts("s1")
+	if err != nil || len(open) != 2 {
+		t.Fatalf("%+v %v", open, err)
+	}
+	if got := open[0].Attachments; len(got) != 2 || got[0] != names[0] || got[1] != names[1] {
+		t.Fatalf("the pictures come back with the prompt, in order: %v", got)
+	}
+	if open[1].Attachments != nil {
+		t.Fatalf("a prompt with none has none: %v", open[1].Attachments)
+	}
+	// A value nobody could have written is said, not read as "no pictures".
+	if _, err := st.db.Exec(`UPDATE session_inbox SET attachments='{oops' WHERE id='p1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UndeliveredPrompts("s1"); err == nil {
+		t.Fatal("unreadable attachments must fail the read")
+	}
+}
+
+func TestTheAttachmentsColumnIsAddedToAnOlderInbox(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reg.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The inbox as v0.1.120 made it, holding a prompt nobody delivered yet.
+	for _, q := range []string{
+		`DROP TABLE session_inbox`,
+		`CREATE TABLE session_inbox (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL, text TEXT NOT NULL,
+  sender TEXT DEFAULT '', created_at INTEGER, delivered_at INTEGER DEFAULT 0)`,
+		`INSERT INTO session_inbox (id,session_id,seq,text,created_at) VALUES ('old','s1',1,'from before',1)`,
+	} {
+		if _, err := st.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("an older registry opens: %v", err)
+	}
+	defer st.Close()
+	open, err := st.UndeliveredPrompts("s1")
+	if err != nil || len(open) != 1 || open[0].Text != "from before" || open[0].Attachments != nil {
+		t.Fatalf("its waiting prompt reads back, with no pictures: %+v %v", open, err)
+	}
+	if err := st.AddInboxPromptAndWake(InboxPrompt{ID: "new", SessionID: "s1", Text: "x", Attachments: []string{"a.png"}, CreatedAt: 2}, false, 2); err != nil {
+		t.Fatalf("and a new one with a picture is stored: %v", err)
+	}
+}

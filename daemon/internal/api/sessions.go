@@ -26,6 +26,8 @@ type runnerSupervisor interface {
 	Create(runner.NewSession) (store.RunnerSession, error)
 	Send(sessionID, text, sender string) (string, error)
 	SendAs(sessionID, promptID, text, sender string) (string, error)
+	SendPrompt(sessionID string, p runner.Prompt) (string, error)
+	MediaDir(sessionID string) string
 	SetWanted(sessionID, wanted string) error
 	SetModel(sessionID, model string) error
 	Restart(sessionID string) error
@@ -84,6 +86,8 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/sessions/{id}/messages", s.runnerSessionMessages)
 	mux.HandleFunc("POST /v1/sessions/{id}/cards/{card}", s.answerRunnerCard)
 	mux.HandleFunc("POST /v1/sessions/{id}/abort", s.abortRunnerSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/images", s.uploadRunnerImage)
+	mux.HandleFunc("GET /v1/sessions/{id}/media/{name}", s.runnerMedia)
 }
 
 func (s *Server) runnersReady(w http.ResponseWriter) bool {
@@ -216,15 +220,34 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if !s.runnersReady(w) {
 		return
 	}
-	var in struct{ Text, Sender string }
+	var in struct {
+		Text, Sender string
+		// Images are names POST .../images gave: pictures that go to Claude
+		// with the text. A picture with no words is still a prompt.
+		Images []string
+	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if in.Text == "" {
+	if in.Text == "" && len(in.Images) == 0 {
 		writeError(w, http.StatusBadRequest, "empty prompt")
 		return
 	}
-	id, err := s.runners.Send(r.PathValue("id"), in.Text, in.Sender)
+	sessionID := r.PathValue("id")
+	if len(in.Images) == 0 {
+		id, err := s.runners.Send(sessionID, in.Text, in.Sender)
+		answerPrompt(w, id, err)
+		return
+	}
+	if msg := s.promptImagesProblem(sessionID, in.Images); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	id, err := s.runners.SendPrompt(sessionID, runner.Prompt{Text: in.Text, Sender: in.Sender, Images: in.Images})
+	answerPrompt(w, id, err)
+}
+
+func answerPrompt(w http.ResponseWriter, id string, err error) {
 	if err != nil {
 		writeRunnerError(w, err)
 		return

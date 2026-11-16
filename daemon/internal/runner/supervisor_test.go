@@ -107,8 +107,9 @@ type fakeRunner struct {
 	boot       string
 	protocol   int
 	busy       bool
-	sent       []string        // prompt ids, in order
-	transcript map[string]bool // ids Claude has
+	sent       []string            // prompt ids, in order
+	images     map[string][]string // prompt id → the image names sent with it
+	transcript map[string]bool     // ids Claude has
 	cards      []map[string]string
 	questions  []map[string]any
 	replies    []string // "<path> <body>" of each card reply, in order
@@ -132,11 +133,18 @@ func (r *fakeRunner) handler() http.Handler {
 		json.NewEncoder(w).Encode(Hello{Protocol: r.protocol, Boot: r.boot, Busy: r.busy})
 	})
 	mux.HandleFunc("POST /prompt", func(w http.ResponseWriter, req *http.Request) {
-		var in struct{ ID, Text string }
+		var in struct {
+			ID, Text string
+			Images   []string
+		}
 		json.NewDecoder(req.Body).Decode(&in)
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.sent = append(r.sent, in.ID)
+		if r.images == nil {
+			r.images = map[string][]string{}
+		}
+		r.images[in.ID] = in.Images
 		json.NewEncoder(w).Encode(map[string]bool{"sent": true})
 	})
 	mux.HandleFunc("POST /delivered", func(w http.ResponseWriter, req *http.Request) {
@@ -724,5 +732,36 @@ func TestAModelIsSavedForTheNextStartAndNeverSentLive(t *testing.T) {
 	sp, _ := ReadSpec(r.paths.SpecFile(sess.ID))
 	if !strings.Contains(strings.Join(sp.Args, " "), "--model haiku") {
 		t.Fatalf("the next start runs on it: %v", sp.Args)
+	}
+}
+
+func TestAPromptsImagesGoWithItEveryTimeItIsSent(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	pics := []string{"0123456789abcdef0123456789abcdef.png"}
+	id, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "what is wrong here?", Sender: "you", Images: pics})
+	if err != nil || id == "" {
+		t.Fatalf("a prompt with no id of its own gets one: %q %v", id, err)
+	}
+	plain, _ := r.sup.Send(sess.ID, "and then?", "you")
+	r.reconcile()
+	fr := r.run[sess.ID]
+	if !slices.Equal(fr.images[id], pics) || fr.images[plain] != nil {
+		t.Fatalf("the picture goes with its prompt, and only with it: %v", fr.images)
+	}
+	// The runner crashed before Claude had the prompt: it is sent again, and
+	// a resend without its picture would be a different prompt.
+	r.units.set(r.paths.Unit(sess.ID), false)
+	r.reconcile()
+	r.reconcile()
+	if again := r.run[sess.ID]; again == fr || !slices.Equal(again.images[id], pics) {
+		t.Fatalf("sent again to the new runner with its picture: %v", again.images)
+	}
+	// The same id sent twice queues once (SendAs's rule holds for SendPrompt).
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{ID: id, Text: "dup"}); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := r.st.UndeliveredPrompts(sess.ID); len(open) != 2 {
+		t.Fatalf("still two waiting: %+v", open)
 	}
 }

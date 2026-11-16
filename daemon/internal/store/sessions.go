@@ -7,6 +7,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -79,14 +80,52 @@ type RunnerSession struct {
 }
 
 // InboxPrompt is one prompt waiting for, or delivered to, a session.
+// Attachments are the images that go with it, as names in the session's
+// media folder (runner.Paths.MediaDir): the prompt carries the names, the
+// runner reads the files, so a prompt sent again after a crash takes its
+// pictures with it.
 type InboxPrompt struct {
-	ID          string `json:"id"`
-	SessionID   string `json:"sessionId"`
-	Seq         int64  `json:"seq"`
-	Text        string `json:"text"`
-	Sender      string `json:"sender,omitempty"`
-	CreatedAt   int64  `json:"createdAt"`
-	DeliveredAt int64  `json:"deliveredAt,omitempty"`
+	ID          string   `json:"id"`
+	SessionID   string   `json:"sessionId"`
+	Seq         int64    `json:"seq"`
+	Text        string   `json:"text"`
+	Sender      string   `json:"sender,omitempty"`
+	CreatedAt   int64    `json:"createdAt"`
+	DeliveredAt int64    `json:"deliveredAt,omitempty"`
+	Attachments []string `json:"attachments,omitempty"`
+}
+
+// migrateInboxAttachments gives an inbox prompt its attachments column (a
+// JSON list of names, ” for none). Strict, as migrateSessionPanes is: the
+// inbox's SELECT names the column.
+func migrateInboxAttachments(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE session_inbox ADD COLUMN attachments TEXT DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate session_inbox.attachments: %w", err)
+	}
+	return nil
+}
+
+// attachmentsText is the column's value for a list of names.
+func attachmentsText(names []string) (string, error) {
+	if len(names) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(names)
+	return string(b), err
+}
+
+// attachmentsOf reads the column back. A value that is not a list is an
+// error: a prompt must not go out as if it had no pictures.
+func attachmentsOf(text string) ([]string, error) {
+	if text == "" {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(text), &names); err != nil {
+		return nil, fmt.Errorf("session_inbox.attachments %q: %w", text, err)
+	}
+	return names, nil
 }
 
 // SessionCard is one card a session raised; body is the runner's JSON.
@@ -229,10 +268,14 @@ func (s *SQLite) AddInboxPromptAndWake(p InboxPrompt, wake bool, now int64) erro
 		return err
 	}
 	defer tx.Rollback()
+	attached, err := attachmentsText(p.Attachments)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`
-INSERT INTO session_inbox (id,session_id,seq,text,sender,created_at,delivered_at)
-VALUES (?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM session_inbox WHERE session_id=?),?,?,?,0)`,
-		p.ID, p.SessionID, p.SessionID, p.Text, p.Sender, p.CreatedAt); err != nil {
+INSERT INTO session_inbox (id,session_id,seq,text,sender,created_at,delivered_at,attachments)
+VALUES (?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM session_inbox WHERE session_id=?),?,?,?,0,?)`,
+		p.ID, p.SessionID, p.SessionID, p.Text, p.Sender, p.CreatedAt, attached); err != nil {
 		return err
 	}
 	if wake {
@@ -258,7 +301,7 @@ func (s *SQLite) HasInboxPrompt(id string) (bool, error) {
 // UndeliveredPrompts is a session's prompts Claude does not have yet, in
 // the order they came.
 func (s *SQLite) UndeliveredPrompts(sessionID string) ([]InboxPrompt, error) {
-	rows, err := s.db.Query(`SELECT id,session_id,seq,text,sender,created_at,delivered_at FROM session_inbox
+	rows, err := s.db.Query(`SELECT id,session_id,seq,text,sender,created_at,delivered_at,attachments FROM session_inbox
 WHERE session_id=? AND delivered_at=0 ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
@@ -267,7 +310,11 @@ WHERE session_id=? AND delivered_at=0 ORDER BY seq`, sessionID)
 	var out []InboxPrompt
 	for rows.Next() {
 		var p InboxPrompt
-		if err := rows.Scan(&p.ID, &p.SessionID, &p.Seq, &p.Text, &p.Sender, &p.CreatedAt, &p.DeliveredAt); err != nil {
+		var attached string
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.Seq, &p.Text, &p.Sender, &p.CreatedAt, &p.DeliveredAt, &attached); err != nil {
+			return nil, err
+		}
+		if p.Attachments, err = attachmentsOf(attached); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

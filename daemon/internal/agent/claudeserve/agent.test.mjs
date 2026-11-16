@@ -740,3 +740,57 @@ test("an agent pane says none of it: its stream is what the chat always read", a
   assert.equal(events[0].properties.part.state.diff, undefined);
   assert.deepEqual(signals, [], "a pane is busy by its prompts only");
 });
+
+// mediaAgent is a runner whose media folder holds one picture.
+function mediaAgent() {
+  const made = runnerAgent({ media: "/m" });
+  const name = "0123456789abcdef0123456789abcdef.png";
+  const bytes = Buffer.from("\x89PNG the picture", "binary");
+  made.agent.media.fs = { mkdir() {}, exists: (p) => p === "/m/" + name, write() {}, read: (p) => { if (p !== "/m/" + name) throw new Error("ENOENT " + p); return bytes; } };
+  return { ...made, name, data: bytes.toString("base64") };
+}
+
+test("a prompt's pictures reach Claude as image blocks before its text, and the page as file parts", async () => {
+  const { agent, sdk, name, data } = mediaAgent();
+  assert.equal(agent.prompt("what is wrong here?", "p1", [name]), true);
+  await tick();
+  assert.deepEqual(sdk.queries[0].sent[0].message.content, [
+    { type: "image", source: { type: "base64", media_type: "image/png", data } },
+    { type: "text", text: "what is wrong here?" },
+  ]);
+  const parts = agent.snapshot().messages[0].parts;
+  assert.deepEqual(parts.map((p) => p.type), ["text", "file"]);
+  assert.deepEqual([parts[1].mime, parts[1].name], ["image/png", name]);
+  assert.ok(!JSON.stringify(agent.snapshot()).includes(data), "the bytes are not in the transcript");
+});
+
+test("a picture with no words is a prompt, and a plain prompt is still a string", async () => {
+  const { agent, sdk, name } = mediaAgent();
+  agent.prompt("", "p1", [name]);
+  agent.prompt("just words", "p2");
+  await tick();
+  assert.deepEqual(sdk.queries[0].sent[0].message.content.map((b) => b.type), ["image"]);
+  assert.equal(sdk.queries[0].sent[1].message.content, "just words");
+});
+
+test("a picture that cannot be read does not hold the prompt back: it goes without it and says so", async () => {
+  const { agent, sdk, out, name } = mediaAgent();
+  agent.prompt("see these", "p1", [name, "ffffffffffffffffffffffffffffffff.png", "../../etc/passwd"]);
+  await tick();
+  const content = sdk.queries[0].sent[0].message.content;
+  assert.deepEqual(content.map((b) => b.type), ["image", "text"]);
+  assert.match(content[1].text, /^see these\n\[ccmux: 2 images attached to this message could not be read/);
+  assert.equal(agent.snapshot().messages[0].parts.filter((p) => p.type === "file").length, 1);
+  assert.equal(out.filter((l) => l.startsWith("! image ")).length, 2);
+  // All of them lost: the words still go, as a string.
+  agent.prompt("and this", "p2", ["ffffffffffffffffffffffffffffffff.png"]);
+  await tick();
+  assert.match(sdk.queries[0].sent[1].message.content, /^and this\n\[ccmux: 1 image attached/);
+});
+
+test("an agent pane, which keeps no images, sends the words and says the picture is missing", async () => {
+  const { agent, sdk } = makeAgent();
+  agent.prompt("look", "", ["0123456789abcdef0123456789abcdef.png"]);
+  await tick();
+  assert.match(sdk.queries[0].sent[0].message.content, /^look\n\[ccmux: 1 image/);
+});

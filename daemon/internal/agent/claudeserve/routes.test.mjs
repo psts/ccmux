@@ -159,14 +159,17 @@ test("the runner routes: hello, prompts by inbox id, delivered, and a replay aft
     agent.events.push({ type: "a" });
     agent.events.push({ type: "b" });
     agent.hello = () => ({ protocol: 1, session: "ses_1" });
-    agent.prompt = (t, id) => { agent.prompts.push([t, id]); return id !== "dup"; };
+    agent.prompt = (t, id, images) => { agent.prompts.push([t, id]); agent.images = images; return id !== "dup"; };
     agent.delivered = (ids) => ids.filter((id) => id === "p1");
     assert.equal((await call("GET", "/hello")).body.protocol, 1);
     assert.deepEqual((await call("POST", "/prompt", { id: "p1", text: "hi" })).body, { sent: true });
     assert.deepEqual((await call("POST", "/prompt", { id: "dup", text: "hi" })).body, { sent: false });
     assert.equal((await call("POST", "/prompt", { text: "hi" })).status, 400, "a prompt needs its inbox id");
     assert.equal((await call("POST", "/prompt", { id: "p2", text: " " })).status, 400);
+    assert.deepEqual((await call("POST", "/prompt", { id: "p3", text: "", images: ["a.png"] })).body, { sent: true }, "a picture with no words is a prompt");
+    assert.equal((await call("POST", "/prompt", { id: "p4", text: " ", images: [] })).status, 400);
     assert.equal((await call("POST", "/model", { model: "haiku" })).status, 404, "no live model switch: it applies at the next start");
+    assert.deepEqual(agent.images, ["a.png"], "the names go to the agent with the prompt");
     assert.deepEqual((await call("POST", "/delivered", { ids: ["p1", "p9"] })).body, { delivered: ["p1"] });
     const ctl = new AbortController();
     const r = await fetch(base + "/event?after=1", { signal: ctl.signal });

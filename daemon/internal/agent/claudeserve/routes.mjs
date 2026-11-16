@@ -54,9 +54,12 @@ export const handlers = {
   "GET snapshot": (a) => [200, a.snapshot()],
   "POST prompt": (a, id, body) => {
     const text = String(body.text || "");
-    if (!text.trim()) return [400, { error: "empty prompt" }];
+    // images are names in the session's media folder; a picture with no
+    // words is still a prompt.
+    const images = Array.isArray(body.images) ? body.images.map(String) : [];
+    if (!text.trim() && !images.length) return [400, { error: "empty prompt" }];
     if (!body.id) return [400, { error: "a prompt needs its inbox id" }];
-    return [200, { sent: a.prompt(text, String(body.id)) }];
+    return [200, { sent: a.prompt(text, String(body.id), images) }];
   },
   "POST delivered": (a, id, body) => [200, { delivered: a.delivered(Array.isArray(body.ids) ? body.ids : []) }],
   // The daemon's PushPrompt (first message, bus messages) speaks opencode's

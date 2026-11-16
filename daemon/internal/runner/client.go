@@ -92,13 +92,18 @@ func (c *Client) Hello(ctx context.Context) (Hello, error) {
 	return h, err
 }
 
-// Prompt sends one inbox prompt. sent is false when the runner already has
-// that id, which is not an error.
-func (c *Client) Prompt(ctx context.Context, id, text string) (sent bool, err error) {
+// Prompt sends one inbox prompt, with the names of the images that go with
+// it (files in the session's media folder, which the runner reads). sent is
+// false when the runner already has that id, which is not an error.
+func (c *Client) Prompt(ctx context.Context, id, text string, images []string) (sent bool, err error) {
 	var out struct {
 		Sent bool `json:"sent"`
 	}
-	err = c.do(ctx, http.MethodPost, "/prompt", map[string]string{"id": id, "text": text}, &out)
+	body := map[string]any{"id": id, "text": text}
+	if len(images) > 0 {
+		body["images"] = images
+	}
+	err = c.do(ctx, http.MethodPost, "/prompt", body, &out)
 	return out.Sent, err
 }
 

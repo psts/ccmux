@@ -18,6 +18,8 @@ import (
 )
 
 type fakeRunners struct {
+	mediaDir string          // where MediaDir points every session
+	prompts  []runner.Prompt // what SendPrompt was given
 	created  []runner.NewSession
 	sent     []string
 	sentAs   []string // "session|prompt id|sender|text"
@@ -32,6 +34,16 @@ type fakeRunners struct {
 func (f *fakeRunners) Create(n runner.NewSession) (store.RunnerSession, error) {
 	f.created = append(f.created, n)
 	return store.RunnerSession{ID: "s1", Cwd: n.Cwd, Wanted: store.SessionRunning, WorkspaceID: n.WorkspaceID, PaneID: "pane-of-s1"}, nil
+}
+
+func (f *fakeRunners) MediaDir(string) string { return f.mediaDir }
+
+func (f *fakeRunners) SendPrompt(id string, p runner.Prompt) (string, error) {
+	if id != "s1" {
+		return "", store.ErrNoSession
+	}
+	f.prompts = append(f.prompts, p)
+	return "p-img", nil
 }
 
 func (f *fakeRunners) SendAs(id, promptID, text, sender string) (string, error) {

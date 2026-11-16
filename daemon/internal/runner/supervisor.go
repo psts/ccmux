@@ -170,6 +170,25 @@ func (s *Supervisor) Send(sessionID, text, sender string) (string, error) {
 // after the message and hands it over again after a crash, and it must
 // run once.
 func (s *Supervisor) SendAs(sessionID, promptID, text, sender string) (string, error) {
+	return s.SendPrompt(sessionID, Prompt{ID: promptID, Text: text, Sender: sender})
+}
+
+// Prompt is one prompt for a session: its text, who sent it, and the images
+// that go with it, named as they are stored in the session's media folder
+// (MediaDir). ID names the prompt (SendAs's rule); "" makes one.
+type Prompt struct {
+	ID, Text, Sender string
+	Images           []string
+}
+
+// SendPrompt is SendAs for a prompt that may carry images. The names are
+// queued with the text, so a prompt sent again after a crash takes its
+// pictures with it.
+func (s *Supervisor) SendPrompt(sessionID string, in Prompt) (string, error) {
+	promptID := in.ID
+	if promptID == "" {
+		promptID = uuid.NewString()
+	}
 	defer s.lock(sessionID)()
 	sess, err := s.row(sessionID)
 	if err != nil {
@@ -182,7 +201,7 @@ func (s *Supervisor) SendAs(sessionID, promptID, text, sender string) (string, e
 		return promptID, err
 	}
 	asleep := sess.Wanted == store.SessionAsleep
-	p := store.InboxPrompt{ID: promptID, SessionID: sessionID, Text: text, Sender: sender, CreatedAt: s.millis()}
+	p := store.InboxPrompt{ID: promptID, SessionID: sessionID, Text: in.Text, Sender: in.Sender, Attachments: in.Images, CreatedAt: s.millis()}
 	if err := s.st.AddInboxPromptAndWake(p, asleep, s.millis()); err != nil {
 		return "", err
 	}
@@ -558,7 +577,7 @@ func (s *Supervisor) sendMissing(ctx context.Context, c *Client, open []store.In
 		if got[p.ID] {
 			continue
 		}
-		if _, err := c.Prompt(ctx, p.ID, p.Text); err != nil {
+		if _, err := c.Prompt(ctx, p.ID, p.Text, p.Attachments); err != nil {
 			return err
 		}
 	}

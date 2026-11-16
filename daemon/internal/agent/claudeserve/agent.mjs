@@ -10,7 +10,7 @@ import { WRITE_TOOLS, wallSafe, wallVerdict } from "./walls.mjs";
 import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.mjs";
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
-import { MediaStore } from "./media.mjs";
+import { MediaStore, mimeFor } from "./media.mjs";
 import { fromInit, fromInitialization, commandList, resultOf } from "./sessionself.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
@@ -427,21 +427,50 @@ export class Agent {
   // lands in the transcript and on the reply; a runner passes the inbox id,
   // and a prompt whose id Claude already has is dropped, so a resend after a
   // crash never runs twice. It reports whether the prompt was sent.
-  prompt(text, id = "") {
+  //
+  // images are the names of pictures that go with a runner's prompt, stored
+  // in its media folder (by the daemon, at upload): Claude gets them as
+  // image blocks before the text, the transcript as file parts.
+  prompt(text, id = "", images = []) {
     if (id && (this.state.isDelivered(id) || this.queued.has(id))) return false;
     const uuid = id || randomUUID();
     this.queued.add(uuid);
-    this.emit(this.transcript.userTurn(text, uuid));
-    this.log("> " + text);
+    const { content, files } = this.promptContent(text, images);
+    this.emit(this.transcript.userTurn(text, uuid, files));
+    this.log("> " + text + (files.length ? ` [+${files.length} image${files.length === 1 ? "" : "s"}]` : ""));
     if (this.turns) {
       this.turns.sent(uuid, text);
       this.persist();
     }
     this.setBusy(true);
     this.ensureQuery();
-    this.feed.inbox.push({ type: "user", uuid, message: { role: "user", content: text }, parent_tool_use_id: null });
+    this.feed.inbox.push({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null });
     if (this.feed.wake) this.feed.wake();
     return true;
+  }
+
+  // promptContent is what Claude is sent for a prompt: the text alone, or
+  // its pictures as image blocks and then the text. A picture that cannot
+  // be read (its file is gone, or this session keeps none) never holds the
+  // prompt back: the inbox is delivered in order, so a prompt that could not
+  // go out would hold every later one with it. It goes without the picture,
+  // and says so to Claude and in the log.
+  promptContent(text, images) {
+    const blocks = [];
+    const files = [];
+    for (const name of images) {
+      try {
+        if (!this.media) throw new Error("this session keeps no images");
+        blocks.push(this.media.block(name));
+        files.push({ mime: mimeFor(name), name });
+      } catch (err) {
+        this.log(`! image ${name} not attached: ${err && err.message ? err.message : String(err)}`);
+      }
+    }
+    const lost = images.length - blocks.length;
+    const said = lost ? `${text}\n[ccmux: ${lost} image${lost === 1 ? "" : "s"} attached to this message could not be read, so ${lost === 1 ? "it is" : "they are"} missing here.]`.trim() : text;
+    if (!blocks.length) return { content: said, files };
+    return { content: said ? [...blocks, { type: "text", text: said }] : blocks, files };
   }
 
 
