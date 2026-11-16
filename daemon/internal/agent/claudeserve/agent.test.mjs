@@ -661,3 +661,82 @@ test("a snapshot carries the cards that wait", async () => {
   await asked;
   assert.equal(agent.snapshot().permissions.length, 0);
 });
+
+const initMsg = (over = {}) => ({ type: "system", subtype: "init", model: "claude-haiku-5-5", claude_code_version: "2.1.325", permissionMode: "auto", mcp_servers: [], slash_commands: ["hello"], terminal_slash_commands: ["doctor"], ...over });
+const resultMsg = { type: "result", subtype: "success", total_cost_usd: 0.02, duration_ms: 900, num_turns: 1, usage: { input_tokens: 3, output_tokens: 7 } };
+
+test("a runner tells its page what it runs on, once, and again only when that changes", () => {
+  const { agent, events } = runnerAgent();
+  agent.onMessage(initMsg());
+  agent.onMessage(initMsg()); // the init line comes with every turn
+  const said = events.filter((e) => e.type === "session.info");
+  assert.equal(said.length, 1);
+  assert.equal(said[0].properties.info.model, "claude-haiku-5-5");
+  assert.deepEqual(said[0].properties.info.commands, [{ name: "hello", description: "", hint: "" }]);
+  agent.onMessage({ type: "system", subtype: "commands_changed", commands: [{ name: "hello", description: "Say hello", argumentHint: "" }] });
+  agent.onMessage(initMsg({ model: "claude-opus-5-5" }));
+  const later = events.filter((e) => e.type === "session.info");
+  assert.equal(later.length, 3);
+  assert.equal(later[2].properties.info.model, "claude-opus-5-5");
+  assert.equal(later[2].properties.info.commands[0].description, "Say hello", "bare names from init do not wipe the descriptions");
+  assert.deepEqual(agent.snapshot().info, later[2].properties.info);
+});
+
+test("a runner asks a new query what it offers before any turn", async () => {
+  const { agent, sdk, events } = runnerAgent();
+  const real = sdk.query;
+  agent.sdk.query = (args) => {
+    const q = real(args);
+    q.initializationResult = async () => ({ commands: [{ name: "cost", description: "What it cost", argumentHint: "" }], models: [{ value: "haiku", displayName: "Haiku 5.5", resolvedModel: "claude-haiku-5-5" }] });
+    return q;
+  };
+  agent.ensureQuery();
+  await tick();
+  const info = events.find((e) => e.type === "session.info").properties.info;
+  assert.deepEqual(info.models, [{ value: "haiku", name: "Haiku 5.5", model: "claude-haiku-5-5" }]);
+  assert.equal(info.commands[0].name, "cost");
+});
+
+test("a turn no prompt opened makes a runner busy until its result, which carries the bill", async () => {
+  const { agent, events, signals } = runnerAgent();
+  agent.ensureQuery();
+  // A background hook woke the session: a turn starts with no prompt of ours.
+  agent.onMessage(initMsg());
+  assert.equal(agent.busy, false, "the init line alone is not work");
+  agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "The review found a bug." }] } });
+  assert.equal(agent.busy, true);
+  agent.onMessage(resultMsg);
+  await tick();
+  assert.equal(agent.busy, false);
+  assert.deepEqual(signals, ["busy", "idle"]);
+  const idle = events.filter((e) => e.type === "session.idle").pop();
+  assert.deepEqual(idle.properties.result, { costUSD: 0.02, durationMs: 900, turns: 1, usage: { input: 3, output: 7, cacheRead: 0, cacheWrite: 0 } });
+  assert.deepEqual(agent.snapshot().result, idle.properties.result);
+});
+
+test("a runner puts what Claude Code says beside the conversation into it, and its to-do list in the snapshot", () => {
+  const { agent, events } = runnerAgent();
+  agent.prompt("go", "p1");
+  agent.onMessage({ type: "system", subtype: "informational", content: "Stop says: Gate: 1 source file(s) unverified", level: "notice" });
+  agent.onMessage({ type: "system", subtype: "thinking_tokens", estimated_tokens: 50 });
+  const notes = agent.snapshot().messages.filter((m) => m.info.role === "note");
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].parts[0].text, "Stop says: Gate: 1 source file(s) unverified");
+  agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "c1", name: "TodoWrite", input: { todos: [{ content: "Ship", status: "pending" }] } }] } });
+  agent.onMessage({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "ok" }] } });
+  assert.deepEqual(agent.snapshot().todos, [{ id: "1", text: "Ship", status: "pending" }]);
+  assert.equal(events.filter((e) => e.type === "session.todos").length, 1);
+});
+
+test("an agent pane says none of it: its stream is what the chat always read", async () => {
+  const { agent, events, signals } = makeAgent();
+  agent.onMessage(initMsg());
+  agent.onMessage({ type: "system", subtype: "informational", content: "Stop says: no", level: "notice" });
+  agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "c1", name: "Edit", input: { file_path: "/a", old_string: "x", new_string: "y" } }] } });
+  agent.onMessage(resultMsg);
+  await tick();
+  assert.deepEqual(events.map((e) => e.type), ["message.part.updated", "session.idle"]);
+  assert.deepEqual(events[1].properties, { sessionID: agent.sid });
+  assert.equal(events[0].properties.part.state.diff, undefined);
+  assert.deepEqual(signals, [], "a pane is busy by its prompts only");
+});

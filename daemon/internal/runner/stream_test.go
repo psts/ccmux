@@ -13,7 +13,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ccmux.dev/ccmuxd/internal/store"
 )
+
+func storeSession(id string) store.RunnerSession {
+	return store.RunnerSession{ID: id, Cwd: "/r/app", Wanted: store.SessionRunning}
+}
 
 // streamRunner is the part of a runner's socket the thread page's relay
 // reads: a snapshot, numbered events, and the routes a card's answer and
@@ -188,5 +194,17 @@ func TestTheSidecarSpeaksThisProtocol(t *testing.T) {
 	}
 	if want := fmt.Sprintf("export const RUNNER_PROTOCOL = %d;", Protocol); !strings.Contains(string(src), want) {
 		t.Fatalf("runnerstate.mjs does not say %q", want)
+	}
+}
+
+func TestARunnerIsToldItsSessionsMediaFolder(t *testing.T) {
+	paths := Paths{State: "/st", Runtime: "/run/s"}
+	cfg := Config{Sidecar: func() (string, string, error) { return "/sc/serve.mjs", "/bin/node", nil }}
+	sp, err := cfg.BuildSpec(storeSession("abc"), paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := strings.Join(sp.Args, " "); !strings.Contains(args, "--media /st/abc.media") {
+		t.Fatalf("the runner keeps the session's images where the daemon serves them from: %s", args)
 	}
 }

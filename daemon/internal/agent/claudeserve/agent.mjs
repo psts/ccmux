@@ -9,6 +9,9 @@ import { mcpFromFiles } from "./mcp.mjs";
 import { WRITE_TOOLS, wallSafe, wallVerdict } from "./walls.mjs";
 import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.mjs";
 import { RunnerTurns } from "./runnerturns.mjs";
+import { RichTranscript, noteFor } from "./richtranscript.mjs";
+import { MediaStore } from "./media.mjs";
+import { fromInit, fromInitialization, commandList, resultOf } from "./sessionself.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
 const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
@@ -71,7 +74,13 @@ export class Agent {
     for (const [name, vars] of Object.entries(this.mcp.unresolved)) {
       this.log(`! mcp ${name}: ${vars.map((v) => "${" + v + "}").join(", ")} not set in this instance's environment (.env)`);
     }
-    this.transcript = new Transcript(this.sid);
+    // A runner keeps the fuller transcript its page draws, with its images
+    // as files in the session's media folder (richtranscript.mjs,
+    // media.mjs); an agent pane keeps the chat's, as before.
+    this.media = o.socket && o.media ? new MediaStore(o.media, deps.mediaFS, (w) => this.log("! " + w)) : null;
+    this.transcript = this.newTranscript(this.sid);
+    this.info = {}; // what the session says of itself (sessionself.mjs), for a runner's page
+    this.result = null; // the last finished turn's bill
     this.clients = new Set();
     this.permissions = new Map(); // id → {request, resolve}
     this.questions = new Map();
@@ -91,6 +100,10 @@ export class Agent {
 
   log(line) {
     this.out(line + "\n");
+  }
+
+  newTranscript(id) {
+    return this.o.socket ? new RichTranscript(id, undefined, this.media) : new Transcript(id);
   }
 
   // signal tells the daemon what the agent is doing (see api.agentSignal).
@@ -249,6 +262,7 @@ export class Agent {
     if (this.q) return;
     this.feed = { inbox: [], wake: null, dead: false };
     this.q = this.sdk.query({ prompt: this.input(this.feed), options: this.options() });
+    if (this.turns) this.askSelf(this.q);
     this.pump().catch((err) => this.log("! " + (err && err.message ? err.message : String(err))));
   }
 
@@ -306,19 +320,56 @@ export class Agent {
   onMessage(m) {
     if (m.type === "assistant") this.resume = true; // a reply is on disk: this conversation can be continued
     this.noteDelivered(m);
-    if (m.type === "system" && m.subtype === "init") {
-      this.claudeCode = m.claude_code_version || this.claudeCode;
-      const mcp = (m.mcp_servers || []).map((x) => `${x.name} ${x.status}`).join(", ");
-      this.log(`⚙ ${this.o.agent} on ${m.model} (session ${this.sid.slice(0, 8)})${mcp ? " · mcp: " + mcp : ""}`);
+    if (m.type === "system") {
+      this.onSystem(m);
       return;
     }
     if (m.type === "result") {
       this.onResult(m);
       return;
     }
+    // A runner's turn that no prompt of ours opened (a background hook woke
+    // the session with its findings) is still a turn: busy until its result,
+    // so its page shows it working and Stop reaches it.
+    if (this.turns && !this.busy && (m.type === "assistant" || m.type === "stream_event")) this.setBusy(true);
     const events = this.transcript.apply(m);
     this.emit(events);
     this.print(m);
+  }
+
+  // onSystem is Claude Code speaking beside the conversation. The terminal
+  // gets the line that starts a turn; a runner's page gets what the session
+  // says of itself, and the notes worth showing where they happened.
+  onSystem(m) {
+    if (m.subtype === "init") {
+      this.claudeCode = m.claude_code_version || this.claudeCode;
+      const mcp = (m.mcp_servers || []).map((x) => `${x.name} ${x.status}`).join(", ");
+      this.log(`⚙ ${this.o.agent} on ${m.model} (session ${this.sid.slice(0, 8)})${mcp ? " · mcp: " + mcp : ""}`);
+    }
+    if (!this.turns) return;
+    if (m.subtype === "init") this.learn(fromInit(m, this.info));
+    else if (m.subtype === "commands_changed") this.learn({ commands: commandList(m.commands) });
+    else this.emit(this.transcript.note(noteFor(m), m.level));
+  }
+
+  // learn takes in something the session said of itself and tells the page
+  // when it is news: the init line comes with every turn, and mostly says
+  // what it said the last time.
+  learn(self) {
+    const next = { ...this.info, ...self };
+    if (JSON.stringify(next) === JSON.stringify(this.info)) return;
+    this.info = next;
+    this.broadcast({ type: "session.info", properties: { sessionID: this.sid, info: this.info } });
+  }
+
+  // askSelf asks a new query what it offers (its commands, the models to
+  // pick from), which it knows before any turn. A query that cannot say
+  // (it died first) costs the page those lists until the first turn.
+  askSelf(q) {
+    if (typeof q.initializationResult !== "function") return;
+    q.initializationResult()
+      .then((r) => { if (this.q === q) this.learn(fromInitialization(r)); })
+      .catch((err) => this.log("! what this session offers was not read: " + (err && err.message ? err.message : String(err))));
   }
 
   // noteDelivered records the prompts Claude has: a reply names the prompt
@@ -342,7 +393,9 @@ export class Agent {
       this.broadcast({ type: "session.error", properties: { sessionID: this.sid, error: text } });
       this.log("! " + text);
     }
-    this.broadcast({ type: "session.idle", properties: { sessionID: this.sid } });
+    const idle = { sessionID: this.sid };
+    if (this.turns) idle.result = this.result = resultOf(m); // what the turn cost, for the session's page
+    this.broadcast({ type: "session.idle", properties: idle });
     this.setBusy(this.turns ? this.turns.busy() : false);
   }
 
@@ -409,6 +462,7 @@ export class Agent {
     return {
       protocol: RUNNER_PROTOCOL, boot: this.boot, seq: this.events.seq, session: this.sid, busy: this.busy,
       messages: this.transcript.messages(), permissions: this.pendingPermissions(), questions: this.pendingQuestions(),
+      info: this.info, result: this.result, todos: this.transcript.todos || [],
     };
   }
 
@@ -548,7 +602,7 @@ export class Agent {
   async messages(id) {
     if (id === this.sid) return this.transcript.messages();
     const msgs = await this.sdk.getSessionMessages(id, { dir: this.cwd });
-    const t = new Transcript(id);
+    const t = this.newTranscript(id);
     for (const m of msgs) t.apply(m);
     return t.messages();
   }

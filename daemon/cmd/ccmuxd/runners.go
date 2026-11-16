@@ -80,7 +80,7 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		// A session whose runner is down is read from Claude Code's own store,
 		// through the sidecar's export (it lands with the first session).
 		History: func(ctx context.Context, sess store.RunnerSession) (json.RawMessage, error) {
-			return agent.ClaudeOfflineMessages(ctx, w.agents.Root, sess.Cwd, sess.ID)
+			return agent.ClaudeOfflineMessages(ctx, w.agents.Root, sess.Cwd, sess.ID, "--media", sup.MediaDir(sess.ID))
 		},
 	})
 	go sup.Run(ctx)

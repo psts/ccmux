@@ -105,11 +105,42 @@ export class Transcript {
   }
 
   // userTurn appends a prompt as a user turn; the events announce it.
-  userTurn(text, id) {
+  // files are the prompt's stored images ({mime, name}), each its own part
+  // after the text; only a session that keeps images has any.
+  userTurn(text, id, files = []) {
     const turn = this.ensureTurn(id || "usr_" + this.nextID(), "user");
     const part = { id: turn.info.id + ".0", messageID: turn.info.id, sessionID: this.sessionID, type: "text", text };
     turn.parts.push(part);
-    return [messageEvent(turn), partEvent(part)];
+    const events = [messageEvent(turn), partEvent(part)];
+    for (const f of files) {
+      const file = { id: turn.info.id + "." + turn.parts.length, messageID: turn.info.id, sessionID: this.sessionID, type: "file", mime: f.mime, name: f.name };
+      turn.parts.push(file);
+      events.push(partEvent(file));
+    }
+    return events;
+  }
+
+  // The four hooks below are where a fuller transcript adds to this one
+  // (richtranscript.mjs, for the thread page). Here they add nothing: the
+  // agent chat's transcript is the same as before they existed.
+
+  // toolFilled hears a tool part whose input is now complete.
+  toolFilled() {}
+
+  // toolSettled hears a tool part that just got its result (block), from
+  // SDK message m.
+  toolSettled() {}
+
+  // userPrompt is what a user message's text and image blocks become:
+  // {text, files, mark}; text null is a message this transcript does not
+  // show.
+  userPrompt(texts) {
+    return { text: texts.join("\n"), files: [] };
+  }
+
+  // settled is the events a user message caused beyond its parts.
+  settled() {
+    return [];
   }
 
   // apply folds one SDK message in and returns the events it caused. A
@@ -184,6 +215,7 @@ export class Transcript {
       try {
         part.state.input = JSON.parse(part.json);
         part.state.title = toolTitle(part.tool, part.state.input);
+        this.toolFilled(part);
       } catch (_) {
         // A partial tool input that never parsed stays as it was; the
         // complete assistant message that follows carries the real one.
@@ -209,6 +241,7 @@ export class Transcript {
         turn.parts.push(part);
       }
       fillPart(part, block);
+      if (part.type === "tool") this.toolFilled(part);
       events.push(partEvent(part));
     }
     if (error && !turn.info.error) {
@@ -220,7 +253,7 @@ export class Transcript {
 
   applyUser(m) {
     const content = m.message?.content;
-    if (typeof content === "string") return this.userTurn(content, m.uuid);
+    if (typeof content === "string") return this.promptTurn([content], m);
     if (!Array.isArray(content)) return [];
     const events = [];
     const texts = [];
@@ -232,12 +265,26 @@ export class Transcript {
         const text = resultText(block.content);
         if (block.is_error) part.state.error = text;
         else part.state.output = text;
+        this.toolSettled(part, block, m);
         events.push(partEvent(part));
       } else if (block.type === "text" && block.text) {
         texts.push(block.text);
       }
     }
-    if (texts.length) events.push(...this.userTurn(texts.join("\n"), m.uuid));
+    events.push(...this.promptTurn(texts, m), ...this.settled());
+    return events;
+  }
+
+  // promptTurn is the user turn of a message's text (and, in a fuller
+  // transcript, its images): none when it has neither.
+  promptTurn(texts, m) {
+    const prompt = this.userPrompt(texts, m);
+    if (prompt.text == null || (!prompt.text && !prompt.files.length && Array.isArray(m.message.content))) return [];
+    const events = this.userTurn(prompt.text, m.uuid, prompt.files);
+    if (prompt.mark) {
+      const turn = this.byID.get(events[0].properties.info.id);
+      Object.assign(turn.info, prompt.mark);
+    }
     return events;
   }
 

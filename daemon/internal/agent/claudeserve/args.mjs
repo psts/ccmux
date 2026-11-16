@@ -11,9 +11,11 @@
 //           [--setting-sources a,b] [--peers-command CMD] [--skills a,b]
 //           [--session ID]
 //   serve   (as a session runner, under systemd) --socket PATH --state FILE
-//           --session-auto ID [--claude PATH] [--detached 1] and the flags above
+//           --session-auto ID [--claude PATH] [--detached 1] [--media DIR]
+//           and the flags above
 //   sessions --dir DIR
-//   export   --dir DIR --session ID
+//   export   --dir DIR --session ID [--media DIR]   (with --media: the fuller
+//           transcript a runner keeps, its images stored in DIR)
 
 const list = (s) => s.split(",").filter(Boolean);
 
@@ -40,6 +42,7 @@ const flags = {
   "--session-auto": (o, v) => { o.sessionAuto = v; },
   "--claude": (o, v) => { o.claude = v; },
   "--detached": (o, v) => { o.detached = v === "1"; },
+  "--media": (o, v) => { o.media = v; },
 };
 
 // parseArgs reads the flags after the verb. An unknown flag, or a flag with

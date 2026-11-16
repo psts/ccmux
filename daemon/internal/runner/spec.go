@@ -55,6 +55,11 @@ func (p Paths) SpecFile(id string) string  { return filepath.Join(p.State, id+".
 func (p Paths) StateFile(id string) string { return filepath.Join(p.State, id+".state.json") }
 func (p Paths) Socket(id string) string    { return filepath.Join(p.Runtime, id+".sock") }
 
+// MediaDir holds a session's images (pasted into a prompt, or returned by a
+// tool) as files named after their bytes: the runner writes and reads them,
+// the daemon serves them to the session's page and stores an upload there.
+func (p Paths) MediaDir(id string) string { return filepath.Join(p.State, id+".media") }
+
 // Config is what every session's spec is built from.
 type Config struct {
 	// Sidecar installs the runner's script and names it and node.
@@ -88,6 +93,7 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	args := []string{
 		"--socket", paths.Socket(sess.ID), "--state", paths.StateFile(sess.ID), "--session-auto", sess.ID,
 		"--detached", "1", "--setting-sources", settingSources, "--agent", sessionLabel(sess),
+		"--media", paths.MediaDir(sess.ID),
 	}
 	if c.Claude != "" {
 		args = append(args, "--claude", c.Claude)

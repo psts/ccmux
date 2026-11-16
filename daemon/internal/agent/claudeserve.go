@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,13 +25,13 @@ import (
 // daemon upgrade's sidecar lands without ceremony), and its one npm
 // dependency installed there once per pinned version.
 
-//go:embed claudeserve/serve.mjs claudeserve/args.mjs claudeserve/agent.mjs claudeserve/routes.mjs claudeserve/translate.mjs claudeserve/mcp.mjs claudeserve/walls.mjs claudeserve/runnerstate.mjs claudeserve/runnerturns.mjs claudeserve/package.json claudeserve/package-lock.json
+//go:embed claudeserve/serve.mjs claudeserve/args.mjs claudeserve/agent.mjs claudeserve/routes.mjs claudeserve/translate.mjs claudeserve/mcp.mjs claudeserve/walls.mjs claudeserve/runnerstate.mjs claudeserve/runnerturns.mjs claudeserve/richtranscript.mjs claudeserve/toolview.mjs claudeserve/media.mjs claudeserve/sessionself.mjs claudeserve/package.json claudeserve/package-lock.json
 var claudeServeFiles embed.FS
 
 // claudeServeShipped is what EnsureClaudeServe writes: the sidecar, its
 // manifest and the lock that pins every package the install may fetch (npm
 // ci refuses anything the lock does not name), never the tests.
-var claudeServeShipped = []string{claudeServeFile, "args.mjs", "agent.mjs", "routes.mjs", "translate.mjs", "mcp.mjs", "walls.mjs", "runnerstate.mjs", "runnerturns.mjs", "package.json", "package-lock.json"}
+var claudeServeShipped = []string{claudeServeFile, "args.mjs", "agent.mjs", "routes.mjs", "translate.mjs", "mcp.mjs", "walls.mjs", "runnerstate.mjs", "runnerturns.mjs", "richtranscript.mjs", "toolview.mjs", "media.mjs", "sessionself.mjs", "package.json", "package-lock.json"}
 
 // installTimeout bounds npm ci so a stalled registry cannot hold the
 // install lock, and every claude start behind it, forever.
@@ -217,13 +219,21 @@ func runClaudeServe(ctx context.Context, root string, args ...string) ([]byte, e
 	if err != nil {
 		return nil, fmt.Errorf("node not installed: %w", err)
 	}
-	out, err := exec.CommandContext(ctx, node, append([]string{script}, args...)...).Output()
+	cmd := exec.CommandContext(ctx, node, append([]string{script}, args...)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	said := strings.TrimSpace(stderr.String())
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
-			return nil, fmt.Errorf("claude sidecar %v: %w: %s", args, err, strings.TrimSpace(string(exit.Stderr)))
+		if said != "" {
+			return nil, fmt.Errorf("claude sidecar %v: %w: %s", args, err, said)
 		}
 		return nil, fmt.Errorf("claude sidecar %v: %w", args, err)
+	}
+	// A read that worked may still have something to say (an image of the
+	// conversation that could not be kept): it has no other way to be heard.
+	if said != "" {
+		log.Printf("claude sidecar %s: %s", args[0], said)
 	}
 	return out, nil
 }

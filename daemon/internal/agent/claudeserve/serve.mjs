@@ -19,13 +19,15 @@
 // The daemon's pane identity (CCMUX_DAEMON_URL, CCMUX_PANE_ID) comes from the
 // pane environment, like the opencode plugin's; busy/idle/permission/question signals
 // go there so the tab badge, the sidebar flash and the lifecycle clock work.
-import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { query, listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { Transcript, sessionInfo } from "./translate.mjs";
 import { createAgentServer } from "./routes.mjs";
 import { Agent } from "./agent.mjs";
+import { RichTranscript } from "./richtranscript.mjs";
+import { MediaStore } from "./media.mjs";
 import { parseArgs } from "./args.mjs";
 
 // --- offline reads: the daemon calls these for an asleep agent ---
@@ -35,9 +37,20 @@ async function cmdSessions(o) {
   process.stdout.write(JSON.stringify(list.map(sessionInfo)) + "\n");
 }
 
+// mediaFS is a session's media folder on the real disk (media.mjs).
+const mediaFS = {
+  mkdir: (dir) => mkdirSync(dir, { recursive: true, mode: 0o700 }),
+  exists: existsSync,
+  write: (path, bytes) => writeFileSync(path, bytes, { mode: 0o600 }),
+  read: (path) => readFileSync(path),
+};
+
+// export with --media is a runner session read while its runner is down:
+// the same fuller transcript the runner would give, images in the same
+// folder. Without it, an agent's conversation as the chat reads it.
 async function cmdExport(o) {
   const msgs = await getSessionMessages(o.session, { dir: o.dir });
-  const t = new Transcript(o.session);
+  const t = o.media ? new RichTranscript(o.session, undefined, new MediaStore(o.media, mediaFS, (w) => process.stderr.write(w + "\n"))) : new Transcript(o.session);
   for (const m of msgs) t.apply(m);
   process.stdout.write(JSON.stringify({ messages: t.messages() }) + "\n");
 }
@@ -74,7 +87,7 @@ async function cmdServe(o) {
     query, listSessions, getSessionMessages, sdkVersion: sdkVersion(),
     writeFile: (p, t) => writeFileSync(p, t, { mode: 0o600 }), rename: renameSync,
     exit: (code) => process.exit(code),
-    cwd: process.cwd(), env: process.env, readFile: readFileSync, fetch: globalThis.fetch,
+    cwd: process.cwd(), env: process.env, readFile: readFileSync, fetch: globalThis.fetch, mediaFS,
     out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s),
   });
   await agent.preload();

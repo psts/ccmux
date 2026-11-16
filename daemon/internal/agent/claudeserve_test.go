@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -155,6 +157,25 @@ else { console.error("bad verb " + a[0]); process.exit(2); }
 	}
 	if _, err := ClaudeOfflineMessages(ctx, root, dir, "new"); err == nil || !strings.Contains(err.Error(), "store locked") {
 		t.Fatalf("stderr must reach the caller: %v", err)
+	}
+	// A read that worked and still had something to say is heard in the
+	// daemon's log: the export has no other way to tell anyone that a
+	// picture of the conversation could not be kept. A read with nothing to
+	// say logs nothing.
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+	os.WriteFile(script, []byte(`console.error("image not kept at /m/x.png: ENOSPC"); console.log(JSON.stringify({messages: [{info: {id: "u1"}}]}))`), 0o644)
+	if raw, err := ClaudeOfflineMessages(ctx, root, dir, "new"); err != nil || !strings.Contains(string(raw), `"u1"`) {
+		t.Fatalf("a warning does not fail the read: %s %v", raw, err)
+	}
+	if !strings.Contains(logged.String(), "claude sidecar export: image not kept at /m/x.png: ENOSPC") {
+		t.Fatalf("the warning was dropped: %q", logged.String())
+	}
+	logged.Reset()
+	os.WriteFile(script, []byte(`console.log(JSON.stringify({messages: []}))`), 0o644)
+	if _, err := ClaudeOfflineMessages(ctx, root, dir, "new"); err != nil || logged.Len() != 0 {
+		t.Fatalf("a quiet read logs nothing: %q %v", logged.String(), err)
 	}
 	// A conversation with nothing in it is an empty list, not null.
 	os.WriteFile(script, []byte(`console.log("{}")`), 0o644)

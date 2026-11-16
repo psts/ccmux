@@ -358,6 +358,9 @@ func (s *Supervisor) Runner(sessionID string) *Client {
 	return s.dial(s.paths.Socket(sessionID))
 }
 
+// MediaDir is where a session's images are kept (Paths.MediaDir).
+func (s *Supervisor) MediaDir(sessionID string) string { return s.paths.MediaDir(sessionID) }
+
 // ErrSessionDone is a prompt for a session that has ended: nothing would
 // ever deliver it.
 var ErrSessionDone = errors.New("this session has ended; start a new one")
