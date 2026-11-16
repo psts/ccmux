@@ -19,7 +19,8 @@
 // The daemon's pane identity (CCMUX_DAEMON_URL, CCMUX_PANE_ID) comes from the
 // pane environment, like the opencode plugin's; busy/idle/permission/question signals
 // go there so the tab badge, the sidebar flash and the lifecycle clock work.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { query, listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { Transcript, sessionInfo } from "./translate.mjs";
@@ -48,10 +49,31 @@ process.on("warning", (w) => {
   if (w.code !== "CLAUDE_SDK_CAN_USE_TOOL_SHADOWED") process.stderr.write(`${w.name}: ${w.message}\n`);
 });
 
+// sdkVersion is the installed SDK's version, said in a runner's hello.
+function sdkVersion() {
+  try {
+    return JSON.parse(readFileSync(new URL("./node_modules/@anthropic-ai/claude-agent-sdk/package.json", import.meta.url), "utf8")).version || "";
+  } catch {
+    return "";
+  }
+}
+
+// listen puts the server on the runner's unix socket, or on the agent
+// pane's loopback port. A socket left by a runner that died is removed
+// first; systemd runs one runner per session, so it cannot be a live one.
+function listen(server, o, ready) {
+  if (!o.socket) return server.listen(o.port, "127.0.0.1", ready);
+  mkdirSync(dirname(o.socket), { recursive: true, mode: 0o700 });
+  rmSync(o.socket, { force: true });
+  return server.listen(o.socket, ready);
+}
+
 async function cmdServe(o) {
-  if (!o.port) throw new Error("--port is required");
+  if (!o.port && !o.socket) throw new Error("--port or --socket is required");
   const agent = new Agent(o, {
-    query, listSessions, getSessionMessages,
+    query, listSessions, getSessionMessages, sdkVersion: sdkVersion(),
+    writeFile: (p, t) => writeFileSync(p, t, { mode: 0o600 }), rename: renameSync,
+    exit: (code) => process.exit(code),
     cwd: process.cwd(), env: process.env, readFile: readFileSync, fetch: globalThis.fetch,
     out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s),
   });
@@ -59,18 +81,23 @@ async function cmdServe(o) {
   // The Claude child (and the peers shim inside it) comes up now, so the
   // agent is on the bus from its first second, not from its first prompt.
   agent.ensureQuery();
+  agent.recover();
   const server = createAgentServer(agent);
-  server.listen(o.port, "127.0.0.1", () => agent.log(`⚙ ${o.agent || "agent"} · chat on port ${o.port} · type here or in the chat · ctrl-d ends the session`));
+  const where = o.socket ? `socket ${o.socket}` : `chat on port ${o.port}`;
+  listen(server, o, () => agent.log(`⚙ ${o.agent || "session"} · ${where}${o.detached ? "" : " · type here or in the chat · ctrl-d ends the session"}`));
+  const end = () => agent.shutdown().finally(() => process.exit(0));
+  process.on("SIGTERM", end);
+  process.on("SIGINT", end);
+  if (o.session) agent.log("⚙ continuing conversation " + o.session.slice(0, 8));
+  // A runner under systemd has no terminal: its input is /dev/null, which
+  // closes at once, so only an agent pane ends on end-of-input.
+  if (o.detached) return;
   const rl = createInterface({ input: process.stdin, terminal: false });
   rl.on("line", (line) => {
     if (!line.trim()) return;
     try { agent.prompt(line.trim()); } catch (err) { agent.log("! " + (err && err.message ? err.message : String(err))); }
   });
-  const end = () => agent.shutdown().finally(() => process.exit(0));
   rl.on("close", end);
-  process.on("SIGTERM", end);
-  process.on("SIGINT", end);
-  if (o.session) agent.log("⚙ continuing conversation " + o.session.slice(0, 8));
 }
 
 async function main() {

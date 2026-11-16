@@ -56,6 +56,8 @@ func runSubcommand(name string, args []string) {
 		err = cmdUpgrade(args)
 	case "env-exec":
 		err = cmdEnvExec(args)
+	case "runner-exec": // a session runner's systemd unit (internal/runner)
+		err = cmdRunnerExec(args)
 	case "version": // -version/--version arrive here via main's carve-out
 		fmt.Printf("ccmuxd %s (wire contract %d)\n", version.Build, version.Contract)
 		os.Exit(0)

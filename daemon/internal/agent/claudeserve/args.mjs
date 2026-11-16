@@ -10,6 +10,8 @@
 //           [--disallowed-tools c] [--write-root DIR]... [--write-inside allow]
 //           [--setting-sources a,b] [--peers-command CMD] [--skills a,b]
 //           [--session ID]
+//   serve   (as a session runner, under systemd) --socket PATH --state FILE
+//           --session-auto ID [--claude PATH] [--detached 1] and the flags above
 //   sessions --dir DIR
 //   export   --dir DIR --session ID
 
@@ -33,6 +35,11 @@ const flags = {
   "--skills": (o, v) => { o.skills = list(v); },
   "--session": (o, v) => { o.session = v; },
   "--dir": (o, v) => { o.dir = v; },
+  "--socket": (o, v) => { o.socket = v; },
+  "--state": (o, v) => { o.state = v; },
+  "--session-auto": (o, v) => { o.sessionAuto = v; },
+  "--claude": (o, v) => { o.claude = v; },
+  "--detached": (o, v) => { o.detached = v === "1"; },
 };
 
 // parseArgs reads the flags after the verb. An unknown flag, or a flag with

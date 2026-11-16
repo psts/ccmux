@@ -1,0 +1,252 @@
+// Session runners (internal/runner): Claude sessions that run through the
+// Agent SDK in their own systemd service instead of a tmux pane. The daemon
+// keeps one row per session saying what should run, an inbox of the prompts
+// meant for it, and the cards (questions, approvals) it raised, so all of it
+// outlives the daemon, the runner and the machine.
+package store
+
+import (
+	"errors"
+	"strings"
+)
+
+const sessionsSchema = `
+-- One row per runner session. wanted is what the daemon keeps it at:
+-- running, asleep or done. The id is also the Claude session id. note says
+-- why the daemon changed it on its own (a start that failed, a session put
+-- to sleep after crashing too often), empty otherwise.
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY, name TEXT DEFAULT '', cwd TEXT NOT NULL, model TEXT DEFAULT '',
+  wanted TEXT NOT NULL, note TEXT DEFAULT '', created_at INTEGER, updated_at INTEGER
+);
+-- Prompts for a session, in the order they came. delivered_at is set once
+-- the prompt's id is in the session's transcript; until then it is sent
+-- again after every reconnect, and the runner drops one it already has.
+CREATE TABLE IF NOT EXISTS session_inbox (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL, text TEXT NOT NULL,
+  sender TEXT DEFAULT '', created_at INTEGER, delivered_at INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS session_inbox_open ON session_inbox(session_id, delivered_at, seq);
+-- Cards a session raised. state is open, answered or expired: a card still
+-- open when its runner restarts is expired, since the question it asked
+-- died with that process.
+CREATE TABLE IF NOT EXISTS session_cards (
+  id TEXT NOT NULL, session_id TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL,
+  state TEXT NOT NULL, boot TEXT DEFAULT '', created_at INTEGER, updated_at INTEGER,
+  PRIMARY KEY (session_id, id)
+);
+`
+
+// The states a session row can want.
+const (
+	SessionRunning = "running"
+	SessionAsleep  = "asleep"
+	SessionDone    = "done"
+)
+
+// The states of a card.
+const (
+	CardOpen     = "open"
+	CardAnswered = "answered"
+	CardExpired  = "expired"
+)
+
+// RunnerSession is one row of sessions. Times are unix milliseconds.
+type RunnerSession struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	Cwd       string `json:"cwd"`
+	Model     string `json:"model,omitempty"`
+	Wanted    string `json:"wanted"`
+	Note      string `json:"note,omitempty"`
+	CreatedAt int64  `json:"createdAt"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
+// InboxPrompt is one prompt waiting for, or delivered to, a session.
+type InboxPrompt struct {
+	ID          string `json:"id"`
+	SessionID   string `json:"sessionId"`
+	Seq         int64  `json:"seq"`
+	Text        string `json:"text"`
+	Sender      string `json:"sender,omitempty"`
+	CreatedAt   int64  `json:"createdAt"`
+	DeliveredAt int64  `json:"deliveredAt,omitempty"`
+}
+
+// SessionCard is one card a session raised; body is the runner's JSON.
+type SessionCard struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	Kind      string `json:"kind"`
+	Body      string `json:"body"`
+	State     string `json:"state"`
+	Boot      string `json:"boot,omitempty"`
+	CreatedAt int64  `json:"createdAt"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
+const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at"
+
+// AddRunnerSession inserts a new session row.
+func (s *SQLite) AddRunnerSession(r RunnerSession) error {
+	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?)`,
+		r.ID, r.Name, r.Cwd, r.Model, r.Wanted, r.Note, r.CreatedAt, r.UpdatedAt)
+	return err
+}
+
+// RunnerSession is one session by id, or nil when there is none.
+func (s *SQLite) RunnerSession(id string) (*RunnerSession, error) {
+	list, err := s.querySessions(`SELECT `+sessionCols+` FROM sessions WHERE id=?`, id)
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	return &list[0], nil
+}
+
+// RunnerSessions lists every session that is not done, oldest first.
+func (s *SQLite) RunnerSessions() ([]RunnerSession, error) {
+	return s.querySessions(`SELECT ` + sessionCols + ` FROM sessions WHERE wanted<>'done' ORDER BY created_at, id`)
+}
+
+func (s *SQLite) querySessions(q string, args ...any) ([]RunnerSession, error) {
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RunnerSession
+	for rows.Next() {
+		var r RunnerSession
+		if err := rows.Scan(&r.ID, &r.Name, &r.Cwd, &r.Model, &r.Wanted, &r.Note, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ErrNoSession is an update of a session with no row.
+var ErrNoSession = errors.New("no such session")
+
+// SetRunnerSessionWanted sets what the daemon keeps a session at.
+func (s *SQLite) SetRunnerSessionWanted(id, wanted string, now int64) error {
+	return s.updateSession(`UPDATE sessions SET wanted=?, updated_at=? WHERE id=?`, wanted, now, id)
+}
+
+// SetRunnerSessionNote records why the daemon acted on a session ("" clears it).
+func (s *SQLite) SetRunnerSessionNote(id, note string, now int64) error {
+	return s.updateSession(`UPDATE sessions SET note=?, updated_at=? WHERE id=?`, note, now, id)
+}
+
+// SetRunnerSessionModel records a session's model, for its later starts.
+func (s *SQLite) SetRunnerSessionModel(id, model string, now int64) error {
+	return s.updateSession(`UPDATE sessions SET model=?, updated_at=? WHERE id=?`, model, now, id)
+}
+
+func (s *SQLite) updateSession(q string, args ...any) error {
+	res, err := s.db.Exec(q, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNoSession
+	}
+	return nil
+}
+
+// AddInboxPromptAndWake queues a prompt and, when wake is set, makes an
+// asleep session want to run again with its note cleared, in one
+// transaction: either the prompt is queued and the session woken, or
+// neither, so a caller that sees an error can send again without the
+// prompt running twice.
+func (s *SQLite) AddInboxPromptAndWake(p InboxPrompt, wake bool, now int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+INSERT INTO session_inbox (id,session_id,seq,text,sender,created_at,delivered_at)
+VALUES (?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM session_inbox WHERE session_id=?),?,?,?,0)`,
+		p.ID, p.SessionID, p.SessionID, p.Text, p.Sender, p.CreatedAt); err != nil {
+		return err
+	}
+	if wake {
+		if _, err := tx.Exec(`UPDATE sessions SET wanted=?, note='', updated_at=? WHERE id=? AND wanted=?`,
+			SessionRunning, now, p.SessionID, SessionAsleep); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// UndeliveredPrompts is a session's prompts Claude does not have yet, in
+// the order they came.
+func (s *SQLite) UndeliveredPrompts(sessionID string) ([]InboxPrompt, error) {
+	rows, err := s.db.Query(`SELECT id,session_id,seq,text,sender,created_at,delivered_at FROM session_inbox
+WHERE session_id=? AND delivered_at=0 ORDER BY seq`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InboxPrompt
+	for rows.Next() {
+		var p InboxPrompt
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.Seq, &p.Text, &p.Sender, &p.CreatedAt, &p.DeliveredAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// MarkPromptsDelivered stamps the prompts Claude has.
+func (s *SQLite) MarkPromptsDelivered(ids []string, now int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	args := []any{now}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := s.db.Exec(`UPDATE session_inbox SET delivered_at=? WHERE delivered_at=0 AND id IN (?`+
+		strings.Repeat(",?", len(ids)-1)+`)`, args...)
+	return err
+}
+
+// UpsertSessionCard records a card the runner shows as pending. A card it
+// already knows keeps its state and first time; a new one opens.
+func (s *SQLite) UpsertSessionCard(c SessionCard) error {
+	_, err := s.db.Exec(`
+INSERT INTO session_cards (id,session_id,kind,body,state,boot,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
+ON CONFLICT(session_id,id) DO NOTHING`,
+		c.ID, c.SessionID, c.Kind, c.Body, CardOpen, c.Boot, c.CreatedAt, c.CreatedAt)
+	return err
+}
+
+// OpenSessionCards lists a session's open cards.
+func (s *SQLite) OpenSessionCards(sessionID string) ([]SessionCard, error) {
+	rows, err := s.db.Query(`SELECT id,session_id,kind,body,state,boot,created_at,updated_at FROM session_cards
+WHERE session_id=? AND state=? ORDER BY created_at, id`, sessionID, CardOpen)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionCard
+	for rows.Next() {
+		var c SessionCard
+		if err := rows.Scan(&c.ID, &c.SessionID, &c.Kind, &c.Body, &c.State, &c.Boot, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SetSessionCardState moves an open card to answered or expired.
+func (s *SQLite) SetSessionCardState(sessionID, id, state string, now int64) error {
+	_, err := s.db.Exec(`UPDATE session_cards SET state=?, updated_at=? WHERE session_id=? AND id=? AND state=?`,
+		state, now, sessionID, id, CardOpen)
+	return err
+}

@@ -45,6 +45,17 @@ export const handlers = {
   "GET question": (a) => [200, a.pendingQuestions()],
   "POST question/:id/reply": (a, id, body) => [a.replyQuestion(id, body.answers) ? 200 : 404, {}],
   "POST question/:id/reject": (a, id) => [a.rejectQuestion(id) ? 200 : 404, {}],
+  // A session runner's own surface (the daemon's internal/runner): its
+  // versions at connect, prompts by inbox id, model switches, and which
+  // prompts Claude already has.
+  "GET hello": (a) => [200, a.hello()],
+  "POST prompt": (a, id, body) => {
+    const text = String(body.text || "");
+    if (!text.trim()) return [400, { error: "empty prompt" }];
+    if (!body.id) return [400, { error: "a prompt needs its inbox id" }];
+    return [200, { sent: a.prompt(text, String(body.id)) }];
+  },
+  "POST delivered": (a, id, body) => [200, { delivered: a.delivered(Array.isArray(body.ids) ? body.ids : []) }],
   // The daemon's PushPrompt (first message, bus messages) speaks opencode's
   // TUI pair: append text to the prompt box, then submit it.
   "POST tui/append-prompt": (a, id, body) => {
@@ -83,16 +94,21 @@ export function send(res, status, body) {
 // eventStream is GET /event: server-sent events, one JSON object per data
 // line, kept open until the client leaves. Whoever broadcasts writes to
 // every response in agent.clients.
-function eventStream(agent, req, res) {
+// A runner's reader passes ?after=N to get the numbered events it missed
+// first (and gap: true in the connected event when some were dropped).
+function eventStream(agent, req, res, after) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-  res.write("data: " + JSON.stringify({ type: "server.connected", properties: {} }) + "\n\n");
+  const replay = after == null || !agent.events ? null : agent.events.after(after);
+  const props = replay ? { gap: replay.gap, seq: agent.events.seq } : {};
+  res.write("data: " + JSON.stringify({ type: "server.connected", properties: props }) + "\n\n");
+  for (const x of replay ? replay.events : []) res.write("id: " + x.seq + "\ndata: " + JSON.stringify(x.ev) + "\n\n");
   agent.clients.add(res);
   req.on("close", () => agent.clients.delete(res));
 }
 
 export async function dispatch(agent, req, res) {
   const url = new URL(req.url, "http://127.0.0.1");
-  if (req.method === "GET" && url.pathname === "/event") return eventStream(agent, req, res);
+  if (req.method === "GET" && url.pathname === "/event") return eventStream(agent, req, res, url.searchParams.get("after"));
   const { key, id } = routeKey(req.method, url.pathname);
   const handler = handlers[key];
   if (!handler) return send(res, 404, { error: "no such route" });

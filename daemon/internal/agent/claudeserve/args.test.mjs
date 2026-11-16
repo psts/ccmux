@@ -59,3 +59,19 @@ test("an isolated start's flags: repeated plugin and mcp files, setting sources,
   assert.deepEqual(o.skills, ["radar:scan", "kb:draft"]);
   assert.deepEqual(parseArgs(["--skills", ""]).skills, [], "every skill off is an empty list, not unset");
 });
+
+test("a session runner's line, as internal/runner's BuildSpec writes it", () => {
+  const o = parseArgs([
+    "--socket", "/run/user/1/ccmuxd/s/abc.sock", "--state", "/st/abc.state.json", "--session-auto", "abc",
+    "--detached", "1", "--setting-sources", "user,project,local", "--agent", "app", "--claude", "/home/u/.local/bin/claude",
+  ]);
+  assert.equal(o.socket, "/run/user/1/ccmuxd/s/abc.sock");
+  assert.equal(o.state, "/st/abc.state.json");
+  assert.equal(o.sessionAuto, "abc");
+  assert.equal(o.detached, true, "a runner does not end on closed input");
+  assert.equal(o.claude, "/home/u/.local/bin/claude");
+  assert.deepEqual(o.settingSources, ["user", "project", "local"]);
+  assert.equal(o.port, undefined);
+  assert.equal(o.session, undefined, "--session-auto is not --session: it opens fresh when nothing is on disk");
+  assert.equal(parseArgs(["--detached", "0"]).detached, false, "only 1 detaches");
+});

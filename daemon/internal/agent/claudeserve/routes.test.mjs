@@ -151,3 +151,31 @@ test("a handler that throws answers 500 and is logged", async () => {
     assert.deepEqual(agent.logged, ["! store gone"]);
   });
 });
+
+test("the runner routes: hello, prompts by inbox id, delivered, and a replay after n", async () => {
+  await withServer(async (agent, call, base) => {
+    const { EventLog } = await import("./runnerstate.mjs");
+    agent.events = new EventLog();
+    agent.events.push({ type: "a" });
+    agent.events.push({ type: "b" });
+    agent.hello = () => ({ protocol: 1, session: "ses_1" });
+    agent.prompt = (t, id) => { agent.prompts.push([t, id]); return id !== "dup"; };
+    agent.delivered = (ids) => ids.filter((id) => id === "p1");
+    assert.equal((await call("GET", "/hello")).body.protocol, 1);
+    assert.deepEqual((await call("POST", "/prompt", { id: "p1", text: "hi" })).body, { sent: true });
+    assert.deepEqual((await call("POST", "/prompt", { id: "dup", text: "hi" })).body, { sent: false });
+    assert.equal((await call("POST", "/prompt", { text: "hi" })).status, 400, "a prompt needs its inbox id");
+    assert.equal((await call("POST", "/prompt", { id: "p2", text: " " })).status, 400);
+    assert.equal((await call("POST", "/model", { model: "haiku" })).status, 404, "no live model switch: it applies at the next start");
+    assert.deepEqual((await call("POST", "/delivered", { ids: ["p1", "p9"] })).body, { delivered: ["p1"] });
+    const ctl = new AbortController();
+    const r = await fetch(base + "/event?after=1", { signal: ctl.signal });
+    const reader = r.body.getReader();
+    let text = "";
+    while (!text.includes('"type":"b"')) text += new TextDecoder().decode((await reader.read()).value);
+    ctl.abort();
+    assert.match(text, /"gap":false/);
+    assert.match(text, /id: 2\ndata: \{"type":"b"\}/);
+    assert.doesNotMatch(text, /"type":"a"/, "only events after 1");
+  });
+});

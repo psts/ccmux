@@ -491,3 +491,122 @@ test("walls: a PreToolUse hook refuses writes outside the roots before any saved
   const { agent: plain } = makeAgent({ writeRoots: [] });
   assert.equal(plain.options().hooks, undefined);
 });
+
+// --- the session runner (--socket, --state, --session-auto, --claude) ---
+
+// runnerAgent is an agent started the way internal/runner starts one, with
+// its state file kept in memory.
+function runnerAgent(opts = {}, script = []) {
+  const files = {};
+  const made = makeAgent({ socket: "/run/s.sock", state: "/st/s.json", sessionAuto: "sess-1", claude: "/bin/claude",
+    settingSources: ["user", "project", "local"], readFile: (p) => { if (p in files) return files[p]; const e = new Error("no"); e.code = "ENOENT"; throw e; }, ...opts }, script);
+  made.agent.sdk.writeFile = (p, t) => { files[p] = t; };
+  made.agent.sdk.rename = (a, b) => { files[b] = files[a]; delete files[a]; };
+  made.sdk.exits = [];
+  made.agent.sdk.exit = (c) => made.sdk.exits.push(c);
+  // A runner's stream puts an id line before each data line.
+  made.agent.clients.clear();
+  made.agent.clients.add({ write: (line) => made.events.push(JSON.parse(line.split("data: ")[1])), end() {} });
+  return { ...made, files };
+}
+
+test("a runner loads the user's own settings, keeps their connectors and runs the named claude", () => {
+  const { agent, sdk } = runnerAgent();
+  agent.prompt("hi", "p1");
+  const o = sdk.queries[0].options;
+  assert.deepEqual(o.settingSources, ["user", "project", "local"]);
+  assert.equal(o.env, undefined, "connectors stay on for the user's own session");
+  assert.equal(o.pathToClaudeCodeExecutable, "/bin/claude");
+  assert.equal(o.permissionMode, undefined, "the user's settings choose the mode");
+  const pane = makeAgent();
+  pane.agent.prompt("hi");
+  assert.equal(pane.sdk.queries[0].options.permissionMode, "default", "an agent pane keeps its fixed mode");
+});
+
+test("a prompt goes in under its inbox id, and the same id is never sent twice", async () => {
+  const { agent, sdk } = runnerAgent();
+  assert.equal(agent.prompt("hi", "p1"), true);
+  assert.equal(agent.prompt("hi", "p1"), false, "a resend of a prompt already sent");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sdk.queries[0].sent.map((m) => m.uuid), ["p1"]);
+});
+
+test("a runner whose Claude dies ends itself, keeping its session id; an agent pane goes on", async () => {
+  const { agent, sdk } = runnerAgent();
+  await agent.preload();
+  agent.prompt("hi", "p1");
+  sdk.queries[0].ended(); // the Claude child exits before replying
+  await tick();
+  assert.deepEqual(sdk.exits, [1], "systemd restarts it, and the start resumes");
+  assert.equal(agent.sid, "sess-1", "never a new id: the row and the transcript stay matched");
+  const pane = makeAgent();
+  pane.sdk.exits = [];
+  pane.agent.sdk.exit = (c) => pane.sdk.exits.push(c);
+  pane.agent.prompt("hi");
+  pane.sdk.queries[0].ended();
+  await tick();
+  assert.deepEqual(pane.sdk.exits, [], "an agent pane is not ended by a failed query");
+});
+
+test("a second prompt queued behind a turn keeps the runner busy past the first result", () => {
+  const { agent } = runnerAgent();
+  agent.prompt("fix it", "p1");
+  agent.prompt("and commit", "p2");
+  agent.onMessage({ type: "assistant", user_message_uuid: "p1", message: { content: [] } });
+  agent.onResult({ type: "result" });
+  assert.equal(agent.busy, true);
+  assert.equal(agent.hello().turnOpen, true);
+  agent.onMessage({ type: "assistant", user_message_uuid: "p2", message: { content: [] } });
+  agent.onResult({ type: "result" });
+  assert.equal(agent.busy, false);
+});
+
+test("a reply stamped with a prompt's id marks it delivered, and the state file says so", () => {
+  const { agent, files } = runnerAgent();
+  agent.prompt("hi", "p1");
+  agent.onMessage({ type: "assistant", user_message_uuid: "p1", message: { content: [] } });
+  assert.deepEqual(agent.delivered(["p1", "p2"]), ["p1"]);
+  assert.deepEqual(JSON.parse(files["/st/s.json"]).delivered, ["p1"]);
+  assert.deepEqual(JSON.parse(files["/st/s.json"]).open.map((p) => p.id), ["p1"], "the prompt is open until its result");
+  agent.onResult({ type: "result" });
+  assert.deepEqual(JSON.parse(files["/st/s.json"]).open, []);
+  assert.equal(agent.busy, false);
+});
+
+test("a runner restarted mid-turn resumes its transcript and is told to check before redoing", async () => {
+  const state = JSON.stringify({ open: [{ id: "p0", text: "commit the fix" }], delivered: [] });
+  const { agent, sdk } = runnerAgent({ readFile: (p) => (p === "/st/s.json" ? state : "# base\n") });
+  sdk.stored["sess-1"] = [{ type: "user", uuid: "p0", message: { role: "user", content: "commit the fix" } }];
+  await agent.preload();
+  assert.equal(agent.resume, true, "a transcript on disk is resumed");
+  assert.deepEqual(agent.delivered(["p0"]), ["p0"], "prompts in the transcript count as delivered");
+  agent.recover();
+  await new Promise((r) => setImmediate(r));
+  const sent = sdk.queries[0].sent.map((m) => m.message.content);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /cut off/);
+  assert.match(sent[0], /commit the fix/);
+  assert.equal(sdk.queries[0].options.resume, "sess-1");
+});
+
+test("a runner with no transcript yet opens its session fresh, and a clean stop needs no notice", async () => {
+  const { agent, sdk } = runnerAgent();
+  await agent.preload();
+  assert.equal(agent.resume, false);
+  agent.recover();
+  assert.equal(sdk.queries.length, 0, "nothing to recover, nothing sent");
+  agent.prompt("hi", "p1");
+  assert.equal(sdk.queries[0].options.sessionId, "sess-1");
+});
+
+test("a runner numbers its events for a reader that reconnects", () => {
+  const { agent } = runnerAgent();
+  agent.prompt("hi", "p1");
+  const { events, gap } = agent.events.after(0);
+  assert.equal(gap, false);
+  assert.ok(events.length >= 2);
+  assert.deepEqual(events.map((x) => x.seq), events.map((_, i) => i + 1));
+  assert.equal(agent.hello().seq, events.length);
+  assert.equal(agent.hello().protocol, 1);
+});
+

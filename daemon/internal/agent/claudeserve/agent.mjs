@@ -7,6 +7,8 @@ import { randomUUID, randomInt } from "node:crypto";
 import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAnswers, questionCardText } from "./translate.mjs";
 import { mcpFromFiles } from "./mcp.mjs";
 import { WRITE_TOOLS, wallSafe, wallVerdict } from "./walls.mjs";
+import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.mjs";
+import { RunnerTurns } from "./runnerturns.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
 const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
@@ -42,8 +44,20 @@ export class Agent {
     this.out = deps.out;
     this.fetch = deps.fetch;
     this.cwd = deps.cwd;
-    this.sid = o.session || randomUUID();
+    // A runner names its session with --session-auto: that id is resumed
+    // when its transcript is on disk (decided in preload), opened fresh
+    // when not. --session always resumes, as the agent panes expect.
+    this.sid = o.session || o.sessionAuto || randomUUID();
     this.resume = !!o.session;
+    // The runner's memory across its own restarts (runnerstate.mjs): only
+    // a runner passes --state, so an agent pane keeps none.
+    this.state = loadState(o.state, deps.readFile, (w) => this.log("! " + w));
+    // A runner (--socket) tracks its turns by prompt (runnerturns.mjs); an
+    // agent pane keeps the one busy flag.
+    this.turns = o.socket ? new RunnerTurns(this.state) : null;
+    this.events = new EventLog();
+    this.claudeCode = "";
+    this.boot = randomUUID(); // names this process, so the daemon sees a restart (cards it raised died with the last one)
     // Read here, not per query: an unreadable base file ends the sidecar
     // before it listens (the pane drops to its shell, read as asleep)
     // rather than failing a prompt and leaving the pane busy for good.
@@ -61,6 +75,7 @@ export class Agent {
     this.permissions = new Map(); // id → {request, resolve}
     this.questions = new Map();
     this.pending = ""; // text appended by tui/append-prompt, sent by tui/submit-prompt
+    this.queued = new Set(); // prompt ids sent by this process
     this.feed = null; // the running query's prompt queue (see input)
     this.q = null;
     this.busy = false;
@@ -133,9 +148,25 @@ export class Agent {
     }
   }
 
+  // broadcast numbers each event (the SSE id line) and keeps it for a
+  // client that reconnects with ?after=N; readers that only want data lines
+  // skip the id line.
   broadcast(ev) {
-    const line = "data: " + JSON.stringify(ev) + "\n\n";
+    const seq = this.events.push(ev);
+    const idLine = this.o.socket ? "id: " + seq + "\n" : ""; // agent panes keep their old stream byte for byte
+    const line = idLine + "data: " + JSON.stringify(ev) + "\n\n";
     for (const res of this.clients) res.write(line);
+  }
+
+  // persist writes the runner's state file; a write that fails is said and
+  // the session goes on, since the state only sharpens a later recovery.
+  persist() {
+    if (!this.o.state) return;
+    try {
+      saveState(this.o.state, this.state, { writeFile: this.sdk.writeFile, rename: this.sdk.rename });
+    } catch (err) {
+      this.log("! state file: " + (err && err.message ? err.message : String(err)));
+    }
   }
 
   emit(events) {
@@ -161,13 +192,15 @@ export class Agent {
     const opts = {
       cwd: this.cwd,
       includePartialMessages: true,
-      permissionMode: "default",
       permissionPrompts: "host",
       canUseTool: (name, input, extra) => this.canUseTool(name, input, extra),
       abortController: this.abort,
       additionalDirectories: o.addDirs,
       stderr: (data) => this.sdk.err(data),
     };
+    // An agent pane asks by its base's rules; a runner is the user's own
+    // session and keeps the mode their settings choose.
+    if (!o.socket) opts.permissionMode = "default";
     if (this.resume) opts.resume = this.sid;
     else opts.sessionId = this.sid;
     if (o.pluginDirs.length) opts.plugins = o.pluginDirs.map((path) => ({ type: "local", path }));
@@ -177,8 +210,11 @@ export class Agent {
     // any settings file, so they are switched off here too.
     if (o.settingSources) {
       opts.settingSources = o.settingSources;
-      opts.env = { ...this.sdk.env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" };
+      // A runner loading the user's own settings is the user's session and
+      // keeps their connectors; an isolated agent (project only) does not.
+      if (!o.settingSources.includes("user")) opts.env = { ...this.sdk.env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" };
     }
+    if (o.claude) opts.pathToClaudeCodeExecutable = o.claude;
     if (o.skills) opts.skills = o.skills;
     if (this.systemPrompt) opts.systemPrompt = { type: "preset", preset: "claude_code", append: this.systemPrompt };
     if (o.model) opts.model = o.model;
@@ -241,6 +277,14 @@ export class Agent {
       // the next one's error.
       feed.dead = true;
       if (feed.wake) feed.wake();
+      // A runner whose Claude died ends with it: systemd starts it again,
+      // and the start is the one path that resumes, sends the notice and
+      // counts toward the restart cap. It keeps its session id throughout.
+      if (this.turns && !this.abort.signal.aborted) {
+        this.log("! Claude stopped; ending this runner so it starts again and resumes");
+        this.sdk.exit(1);
+        return;
+      }
       if (this.feed === feed) this.feed = null;
       this.interrupting = false;
       if (!this.abort.signal.aborted && !this.resume) this.rotateSession();
@@ -260,7 +304,9 @@ export class Agent {
 
   onMessage(m) {
     if (m.type === "assistant") this.resume = true; // a reply is on disk: this conversation can be continued
+    this.noteDelivered(m);
     if (m.type === "system" && m.subtype === "init") {
+      this.claudeCode = m.claude_code_version || this.claudeCode;
       const mcp = (m.mcp_servers || []).map((x) => `${x.name} ${x.status}`).join(", ");
       this.log(`⚙ ${this.o.agent} on ${m.model} (session ${this.sid.slice(0, 8)})${mcp ? " · mcp: " + mcp : ""}`);
       return;
@@ -274,7 +320,19 @@ export class Agent {
     this.print(m);
   }
 
+  // noteDelivered records the prompts Claude has: a reply names the prompt
+  // it answers (user_message_uuid), and the SDK echoes a user message back
+  // with its id.
+  noteDelivered(m) {
+    const ids = [];
+    if (m.type === "assistant") ids.push(m.user_message_uuid, ...(m.user_message_uuids || []));
+    if (m.type === "user" && !m.parent_tool_use_id) ids.push(m.uuid);
+    if (this.turns && m.type === "assistant") this.turns.stamped(ids);
+    if (this.state.markDelivered(ids.filter(Boolean))) this.persist();
+  }
+
   onResult(m) {
+    if (this.turns && this.turns.result()) this.persist();
     const failed = m.is_error && !this.interrupting;
     this.interrupting = false;
     if (failed) {
@@ -284,7 +342,7 @@ export class Agent {
       this.log("! " + text);
     }
     this.broadcast({ type: "session.idle", properties: { sessionID: this.sid } });
-    this.setBusy(false);
+    this.setBusy(this.turns ? this.turns.busy() : false);
   }
 
   // print is the terminal view: reply text as it streams, tool calls on
@@ -311,13 +369,40 @@ export class Agent {
 
   // --- what the daemon and the terminal send in ---
 
-  prompt(text) {
-    this.emit(this.transcript.userTurn(text));
+  // prompt sends text as the next turn. id is the prompt's own uuid, which
+  // lands in the transcript and on the reply; a runner passes the inbox id,
+  // and a prompt whose id Claude already has is dropped, so a resend after a
+  // crash never runs twice. It reports whether the prompt was sent.
+  prompt(text, id = "") {
+    if (id && (this.state.isDelivered(id) || this.queued.has(id))) return false;
+    const uuid = id || randomUUID();
+    this.queued.add(uuid);
+    this.emit(this.transcript.userTurn(text, uuid));
     this.log("> " + text);
+    if (this.turns) {
+      this.turns.sent(uuid, text);
+      this.persist();
+    }
     this.setBusy(true);
     this.ensureQuery();
-    this.feed.inbox.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null });
+    this.feed.inbox.push({ type: "user", uuid, message: { role: "user", content: text }, parent_tool_use_id: null });
     if (this.feed.wake) this.feed.wake();
+    return true;
+  }
+
+
+  // hello is what a runner says at connect: versions to check, and where
+  // the session is.
+  hello() {
+    return {
+      protocol: RUNNER_PROTOCOL, boot: this.boot, session: this.sid, busy: this.busy, turnOpen: !!this.turns && this.turns.busy(),
+      seq: this.events.seq, model: this.o.model || "", claudeCode: this.claudeCode, sdk: this.sdk.sdkVersion || "",
+    };
+  }
+
+  // delivered is the subset of ids Claude has.
+  delivered(ids) {
+    return (ids || []).filter((id) => this.state.isDelivered(id));
   }
 
   // interrupt stops the running turn: pending cards are answered as denied
@@ -358,7 +443,7 @@ export class Agent {
     // An isolated start reads no local settings, so an "always" saved there
     // would be forgotten at the next wake: it goes to the home's project
     // settings, which that start does read.
-    if (this.o.settingSources) suggestions = suggestions.map((sg) => (sg.destination === "localSettings" ? { ...sg, destination: "projectSettings" } : sg));
+    if (this.o.settingSources && !this.o.settingSources.includes("user")) suggestions = suggestions.map((sg) => (sg.destination === "localSettings" ? { ...sg, destination: "projectSettings" } : sg));
     const request = {
       id, sessionID: this.sid, permission: name, patterns: [permissionPattern(name, input)],
       always: suggestions.length ? ["*"] : [],
@@ -461,8 +546,23 @@ export class Agent {
   // conversation that cannot be read ends the start (main exits, the pane
   // drops to its shell) instead of continuing it as an empty transcript.
   async preload() {
-    if (!this.resume) return;
-    for (const m of await this.sdk.getSessionMessages(this.sid, { dir: this.cwd })) this.transcript.apply(m);
+    if (!this.resume && !this.o.sessionAuto) return;
+    const msgs = await this.sdk.getSessionMessages(this.sid, { dir: this.cwd });
+    if (this.o.sessionAuto) this.resume = msgs.length > 0;
+    for (const m of msgs) {
+      this.transcript.apply(m);
+      if (m.type === "user" && m.uuid) this.state.markDelivered([m.uuid]);
+    }
+  }
+
+  // recover runs once at a runner's start, after preload: a turn that was
+  // cut off gets the interruption notice as the next prompt.
+  recover() {
+    if (!this.turns) return;
+    const notice = this.turns.notice();
+    if (!notice) return;
+    this.persist();
+    this.prompt(notice);
   }
 
   // shutdown ends the SDK session and the event streams; the caller exits.

@@ -92,7 +92,9 @@ type Server struct {
 
 	// sidecars supervises the Meridian processes meridian-kind accounts call
 	// for, wired by SetSidecars; nil means no sidecars (settings omit the key).
-	sidecars sidecarSupervisor
+	sidecars   sidecarSupervisor
+	runners    runnerSupervisor // session runners (sessions.go); nil turns their routes off
+	runnerRows runnerRows
 
 	// agents is the base-agent folder store, wired by SetAgents; nil means
 	// the /v1/agents routes answer 503.
@@ -358,6 +360,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("POST /v1/projects", s.createProject)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
+	s.sessionRoutes(mux)
 	// Base agents: folder-backed role definitions (internal/agent). Per-name
 	// upsert and explicit delete, not a list replace — see putAgent.
 	mux.HandleFunc("GET /v1/agents", s.listAgents)

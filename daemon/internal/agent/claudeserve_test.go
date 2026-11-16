@@ -227,7 +227,7 @@ func TestEnsureClaudeServeWritesFilesAndSkipsAnInstalledSDK(t *testing.T) {
 	if got, _ := os.ReadFile(notes); string(got) != "{}" {
 		t.Error("the install's own files under node_modules must not be touched")
 	}
-	for _, name := range []string{"translate.test.mjs", "routes.test.mjs", "agent.test.mjs", "args.test.mjs"} {
+	for _, name := range []string{"translate.test.mjs", "routes.test.mjs", "agent.test.mjs", "args.test.mjs", "runnerstate.test.mjs", "runnerturns.test.mjs"} {
 		if _, err := os.Stat(filepath.Join(st.Root, ClaudeServeDir, name)); err == nil {
 			t.Errorf("%s is a test, not shipped", name)
 		}

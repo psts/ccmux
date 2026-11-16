@@ -44,7 +44,7 @@ for f in daemon/web/*.js; do node --check "$f" || exit 1; done
 # so no node_modules is needed here; serve.mjs, the entry point that imports the SDK
 # and only wires the others together, is parse-checked only.
 for f in daemon/internal/agent/claudeserve/*.mjs; do node --check "$f" || exit 1; done
-node --test daemon/internal/agent/claudeserve/args.test.mjs daemon/internal/agent/claudeserve/translate.test.mjs daemon/internal/agent/claudeserve/routes.test.mjs daemon/internal/agent/claudeserve/agent.test.mjs daemon/internal/agent/claudeserve/mcp.test.mjs daemon/internal/agent/claudeserve/walls.test.mjs || exit 1
+node --test daemon/internal/agent/claudeserve/args.test.mjs daemon/internal/agent/claudeserve/translate.test.mjs daemon/internal/agent/claudeserve/routes.test.mjs daemon/internal/agent/claudeserve/agent.test.mjs daemon/internal/agent/claudeserve/mcp.test.mjs daemon/internal/agent/claudeserve/walls.test.mjs daemon/internal/agent/claudeserve/runnerstate.test.mjs daemon/internal/agent/claudeserve/runnerturns.test.mjs || exit 1
 
 # Web lens smoke test. Added 2026-09-11 because the parse above is not enough:
 # a const declared inside a function and referenced from module scope passes
