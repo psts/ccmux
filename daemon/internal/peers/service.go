@@ -212,6 +212,11 @@ type Service struct {
 	// none.
 	RunnerPane  func(paneID string) (RunnerInfo, bool)
 	RunnerInbox func(paneID, promptID, text, sender string) error
+	// RunnerSummary hears the summary a runner session's peer set
+	// (set_summary): the session's page shows it as the session's goal, and
+	// the daemon keeps it with the session. Called outside the bus lock; nil
+	// hears nothing.
+	RunnerSummary func(paneID, summary string)
 
 	// SpawnTimeout is how long a spawned teammate has to register before its
 	// requester gets an "unreachable" notice. Exported for tests.

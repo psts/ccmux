@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
@@ -95,5 +96,67 @@ func TestManager_GitStatusCollector(t *testing.T) {
 	got = mgr.Workspace(ws.ID).Git
 	if got == nil || len(got.UntrackedFiles) != 1 || got.UntrackedFiles[0].Path != "new.txt" {
 		t.Fatalf("git after change = %+v, want untracked new.txt", got)
+	}
+}
+
+// A runner session works in its repo with no terminal session open there, so
+// a closed workspace that holds one has its git state read; a closed
+// workspace with none is left alone, as before.
+func TestManager_GitStatusOfAClosedWorkspaceWithARunnerSession(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	st, err := store.Open(t.TempDir() + "/reg.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "main"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := New(ctx, &tmux.Server{Socket: "unused"}, st)
+	worked := &model.Workspace{ID: "worked", Name: "app", RepoPath: repo, Status: model.StatusCold}
+	idle := &model.Workspace{ID: "idle", Name: "api", RepoPath: repo, Status: model.StatusCold}
+	m.byID["worked"], m.byID["idle"] = &entry{ws: worked}, &entry{ws: idle}
+	m.SyncRunnerPane(store.RunnerSession{ID: "s1", Cwd: repo, Wanted: store.SessionRunning, PaneID: "run1", WorkspaceID: "worked"})
+
+	id, ch := m.SubscribeEvents()
+	defer m.UnsubscribeEvents(id)
+	m.StartGitStatus(20 * time.Millisecond)
+	deadline := time.After(5 * time.Second)
+	for got := false; !got; {
+		select {
+		case ev := <-ch:
+			if ev.Kind == "workspace-git" && ev.WorkspaceID == "idle" {
+				t.Fatal("a closed workspace nobody works in was read")
+			}
+			got = ev.Kind == "workspace-git" && ev.WorkspaceID == "worked"
+		case <-deadline:
+			t.Fatal("the closed workspace with a runner session never got its git state")
+		}
+	}
+	time.Sleep(60 * time.Millisecond) // a few more passes over the idle one
+	list := m.List()
+	for _, ws := range list {
+		switch ws.ID {
+		case "worked":
+			if ws.Git == nil || ws.Git.Branch != "main" || len(ws.Git.UntrackedFiles) != 1 {
+				t.Fatalf("its state: %+v", ws.Git)
+			}
+		case "idle":
+			if ws.Git != nil {
+				t.Fatalf("the idle one was read: %+v", ws.Git)
+			}
+		}
 	}
 }

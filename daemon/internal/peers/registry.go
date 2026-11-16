@@ -273,16 +273,24 @@ func (s *Service) touch(peerID string) {
 	s.touchLocked(peerID)
 }
 
-// SetSummary updates a peer's work summary.
+// SetSummary updates a peer's work summary. A runner session's is also
+// handed to RunnerSummary, which keeps it with the session (the bus holds
+// summaries in memory only); that call is made after the lock is released,
+// since it writes to the registry.
 func (s *Service) SetSummary(peerID, summary string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	p := s.peers[peerID]
 	if p == nil {
+		s.mu.Unlock()
 		return false
 	}
 	p.Summary = summary
 	s.touchLocked(peerID)
+	pane, keep := p.PaneID, s.RunnerSummary != nil && s.runnerPeerLocked(p)
+	s.mu.Unlock()
+	if keep {
+		s.RunnerSummary(pane, summary)
+	}
 	return true
 }
 

@@ -313,3 +313,30 @@ func TestAWindowNoticeDoesNotWakeAnAsleepRunner(t *testing.T) {
 	}
 	eventually(t, "the notice as a prompt", func() bool { return len(box.got()) == 2 })
 }
+
+func TestARunnersSummaryIsHandedOnAndAnotherPeersIsNot(t *testing.T) {
+	svc, _, _, _ := runnerBus(t)
+	svc.EnsureRunnerPeer("run1", "/r/app")
+	var kept []string
+	svc.RunnerSummary = func(paneID, summary string) {
+		// Called outside the bus lock: asking the bus something here must not hang.
+		_ = svc.PeerForPane(paneID)
+		kept = append(kept, paneID+": "+summary)
+	}
+	runner := svc.PeerForPane("run1")
+	if !svc.SetSummary(runner, "Export closed trades. Next: the admin table.") {
+		t.Fatal("the session's peer takes a summary")
+	}
+	// A terminal session's peer in the same group keeps its summary on the
+	// bus only: it has no session row to keep it on.
+	other := svc.RegisterFrom(RegisterReq{PID: 4242, CWD: "/r/app", GitRoot: "/r/app", PaneID: "tmux1"}, "")
+	if !svc.SetSummary(other.PeerID, "something else") {
+		t.Fatal("a terminal peer takes a summary")
+	}
+	if svc.SetSummary("no-such-peer", "x") {
+		t.Fatal("an unknown peer takes none")
+	}
+	if len(kept) != 1 || kept[0] != "run1: Export closed trades. Next: the admin table." {
+		t.Fatalf("only the runner's summary is handed on: %v", kept)
+	}
+}

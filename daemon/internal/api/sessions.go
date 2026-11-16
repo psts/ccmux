@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
@@ -42,6 +44,9 @@ type runnerRows interface {
 	UndeliveredPrompts(sessionID string) ([]store.InboxPrompt, error)
 	OpenSessionCards(sessionID string) ([]store.SessionCard, error)
 	SetSessionCardState(sessionID, id, state string, now int64) error
+	RunnerLead(workspaceID string) (*store.RunnerSession, error)
+	SetRunnerSessionTitle(id, title string, now int64) error
+	SetRunnerSessionGoal(id, goal string, now int64) error
 }
 
 // SetRunners turns the session routes on.
@@ -81,6 +86,7 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/model", s.setRunnerModel)
 	mux.HandleFunc("POST /v1/sessions/{id}/restart", s.restartRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/acted", s.actedRunnerSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/title", s.setRunnerTitle)
 	// The thread page (sessionstream.go, sessioncards.go).
 	mux.HandleFunc("GET /v1/sessions/{id}/ws", s.streamRunnerSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/messages", s.runnerSessionMessages)
@@ -114,21 +120,26 @@ func (s *Server) listRunnerSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": views})
 }
 
-// createRunnerSession: POST /v1/sessions {cwd, name?, model?, workspaceId?}.
-// The session joins a repo workspace: the one named, else the one whose
-// folder is cwd or holds it. With neither it is refused (409): a session in
-// no workspace would be on no bus and raise no alert, which is the session
-// nobody can see that this route exists to stop making. A worktree outside
-// its repo's folder names its workspace.
+// createRunnerSession: POST /v1/sessions {cwd, name?, model?, workspaceId?,
+// kind?, title?}. The session joins a repo workspace: the one named, else
+// the one whose folder is cwd or holds it. With neither it is refused
+// (409): a session in no workspace would be on no bus and raise no alert,
+// which is the session nobody can see that this route exists to stop
+// making. A worktree outside its repo's folder names its workspace.
+//
+// kind "lead" asks for the repo's own session, of which a workspace has
+// one: when it is there already (whoever made it, a moment ago or last
+// week) the answer is that session with 200, never a second lead. Anything
+// else is a thread, made new each time (201).
 func (s *Server) createRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if !s.runnersReady(w) {
 		return
 	}
-	var in struct{ Cwd, Name, Model, WorkspaceID string }
+	var in struct{ Cwd, Name, Model, WorkspaceID, Kind, Title string }
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if msg := sessionFolderProblem(in.Cwd); msg != "" {
+	if msg := newSessionProblem(in.Cwd, in.Kind); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -138,12 +149,100 @@ func (s *Server) createRunnerSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
-	sess, err := s.runners.Create(runner.NewSession{Cwd: cwd, Name: in.Name, Model: in.Model, WorkspaceID: wsID})
+	if in.Kind == store.SessionLead && s.answerLead(w, wsID) {
+		return
+	}
+	sess, err := s.runners.Create(runner.NewSession{Cwd: cwd, Name: in.Name, Model: in.Model, WorkspaceID: wsID, Kind: in.Kind, Title: sessionTitle(in.Title)})
+	if errors.Is(err, store.ErrLeadExists) && s.answerLead(w, wsID) {
+		return // another window made the lead between the look and the insert
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, s.viewOf(sess))
+}
+
+// newSessionProblem says why a session cannot be made as asked, or "".
+func newSessionProblem(cwd, kind string) string {
+	if kind != "" && kind != store.SessionLead {
+		return `kind is "lead" (the repo's own session) or left out (a thread)`
+	}
+	return sessionFolderProblem(cwd)
+}
+
+// answerLead answers with the workspace's lead when it has one, and says
+// whether it did.
+func (s *Server) answerLead(w http.ResponseWriter, wsID string) bool {
+	lead, err := s.runnerRows.RunnerLead(wsID)
+	if err != nil {
+		log.Printf("sessions: lead of workspace %s not read: %v", wsID, err)
+	}
+	if lead == nil {
+		return false
+	}
+	writeJSON(w, http.StatusOK, s.viewOf(*lead))
+	return true
+}
+
+// maxSessionTitle bounds a title: it is one line in a sidebar row.
+const maxSessionTitle = 80
+
+// sessionTitle is a title as it is kept: its first line, trimmed and cut.
+func sessionTitle(text string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	line = strings.TrimSpace(line)
+	if r := []rune(line); len(r) > maxSessionTitle {
+		return strings.TrimSpace(string(r[:maxSessionTitle-1])) + "…"
+	}
+	return line
+}
+
+// setRunnerTitle: POST /v1/sessions/{id}/title {title} names a session.
+func (s *Server) setRunnerTitle(w http.ResponseWriter, r *http.Request) {
+	if !s.runnersReady(w) {
+		return
+	}
+	var in struct{ Title string }
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	id, title := r.PathValue("id"), sessionTitle(in.Title)
+	if err := s.runnerRows.SetRunnerSessionTitle(id, title, time.Now().UnixMilli()); err != nil {
+		writeRunnerError(w, err)
+		return
+	}
+	s.sessionChanged(id)
+	writeJSON(w, http.StatusOK, map[string]string{"title": title})
+}
+
+// titleFromFirstPrompt names a thread that has no title yet after what it
+// was first asked. A lead is named after its repo by the page, and a thread
+// someone named keeps its name.
+func (s *Server) titleFromFirstPrompt(sessionID, text string) {
+	title := sessionTitle(text)
+	sess, err := s.runnerRows.RunnerSession(sessionID)
+	if err != nil || sess == nil || sess.Kind == store.SessionLead || sess.Title != "" || title == "" {
+		return
+	}
+	if err := s.runnerRows.SetRunnerSessionTitle(sessionID, title, time.Now().UnixMilli()); err != nil {
+		log.Printf("sessions: %s: its title was not kept: %v", sessionID, err)
+		return
+	}
+	s.sessionChanged(sessionID)
+}
+
+// sessionChanged tells every lens a session's row changed in a way its page
+// shows (its title, its goal), so they read the list again.
+func (s *Server) sessionChanged(sessionID string) {
+	if s.mgr == nil {
+		return
+	}
+	sess, err := s.runnerRows.RunnerSession(sessionID)
+	if err != nil || sess == nil {
+		return
+	}
+	s.mgr.SessionsChanged(sess.WorkspaceID)
 }
 
 // sessionWorkspace is the workspace a new session joins, or why it has
@@ -236,7 +335,7 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	if len(in.Images) == 0 {
 		id, err := s.runners.Send(sessionID, in.Text, in.Sender)
-		answerPrompt(w, id, err)
+		s.answerPrompt(w, sessionID, in.Text, id, err)
 		return
 	}
 	if msg := s.promptImagesProblem(sessionID, in.Images); msg != "" {
@@ -244,14 +343,15 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.runners.SendPrompt(sessionID, runner.Prompt{Text: in.Text, Sender: in.Sender, Images: in.Images})
-	answerPrompt(w, id, err)
+	s.answerPrompt(w, sessionID, in.Text, id, err)
 }
 
-func answerPrompt(w http.ResponseWriter, id string, err error) {
+func (s *Server) answerPrompt(w http.ResponseWriter, sessionID, text, id string, err error) {
 	if err != nil {
 		writeRunnerError(w, err)
 		return
 	}
+	s.titleFromFirstPrompt(sessionID, text)
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
 }
 

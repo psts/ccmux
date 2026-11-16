@@ -24,6 +24,22 @@ func (s *Server) wirePeersRunners() {
 	}
 	s.peersSvc.RunnerInbox = s.runnerInbox
 	s.peersSvc.ReplyToPane = s.replyToAgentPane // a runner's cards are answered through it too
+	s.peersSvc.RunnerSummary = s.keepRunnerGoal
+}
+
+// keepRunnerGoal is the bus's RunnerSummary: the note a session gave the bus
+// of what it is doing becomes its goal, kept on its row so the thread page
+// has it after a daemon restart too.
+func (s *Server) keepRunnerGoal(paneID, summary string) {
+	info, ok := s.mgr.RunnerPane(paneID)
+	if !ok {
+		return
+	}
+	if err := s.runnerRows.SetRunnerSessionGoal(info.SessionID, summary, time.Now().UnixMilli()); err != nil {
+		log.Printf("sessions: %s: its goal was not kept: %v", info.SessionID, err)
+		return
+	}
+	s.sessionChanged(info.SessionID)
 }
 
 // runnerInbox is the bus's RunnerInbox: queue a message as a prompt for the

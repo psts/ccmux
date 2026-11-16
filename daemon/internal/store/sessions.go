@@ -47,6 +47,10 @@ const (
 	SessionDone    = "done"
 )
 
+// SessionLead is the kind of a repo's own session on the thread page: the
+// one a repo row opens. Any other session of the repo is a thread ("").
+const SessionLead = "lead"
+
 // The states of a card.
 const (
 	CardOpen     = "open"
@@ -77,6 +81,15 @@ type RunnerSession struct {
 	Attention       string `json:"attention,omitempty"`
 	AttentionReason string `json:"attentionReason,omitempty"`
 	AttentionSince  int64  `json:"attentionSince,omitempty"`
+	// Kind, Title and Goal are the session's place on the thread page: Kind
+	// is SessionLead for a repo's own session (one per workspace that has
+	// not ended, kept so by an index) and "" for a thread filed under it;
+	// Title is what its row and header show; Goal is the note the session
+	// keeps of what it is doing and what comes next, which is the text it
+	// gives the bus with set_summary, kept here so it outlives the daemon.
+	Kind  string `json:"kind,omitempty"`
+	Title string `json:"title,omitempty"`
+	Goal  string `json:"goal,omitempty"`
 }
 
 // InboxPrompt is one prompt waiting for, or delivered to, a session.
@@ -140,7 +153,30 @@ type SessionCard struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
-const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at,pane_id,workspace_id,attention,attention_reason,attention_since"
+const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at,pane_id,workspace_id,attention,attention_reason,attention_since,kind,title,goal"
+
+// migrateSessionThreads gives a session row its kind, title and goal, and
+// the rule that a workspace has one lead that has not ended. Strict, as
+// migrateSessionPanes is. Rows from before are threads with no title.
+func migrateSessionThreads(db *sql.DB) error {
+	for _, col := range []string{"kind TEXT DEFAULT ''", "title TEXT DEFAULT ''", "goal TEXT DEFAULT ''"} {
+		_, err := db.Exec(`ALTER TABLE sessions ADD COLUMN ` + col)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate sessions.%s: %w", strings.Fields(col)[0], err)
+		}
+	}
+	// Two browser windows opening the same repo row at once must end with
+	// one lead, whichever insert came second; the database is the one place
+	// both go through.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS sessions_one_lead ON sessions(workspace_id)
+WHERE kind='lead' AND wanted<>'done' AND workspace_id<>''`); err != nil {
+		return fmt.Errorf("migrate sessions: one lead per workspace: %w", err)
+	}
+	return nil
+}
+
+// ErrLeadExists is a second lead for a workspace whose lead has not ended.
+var ErrLeadExists = errors.New("this repo already has a lead session")
 
 // migrateSessionPanes gives a session row its pane: the pane id and the
 // workspace it belongs to, and that pane's attention. Strict, like the
@@ -161,12 +197,35 @@ func migrateSessionPanes(db *sql.DB) error {
 	return nil
 }
 
-// AddRunnerSession inserts a new session row.
+// AddRunnerSession inserts a new session row. A lead for a workspace that
+// has one is ErrLeadExists.
 func (s *SQLite) AddRunnerSession(r RunnerSession) error {
-	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.Name, r.Cwd, r.Model, r.Wanted, r.Note, r.CreatedAt, r.UpdatedAt,
-		r.PaneID, r.WorkspaceID, r.Attention, r.AttentionReason, r.AttentionSince)
+		r.PaneID, r.WorkspaceID, r.Attention, r.AttentionReason, r.AttentionSince, r.Kind, r.Title, r.Goal)
+	if err != nil && r.Kind == SessionLead && strings.Contains(err.Error(), "UNIQUE constraint failed: sessions.workspace_id") {
+		return ErrLeadExists
+	}
 	return err
+}
+
+// RunnerLead is a workspace's lead session that has not ended, or nil.
+func (s *SQLite) RunnerLead(workspaceID string) (*RunnerSession, error) {
+	list, err := s.querySessions(`SELECT `+sessionCols+` FROM sessions WHERE workspace_id=? AND kind=? AND wanted<>'done'`, workspaceID, SessionLead)
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	return &list[0], nil
+}
+
+// SetRunnerSessionTitle sets what a session's row and header show.
+func (s *SQLite) SetRunnerSessionTitle(id, title string, now int64) error {
+	return s.updateSession(`UPDATE sessions SET title=?, updated_at=? WHERE id=?`, title, now, id)
+}
+
+// SetRunnerSessionGoal records the note a session keeps of what it is doing.
+func (s *SQLite) SetRunnerSessionGoal(id, goal string, now int64) error {
+	return s.updateSession(`UPDATE sessions SET goal=?, updated_at=? WHERE id=?`, goal, now, id)
 }
 
 // RunnerPaneIDs is every pane id a session ever had, ended ones included:
@@ -220,7 +279,7 @@ func (s *SQLite) querySessions(q string, args ...any) ([]RunnerSession, error) {
 	for rows.Next() {
 		var r RunnerSession
 		if err := rows.Scan(&r.ID, &r.Name, &r.Cwd, &r.Model, &r.Wanted, &r.Note, &r.CreatedAt, &r.UpdatedAt,
-			&r.PaneID, &r.WorkspaceID, &r.Attention, &r.AttentionReason, &r.AttentionSince); err != nil {
+			&r.PaneID, &r.WorkspaceID, &r.Attention, &r.AttentionReason, &r.AttentionSince, &r.Kind, &r.Title, &r.Goal); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

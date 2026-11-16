@@ -153,6 +153,9 @@ func (fakeRunnerRows) UndeliveredPrompts(string) ([]store.InboxPrompt, error) {
 }
 func (fakeRunnerRows) OpenSessionCards(string) ([]store.SessionCard, error)    { return nil, nil }
 func (fakeRunnerRows) SetSessionCardState(string, string, string, int64) error { return nil }
+func (fakeRunnerRows) RunnerLead(string) (*store.RunnerSession, error)         { return nil, nil }
+func (fakeRunnerRows) SetRunnerSessionTitle(string, string, int64) error       { return nil }
+func (fakeRunnerRows) SetRunnerSessionGoal(string, string, int64) error        { return nil }
 
 func callSessions(t *testing.T, s *Server, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()

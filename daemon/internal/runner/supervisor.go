@@ -129,8 +129,13 @@ func (s *Supervisor) Kick() {
 // workspace it belongs to; with one, the session gets a pane id, which is
 // what puts it on the bus and behind the alerts, the hooks and the proxy.
 // Without one it runs alone, as every session did before panes.
+//
+// Kind and Title are its place on the thread page (store.RunnerSession):
+// Kind store.SessionLead for a repo's own session, of which a workspace has
+// one; a second is refused with store.ErrLeadExists and nothing is made.
 type NewSession struct {
 	Cwd, Name, Model, WorkspaceID string
+	Kind, Title                   string
 }
 
 // Create records a new session and starts it. Once the row exists the
@@ -139,7 +144,7 @@ type NewSession struct {
 // a failed create the caller would retry into a second session.
 func (s *Supervisor) Create(n NewSession) (store.RunnerSession, error) {
 	now := s.millis()
-	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID}
+	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID, Kind: n.Kind, Title: n.Title}
 	if n.WorkspaceID != "" {
 		sess.PaneID = uuid.NewString()
 	}

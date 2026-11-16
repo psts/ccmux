@@ -248,3 +248,107 @@ func TestTheAttachmentsColumnIsAddedToAnOlderInbox(t *testing.T) {
 		t.Fatalf("and a new one with a picture is stored: %v", err)
 	}
 }
+
+func TestAWorkspaceHasOneLeadThatHasNotEnded(t *testing.T) {
+	st := openSessions(t)
+	lead := RunnerSession{ID: "lead1", Cwd: "/r/app", Wanted: SessionRunning, WorkspaceID: "ws", Kind: SessionLead, Title: "app"}
+	if err := st.AddRunnerSession(lead); err != nil {
+		t.Fatal(err)
+	}
+	second := lead
+	second.ID = "lead2"
+	if err := st.AddRunnerSession(second); !errors.Is(err, ErrLeadExists) {
+		t.Fatalf("a second lead for the same workspace: %v, want ErrLeadExists", err)
+	}
+	// What the rule must not stop: threads of that workspace, a lead of
+	// another one, and sessions in no workspace at all.
+	for _, ok := range []RunnerSession{
+		{ID: "t1", Cwd: "/r/app", Wanted: SessionRunning, WorkspaceID: "ws", Title: "a thread"},
+		{ID: "t2", Cwd: "/r/app", Wanted: SessionRunning, WorkspaceID: "ws"},
+		{ID: "other", Cwd: "/r/api", Wanted: SessionRunning, WorkspaceID: "ws2", Kind: SessionLead},
+		{ID: "bare1", Cwd: "/x", Wanted: SessionRunning, Kind: SessionLead},
+		{ID: "bare2", Cwd: "/x", Wanted: SessionRunning, Kind: SessionLead},
+	} {
+		if err := st.AddRunnerSession(ok); err != nil {
+			t.Fatalf("%s: %v", ok.ID, err)
+		}
+	}
+	if got, err := st.RunnerLead("ws"); err != nil || got == nil || got.ID != "lead1" || got.Title != "app" || got.Kind != SessionLead {
+		t.Fatalf("the workspace's lead: %+v %v", got, err)
+	}
+	if got, _ := st.RunnerLead("none"); got != nil {
+		t.Fatalf("a workspace with no lead: %+v", got)
+	}
+	// An ended lead makes room for the next.
+	if err := st.SetRunnerSessionWanted("lead1", SessionDone, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddRunnerSession(second); err != nil {
+		t.Fatalf("after the first ended: %v", err)
+	}
+	if got, _ := st.RunnerLead("ws"); got == nil || got.ID != "lead2" {
+		t.Fatalf("the new lead: %+v", got)
+	}
+}
+
+func TestASessionKeepsItsTitleAndGoal(t *testing.T) {
+	st := openSessions(t)
+	if err := st.AddRunnerSession(RunnerSession{ID: "s1", Cwd: "/r/app", Wanted: SessionRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetRunnerSessionTitle("s1", "Trade CSV export", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetRunnerSessionGoal("s1", "Export closed trades. Next: the admin table.", 6); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.RunnerSession("s1")
+	if got.Title != "Trade CSV export" || got.Goal != "Export closed trades. Next: the admin table." || got.Kind != "" || got.UpdatedAt != 6 {
+		t.Fatalf("%+v", got)
+	}
+	if err := st.SetRunnerSessionTitle("nope", "x", 7); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("an unknown session: %v", err)
+	}
+	if err := st.SetRunnerSessionGoal("nope", "x", 7); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("an unknown session: %v", err)
+	}
+}
+
+func TestThreadColumnsAreAddedToAnOlderRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reg.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The sessions table as stage 2 left it: panes, no kind, title or goal.
+	for _, q := range []string{
+		`DROP INDEX sessions_one_lead`,
+		`DROP TABLE sessions`,
+		`CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT DEFAULT '', cwd TEXT NOT NULL, model TEXT DEFAULT '',
+  wanted TEXT NOT NULL, note TEXT DEFAULT '', created_at INTEGER, updated_at INTEGER, pane_id TEXT DEFAULT '',
+  workspace_id TEXT DEFAULT '', attention TEXT DEFAULT '', attention_reason TEXT DEFAULT '', attention_since INTEGER DEFAULT 0)`,
+		`INSERT INTO sessions (id,cwd,wanted,created_at,updated_at,pane_id,workspace_id) VALUES ('old','/r/app','running',1,1,'p1','ws')`,
+	} {
+		if _, err := st.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("an older registry opens: %v", err)
+	}
+	defer st.Close()
+	list, err := st.RunnerSessions()
+	if err != nil || len(list) != 1 || list[0].Kind != "" || list[0].Title != "" || list[0].PaneID != "p1" {
+		t.Fatalf("its session reads back as a thread with no title: %+v %v", list, err)
+	}
+	lead := RunnerSession{ID: "lead", Cwd: "/r/app", Wanted: SessionRunning, WorkspaceID: "ws", Kind: SessionLead}
+	if err := st.AddRunnerSession(lead); err != nil {
+		t.Fatalf("and it takes a lead beside it: %v", err)
+	}
+	lead.ID = "again"
+	if err := st.AddRunnerSession(lead); !errors.Is(err, ErrLeadExists) {
+		t.Fatalf("the one-lead rule holds there too: %v", err)
+	}
+}

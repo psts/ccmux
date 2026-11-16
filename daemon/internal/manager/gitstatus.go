@@ -44,7 +44,10 @@ type gitCollector struct {
 func (c *gitCollector) collectOnce() {
 	seen := map[string]bool{}
 	for _, ws := range c.m.List() {
-		if ws.Status != model.StatusLive {
+		// A closed workspace is read too while a runner session works in it:
+		// the thread page shows its repo's git state, and Claude changes the
+		// tree there with no terminal session open.
+		if ws.Status != model.StatusLive && !c.m.hasRunnerPanes(ws.ID) {
 			continue
 		}
 		seen[ws.ID] = true

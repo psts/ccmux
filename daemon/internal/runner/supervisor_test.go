@@ -765,3 +765,28 @@ func TestAPromptsImagesGoWithItEveryTimeItIsSent(t *testing.T) {
 		t.Fatalf("still two waiting: %+v", open)
 	}
 }
+
+func TestASecondLeadIsRefusedAndNothingIsStartedForIt(t *testing.T) {
+	r := newRig(t)
+	lead, err := r.sup.Create(NewSession{Cwd: "/r/app", WorkspaceID: "ws", Kind: store.SessionLead, Title: "app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := r.st.RunnerSession(lead.ID); row.Kind != store.SessionLead || row.Title != "app" {
+		t.Fatalf("the row keeps its kind and title: %+v", row)
+	}
+	starts := r.units.count("start ")
+	if _, err := r.sup.Create(NewSession{Cwd: "/r/app", WorkspaceID: "ws", Kind: store.SessionLead}); !errors.Is(err, store.ErrLeadExists) {
+		t.Fatalf("a second lead: %v", err)
+	}
+	if r.units.count("start ") != starts {
+		t.Fatal("a refused lead must not start a unit")
+	}
+	// A thread in the same workspace is its own session, started as any.
+	if _, err := r.sup.Create(NewSession{Cwd: "/r/app", WorkspaceID: "ws", Title: "a thread"}); err != nil || r.units.count("start ") != starts+1 {
+		t.Fatalf("a thread beside the lead: %v", err)
+	}
+	if list, _ := r.st.RunnerSessions(); len(list) != 2 {
+		t.Fatalf("one lead, one thread: %+v", list)
+	}
+}

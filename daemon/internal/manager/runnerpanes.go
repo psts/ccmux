@@ -236,6 +236,16 @@ func (m *Manager) SessionsChanged(wsID string) {
 	m.events.publish(Event{Kind: "sessions-changed", WorkspaceID: wsID})
 }
 
+// hasRunnerPanes reports whether a workspace holds a runner session that has
+// not ended. Such a workspace is being worked in whether or not its
+// terminal session is open, so its git state is kept fresh (gitstatus.go).
+func (m *Manager) hasRunnerPanes(wsID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e := m.byID[wsID]
+	return e != nil && len(e.runners) > 0
+}
+
 // RunnerPanes is a copy of every runner pane, for the attention snapshot a
 // lens gets at connect.
 func (m *Manager) RunnerPanes() []model.Pane {
