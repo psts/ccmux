@@ -137,7 +137,7 @@ async function boot(opts = {}) {
     const body = typeof init.body === "string" ? JSON.parse(init.body) : init.body;
     book.calls.push({ method, url: String(url), body });
     const hit = routes.find(([re]) => re.test(method + " " + url));
-    const out = hit ? hit[1](body) : {};
+    const out = hit ? await hit[1](body) : {};
     if (out && out.fail) return { ok: false, status: out.fail, json: async () => ({ error: out.error }) };
     return { ok: true, status: 200, json: async () => out };
   };
@@ -148,7 +148,7 @@ async function boot(opts = {}) {
     localStorage: { getItem: () => "stored-name" }, navigator: {},
     WebSocket: function (url) { const s = { url: String(url), readyState: 1, sent: [], send: (x) => s.sent.push(JSON.parse(x)), close() { s.closed = true; } }; book.sockets.push(s); return s; },
     requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval() {},
-    addEventListener() {}, confirm: () => true, prompt: () => "Renamed", createImageBitmap: async () => ({ width: 10, height: 10 }),
+    addEventListener() {}, confirm: opts.confirm || (() => true), prompt: () => "Renamed", createImageBitmap: async () => ({ width: 10, height: 10 }),
   };
   ctx.window = ctx;
   vm.createContext(ctx);
@@ -388,7 +388,7 @@ test("the repo the page is in shows its git state inside its own card, and the o
   assert.deepEqual(detail.children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
   assert.deepEqual(rows[0].querySelector(".row-git").children.map((c) => c.textContent), ["dev", "●1", "↑2"], "branch, changes and ahead sit by the name");
   assert.equal(rows[1].querySelector(".git-detail"), null, "a repo the page is not in keeps to one line");
-  assert.equal(p.$("tree").querySelectorAll(".repo")[0].children.length, 1, "nothing hangs below the card");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more"], "nothing hangs below the card but its menu button, which sits over it");
 });
 
 test("the firehose moves a session's dot and has the lists read again", async () => {
@@ -604,4 +604,144 @@ test("a new thread in a folder that is no git repo is a plain session, as it alw
   assert.deepEqual(await madeIn(notes), ["/v1/sessions", { cwd: "/p/notes", workspaceId: "ws9", model: "" }], "nothing there lands through git, so no thread is asked for");
   assert.deepEqual(await madeIn(unread), ["/v1/threads", { workspaceId: "ws8", model: "" }]);
   assert.deepEqual(await madeIn(repo), ["/v1/threads", { workspaceId: "ws1", model: "" }]);
+});
+
+// --- skills and plugins ---
+
+const catalog = {
+  capabilities: [
+    { id: "qa", kind: "plugin", source: "personal", cost: 1400, version: "1.9.0", commit: "abc1234", pinned: true, updateAvailable: "1.9.2" },
+    { id: "chrome-pool", kind: "plugin", source: "personal", cost: 900, version: "2.0.0", commit: "abc1234" },
+  ],
+  sources: [{ id: "personal", url: "https://github.com/me/claude-personal", commit: "4f2a91c00", updated: new Date().toISOString() }],
+};
+const capRoutes = (repoChoices) => [
+  [/^GET \/v1\/capabilities$/, () => catalog],
+  [/^GET \/v1\/capabilities\/choices$/, () => ({ windows: { w1: ["qa"] }, workspaces: {} })],
+  [/^GET \/v1\/workspaces\/ws1\/capabilities$/, () => ({ window: "w1", group: ["qa"], choices: repoChoices, effective: repoChoices.qa === "off" ? [] : ["qa"], missing: [] })],
+  [/^GET \/v1\/windows\/w1\/capabilities$/, () => ({ on: ["qa"], missing: [] })],
+];
+const capRows = (p) => p.$("caps-sheet").querySelectorAll(".cap-item").map((r) => [r.dataset.cap, (r.querySelector(".cap-meta") || {}).textContent, (r.querySelector(".seg-opt.on") || {}).textContent]);
+
+test("a right-click on a repo opens its menu, and Skills and plugins its panel; Off is sent and read back", async () => {
+  const choices = {};
+  const p = await boot({ sessions: [lead], routes: [[/^PUT \/v1\/workspaces\/ws1\/capabilities\/qa$/, (body) => { choices.qa = body.state; return {}; }], ...capRoutes(choices)] });
+  let prevented = false;
+  p.$("tree").querySelector(".row").oncontextmenu({ preventDefault: () => { prevented = true; }, clientX: 40, clientY: 80 });
+  assert.equal(prevented, true, "the browser's own menu stays shut");
+  assert.equal(p.$("caps-menu").classList.contains("hidden"), false);
+  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…"]);
+  p.$("caps-menu").querySelector(".ctx-item").click();
+  await p.settle();
+  assert.equal(p.$("caps-menu").classList.contains("hidden"), true);
+  assert.equal(p.$("caps-overlay").classList.contains("hidden"), false);
+  assert.equal(p.$("caps-sheet").querySelector(".sheet-title").textContent, "app · skills and plugins");
+  assert.equal(p.$("caps-sheet").querySelector(".cap-base").textContent, "Always on: CLAUDE.md, memory, the bus, thread limits.");
+  assert.deepEqual(capRows(p), [["qa", "On from ChartLabs", "As group"], ["chrome-pool", "Off from ChartLabs", "As group"]]);
+  assert.match(p.$("caps-sheet").querySelector(".cap-foot").textContent, /^This repo's sessions load about 1\.4k tokens of these\. Changes apply when a session next starts\.$/);
+  p.$("caps-sheet").querySelector('.cap-item[data-cap="qa"] .seg-opt[data-state="off"]').click();
+  await p.settle();
+  assert.deepEqual(p.book.calls.filter((c) => c.method === "PUT").map((c) => [c.url, c.body]), [["/v1/workspaces/ws1/capabilities/qa", { state: "off" }]]);
+  assert.deepEqual(capRows(p)[0], ["qa", "On in ChartLabs, off here", "Off"], "the panel reads its list again");
+  assert.match(p.$("caps-sheet").querySelector(".cap-foot").textContent, /load none of these/);
+  p.doc.handlers.keydown({ key: "Escape", target: p.doc.body, preventDefault() {} });
+  assert.equal(p.$("caps-overlay").classList.contains("hidden"), true, "Escape closes it");
+});
+
+test("a read that fails after another sheet was opened leaves that sheet alone", async () => {
+  let fail;
+  const late = new Promise((resolve) => { fail = resolve; });
+  const p = await boot({ sessions: [lead], routes: [[/^GET \/v1\/workspaces\/ws1\/capabilities$/, () => late], ...capRoutes({})] });
+  p.$("tree").querySelector(".row").oncontextmenu({ preventDefault() {} });
+  p.$("caps-menu").querySelector(".ctx-item").click();
+  p.$("tree").querySelector(".group-head .side-more").click();
+  p.$("caps-menu").querySelector(".ctx-item").click();
+  await p.settle();
+  fail({ fail: 500, error: "the repo's read failed" });
+  await p.settle();
+  assert.equal(p.$("caps-sheet").querySelector(".sheet-title").textContent, "ChartLabs · skills and plugins");
+  assert.equal(p.$("caps-sheet").querySelector(".cap-error"), null, "the repo's error is not the group's");
+  assert.deepEqual(capRows(p).map((r) => r[2]), ["On", "Off"]);
+});
+
+test("an Update that answers after another sheet was opened says nothing on that sheet", async () => {
+  let answer;
+  const late = new Promise((resolve) => { answer = resolve; });
+  const p = await boot({ sessions: [lead], routes: [[/^POST \/v1\/capabilities\/sources\/personal\/update$/, () => late], ...capRoutes({})] });
+  p.$("open-settings").click();
+  await p.settle();
+  p.$("caps-sheet").querySelector(".cap-src button").click();
+  p.doc.handlers.keydown({ key: "Escape", target: p.doc.body, preventDefault() {} });
+  p.$("tree").querySelector(".group-head .side-more").click();
+  p.$("caps-menu").querySelector(".ctx-item").click();
+  await p.settle();
+  answer({ fail: 502, error: "git fetch failed" });
+  await p.settle();
+  assert.equal(p.$("caps-sheet").querySelector(".sheet-title").textContent, "ChartLabs · skills and plugins");
+  assert.equal(p.$("caps-sheet").querySelector(".cap-error"), null, "the Update's error is not the group's");
+  p.$("caps-sheet").querySelector('.cap-item[data-cap="qa"] .seg-opt[data-state="off"]').click();
+  await p.settle();
+  assert.equal(p.$("caps-sheet").querySelector(".cap-error"), null, "an action on the sheet still open still runs");
+});
+
+test("a group's ⋯ opens the group's own panel, on or off", async () => {
+  const p = await boot({ sessions: [lead], routes: capRoutes({}) });
+  p.$("tree").querySelector(".group-head .side-more").click();
+  p.$("caps-menu").querySelector(".ctx-item").click();
+  await p.settle();
+  assert.equal(p.$("caps-sheet").querySelector(".sheet-title").textContent, "ChartLabs · skills and plugins");
+  assert.deepEqual(capRows(p).map((r) => r[2]), ["On", "Off"]);
+});
+
+test("the sessions on the old list are named under the panel, and restarted only after a yes", async () => {
+  const stale = { ...lead, loadoutStale: true };
+  let asked = "";
+  const p = await boot({ sessions: [stale], routes: capRoutes({}), confirm: (q) => { asked = q; return true; } });
+  p.$("tree").querySelector(".row").oncontextmenu({ preventDefault() {} });
+  p.$("caps-menu").querySelector(".ctx-item").click();
+  await p.settle();
+  assert.equal(p.$("caps-sheet").querySelector(".cap-stale").textContent.trim(), "1 running session uses the old list.");
+  assert.equal(p.posts().length, 0, "nothing restarts by itself");
+  p.$("caps-sheet").querySelector(".cap-foot .apply").click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.url), ["/v1/sessions/lead1/restart"]);
+  assert.equal(p.$("caps-sheet").querySelector(".cap-note").textContent, "Restarting 1 session.");
+  assert.equal(asked, "Restart 1 session now? Each stops what it is doing and starts again on the new list.", "the page asks first");
+  const no = await boot({ sessions: [stale], routes: capRoutes({}), confirm: () => false });
+  no.$("tree").querySelector(".row").oncontextmenu({ preventDefault() {} });
+  no.$("caps-menu").querySelector(".ctx-item").click();
+  await no.settle();
+  no.$("caps-sheet").querySelector(".cap-foot .apply").click();
+  await no.settle();
+  assert.equal(no.posts().length, 0, "a no restarts nothing");
+});
+
+test("a running session whose skills changed says so in its header, with Restart now", async () => {
+  const p = await boot({ sessions: [{ ...lead, loadoutStale: true }], search: "?s=lead1" });
+  assert.equal(p.$("loadout-bar").classList.contains("hidden"), false);
+  p.$("loadout-restart").click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.url), ["/v1/sessions/lead1/restart"]);
+  assert.equal(p.$("loadout-bar").classList.contains("hidden"), true, "gone while the restart is on its way");
+  const fresh = await boot({ sessions: [lead], search: "?s=lead1" });
+  assert.equal(fresh.$("loadout-bar").classList.contains("hidden"), true);
+});
+
+test("Settings lists the sources and every entry, and Update says what it pulled", async () => {
+  const p = await boot({ sessions: [lead], routes: [[/^POST \/v1\/capabilities\/sources\/personal\/update$/, () => ({ source: { id: "personal" }, changed: [{ id: "chrome-pool" }], added: [] })], ...capRoutes({})] });
+  p.$("open-settings").click();
+  await p.settle();
+  const sheet = p.$("caps-sheet");
+  assert.deepEqual(sheet.querySelectorAll(".sheet-tab").map((t) => t.textContent), ["Skills and plugins"]);
+  assert.equal(sheet.querySelector(".cap-where").textContent, "git · me/claude-personal · 4f2a91c · checked today");
+  assert.equal(sheet.querySelector(".cap-src .cap-tag").textContent, "1 update", "the pinned qa is behind");
+  assert.deepEqual(capRows(p).map((r) => r[1]), [
+    "personal · ~1.4k tokens · pinned at 1.9.0 · on in ChartLabs",
+    "personal · ~0.9k tokens · 2.0.0 · follows newest · on nowhere",
+  ]);
+  assert.equal(sheet.querySelector('.cap-item[data-cap="qa"] .cap-tag').textContent, "update 1.9.0 → 1.9.2");
+  sheet.querySelector(".cap-src button").click();
+  await p.settle();
+  assert.equal(p.posts().pop().url, "/v1/capabilities/sources/personal/update");
+  assert.equal(p.$("caps-sheet").querySelector(".cap-note").textContent, "personal: 1 changed.");
 });

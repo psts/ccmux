@@ -19,7 +19,10 @@
         <button id="new-thread" type="button" title="A new thread in the repo you are in">New thread</button>
       </div>
       <div id="tree"></div>
-      <div id="side-foot" class="side-foot"></div>
+      <div class="side-foot">
+        <button id="open-settings" class="plain small" type="button" title="Skills and plugins, and where each is on">Settings</button>
+        <span id="side-version"></span>
+      </div>
     </nav>
 
     <main id="main">
@@ -51,6 +54,10 @@
         <span id="model-bar-text" class="grow"></span>
         <button id="restart-now" class="primary" type="button">Restart now</button>
         <button id="later" class="plain" type="button">Later</button>
+      </div>
+      <div id="loadout-bar" class="bar blue hidden" role="status">
+        <span class="grow"><strong>Skills changed, restart to use them.</strong> This session keeps its old list until then.</span>
+        <button id="loadout-restart" class="primary" type="button">Restart now</button>
       </div>
       <div id="restarted-bar" class="bar green hidden" role="status"></div>
       <div id="notice-bar" class="bar amber hidden" role="status"></div>
@@ -96,6 +103,13 @@
     </aside>
   </div>
 
+  <!-- Skills and plugins (threadcapsctl.js): the Settings dialog or a repo's
+       or group's panel, and the sidebar's right-click menu. -->
+  <div id="caps-overlay" class="overlay hidden">
+    <div id="caps-sheet" class="sheet" role="dialog" aria-modal="true"></div>
+  </div>
+  <div id="caps-menu" class="menu-layer hidden"></div>
+
   <script src="/retry.js"></script>
   <script src="/route.js"></script>
   <script src="/agentchat.js"></script>
@@ -107,6 +121,9 @@
   <script src="/threadimage.js"></script>
   <script src="/threadpending.js"></script>
   <script src="/threadview.js"></script>
+  <script src="/threadcaps.js"></script>
+  <script src="/threadcapsview.js"></script>
+  <script src="/threadcapsctl.js"></script>
   <script src="/threads.js"></script>
   <script src="/build.js"></script>
   <script src="/update.js"></script>

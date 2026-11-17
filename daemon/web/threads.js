@@ -21,6 +21,10 @@
     draftModel: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
   };
 
+  // The skills and plugins screens: the Settings dialog, and the panel a
+  // right-click on a repo or group opens (threadcapsctl.js).
+  const Caps = window.ccmuxThreadCapsCtl.create({ call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q) });
+
   // --- the daemon ---
 
   async function call(method, path, body) {
@@ -49,6 +53,7 @@
     S.listError = failed;
     S.listed = true;
     drawAll();
+    Caps.listsChanged();
     maybeActed();
     loadTeam();
   }
@@ -148,6 +153,7 @@
     if (S.awaitBoot !== null && S.stream.boot && S.stream.boot !== S.awaitBoot) {
       S.awaitBoot = null;
       S.restarted = true;
+      loadLists(); // the row now says what the new start loaded
     }
   }
 
@@ -162,6 +168,7 @@
   function drawAll() {
     drawSide();
     drawHead();
+    drawLoadout();
     drawBars();
     drawStream();
     drawDetail();
@@ -177,12 +184,11 @@
       inRepo: (r) => !!ws && ws.id === r.id,
       pickRepo: (r) => select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" }),
       pickSession: (s) => select({ kind: "session", id: s.id }),
+      menu: (kind, item, e) => Caps.menu(kind, item, e),
     });
     $("new-thread").disabled = !ws;
     const info = S.stream.info || {};
-    const foot = $("side-foot");
-    foot.textContent = "";
-    if (info.claudeCode || S.stream.sdk) foot.appendChild(View.el("span", "", `Claude Code ${info.claudeCode || "?"} · SDK ${S.stream.sdk || "?"}`));
+    $("side-version").textContent = info.claudeCode || S.stream.sdk ? `Claude Code ${info.claudeCode || "?"} · SDK ${S.stream.sdk || "?"}` : "";
   }
 
   // liveState is where the picked session is right now: its row's word,
@@ -257,6 +263,15 @@
     text.appendChild(document.createTextNode(` This session keeps running on ${mv.runningName || "its current model"} until then.`));
     show("restarted-bar", S.restarted && !pending);
     $("restarted-bar").textContent = `Restarted on ${mv.runningName || mv.wantedName}. The session picked up where it was.`;
+  }
+
+  // drawLoadout says a running session's skills and plugins moved on since
+  // it started (the daemon's loadoutStale). Not while a restart is on its
+  // way, and not beside the model's bar, whose Restart now does the same.
+  function drawLoadout() {
+    const sess = session();
+    const waiting = S.awaitBoot !== null || !$("model-bar").classList.contains("hidden");
+    show("loadout-bar", !!sess && !!sess.loadoutStale && sess.state !== "done" && !waiting);
   }
 
   function drawBars() {
@@ -688,6 +703,7 @@
   const editable = (t) => !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
   function onKey(e) {
+    if (e.key === "Escape" && Caps.escape()) return;
     if (e.key === "Escape" && S.menu) { S.menu = false; drawCommands(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey || editable(e.target)) return; // a digit typed into the composer is a digit
     if ("1234".includes(e.key) && View.pressKey($("cards"), e.key)) e.preventDefault();
@@ -713,6 +729,8 @@
     $("model").onchange = (e) => pickModel(e.target.value);
     $("restart-now").onclick = restartNow;
     $("restart-later").onclick = restartNow;
+    $("loadout-restart").onclick = restartNow;
+    $("open-settings").onclick = () => Caps.openSettings();
     $("later").onclick = () => { const sess = session(); if (sess) S.later.add(sess.id); drawAll(); };
     $("stop").onclick = () => act((sess) => call("POST", `/v1/sessions/${sess.id}/abort`));
     $("sleep").onclick = () => setWanted("asleep");

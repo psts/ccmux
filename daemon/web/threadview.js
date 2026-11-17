@@ -233,6 +233,18 @@
     return add(el("span", "git-detail"), r.path ? el("span", "git-path", r.path) : null, el("span", "", g.track), g.vs ? el("span", "", g.vs) : null, state);
   }
 
+  // withMenu gives a sidebar item its right-click menu (ctx.menu), and a
+  // "⋯" button that opens the same menu on a touch screen.
+  function withMenu(target, kind, item, ctx) {
+    target.oncontextmenu = (e) => { e.preventDefault(); ctx.menu(kind, item, e); };
+    const more = el("button", "side-more", "⋯");
+    more.type = "button";
+    more.title = "Skills and plugins…";
+    more.setAttribute("aria-label", `More for ${item.name}`);
+    more.onclick = (e) => ctx.menu(kind, item, e);
+    return more;
+  }
+
   function repoEl(r, ctx) {
     const box = el("div", "repo");
     const open = !!r.git && ctx.inRepo(r);
@@ -241,7 +253,7 @@
     row.onclick = () => ctx.pickRepo(r);
     const top = add(el("span", "row-top"), el("span", "row-name", r.name), gitBadges(r.git));
     const sub = r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet";
-    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, el("span", "row-sub", sub), open ? gitDetail(r) : null)));
+    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, el("span", "row-sub", sub), open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
     for (const t of r.threads) {
       const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : ""));
       tr.type = "button";
@@ -251,9 +263,18 @@
     return box;
   }
 
+  // groupHead is a group's name; a group that is a window (not "Other")
+  // has the menu that sets its skills and plugins.
+  function groupHead(g, ctx) {
+    const name = el("div", "group-name", g.name);
+    if (!g.id) return name;
+    const headEl = el("div", "group-head");
+    return add(headEl, name, withMenu(headEl, "group", g, ctx));
+  }
+
   function sidebar(tree, groups, ctx) {
     tree.textContent = "";
-    for (const g of groups) add(tree, add(el("div", "group"), el("div", "group-name", g.name), ...g.repos.map((r) => repoEl(r, ctx))));
+    for (const g of groups) add(tree, add(el("div", "group"), groupHead(g, ctx), ...g.repos.map((r) => repoEl(r, ctx))));
     if (!groups.length) add(tree, el("div", "quiet", "No repos yet. Open one in the terminal lens first."));
   }
 
