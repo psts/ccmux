@@ -97,6 +97,14 @@ type memberRef struct {
 // sender is who a thread's own notices are from.
 const sender = "ccmux"
 
+// Who asked for something to be done to a thread: its lead, through the
+// thread tool, or a person, on the thread's page. The lead is told of what a
+// person did to its team: it did not see it happen.
+const (
+	ByLead   = "lead"
+	ByPerson = "person"
+)
+
 // ErrNotMember is a call about a session that is in no thread.
 var ErrNotMember = errors.New("this session is not in a thread")
 

@@ -92,4 +92,21 @@ test("a path outside the repo is written whole", () => {
   assert.equal(w.rel("/p/app/src/a.ts", "/p/app"), "src/a.ts");
   assert.equal(w.rel("/p/application/a.ts", "/p/app"), "/p/application/a.ts");
   assert.equal(w.rel("/etc/hosts", ""), "/etc/hosts");
+  assert.equal(w.rel("/wt/app/thread-3/src/a.ts", ["/wt/app/thread-3", "/p/app"]), "src/a.ts", "a thread member's worktree is a root too");
+  assert.equal(w.rel("/p/app/src/a.ts", ["/wt/app/thread-3", "/p/app"]), "src/a.ts");
+  assert.equal(w.rel("/elsewhere/a.ts", ["/wt/app/thread-3", "/p/app"]), "/elsewhere/a.ts");
+});
+
+test("a thread member's paths are written without its repo's folder or its worktree, also once the worktree is gone from its row", () => {
+  const edit = (path) => ({ parts: [{ type: "tool", state: { input: { file_path: path } } }] });
+  const member = { threadId: 3, worktree: "/wt/app-b4/thread-3" };
+  assert.deepEqual(w.threadRoots(member, "/p/app", []), ["/wt/app-b4/thread-3", "/p/app"]);
+  // Merged: the row names no worktree, the conversation still does.
+  const merged = w.threadRoots({ threadId: 3 }, "/p/app", [edit("/p/app/README.md"), edit("/wt/app-b4/thread-3/src/a.ts"), edit("/wt/app-b4/thread-3/src/b.ts")]);
+  assert.deepEqual(merged, ["/wt/app-b4/thread-3", "/p/app"]);
+  assert.equal(w.rel("/wt/app-b4/thread-3/src/a.ts", merged), "src/a.ts");
+  // Another thread's worktree, and a session in no thread, add nothing.
+  assert.deepEqual(w.threadRoots({ threadId: 3 }, "/p/app", [edit("/wt/app-b4/thread-30/src/a.ts")]), ["/p/app"]);
+  assert.deepEqual(w.threadRoots({}, "/p/app", [edit("/wt/app-b4/thread-3/src/a.ts")]), ["/p/app"]);
+  assert.deepEqual(w.threadRoots(null, "", []), []);
 });

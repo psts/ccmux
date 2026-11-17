@@ -54,8 +54,10 @@
   }
 
   // repoRow is one repo with its lead and its threads, oldest thread first.
+  // A thread's helper in this repo is no thread of the repo: it is filed
+  // under its own thread, in the repo that leads it (threadteam.js).
   function repoRow(ws, sessions) {
-    const mine = sessions.filter((s) => s.workspaceId === ws.id && s.state !== "done");
+    const mine = sessions.filter((s) => s.workspaceId === ws.id && s.state !== "done" && s.role !== "helper");
     const lead = mine.find((s) => s.kind === "lead") || null;
     const threads = mine.filter((s) => s !== lead).sort((a, b) => a.createdAt - b.createdAt);
     return {

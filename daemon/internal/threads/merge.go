@@ -20,7 +20,7 @@ import (
 // It is refused, with the reason, while a helper is still mid-turn (its
 // work is not all there yet), while a repo's own folder cannot take the
 // merge, and when no member changed anything.
-func (s *Service) Merge(threadID int64) (string, error) {
+func (s *Service) Merge(threadID int64, by string) (string, error) {
 	defer s.lock(threadKey(threadID))()
 	th, lead, err := s.led(threadID)
 	if err != nil {
@@ -44,7 +44,7 @@ func (s *Service) Merge(threadID int64) (string, error) {
 	if err := s.St.SaveThread(th); err != nil {
 		return "", err
 	}
-	go s.land(th, lead, work)
+	go s.land(th, lead, work, by)
 	return fmt.Sprintf("Merging thread #%d: %s. Each repo's checks run now, which takes minutes. "+
 		"The result comes to the lead as a message; change nothing in a worktree meanwhile.", threadID, repoList(work)), nil
 }
@@ -94,20 +94,28 @@ func mergeRefusal(th store.Thread, members, work []store.RunnerSession) string {
 // member whose worktree the failure is in when it is one member's to fix.
 // Landed: the helpers are stood down, every worktree goes (the lead is back
 // in its repo's folder first, reading), and the lead is told.
-func (s *Service) land(th store.Thread, lead store.RunnerSession, work []store.RunnerSession) {
+func (s *Service) land(th store.Thread, lead store.RunnerSession, work []store.RunnerSession, by string) {
 	note, err := s.Lander.Land(works(work))
 	defer s.lock(threadKey(th.ID))()
 	if err != nil {
 		log.Printf("threads: #%d merge failed: %v", th.ID, err)
 		s.settle(th, store.ThreadOpen, "merge failed: "+firstLine(err.Error()))
-		s.tell(lead, failedText(th, work, err))
+		s.tell(lead, asked(by)+failedText(th, work, err))
 		return
 	}
 	log.Printf("threads: #%d %s", th.ID, note)
 	left := s.dissolve(th, lead)
 	s.settle(th, store.ThreadMerged, note+stayed(left))
 	s.reindex()
-	s.tell(lead, landedText(th, lead, note, left))
+	s.tell(lead, asked(by)+landedText(th, lead, note, left))
+}
+
+// asked opens the word to the lead on a merge it did not ask for itself.
+func asked(by string) string {
+	if by == ByPerson {
+		return "[ccmux] A person asked for this thread's merge on its page.\n\n"
+	}
+	return ""
 }
 
 // settle records how a merge ended.

@@ -28,7 +28,7 @@ func TestAThreadMergesEveryMembersBranchAndStandsItsHelpersDown(t *testing.T) {
 	r, th, lead, backend, admin := team(t)
 	other, otherLead := r.thread("Second")
 	bystander := r.helper(other, "backend")
-	started, err := r.svc.Merge(th.ID)
+	started, err := r.svc.Merge(th.ID, ByLead)
 	if err != nil || !strings.Contains(started, "Merging thread #1: app, backend") {
 		t.Fatalf("the merge starts and says which repos it lands: %q %v", started, err)
 	}
@@ -68,7 +68,7 @@ func TestAThreadMergesEveryMembersBranchAndStandsItsHelpersDown(t *testing.T) {
 func TestAFailedMergeLeavesTheThreadOpenAndTellsTheLeadWhoseItIs(t *testing.T) {
 	r, th, lead, backend, admin := team(t)
 	r.git.set(func(g *fakeGit) { g.red = map[string]string{"backend": "FAIL: TestExport"} })
-	if _, err := r.svc.Merge(th.ID); err != nil {
+	if _, err := r.svc.Merge(th.ID, ByLead); err != nil {
 		t.Fatal(err)
 	}
 	told := r.said(lead)
@@ -90,7 +90,7 @@ func TestAFailedMergeLeavesTheThreadOpenAndTellsTheLeadWhoseItIs(t *testing.T) {
 	}
 	// The lead's own branch failing is the lead's to fix.
 	r.git.set(func(g *fakeGit) { g.red = nil; g.uncommitted = map[string]string{"app": "M src/a.js"} })
-	if _, err := r.svc.Merge(th.ID); err != nil {
+	if _, err := r.svc.Merge(th.ID, ByLead); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the second result", func() bool { return len(r.sess.prompts(lead.ID)) == 2 })
@@ -103,7 +103,7 @@ func TestAMergeIsRefusedBeforeItStartsWhenItCannotLand(t *testing.T) {
 	r, th, _, backend, _ := team(t)
 	refused := func(want string) {
 		t.Helper()
-		if _, err := r.svc.Merge(th.ID); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := r.svc.Merge(th.ID, ByLead); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("refused with %q, got %v", want, err)
 		}
 		if got := r.state(th.ID); got.State != store.ThreadOpen {
@@ -123,19 +123,19 @@ func TestAMergeIsRefusedBeforeItStartsWhenItCannotLand(t *testing.T) {
 	// One merge at a time.
 	release := make(chan struct{})
 	r.git.set(func(g *fakeGit) { g.landHook = func() { <-release } })
-	if _, err := r.svc.Merge(th.ID); err != nil {
+	if _, err := r.svc.Merge(th.ID, ByLead); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.svc.Merge(th.ID); err == nil || !strings.Contains(err.Error(), "being merged already") {
+	if _, err := r.svc.Merge(th.ID, ByLead); err == nil || !strings.Contains(err.Error(), "being merged already") {
 		t.Fatalf("a second merge waits for the first: %v", err)
 	}
-	if _, err := r.svc.End(th.ID); err == nil || !strings.Contains(err.Error(), "being merged") {
+	if _, err := r.svc.End(th.ID, ByLead); err == nil || !strings.Contains(err.Error(), "being merged") {
 		t.Fatalf("a thread is not ended under its merge: %v", err)
 	}
 	close(release)
 	eventually(t, "the merge to finish", func() bool { return r.state(th.ID).State == store.ThreadMerged })
 	// Nothing changed since: nothing to merge.
-	if _, err := r.svc.Merge(th.ID); err == nil || !strings.Contains(err.Error(), "nothing to merge") {
+	if _, err := r.svc.Merge(th.ID, ByLead); err == nil || !strings.Contains(err.Error(), "nothing to merge") {
 		t.Fatalf("a thread whose members changed nothing has nothing to land: %v", err)
 	}
 }
@@ -184,5 +184,40 @@ func TestAThreadsPageSeesEachMemberAndWhatItsBranchHolds(t *testing.T) {
 	}
 	if _, err := r.svc.Detail(99); err == nil {
 		t.Fatal("an unknown thread is an error")
+	}
+}
+
+func TestTheLeadIsToldWhatAPersonDidToItsTeamOnThePage(t *testing.T) {
+	r, th, lead, _, _ := team(t)
+	other, otherLead := r.thread("Second")
+	r.helper(other, "backend")
+	if _, err := r.svc.StandDown(th.ID, "admin", ByPerson); err != nil {
+		t.Fatal(err)
+	}
+	if said := r.sess.prompts(lead.ID); len(said) != 1 || !strings.Contains(said[0], "a person did this on the thread's page. Stood down admin-thread-1") {
+		t.Fatalf("the lead did not see it happen, so it is told: %v", said)
+	}
+	if _, err := r.svc.Merge(th.ID, ByPerson); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the merge's result", func() bool { return len(r.sess.prompts(lead.ID)) == 2 })
+	if landed := r.sess.prompts(lead.ID)[1]; !strings.HasPrefix(landed, "[ccmux] A person asked for this thread's merge on its page.") || !strings.Contains(landed, "merged app into main") {
+		t.Fatalf("a merge the lead did not ask for says who did: %s", landed)
+	}
+	if _, err := r.svc.End(th.ID, ByPerson); err != nil {
+		t.Fatal(err)
+	}
+	if said := r.sess.prompts(lead.ID); len(said) != 3 || !strings.Contains(said[2], "is closed") {
+		t.Fatalf("and so does closing it: %v", said)
+	}
+	// What the lead does itself, it is not told again.
+	if _, err := r.svc.StandDown(other.ID, "backend", ByLead); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.End(other.ID, ByLead); err != nil {
+		t.Fatal(err)
+	}
+	if said := r.sess.prompts(otherLead.ID); len(said) != 0 {
+		t.Fatalf("a lead's own stand-down and close come back as the tool's answer only: %v", said)
 	}
 }

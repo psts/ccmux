@@ -212,7 +212,7 @@
       const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : ""));
       tr.type = "button";
       tr.onclick = () => ctx.pickSession(t.session);
-      add(box, add(tr, el("span", "dot " + t.state), add(el("span", "row-body"), el("span", "row-name", t.title), el("span", "row-sub", Model.stateLabel(t.state).toLowerCase()))));
+      add(box, add(tr, el("span", "dot " + t.state), add(el("span", "row-body"), el("span", "row-name", t.title), el("span", "row-sub", t.sub || Model.stateLabel(t.state).toLowerCase()))));
     }
     return box;
   }
@@ -225,9 +225,23 @@
 
   // --- the right-hand tabs ---
 
-  function changesTab(box, files, picked, onPick) {
+  // repoChanges is one repo of a thread in the Changes tab: whose branch it
+  // is, the one line on what the branch holds, and its files.
+  function repoChanges(g) {
+    const box = el("div", "chg");
+    add(box, add(el("div", "chg-head"), el("span", "chg-repo", g.repo), el("span", "branch", g.branch)));
+    for (const f of g.files) add(box, add(el("div", "file still"), el("span", "file-path", f.path), el("span", "plus", f.added ? "+" + f.added : ""), el("span", "minus", f.removed ? "−" + f.removed : "")));
+    return add(box, el("div", "chg-status", g.status));
+  }
+
+  // changesTab draws a thread's changes by repo (groups, from the daemon's
+  // read of each member's branch), then what this session itself changed
+  // with its diffs (files, from its conversation).
+  function changesTab(box, files, picked, onPick, groups = []) {
     box.textContent = "";
-    if (!files.length) return add(box, el("div", "quiet", "No files changed in this session yet."));
+    for (const g of groups) add(box, repoChanges(g));
+    if (groups.length && files.length) add(box, el("div", "chg-own", "Edits in this conversation"));
+    if (!files.length) return groups.length ? box : add(box, el("div", "quiet", "No files changed in this session yet."));
     for (const f of files) {
       const row = el("button", "file" + (picked === f.path ? " on" : ""));
       row.type = "button";
@@ -238,11 +252,39 @@
     return add(box, diff(shown.diff, shown.path));
   }
 
+  // helpersTab lists a thread's team: each member with what it is doing and
+  // where it works. A row opens that member's conversation; a helper's has
+  // the button that stands it down.
+  function helpersTab(box, rows, ctx) {
+    box.textContent = "";
+    if (!rows.length) return add(box, el("div", "quiet", "No helpers. A thread stands one up when it needs another repo."));
+    add(box, el("div", "quiet", "Helpers this thread stood up. The lead stands them down when it is done."));
+    for (const r of rows) {
+      const row = el("div", "member" + (ctx.isPicked(r) ? " on" : ""));
+      const open = el("button", "member-open");
+      open.type = "button";
+      open.title = r.bus ? "Open " + r.bus : "Open";
+      open.onclick = () => ctx.pick(r);
+      add(open, el("span", "dot " + r.state), add(el("span", "row-body"),
+        add(el("span", "row-top"), el("span", "row-name", r.name), el("span", "role", r.role)),
+        el("span", "member-doing", r.doing), el("span", "member-where", r.where)));
+      add(row, open);
+      if (r.role === "helper" && ctx.canStandDown) {
+        const down = el("button", "plain small", "Stand down");
+        down.type = "button";
+        down.onclick = () => ctx.standDown(r);
+        add(row, down);
+      }
+      add(box, row);
+    }
+    return box;
+  }
+
   function todoTab(box, todos, result) {
     box.textContent = "";
     add(box, todos.length ? todoList(todos) : el("div", "quiet", "No to-do list in this session."));
     if (result) add(box, el("div", "cost", `Last turn ${(result.durationMs / 1000).toFixed(1)} s · session so far $${result.costUSD.toFixed(2)}`));
   }
 
-  window.ccmuxThreadView = { el, block, sig, card, pressKey, frameAnswer, sidebar, changesTab, todoTab, diff, mediaURL };
+  window.ccmuxThreadView = { el, block, sig, card, pressKey, frameAnswer, sidebar, changesTab, helpersTab, todoTab, diff, mediaURL };
 })();

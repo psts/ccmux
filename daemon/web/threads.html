@@ -38,6 +38,8 @@
         <details id="more" class="more hidden">
           <summary title="More">&#8943;</summary>
           <div class="more-menu">
+            <button id="merge-thread" type="button" title="Land every member's branch through its repo's checks">Merge thread</button>
+            <button id="end-thread" type="button" title="Stand every helper down and close the thread">Close thread</button>
             <button id="rename" type="button">Rename</button>
             <button id="sleep" type="button">Put to sleep</button>
             <button id="end" type="button">End this session</button>
@@ -85,9 +87,11 @@
     <aside id="detail" aria-label="Thread details">
       <div class="tabs" role="tablist">
         <button class="tab on" role="tab" data-tab="changes" type="button">Changes</button>
+        <button class="tab" role="tab" data-tab="team" type="button">Helpers</button>
         <button class="tab" role="tab" data-tab="todo" type="button">To-do</button>
       </div>
       <div id="tab-changes" class="tab-body"></div>
+      <div id="tab-team" class="tab-body hidden"></div>
       <div id="tab-todo" class="tab-body hidden"></div>
     </aside>
   </div>
@@ -96,6 +100,7 @@
   <script src="/route.js"></script>
   <script src="/agentchat.js"></script>
   <script src="/threadmodel.js"></script>
+  <script src="/threadteam.js"></script>
   <script src="/threadstream.js"></script>
   <script src="/threadwork.js"></script>
   <script src="/threadmd.js"></script>

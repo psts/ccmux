@@ -21,9 +21,9 @@ type threadService interface {
 	FirstEdit(sessionID string) (threads.Moved, error)
 	List() ([]store.Thread, error)
 	Detail(threadID int64) (threads.Detail, error)
-	Merge(threadID int64) (string, error)
-	End(threadID int64) (string, error)
-	StandDown(threadID int64, repo string) (string, error)
+	Merge(threadID int64, by string) (string, error)
+	End(threadID int64, by string) (string, error)
+	StandDown(threadID int64, repo, by string) (string, error)
 	Tool(sessionID, action, repo string) (string, error)
 	LeadChanged(sessionID string)
 }
@@ -35,9 +35,15 @@ func (s *Server) threadRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/threads", s.createThread)
 	mux.HandleFunc("GET /v1/threads", s.listThreads)
 	mux.HandleFunc("GET /v1/threads/{id}", s.getThread)
-	mux.HandleFunc("POST /v1/threads/{id}/merge", s.threadAction(func(t threadService, id int64, _ string) (string, error) { return t.Merge(id) }))
-	mux.HandleFunc("POST /v1/threads/{id}/end", s.threadAction(func(t threadService, id int64, _ string) (string, error) { return t.End(id) }))
-	mux.HandleFunc("POST /v1/threads/{id}/stand-down", s.threadAction(threadService.StandDown))
+	mux.HandleFunc("POST /v1/threads/{id}/merge", s.threadAction(func(t threadService, id int64, _ string) (string, error) {
+		return t.Merge(id, threads.ByPerson)
+	}))
+	mux.HandleFunc("POST /v1/threads/{id}/end", s.threadAction(func(t threadService, id int64, _ string) (string, error) {
+		return t.End(id, threads.ByPerson)
+	}))
+	mux.HandleFunc("POST /v1/threads/{id}/stand-down", s.threadAction(func(t threadService, id int64, repo string) (string, error) {
+		return t.StandDown(id, repo, threads.ByPerson)
+	}))
 	mux.HandleFunc("POST /v1/panes/{id}/first-edit", s.paneFirstEdit)
 	mux.HandleFunc("POST /v1/panes/{id}/thread", s.paneThread)
 }
@@ -171,7 +177,8 @@ func writeThreadError(w http.ResponseWriter, err error) {
 }
 
 // threadAction is a route a person's page calls on a thread: merge, end,
-// or stand one helper down ({repo}). 200 with what was done, in words.
+// or stand one helper down ({repo}). 200 with what was done, in words. The
+// thread's lead is told a person did it (threads.ByPerson).
 func (s *Server) threadAction(run func(t threadService, id int64, repo string) (string, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.threadsReady(w) {

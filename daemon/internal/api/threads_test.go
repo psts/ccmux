@@ -54,10 +54,10 @@ func (f *fakeThreads) act(what string, id int64) (string, error) {
 	return "did " + what, nil
 }
 
-func (f *fakeThreads) Merge(id int64) (string, error) { return f.act("merge", id) }
-func (f *fakeThreads) End(id int64) (string, error)   { return f.act("end", id) }
-func (f *fakeThreads) StandDown(id int64, repo string) (string, error) {
-	return f.act("stand-down "+repo, id)
+func (f *fakeThreads) Merge(id int64, by string) (string, error) { return f.act("merge by "+by, id) }
+func (f *fakeThreads) End(id int64, by string) (string, error)   { return f.act("end by "+by, id) }
+func (f *fakeThreads) StandDown(id int64, repo, by string) (string, error) {
+	return f.act("stand-down "+repo+" by "+by, id)
 }
 
 func (f *fakeThreads) Tool(sessionID, action, repo string) (string, error) {
@@ -168,16 +168,16 @@ func TestAThreadIsReadAndActedOnFromItsPage(t *testing.T) {
 		t.Fatalf("a thread is named by its number: %d", w.Code)
 	}
 	for _, c := range []struct{ path, body, did string }{
-		{"/v1/threads/7/merge", "", "merge"},
-		{"/v1/threads/7/stand-down", `{"repo":"backend"}`, "stand-down backend"},
-		{"/v1/threads/7/end", "", "end"},
+		{"/v1/threads/7/merge", "", "merge by person"},
+		{"/v1/threads/7/stand-down", `{"repo":"backend"}`, "stand-down backend by person"},
+		{"/v1/threads/7/end", "", "end by person"},
 	} {
 		if w := callSessions(t, s, "POST", c.path, c.body); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"message":"did `+c.did+`"`) {
 			t.Fatalf("%s answers with what was done: %d %s", c.path, w.Code, w.Body)
 		}
 	}
-	if strings.Join(f.acts, "|") != "merge|stand-down backend|end" {
-		t.Fatalf("each route is its own action: %v", f.acts)
+	if strings.Join(f.acts, "|") != "merge by person|stand-down backend by person|end by person" {
+		t.Fatalf("each route is its own action, asked for by a person: %v", f.acts)
 	}
 	f.refuse = errors.New("backend-thread-7 is still working; wait for it to report, then merge")
 	if w := callSessions(t, s, "POST", "/v1/threads/7/merge", ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "still working") {

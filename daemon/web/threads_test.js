@@ -122,7 +122,8 @@ const lead = { id: "lead1", workspaceId: "ws1", kind: "lead", cwd: "/p/app", mod
 async function boot(opts = {}) {
   const doc = page();
   const book = { calls: [], sockets: [], timers: [], frames: [], pushed: [] };
-  const lists = { windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1"] }], workspaces: [repo], sessions: opts.sessions || [] };
+  const workspaces = opts.workspaces || [repo];
+  const lists = { windows: [{ id: "w1", name: "ChartLabs", workspaceIds: workspaces.map((w) => w.id) }], workspaces, sessions: opts.sessions || [] };
   const routes = [
     ...(opts.routes || []), // a case's own answers win over the usual ones
     [/^GET \/v1\/windows/, () => lists.windows], [/^GET \/v1\/workspaces/, () => lists.workspaces], [/^GET \/v1\/sessions$/, () => ({ sessions: lists.sessions })],
@@ -366,4 +367,123 @@ test("a finished turn on screen is reported as seen, once", async () => {
   p.doc.handlers.visibilitychange();
   await p.settle();
   assert.equal(acted(), 1, "the same claim is not reported twice");
+});
+
+// --- a thread with helpers ---
+
+const backendRepo = { id: "ws2", name: "backend", repoPath: "/p/backend", git: { isGitRepo: true, branch: "dev" } };
+const threadLead = { id: "t1", workspaceId: "ws1", kind: "", title: "Trade CSV export", cwd: "/wt/app/thread-3", model: "", state: "running", attention: "idle", paneId: "pane-t1", createdAt: 2,
+  threadId: 3, role: "lead", repo: "/p/app", worktree: "/wt/app/thread-3", branch: "thread/3-trade-csv-export", name: "app-thread-3" };
+const helper = { id: "h1", workspaceId: "ws2", kind: "", title: "Trade CSV export", cwd: "/p/backend", model: "", state: "running", attention: "needs_input", paneId: "pane-h1", createdAt: 3,
+  threadId: 3, role: "helper", repo: "/p/backend", readOnly: true, name: "backend-thread-3", goal: "Reading the trades routes." };
+const detail = { thread: { id: 3, state: "open", title: "Trade CSV export" }, members: [
+  { session: threadLead, repo: "app", status: "1 commit, all committed", changes: { commits: 1, files: [{ path: "src/exportLink.js", added: 1, removed: 0 }] } },
+  { session: helper, repo: "backend", status: "Reading only" },
+] };
+const teamRoutes = [[/^GET \/v1\/threads$/, () => ({ threads: [detail.thread] })], [/^GET \/v1\/threads\/3$/, () => detail]];
+// Fresh copies: the page notes attention on the session objects it was given.
+const team = (over = {}) => boot({ workspaces: [repo, backendRepo], sessions: [{ ...lead, attention: "idle" }, { ...threadLead }, { ...helper }], search: "?s=t1", ...over, routes: [...(over.routes || []), ...teamRoutes] });
+
+test("a new thread is made as a thread, with its lead, by its first message", async () => {
+  const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread", routes: [[/^POST \/v1\/threads$/, (body) => ({ thread: { id: 3 }, session: { ...threadLead, model: body.model } })]] });
+  p.$("input").value = "Add CSV export in the app and in backend";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [
+    ["/v1/threads", { workspaceId: "ws1", model: "" }],
+    ["/v1/sessions/t1/prompt", { text: "Add CSV export in the app and in backend", sender: "Pat", images: [] }],
+  ]);
+  assert.equal(p.book.pushed.pop(), "/threads.html?s=t1");
+});
+
+test("a thread is filed under its lead's repo with who it works with, and its helper is no thread of the helper's repo", async () => {
+  const p = await team();
+  const rows = p.$("tree").querySelectorAll(".row").map((r) => [r.querySelector(".row-name").textContent, r.querySelector(".row-sub").textContent]);
+  assert.deepEqual(rows, [["app", "lead idle"], ["Trade CSV export", "with backend · needs you"], ["backend", "no lead yet"]]);
+  assert.equal(p.$("tree").querySelectorAll(".row.thread")[0].querySelector(".dot").className, "dot waiting", "the helper's question shows on the thread");
+  assert.equal(p.$("meta").textContent, "ChartLabs · lead: app · helper: backend");
+});
+
+test("the Helpers tab lists the team, opens a member, and stands a helper down", async () => {
+  const p = await team({ routes: [[/^POST \/v1\/threads\/3\/stand-down$/, () => ({ message: "Stood down backend-thread-3." })]] });
+  const members = p.$("tab-team").querySelectorAll(".member");
+  assert.deepEqual(members.map((m) => [m.querySelector(".row-name").textContent, m.querySelector(".role").textContent, m.querySelector(".member-doing").textContent, m.querySelector(".member-where").textContent]), [
+    ["app", "lead", "Idle.", "worktree · thread/3-trade-csv-export"],
+    ["backend", "helper", "Reading the trades routes.", "repo folder · read only"],
+  ]);
+  assert.equal(members[0].querySelectorAll(".small").length, 0, "the lead is not stood down");
+  members[1].querySelector(".small").click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [["/v1/threads/3/stand-down", { repo: "backend" }]]);
+  assert.equal(p.$("notice-bar").textContent, "Stood down backend-thread-3.");
+  members[1].querySelector(".member-open").click();
+  await p.settle();
+  assert.equal(p.book.pushed.pop(), "/threads.html?s=h1", "a member's row opens its own conversation");
+  assert.equal(p.$("meta").textContent, "ChartLabs · helper in backend · lead: app");
+  assert.equal(p.$("merge-thread").classList.contains("hidden"), true, "merging is the lead's");
+  assert.equal(p.$("tab-team").querySelectorAll(".small").length, 0, "and so is standing a helper down");
+});
+
+test("changes are shown by repo, each with its branch and what it holds", async () => {
+  const p = await team();
+  const groups = p.$("tab-changes").querySelectorAll(".chg");
+  assert.deepEqual(groups.map((g) => [g.querySelector(".chg-repo").textContent, g.querySelector(".branch").textContent, g.querySelector(".chg-status").textContent, g.querySelectorAll(".file-path").map((f) => f.textContent)]), [
+    ["app", "thread/3-trade-csv-export", "1 commit, all committed", ["src/exportLink.js"]],
+    ["backend", "no branch yet", "Reading only", []],
+  ]);
+  const plain = await boot({ sessions: [lead], search: "?s=lead1" });
+  assert.equal(plain.$("tab-changes").querySelectorAll(".chg").length, 0, "a session in no thread has no team to show");
+  assert.equal(plain.$("tab-team").textContent, "No helpers. A thread stands one up when it needs another repo.");
+  assert.equal(plain.book.calls.some((c) => /\/v1\/threads\/\d/.test(c.url)), false, "and no thread is asked for");
+});
+
+test("Merge thread asks the daemon, and says what it said or why it would not", async () => {
+  let refuse = true;
+  const p = await team({ routes: [[/^POST \/v1\/threads\/3\/merge$/, () => (refuse ? { fail: 409, error: "backend-thread-3 is still working; wait for it to report, then merge" } : { message: "Merging thread #3: app." })]] });
+  assert.equal(p.$("merge-thread").classList.contains("hidden"), false);
+  p.$("merge-thread").click();
+  await p.settle();
+  assert.equal(p.$("error-bar").textContent, "backend-thread-3 is still working; wait for it to report, then merge");
+  assert.equal(p.$("notice-bar").classList.contains("hidden"), true);
+  refuse = false;
+  p.$("merge-thread").click();
+  await p.settle();
+  assert.equal(p.$("notice-bar").textContent, "Merging thread #3: app.");
+  assert.equal(p.$("error-bar").classList.contains("hidden"), true);
+  // A later refusal does not sit beside the earlier "merging".
+  refuse = true;
+  p.$("merge-thread").click();
+  await p.settle();
+  assert.equal(p.$("notice-bar").classList.contains("hidden"), true, "what the earlier merge said is gone");
+  assert.equal(p.$("error-bar").textContent, "backend-thread-3 is still working; wait for it to report, then merge");
+  p.$("end-thread").click();
+  await p.settle();
+  assert.equal(p.posts().pop().url, "/v1/threads/3/end");
+  const other = await boot({ sessions: [lead], search: "?s=lead1" });
+  assert.equal(other.$("merge-thread").classList.contains("hidden"), true, "a repo's own lead leads no thread");
+});
+
+test("what a thread action said shows beside the session's own notice, and neither hides the other", async () => {
+  const noted = { ...threadLead, note: "start failed (1 of 5), trying again: no node" };
+  const p = await boot({ workspaces: [repo, backendRepo], sessions: [noted, { ...helper }], search: "?s=t1",
+    routes: [[/^POST \/v1\/threads\/3\/stand-down$/, () => ({ message: "Stood down backend-thread-3." })], ...teamRoutes] });
+  assert.equal(p.$("notice-bar").textContent, "start failed (1 of 5), trying again: no node");
+  p.$("tab-team").querySelector(".small").click();
+  await p.settle();
+  assert.equal(p.$("notice-bar").textContent, "Stood down backend-thread-3. start failed (1 of 5), trying again: no node");
+});
+
+test("a new thread in a folder that is no git repo is a plain session, as it always was", async () => {
+  const notes = { id: "ws9", name: "notes", repoPath: "/p/notes", git: { isGitRepo: false } };
+  const unread = { id: "ws8", name: "fresh", repoPath: "/p/fresh" }; // its git state is not read yet: not known to be no repo
+  const madeIn = async (ws) => {
+    const p = await boot({ workspaces: [ws], search: `?ws=${ws.id}&new=thread`, routes: [[/^POST \/v1\/threads$/, () => ({ thread: { id: 3 }, session: { ...threadLead, workspaceId: ws.id } })]] });
+    p.$("input").value = "Tidy these notes";
+    p.$("composer").onsubmit({ preventDefault() {} });
+    await p.settle();
+    return p.posts().map((c) => [c.url, c.body])[0];
+  };
+  assert.deepEqual(await madeIn(notes), ["/v1/sessions", { cwd: "/p/notes", workspaceId: "ws9", model: "" }], "nothing there lands through git, so no thread is asked for");
+  assert.deepEqual(await madeIn(unread), ["/v1/threads", { workspaceId: "ws8", model: "" }]);
+  assert.deepEqual(await madeIn(repo), ["/v1/threads", { workspaceId: "ws1", model: "" }]);
 });

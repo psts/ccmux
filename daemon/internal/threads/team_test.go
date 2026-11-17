@@ -78,7 +78,7 @@ func TestStandingAHelperDownEndsItAndTidiesItsWorktree(t *testing.T) {
 	th, lead := r.thread("x")
 	backend, admin := r.helper(th, "backend"), r.helper(th, "admin")
 	r.edits(backend.ID)
-	said, err := r.svc.StandDown(th.ID, "backend")
+	said, err := r.svc.StandDown(th.ID, "backend", ByLead)
 	if err != nil || !strings.Contains(said, "Stood down backend-thread-1") {
 		t.Fatalf("the lead hears it: %q %v", said, err)
 	}
@@ -95,16 +95,16 @@ func TestStandingAHelperDownEndsItAndTidiesItsWorktree(t *testing.T) {
 		t.Fatal("a helper that was stood down is in no thread any more")
 	}
 	// A helper that only read has no worktree to remove.
-	if _, err := r.svc.StandDown(th.ID, "admin"); err != nil {
+	if _, err := r.svc.StandDown(th.ID, "admin", ByLead); err != nil {
 		t.Fatal(err)
 	}
 	if removed := r.git.did(func(g *fakeGit) []string { return g.removed }); len(removed) != 1 {
 		t.Fatalf("nothing is removed for a helper that changed nothing: %v", removed)
 	}
-	if _, err := r.svc.StandDown(th.ID, "backend"); err == nil || !strings.Contains(err.Error(), "no helper for \"backend\" (its helpers: none)") {
+	if _, err := r.svc.StandDown(th.ID, "backend", ByLead); err == nil || !strings.Contains(err.Error(), "no helper for \"backend\" (its helpers: none)") {
 		t.Fatalf("a repo with no helper says so: %v", err)
 	}
-	if _, err := r.svc.StandDown(th.ID, "app"); err == nil {
+	if _, err := r.svc.StandDown(th.ID, "app", ByLead); err == nil {
 		t.Fatal("the lead is not a helper to stand down")
 	}
 }
@@ -115,7 +115,7 @@ func TestAWorktreeWithUnmergedWorkStaysWhenItsHelperIsStoodDown(t *testing.T) {
 	backend := r.helper(th, "backend")
 	r.edits(backend.ID)
 	r.git.set(func(g *fakeGit) { g.kept = map[string]string{"backend": "kept, it holds uncommitted files"} })
-	said, err := r.svc.StandDown(th.ID, "backend")
+	said, err := r.svc.StandDown(th.ID, "backend", ByLead)
 	if err != nil || !strings.Contains(said, "left for you") || !strings.Contains(said, "uncommitted files") {
 		t.Fatalf("what could not be removed is named, never forced: %q %v", said, err)
 	}
@@ -129,7 +129,7 @@ func TestEndingAThreadStandsItsHelpersDownAndTheLeadStays(t *testing.T) {
 	th, lead := r.thread("x")
 	other, otherLead := r.thread("y")
 	backend, kept := r.helper(th, "backend"), r.helper(other, "backend")
-	said, err := r.svc.End(th.ID)
+	said, err := r.svc.End(th.ID, ByLead)
 	if err != nil || !strings.Contains(said, "Thread #1 is closed") {
 		t.Fatalf("the lead hears it: %q %v", said, err)
 	}

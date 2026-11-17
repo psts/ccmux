@@ -7,12 +7,12 @@
 (() => {
   "use strict";
   const R = window.ccmuxRoute, Model = window.ccmuxThreadModel, Stream = window.ccmuxThreadStream;
-  const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage;
+  const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage, Team = window.ccmuxThreadTeam;
   const $ = (id) => document.getElementById(id);
   const show = (id, on) => $(id).classList.toggle("hidden", !on);
 
   const S = {
-    windows: [], workspaces: [], sessions: [], listed: false,
+    windows: [], workspaces: [], sessions: [], threads: [], detail: null, listed: false,
     sel: R.parseThread(location.search), // what is on screen: a session, a draft, or nothing
     stream: Stream.fresh(), sock: null, retry: window.ccmuxRetry.backoff(), feedRetry: window.ccmuxRetry.backoff(),
     drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), file: "", dirty: false, jump: false,
@@ -49,6 +49,24 @@
     S.listed = true;
     drawAll();
     maybeActed();
+    loadTeam();
+  }
+
+  // loadTeam reads what only a thread with helpers has: the threads' own
+  // rows (a merge shows there) and, for the thread on screen, each member's
+  // changes. A daemon with no threads, or a read that fails, costs the page
+  // those lines and nothing else: the sessions already say who is in which
+  // thread.
+  async function loadTeam() {
+    const rows = await call("GET", "/v1/threads").then((d) => d.threads || [], () => null);
+    if (rows) S.threads = rows;
+    const sess = session();
+    const id = sess ? sess.threadId : 0;
+    const detail = id ? await call("GET", `/v1/threads/${id}`).then((d) => d, () => null) : null;
+    const now = session();
+    if ((now ? now.threadId : 0) !== id) return; // another session was picked meanwhile
+    S.detail = detail && detail.thread ? detail : null;
+    schedule();
   }
 
   const session = () => (S.sel.kind === "session" ? S.sessions.find((s) => s.id === S.sel.id) || null : null);
@@ -57,6 +75,9 @@
     const id = sess ? sess.workspaceId : S.sel.kind === "draft" ? S.sel.ws : "";
     return S.workspaces.find((w) => w.id === id) || null;
   };
+  // roots are the folders the picked session's paths are written without:
+  // its repo's, and a thread member's worktree (threadwork.js).
+  const roots = () => { const ws = workspace(); return Work.threadRoots(session(), ws ? ws.repoPath || "" : "", S.stream.turns); };
   const groupOf = (ws) => { const w = ws && S.windows.find((x) => (x.workspaceIds || []).includes(ws.id)); return w ? w.name : "Other"; };
 
   // --- what is on screen ---
@@ -69,12 +90,13 @@
     $("blocks").textContent = "";
     S.cardsSig = "";
     S.open.clear();
-    Object.assign(S, { file: "", error: "", restarted: false, awaitBoot: null, picked: "", menu: false });
+    Object.assign(S, { file: "", error: "", restarted: false, awaitBoot: null, picked: "", menu: false, detail: null, said: "" });
     closeSock();
     if (sel.kind === "session") openSock();
     document.getElementById("page").classList.remove("side-open");
     drawAll();
     maybeActed();
+    loadTeam();
   }
 
   function closeSock() {
@@ -148,7 +170,7 @@
   function drawSide() {
     const sess = session();
     const ws = workspace();
-    View.sidebar($("tree"), Model.tree(S.windows, S.workspaces, S.sessions), {
+    View.sidebar($("tree"), Team.decorate(Model.tree(S.windows, S.workspaces, S.sessions), S.sessions, S.workspaces, S.threads), {
       isLead: (r) => (sess ? !!r.lead && r.lead.id === sess.id : S.sel.kind === "draft" && S.sel.as === "lead" && S.sel.ws === r.id),
       isSession: (s) => !!sess && s.id === sess.id,
       inRepo: (r) => !!ws && ws.id === r.id,
@@ -175,6 +197,7 @@
   function headText(sess, ws) {
     const repo = ws ? Model.repoName(ws) : "";
     const group = groupOf(ws);
+    if (sess && sess.threadId) return { title: Model.titleOf(sess, ws), meta: Team.metaLine(sess, S.sessions, S.workspaces, group) };
     if (sess) {
       const lead = sess.kind === "lead";
       const filed = S.sessions.filter((s) => s.workspaceId === sess.workspaceId && s.kind !== "lead" && s.state !== "done").length;
@@ -205,6 +228,9 @@
     show("stop", live && (S.stream.busy || S.stream.cards.length > 0));
     show("more", live);
     show("rename", !!sess && sess.kind !== "lead");
+    const leads = live && !!sess.threadId && sess.role === "lead";
+    show("merge-thread", leads);
+    show("end-thread", leads);
     drawModel(sess);
   }
 
@@ -234,7 +260,9 @@
 
   function drawBars() {
     const sess = session();
-    const note = S.stream.note || (sess && sess.note) || "";
+    // What a thread action just answered, and the session's own notice: one
+    // never hides the other.
+    const note = [S.said, S.stream.note || (sess && sess.note) || ""].filter(Boolean).join(" ");
     show("notice-bar", !!note);
     $("notice-bar").textContent = note;
     const error = S.error || S.stream.error || S.listError;
@@ -252,7 +280,7 @@
   const viewCtx = () => {
     const sess = session();
     const ws = workspace();
-    const repo = ws ? ws.repoPath || "" : "";
+    const repo = roots();
     return {
       sessionId: S.sel.kind === "session" ? S.sel.id : "", now: Date.now(), // from the address: the stream can be ahead of the lists
       who: ws ? `Claude · ${Model.repoName(ws)}${sess && sess.kind === "lead" ? " lead" : ""}` : "Claude",
@@ -280,7 +308,7 @@
     const ctx = viewCtx();
     const follow = S.pinned || S.jump;
     S.jump = false;
-    const blocks = Work.blocks(S.stream.turns, ws ? ws.repoPath || "" : "", ws ? Model.repoName(ws) : "");
+    const blocks = Work.blocks(S.stream.turns, roots(), ws ? Model.repoName(ws) : "");
     const box = $("blocks");
     // What every block is drawn with (whose words, which session's images)
     // changed, as when the lists arrive after the conversation: draw anew.
@@ -352,10 +380,28 @@
   }
 
   function drawDetail() {
-    const ws = workspace();
-    const files = Work.changes(S.stream.turns, ws ? ws.repoPath || "" : "");
-    View.changesTab($("tab-changes"), files, S.file, (path) => { S.file = path; schedule(); });
+    const files = Work.changes(S.stream.turns, roots());
+    const sess = session();
+    const mine = !!sess && !!S.detail && S.detail.thread.id === sess.threadId;
+    View.changesTab($("tab-changes"), files, S.file, (path) => { S.file = path; schedule(); }, mine ? Team.changeGroups(S.detail) : []);
+    View.helpersTab($("tab-team"), Team.helperRows(sess, S.sessions, S.workspaces), {
+      isPicked: (r) => !!sess && r.id === sess.id,
+      pick: (r) => select({ kind: "session", id: r.id }),
+      canStandDown: !!sess && sess.role === "lead",
+      standDown: (r) => threadAct("stand-down", { repo: r.name }, `Stand the ${r.name} helper down? Work it has not committed stays in its worktree.`),
+    });
     View.todoTab($("tab-todo"), S.stream.todos, S.stream.result);
+  }
+
+  // threadAct runs one action on the picked session's thread (merge, end,
+  // stand a helper down) and shows what the daemon said of it: what it did,
+  // or why it would not.
+  async function threadAct(action, body, ask) {
+    const sess = session();
+    if (!sess || !sess.threadId || (ask && !confirm(ask))) return;
+    $("more").open = false;
+    await act(async () => { S.said = (await call("POST", `/v1/threads/${sess.threadId}/${action}`, body)).message || ""; });
+    loadLists();
   }
 
   // --- the composer ---
@@ -419,15 +465,24 @@
     }
   }
 
+  // makeSession makes what a draft stands for: a repo's own lead, or a
+  // thread, whose lead may stand up helpers and whose work lands through
+  // git. In a folder known not to be a git repo there is nothing to land,
+  // so a thread there is a plain session, as it always was.
+  async function makeSession(ws, lead) {
+    const plain = { cwd: ws.repoPath, workspaceId: ws.id, model: S.draftModel };
+    if (lead) return call("POST", "/v1/sessions", { ...plain, kind: "lead" });
+    if (ws.git && ws.git.isGitRepo === false) return call("POST", "/v1/sessions", plain);
+    return (await call("POST", "/v1/threads", { workspaceId: ws.id, model: S.draftModel })).session;
+  }
+
   // ensureSession makes the lead or thread a draft stands for (a lead that
   // is there already is answered with, never made twice) and puts it on
   // screen.
   async function ensureSession() {
     if (S.sel.kind === "session") return S.sel.id;
     const ws = workspace();
-    const body = { cwd: ws.repoPath, workspaceId: ws.id, model: S.draftModel };
-    if (S.sel.as === "lead") body.kind = "lead";
-    const sess = await call("POST", "/v1/sessions", body);
+    const sess = await makeSession(ws, S.sel.as === "lead");
     S.sessions = S.sessions.filter((s) => s.id !== sess.id).concat(sess);
     select({ kind: "session", id: sess.id });
     return sess.id;
@@ -474,6 +529,7 @@
   // act runs one session action and says why when it fails.
   async function act(work) {
     S.error = "";
+    S.said = ""; // what the last action answered is about that action only
     try {
       await work(session());
     } catch (e) {
@@ -610,13 +666,14 @@
     $("sleep").onclick = () => setWanted("asleep");
     $("end").onclick = () => { if (confirm("End this session? Its conversation stays on disk, but it will not run again.")) setWanted("done"); };
     $("rename").onclick = rename;
+    $("merge-thread").onclick = () => threadAct("merge");
+    $("end-thread").onclick = () => threadAct("end", undefined, "Close this thread? Its helpers are stood down. Work that is not merged stays on its branch.");
     $("new-thread").onclick = () => { const ws = workspace(); if (ws) select({ kind: "draft", ws: ws.id, as: "thread" }); };
     $("side-toggle").onclick = () => $("page").classList.toggle("side-open");
     for (const tab of document.querySelectorAll(".tab")) {
       tab.onclick = () => {
         for (const t of document.querySelectorAll(".tab")) t.classList.toggle("on", t === tab);
-        show("tab-changes", tab.dataset.tab === "changes");
-        show("tab-todo", tab.dataset.tab === "todo");
+        for (const name of ["changes", "team", "todo"]) show("tab-" + name, tab.dataset.tab === name);
       };
     }
   }

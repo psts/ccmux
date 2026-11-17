@@ -9,9 +9,33 @@
   "use strict";
 
   // rel is a path as the page writes it: inside the repo, without the repo.
+  // repo is the repo's folder, or several folders for a session that works
+  // in more than one (a thread member reads in its repo's folder and writes
+  // in its worktree): the first that holds the path is left out.
   function rel(path, repo) {
     const p = String(path || "");
-    return repo && p.startsWith(repo + "/") ? p.slice(repo.length + 1) : p;
+    for (const root of Array.isArray(repo) ? repo : [repo]) {
+      if (root && p.startsWith(root + "/")) return p.slice(root.length + 1);
+    }
+    return p;
+  }
+
+  // threadRoots is the folders a thread member's paths are written without:
+  // its repo's own, the worktree its row names, and the worktree its
+  // conversation names. The last is read off the paths themselves, by the
+  // folder name ccmux gives a thread's worktree (thread-<id>): once a thread
+  // has merged the worktree is gone from the row, and the conversation still
+  // shows what was changed in it.
+  function threadRoots(session, repoPath, turns) {
+    const roots = [session && session.worktree, repoPath].filter(Boolean);
+    if (!session || !session.threadId) return roots;
+    const mark = "/thread-" + session.threadId + "/";
+    for (const t of turns || []) for (const part of t.parts || []) {
+      const path = String((part.state && part.state.input && part.state.input.file_path) || "");
+      const at = path.indexOf(mark);
+      if (at > 0 && !roots.includes(path.slice(0, at + mark.length - 1))) roots.unshift(path.slice(0, at + mark.length - 1));
+    }
+    return roots;
   }
 
   // busMessage reads a prompt that came over the peers bus: who sent it and
@@ -151,7 +175,7 @@
     return [...byPath.values()];
   }
 
-  const api = { rel, busMessage, outcome, step, summarize, blocks, changes };
+  const api = { rel, threadRoots, busMessage, outcome, step, summarize, blocks, changes };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadWork = api;
 })(typeof window !== "undefined" ? window : this);

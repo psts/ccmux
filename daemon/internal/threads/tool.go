@@ -17,10 +17,10 @@ func (s *Service) List() ([]store.Thread, error) { return s.St.Threads() }
 var toolActions = map[string]func(s *Service, threadID int64, repo string) (string, error){
 	"helpers": func(s *Service, id int64, _ string) (string, error) { return s.Describe(id) },
 	"stand_down": func(s *Service, id int64, repo string) (string, error) {
-		return s.StandDown(id, strings.TrimSpace(repo))
+		return s.StandDown(id, strings.TrimSpace(repo), ByLead)
 	},
-	"merge": func(s *Service, id int64, _ string) (string, error) { return s.Merge(id) },
-	"end":   func(s *Service, id int64, _ string) (string, error) { return s.End(id) },
+	"merge": func(s *Service, id int64, _ string) (string, error) { return s.Merge(id, ByLead) },
+	"end":   func(s *Service, id int64, _ string) (string, error) { return s.End(id, ByLead) },
 }
 
 // Tool runs one action of the thread tool for the session that called it.

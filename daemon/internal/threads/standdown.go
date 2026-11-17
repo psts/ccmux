@@ -19,9 +19,10 @@ func workOf(m store.RunnerSession) taskq.Work {
 // repoName, and removes its worktree and branch when nothing in them would
 // be lost. It returns what to say of it. The lead is never stood down: it
 // ends with its own session.
-func (s *Service) StandDown(threadID int64, repoName string) (string, error) {
+func (s *Service) StandDown(threadID int64, repoName, by string) (string, error) {
 	defer s.lock(threadKey(threadID))()
-	if _, _, err := s.led(threadID); err != nil {
+	_, lead, err := s.led(threadID)
+	if err != nil {
 		return "", err
 	}
 	helpers, err := s.helpers(threadID)
@@ -32,7 +33,9 @@ func (s *Service) StandDown(threadID int64, repoName string) (string, error) {
 		if filepath.Base(h.Repo) == repoName || h.Name == repoName {
 			left := s.standDown(h)
 			s.reindex()
-			return "Stood down " + h.Name + stayed(left) + ".", nil
+			said := "Stood down " + h.Name + stayed(left) + "."
+			s.tellOfPerson(lead, by, said)
+			return said, nil
 		}
 	}
 	return "", fmt.Errorf("thread #%d has no helper for %q (its helpers: %s)", threadID, repoName, names(helpers))
@@ -91,13 +94,21 @@ func (s *Service) standDown(m store.RunnerSession) []string {
 	return nil
 }
 
+// tellOfPerson tells a thread's lead what a person did to its team on the
+// thread's page. What the lead did itself, it knows.
+func (s *Service) tellOfPerson(lead store.RunnerSession, by, said string) {
+	if by == ByPerson {
+		s.tell(lead, fmt.Sprintf("[ccmux] Thread #%d: a person did this on the thread's page. %s", lead.ThreadID, said))
+	}
+}
+
 // End closes a thread: every helper is stood down, and the thread reads as
 // ended. The lead's own session and work stay as they are: the lead says
 // its last words, and a person ends its session. Work the lead takes up
 // after that opens the thread again.
-func (s *Service) End(threadID int64) (string, error) {
+func (s *Service) End(threadID int64, by string) (string, error) {
 	defer s.lock(threadKey(threadID))()
-	th, _, err := s.led(threadID)
+	th, lead, err := s.led(threadID)
 	if err != nil {
 		return "", err
 	}
@@ -113,7 +124,9 @@ func (s *Service) End(threadID int64) (string, error) {
 		return "", err
 	}
 	s.reindex()
-	return fmt.Sprintf("Thread #%d is closed and its helpers are stood down%s.", threadID, stayed(left)), nil
+	said := fmt.Sprintf("Thread #%d is closed and its helpers are stood down%s.", threadID, stayed(left))
+	s.tellOfPerson(lead, by, said)
+	return said, nil
 }
 
 // standAllDown stands every helper of a thread down and returns what stayed.
