@@ -363,11 +363,11 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
   await p.settle();
   assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [["/v1/sessions/lead1/model", { model: "haiku" }]]);
   assert.equal(p.$("model-bar").classList.contains("hidden"), false);
-  assert.equal(p.$("model-bar-text").textContent, "Haiku 5.5 applies on the next restart. This session keeps running on Opus 5.5 until then.");
+  assert.equal(p.$("model-bar-text").textContent, "Haiku applies on the next restart. This session keeps running on Opus until then.");
   p.$("later").click();
   await p.settle();
   assert.equal(p.$("model-bar").classList.contains("hidden"), true);
-  assert.equal(p.$("restart-later").textContent, "Restart to apply Haiku 5.5");
+  assert.equal(p.$("restart-later").textContent, "Restart to apply Haiku");
   assert.equal(p.$("restart-later").classList.contains("hidden"), false);
   p.$("restart-later").click();
   await p.settle();
@@ -375,7 +375,7 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
   assert.equal(p.$("restarted-bar").classList.contains("hidden"), true, "not restarted until the new runner says so");
   await p.frame({ t: "snapshot", boot: "b2", seq: 0, data: { messages: [], info: { model: "claude-haiku-5-5" } } });
   assert.equal(p.$("restarted-bar").classList.contains("hidden"), false);
-  assert.equal(p.$("restarted-bar").textContent, "Restarted on Haiku 5.5. The session picked up where it was.");
+  assert.equal(p.$("restarted-bar").textContent, "Restarted on Haiku. The session picked up where it was.");
 });
 
 test("the firehose moves a session's dot and has the lists read again", async () => {

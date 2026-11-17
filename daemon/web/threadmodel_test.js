@@ -119,3 +119,9 @@ test("how long ago, in the page's words", () => {
   assert.equal(m.ago(now - 3 * 86_400_000, now), "3 d ago");
   assert.equal(m.ago(0, now), "just now");
 });
+
+test("before a session says which models it offers, the picker names them without a version", () => {
+  const v = m.modelView({ model: "" }, {});
+  assert.deepEqual(v.options.map((o) => [o.value, o.label]), [["opus", "Opus (default)"], ["fable", "Fable"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]]);
+  assert.equal(m.modelView({ model: "sonnet" }, { models: [{ value: "sonnet", name: "Sonnet 6", model: "claude-sonnet-6" }] }).wantedName, "Sonnet 6", "once it says, its own names, with the version");
+});

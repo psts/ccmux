@@ -89,9 +89,13 @@
   // start), and the ones kept from what it does offer. A login can run a
   // dozen older models too; the picker is for choosing among the current
   // ones, and a session already on another model still shows it.
+  // The names here carry no version: an alias always runs the newest model
+  // of its family, so a release must not leave this list naming the old
+  // one. Once a session has started, the names are its own, versions and
+  // all. The ids only match these to what a session offers.
   const fallbackModels = [
-    { value: "opus", name: "Opus 5.5", model: "claude-opus-5-5" }, { value: "fable", name: "Fable 5.2", model: "claude-fable-5-2" },
-    { value: "sonnet", name: "Sonnet 5.5", model: "claude-sonnet-5-5" }, { value: "haiku", name: "Haiku 5.5", model: "claude-haiku-5-5" },
+    { value: "opus", name: "Opus", model: "claude-opus-5-5" }, { value: "fable", name: "Fable", model: "claude-fable-5-2" },
+    { value: "sonnet", name: "Sonnet", model: "claude-sonnet-5-5" }, { value: "haiku", name: "Haiku", model: "claude-haiku-5-5" },
   ];
 
   // bare is a model id without the context-window tag some logins add
