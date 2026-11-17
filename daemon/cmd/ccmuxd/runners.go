@@ -83,9 +83,9 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		return team.Brief(sess)
 	}
 	sup := runner.New(w.st, units, paths, cfg)
-	team = &threads.Service{St: w.st, Sessions: sup, Host: w.mgr, Git: taskq.ExecGit{}, Root: w.worktrees, Now: time.Now, MoveAfter: time.Second}
+	team = newThreads(w, sup)
 	w.api.SetThreads(team)
-	sup.Changed = sessionChanged(w.mgr, w.peers)
+	sup.Changed = sessionChanged(w.mgr, w.peers, team)
 	w.mgr.RunnerLiveness = sup.Liveness
 	w.mgr.EndRunnerSession = func(id string) {
 		if err := sup.SetWanted(id, store.SessionDone); err != nil {
@@ -104,15 +104,43 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 	go sup.Run(ctx)
 }
 
+// newThreads makes the threads service (internal/threads): threads with
+// helpers, over the session supervisor, landing through the task queue's own
+// merge. The bus asks it where a thread member's message to a repo goes, and
+// has it stand that repo's helper up.
+func newThreads(w runnerWiring, sup *runner.Supervisor) *threads.Service {
+	git := taskq.ExecGit{}
+	team := &threads.Service{
+		St: w.st, Sessions: sup, Host: w.mgr, Root: w.worktrees, Now: time.Now, MoveAfter: time.Second,
+		Lander:  taskq.Lander{Git: git, MergeGit: git, Checks: taskq.GateChecks{PerLine: 20 * time.Minute}, Tag: "threads"},
+		Changes: taskq.ReadBranchChanges,
+	}
+	if w.peers != nil {
+		w.peers.ThreadRoute = func(senderPane, toName string) (peers.HelperRoute, bool) {
+			r, ok := team.Route(senderPane, toName)
+			return peers.HelperRoute{ThreadID: r.ThreadID, Repo: r.Repo, Name: r.Name}, ok
+		}
+		w.peers.StartHelper = team.StartHelper
+	}
+	team.Recover()
+	return team
+}
+
 // sessionChanged is what the supervisor calls when a session's row changes:
 // the session's pane follows the row (made, renamed, gone with an ended
 // session), and a session that is not done has its peer on the bus, which
 // is what lets a message reach, and wake, one that is asleep. An ended
 // session's peer leaves the bus at once, with its mailbox.
-func sessionChanged(mgr *manager.Manager, bus *peers.Service) func(store.RunnerSession) {
+//
+// A thread hears of a member that ended, off the supervisor's lock (it ends
+// other sessions in turn): a lead takes its helpers with it.
+func sessionChanged(mgr *manager.Manager, bus *peers.Service, team *threads.Service) func(store.RunnerSession) {
 	return func(sess store.RunnerSession) {
 		mgr.SyncRunnerPane(sess)
 		mgr.SessionsChanged(sess.WorkspaceID)
+		if team != nil && sess.Wanted == store.SessionDone {
+			go team.SessionEnded(sess)
+		}
 		switch {
 		case bus == nil || sess.PaneID == "":
 		case sess.Wanted == store.SessionDone:

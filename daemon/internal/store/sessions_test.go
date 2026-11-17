@@ -385,8 +385,20 @@ func TestAThreadKeepsItsRowAndItsMembers(t *testing.T) {
 	if err := st.SaveThread(th); err != nil {
 		t.Fatal(err)
 	}
+	if list, err := st.Threads(); err != nil || len(list) != 1 || list[0].State != ThreadEnded {
+		t.Fatalf("a thread its lead closed is still there while the lead is: %+v %v", list, err)
+	}
+	if err := st.SetRunnerSessionWanted("s2", SessionDone, 6); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := st.Threads(); len(list) != 1 {
+		t.Fatalf("a helper that ended does not end the thread: %+v", list)
+	}
+	if err := st.SetRunnerSessionWanted("s1", SessionDone, 7); err != nil {
+		t.Fatal(err)
+	}
 	if list, err := st.Threads(); err != nil || len(list) != 0 {
-		t.Fatalf("an ended thread drops out of the list: %+v %v", list, err)
+		t.Fatalf("a thread whose lead session ended drops out of the list: %+v %v", list, err)
 	}
 }
 

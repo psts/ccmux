@@ -67,7 +67,7 @@ func TestASessionsChangeMovesItsPaneAndItsPeer(t *testing.T) {
 	bus := peers.NewService(st, mgr, []byte("test-secret-test-secret-test-sec"))
 	bus.RunnerPane = runnerPaneForBus(mgr)
 	bus.RunnerInbox = func(string, string, string, string) error { return nil } // runners on: wireRunners and EnablePeers set both
-	changed := sessionChanged(mgr, bus)
+	changed := sessionChanged(mgr, bus, nil)
 	sub, events := mgr.SubscribeEvents()
 	defer mgr.UnsubscribeEvents(sub)
 

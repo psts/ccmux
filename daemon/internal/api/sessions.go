@@ -242,6 +242,7 @@ func (s *Server) sessionChanged(sessionID string) {
 	if err != nil || sess == nil {
 		return
 	}
+	s.threadLeadChanged(sessionID)
 	s.mgr.SessionsChanged(sess.WorkspaceID)
 }
 
@@ -393,8 +394,10 @@ func (s *Server) setRunnerModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A model applies when the session next starts (runner.SetModel); the
-	// lens says so and offers the restart route as "Restart now".
+	// lens says so and offers the restart route as "Restart now". A thread's
+	// helpers follow their lead's model, at their own next start.
 	id := r.PathValue("id")
+	s.threadLeadChanged(id)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"model": in.Model, "applies": "on the next restart", "restart": "/v1/sessions/" + id + "/restart",
 	})

@@ -16,8 +16,9 @@ import (
 const threadsSchema = `
 -- One row per thread. ws_group is the ccmux window it was started in ('' for
 -- a repo in none); lead_session its lead's session id; state is open,
--- merging, merged or ended; model is what its members start on ('' for the
--- default); note says how its last merge went.
+-- merging, merged or ended (its lead closed it; it is gone for good once
+-- its lead session has ended); model is what its members start on ('' for
+-- the default); note says how its last merge went.
 CREATE TABLE IF NOT EXISTS threads (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ws_group TEXT DEFAULT '', lead_session TEXT DEFAULT '',
   title TEXT DEFAULT '', goal TEXT DEFAULT '', state TEXT NOT NULL, model TEXT DEFAULT '',
@@ -119,9 +120,13 @@ func (s *SQLite) Thread(id int64) (*Thread, error) {
 	return &list[0], nil
 }
 
-// Threads lists every thread that has not ended, oldest first.
+// Threads lists every thread whose lead session has not ended, oldest
+// first. A thread lives as long as its lead does: one its lead closed
+// (ended) or merged is still there to read, and opens again when the lead
+// has new work.
 func (s *SQLite) Threads() ([]Thread, error) {
-	return s.queryThreads(`SELECT `+threadCols+` FROM threads WHERE state<>? ORDER BY id`, ThreadEnded)
+	return s.queryThreads(`SELECT ` + threadCols + ` FROM threads
+WHERE EXISTS (SELECT 1 FROM sessions WHERE sessions.id=threads.lead_session AND sessions.wanted<>'done') ORDER BY id`)
 }
 
 func (s *SQLite) queryThreads(q string, args ...any) ([]Thread, error) {

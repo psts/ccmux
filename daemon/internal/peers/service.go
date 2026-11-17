@@ -218,6 +218,15 @@ type Service struct {
 	// hears nothing.
 	RunnerSummary func(paneID, summary string)
 
+	// ThreadRoute says where a thread member's message to a repo of its
+	// window goes: to its thread's own helper for that repo (helperroute.go).
+	// Asked under the bus lock, so it reads memory only. StartHelper stands
+	// that helper up when it is not on the bus; it makes a session, which
+	// registers a peer here, so it is never called under the lock. Both are
+	// wired at startup when threads are on; nil means there are none.
+	ThreadRoute func(senderPaneID, toName string) (HelperRoute, bool)
+	StartHelper func(threadID int64, repo string) error
+
 	// SpawnTimeout is how long a spawned teammate has to register before its
 	// requester gets an "unreachable" notice. Exported for tests.
 	SpawnTimeout time.Duration

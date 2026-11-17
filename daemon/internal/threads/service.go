@@ -62,7 +62,11 @@ type Service struct {
 	St       Store
 	Sessions Sessions
 	Host     Host
-	Git      taskq.Git
+	// Lander is the task queue's own merge (taskq/land.go): its git makes a
+	// member's worktree, and a thread's branches land through it.
+	Lander taskq.Lander
+	// Changes reads what a member's branch holds (taskq.ReadBranchChanges).
+	Changes func(worktree, trunk string) (taskq.BranchChanges, error)
 	// Root is where worktrees go: the task queue's own folder, a thread's
 	// beside a repo's task worktrees.
 	Root string
@@ -76,6 +80,18 @@ type Service struct {
 	// moving is the members whose restart into a new folder is on its way
 	// (session id → true), so asking twice restarts once.
 	moving sync.Map
+
+	// members is who is in which thread, by pane: what the bus asks under
+	// its own lock (Route), so it is kept in memory and read from nowhere
+	// else. Rebuilt from the rows after every change (reindex).
+	mu      sync.RWMutex
+	members map[string]memberRef
+}
+
+// memberRef is a member's thread and the repo it works for.
+type memberRef struct {
+	thread int64
+	repo   string
 }
 
 // sender is who a thread's own notices are from.
@@ -143,18 +159,18 @@ func (s *Service) Create(n New) (store.Thread, store.RunnerSession, error) {
 		return th, lead, s.dropUnled(th, err)
 	}
 	th.LeadSession = lead.ID
-	return th, lead, s.St.SaveThread(th)
+	if err := s.St.SaveThread(th); err != nil {
+		return th, lead, err
+	}
+	s.reindex()
+	return th, lead, nil
 }
 
 // memberSession is the session a thread's member starts as: in its repo's
 // own folder, reading only, under the bus name its teammates can work out.
 func memberSession(th store.Thread, ws *model.Workspace, role string) runner.NewSession {
-	title := ""
-	if role == store.RoleLead {
-		title = th.Title
-	}
 	return runner.NewSession{
-		Cwd: ws.RepoPath, Name: taskq.ThreadBusName(ws.RepoPath, th.ID), Model: th.Model, WorkspaceID: ws.ID, Title: title,
+		Cwd: ws.RepoPath, Name: taskq.ThreadBusName(ws.RepoPath, th.ID), Model: th.Model, WorkspaceID: ws.ID, Title: th.Title,
 		ThreadID: th.ID, Role: role, Repo: ws.RepoPath, ReadOnly: true,
 	}
 }

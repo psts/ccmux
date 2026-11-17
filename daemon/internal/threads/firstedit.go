@@ -41,7 +41,7 @@ func (s *Service) FirstEdit(sessionID string) (Moved, error) {
 		return movedText(sess, ""), nil
 	}
 	worktree, branch := taskq.ThreadPlace(s.Root, sess.Repo, th.ID, s.titleNow(th))
-	trunk, err := taskq.MakeWorktree(s.Git, sess.Repo, worktree, branch)
+	trunk, err := taskq.MakeWorktree(s.Lander.Git, sess.Repo, worktree, branch)
 	if err != nil {
 		return Moved{}, fmt.Errorf("making the worktree %s: %w", worktree, err)
 	}
@@ -95,15 +95,15 @@ func (s *Service) relocate(sessionID string) {
 	}
 }
 
-// reopen makes a thread that had merged open again: one of its members has
-// new work.
+// reopen makes a thread that had merged, or that its lead had closed, open
+// again: it has new work.
 func (s *Service) reopen(th store.Thread) {
-	if th.State != store.ThreadMerged {
+	if th.State != store.ThreadMerged && th.State != store.ThreadEnded {
 		return
 	}
 	th.State, th.UpdatedAt = store.ThreadOpen, s.millis()
 	if err := s.St.SaveThread(th); err != nil {
-		log.Printf("threads: #%d has new work but still reads as merged: %v", th.ID, err)
+		log.Printf("threads: #%d has new work but is not marked open again: %v", th.ID, err)
 	}
 }
 

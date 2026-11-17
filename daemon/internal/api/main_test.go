@@ -22,5 +22,11 @@ func TestMain(m *testing.M) {
 	hooktrace.SetPath(filepath.Join(dir, "trace.jsonl"))
 	code := m.Run()
 	_ = os.RemoveAll(dir)
+	// The ccmuxd a test built for its panes (envExecBinary) goes with the
+	// run: left behind, each run kept 45 MB in the temp folder, and they
+	// filled the disk (78 of them by 2026-11-17).
+	if envExecPath != "" {
+		_ = os.RemoveAll(filepath.Dir(envExecPath))
+	}
 	os.Exit(code)
 }

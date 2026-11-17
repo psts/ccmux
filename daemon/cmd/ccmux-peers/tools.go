@@ -254,6 +254,25 @@ var toolsList = []map[string]any{
 		},
 	},
 	{
+		"name":        "thread",
+		"description": threadToolText,
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"action": map[string]any{
+					"type":        "string",
+					"enum":        []string{"helpers", "stand_down", "merge", "end"},
+					"description": "What to do with your thread.",
+				},
+				"repo": map[string]any{
+					"type":        "string",
+					"description": "stand_down: the folder name of the repo whose helper is stood down.",
+				},
+			},
+			"required": []string{"action"},
+		},
+	},
+	{
 		"name":        "page",
 		"description": `Page your human: one urgent push to their phone and browser, sent even while they sit at a screen. Only for security, money, or a live outage, never for routine news (use send_message for that). At most one page per incident: pass the same incident key every time you run into the same problem, and the bus refuses the repeats; a new key only for a new incident.`,
 		"inputSchema": map[string]any{
@@ -315,6 +334,7 @@ var toolHandlers = map[string]func(*app, json.RawMessage) any{
 	"check_messages": func(a *app, _ json.RawMessage) any { return a.toolCheckMessages() },
 	"schedule":       (*app).toolSchedule,
 	"tasks":          (*app).toolTasks,
+	"thread":         (*app).toolThread,
 	"page":           (*app).toolPage,
 }
 

@@ -17,6 +17,9 @@ type fakeThreads struct {
 	createErr error
 	edits     []string // session ids asked to move
 	editErr   error
+	acts      []string // merge, end, stand-down and tool calls, in order
+	refuse    error    // what the next action is refused with
+	changed   []string // session ids LeadChanged heard of
 }
 
 func (f *fakeThreads) Create(n threads.New) (store.Thread, store.RunnerSession, error) {
@@ -27,6 +30,44 @@ func (f *fakeThreads) Create(n threads.New) (store.Thread, store.RunnerSession, 
 	return store.Thread{ID: 7, Title: n.Title, State: store.ThreadOpen, LeadSession: "lead1"},
 		store.RunnerSession{ID: "lead1", Name: "app-thread-7", ThreadID: 7, Role: store.RoleLead, ReadOnly: true, Wanted: store.SessionRunning}, nil
 }
+
+func (f *fakeThreads) List() ([]store.Thread, error) {
+	return []store.Thread{{ID: 7, Title: "Trade CSV export", State: store.ThreadOpen, LeadSession: "lead1"}}, nil
+}
+
+func (f *fakeThreads) Detail(id int64) (threads.Detail, error) {
+	if id != 7 {
+		return threads.Detail{}, store.ErrNoThread
+	}
+	return threads.Detail{Thread: store.Thread{ID: 7, State: store.ThreadOpen}, Members: []threads.Member{{Repo: "app", Status: "Reading only"}}}, nil
+}
+
+// act notes an action on a thread and answers as the service would.
+func (f *fakeThreads) act(what string, id int64) (string, error) {
+	if id != 7 {
+		return "", store.ErrNoThread
+	}
+	if f.refuse != nil {
+		return "", f.refuse
+	}
+	f.acts = append(f.acts, what)
+	return "did " + what, nil
+}
+
+func (f *fakeThreads) Merge(id int64) (string, error) { return f.act("merge", id) }
+func (f *fakeThreads) End(id int64) (string, error)   { return f.act("end", id) }
+func (f *fakeThreads) StandDown(id int64, repo string) (string, error) {
+	return f.act("stand-down "+repo, id)
+}
+
+func (f *fakeThreads) Tool(sessionID, action, repo string) (string, error) {
+	if sessionID != "lead1" {
+		return "", threads.ErrNotMember
+	}
+	return f.act(strings.TrimSpace("tool "+action+" "+repo), 7)
+}
+
+func (f *fakeThreads) LeadChanged(sessionID string) { f.changed = append(f.changed, sessionID) }
 
 func (f *fakeThreads) FirstEdit(sessionID string) (threads.Moved, error) {
 	if f.editErr != nil {
@@ -109,5 +150,74 @@ func TestAMembersRunnerAsksForItsWorktreeOnItsOwnPane(t *testing.T) {
 	f.editErr = errors.New("disk full")
 	if w := fromPane(s, "/v1/panes/pane-lead/first-edit", "127.0.0.1:4000"); w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "disk full") {
 		t.Fatalf("a worktree that could not be made says why: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestAThreadIsReadAndActedOnFromItsPage(t *testing.T) {
+	s, f := threadsAPI(t)
+	if w := callSessions(t, s, "GET", "/v1/threads", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"threads":[{"id":7`) {
+		t.Fatalf("the list is the thread rows: %d %s", w.Code, w.Body)
+	}
+	if w := callSessions(t, s, "GET", "/v1/threads/7", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"Reading only"`) {
+		t.Fatalf("one thread comes with its members: %d %s", w.Code, w.Body)
+	}
+	if w := callSessions(t, s, "GET", "/v1/threads/8", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("an unknown thread is not found: %d", w.Code)
+	}
+	if w := callSessions(t, s, "GET", "/v1/threads/seven", ""); w.Code != http.StatusBadRequest {
+		t.Fatalf("a thread is named by its number: %d", w.Code)
+	}
+	for _, c := range []struct{ path, body, did string }{
+		{"/v1/threads/7/merge", "", "merge"},
+		{"/v1/threads/7/stand-down", `{"repo":"backend"}`, "stand-down backend"},
+		{"/v1/threads/7/end", "", "end"},
+	} {
+		if w := callSessions(t, s, "POST", c.path, c.body); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"message":"did `+c.did+`"`) {
+			t.Fatalf("%s answers with what was done: %d %s", c.path, w.Code, w.Body)
+		}
+	}
+	if strings.Join(f.acts, "|") != "merge|stand-down backend|end" {
+		t.Fatalf("each route is its own action: %v", f.acts)
+	}
+	f.refuse = errors.New("backend-thread-7 is still working; wait for it to report, then merge")
+	if w := callSessions(t, s, "POST", "/v1/threads/7/merge", ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "still working") {
+		t.Fatalf("a refused action says why: %d %s", w.Code, w.Body)
+	}
+	if w := callSessions(t, s, "POST", "/v1/threads/8/merge", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("an action on an unknown thread is not found: %d", w.Code)
+	}
+	if len(f.acts) != 3 {
+		t.Fatalf("a refused action did nothing: %v", f.acts)
+	}
+}
+
+func TestTheThreadToolActsForThePanesOwnSession(t *testing.T) {
+	s, f := threadsAPI(t)
+	s.mgr.SyncRunnerPane(store.RunnerSession{ID: "lead1", PaneID: "pane-lead", WorkspaceID: "ws-app", Wanted: store.SessionRunning, Cwd: "/r/app"})
+	s.mgr.SyncRunnerPane(store.RunnerSession{ID: "plain1", PaneID: "pane-plain", WorkspaceID: "ws-app", Wanted: store.SessionRunning, Cwd: "/r/app"})
+	w := callSessions(t, s, "POST", "/v1/panes/pane-lead/thread", `{"action":"stand_down","repo":"backend"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"message":"did tool stand_down backend"`) || f.acts[0] != "tool stand_down backend" {
+		t.Fatalf("the pane names the session, the body the action: %d %s %v", w.Code, w.Body, f.acts)
+	}
+	for _, pane := range []string{"pane-plain", "tmux1", "nope"} {
+		if w := callSessions(t, s, "POST", "/v1/panes/"+pane+"/thread", `{"action":"merge"}`); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "not in a thread") {
+			t.Fatalf("%s is no thread member's pane: %d %s", pane, w.Code, w.Body)
+		}
+	}
+	if len(f.acts) != 1 {
+		t.Fatalf("nothing was done for them: %v", f.acts)
+	}
+}
+
+func TestAThreadHearsWhenItsLeadsTitleOrModelChanges(t *testing.T) {
+	s, f := threadsAPI(t)
+	if w := callSessions(t, s, "POST", "/v1/sessions/s1/model", `{"model":"opus"}`); w.Code != http.StatusOK {
+		t.Fatalf("the model is saved: %d %s", w.Code, w.Body)
+	}
+	if len(f.changed) != 1 || f.changed[0] != "s1" {
+		t.Fatalf("the threads service hears whose model changed: %v", f.changed)
+	}
+	if w := callSessions(t, s, "POST", "/v1/sessions/s1/model", `{}`); w.Code != http.StatusBadRequest || len(f.changed) != 1 {
+		t.Fatalf("a model that was not saved is not passed on: %d %v", w.Code, f.changed)
 	}
 }

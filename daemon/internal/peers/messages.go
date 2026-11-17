@@ -127,10 +127,9 @@ func (s *Service) Send(req SendReq) SendResp {
 	return SendResp{OK: true, Queued: !s.presentLocked(target)}
 }
 
-// resolveTargetLocked finds the addressee: by id, or by name within the
-// addressed group — the sender's own unless to_group names another (erroring on
-// ambiguity instead of the old silent first-match), optionally spawning a
-// missing named teammate.
+// resolveTargetLocked finds the addressee: by id, or by name. A thread
+// member naming a repo of its window reaches its thread's own helper there
+// (helperroute.go); every other name is looked up in the addressed group.
 func (s *Service) resolveTargetLocked(req SendReq, sender *Peer, senderGroup string) (*Peer, SendResp) {
 	if req.ToID != "" {
 		t := s.peers[req.ToID]
@@ -142,21 +141,37 @@ func (s *Service) resolveTargetLocked(req SendReq, sender *Peer, senderGroup str
 	if req.ToName == "" {
 		return nil, SendResp{Error: "Either to_id or to_name is required"}
 	}
+	if target, resp, routed := s.threadTargetLocked(req, sender, senderGroup); routed {
+		return target, resp
+	}
+	return s.resolveByNameLocked(req, sender, senderGroup)
+}
+
+// namedLocked is the present peers called name in group, the sender left
+// out. Only present peers are candidates: naming a teammate means "the one
+// that's running", and matching a departed session would silently post into
+// a mailbox instead of falling through to the spawn path. Replies, which
+// carry to_id, still reach an away peer's queue.
+func (s *Service) namedLocked(name, group, senderID string) []*Peer {
+	var matches []*Peer
+	for _, p := range s.peers {
+		if p.Name == name && p.ID != senderID && sameGroup(s.groupOfLocked(p), group) && s.presentLocked(p) {
+			matches = append(matches, p)
+		}
+	}
+	return matches
+}
+
+// resolveByNameLocked finds the addressee by name within the addressed
+// group, the sender's own unless to_group names another (erroring on
+// ambiguity instead of the old silent first-match), optionally spawning a
+// missing named teammate.
+func (s *Service) resolveByNameLocked(req SendReq, sender *Peer, senderGroup string) (*Peer, SendResp) {
 	wantGroup := senderGroup
 	if req.ToGroup != "" {
 		wantGroup = req.ToGroup
 	}
-	// By NAME, only present peers are candidates: naming a teammate means "the
-	// one that's running", and matching a departed session would silently post
-	// into a mailbox instead of falling through to the spawn path. Replies,
-	// which carry to_id, still reach an away peer's queue.
-	var matches []*Peer
-	for _, p := range s.peers {
-		if p.Name == req.ToName && p.ID != sender.ID &&
-			sameGroup(s.groupOfLocked(p), wantGroup) && s.presentLocked(p) {
-			matches = append(matches, p)
-		}
-	}
+	matches := s.namedLocked(req.ToName, wantGroup, sender.ID)
 	switch len(matches) {
 	case 1:
 		return matches[0], SendResp{}
