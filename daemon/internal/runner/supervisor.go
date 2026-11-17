@@ -21,6 +21,7 @@ type Store interface {
 	SetRunnerSessionWanted(id, wanted string, now int64) error
 	SetRunnerSessionModel(id, model string, now int64) error
 	SetRunnerSessionNote(id, note string, now int64) error
+	SetRunnerSessionPlace(id string, p store.SessionPlace, now int64) error
 	AddInboxPromptAndWake(p store.InboxPrompt, wake bool, now int64) error
 	HasInboxPrompt(id string) (bool, error)
 	UndeliveredPrompts(sessionID string) ([]store.InboxPrompt, error)
@@ -133,9 +134,16 @@ func (s *Supervisor) Kick() {
 // Kind and Title are its place on the thread page (store.RunnerSession):
 // Kind store.SessionLead for a repo's own session, of which a workspace has
 // one; a second is refused with store.ErrLeadExists and nothing is made.
+//
+// ThreadID, Role, Repo and ReadOnly are its place in a thread with helpers
+// (store/threads.go); a second member of a thread for the same repo is
+// refused with store.ErrMemberExists.
 type NewSession struct {
 	Cwd, Name, Model, WorkspaceID string
 	Kind, Title                   string
+	ThreadID                      int64
+	Role, Repo                    string
+	ReadOnly                      bool
 }
 
 // Create records a new session and starts it. Once the row exists the
@@ -144,7 +152,8 @@ type NewSession struct {
 // a failed create the caller would retry into a second session.
 func (s *Supervisor) Create(n NewSession) (store.RunnerSession, error) {
 	now := s.millis()
-	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID, Kind: n.Kind, Title: n.Title}
+	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID, Kind: n.Kind, Title: n.Title,
+		ThreadID: n.ThreadID, Role: n.Role, Repo: n.Repo, ReadOnly: n.ReadOnly}
 	if n.WorkspaceID != "" {
 		sess.PaneID = uuid.NewString()
 	}
@@ -342,6 +351,43 @@ func (s *Supervisor) Restart(sessionID string) error {
 	return s.restart(*sess)
 }
 
+// Place records where a session works from now on: its folder, its worktree
+// and branch, and whether it only reads there. The row changes and whoever
+// follows it is told; a running process stays where it is until Relocate
+// restarts it. An ended session has no place to change.
+func (s *Supervisor) Place(sessionID string, p store.SessionPlace) error {
+	defer s.lock(sessionID)()
+	sess, err := s.row(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess.Wanted == store.SessionDone {
+		return ErrSessionDone
+	}
+	if err := s.st.SetRunnerSessionPlace(sessionID, p, s.millis()); err != nil {
+		return err
+	}
+	s.announce(sessionID)
+	return nil
+}
+
+// Relocate restarts a running session in the folder its row now names
+// (Place), resuming its conversation there. It is a restart someone planned,
+// so it does not count toward the cap on failed starts. A session that is
+// asleep is left asleep: its next start is in the new folder anyway.
+func (s *Supervisor) Relocate(sessionID string) error {
+	defer s.lock(sessionID)()
+	sess, err := s.row(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess.Wanted != store.SessionRunning {
+		return nil
+	}
+	s.freshStarts(sessionID)
+	return s.restart(*sess)
+}
+
 // Liveness says where a session is: running (it should run and its unit is
 // up or coming up), asleep (put to sleep, or it should run and its unit is
 // down until the next reconcile starts it), or done (ended, or no such
@@ -498,6 +544,10 @@ func (s *Supervisor) park(id, text string) error {
 func (s *Supervisor) writeSpec(sess store.RunnerSession) error {
 	sp, err := s.cfg.BuildSpec(sess, s.paths)
 	if err != nil {
+		return err
+	}
+	// The brief first: the spec names its file.
+	if err := writeBrief(s.paths.BriefFile(sess.ID), sp.Brief); err != nil {
 		return err
 	}
 	return WriteSpec(s.paths.SpecFile(sess.ID), sp)

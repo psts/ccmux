@@ -95,6 +95,7 @@ type Server struct {
 	sidecars   sidecarSupervisor
 	runners    runnerSupervisor // session runners (sessions.go); nil turns their routes off
 	runnerRows runnerRows
+	threads    threadService // threads with helpers (threads.go); nil turns their routes off
 	doors      RunnerDoors   // the thread page's way to a session's runner (sessionstream.go)
 	streamPace time.Duration // how often a session stream looks at a session it is not following; 0 = a second
 
@@ -363,6 +364,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/projects", s.createProject)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
 	s.sessionRoutes(mux)
+	s.threadRoutes(mux)
 	// Base agents: folder-backed role definitions (internal/agent). Per-name
 	// upsert and explicit delete, not a list replace — see putAgent.
 	mux.HandleFunc("GET /v1/agents", s.listAgents)

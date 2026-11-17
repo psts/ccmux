@@ -351,3 +351,17 @@ func TestARunnersSummaryIsHandedOnAndAnotherPeersIsNot(t *testing.T) {
 		t.Fatalf("only the runner's summary is handed on: %v", kept)
 	}
 }
+
+func TestARunnersPeerFollowsItsSessionIntoAnotherFolder(t *testing.T) {
+	svc, _, _, _ := runnerBus(t)
+	svc.EnsureRunnerPeer("run1", "/r/app")
+	// A thread member moved into its worktree: the daemon says so again.
+	svc.EnsureRunnerPeer("run1", "/wt/app/thread-3")
+	svc.mu.Lock()
+	p := svc.peers[derivedID("run1")]
+	cwd, root := p.CWD, p.GitRoot
+	svc.mu.Unlock()
+	if cwd != "/wt/app/thread-3" || root != "/r/app" {
+		t.Fatalf("it is listed where it works, and still as its repo's: cwd %q, repo %q", cwd, root)
+	}
+}

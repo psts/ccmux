@@ -106,7 +106,7 @@ func (m *Manager) LoadRunnerPanes() error {
 }
 
 // SyncRunnerPane brings a session's pane in step with its row: made when
-// the session is, renamed with it, gone once it has ended. A session with
+// the session is, renamed and moved with it, gone once it has ended. A session with
 // no pane id has none. One whose workspace is gone (deleted under it) is
 // logged and left without a pane: it runs, off the bus.
 func (m *Manager) SyncRunnerPane(sess store.RunnerSession) {
@@ -131,6 +131,7 @@ func (m *Manager) SyncRunnerPane(sess store.RunnerSession) {
 		e.runners = append(e.runners, p)
 	}
 	p.Title = m.runnerNameLocked(sess, e.ws)
+	p.CWD = sess.Cwd // a thread member moves into its worktree, and back
 	p.Status = model.StatusCold
 	if sess.Wanted == store.SessionRunning {
 		p.Status = model.StatusLive

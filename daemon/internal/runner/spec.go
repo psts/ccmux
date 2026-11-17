@@ -23,6 +23,9 @@ type Spec struct {
 	Args   []string `json:"args"`
 	Dir    string   `json:"dir"`
 	Env    []string `json:"env"`
+	// Brief is the text of the session's brief file (Paths.BriefFile), which
+	// Args name: written beside the spec, never into it.
+	Brief string `json:"-"`
 }
 
 // Paths are where the runner files live. Specs and state files are kept
@@ -55,6 +58,10 @@ func (p Paths) SpecFile(id string) string  { return filepath.Join(p.State, id+".
 func (p Paths) StateFile(id string) string { return filepath.Join(p.State, id+".state.json") }
 func (p Paths) Socket(id string) string    { return filepath.Join(p.Runtime, id+".sock") }
 
+// BriefFile holds a thread member's standing brief (Config.Brief), which its
+// runner reads at every start.
+func (p Paths) BriefFile(id string) string { return filepath.Join(p.State, id+".brief.md") }
+
 // MediaDir holds a session's images (pasted into a prompt, or returned by a
 // tool) as files named after their bytes: the runner writes and reads them,
 // the daemon serves them to the session's page and stores an upload there.
@@ -78,6 +85,10 @@ type Config struct {
 	// names: that one is whatever was last installed, and it joins the bus
 	// only from a terminal. "" leaves the user's config to decide.
 	Peers string
+	// Brief is the standing text a session starts with, on top of Claude
+	// Code's own system prompt: for a thread member, who it is in its thread
+	// and how the thread works (threads.Brief). Nil, or "" from it, is none.
+	Brief func(store.RunnerSession) string
 }
 
 // settingSources loads the user's own settings: their plugins, hooks,
@@ -104,7 +115,28 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if c.Peers != "" && sess.PaneID != "" {
 		args = append(args, "--peers-command", c.Peers)
 	}
-	return Spec{Node: node, Script: script, Args: args, Dir: sess.Cwd, Env: c.env(sess)}, nil
+	args = append(args, fenceArgs(sess)...)
+	brief := ""
+	if c.Brief != nil {
+		brief = c.Brief(sess)
+	}
+	if brief != "" {
+		args = append(args, "--system-prompt-file", paths.BriefFile(sess.ID))
+	}
+	return Spec{Node: node, Script: script, Args: args, Dir: sess.Cwd, Env: c.env(sess), Brief: brief}, nil
+}
+
+// fenceArgs are a thread member's fences (claudeserve/readonly.mjs): read
+// only while it is in its repo's own folder, and kept out of that folder
+// once it works in its worktree. A session in no thread has neither.
+func fenceArgs(sess store.RunnerSession) []string {
+	switch {
+	case sess.ReadOnly:
+		return []string{"--read-only", "1"}
+	case sess.Worktree != "" && sess.Cwd == sess.Worktree && sess.Repo != "":
+		return []string{"--keep-out", sess.Repo}
+	}
+	return nil
 }
 
 func sessionLabel(sess store.RunnerSession) string {
@@ -165,6 +197,20 @@ func dropped(kv string) bool {
 		}
 	}
 	return false
+}
+
+// writeBrief writes a session's brief file, or removes one it no longer has.
+func writeBrief(path, text string) error {
+	if text == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(text), 0o600)
 }
 
 // WriteSpec writes a session's spec whole, through a temporary name.

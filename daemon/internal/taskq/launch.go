@@ -22,8 +22,7 @@ type layout struct {
 // share a folder. Every part of a task gets the same branch name, each in
 // its own repo, and a bus name its teammates can work out: <repo>-task-<id>.
 func layoutOf(root string, t store.Task, p store.Part) layout {
-	sum := sha1.Sum([]byte(p.RepoPath))
-	dir := filepath.Join(root, filepath.Base(p.RepoPath)+"-"+hex.EncodeToString(sum[:3]))
+	dir := repoDir(root, p.RepoPath)
 	name := fmt.Sprintf("task-%d", t.ID)
 	branch := p.Branch // a part run before keeps its branch, whatever the title says now
 	if branch == "" {
@@ -36,6 +35,13 @@ func layoutOf(root string, t store.Task, p store.Part) layout {
 		branch:   branch,
 		busName:  BusName(p.RepoPath, t.ID),
 	}
+}
+
+// repoDir is the folder under root that holds one repo's worktrees: the
+// repo's folder name joined by a short hash of its path.
+func repoDir(root, repo string) string {
+	sum := sha1.Sum([]byte(repo))
+	return filepath.Join(root, filepath.Base(repo)+"-"+hex.EncodeToString(sum[:3]))
 }
 
 // BusName is the peers-bus name of the Claude building a task's part in repo.

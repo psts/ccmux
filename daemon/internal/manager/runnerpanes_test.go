@@ -374,3 +374,18 @@ func TestAFinishedRunnerTurnIsRemindedLikeAPanes(t *testing.T) {
 		t.Fatalf("an ended session is not reminded: %d", n)
 	}
 }
+
+func TestARunnerPaneFollowsItsSessionIntoAnotherFolder(t *testing.T) {
+	m, _, sess := runnerManager(t)
+	m.SyncRunnerPane(sess)
+	// A thread member moved into its worktree.
+	sess.Cwd = "/wt/app/thread-3"
+	m.SyncRunnerPane(sess)
+	panes := m.RunnerPanes()
+	if len(panes) != 1 || panes[0].CWD != "/wt/app/thread-3" {
+		t.Fatalf("the pane is where its session works now, and still one pane: %+v", panes)
+	}
+	if info, ok := m.RunnerPane("run1"); !ok || info.Repo != "/r/app" {
+		t.Fatalf("its repo is still its workspace's: %+v %v", info, ok)
+	}
+}

@@ -83,7 +83,8 @@ func (s *Service) stampRunnerLocked(p *Peer) {
 }
 
 // EnsureRunnerPeer registers the peer of a runner session's pane, or renames
-// the one already there, and hands over whatever waits in its mailbox. The
+// and moves the one already there, and hands over whatever waits in its
+// mailbox. The
 // daemon calls it when a session is made or woken, and for every session at
 // its own start. A pane that is not a runner's is left alone.
 func (s *Service) EnsureRunnerPeer(paneID, cwd string) {
@@ -105,7 +106,11 @@ func (s *Service) EnsureRunnerPeer(paneID, cwd string) {
 		log.Printf("peers: runner pane %s shares its derived id %s with pane %s; it stays off the bus", paneID, id, p.PaneID)
 		return
 	}
+	p.CWD = cwd // a thread member moves into its worktree, and back
 	s.stampRunnerLocked(p)
+	// A helper a thread asked for by name is on the bus from here on: what
+	// was sent to start it is delivered now (helperroute.go).
+	s.fulfillPendingSpawnLocked(p)
 	s.mu.Unlock()
 	go s.drainInbox(id, paneID)
 }

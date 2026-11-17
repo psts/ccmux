@@ -213,7 +213,7 @@ func runDaemon() {
 	agentStore := agent.NewStore(*agentsDir)
 	agentStore.AskNPMForLatestSDK() // the lenses' "agents on X, latest Y"
 	apiSrv.SetAgents(agentStore, *agentsMax)
-	wireRunners(ctx, runnerWiring{st: st, agents: agentStore, api: apiSrv, mgr: mgr, peers: peersSvc, prefix: *runnerPrefix, shim: *peersShimPath})
+	wireRunners(ctx, runnerWiring{st: st, agents: agentStore, api: apiSrv, mgr: mgr, peers: peersSvc, prefix: *runnerPrefix, shim: *peersShimPath, worktrees: *worktreesDir})
 	// Repo sessions write their own shared/<repo>/ folder without asking;
 	// joins after this are granted as they happen (window notices).
 	go apiSrv.GrantSharedFolders()

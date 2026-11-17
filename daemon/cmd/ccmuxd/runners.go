@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/api"
@@ -18,6 +19,8 @@ import (
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/taskq"
+	"ccmux.dev/ccmuxd/internal/threads"
 )
 
 // runnerWiring is what wireRunners connects the session supervisor to.
@@ -33,6 +36,9 @@ type runnerWiring struct {
 	prefix string
 	// shim is the bus shim sessions load (-peers-shim); "" finds it.
 	shim string
+	// worktrees is where a thread member's worktree goes (-worktrees-dir):
+	// the task queue's own folder.
+	worktrees string
 }
 
 // wireRunners starts the session-runner supervisor (internal/runner): Claude
@@ -66,7 +72,19 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		// hooks socket and its route through the LLM proxy).
 		SessionEnv: func(sess store.RunnerSession) map[string]string { return w.mgr.RunnerEnv(sess.PaneID) },
 	}
+	// A thread member starts with its thread's brief. The threads service
+	// needs the supervisor, which needs this config: so the config asks it
+	// late, once both are there.
+	var team *threads.Service
+	cfg.Brief = func(sess store.RunnerSession) string {
+		if team == nil {
+			return ""
+		}
+		return team.Brief(sess)
+	}
 	sup := runner.New(w.st, units, paths, cfg)
+	team = &threads.Service{St: w.st, Sessions: sup, Host: w.mgr, Git: taskq.ExecGit{}, Root: w.worktrees, Now: time.Now, MoveAfter: time.Second}
+	w.api.SetThreads(team)
 	sup.Changed = sessionChanged(w.mgr, w.peers)
 	w.mgr.RunnerLiveness = sup.Liveness
 	w.mgr.EndRunnerSession = func(id string) {
