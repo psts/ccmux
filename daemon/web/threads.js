@@ -8,6 +8,7 @@
   "use strict";
   const R = window.ccmuxRoute, Model = window.ccmuxThreadModel, Stream = window.ccmuxThreadStream;
   const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage, Team = window.ccmuxThreadTeam;
+  const Pending = window.ccmuxThreadPending;
   const $ = (id) => document.getElementById(id);
   const show = (id, on) => $(id).classList.toggle("hidden", !on);
 
@@ -16,7 +17,7 @@
     sel: R.parseThread(location.search), // what is on screen: a session, a draft, or nothing
     stream: Stream.fresh(), sock: null, retry: window.ccmuxRetry.backoff(), feedRetry: window.ccmuxRetry.backoff(),
     drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), file: "", dirty: false, jump: false,
-    user: "anon", feed: null, acted: "", images: [], sending: false, error: "", listError: "", menu: false,
+    user: "anon", feed: null, acted: "", images: [], pending: [], pendingKey: 0, pumping: false, error: "", listError: "", menu: false,
     draftModel: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
   };
 
@@ -289,6 +290,8 @@
       rel: (path) => Work.rel(path, repo),
       diffFor: (req) => diffOfCall(req.tool && req.tool.callID),
       answer: answerCard,
+      retry: retryPending,
+      drop: dropPending,
     };
   };
 
@@ -308,7 +311,7 @@
     const ctx = viewCtx();
     const follow = S.pinned || S.jump;
     S.jump = false;
-    const blocks = Work.blocks(S.stream.turns, roots(), ws ? Model.repoName(ws) : "");
+    const blocks = Work.blocks(S.stream.turns, roots(), ws ? Model.repoName(ws) : "").concat(Pending.blocks(settlePending(), R.threadHref(S.sel)));
     const box = $("blocks");
     // What every block is drawn with (whose words, which session's images)
     // changed, as when the lists arrive after the conversation: draw anew.
@@ -341,6 +344,16 @@
     $("empty").textContent = !picked ? "Pick a repo on the left to talk to its lead, or start a thread."
       : S.sel.kind === "draft" ? "Nothing here yet. Your first message starts the session." : "No messages yet.";
     if (follow) pinToEnd();
+  }
+
+  // settlePending drops the sent messages the stream now holds, and gives
+  // their pictures back to the browser: the conversation draws them from
+  // the daemon from here on. What is left is still on its way.
+  function settlePending() {
+    const { left, landed } = Pending.arrived(S.pending, S.stream.turns);
+    landed.forEach((p) => p.urls.forEach((u) => URL.revokeObjectURL(u)));
+    S.pending = left;
+    return left;
   }
 
   // pinToEnd keeps the newest of the conversation on screen. The page stays
@@ -412,8 +425,8 @@
     show("composer", usable);
     const lead = sess ? sess.kind === "lead" : S.sel.as === "lead";
     document.querySelector("#composer label").textContent = `Message ${lead ? "the lead" : "this thread"}, or type / for commands`;
-    $("send").disabled = S.sending;
-    $("hint").textContent = S.sending ? "Sending…" : sess && sess.state === "asleep" ? "Asleep. A message wakes it." : "Lands as the next turn if Claude is busy";
+    const here = R.threadHref(S.sel);
+    $("hint").textContent = S.pending.some((p) => p.where === here && p.state === "new") ? "Sending…" : sess && sess.state === "asleep" ? "Asleep. A message wakes it." : "Lands as the next turn if Claude is busy";
     const box = $("attached");
     box.textContent = "";
     S.images.forEach((img, i) => {
@@ -477,51 +490,90 @@
   }
 
   // ensureSession makes the lead or thread a draft stands for (a lead that
-  // is there already is answered with, never made twice) and puts it on
-  // screen.
-  async function ensureSession() {
-    if (S.sel.kind === "session") return S.sel.id;
-    const ws = workspace();
-    const sess = await makeSession(ws, S.sel.as === "lead");
+  // is there already is answered with, never made twice). Every message
+  // still on its way from that draft goes to the new session, and the page
+  // moves there if it still shows the draft.
+  async function ensureSession(item) {
+    if (item.sel.kind === "session") return item.sel.id;
+    const ws = S.workspaces.find((w) => w.id === item.sel.ws);
+    if (!ws) throw new Error("this repo is no longer listed");
+    const sess = await makeSession(ws, item.sel.as === "lead");
     S.sessions = S.sessions.filter((s) => s.id !== sess.id).concat(sess);
-    select({ kind: "session", id: sess.id });
+    const to = { kind: "session", id: sess.id };
+    const shown = R.threadHref(S.sel) === item.where;
+    Pending.rehome(S.pending, item.where, R.threadHref(to), to);
+    if (shown) select(to);
     return sess.id;
   }
 
-  async function uploadImages(id) {
+  async function uploadImages(id, images) {
     const names = [];
-    for (const img of S.images) {
+    for (const img of images) {
       const blob = await Img.prepare(img.file);
       names.push((await call("POST", `/v1/sessions/${id}/images`, blob)).name);
     }
     return names;
   }
 
-  // send makes the session if this is its first message, uploads the
-  // pictures, then queues the prompt. Whatever fails, the text and the
-  // pictures stay in the composer for the retry.
-  async function send() {
+  // send shows the message in the conversation at once, empties the
+  // composer and leaves the sending to pump.
+  function send() {
     const input = $("input");
     const text = input.value.trim();
-    if (S.sending || (!text && !S.images.length)) return;
-    S.sending = true;
-    S.error = "";
+    if (!text && !S.images.length) return;
     const images = S.images;
-    drawComposer();
-    try {
-      const id = await ensureSession();
-      S.images = images; // picking the new session cleared nothing of the composer, keep it so
-      const names = await uploadImages(id);
-      await call("POST", `/v1/sessions/${id}/prompt`, { text, sender: S.user, images: names });
-      input.value = "";
-      S.images.forEach((img) => URL.revokeObjectURL(img.url));
-      S.images = [];
-      S.menu = false;
-    } catch (e) {
-      S.error = "Not sent: " + e.message;
-    }
-    S.sending = false;
+    S.pending.push({ key: ++S.pendingKey, sel: S.sel, where: R.threadHref(S.sel), state: "new", id: "", error: "", text, urls: images.map((img) => img.url), images });
+    input.value = "";
+    Object.assign(S, { images: [], menu: false, error: "", jump: true });
     drawAll();
+    pump();
+  }
+
+  // pump sends the messages one at a time, oldest first, so they land in
+  // the order sent and a draft is made into a session once. One that
+  // failed holds the rest of its conversation (threadpending.js).
+  async function pump() {
+    if (S.pumping) return;
+    S.pumping = true;
+    try {
+      for (let item = Pending.next(S.pending); item; item = Pending.next(S.pending)) await deliver(item);
+    } finally {
+      S.pumping = false;
+    }
+  }
+
+  // deliver makes the session if this is its first message, uploads the
+  // pictures, then queues the prompt. The prompt's id is what its turn in
+  // the stream will be called, which is when the page stops drawing it
+  // itself. One that fails stays where it was sent, saying why, for Retry
+  // or Remove.
+  async function deliver(item) {
+    try {
+      const id = await ensureSession(item);
+      const names = await uploadImages(id, item.images);
+      const out = await call("POST", `/v1/sessions/${id}/prompt`, { text: item.text, sender: S.user, images: names });
+      Object.assign(item, { state: "queued", id: out.id || "" });
+    } catch (e) {
+      Object.assign(item, { state: "failed", error: e.message });
+    }
+    schedule();
+  }
+
+  // retryPending sends a failed message again; dropPending removes it,
+  // which lets the ones that waited behind it go.
+  function retryPending(key) {
+    const item = S.pending.find((p) => p.key === key);
+    if (item) Object.assign(item, { state: "new", error: "" });
+    schedule();
+    pump();
+  }
+
+  function dropPending(key) {
+    const item = S.pending.find((p) => p.key === key);
+    if (item) item.urls.forEach((u) => URL.revokeObjectURL(u));
+    S.pending = S.pending.filter((p) => p !== item);
+    schedule();
+    pump();
   }
 
   // --- the header's actions ---

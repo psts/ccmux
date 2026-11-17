@@ -194,14 +194,79 @@ test("a repo with no lead opens as a draft, and its first message makes the lead
   assert.equal(p.$("input").value, "", "sent, so the composer is empty");
 });
 
-test("a message that cannot be sent stays in the composer and says why", async () => {
-  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [[/^POST \/v1\/sessions\/lead1\/prompt/, () => ({ fail: 409, error: "this session has ended; start a new one" })]] });
+test("a message that cannot be sent stays where it was sent, says why, and is sent again by Retry", async () => {
+  let fail = true;
+  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [[/^POST \/v1\/sessions\/lead1\/prompt/, () => (fail ? { fail: 409, error: "this session has ended; start a new one" } : { id: "p1" })]] });
   p.$("input").value = "still there?";
   p.$("composer").onsubmit({ preventDefault() {} });
   await p.settle();
-  assert.equal(p.$("input").value, "still there?");
-  assert.equal(p.$("error-bar").textContent, "Not sent: this session has ended; start a new one");
-  assert.equal(p.$("error-bar").classList.contains("hidden"), false);
+  assert.equal(p.$("input").value, "", "the text stays in the conversation, not the composer");
+  const line = p.$("blocks").querySelector(".sending");
+  assert.equal(line.className, "sending failed");
+  assert.match(line.textContent, /^Not sent: this session has ended; start a new one/);
+  fail = false;
+  line.querySelectorAll("button")[0].click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.body.text), ["still there?", "still there?"]);
+  assert.equal(p.$("blocks").querySelector(".sending").textContent, "Sent, waiting for Claude");
+});
+
+test("a failed message holds the ones after it until it is removed, and stays in its own conversation", async () => {
+  const other = { ...lead, id: "t2", kind: "", title: "Other", createdAt: 2 };
+  let n = 0;
+  const p = await boot({ sessions: [lead, other], search: "?s=lead1", routes: [[/^POST \/v1\/sessions\/lead1\/prompt/, () => (++n === 1 ? { fail: 500, error: "boom" } : { id: "p" + n })]] });
+  p.$("input").value = "first";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  p.$("input").value = "second";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.body.text), ["first"], "second does not go ahead of first");
+  assert.deepEqual(p.$("blocks").querySelectorAll(".sending").map((x) => x.textContent.split(" Retry")[0]), ["Not sent: boom", "Waits for the message above"]);
+  p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes("Other")).click();
+  await p.settle();
+  assert.equal(p.$("input").value, "", "nothing of lead1's lands in another conversation's composer");
+  assert.equal(p.$("blocks").querySelectorAll(".b-user").length, 0);
+  p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes("app")).click();
+  await p.settle();
+  p.$("blocks").querySelector(".sending").querySelectorAll("button")[1].click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.body.text), ["first", "second"], "removing first lets second go");
+  assert.deepEqual(p.$("blocks").querySelectorAll(".bubble").map((x) => x.textContent), ["second"]);
+});
+
+test("a message shows the moment it is sent, and gives way to its turn once the stream has it", async () => {
+  let answer;
+  const held = new Promise((r) => { answer = r; });
+  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [[/^POST \/v1\/sessions\/lead1\/prompt/, () => held]] });
+  await p.frame(snapshot());
+  p.$("input").value = "quick one";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  assert.equal(p.$("input").value, "", "the composer is free at once");
+  const bubbles = () => p.$("blocks").querySelectorAll(".bubble").map((b) => b.textContent);
+  assert.deepEqual(bubbles(), ["hello there", "quick one"], "drawn before the daemon answered");
+  assert.equal(p.$("blocks").querySelector(".sending").textContent, "Sending…");
+  answer({ id: "p1" });
+  await p.settle();
+  assert.equal(p.$("blocks").querySelector(".sending").textContent, "Sent, waiting for Claude");
+  await p.frame({ t: "event", seq: 6, data: { type: "message.updated", properties: { info: { id: "p1", role: "user" } } } });
+  await p.frame({ t: "event", seq: 7, data: { type: "message.part.updated", properties: { part: { id: "p1.0", messageID: "p1", type: "text", text: "quick one" } } } });
+  assert.deepEqual(bubbles(), ["hello there", "quick one"], "once, as the stream's own turn");
+  assert.equal(p.$("blocks").querySelector(".sending"), null);
+});
+
+test("two messages sent quickly go out in order, after the first one's session is made", async () => {
+  const p = await boot();
+  p.$("tree").querySelector(".row").click();
+  await p.settle();
+  p.$("input").value = "first";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  p.$("input").value = "second";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body && c.body.text]), [
+    ["/v1/sessions", undefined], ["/v1/sessions/lead1/prompt", "first"], ["/v1/sessions/lead1/prompt", "second"],
+  ]);
+  assert.deepEqual(p.$("blocks").querySelectorAll(".bubble").map((b) => b.textContent), ["first", "second"], "both still on screen in the session the draft became");
 });
 
 test("the conversation draws from a snapshot and its events, and a hole in the numbers redials for a new snapshot", async () => {

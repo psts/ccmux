@@ -18,6 +18,14 @@
   const mediaURL = (sessionId, name) => `/v1/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(name)}`;
 
   // thumb is one stored image, opened full size by a click.
+  // localThumb is a picture the browser still holds (a message on its way).
+  function localThumb(url, caption) {
+    const img = el("img");
+    img.src = url;
+    img.alt = caption;
+    return add(el("figure", "thumb"), img, el("figcaption", "", caption));
+  }
+
   function thumb(sessionId, file, caption) {
     const fig = el("figure", "thumb");
     const link = el("a");
@@ -86,12 +94,28 @@
     return add(box, steps);
   }
 
+  const pendingSays = { sending: "Sending…", queued: "Sent, waiting for Claude", held: "Waits for the message above" };
+
+  // failedLine is what a message that could not be sent says, with what
+  // can be done about it.
+  function failedLine(b, ctx) {
+    const line = el("div", "sending failed", "Not sent: " + b.error + " ");
+    const button = (label, fn) => { const x = el("button", "link", label); x.type = "button"; x.onclick = () => fn(b.key); return x; };
+    return add(line, button("Retry", ctx.retry), button("Remove", ctx.drop));
+  }
+
+  // user is the human's message. One still on its way (b.pending, drawn
+  // by the page before the stream has it) shows its pictures from the
+  // browser and says it is being sent.
   function user(b, ctx) {
-    const box = el("div", "b-user");
+    const box = el("div", "b-user" + (b.pending ? " pending" : ""));
     const pics = el("div", "thumbs");
     b.files.forEach((f, i) => add(pics, thumb(ctx.sessionId, f, `Pasted image · ${i + 1} of ${b.files.length}`)));
+    (b.urls || []).forEach((u, i) => add(pics, localThumb(u, `Pasted image · ${i + 1} of ${b.urls.length}`)));
     if (pics.childElementCount) add(box, pics);
     if (b.text) add(box, el("div", "bubble", b.text));
+    if (b.pending === "failed") add(box, failedLine(b, ctx));
+    else if (b.pending) add(box, el("div", "sending", pendingSays[b.pending]));
     return box;
   }
 
