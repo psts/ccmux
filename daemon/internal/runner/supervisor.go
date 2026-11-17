@@ -22,6 +22,7 @@ type Store interface {
 	SetRunnerSessionModel(id, model string, now int64) error
 	SetRunnerSessionNote(id, note string, now int64) error
 	SetRunnerSessionPlace(id string, p store.SessionPlace, now int64) error
+	SetRunnerSessionLoadout(id, loadout string) error
 	AddInboxPromptAndWake(p store.InboxPrompt, wake bool, now int64) error
 	HasInboxPrompt(id string) (bool, error)
 	UndeliveredPrompts(sessionID string) ([]store.InboxPrompt, error)
@@ -166,6 +167,8 @@ func (s *Supervisor) Create(n NewSession) (store.RunnerSession, error) {
 	s.announce(sess.ID)
 	if err := s.start(sess); err != nil {
 		sess.Note = s.startFailed(sess, err)
+	} else if row, err := s.row(sess.ID); err == nil {
+		sess.Loadout = row.Loadout // what that start recorded, so the answer says what it loaded
 	}
 	return sess, nil
 }
@@ -540,17 +543,27 @@ func (s *Supervisor) park(id, text string) error {
 }
 
 // writeSpec writes the session's spec fresh from its row (the sidecar, the
-// model or the session's own environment may have changed).
+// model, the session's own environment or what its group and repo have on
+// may have changed), and records the loadout it names on the row.
 func (s *Supervisor) writeSpec(sess store.RunnerSession) error {
 	sp, err := s.cfg.BuildSpec(sess, s.paths)
 	if err != nil {
 		return err
 	}
-	// The brief first: the spec names its file.
+	// The brief and the loadout first: the spec names their files.
 	if err := writeBrief(s.paths.BriefFile(sess.ID), sp.Brief); err != nil {
 		return err
 	}
-	return WriteSpec(s.paths.SpecFile(sess.ID), sp)
+	if err := writeLoadout(s.paths.LoadoutFile(sess.ID), sp.Loadout); err != nil {
+		return err
+	}
+	if err := WriteSpec(s.paths.SpecFile(sess.ID), sp); err != nil {
+		return err
+	}
+	// The row says what the process about to start loads. Written before
+	// the start, so a start that follows never runs on a list the row does
+	// not name; one that fails is tried again and writes it again.
+	return s.st.SetRunnerSessionLoadout(sess.ID, sp.LoadoutRecord)
 }
 
 // start writes the spec and starts the session's unit. The runner resumes

@@ -26,6 +26,11 @@ type Spec struct {
 	// Brief is the text of the session's brief file (Paths.BriefFile), which
 	// Args name: written beside the spec, never into it.
 	Brief string `json:"-"`
+	// Loadout is the session's loadout file (Paths.LoadoutFile), which Args
+	// name too, and LoadoutRecord what the session's row keeps of it. Both
+	// empty for a session started with no loadout (Config.Loadout nil).
+	Loadout       []byte `json:"-"`
+	LoadoutRecord string `json:"-"`
 }
 
 // Paths are where the runner files live. Specs and state files are kept
@@ -62,6 +67,10 @@ func (p Paths) Socket(id string) string    { return filepath.Join(p.Runtime, id+
 // runner reads at every start.
 func (p Paths) BriefFile(id string) string { return filepath.Join(p.State, id+".brief.md") }
 
+// LoadoutFile holds what a session loads from the capability catalog
+// (Config.Loadout), which its runner reads at every start.
+func (p Paths) LoadoutFile(id string) string { return filepath.Join(p.State, id+".loadout.json") }
+
 // MediaDir holds a session's images (pasted into a prompt, or returned by a
 // tool) as files named after their bytes: the runner writes and reads them,
 // the daemon serves them to the session's page and stores an upload there.
@@ -89,10 +98,21 @@ type Config struct {
 	// Code's own system prompt: for a thread member, who it is in its thread
 	// and how the thread works (threads.Brief). Nil, or "" from it, is none.
 	Brief func(store.RunnerSession) string
+	// Loadout is what a session loads from the capability catalog, as its
+	// group and repo chose (internal/loadout): the file its runner reads
+	// (claudeserve/loadout.mjs) and the record its row keeps. An error fails
+	// the start, which is tried again: a session started without its
+	// loadout would run with everything, or with nothing, and say neither.
+	// Nil starts every session with the user's whole Claude setup, as
+	// before loadouts.
+	Loadout func(store.RunnerSession) (file []byte, record string, err error)
 }
 
-// settingSources loads the user's own settings: their plugins, hooks,
-// memory and connectors, as in a terminal session.
+// settingSources loads the user's own settings, as in a terminal session:
+// their CLAUDE.md, memory and hooks come this way. Their plugins, skills,
+// MCP servers and connectors come this way too, and a session's loadout
+// (Config.Loadout) then switches off every one its group and repo did not
+// choose.
 const settingSources = "user,project,local"
 
 // BuildSpec makes the spec for one session.
@@ -123,7 +143,15 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if brief != "" {
 		args = append(args, "--system-prompt-file", paths.BriefFile(sess.ID))
 	}
-	return Spec{Node: node, Script: script, Args: args, Dir: sess.Cwd, Env: c.env(sess), Brief: brief}, nil
+	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess), Brief: brief}
+	if c.Loadout != nil {
+		if sp.Loadout, sp.LoadoutRecord, err = c.Loadout(sess); err != nil {
+			return Spec{}, fmt.Errorf("session runner: %w", err)
+		}
+		args = append(args, "--loadout", paths.LoadoutFile(sess.ID))
+	}
+	sp.Args = args
+	return sp, nil
 }
 
 // fenceArgs are a thread member's fences (claudeserve/readonly.mjs): read
@@ -211,6 +239,26 @@ func writeBrief(path, text string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(text), 0o600)
+}
+
+// writeLoadout writes a session's loadout file whole, through a temporary
+// name, or removes one it no longer has (nil). An empty loadout is still a
+// file: "load nothing" is not "no loadout".
+func writeLoadout(path string, body []byte) error {
+	if body == nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // WriteSpec writes a session's spec whole, through a temporary name.

@@ -539,6 +539,66 @@ test("a runner loads the user's own settings, keeps their connectors and runs th
   assert.equal(pane.sdk.queries[0].options.permissionMode, "default", "an agent pane keeps its fixed mode");
 });
 
+// --- a runner's loadout (--loadout, loadout.mjs) ---
+
+const LOADOUT = "/st/s.loadout.json";
+
+// loadoutAgent is a runner handed a loadout file.
+function loadoutAgent(loadout, opts = {}) {
+  const body = typeof loadout === "string" ? loadout : JSON.stringify({ pluginDirs: [], enabledPlugins: {}, skills: [], deniedServers: [], connectors: false, mcp: {}, ...loadout });
+  return runnerAgent({ loadout: LOADOUT, readFile: (p) => { if (p === LOADOUT) return body; const e = new Error("no"); e.code = "ENOENT"; throw e; }, ...opts });
+}
+
+test("a runner with a loadout loads what its group and repo chose, on top of the user's own settings", () => {
+  const { agent, sdk, out } = loadoutAgent({
+    pluginDirs: ["/caps/personal/plugins/kb"], enabledPlugins: { "qa@personal": true, "marketing@synced": false, "stripe@official": false },
+    skills: ["qa:check", "kb:write", "glitchtip"], deniedServers: ["claude.ai Gmail", "claude_design"], connectors: true,
+  }, { peersCommand: "/bin/ccmux-peers" });
+  agent.prompt("hi", "p1");
+  const o = sdk.queries[0].options;
+  assert.deepEqual(o.settingSources, ["user", "project", "local"], "CLAUDE.md and memory still come from the user's settings");
+  assert.deepEqual(o.plugins, [{ type: "local", path: "/caps/personal/plugins/kb" }]);
+  assert.deepEqual(o.settings, {
+    enabledPlugins: { "qa@personal": true, "marketing@synced": false, "stripe@official": false },
+    deniedMcpServers: [{ serverName: "claude.ai Gmail" }, { serverName: "claude_design" }],
+  });
+  assert.deepEqual(o.skills, ["qa:check", "kb:write", "glitchtip"]);
+  assert.equal(o.env, undefined, "a connector is chosen, so connectors stay on");
+  assert.equal(o.strictMcpConfig, undefined, "never: it would drop the bus");
+  assert.equal(o.mcpServers["claude-peers"].command, "/bin/ccmux-peers", "the bus is the fixed base");
+  assert.ok(out.join("").includes("loadout: 2 plugin(s) on, 2 off"), "the start says what it was given");
+});
+
+test("a runner whose group and repo chose nothing offers no skill and switches connectors off, and keeps the bus", () => {
+  const { agent, sdk } = loadoutAgent({}, { peersCommand: "/bin/ccmux-peers", env: { HOME: "/h" } });
+  agent.prompt("hi", "p1");
+  const o = sdk.queries[0].options;
+  assert.deepEqual(o.skills, [], "an empty list, not a missing one: missing would offer every skill");
+  assert.equal(o.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
+  assert.equal(o.env.HOME, "/h");
+  assert.equal(o.plugins, undefined);
+  assert.equal(o.settings, undefined);
+  assert.deepEqual(Object.keys(o.mcpServers), ["claude-peers"]);
+});
+
+test("a loadout's catalog servers are passed, and never in the bus's place", () => {
+  const { agent, sdk } = loadoutAgent({
+    deniedServers: ["claude-peers"], mcp: { search: { type: "http", url: "https://s/mcp" }, "claude-peers": { command: "/evil" } },
+  }, { peersCommand: "/bin/ccmux-peers" });
+  agent.prompt("hi", "p1");
+  const o = sdk.queries[0].options;
+  assert.deepEqual(o.mcpServers.search, { type: "http", url: "https://s/mcp" });
+  assert.equal(o.mcpServers["claude-peers"].command, "/bin/ccmux-peers");
+  assert.equal(o.settings, undefined, "the bus was the only name denied, and it is never denied");
+  assert.ok(o.allowedTools.includes("mcp__search"), "a chosen server's tools ask nothing, as an agent's do");
+});
+
+test("a loadout file that is missing or malformed ends the start instead of loading everything", () => {
+  assert.throws(() => runnerAgent({ loadout: LOADOUT }), /no/, "the file is not there");
+  assert.throws(() => loadoutAgent(JSON.stringify({ pluginDirs: [] })), /enabledPlugins/);
+  assert.throws(() => loadoutAgent("{ not json"));
+});
+
 test("a prompt goes in under its inbox id, and the same id is never sent twice", async () => {
   const { agent, sdk } = runnerAgent();
   assert.equal(agent.prompt("hi", "p1"), true);

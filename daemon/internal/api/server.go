@@ -23,6 +23,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/childproc"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
+	"ccmux.dev/ccmuxd/internal/loadout"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/meridian"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -96,6 +97,10 @@ type Server struct {
 	runners    runnerSupervisor // session runners (sessions.go); nil turns their routes off
 	runnerRows runnerRows
 	threads    threadService // threads with helpers (threads.go); nil turns their routes off
+	// loadouts and choices are the skills and plugins choices per group and
+	// repo (capchoices.go); nil turns their routes off.
+	loadouts   *loadout.Service
+	choices    choiceStore
 	doors      RunnerDoors   // the thread page's way to a session's runner (sessionstream.go)
 	streamPace time.Duration // how often a session stream looks at a session it is not following; 0 = a second
 
@@ -365,6 +370,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
 	s.sessionRoutes(mux)
 	s.threadRoutes(mux)
+	s.choiceRoutes(mux)
 	// Base agents: folder-backed role definitions (internal/agent). Per-name
 	// upsert and explicit delete, not a list replace — see putAgent.
 	mux.HandleFunc("GET /v1/agents", s.listAgents)

@@ -65,13 +65,7 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		// may not be the version the terminal runs.
 		log.Printf("session runners: no claude on this host (%v); sessions use the SDK's bundled Claude Code", err)
 	}
-	cfg := runner.Config{
-		Sidecar: w.agents.EnsureClaudeServe, Claude: claude, Env: runnerEnv, Peers: peersShim(w.shim),
-		// A session's own identity: what a tmux pane's shell is given that
-		// applies to Claude (its pane id and bus token, the daemon, its
-		// hooks socket and its route through the LLM proxy).
-		SessionEnv: func(sess store.RunnerSession) map[string]string { return w.mgr.RunnerEnv(sess.PaneID) },
-	}
+	cfg := runnerConfig(w, claude)
 	// A thread member starts with its thread's brief. The threads service
 	// needs the supervisor, which needs this config: so the config asks it
 	// late, once both are there.
@@ -102,6 +96,21 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		},
 	})
 	go sup.Run(ctx)
+}
+
+// runnerConfig is what every session's spec is built from.
+func runnerConfig(w runnerWiring, claude string) runner.Config {
+	return runner.Config{
+		Sidecar: w.agents.EnsureClaudeServe, Claude: claude, Env: runnerEnv, Peers: peersShim(w.shim),
+		// A session's own identity: what a tmux pane's shell is given that
+		// applies to Claude (its pane id and bus token, the daemon, its
+		// hooks socket and its route through the LLM proxy).
+		SessionEnv: func(sess store.RunnerSession) map[string]string { return w.mgr.RunnerEnv(sess.PaneID) },
+		// What its group and repo chose from the catalog, and nothing else of
+		// the user's Claude setup (loadouts.go). The day-one choices are
+		// written here, before the supervisor starts a session.
+		Loadout: wireLoadouts(w).ForSession,
+	}
 }
 
 // newThreads makes the threads service (internal/threads): threads with

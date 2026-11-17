@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/agent"
+	"ccmux.dev/ccmuxd/internal/loadout"
 	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -60,21 +62,43 @@ func (s *Server) SetRunners(sup runnerSupervisor, rows runnerRows) {
 // asleep or done, or unknown when the registry or systemd could not be
 // asked. The row's own "wanted" is still there to read; what is not known
 // is never served as one of the other three.
+//
+// Loadout is what the session loaded from the capability catalog at its
+// last start (internal/loadout): the entries, and notes on what was skipped
+// and why. LoadoutStale says a running session's list has moved on since
+// (its group's or repo's choices, or a version of something it loaded), so
+// the page can offer a restart; nothing restarts by itself. A running
+// session with no loadout started before loadouts did and is stale too.
 type sessionView struct {
 	store.RunnerSession
-	State string `json:"state"`
+	State        string               `json:"state"`
+	Loadout      *agent.LoadoutRecord `json:"loadout,omitempty"`
+	LoadoutStale bool                 `json:"loadoutStale,omitempty"`
 }
 
 // stateUnknown is a session's state when it could not be read.
 const stateUnknown = "unknown"
 
 func (s *Server) viewOf(sess store.RunnerSession) sessionView {
-	state, err := s.runners.Liveness(sess.ID)
+	return s.viewWith(s.sessionLoadouts(), sess)
+}
+
+// viewWith is viewOf against choices already read (sessionLoadouts), for a
+// list of sessions.
+func (s *Server) viewWith(snap *loadout.Snapshot, sess store.RunnerSession) sessionView {
+	rec, stale := loadoutOf(snap, sess)
+	return sessionView{RunnerSession: sess, State: s.stateOf(sess.ID), Loadout: rec, LoadoutStale: stale}
+}
+
+// stateOf is where a session is now: running, asleep or done, or unknown
+// when that could not be asked.
+func (s *Server) stateOf(sessionID string) string {
+	state, err := s.runners.Liveness(sessionID)
 	if err != nil {
-		log.Printf("sessions: state of %s not read, served as %q: %v", sess.ID, stateUnknown, err)
-		state = stateUnknown
+		log.Printf("sessions: state of %s not read, served as %q: %v", sessionID, stateUnknown, err)
+		return stateUnknown
 	}
-	return sessionView{RunnerSession: sess, State: state}
+	return state
 }
 
 func (s *Server) sessionRoutes(mux *http.ServeMux) {
@@ -114,8 +138,9 @@ func (s *Server) listRunnerSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	views := make([]sessionView, 0, len(list))
+	snap := s.sessionLoadouts()
 	for _, sess := range list {
-		views = append(views, s.viewOf(sess))
+		views = append(views, s.viewWith(snap, sess))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": views})
 }

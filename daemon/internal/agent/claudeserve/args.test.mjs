@@ -74,6 +74,8 @@ test("a session runner's line, as internal/runner's BuildSpec writes it", () => 
   assert.equal(o.port, undefined);
   assert.equal(o.session, undefined, "--session-auto is not --session: it opens fresh when nothing is on disk");
   assert.equal(parseArgs(["--detached", "0"]).detached, false, "only 1 detaches");
+  assert.equal(o.loadout, undefined, "no loadout named, none read");
+  assert.equal(parseArgs(["--socket", "/s.sock", "--loadout", "/st/abc.loadout.json"]).loadout, "/st/abc.loadout.json");
 });
 
 test("a thread member's line: read only in its repo's folder, or kept out of it in its worktree", () => {

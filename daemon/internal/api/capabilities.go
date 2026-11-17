@@ -14,7 +14,8 @@ import (
 //
 //	GET    /v1/capabilities          {capabilities, installed, sources}
 //	PUT    /v1/capabilities/{id}     add or replace one entry
-//	DELETE /v1/capabilities/{id}     409 while a base still names it
+//	DELETE /v1/capabilities/{id}     409 while a base still names it, or a
+//	                                 group or repo has it on (capchoices.go)
 //	POST   /v1/capabilities/{id}/pin {pinned}: keep a source entry at its version
 //	POST   /v1/capabilities/import   seed from the host's Claude setup;
 //	                                 ?probe=1 also reads a probe session

@@ -8,6 +8,7 @@ import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAn
 import { mcpFromFiles } from "./mcp.mjs";
 import { WRITE_TOOLS, wallSafe, wallVerdict } from "./walls.mjs";
 import { readOnlyVerdict } from "./readonly.mjs";
+import { parseLoadout, applyLoadout, describeLoadout } from "./loadout.mjs";
 import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.mjs";
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
@@ -73,10 +74,20 @@ export class Agent {
     // before it listens (the pane drops to its shell, read as asleep)
     // rather than failing a prompt and leaving the pane busy for good.
     this.systemPrompt = o.systemPromptFile ? deps.readFile(o.systemPromptFile, "utf8") : "";
+    // A session runner's loadout (loadout.mjs), same rule: a file that is
+    // not there or does not read as one ends the start, since going on
+    // without it would load the user's whole setup. Only a runner is
+    // handed one; an agent pane's base says what it loads.
+    this.loadout = o.loadout ? parseLoadout(deps.readFile(o.loadout, "utf8")) : null;
     // The base's MCP servers, same rule: read once, fail the start when the
     // file is unreadable. A base without the file has no servers.
     // A runner with a pane starts the shim as its pane's bus owner (mcp.mjs).
-    this.mcp = mcpFromFiles(o.mcpFiles.map((f) => readIfPresent(deps.readFile, f)), deps.env, o.peersCommand, !!o.socket && !!deps.env.CCMUX_PANE_ID);
+    // The catalog servers a loadout chose ride with the files' own; the
+    // peers shim is added last, so nothing chosen replaces the bus.
+    const mcpTexts = o.mcpFiles.map((f) => readIfPresent(deps.readFile, f));
+    if (this.loadout) mcpTexts.push(JSON.stringify(this.loadout.mcp));
+    this.mcp = mcpFromFiles(mcpTexts, deps.env, o.peersCommand, !!o.socket && !!deps.env.CCMUX_PANE_ID);
+    if (this.loadout) this.log("⚙ " + describeLoadout(this.loadout));
     // Said at start: the SDK's init line reports only "failed" for a server
     // whose url or token came out of an unset variable.
     for (const [name, vars] of Object.entries(this.mcp.unresolved)) {
@@ -248,6 +259,9 @@ export class Agent {
     if (o.disallowed.length) opts.disallowedTools = o.disallowed;
     const before = this.preToolHooks();
     if (before.length) opts.hooks = { PreToolUse: before };
+    // Last: what the session's group and repo chose narrows everything the
+    // user's own settings would load (loadout.mjs).
+    if (this.loadout) applyLoadout(opts, this.loadout, this.sdk.env);
     return opts;
   }
 

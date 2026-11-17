@@ -226,7 +226,8 @@ func (st *sessionStream) run(ctx context.Context) {
 	}
 }
 
-// sessionState is a session's row and where it is now (viewOf's rule).
+// sessionState is a session's row and where it is now (viewOf's rule). A
+// stream asks it every second, so it reads the state alone, not the view.
 func (s *Server) sessionState(id string) (*store.RunnerSession, string) {
 	sess, err := s.runnerRows.RunnerSession(id)
 	if err != nil {
@@ -236,7 +237,7 @@ func (s *Server) sessionState(id string) (*store.RunnerSession, string) {
 	if sess == nil {
 		return nil, store.SessionDone
 	}
-	return sess, s.viewOf(*sess).State
+	return sess, s.stateOf(sess.ID)
 }
 
 func (st *sessionStream) pause(ctx context.Context) {
