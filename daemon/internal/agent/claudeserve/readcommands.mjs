@@ -15,42 +15,75 @@
 // a redirect into a file, a substitution, a subshell, a background job, a
 // here-document.
 export function lex(line) {
-  const cmds = [[]];
-  let word = null; // the word being read, null between words
-  const end = () => { if (word !== null) cmds[cmds.length - 1].push(word); word = null; };
-  const next = () => { end(); cmds.push([]); };
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    const two = line.slice(i, i + 2);
-    if (c === "'") {
-      const close = line.indexOf("'", i + 1);
-      if (close < 0) return null;
-      word = (word ?? "") + line.slice(i + 1, close);
-      i = close;
-    } else if (c === '"') {
-      const got = doubleQuoted(line, i + 1);
-      if (!got) return null;
-      word = (word ?? "") + got.text;
-      i = got.end;
-    } else if (c === "\\") {
-      if (i + 1 >= line.length) return null;
-      word = (word ?? "") + line[++i];
-    } else if (c === " " || c === "\t") end();
-    else if (c === "\n" || c === ";") next();
-    else if (two === "&&" || two === "||") { next(); i++; }
-    else if (c === "|") next();
-    else if (c === ">" || two === "&>") {
-      const skip = harmlessRedirect(line, i, word);
-      if (skip < 0) return null;
-      if (/^\d+$/.test(word ?? "")) word = null; // the "2" of 2>/dev/null
-      end();
-      i = skip;
-    } else if ("`()<&".includes(c) || two === "$(") return null;
-    else word = (word ?? "") + c;
+  const sc = { line, i: 0, cmds: [[]], word: null };
+  for (; sc.i < line.length; sc.i++) {
+    const read = readers[line[sc.i]] || plain;
+    if (!read(sc)) return null;
   }
-  end();
-  return cmds.filter((c) => c.length);
+  endWord(sc);
+  return sc.cmds.filter((c) => c.length);
 }
+
+// The scanner's state is sc: the line, where it is, the commands so far and
+// the word being read (null between words). Each reader takes the character
+// at sc.i, may move sc.i on to the last character it used, and returns
+// false when the line is not one this file follows.
+const endWord = (sc) => { if (sc.word !== null) sc.cmds[sc.cmds.length - 1].push(sc.word); sc.word = null; return true; };
+const nextCommand = (sc) => { endWord(sc); sc.cmds.push([]); return true; };
+const add = (sc, text) => { sc.word = (sc.word ?? "") + text; return true; };
+const refuse = () => false;
+const plain = (sc) => add(sc, sc.line[sc.i]);
+
+function singleQuote(sc) {
+  const close = sc.line.indexOf("'", sc.i + 1);
+  if (close < 0) return false;
+  add(sc, sc.line.slice(sc.i + 1, close));
+  sc.i = close;
+  return true;
+}
+
+function doubleQuote(sc) {
+  const got = doubleQuoted(sc.line, sc.i + 1);
+  if (!got) return false;
+  add(sc, got.text);
+  sc.i = got.end;
+  return true;
+}
+
+function escape(sc) {
+  if (sc.i + 1 >= sc.line.length) return false;
+  return add(sc, sc.line[++sc.i]);
+}
+
+// pipe is | or ||: either way the next command starts.
+function pipe(sc) {
+  if (sc.line[sc.i + 1] === "|") sc.i++;
+  return nextCommand(sc);
+}
+
+// ampersand is && (the next command), &> (a redirect) or a background job.
+function ampersand(sc) {
+  const next = sc.line[sc.i + 1];
+  if (next === "&") { sc.i++; return nextCommand(sc); }
+  return next === ">" ? redirect(sc) : false;
+}
+
+function redirect(sc) {
+  const last = harmlessRedirect(sc.line, sc.i, sc.word);
+  if (last < 0) return false;
+  if (/^\d+$/.test(sc.word ?? "")) sc.word = null; // the "2" of 2>/dev/null
+  endWord(sc);
+  sc.i = last;
+  return true;
+}
+
+// dollar starts a variable, which is text, or a substitution, which runs.
+const dollar = (sc) => (sc.line[sc.i + 1] === "(" ? false : add(sc, "$"));
+
+const readers = {
+  "'": singleQuote, '"': doubleQuote, "\\": escape, " ": endWord, "\t": endWord, "\n": nextCommand, ";": nextCommand,
+  "|": pipe, "&": ampersand, ">": redirect, "$": dollar, "`": refuse, "(": refuse, ")": refuse, "<": refuse,
+};
 
 // doubleQuoted reads a double-quoted stretch from start (just past the
 // opening quote): its text and where its closing quote is, or null when it
@@ -80,13 +113,18 @@ function harmlessRedirect(line, i, word) {
 const has = (args, ...flags) => args.some((a) => flags.some((f) => a === f || a.startsWith(f + "=")));
 const positional = (args) => args.filter((a) => !a.startsWith("-"));
 const anyStarts = (args, ...prefixes) => args.some((a) => prefixes.some((p) => a.startsWith(p)));
+// short reports a one-letter flag among letters, alone or in a cluster with
+// others ("-uo"), or with its value glued on ("-oout.txt").
+const short = (args, letters) => args.some((a) => a.startsWith("-") && !a.startsWith("--") && [...letters].some((l) => a.slice(1).includes(l)));
 
-// always are commands that read whatever their arguments.
+// always are commands that read whatever their arguments. A pager is not
+// among them: it can write a log file and run a preprocessor, and a session
+// with no terminal has no use for one.
 const always = new Set([
-  "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "ag", "tree", "stat", "file", "du", "df", "pwd", "cd",
+  "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "stat", "du", "df", "pwd", "cd",
   "echo", "printf", "date", "which", "type", "whoami", "id", "uname", "hostname", "basename", "dirname", "realpath", "readlink",
   "cut", "tr", "column", "nl", "tac", "rev", "diff", "cmp", "comm", "seq", "true", "false", "test", "[", "sleep", "jq", "printenv",
-  "md5sum", "sha1sum", "sha256sum", "strings", "od", "hexdump", "less", "more", "ps", "pgrep", "uptime", "free", "nproc", "lsblk",
+  "md5sum", "sha1sum", "sha256sum", "strings", "od", "hexdump", "ps", "pgrep", "uptime", "free", "nproc", "lsblk",
 ]);
 
 // gitReads are git's subcommands that read, each with the test its
@@ -103,7 +141,7 @@ const gitReads = {
   worktree: (args) => args[0] === "list",
   stash: (args) => args[0] === "list" || args[0] === "show",
   remote: (args) => !args.length || ["-v", "--verbose", "show", "get-url"].includes(args[0]),
-  config: (args) => has(args, "--get", "--get-all", "--get-regexp", "--list", "-l"),
+  config: (args) => has(args, "--get", "--get-all", "--get-regexp", "--list", "-l") && !anyStarts(args, "--add", "--unset", "--replace-all", "--rename-section", "--remove-section", "--edit", "-e"),
   branch: noCreate,
   tag: (args) => positional(args).length === 0 && !anyStarts(args, "-d", "-a", "-s", "-f", "-m", "-F", "-u", "--delete", "--force"),
   "symbolic-ref": (args) => positional(args).length <= 1 && !has(args, "-d", "--delete", "-m"),
@@ -139,10 +177,14 @@ const versionOnly = (args) => args.length === 1 && ["--version", "-v", "-V", "ve
 const rules = {
   git,
   sed,
-  sort: (args) => !anyStarts(args, "-o", "--output"),
+  sort: (args) => !short(args, "o") && !anyStarts(args, "--output"),
+  tree: (args) => !short(args, "o") && !anyStarts(args, "--output"),
+  file: (args) => !short(args, "C") && !anyStarts(args, "--compile"),
   uniq: (args) => positional(args).length <= 1,
   find: (args) => !anyStarts(args, "-delete", "-exec", "-ok", "-fprint", "-fls"),
-  fd: (args) => !anyStarts(args, "-x", "-X", "--exec"),
+  fd: (args) => !short(args, "xX") && !anyStarts(args, "--exec"),
+  rg: (args) => !anyStarts(args, "--pre", "--hostname-bin"),
+  ag: (args) => !anyStarts(args, "--pager"),
   awk: (args) => !args.some((a) => /[>|]|system|getline/.test(a)) && !anyStarts(args, "-f", "--file", "-i", "--include"),
   yq: (args) => !anyStarts(args, "-i", "--inplace"),
   env: (args) => args.length === 0,
@@ -151,12 +193,19 @@ const rules = {
   node: versionOnly, python: versionOnly, python3: versionOnly, claude: versionOnly,
 };
 
-// reads says whether one command (its words) only reads. Variables set in
-// front of it (FOO=1 cmd) are let through: with substitutions already
-// refused they are plain text.
+// harmlessVar is a variable that only changes how a command prints: its
+// language, its time zone, its colours. Any other one set in front of a
+// command is refused, since many name a program to run (GIT_EXTERNAL_DIFF,
+// LESSOPEN, PAGER).
+const harmlessVar = /^(LC_[A-Z]+|LANG|LANGUAGE|TZ|NO_COLOR|TERM|COLUMNS|LINES)=/;
+
+// reads says whether one command (its words) only reads.
 function reads(words) {
   let i = 0;
-  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) {
+    if (!harmlessVar.test(words[i])) return false;
+    i++;
+  }
   if (i === words.length) return true; // only assignments
   const name = words[i];
   const args = words.slice(i + 1);

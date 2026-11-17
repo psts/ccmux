@@ -17,9 +17,9 @@ import (
 // forward or none does). The checks take minutes, so this only starts it
 // and says so; how it went reaches the lead as a message (land).
 //
-// It is refused, with the reason, while a helper is still mid-turn (its
-// work is not all there yet), while a repo's own folder cannot take the
-// merge, and when no member changed anything.
+// It is refused, with the reason, while a helper is still mid-turn or waits
+// on a card (its work is not all there yet), while a repo's own folder
+// cannot take the merge, and when no member changed anything.
 func (s *Service) Merge(threadID int64, by string) (string, error) {
 	defer s.lock(threadKey(threadID))()
 	th, lead, err := s.led(threadID)
@@ -82,8 +82,14 @@ func mergeRefusal(th store.Thread, members, work []store.RunnerSession) string {
 		return fmt.Sprintf("thread #%d has nothing to merge: no member has changed anything", th.ID)
 	}
 	for _, m := range members {
-		if m.Role != store.RoleLead && m.Attention == string(model.AttentionRunning) {
+		if m.Role == store.RoleLead {
+			continue // the lead is mid-turn by asking, and a person merges over its question
+		}
+		switch model.Attention(m.Attention) {
+		case model.AttentionRunning:
 			return fmt.Sprintf("%s is still working; wait for it to report, then merge", m.Name)
+		case model.AttentionNeedsInput:
+			return fmt.Sprintf("%s is waiting on an answer (a question or an approval): a merge would stand it down with its card open. Answer it, or stand it down, then merge", m.Name)
 		}
 	}
 	return ""

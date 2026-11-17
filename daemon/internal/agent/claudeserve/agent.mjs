@@ -17,6 +17,13 @@ import { fromInit, fromInitialization, commandList, resultOf } from "./sessionse
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
 const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
 
+// READ_ONLY_HOOK_SECONDS is how long a thread member's fence may take to
+// answer. Its slow case is the daemon making the member's worktree (a git
+// checkout, up to a minute). Past the limit Claude Code refuses the call
+// itself, with its own words (seen on 2.1.326), so the fence holds either
+// way; the limit only decides whose words Claude reads.
+const READ_ONLY_HOOK_SECONDS = 120;
+
 // askID is a card's id: five lowercase letters without l, the shape the
 // bus's reply matchers accept ("yes abcde", "answer abcde ..."), so the
 // same id names the card in the chat and on the bus.
@@ -251,7 +258,7 @@ export class Agent {
     const o = this.o;
     const hooks = [];
     if (o.writeRoots && o.writeRoots.length) hooks.push({ matcher: WRITE_MATCHER, hooks: [(input) => this.wallHook(input)] });
-    if (o.readOnly || o.keepOut) hooks.push({ hooks: [(input) => this.readOnlyHook(input)] });
+    if (o.readOnly || o.keepOut) hooks.push({ hooks: [(input) => this.readOnlyHook(input)], timeout: READ_ONLY_HOOK_SECONDS });
     return hooks;
   }
 

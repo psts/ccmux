@@ -115,6 +115,9 @@ func TestAMergeIsRefusedBeforeItStartsWhenItCannotLand(t *testing.T) {
 		t.Fatal(err)
 	}
 	refused("backend-thread-1 is still working")
+	// Or waiting on a card: the merge would stand it down with the card open.
+	r.st.SaveRunnerAttention(backend.PaneID, "needs_input", "question", 2)
+	refused("backend-thread-1 is waiting on an answer")
 	r.st.SaveRunnerAttention(backend.PaneID, "done", "finished", 2)
 	// A person has uncommitted work on the trunk in the repo's own folder.
 	r.git.set(func(g *fakeGit) { g.blocked = map[string]string{"backend": "backend has uncommitted changes on main"} })

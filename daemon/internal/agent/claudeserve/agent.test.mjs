@@ -876,6 +876,7 @@ test("a read-only member reads on, and its first change asks the daemon for its 
   const { agent, firstEdits, files } = runnerAgent({ readOnly: true, firstEdit: () => moved });
   const [m] = agent.options().hooks.PreToolUse;
   assert.equal(m.matcher, undefined, "every tool is checked: a shell command writes too");
+  assert.equal(m.timeout, 120, "long enough for the daemon to make a worktree");
   const hook = m.hooks[0];
   assert.deepEqual(await hook({ tool_name: "Read", tool_input: { file_path: "/inst/a.go" } }), {});
   assert.deepEqual(await hook({ tool_name: "Bash", tool_input: { command: "git status" } }), {});

@@ -11,6 +11,8 @@ test("commands that only read are let through", () => {
     "cat x 2>/dev/null", "ls missing 2>&1 | tail -1", "ls > /dev/null", "cd src && ls; pwd",
     "LC_ALL=C sort names.txt", "awk '{print $1}' log.txt", "go list ./...", "go env GOPATH", "npm ls --depth=0", "node --version",
     "echo \"it's fine\"", "jq '.name' package.json", "test -f go.mod && echo yes || echo no",
+    "rg -n --glob '*.go' needle", "ag needle src", "tree -L 2 -I node_modules", "file src/a.go", "fd -e go", "TZ=UTC date", "sort -t: -k2 names.txt",
+    "echo $HOME", "ls 2>/dev/null && pwd", "git config --get-all remote.origin.url",
     "git log --format='%h %s' \\\n  -3",
   ]) assert.equal(plainRead(line), true, line);
 });
@@ -27,6 +29,12 @@ test("anything that can write, or run more than is written, is refused", () => {
     "find . -name '*.tmp' -delete", "find . -exec rm {} ;", "sed -i 's/a/b/' f", "sed 's/a/b/w out' f", "sed -n 'w out' f",
     "sort -o names.txt names.txt", "uniq in.txt out.txt", "awk '{print > \"out\"}' f", "awk 'BEGIN{system(\"touch x\")}'",
     "env FOO=1 make", "yq -i '.a=1' f.yml", "curl -o f https://example.com", "cat 'unclosed", "", "   ", "unknowncmd --help",
+    // A variable in front can name a program to run.
+    "GIT_EXTERNAL_DIFF=./x git diff", "LESSOPEN='|./x %s' cat f", "PAGER=./x git log", "FOO=1 ls",
+    // Flags that run a program or write a file, alone, in a cluster, or with the value glued on.
+    "rg --pre ./x needle", "rg --pre=./x needle", "ag --pager ./x needle", "tree -o out.txt", "tree -ao out.txt", "less -o log f", "more f",
+    "sort -uo names.txt names.txt", "sort -onames.txt names.txt", "sort --output=names.txt names.txt", "fd -Hx rm", "file -C -m magic",
+    "git config --get x --add y", "ls & pwd", "ls |& tee x", "cat a >| b", "echo \\",
   ]) assert.equal(plainRead(line), false, JSON.stringify(line));
   assert.equal(plainRead(undefined), false);
 });
