@@ -44,10 +44,18 @@ func (s *Service) Seed() error {
 	}
 	// The catalog may be empty: fill it from what is installed, so there
 	// is an entry to switch on for every plugin a repo uses.
-	if _, err := s.Catalog.ImportCapabilities(claudeDir, nil); err != nil {
+	imported, err := s.Catalog.ImportCapabilities(claudeDir, nil)
+	if err != nil {
 		return fmt.Errorf("filling the catalog: %w", err)
 	}
-	rows, err := s.seedRows()
+	for _, why := range imported.Skipped {
+		log.Printf("skills and plugins: day-one choices: the catalog left out %s", why)
+	}
+	installed, err := agent.ReadInstalledPlugins(agent.InstalledPluginsPath(claudeDir))
+	if err != nil {
+		return fmt.Errorf("reading the installed plugins: %w", err)
+	}
+	rows, err := s.seedRows(installed)
 	if err != nil {
 		return err
 	}
@@ -58,8 +66,9 @@ func (s *Service) Seed() error {
 	return nil
 }
 
-// seedRows works the day-one choices out.
-func (s *Service) seedRows() ([]store.CapChoice, error) {
+// seedRows works the day-one choices out. installed is Claude Code's
+// installed plugins, so a plugin left out can say why.
+func (s *Service) seedRows(installed map[string]string) ([]store.CapChoice, error) {
 	catalog, err := s.Catalog.Capabilities()
 	if err != nil {
 		return nil, err
@@ -86,7 +95,7 @@ func (s *Service) seedRows() ([]store.CapChoice, error) {
 		if _, ok := windows[members[repo.WorkspaceID]]; ok {
 			scope, id = store.ChoiceWindow, members[repo.WorkspaceID]
 		}
-		set.add(scope, id, append(repoPlugins(repo, catalog, sources), base...))
+		set.add(scope, id, append(repoPlugins(repo, catalog, sources, installed), base...))
 	}
 	return set.rows(), nil
 }
@@ -129,10 +138,12 @@ func seedBase(catalog []agent.Capability) []string {
 }
 
 // repoPlugins are the catalog entries of the plugins a repo's own settings
-// switch on. A plugin the catalog has no entry for (enabled but never
-// installed) and a settings file that does not parse are logged and left
-// out: Claude Code loads nothing from either.
-func repoPlugins(repo Repo, catalog []agent.Capability, sources []agent.CapSource) []string {
+// switch on. A plugin the catalog has no entry for and a settings file that
+// does not parse are logged and left out. The log says which of two causes
+// it is: never installed (Claude Code loads nothing either), or installed
+// but its name taken by another catalog entry (the repo used it, so it must
+// be turned on by hand; the seed runs once).
+func repoPlugins(repo Repo, catalog []agent.Capability, sources []agent.CapSource, installed map[string]string) []string {
 	enabled, err := agent.EnabledPlugins(repo.Path)
 	if err != nil {
 		log.Printf("skills and plugins: day-one choices: %s: %v", repo.Path, err)
@@ -141,10 +152,19 @@ func repoPlugins(repo Repo, catalog []agent.Capability, sources []agent.CapSourc
 	for _, pluginID := range enabled {
 		id, ok := agent.CatalogIDOfPlugin(catalog, sources, pluginID)
 		if !ok {
-			log.Printf("skills and plugins: day-one choices: %s switches on %s, which is not installed on this host; left out", repo.Path, pluginID)
+			logLeftOut(repo.Path, pluginID, installed)
 			continue
 		}
 		out = append(out, id)
 	}
 	return out
+}
+
+// logLeftOut says why a plugin a repo switches on got no day-one choice.
+func logLeftOut(repoPath, pluginID string, installed map[string]string) {
+	if _, ok := installed[pluginID]; ok {
+		log.Printf("skills and plugins: day-one choices: %s switches on %s, which is installed but has no catalog entry (its name is taken by another entry); left out, turn it on by hand", repoPath, pluginID)
+		return
+	}
+	log.Printf("skills and plugins: day-one choices: %s switches on %s, which is not installed on this host; left out", repoPath, pluginID)
 }

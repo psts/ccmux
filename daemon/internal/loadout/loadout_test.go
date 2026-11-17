@@ -1,11 +1,14 @@
 package loadout
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,6 +169,44 @@ func TestSeed_GroupsStartWithWhatTheirReposUseToday(t *testing.T) {
 	snap, _ := r.svc.Snapshot()
 	if got := snap.Group("w2"); len(got) != 2 || got["chrome-pool"] != store.ChoiceOn || got["glitchtip"] != store.ChoiceOn {
 		t.Errorf("a group with no repos = %v, want chrome-pool and the loose skills", got)
+	}
+}
+
+// A plugin a repo uses that the catalog could not take (its name was
+// taken by another installed plugin's entry) is said to be installed and
+// left out, never "not installed".
+func TestSeed_SaysWhyAnInstalledPluginIsLeftOut(t *testing.T) {
+	r := newRig(t)
+	raw, err := os.ReadFile(agent.InstalledPluginsPath(r.claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file map[string]map[string]any
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	file["plugins"]["qa@other"] = []map[string]string{{"installPath": plugin(t, t.TempDir(), "qa"), "lastUpdated": "2"}}
+	blob, _ := json.Marshal(file)
+	write(t, agent.InstalledPluginsPath(r.claude), string(blob))
+	// Both qa plugins are installed and only one gets the id "qa"; which
+	// one is up to the import's order, so the repo uses both.
+	r.repo(t, "app", "w1", "qa@personal", "qa@other", "ghost@nowhere")
+	var said bytes.Buffer
+	log.SetOutput(&said)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	if err := r.svc.Seed(); err != nil {
+		t.Fatal(err)
+	}
+	out := said.String()
+	taken := strings.Count(out, "qa@other, which is installed but has no catalog entry") + strings.Count(out, "qa@personal, which is installed but has no catalog entry")
+	if taken != 1 {
+		t.Errorf("the qa plugin left out is said to be installed %d times, want 1:\n%s", taken, out)
+	}
+	if !strings.Contains(out, "ghost@nowhere, which is not installed") {
+		t.Errorf("a plugin never installed is still said to be not installed:\n%s", out)
+	}
+	if strings.Contains(out, "qa@other, which is not installed") || strings.Contains(out, "qa@personal, which is not installed") {
+		t.Errorf("an installed qa is wrongly said to be not installed:\n%s", out)
 	}
 }
 
