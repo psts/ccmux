@@ -2,6 +2,7 @@ package autoconfirm
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -90,6 +91,22 @@ func TestWatch_PressesEnterOnPrompt(t *testing.T) {
 	io.mu.Unlock()
 	cancel()
 	<-done
+}
+
+// The trust prompt for an --add-dir folder (Claude Code 2.1.3xx, seen
+// 2026-11-16 holding task #162's builder all night) words it differently and
+// also starts on "No, exit".
+func TestKeyFor_AddDirTrustPrompt(t *testing.T) {
+	head := " Adding a new directory:\n /home/u/.ccmux/worktrees/x\n This session hasn't worked here before. Is this a directory you created or one\n you trust?\n"
+	if got := keyFor(head + " ❯ No, exit\n   Yes, add it\n Enter to confirm · Esc to cancel"); string(got) != string(down) {
+		t.Fatalf("cursor on No: key %q, want Down", got)
+	}
+	if got := keyFor(head + "   No, exit\n ❯ Yes, add it\n Enter to confirm · Esc to cancel"); string(got) != string(enter) {
+		t.Fatalf("cursor on Yes: key %q, want Enter", got)
+	}
+	if got := keyFor(strings.ReplaceAll(head, "'", "’") + " ❯ No, exit\n   Yes, add it"); string(got) != string(down) {
+		t.Fatalf("curly apostrophe: key %q, want Down", got)
+	}
 }
 
 // The trust prompt of a folder Claude has never seen starts on "No, exit":

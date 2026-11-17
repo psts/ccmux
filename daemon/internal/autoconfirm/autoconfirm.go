@@ -23,8 +23,9 @@ const (
 	watchTimeout = 120 * time.Second
 	pollInterval = 250 * time.Millisecond
 	postEnterGap = 2 * time.Second
-	// Up to two prompts (trust + dev-channels); a third for margin.
-	maxEnters = 3
+	// Up to three prompts (folder trust, an --add-dir folder's trust,
+	// dev-channels); a fourth for margin.
+	maxEnters = 4
 	// The trust prompt's choice is one step below its "No, exit"; a few
 	// more allow for a slow redraw, never an endless walk.
 	maxDowns = 4
@@ -41,8 +42,13 @@ func compact(text string) string {
 	return strings.NewReplacer("\x00", "", " ", "", "\n", "", "\t", "", "\r", "").Replace(text)
 }
 
+// isPrompt matches the dev-channels prompt and both trust prompts: the
+// project folder's ("trust this folder") and an --add-dir folder's ("This
+// session hasn't worked here before", answered "Yes, add it"). The apostrophe
+// is left out of the match, since it may be drawn straight or curly.
 func isPrompt(c string) bool {
-	return strings.Contains(c, "localdevelopment") || strings.Contains(c, "trustthisfolder")
+	return strings.Contains(c, "localdevelopment") || strings.Contains(c, "trustthisfolder") ||
+		strings.Contains(c, "workedherebefore")
 }
 
 var (
