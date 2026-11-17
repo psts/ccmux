@@ -214,6 +214,11 @@ type Store struct {
 	now func() time.Time
 	// latest is the newest SDK on npm, nil until AskNPMForLatestSDK.
 	latest *latestCache
+	// ChoiceUsers names the groups and repos that have catalog entry id
+	// switched on (store.CapabilityChoiceUsers), for CapabilityUsers. It is
+	// asked with the catalog's lock held, so it must be a plain read that
+	// never calls back into the catalog. Nil counts none.
+	ChoiceUsers func(id string) ([]string, error)
 }
 
 // NewStore returns a Store over root, creating nothing until the first Save.

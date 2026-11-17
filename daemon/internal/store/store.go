@@ -278,7 +278,7 @@ func Open(path string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema + sessionsSchema + threadsSchema); err != nil {
+	if _, err := db.Exec(schema + sessionsSchema + threadsSchema + capChoicesSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
@@ -365,7 +365,7 @@ func erroringMigrations(db *sql.DB) error {
 		migrateAgentColumns, migrateAttentionClaim, migratePaneActivity, migrateTaskSignal,
 		migrateTaskWindow, migrateTaskAutoFixes, migrateTaskFixPart, migrateTaskAfterIDs,
 		migrateTaskLook, migratePartRun, migrateWindowOpenDevices, migrateSessionPanes,
-		migrateInboxAttachments, migrateSessionThreads, migrateSessionMembers,
+		migrateInboxAttachments, migrateSessionThreads, migrateSessionMembers, migrateSessionLoadout,
 	} {
 		if err := migrate(db); err != nil {
 			return err
@@ -563,8 +563,10 @@ func (s *SQLite) DeleteWorkspace(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM panes WHERE workspace_id=?`, id); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM workspaces WHERE id=?`, id)
-	return err
+	if _, err := s.db.Exec(`DELETE FROM workspaces WHERE id=?`, id); err != nil {
+		return err
+	}
+	return s.deleteChoicesOf(ChoiceWorkspace, id)
 }
 
 func (s *SQLite) DeletePane(id string) error {
@@ -727,8 +729,8 @@ func (s *SQLite) RenameWindow(id, name string) error {
 	return err
 }
 
-// DeleteWindow removes a window entity plus its membership, open flags, size
-// and task slots.
+// DeleteWindow removes a window entity plus its membership, open flags, size,
+// task slots and its skills and plugins choices.
 func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_members WHERE window_id=?`, id); err != nil {
 		return err
@@ -745,8 +747,10 @@ func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_sizes WHERE window_id=?`, id); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM window_slots WHERE window_id=?`, id)
-	return err
+	if _, err := s.db.Exec(`DELETE FROM window_slots WHERE window_id=?`, id); err != nil {
+		return err
+	}
+	return s.deleteChoicesOf(ChoiceWindow, id)
 }
 
 // AllWindows returns every shared window, id → name.

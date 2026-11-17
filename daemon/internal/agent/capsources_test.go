@@ -305,3 +305,36 @@ func TestSources_RemoveAndAdopt(t *testing.T) {
 		t.Fatalf("only the source's own entries go: %+v", list)
 	}
 }
+
+// A group or repo that has an entry on holds it against a delete, and
+// against its source going away, but not against the move onto ccmux's own
+// checkout: that is where its sessions are meant to load it from.
+func TestCapabilityUsers_GroupAndRepoChoices(t *testing.T) {
+	s, m := testStore(t), newMarketRepo(t)
+	s.ChoiceUsers = func(id string) ([]string, error) {
+		if id == "qa" {
+			return []string{"group ChartLabs"}, nil
+		}
+		return nil, nil
+	}
+	if _, err := s.SaveCapability(Capability{ID: "qa", Kind: CapPlugin, Plugin: "qa@personal"}); err != nil {
+		t.Fatal(err)
+	}
+	if users, err := s.CapabilityUsers("qa"); err != nil || !slices.Equal(users, []string{"group ChartLabs"}) {
+		t.Fatalf("users = %v %v", users, err)
+	}
+	if err := s.RemoveCapability("qa"); !errors.Is(err, ErrCapabilityInUse) || !strings.Contains(err.Error(), "group ChartLabs") {
+		t.Fatalf("an entry a group has on is not deleted: %v", err)
+	}
+	s.AddSource(CapSource{ID: "local", URL: m.bare})
+	res, err := s.UpdateSource(context.Background(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(res.Added, "qa") || !fromCheckout(entryOf(t, s, "qa")) {
+		t.Fatalf("a group's choice does not stop the move onto the checkout: %+v", res)
+	}
+	if err := s.RemoveSource("local"); !errors.Is(err, ErrCapabilityInUse) {
+		t.Fatalf("a source whose entry a group has on stays: %v", err)
+	}
+}

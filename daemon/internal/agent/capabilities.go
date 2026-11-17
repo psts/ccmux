@@ -179,6 +179,10 @@ func (s *Store) refuseInUse(id string) error {
 	if err != nil {
 		return err
 	}
+	return inUse(id, users)
+}
+
+func inUse(id string, users []string) error {
 	if len(users) > 0 {
 		return fmt.Errorf("%w: %s is still on %v", ErrCapabilityInUse, id, users)
 	}
@@ -186,11 +190,26 @@ func (s *Store) refuseInUse(id string) error {
 }
 
 // CapabilityUsers answers "who uses catalog entry id", as one label per
-// user ("agent radar"). It is the one place that question is asked: removing
-// an entry, removing a source and re-pointing an imported entry at a source
-// all go through it. Today the users are the bases that name the id; the
-// group and repo choices (skills and plugins task 2) are added here.
+// user ("agent radar", "group ChartLabs", "repo app"): the bases that name
+// the id, and the groups and repos that have it switched on (ChoiceUsers).
+// Removing an entry and removing a source both ask it.
 func (s *Store) CapabilityUsers(id string) ([]string, error) {
+	users, err := s.agentUsers(id)
+	if err != nil || s.ChoiceUsers == nil {
+		return users, err
+	}
+	chosen, err := s.ChoiceUsers(id)
+	if err != nil {
+		return nil, err
+	}
+	return append(users, chosen...), nil
+}
+
+// agentUsers are the bases that name id. Re-pointing an imported entry at
+// a source's checkout asks only this (capsync.go): an isolated agent must
+// not have its plugin swapped under it, while a group or repo that has the
+// entry on is meant to follow the checkout.
+func (s *Store) agentUsers(id string) ([]string, error) {
 	defs, err := s.List()
 	if err != nil {
 		return nil, err

@@ -197,7 +197,7 @@ func (s *Store) mergeSource(src CapSource, plugins []sourcePlugin, res *SourceUp
 
 // mergePlugin adds or refreshes one plugin's entry. An entry of this
 // source moves to the new version unless pinned. An imported entry of the
-// same plugin (name@marketplace) that nothing uses is re-pointed at the
+// same plugin (name@marketplace) that no agent uses is re-pointed at the
 // checkout; anything else holding the id is left alone and reported.
 func (s *Store) mergePlugin(catalog []Capability, src CapSource, p sourcePlugin, res *SourceUpdate) []Capability {
 	entry := Capability{ID: p.name, Kind: CapPlugin, Path: filepath.Join(s.checkoutDir(src.ID), p.rel), Source: src.ID, Version: p.version, Commit: src.Commit, Description: p.description, Cost: p.cost}
@@ -215,7 +215,13 @@ func (s *Store) mergePlugin(catalog []Capability, src CapSource, p sourcePlugin,
 	case e.Source == src.ID && fromCheckout(e):
 		catalog[i] = refreshEntry(e, entry, res)
 	case e.Kind == CapPlugin && e.Plugin == p.name+"@"+src.Marketplace:
-		if err := s.refuseInUse(e.ID); err != nil {
+		// Only an agent holds it where it is: a group or repo that has it
+		// on follows the checkout (agentUsers).
+		users, err := s.agentUsers(e.ID)
+		if err == nil {
+			err = inUse(e.ID, users)
+		}
+		if err != nil {
 			res.Skipped = append(res.Skipped, err.Error())
 			return catalog
 		}
