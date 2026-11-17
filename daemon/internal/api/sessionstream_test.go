@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ type fakeProc struct {
 	boot      string
 	protocol  int
 	down      bool    // the socket does not answer
+	broken    error   // the socket answers, with this error
 	log       []int64 // event numbers held, in order
 	seq       int64
 	snapshots int
@@ -66,7 +68,10 @@ func (p *fakeProc) Hello(context.Context) (runner.Hello, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.down {
-		return runner.Hello{}, errors.New("connection refused")
+		return runner.Hello{}, fmt.Errorf("dial: %w", syscall.ECONNREFUSED)
+	}
+	if p.broken != nil {
+		return runner.Hello{}, p.broken
 	}
 	return runner.Hello{Protocol: p.protocol, Boot: p.boot, Seq: p.seq}, nil
 }
@@ -196,7 +201,14 @@ type streamRig struct {
 	rows *streamRows
 	hs   *httptest.Server
 	srv  *Server
+	dmu  sync.Mutex
 	disk string // the conversation "on disk"; "!" fails the read
+}
+
+func (r *streamRig) setDisk(v string) {
+	r.dmu.Lock()
+	defer r.dmu.Unlock()
+	r.disk = v
 }
 
 func newStreamRig(t *testing.T) *streamRig {
@@ -207,6 +219,8 @@ func newStreamRig(t *testing.T) *streamRig {
 	r.srv.SetRunnerDoors(RunnerDoors{
 		Dial: func(string) SessionRunner { return r.proc },
 		History: func(context.Context, store.RunnerSession) (json.RawMessage, error) {
+			r.dmu.Lock()
+			defer r.dmu.Unlock()
 			if r.disk == "!" {
 				return nil, errors.New("store unreadable")
 			}
@@ -369,6 +383,42 @@ func TestAConversationDiskCannotGiveIsSaid(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var f streamFrame
 	if err := conn.ReadJSON(&f); err != nil || f.T != "state" || !strings.Contains(f.Note, "store unreadable") {
+		t.Fatalf("%+v %v", f, err)
+	}
+	// The failure stays said through many passes: had a plain "asleep"
+	// followed it, it would be the next frame read here. Once the disk reads,
+	// this same connection gets the conversation.
+	time.Sleep(50 * time.Millisecond)
+	r.setDisk(`["from-disk"]`)
+	if got := streamWords(t, conn, 2); got != "snap:@0 state:asleep" {
+		t.Fatal(got)
+	}
+}
+
+// An ended session whose conversation cannot be read is still said to be
+// done, with the reason as its note: there is no next pass to try again.
+// An asleep one is not said as asleep (TestAConversationDiskCannotGiveIsSaid).
+func TestAnEndedSessionsUnreadableDiskIsDoneWithTheReason(t *testing.T) {
+	r := newStreamRig(t)
+	r.setDisk("!")
+	r.sup.set(store.SessionDone)
+	conn := r.dial("", 0)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var f streamFrame
+	if err := conn.ReadJSON(&f); err != nil || f.State != store.SessionDone || !strings.Contains(f.Note, "store unreadable") {
+		t.Fatalf("%+v %v", f, err)
+	}
+}
+
+// A runner that answers with an error is not "starting" with no word: the
+// error is the note.
+func TestARunnerAnsweringWithAnErrorIsSaid(t *testing.T) {
+	r := newStreamRig(t)
+	r.proc.broken = errors.New("runner GET /hello: HTTP 500: boom")
+	conn := r.dial("", 0)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var f streamFrame
+	if err := conn.ReadJSON(&f); err != nil || f.State != "starting" || !strings.Contains(f.Note, "HTTP 500: boom") {
 		t.Fatalf("%+v %v", f, err)
 	}
 }

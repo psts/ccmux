@@ -42,9 +42,11 @@ type RunnerInfo struct {
 }
 
 // runnerLocked reports whether paneID is a runner session's pane, and what
-// the daemon says of it.
+// the daemon says of it. With no inbox to hand messages to (session runners
+// are off on this host) no pane is one: a runner peer would be kept present
+// and take messages that nothing ever delivers.
 func (s *Service) runnerLocked(paneID string) (RunnerInfo, bool) {
-	if s.RunnerPane == nil || paneID == "" {
+	if s.RunnerPane == nil || s.RunnerInbox == nil || paneID == "" {
 		return RunnerInfo{}, false
 	}
 	return s.RunnerPane(paneID)

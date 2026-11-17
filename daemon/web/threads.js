@@ -278,7 +278,6 @@
   function drawStream() {
     const ws = workspace();
     const ctx = viewCtx();
-    const scroller = $("stream");
     const follow = S.pinned || S.jump;
     S.jump = false;
     const blocks = Work.blocks(S.stream.turns, ws ? ws.repoPath || "" : "", ws ? Model.repoName(ws) : "");

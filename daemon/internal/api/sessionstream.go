@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -250,24 +251,42 @@ func (st *sessionStream) pause(ctx context.Context) {
 // following the runner until it went down already has every event it sent.
 func (st *sessionStream) down(ctx context.Context, sess store.RunnerSession, state string) {
 	if !st.has {
+		if err := st.sendFromDisk(ctx, sess); err != nil {
+			note := "the conversation could not be read from disk: " + err.Error()
+			if state == store.SessionDone {
+				st.sayProblem(state, note) // final, so said with its state; there is no next pass
+				return
+			}
+			// Said instead of the session's state, and read again next pass:
+			// a plain "asleep" over an empty page would hide that it failed.
+			st.sayProblem(stateUnknown, note)
+			return
+		}
 		st.has = true
-		st.sendFromDisk(ctx, sess)
 	}
 	st.say(state, sess.Note)
 }
 
-// sendFromDisk sends the conversation as Claude Code's store holds it. One
-// that cannot be read is said, and the page shows the session without it.
-func (st *sessionStream) sendFromDisk(ctx context.Context, sess store.RunnerSession) {
+// sendFromDisk sends the conversation as Claude Code's store holds it.
+func (st *sessionStream) sendFromDisk(ctx context.Context, sess store.RunnerSession) error {
 	data, err := st.s.diskSnapshot(ctx, sess)
 	if err != nil {
-		log.Printf("sessions: %s: its conversation was not read from disk: %v", st.id, err)
-		_ = st.write(streamFrame{T: "state", State: stateUnknown, Note: "the conversation could not be read from disk: " + err.Error()})
-		return
+		return err
 	}
-	if st.write(streamFrame{T: "snapshot", Data: data}) == nil {
-		st.boot, st.after = "", 0
+	if err := st.write(streamFrame{T: "snapshot", Data: data}); err != nil {
+		return err
 	}
+	st.boot, st.after = "", 0
+	return nil
+}
+
+// sayProblem says a state whose note is a failure, and logs it once per
+// distinct failure rather than on every pass.
+func (st *sessionStream) sayProblem(state, note string) {
+	if st.said != state+"\x00"+note {
+		log.Printf("sessions: %s: %s", st.id, note)
+	}
+	st.say(state, note)
 }
 
 // diskSnapshot is a snapshot body holding only the conversation from disk.
@@ -349,9 +368,18 @@ func (st *sessionStream) notFollowing(err error) {
 	case errors.Is(err, errRunnerOld):
 		st.say(stateUpdating, "this session runs an older build; it restarts on the new one when its turn ends")
 	case errors.Is(err, errStreamEnded), errors.Is(err, runner.ErrGap):
-	default:
+	case runnerNotListening(err):
 		st.say(stateStarting, "")
+	default:
+		// It answers but fails: said and logged, never a silent "starting".
+		st.sayProblem(stateStarting, "its runner answered with an error: "+err.Error())
 	}
+}
+
+// runnerNotListening is a runner whose socket is not there or not taking
+// connections yet: a session starting up, not one that is broken.
+func runnerNotListening(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
 }
 
 // runnerSessionMessages: GET /v1/sessions/{id}/messages is the session's
@@ -369,10 +397,12 @@ func (s *Server) runnerSessionMessages(w http.ResponseWriter, r *http.Request) {
 	if state == store.SessionRunning {
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		if snap, err := s.doors.Dial(sess.ID).Snapshot(ctx); err == nil {
+		snap, err := s.doors.Dial(sess.ID).Snapshot(ctx)
+		if err == nil {
 			writeJSON(w, http.StatusOK, streamFrame{T: "snapshot", State: state, Boot: snap.Boot, Seq: snap.Seq, Data: snap.Body})
 			return
 		}
+		log.Printf("sessions: %s: its runner gave no snapshot, serving the conversation from disk: %v", sess.ID, err)
 		state = stateStarting // its runner is not answering (yet): what disk holds is the best there is
 	}
 	data, err := s.diskSnapshot(r.Context(), *sess)

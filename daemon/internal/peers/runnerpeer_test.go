@@ -69,6 +69,17 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// With session runners off (no inbox wired) a runner session's pane is no
+// runner peer: kept present, it would take messages nothing delivers.
+func TestWithNoInboxARunnersPaneIsNoRunnerPeer(t *testing.T) {
+	svc, _, _, _ := runnerBus(t)
+	svc.RunnerInbox = nil
+	svc.EnsureRunnerPeer("run1", "/r/app")
+	if p := svc.peers[derivedID("run1")]; p != nil {
+		t.Fatalf("a runner peer was made with nowhere to deliver to: %+v", p)
+	}
+}
+
 func TestTheDaemonRegistersARunnersPeerAndItStaysPresent(t *testing.T) {
 	svc, hook, _, _ := runnerBus(t)
 	svc.EnsureRunnerPeer("run1", "/r/app")

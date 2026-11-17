@@ -66,6 +66,7 @@ func TestASessionsChangeMovesItsPaneAndItsPeer(t *testing.T) {
 	}
 	bus := peers.NewService(st, mgr, []byte("test-secret-test-secret-test-sec"))
 	bus.RunnerPane = runnerPaneForBus(mgr)
+	bus.RunnerInbox = func(string, string, string, string) error { return nil } // runners on: wireRunners and EnablePeers set both
 	changed := sessionChanged(mgr, bus)
 	sub, events := mgr.SubscribeEvents()
 	defer mgr.UnsubscribeEvents(sub)
@@ -129,6 +130,7 @@ func TestADaemonRestartPutsSessionsBackOnTheBus(t *testing.T) {
 	}
 	bus := peers.NewService(st, mgr, []byte("test-secret-test-secret-test-sec"))
 	bus.RunnerPane = runnerPaneForBus(mgr)
+	bus.RunnerInbox = func(string, string, string, string) error { return nil } // runners on: wireRunners and EnablePeers set both
 	if bus.PeerForPane("pane-asleep1") != "" {
 		t.Fatal("a bus that just started knows nobody")
 	}
