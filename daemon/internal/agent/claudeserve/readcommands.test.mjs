@@ -9,10 +9,11 @@ test("commands that only read are let through", () => {
     "git branch -a", "git branch --show-current", "git remote -v", "git config --get user.name", "git worktree list", "git stash list",
     "find . -name '*.go' -newer go.mod", "sed -n '10,40p' main.go", "sort names.txt | uniq -c | sort -rn",
     "cat x 2>/dev/null", "ls missing 2>&1 | tail -1", "ls > /dev/null", "cd src && ls; pwd",
-    "LC_ALL=C sort names.txt", "awk '{print $1}' log.txt", "go list ./...", "go env GOPATH", "npm ls --depth=0", "node --version",
+    "LC_ALL=C sort names.txt", "go list ./...", "go env GOPATH", "npm ls --depth=0", "node --version",
     "echo \"it's fine\"", "jq '.name' package.json", "test -f go.mod && echo yes || echo no",
     "rg -n --glob '*.go' needle", "ag needle src", "tree -L 2 -I node_modules", "file src/a.go", "fd -e go", "TZ=UTC date", "sort -t: -k2 names.txt",
-    "echo $HOME", "ls 2>/dev/null && pwd", "git config --get-all remote.origin.url",
+    "ls 2>/dev/null && pwd", "ls src/*.go", "grep -n \"a\\\nb\" f", "ls 'my dir'/*.go", "rg -n foo -g '*.go'", "git remote -v show origin", "git grep -in needle", "git diff --exit-code", "yq -P '.a' f.yml", "find . -mtime -1 -size +10k -type f",
+    "sort -rn -k2 -t : f", "sort --key=2 --reverse f", "tree -a -L 3 --dirsfirst", "sed -n '1,5p' f", "grep -n 'a$' f", "git config --get-all remote.origin.url",
     "git log --format='%h %s' \\\n  -3",
   ]) assert.equal(plainRead(line), true, line);
 });
@@ -35,6 +36,16 @@ test("anything that can write, or run more than is written, is refused", () => {
     "rg --pre ./x needle", "rg --pre=./x needle", "ag --pager ./x needle", "tree -o out.txt", "tree -ao out.txt", "less -o log f", "more f",
     "sort -uo names.txt names.txt", "sort -onames.txt names.txt", "sort --output=names.txt names.txt", "fd -Hx rm", "file -C -m magic",
     "git config --get x --add y", "ls & pwd", "ls |& tee x", "cat a >| b", "echo \\",
+    // The shell's own expansions, which can turn into a flag this file never
+    // saw (2026-11-17 ship review): variables, brace lists, $'...', a word
+    // that starts with a wildcard, and a flag split by backslash-newline.
+    "echo $HOME", "X=-delete; find . $X", "LANG=-delete; find . $LANG", "COLUMNS=-delete", "printf -v X -- -delete; find . $X",
+    "TERM=--output=x.txt; sort $TERM f", "find . -name x {-delete,}", "sort {-o,out.txt} f", "git diff {--output=x,}",
+    "find . -delet{e,e}", "find . $'-delete'", "find . -del\\\nete", "find . \"\\\n-delete\"", "sort \"\\\n-ofile\" f", "find . *", "find . ''*", 'find . ""*', "find . '-'*", "sort ''* f", "ls \"$HOME\"", "cat ${f}",
+    // Flags that write or run, found only by a list of the ones allowed.
+    "tree -R -H . -L 1", "sort -S 1K --compress-program=sh f", "sort --comp=sh f", "sort -T /tmp f", "sed -n --i '1p' f",
+    "git remote -v add o url", "git remote -v remove origin", "git remote --verbose set-url origin x", "git remote -v update",
+    "git diff --outp=x", "git grep --open less needle", "git grep -iOless needle", "git diff --ext", "yq -Pi '.a=1' f.yml", "awk '{print $1}' log.txt", "awk -E prog f", "file --comp m", "find . -fprint out", "find . -okdir rm ;",
   ]) assert.equal(plainRead(line), false, JSON.stringify(line));
   assert.equal(plainRead(undefined), false);
 });

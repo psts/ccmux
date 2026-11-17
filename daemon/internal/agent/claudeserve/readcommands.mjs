@@ -7,8 +7,12 @@
 // move into its own worktree, where it runs anything; one wrongly let
 // through writes into somebody else's folder. So the line is read the way a
 // shell would (quotes, pipes, redirects), anything this file cannot follow
-// is a no, and each command is on a short list with the flags that would
-// make it write taken out. Pure: no I/O.
+// is a no, and each command is on a short list. The shell's own expansions
+// are refused outright: a variable, a brace list or a word that starts with
+// a wildcard can each turn into a flag this file never saw ("$X" into
+// "-delete", "{-delete,}" too, "*" into a file named "-delete"). Commands
+// that have a flag which writes or runs something take only the flags
+// listed for them, not all but a few. Pure: no I/O.
 
 // lex splits a command line into commands (lists of words), or returns null
 // when it holds something that can write or run more than is written:
@@ -32,7 +36,12 @@ const endWord = (sc) => { if (sc.word !== null) sc.cmds[sc.cmds.length - 1].push
 const nextCommand = (sc) => { endWord(sc); sc.cmds.push([]); return true; };
 const add = (sc, text) => { sc.word = (sc.word ?? "") + text; return true; };
 const refuse = () => false;
-const plain = (sc) => add(sc, sc.line[sc.i]);
+// plain is any other character. A wildcard is refused when nothing but
+// empty quotes ('' and "" add no text) or a "-" comes before it in its
+// word: what it matches is not on the line, and a file named "-delete"
+// would be a flag. One after other text ("src/*.go") only matches names
+// that start with that text.
+const plain = (sc) => ("*?[".includes(sc.line[sc.i]) && (!sc.word || sc.word.startsWith("-")) ? false : add(sc, sc.line[sc.i]));
 
 function singleQuote(sc) {
   const close = sc.line.indexOf("'", sc.i + 1);
@@ -50,8 +59,12 @@ function doubleQuote(sc) {
   return true;
 }
 
+// escape is a backslash: the next character as itself, or, before a
+// newline, nothing at all (the shell joins the two lines, so "-del\<newline>ete"
+// is "-delete").
 function escape(sc) {
   if (sc.i + 1 >= sc.line.length) return false;
+  if (sc.line[sc.i + 1] === "\n") { sc.i++; return true; }
   return add(sc, sc.line[++sc.i]);
 }
 
@@ -77,12 +90,12 @@ function redirect(sc) {
   return true;
 }
 
-// dollar starts a variable, which is text, or a substitution, which runs.
-const dollar = (sc) => (sc.line[sc.i + 1] === "(" ? false : add(sc, "$"));
-
+// "$" (a variable, $'...', a substitution) and an unquoted brace list are
+// the shell putting in text this file cannot see, so both are refused.
 const readers = {
   "'": singleQuote, '"': doubleQuote, "\\": escape, " ": endWord, "\t": endWord, "\n": nextCommand, ";": nextCommand,
-  "|": pipe, "&": ampersand, ">": redirect, "$": dollar, "`": refuse, "(": refuse, ")": refuse, "<": refuse,
+  "|": pipe, "&": ampersand, ">": redirect, "$": refuse, "`": refuse, "(": refuse, ")": refuse, "<": refuse,
+  "{": refuse, "}": refuse,
 };
 
 // doubleQuoted reads a double-quoted stretch from start (just past the
@@ -93,8 +106,9 @@ function doubleQuoted(line, start) {
   for (let i = start; i < line.length; i++) {
     const c = line[i];
     if (c === '"') return { text, end: i };
-    if (c === "`" || line.slice(i, i + 2) === "$(") return null;
-    if (c === "\\" && i + 1 < line.length) text += line[++i];
+    if (c === "`" || c === "$") return null; // a variable or a substitution: text this file cannot see
+    if (c === "\\" && line[i + 1] === "\n") i++; // joined, as outside quotes
+    else if (c === "\\" && i + 1 < line.length) text += line[++i];
     else text += c;
   }
   return null;
@@ -133,14 +147,17 @@ const gitAny = () => true;
 const noCreate = (args) => positional(args).length === 0 && !anyStarts(args, "-d", "-D", "-m", "-M", "-c", "-C", "-u", "-f", "--delete", "--move", "--copy", "--set-upstream", "--unset-upstream", "--force", "--edit-description");
 const gitReads = {
   status: gitAny, log: gitAny, diff: gitAny, show: gitAny, "rev-parse": gitAny, "ls-files": gitAny, "ls-tree": gitAny, blame: gitAny,
-  grep: (args) => !anyStarts(args, "-O", "--open-files-in-pager"), describe: gitAny, "cat-file": gitAny, shortlog: gitAny,
+  grep: (args) => !short(args, "O") && !anyStarts(args, "--op"), // --open-files-in-pager runs a program, cut short or not describe: gitAny, "cat-file": gitAny, shortlog: gitAny,
   "merge-base": gitAny, "rev-list": gitAny, "name-rev": gitAny, "for-each-ref": gitAny, "show-ref": gitAny, whatchanged: gitAny,
   "count-objects": gitAny, "check-ignore": gitAny, "check-attr": gitAny, "show-branch": gitAny, cherry: gitAny, "range-diff": gitAny,
   "diff-tree": gitAny, version: gitAny,
   reflog: (args) => !args.length || args[0] === "show",
   worktree: (args) => args[0] === "list",
   stash: (args) => args[0] === "list" || args[0] === "show",
-  remote: (args) => !args.length || ["-v", "--verbose", "show", "get-url"].includes(args[0]),
+  remote: (args) => {
+    const rest = args[0] === "-v" || args[0] === "--verbose" ? args.slice(1) : args; // "git remote -v add" adds
+    return !rest.length || rest[0] === "show" || rest[0] === "get-url";
+  },
   config: (args) => has(args, "--get", "--get-all", "--get-regexp", "--list", "-l") && !anyStarts(args, "--add", "--unset", "--replace-all", "--rename-section", "--remove-section", "--edit", "-e"),
   branch: noCreate,
   tag: (args) => positional(args).length === 0 && !anyStarts(args, "-d", "-a", "-s", "-f", "-m", "-F", "-u", "--delete", "--force"),
@@ -159,17 +176,85 @@ function git(args) {
   }
   const rule = gitReads[args[i]];
   const rest = args.slice(i + 1);
-  return !!rule && !anyStarts(rest, "--output", "--ext-diff") && rule(rest);
+  // "--ou" and not "--output": git takes a long option cut short ("--outp=x").
+  return !!rule && !anyStarts(rest, "--ou", "--ext") && rule(rest);
 }
 
 // printsOnly is a sed script that only prints lines: "10,20p", "$p", "5q".
 const printsOnly = /^[0-9,$~+ ]*[pq=]?(;[0-9,$~+ ]*[pq=]?)*$/;
 
+// sed reads with -n and a script that only prints. No other flag: GNU sed
+// takes a long option cut short, so "--i" is --in-place.
 function sed(args) {
-  if (!has(args, "-n", "--quiet", "--silent") || anyStarts(args, "-i", "--in-place", "-f", "--file", "-s", "-e", "--expression", "-E", "-r", "-z")) return false;
+  if (!has(args, "-n", "--quiet", "--silent") || !onlyFlags(args, sedFlags)) return false;
   const script = positional(args)[0];
   return typeof script === "string" && printsOnly.test(script);
 }
+
+// onlyFlags reports whether every flag in args is one spec lists: a cluster
+// of its letters ("-rn"), a letter that takes a value, glued on or the next
+// word ("-k2", "-t :"), or one of its long flags ("--key=2", "--key 2").
+// Anything else, a long flag cut short among them, is a no.
+function onlyFlags(args, spec) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") return true;
+    if (!a.startsWith("-") || a === "-") continue;
+    const step = a.startsWith("--") ? longFlag(a, args[i + 1], spec) : shortFlags(a, spec);
+    if (step < 0) return false;
+    i += step;
+  }
+  return true;
+}
+
+// longFlag returns how many more words a long flag uses (0 or 1), or -1.
+function longFlag(a, next, spec) {
+  const [name, value] = a.split("=", 2);
+  if ((spec.long || []).includes(name) && value === undefined) return 0;
+  if (!(spec.longValued || []).includes(name)) return -1;
+  return value === undefined ? (next === undefined ? -1 : 1) : 0;
+}
+
+function shortFlags(a, spec) {
+  for (let j = 1; j < a.length; j++) {
+    if ((spec.letters || "").includes(a[j])) continue;
+    if (!(spec.valued || "").includes(a[j])) return -1;
+    return j === a.length - 1 ? 1 : 0; // its value is the next word, or the rest of this one
+  }
+  return 0;
+}
+
+const sedFlags = { letters: "n", long: ["--quiet", "--silent"] };
+
+// sort without -o (writes), -T/-S (temporary files, and with them
+// --compress-program, which runs a program).
+const sortFlags = {
+  letters: "bcdfghiMnRrsuVz", valued: "kt",
+  long: ["--ignore-leading-blanks", "--check", "--dictionary-order", "--ignore-case", "--general-numeric-sort", "--human-numeric-sort",
+    "--ignore-nonprinting", "--month-sort", "--numeric-sort", "--random-sort", "--reverse", "--stable", "--unique", "--version-sort", "--zero-terminated"],
+  longValued: ["--key", "--field-separator"],
+};
+
+// tree without -o (writes) and -R (with -H, writes a page in every folder).
+const treeFlags = {
+  letters: "adflsFpughDiCnqNQrtvUJ", valued: "LIP",
+  long: ["--noreport", "--dirsfirst", "--du", "--prune", "--gitignore", "--matchdirs", "--ignore-case", "--version", "--help"],
+  longValued: ["--charset", "--filelimit", "--sort"],
+};
+
+// findTests are find's tests and actions that only look and print. -delete,
+// -exec, -ok and the -f... ones that write a file are not among them.
+const findTests = new Set([
+  "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "-regextype", "-type", "-xtype",
+  "-maxdepth", "-mindepth", "-newer", "-anewer", "-cnewer", "-size", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin",
+  "-empty", "-print", "-print0", "-printf", "-ls", "-not", "-o", "-a", "-and", "-or", "-perm", "-user", "-group", "-uid", "-gid",
+  "-nouser", "-nogroup", "-links", "-lname", "-ilname", "-readable", "-writable", "-executable", "-prune", "-depth", "-follow",
+  "-L", "-H", "-P", "-true", "-false", "-samefile", "-inum", "-quit", "-mount", "-xdev",
+]);
+
+// find reads when every word that looks like a flag is one of findTests,
+// or a number a test takes ("-mtime -1", "-size -10k").
+const find = (args) => args.every((a) => !a.startsWith("-") || findTests.has(a) || /^-\d+[a-zA-Z]?$/.test(a));
 
 const versionOnly = (args) => args.length === 1 && ["--version", "-v", "-V", "version"].includes(args[0]);
 
@@ -177,16 +262,15 @@ const versionOnly = (args) => args.length === 1 && ["--version", "-v", "-V", "ve
 const rules = {
   git,
   sed,
-  sort: (args) => !short(args, "o") && !anyStarts(args, "--output"),
-  tree: (args) => !short(args, "o") && !anyStarts(args, "--output"),
-  file: (args) => !short(args, "C") && !anyStarts(args, "--compile"),
+  sort: (args) => onlyFlags(args, sortFlags),
+  tree: (args) => onlyFlags(args, treeFlags),
+  file: (args) => !short(args, "C") && !anyStarts(args, "--c"), // --compile, cut short or not
   uniq: (args) => positional(args).length <= 1,
-  find: (args) => !anyStarts(args, "-delete", "-exec", "-ok", "-fprint", "-fls"),
+  find,
   fd: (args) => !short(args, "xX") && !anyStarts(args, "--exec"),
   rg: (args) => !anyStarts(args, "--pre", "--hostname-bin"),
   ag: (args) => !anyStarts(args, "--pager"),
-  awk: (args) => !args.some((a) => /[>|]|system|getline/.test(a)) && !anyStarts(args, "-f", "--file", "-i", "--include"),
-  yq: (args) => !anyStarts(args, "-i", "--inplace"),
+  yq: (args) => !short(args, "i") && !anyStarts(args, "--inplace"),
   env: (args) => args.length === 0,
   go: (args) => ["version", "list", "doc"].includes(args[0]) || (args[0] === "env" && !has(args, "-w", "-u")),
   npm: (args) => ["ls", "list", "view", "root", "prefix", "outdated"].includes(args[0]),
@@ -206,7 +290,7 @@ function reads(words) {
     if (!harmlessVar.test(words[i])) return false;
     i++;
   }
-  if (i === words.length) return true; // only assignments
+  if (i === words.length) return false; // only assignments: nothing to read, and the shell may use them later
   const name = words[i];
   const args = words.slice(i + 1);
   if (always.has(name)) return true;
