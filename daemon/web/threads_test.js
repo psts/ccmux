@@ -378,6 +378,19 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
   assert.equal(p.$("restarted-bar").textContent, "Restarted on Haiku. The session picked up where it was.");
 });
 
+test("the repo the page is in shows its git state inside its own card, and the other repos do not", async () => {
+  const other = { id: "ws2", name: "api", repoPath: "/p/api", git: { isGitRepo: true, branch: "main" } };
+  const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, modifiedFiles: ["a.ts"] } };
+  const p = await boot({ workspaces: [app, other], sessions: [lead], search: "?s=lead1" });
+  const rows = p.$("tree").querySelectorAll(".row");
+  assert.equal(rows[0].className, "row on open");
+  const detail = rows[0].querySelector(".git-detail");
+  assert.deepEqual(detail.children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
+  assert.deepEqual(rows[0].querySelector(".row-git").children.map((c) => c.textContent), ["dev", "●1", "↑2"], "branch, changes and ahead sit by the name");
+  assert.equal(rows[1].querySelector(".git-detail"), null, "a repo the page is not in keeps to one line");
+  assert.equal(p.$("tree").querySelectorAll(".repo")[0].children.length, 1, "nothing hangs below the card");
+});
+
 test("the firehose moves a session's dot and has the lists read again", async () => {
   const p = await boot({ sessions: [lead] });
   const feed = p.book.sockets[0];

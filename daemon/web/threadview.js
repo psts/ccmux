@@ -217,21 +217,31 @@
 
   // --- the sidebar ---
 
+  // gitBadges sit at the right of a repo's name: its branch, its changed
+  // files, and how far it is from its upstream.
   function gitBadges(git) {
-    if (!git) return [];
-    return [el("span", "branch", git.branch), git.dirty ? el("span", "dirty", "●" + git.dirty) : null, git.origin ? el("span", "ab", git.origin) : null];
+    if (!git) return null;
+    return add(el("span", "row-git"), el("span", "branch", git.branch), git.dirty ? el("span", "dirty", "●" + git.dirty) : null, git.origin ? el("span", "ab", git.origin) : null);
+  }
+
+  // gitDetail is the repo's git state written out, inside its row's card,
+  // for the repo the page is in: where it is, how its branch stands, and
+  // whether anything is changed.
+  function gitDetail(r) {
+    const g = r.git;
+    const state = g.dirty ? el("span", "git-dirty", "● " + g.clean) : el("span", "git-clean", "✓ Clean, no changes");
+    return add(el("span", "git-detail"), r.path ? el("span", "git-path", r.path) : null, el("span", "", g.track), g.vs ? el("span", "", g.vs) : null, state);
   }
 
   function repoEl(r, ctx) {
     const box = el("div", "repo");
-    const on = ctx.isLead(r);
-    const row = el("button", "row" + (on ? " on" : ""));
+    const open = !!r.git && ctx.inRepo(r);
+    const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + (open ? " open" : ""));
     row.type = "button";
     row.onclick = () => ctx.pickRepo(r);
-    const top = add(el("span", "row-top"), el("span", "row-name", r.name), ...gitBadges(r.git));
-    const sub = (r.git && r.git.vs) || (r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet");
-    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, el("span", "row-sub", sub))));
-    if (r.git && ctx.inRepo(r)) add(box, add(el("div", "git-detail"), el("span", "", r.git.track), r.git.vs ? el("span", "", r.git.vs) : null, el("span", "quiet", r.git.clean)));
+    const top = add(el("span", "row-top"), el("span", "row-name", r.name), gitBadges(r.git));
+    const sub = r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet";
+    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, el("span", "row-sub", sub), open ? gitDetail(r) : null)));
     for (const t of r.threads) {
       const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : ""));
       tr.type = "button";
