@@ -75,3 +75,14 @@ test("a session runner's line, as internal/runner's BuildSpec writes it", () => 
   assert.equal(o.session, undefined, "--session-auto is not --session: it opens fresh when nothing is on disk");
   assert.equal(parseArgs(["--detached", "0"]).detached, false, "only 1 detaches");
 });
+
+test("a thread member's line: read only in its repo's folder, or kept out of it in its worktree", () => {
+  const reading = parseArgs(["--socket", "/s.sock", "--read-only", "1", "--system-prompt-file", "/st/abc.brief.md"]);
+  assert.equal(reading.readOnly, true);
+  assert.equal(reading.keepOut, undefined);
+  assert.equal(reading.systemPromptFile, "/st/abc.brief.md");
+  const working = parseArgs(["--socket", "/s.sock", "--keep-out", "/r/api"]);
+  assert.equal(working.keepOut, "/r/api");
+  assert.equal(working.readOnly, undefined);
+  assert.equal(parseArgs(["--read-only", "0"]).readOnly, false, "only 1 is read only");
+});

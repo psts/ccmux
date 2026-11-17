@@ -15,10 +15,13 @@ export const RUNNER_PROTOCOL = 2;
 const deliveredCap = 500;
 
 // RunnerState is the state file's content: the prompts sent and not yet
-// answered (open, oldest first, each with its text for the notice), and
-// the ids Claude has in its transcript (delivered).
+// answered (open, oldest first, each with its text for the notice), the
+// ids Claude has in its transcript (delivered), and what to tell Claude at
+// the next start when this process is being restarted on purpose (note: a
+// thread member moved into its worktree, readonly.mjs).
 export class RunnerState {
   constructor(data = {}) {
+    this.note = typeof data.note === "string" ? data.note : "";
     this.open = Array.isArray(data.open) ? data.open.filter((p) => p && p.id).map((p) => ({ id: String(p.id), text: String(p.text || "") })) : [];
     this.delivered = Array.isArray(data.delivered) ? data.delivered.slice(-deliveredCap) : [];
   }
@@ -41,7 +44,7 @@ export class RunnerState {
   }
 
   toJSON() {
-    return { open: this.open, delivered: this.delivered };
+    return { open: this.open, delivered: this.delivered, note: this.note };
   }
 }
 

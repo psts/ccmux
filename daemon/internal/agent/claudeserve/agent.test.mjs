@@ -39,6 +39,7 @@ function makeAgent(opts = {}, script = []) {
   const signals = [];
   const asks = []; // what reached POST .../agent-ask
   const headers = []; // the headers of every daemon call
+  const firstEdits = []; // what reached POST .../first-edit
   const deps = {
     ...sdk, cwd: "/inst", env: { CCMUX_DAEMON_URL: "http://d", CCMUX_PANE_ID: "p1", CCMUX_PANE_TOKEN: "tok-p1", ...(opts.env || {}) },
     readFile: opts.readFile || (() => "# base\n"), out: (s) => out.push(s), err: (s) => sdk.err.push(s),
@@ -48,6 +49,10 @@ function makeAgent(opts = {}, script = []) {
         asks.push(JSON.parse(init.body));
         if (opts.askStatus) return { ok: false, status: opts.askStatus, json: async () => ({ error: opts.askStatus === 401 ? "invalid pane token" : "no peer is registered on this pane" }) };
         return { ok: true, json: async () => ({ ok: true, relayed_to: opts.relayedTo ?? 1 }) };
+      }
+      if (url.endsWith("/first-edit")) {
+        firstEdits.push(JSON.parse(init.body));
+        return opts.firstEdit();
       }
       assert.equal(url, "http://d/v1/panes/p1/agent-signal");
       signals.push(JSON.parse(init.body).state);
@@ -59,7 +64,7 @@ function makeAgent(opts = {}, script = []) {
   const agent = new Agent({ agent: "probe", addDirs: [], allowed: [], disallowed: [], pluginDirs: [], mcpFiles: [], ...opts }, deps);
   const events = [];
   agent.clients.add({ write: (line) => events.push(JSON.parse(line.slice(6))), end() {} });
-  return { agent, sdk, out, signals, asks, headers, events };
+  return { agent, sdk, out, signals, asks, headers, events, firstEdits };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -860,4 +865,58 @@ test("an agent pane takes no notice of a prompt's lifecycle", async () => {
   await tick();
   assert.equal(events.length, before);
   assert.deepEqual(signals, ["busy"]);
+});
+
+// --- a thread member's fences (--read-only, --keep-out) ---
+
+const denied = (out) => out.hookSpecificOutput && out.hookSpecificOutput.permissionDecision === "deny" ? out.hookSpecificOutput.permissionDecisionReason : "";
+
+test("a read-only member reads on, and its first change asks the daemon for its worktree", async () => {
+  const moved = { ok: true, json: async () => ({ message: "moving to /wt/api/thread-3", notice: "[ccmux] You now work in /wt/api/thread-3." }) };
+  const { agent, firstEdits, files } = runnerAgent({ readOnly: true, firstEdit: () => moved });
+  const [m] = agent.options().hooks.PreToolUse;
+  assert.equal(m.matcher, undefined, "every tool is checked: a shell command writes too");
+  const hook = m.hooks[0];
+  assert.deepEqual(await hook({ tool_name: "Read", tool_input: { file_path: "/inst/a.go" } }), {});
+  assert.deepEqual(await hook({ tool_name: "Bash", tool_input: { command: "git status" } }), {});
+  assert.deepEqual(firstEdits, [], "reading asks for nothing");
+  assert.equal(denied(await hook({ tool_name: "Edit", tool_input: { file_path: "/inst/a.go" } })), "moving to /wt/api/thread-3");
+  assert.deepEqual(firstEdits, [{ tool: "Edit" }]);
+  assert.equal(JSON.parse(files["/st/s.json"]).note, "[ccmux] You now work in /wt/api/thread-3.", "kept for the start in the worktree");
+  assert.equal(denied(await hook({ tool_name: "Bash", tool_input: { command: "npm test" } })), "moving to /wt/api/thread-3", "a command that does not plainly read moves it too");
+});
+
+test("a read-only member is refused whatever the daemon says, or fails to say", async () => {
+  const refused = { ok: false, status: 500, json: async () => ({ error: "git worktree add: disk full" }) };
+  const { agent } = runnerAgent({ readOnly: true, firstEdit: () => refused });
+  const hook = agent.options().hooks.PreToolUse[0].hooks[0];
+  const why = denied(await hook({ tool_name: "Write", tool_input: { file_path: "/inst/a.go" } }));
+  assert.match(why, /only reads in \/inst/);
+  assert.match(why, /disk full/);
+  const { agent: down } = runnerAgent({ readOnly: true, firstEdit: () => { throw new Error("connect ECONNREFUSED"); } });
+  assert.match(denied(await down.options().hooks.PreToolUse[0].hooks[0]({ tool_name: "Write", tool_input: { file_path: "/inst/a.go" } })), /ECONNREFUSED/);
+  // A check that throws must refuse: Claude Code runs the tool when a hook throws.
+  assert.match(denied(await agent.readOnlyHook({ tool_name: "Write", get tool_input() { throw new Error("odd input"); } })), /could not be checked.*odd input/);
+});
+
+test("a member in its worktree is kept out of the repo's own folder, with no word to the daemon", async () => {
+  const { agent, firstEdits } = runnerAgent({ keepOut: "/r/api" });
+  const hook = agent.options().hooks.PreToolUse[0].hooks[0];
+  assert.deepEqual(await hook({ tool_name: "Write", tool_input: { file_path: "/inst/a.go" } }), {});
+  assert.match(denied(await hook({ tool_name: "Write", tool_input: { file_path: "/r/api/a.go" } })), /the repo's own folder/);
+  assert.deepEqual(firstEdits, []);
+  const { agent: walled } = makeAgent({ writeRoots: ["/inst"], readOnly: true });
+  assert.deepEqual(walled.options().hooks.PreToolUse.map((h) => h.matcher), ["Edit|Write|MultiEdit|NotebookEdit", undefined], "the walls keep their own hook");
+});
+
+test("a runner restarted on purpose says what the restart was for, once, and not that a turn was cut off", async () => {
+  const state = JSON.stringify({ open: [{ id: "p0", text: "add the endpoint" }], delivered: [], note: "[ccmux] You now work in /wt/api/thread-3." });
+  const { agent, sdk, files } = runnerAgent({ keepOut: "/r/api", readFile: (p) => (p === "/st/s.json" ? state : "# base\n") });
+  sdk.stored["sess-1"] = [{ type: "user", uuid: "p0", message: { role: "user", content: "add the endpoint" } }];
+  await agent.preload();
+  agent.recover();
+  await new Promise((r) => setImmediate(r));
+  const sent = sdk.queries[0].sent.map((m) => m.message.content);
+  assert.deepEqual(sent, ["[ccmux] You now work in /wt/api/thread-3."]);
+  assert.equal(JSON.parse(files["/st/s.json"]).note, "", "said once");
 });

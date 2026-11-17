@@ -352,3 +352,114 @@ func TestThreadColumnsAreAddedToAnOlderRegistry(t *testing.T) {
 		t.Fatalf("the one-lead rule holds there too: %v", err)
 	}
 }
+
+func TestAThreadKeepsItsRowAndItsMembers(t *testing.T) {
+	st := openSessions(t)
+	th, err := st.AddThread(Thread{Group: "w1", Title: "CSV export", State: ThreadOpen, Model: "haiku", CreatedAt: 1, UpdatedAt: 1})
+	if err != nil || th.ID == 0 {
+		t.Fatalf("a new thread gets an id: %+v %v", th, err)
+	}
+	lead := RunnerSession{ID: "s1", Cwd: "/r/app", Wanted: SessionRunning, CreatedAt: 2, ThreadID: th.ID, Role: RoleLead, Repo: "/r/app", ReadOnly: true}
+	helper := RunnerSession{ID: "s2", Cwd: "/r/api", Wanted: SessionRunning, CreatedAt: 1, ThreadID: th.ID, Role: RoleHelper, Repo: "/r/api", ReadOnly: true}
+	for _, r := range []RunnerSession{helper, lead} {
+		if err := st.AddRunnerSession(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	th.LeadSession, th.State, th.Note, th.UpdatedAt = "s1", ThreadMerged, "merged app", 5
+	if err := st.SaveThread(th); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Thread(th.ID)
+	if err != nil || got == nil || *got != th {
+		t.Fatalf("the thread reads back as saved: %+v %v", got, err)
+	}
+	members, err := st.ThreadMembers(th.ID)
+	if err != nil || len(members) != 2 || members[0].ID != "s1" || members[1].ID != "s2" || !members[1].ReadOnly {
+		t.Fatalf("the lead comes first, then the helpers: %+v %v", members, err)
+	}
+	if err := st.SaveThread(Thread{ID: 999, State: ThreadOpen}); !errors.Is(err, ErrNoThread) {
+		t.Fatalf("a thread with no row is an error, got %v", err)
+	}
+	th.State = ThreadEnded
+	if err := st.SaveThread(th); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := st.Threads(); err != nil || len(list) != 0 {
+		t.Fatalf("an ended thread drops out of the list: %+v %v", list, err)
+	}
+}
+
+func TestAThreadHasOneMemberPerRepoThatHasNotEnded(t *testing.T) {
+	st := openSessions(t)
+	add := func(id string, thread int64, repo string) error {
+		return st.AddRunnerSession(RunnerSession{ID: id, Cwd: repo, Wanted: SessionRunning, ThreadID: thread, Role: RoleHelper, Repo: repo})
+	}
+	if err := add("h1", 7, "/r/api"); err != nil {
+		t.Fatal(err)
+	}
+	if err := add("h2", 7, "/r/api"); !errors.Is(err, ErrMemberExists) {
+		t.Fatalf("a second helper for the same repo is refused, got %v", err)
+	}
+	if err := add("h3", 8, "/r/api"); err != nil {
+		t.Fatalf("another thread has its own helper there: %v", err)
+	}
+	if err := st.SetRunnerSessionWanted("h1", SessionDone, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := add("h4", 7, "/r/api"); err != nil {
+		t.Fatalf("a helper that was stood down makes room for a new one: %v", err)
+	}
+	for _, id := range []string{"p1", "p2"} {
+		if err := st.AddRunnerSession(RunnerSession{ID: id, Cwd: "/r/api", Wanted: SessionRunning}); err != nil {
+			t.Fatalf("sessions in no thread are not counted: %v", err)
+		}
+	}
+}
+
+func TestAMemberMovesIntoItsWorktreeAndBack(t *testing.T) {
+	st := openSessions(t)
+	if err := st.AddRunnerSession(RunnerSession{ID: "s1", Cwd: "/r/api", Wanted: SessionRunning, ThreadID: 3, Role: RoleHelper, Repo: "/r/api", ReadOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetRunnerSessionPlace("s1", SessionPlace{Cwd: "/wt/api/thread-3", Worktree: "/wt/api/thread-3", Branch: "thread/3-x"}, 4); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.RunnerSession("s1")
+	if got.Cwd != "/wt/api/thread-3" || got.Worktree != "/wt/api/thread-3" || got.Branch != "thread/3-x" || got.ReadOnly || got.Repo != "/r/api" {
+		t.Fatalf("it works in its worktree, and its repo is still its repo: %+v", got)
+	}
+	if err := st.SetRunnerSessionPlace("nope", SessionPlace{Cwd: "/x"}, 4); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("an unknown session is an error, got %v", err)
+	}
+}
+
+func TestMemberColumnsAreAddedToAnOlderRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reg.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A registry from before threads had helpers: the six columns and the
+	// index are gone, the rows stay.
+	for _, q := range []string{
+		`DROP INDEX sessions_one_member`,
+		`ALTER TABLE sessions DROP COLUMN thread_id`, `ALTER TABLE sessions DROP COLUMN role`, `ALTER TABLE sessions DROP COLUMN repo`,
+		`ALTER TABLE sessions DROP COLUMN worktree`, `ALTER TABLE sessions DROP COLUMN branch`, `ALTER TABLE sessions DROP COLUMN read_only`,
+		`INSERT INTO sessions (id,cwd,wanted,created_at,updated_at) VALUES ('old','/r/app','running',1,1)`,
+	} {
+		if _, err := st.db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	st.Close()
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("an older registry opens: %v", err)
+	}
+	defer st.Close()
+	got, err := st.RunnerSession("old")
+	if err != nil || got == nil || got.ThreadID != 0 || got.Role != "" || got.ReadOnly {
+		t.Fatalf("an older row is in no thread: %+v %v", got, err)
+	}
+}

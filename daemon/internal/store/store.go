@@ -278,7 +278,7 @@ func Open(path string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema + sessionsSchema); err != nil {
+	if _, err := db.Exec(schema + sessionsSchema + threadsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
@@ -365,7 +365,7 @@ func erroringMigrations(db *sql.DB) error {
 		migrateAgentColumns, migrateAttentionClaim, migratePaneActivity, migrateTaskSignal,
 		migrateTaskWindow, migrateTaskAutoFixes, migrateTaskFixPart, migrateTaskAfterIDs,
 		migrateTaskLook, migratePartRun, migrateWindowOpenDevices, migrateSessionPanes,
-		migrateInboxAttachments, migrateSessionThreads,
+		migrateInboxAttachments, migrateSessionThreads, migrateSessionMembers,
 	} {
 		if err := migrate(db); err != nil {
 			return err

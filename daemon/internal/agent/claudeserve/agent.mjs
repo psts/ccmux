@@ -7,6 +7,7 @@ import { randomUUID, randomInt } from "node:crypto";
 import { Transcript, sessionInfo, permissionPattern, questionRequest, questionAnswers, questionCardText } from "./translate.mjs";
 import { mcpFromFiles } from "./mcp.mjs";
 import { WRITE_TOOLS, wallSafe, wallVerdict } from "./walls.mjs";
+import { readOnlyVerdict } from "./readonly.mjs";
 import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.mjs";
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
@@ -238,8 +239,55 @@ export class Agent {
     // the base chose those servers, so a card for their tools asks nothing.
     opts.allowedTools = o.allowed.concat(this.mcp.allow);
     if (o.disallowed.length) opts.disallowedTools = o.disallowed;
-    if (o.writeRoots && o.writeRoots.length) opts.hooks = { PreToolUse: [{ matcher: WRITE_MATCHER, hooks: [(input) => this.wallHook(input)] }] };
+    const before = this.preToolHooks();
+    if (before.length) opts.hooks = { PreToolUse: before };
     return opts;
+  }
+
+  // preToolHooks are the hard stops that run before any tool: the walls of
+  // a walled agent (its write tools), and the fences of a thread member
+  // (every tool, since a shell command writes too).
+  preToolHooks() {
+    const o = this.o;
+    const hooks = [];
+    if (o.writeRoots && o.writeRoots.length) hooks.push({ matcher: WRITE_MATCHER, hooks: [(input) => this.wallHook(input)] });
+    if (o.readOnly || o.keepOut) hooks.push({ hooks: [(input) => this.readOnlyHook(input)] });
+    return hooks;
+  }
+
+  // readOnlyHook is a thread member's fence (readonly.mjs). It never lets a
+  // call through by accident: Claude Code runs the tool when a hook throws
+  // (seen on Claude Code 2.1.326), so anything that goes wrong here, the
+  // check itself included, is a refusal.
+  async readOnlyHook(input) {
+    let reason;
+    try {
+      const verdict = readOnlyVerdict(input.tool_name, input.tool_input, this.o, this.cwd);
+      if (!verdict) return {};
+      reason = verdict.move ? await this.askForWorktree(input.tool_name) : verdict.deny;
+    } catch (err) {
+      reason = `ccmux: this call could not be checked against the session's read-only rule (${err && err.message ? err.message : String(err)}), so it is refused.`;
+    }
+    this.log(`read only: ${input.tool_name} refused: ${reason}`);
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
+  }
+
+  // askForWorktree asks the daemon to move this read-only member into its
+  // own worktree, and returns what the refused call is answered with. The
+  // daemon restarts this runner in the worktree a moment after it answers;
+  // what it wants said there is kept for that start (RunnerState.note).
+  // Without a daemon, or when it could not make the worktree, the call is
+  // refused all the same and the answer says why.
+  async askForWorktree(tool) {
+    const { failure, data } = await this.post("first-edit", { tool });
+    if (failure) {
+      return `ccmux: this session only reads in ${this.cwd} until it has its own worktree, and the worktree could not be made (${failure}). Nothing was changed. Tell your lead, or the person, what you need.`;
+    }
+    if (data.notice) {
+      this.state.note = String(data.notice);
+      this.persist();
+    }
+    return String(data.message || "ccmux: this session is being moved into its own worktree and restarts there in a moment. Make this change again after the restart.");
   }
 
   // wallHook is the walls' hard stop. A PreToolUse hook runs before every

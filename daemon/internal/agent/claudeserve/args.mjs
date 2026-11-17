@@ -12,6 +12,7 @@
 //           [--session ID]
 //   serve   (as a session runner, under systemd) --socket PATH --state FILE
 //           --session-auto ID [--claude PATH] [--detached 1] [--media DIR]
+//           [--read-only 1 | --keep-out DIR] (a thread member, readonly.mjs)
 //           and the flags above
 //   sessions --dir DIR
 //   export   --dir DIR --session ID [--media DIR]   (with --media: the fuller
@@ -43,6 +44,8 @@ const flags = {
   "--claude": (o, v) => { o.claude = v; },
   "--detached": (o, v) => { o.detached = v === "1"; },
   "--media": (o, v) => { o.media = v; },
+  "--read-only": (o, v) => { o.readOnly = v === "1"; },
+  "--keep-out": (o, v) => { o.keepOut = v; },
 };
 
 // parseArgs reads the flags after the verb. An unknown flag, or a flag with

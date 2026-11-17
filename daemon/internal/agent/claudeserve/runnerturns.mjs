@@ -62,10 +62,17 @@ export class RunnerTurns {
   // an open prompt Claude has in its transcript was being worked on. Open
   // prompts Claude never got are left alone; the daemon sends them again.
   // The cut-off prompts close, since the notice takes over from them.
+  //
+  // A restart made on purpose left its own words for this moment
+  // (state.note): they are the whole notice, said once, in place of "cut
+  // off", which would send Claude checking for damage nothing did.
   notice() {
     const cut = this.state.open.filter((p) => this.state.isDelivered(p.id));
-    if (!cut.length) return "";
+    const planned = this.state.note;
+    this.state.note = "";
+    if (!cut.length && !planned) return "";
     this.state.open = this.state.open.filter((p) => !this.state.isDelivered(p.id));
+    if (planned) return planned;
     const last = cut[cut.length - 1].text;
     const what = last ? ` The turn was answering: "${last}".` : "";
     return noticeHead + what + " Check what state your last steps left (files, git, running commands, messages sent) before redoing any of them, then carry on.";
