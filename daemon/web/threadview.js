@@ -17,7 +17,6 @@
 
   const mediaURL = (sessionId, name) => `/v1/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(name)}`;
 
-  // thumb is one stored image, opened full size by a click.
   // localThumb is a picture the browser still holds (a message on its way).
   function localThumb(url, caption) {
     const img = el("img");
@@ -26,6 +25,7 @@
     return add(el("figure", "thumb"), img, el("figcaption", "", caption));
   }
 
+  // thumb is one stored image, opened full size by a click.
   function thumb(sessionId, file, caption) {
     const fig = el("figure", "thumb");
     const link = el("a");

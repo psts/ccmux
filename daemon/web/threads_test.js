@@ -148,7 +148,7 @@ async function boot(opts = {}) {
     localStorage: { getItem: () => "stored-name" }, navigator: {},
     WebSocket: function (url) { const s = { url: String(url), readyState: 1, sent: [], send: (x) => s.sent.push(JSON.parse(x)), close() { s.closed = true; } }; book.sockets.push(s); return s; },
     requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval() {},
-    addEventListener() {}, confirm: () => true, prompt: () => "Renamed",
+    addEventListener() {}, confirm: () => true, prompt: () => "Renamed", createImageBitmap: async () => ({ width: 10, height: 10 }),
   };
   ctx.window = ctx;
   vm.createContext(ctx);
@@ -205,7 +205,7 @@ test("a message that cannot be sent stays where it was sent, says why, and is se
   assert.equal(line.className, "sending failed");
   assert.match(line.textContent, /^Not sent: this session has ended; start a new one/);
   fail = false;
-  line.querySelectorAll("button")[0].click();
+  line.querySelectorAll("button").find((b) => b.textContent === "Retry").click();
   await p.settle();
   assert.deepEqual(p.posts().map((c) => c.body.text), ["still there?", "still there?"]);
   assert.equal(p.$("blocks").querySelector(".sending").textContent, "Sent, waiting for Claude");
@@ -228,7 +228,7 @@ test("a failed message holds the ones after it until it is removed, and stays in
   assert.equal(p.$("blocks").querySelectorAll(".b-user").length, 0);
   p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes("app")).click();
   await p.settle();
-  p.$("blocks").querySelector(".sending").querySelectorAll("button")[1].click();
+  p.$("blocks").querySelector(".sending").querySelectorAll("button").find((b) => b.textContent === "Remove").click();
   await p.settle();
   assert.deepEqual(p.posts().map((c) => c.body.text), ["first", "second"], "removing first lets second go");
   assert.deepEqual(p.$("blocks").querySelectorAll(".bubble").map((x) => x.textContent), ["second"]);
@@ -461,6 +461,46 @@ const detail = { thread: { id: 3, state: "open", title: "Trade CSV export" }, me
 const teamRoutes = [[/^GET \/v1\/threads$/, () => ({ threads: [detail.thread] })], [/^GET \/v1\/threads\/3$/, () => detail]];
 // Fresh copies: the page notes attention on the session objects it was given.
 const team = (over = {}) => boot({ workspaces: [repo, backendRepo], sessions: [{ ...lead, attention: "idle" }, { ...threadLead }, { ...helper }], search: "?s=t1", ...over, routes: [...(over.routes || []), ...teamRoutes] });
+
+test("a new thread whose first message fails is not made twice by Retry, and a page that moved on stays where it is", async () => {
+  let fail = true, release;
+  const made = new Promise((r) => { release = r; });
+  const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread", routes: [
+    [/^POST \/v1\/threads$/, async () => { await made; return { thread: { id: 3 }, session: { ...threadLead } }; }],
+    [/^POST \/v1\/sessions\/t1\/prompt/, () => (fail ? { fail: 500, error: "boom" } : { id: "p2" })],
+  ] });
+  p.$("input").value = "Add CSV export";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  p.$("tree").querySelectorAll(".row")[0].click(); // away to the lead before the thread exists
+  await p.settle();
+  const away = p.book.pushed[p.book.pushed.length - 1];
+  release();
+  await p.settle();
+  assert.equal(p.book.pushed[p.book.pushed.length - 1], away, "the new thread does not pull the page back");
+  p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes("Trade CSV export")).click();
+  await p.settle();
+  const retry = p.$("blocks").querySelector(".sending").querySelectorAll("button").find((b) => b.textContent === "Retry");
+  fail = false;
+  retry.click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.url), ["/v1/threads", "/v1/sessions/t1/prompt", "/v1/sessions/t1/prompt"], "one thread, the prompt sent to it twice");
+  assert.equal(p.$("blocks").querySelector(".sending").textContent, "Sent, waiting for Claude");
+});
+
+test("a message with a picture uploads it, sends its name with the words, and shows the picture until its turn lands", async () => {
+  const p = await boot({ sessions: [lead], search: "?s=lead1" });
+  await p.frame(snapshot());
+  p.$("file").onchange({ target: { files: [{ type: "image/png", size: 100, name: "shot.png" }], value: "x" } });
+  p.$("input").value = "look at this";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  assert.equal(p.$("attached").children.length, 0, "the composer lets go of the picture at once");
+  assert.equal(p.$("blocks").querySelectorAll(".b-user")[1].querySelector("img").src, "blob:x", "drawn from the browser while on its way");
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body && c.body.images]), [
+    ["/v1/sessions/lead1/images", undefined], ["/v1/sessions/lead1/prompt", ["0123456789abcdef0123456789abcdef.png"]],
+  ]);
+});
 
 test("a new thread is made as a thread, with its lead, by its first message", async () => {
   const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread", routes: [[/^POST \/v1\/threads$/, (body) => ({ thread: { id: 3 }, session: { ...threadLead, model: body.model } })]] });
