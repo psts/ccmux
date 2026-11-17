@@ -40,6 +40,9 @@ func ResolveCapabilities(ids []string, catalog []Capability, installed map[strin
 			out.MCP[c.ID] = *c.Server
 			continue
 		}
+		if c.Kind != CapPlugin {
+			return out, fmt.Errorf("capability %q is a %s; an isolated agent loads plugins and MCP servers only", id, c.Kind)
+		}
 		dir, err := pluginDir(c, installed)
 		if err != nil {
 			return out, err

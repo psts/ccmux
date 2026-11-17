@@ -51,13 +51,15 @@ type home struct {
 }
 
 // ImportCapabilities runs the import against the plugins installed under
-// claudeDir and every instance home under the windows folder.
-func (s *Store) ImportCapabilities(claudeDir string) (ImportResult, error) {
-	installed, err := ReadInstalledPlugins(InstalledPluginsPath(claudeDir))
+// claudeDir, its loose skills, every instance home under the windows
+// folder and, when one ran, a probe session (capprobe.go), which adds
+// claude.ai's synced plugins and connectors.
+func (s *Store) ImportCapabilities(claudeDir string, probe *ProbeResult) (ImportResult, error) {
+	homes, err := s.readHomes()
 	if err != nil {
 		return ImportResult{}, err
 	}
-	homes, err := s.readHomes()
+	cands, skipped, err := gatherCandidates(claudeDir, homes, probe)
 	if err != nil {
 		return ImportResult{}, err
 	}
@@ -67,9 +69,14 @@ func (s *Store) ImportCapabilities(claudeDir string) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, err
 	}
-	res := ImportResult{Added: []string{}, Skipped: []string{}, Proposals: map[string]Proposal{}}
-	for _, c := range importCandidates(installed, homes) {
-		catalog = addCandidate(catalog, c, &res)
+	sources, err := s.Sources()
+	if err != nil {
+		return ImportResult{}, err
+	}
+	same := sameSourcePlugin(sources)
+	res := ImportResult{Added: []string{}, Skipped: orEmpty(skipped), Proposals: map[string]Proposal{}}
+	for _, c := range cands {
+		catalog = addCandidate(catalog, c, &res, same)
 	}
 	if err := s.writeCapabilities(catalog); err != nil {
 		return ImportResult{}, err
@@ -78,6 +85,29 @@ func (s *Store) ImportCapabilities(claudeDir string) (ImportResult, error) {
 		res.Proposals[name] = propose(hs, catalog)
 	}
 	return res, nil
+}
+
+// gatherCandidates is every entry the import would add, sorted by id, and
+// what a probe could not import.
+func gatherCandidates(claudeDir string, homes map[string][]home, probe *ProbeResult) ([]Capability, []string, error) {
+	installed, err := ReadInstalledPlugins(InstalledPluginsPath(claudeDir))
+	if err != nil {
+		return nil, nil, err
+	}
+	loose, err := LooseSkills(claudeDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	var tools toolCounts
+	var probed []Capability
+	var skipped []string
+	if probe != nil {
+		tools = toolCounts(orEmpty(probe.Tools))
+		probed, skipped = probeCandidates(*probe)
+	}
+	out := slices.Concat(importCandidates(installed, homes, tools), probed, loose)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, skipped, nil
 }
 
 // readHomes reads every instance home, by base name, under every window.
@@ -133,16 +163,16 @@ func readJSONIfPresent(path string, v any) error {
 // importCandidates are the entries the import would add: one per installed
 // plugin (id = the plugin's name) and one per home MCP server (id = its
 // name), sorted by id.
-func importCandidates(installed map[string]string, homes map[string][]home) []Capability {
+func importCandidates(installed map[string]string, homes map[string][]home, tools toolCounts) []Capability {
 	var out []Capability
-	for id := range installed {
-		name, _, _ := strings.Cut(id, "@")
-		out = append(out, Capability{ID: name, Kind: CapPlugin, Plugin: id})
+	for id, dir := range installed {
+		name, market, _ := strings.Cut(id, "@")
+		out = append(out, Capability{ID: name, Kind: CapPlugin, Plugin: id, Source: market, Version: manifestVersion(dir), Cost: pluginCost(dir, tools.plugin(name))})
 	}
 	for _, hs := range homes {
 		for _, h := range hs {
 			for name, e := range h.servers {
-				out = append(out, Capability{ID: name, Kind: CapMCP, Server: &e})
+				out = append(out, Capability{ID: name, Kind: CapMCP, Server: &e, Cost: serverCost(-1)})
 			}
 		}
 	}
@@ -150,11 +180,26 @@ func importCandidates(installed map[string]string, homes map[string][]home) []Ca
 	return out
 }
 
+// sameSourcePlugin says whether candidate c, an installed plugin, is the
+// plugin that source entry e holds: e's id at the marketplace e's source
+// says it is (qa@personal is the qa of a source whose marketplace.json
+// calls itself "personal", whatever the source's own id).
+func sameSourcePlugin(sources []CapSource) func(e, c Capability) bool {
+	market := map[string]string{}
+	for _, src := range sources {
+		market[src.ID] = src.Marketplace
+	}
+	return func(e, c Capability) bool {
+		m := market[e.Source]
+		return fromCheckout(e) && m != "" && c.Plugin == e.ID+"@"+m
+	}
+}
+
 // addCandidate adds c unless the catalog has it: the same plugin or an
 // identical server is already there (nothing to say), or its id is taken
 // by something else (Skipped). A candidate that does not validate is
 // skipped too.
-func addCandidate(catalog []Capability, c Capability, res *ImportResult) []Capability {
+func addCandidate(catalog []Capability, c Capability, res *ImportResult, same func(e, c Capability) bool) []Capability {
 	c, err := checkCapability(c)
 	if err != nil {
 		res.Skipped = append(res.Skipped, c.ID+": "+err.Error())
@@ -162,7 +207,9 @@ func addCandidate(catalog []Capability, c Capability, res *ImportResult) []Capab
 	}
 	for _, e := range catalog {
 		if e.ID == c.ID {
-			if !sameCapability(e, c) && !slices.Contains(res.Skipped, c.ID) {
+			// The same plugin, kept by ccmux's own checkout of its
+			// source, is there already.
+			if !same(e, c) && !sameCapability(e, c) && !slices.Contains(res.Skipped, c.ID) {
 				res.Skipped = append(res.Skipped, c.ID)
 			}
 			return catalog
@@ -172,10 +219,16 @@ func addCandidate(catalog []Capability, c Capability, res *ImportResult) []Capab
 	return append(catalog, c)
 }
 
+// sameCapability says whether a and b are the same thing to load: the
+// same kind and target. Description, source, version, cost and pin are
+// what the daemon learns about it, not what it is.
 func sameCapability(a, b Capability) bool {
-	ja, _ := json.Marshal(a)
-	jb, _ := json.Marshal(b)
-	return string(ja) == string(jb)
+	return capIdentity(a) == capIdentity(b)
+}
+
+func capIdentity(c Capability) string {
+	j, _ := json.Marshal(Capability{Kind: c.Kind, Plugin: c.Plugin, Path: c.Path, Server: c.Server, Connector: c.Connector})
+	return string(j)
 }
 
 // propose reads one base's homes: every plugin capability whose tools a
@@ -209,13 +262,25 @@ func propose(hs []home, catalog []Capability) Proposal {
 // wanted says whether a home uses capability c: enabled outright, or (a
 // plugin) named by a rule on its tools, mcp__plugin_<name>_<server>.
 func wanted(c Capability, enabled map[string]bool, rules []string) bool {
-	if c.Kind == CapMCP {
+	switch {
+	case c.Kind == CapMCP:
 		return enabled["mcp:"+c.ID]
-	}
-	if enabled[c.Plugin] {
+	case c.Kind != CapPlugin:
+		return false
+	case enabled[c.Plugin] && c.Plugin != "":
 		return true
 	}
 	name, _, _ := strings.Cut(c.Plugin, "@")
+	if c.Plugin == "" {
+		// A plugin folder (a source's checkout): a home enabling the plugin
+		// of that name from any marketplace wants it.
+		name = c.ID
+		for id, on := range enabled {
+			if on && strings.HasPrefix(id, name+"@") {
+				return true
+			}
+		}
+	}
 	return slices.ContainsFunc(rules, func(r string) bool { return strings.HasPrefix(r, "mcp__plugin_"+name+"_") })
 }
 

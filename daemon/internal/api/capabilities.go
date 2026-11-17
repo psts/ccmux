@@ -8,20 +8,28 @@ import (
 	"ccmux.dev/ccmuxd/internal/agent"
 )
 
-// The capability catalog (agent/capabilities.go): what an isolated claude
-// agent may be given besides its own base. Both lenses list it in the
-// agent editor as checkboxes and add to it from there.
+// The capability catalog (agent/capabilities.go): everything a session
+// can be given, and where each entry comes from. The agent editor lists it
+// as checkboxes for isolated agents and adds to it from there.
 //
-//	GET    /v1/capabilities          {capabilities, installed}
+//	GET    /v1/capabilities          {capabilities, installed, sources}
 //	PUT    /v1/capabilities/{id}     add or replace one entry
 //	DELETE /v1/capabilities/{id}     409 while a base still names it
-//	POST   /v1/capabilities/import   seed from the host's Claude setup
+//	POST   /v1/capabilities/{id}/pin {pinned}: keep a source entry at its version
+//	POST   /v1/capabilities/import   seed from the host's Claude setup;
+//	                                 ?probe=1 also reads a probe session
+//	GET    /v1/capabilities/sources             the git sources (capsources.go)
+//	POST   /v1/capabilities/sources             {id, url}: add one and fetch it
+//	DELETE /v1/capabilities/sources/{id}        409 while one of its entries is used
+//	POST   /v1/capabilities/sources/{id}/update fetch, fast-forward, sync
 
 // capabilityView is an entry as the lenses read it: the entry plus the
-// skills a plugin brings (<plugin>:<skill>), for the editor's skill list.
+// skills a plugin brings (<plugin>:<skill>), for the editor's skill list,
+// and for a pinned entry the version its source has moved on to.
 type capabilityView struct {
 	agent.Capability
-	Skills []string `json:"skills"`
+	Skills          []string `json:"skills"`
+	UpdateAvailable string   `json:"updateAvailable,omitempty"`
 }
 
 func (s *Server) listCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -38,16 +46,35 @@ func (s *Server) listCapabilities(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	sources, err := s.agents.Sources()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	views := make([]capabilityView, 0, len(list))
 	for _, c := range list {
-		views = append(views, capabilityView{Capability: c, Skills: capabilitySkills(c, installed)})
+		views = append(views, capabilityView{Capability: c, Skills: capabilitySkills(c, installed), UpdateAvailable: updateAvailable(c, sources)})
 	}
 	ids := make([]string, 0, len(installed))
 	for id := range installed {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	writeJSON(w, http.StatusOK, map[string]any{"capabilities": views, "installed": ids})
+	writeJSON(w, http.StatusOK, map[string]any{"capabilities": views, "installed": ids, "sources": sources})
+}
+
+// updateAvailable is the version a pinned entry's source now has, when it
+// is not the one the entry is pinned at.
+func updateAvailable(c agent.Capability, sources []agent.CapSource) string {
+	if !c.Pinned {
+		return ""
+	}
+	for _, src := range sources {
+		if v := src.Plugins[c.ID]; src.ID == c.Source && v != c.Version {
+			return v
+		}
+	}
+	return ""
 }
 
 // capabilitySkills is what a plugin entry brings; none for a server, or
@@ -117,7 +144,16 @@ func (s *Server) importCapabilities(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	res, err := s.agents.ImportCapabilities(claudeDir)
+	var probe *agent.ProbeResult
+	if r.URL.Query().Get("probe") == "1" {
+		p, err := s.probeSession(r)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		probe = &p
+	}
+	res, err := s.agents.ImportCapabilities(claudeDir, probe)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

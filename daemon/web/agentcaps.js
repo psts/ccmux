@@ -61,7 +61,10 @@
       const r = await fetch("/v1/capabilities");
       if (!r.ok) throw new Error(await r.text());
       const body = await r.json();
-      st.catalog = body.capabilities || [];
+      // Only what an isolated start can load: the catalog also lists skills
+      // and claude.ai connectors (for thread sessions), and a ticked one
+      // would fail the agent's next wake.
+      st.catalog = (body.capabilities || []).filter((c) => c.kind === "plugin" || c.kind === "mcp");
       st.installed = body.installed || [];
     } catch (e) { q(".cap-state").textContent = "Couldn't load the catalog: " + e.message; }
     q(".cap-plugin").innerHTML = st.installed.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("");

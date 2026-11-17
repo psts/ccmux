@@ -190,7 +190,7 @@ func TestImportCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := s.ImportCapabilities(claude)
+	res, err := s.ImportCapabilities(claude, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestImportCapabilities(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(watch, ".mcp.json")); string(b) != doors {
 		t.Error("the import wrote into a home")
 	}
-	if again, err := s.ImportCapabilities(claude); err != nil || len(again.Added) != 0 {
+	if again, err := s.ImportCapabilities(claude, nil); err != nil || len(again.Added) != 0 {
 		t.Errorf("a second import adds nothing: %+v %v", again, err)
 	}
 }
