@@ -337,10 +337,11 @@ func TestDroppedEventsAreASnapshotNotAHole(t *testing.T) {
 func TestAnEventThatCannotBeReadIsNotAskedForAgain(t *testing.T) {
 	r := newStreamRig(t)
 	r.proc.emit(3)
-	conn := r.dial("b1", 1)
+	// Set before the dial: set after, the stream could read event 2 first.
 	r.proc.mu.Lock()
 	r.proc.unread = 2 // the very next event is one line too long
 	r.proc.mu.Unlock()
+	conn := r.dial("b1", 1)
 	if got := streamWords(t, conn, 2); got != "state:running state:starting" {
 		t.Fatalf("the failed read is said: %s", got)
 	}
