@@ -24,3 +24,10 @@ test("the gauge: how full the context is and how long the prompt cache has left"
   assert.equal(m.gauge(null, at), null);
   assert.equal(m.gauge({ endedAt: at, cacheTtlMs: 60 * min }, at + min).text, "cache 59 min", "a cache with no context number yet");
 });
+
+test("while a turn runs the cache is in use, so it shows live, not a countdown or cold", () => {
+  const r = { endedAt: 1000, cacheTtlMs: 300000, context: { percent: 42, used: 84000, max: 200000 } };
+  const g = m.gauge(r, 1000 + 9 * 60000, true);
+  assert.deepEqual([g.text, g.cache], ["42% · cache live", ""]);
+  assert.match(g.title, /in use by the running turn/);
+});

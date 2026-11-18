@@ -24,9 +24,11 @@
   }
 
   // cachePart counts the cache down from the last reply: orange in its last
-  // five minutes (its last minute for a five-minute cache), cold after.
-  function cachePart(r, now) {
+  // five minutes (its last minute for a five-minute cache), cold after, and
+  // live while a turn runs.
+  function cachePart(r, now, busy) {
     if (!r.cacheTtlMs || !r.endedAt) return null;
+    if (busy) return { text: "cache live", cls: "", title: "Prompt cache: in use by the running turn, so it stays warm" };
     const rest = r.endedAt + r.cacheTtlMs - now, life = r.cacheTtlMs >= 60 * MIN ? "1 hour" : since(r.cacheTtlMs);
     const head = `Prompt cache: ${life}, last reply ${since(now - r.endedAt)} ago`;
     if (rest <= 0) return { text: "cache cold", cls: "cold", title: `${head}, expired ${since(-rest)} ago: the next message re-reads the conversation at full price` };
@@ -35,10 +37,11 @@
   }
 
   // gauge is what the header shows for a turn's result at now (ms), or null
-  // when nothing is known yet.
-  function gauge(r, now) {
+  // when nothing is known yet. busy: a turn is running, which keeps the
+  // cache warm with every call it makes.
+  function gauge(r, now, busy) {
     if (!r) return null;
-    const c = contextPart(r.context), m = cachePart(r, now);
+    const c = contextPart(r.context), m = cachePart(r, now, busy);
     if (!c && !m) return null;
     const parts = [c, m].filter(Boolean);
     return {

@@ -47,19 +47,28 @@ test("before any turn a query says its commands and the models to pick from", ()
 });
 
 test("a result is the turn's bill", () => {
-  const r = resultOf({ total_cost_usd: 0.0123, duration_ms: 4100, num_turns: 3, usage: { input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 40 } }, 0, 1000);
+  const r = resultOf({ total_cost_usd: 0.0123, duration_ms: 4100, num_turns: 3, usage: { input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 40 } }, null, 1000);
   assert.deepEqual(r, { costUSD: 0.0123, durationMs: 4100, turns: 3, usage: { input: 10, output: 200, cacheRead: 3000, cacheWrite: 40 }, endedAt: 1000, cacheTtlMs: 0 });
   assert.deepEqual(resultOf({}).usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });
 
 test("a result says how long its prompt cache lives, from what the turn wrote", () => {
   const hour = { usage: { cache_creation: { ephemeral_1h_input_tokens: 500, ephemeral_5m_input_tokens: 0 } } };
-  assert.equal(resultOf(hour, 0, 1).cacheTtlMs, 3600000);
-  const five = { modelUsage: { "claude-opus-5-5": { cacheCreationEphemeral5mInputTokens: 80 } } };
-  assert.equal(resultOf(five, 0, 1).cacheTtlMs, 300000);
-  const both = { modelUsage: { a: { cacheCreationEphemeral5mInputTokens: 80 }, b: { cacheCreationEphemeral1hInputTokens: 9 } } };
-  assert.equal(resultOf(both, 0, 1).cacheTtlMs, 3600000, "the hour wins: the long-lived prefix is what a cold start loses");
-  assert.equal(resultOf({}, 3600000, 1).cacheTtlMs, 3600000, "a turn that only read the cache keeps the lifetime it had");
+  assert.equal(resultOf(hour, null, 1).cacheTtlMs, 3600000);
+  const five = { usage: { cache_creation: { ephemeral_5m_input_tokens: 80 } } };
+  assert.equal(resultOf(five, null, 1).cacheTtlMs, 300000);
+  const both = { usage: { cache_creation: { ephemeral_5m_input_tokens: 80, ephemeral_1h_input_tokens: 9 } } };
+  assert.equal(resultOf(both, null, 1).cacheTtlMs, 3600000, "the hour wins: the long-lived prefix is what a cold start loses");
+  // modelUsage is the session's running total (subagents and compaction
+  // included), so an hour written once would read as an hour on every turn.
+  const later = { usage: { cache_creation: { ephemeral_5m_input_tokens: 40 } }, modelUsage: { a: { cacheCreationEphemeral1hInputTokens: 9000 } } };
+  assert.equal(resultOf(later, null, 1).cacheTtlMs, 300000, "this turn's own writes decide, not the running total");
+  const prev = { endedAt: 500, cacheTtlMs: 3600000 };
+  const read = resultOf({ usage: { cache_read_input_tokens: 9000 } }, prev, 900);
+  assert.deepEqual([read.endedAt, read.cacheTtlMs], [900, 3600000], "a turn that only read the cache refreshes it with the lifetime it had");
+  const none = resultOf({ is_error: true, usage: {} }, prev, 900);
+  assert.deepEqual([none.endedAt, none.cacheTtlMs], [500, 3600000], "a turn that touched no cache (a failed call) leaves the countdown where it was");
+  assert.deepEqual([resultOf({}, undefined, 900).endedAt, resultOf({}, undefined, 900).cacheTtlMs], [0, 0], "nothing known, nothing claimed");
 });
 
 test("context usage is the percent of the window in use", () => {

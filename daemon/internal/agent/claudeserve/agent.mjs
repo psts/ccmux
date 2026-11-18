@@ -490,7 +490,7 @@ export class Agent {
       this.log("! " + text);
     }
     const idle = { sessionID: this.sid };
-    if (this.turns) idle.result = this.result = resultOf(m, this.result && this.result.cacheTtlMs); // what the turn cost, for the session's page
+    if (this.turns) idle.result = this.result = resultOf(m, this.result); // what the turn cost, for the session's page
     this.broadcast({ type: "session.idle", properties: idle });
     this.setBusy(this.turns ? this.turns.busy() : false);
     if (this.turns) this.readContext(this.result);
@@ -508,7 +508,7 @@ export class Agent {
       if (this.result !== result) return; // a newer turn has its own
       result.context = contextOf(r);
       this.broadcast({ type: "session.context", properties: { sessionID: this.sid, context: result.context } });
-    }).catch((e) => this.log("context usage unreadable: " + (e && e.message ? e.message : e)));
+    }).catch((e) => this.log("! context usage unreadable: " + (e && e.message ? e.message : e)));
   }
 
   // print is the terminal view: reply text as it streams, tool calls on

@@ -47,11 +47,16 @@ export function fromInitialization(r) {
 }
 
 // resultOf is a finished turn's bill: what the session has cost so far, how
-// long the turn took and the tokens it used, plus when it ended and how long
-// its prompt cache lives (prevTtl when this turn wrote none: a read keeps
-// the lifetime the cache was written with). now is the runner's clock.
-export function resultOf(m, prevTtl, now) {
+// long the turn took and the tokens it used, plus when the prompt cache was
+// last touched and how long it lives. prev is the turn before's result. A
+// turn that read the cache but wrote none refreshes it with the lifetime it
+// had; one that touched no cache at all (a call that failed) leaves both as
+// they were, so the page does not count a cold cache down as warm. now is
+// the runner's clock.
+export function resultOf(m, prev, now) {
   const u = m.usage || {};
+  const touched = (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0) > 0 || cacheTtlOf(m) > 0;
+  const p = prev || {};
   return {
     costUSD: Number(m.total_cost_usd) || 0,
     durationMs: Number(m.duration_ms) || 0,
@@ -60,8 +65,8 @@ export function resultOf(m, prevTtl, now) {
       input: Number(u.input_tokens) || 0, output: Number(u.output_tokens) || 0,
       cacheRead: Number(u.cache_read_input_tokens) || 0, cacheWrite: Number(u.cache_creation_input_tokens) || 0,
     },
-    endedAt: now === undefined ? Date.now() : now,
-    cacheTtlMs: cacheTtlOf(m) || Number(prevTtl) || 0,
+    endedAt: touched ? (now === undefined ? Date.now() : now) : Number(p.endedAt) || 0,
+    cacheTtlMs: (touched && cacheTtlOf(m)) || Number(p.cacheTtlMs) || 0,
   };
 }
 
@@ -69,13 +74,12 @@ const HOUR = 3600000, FIVE_MIN = 300000;
 
 // cacheTtlOf is the lifetime of the cache a turn wrote: an hour if any of it
 // was written for an hour, five minutes if only for five, 0 if it wrote none.
+// It reads the turn's own usage (the main loop), never modelUsage: that is
+// the session's running total, subagents and compaction included, so an
+// hour written once would read as an hour on every later turn.
 function cacheTtlOf(m) {
   const c = (m.usage && m.usage.cache_creation) || {};
-  let hour = Number(c.ephemeral_1h_input_tokens) || 0, five = Number(c.ephemeral_5m_input_tokens) || 0;
-  for (const mu of Object.values(m.modelUsage || {})) {
-    hour += Number(mu && mu.cacheCreationEphemeral1hInputTokens) || 0;
-    five += Number(mu && mu.cacheCreationEphemeral5mInputTokens) || 0;
-  }
+  const hour = Number(c.ephemeral_1h_input_tokens) || 0, five = Number(c.ephemeral_5m_input_tokens) || 0;
   return hour > 0 ? HOUR : five > 0 ? FIVE_MIN : 0;
 }
 

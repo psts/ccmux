@@ -267,7 +267,7 @@
   // a tick redraws it so the cache counts down between messages.
   function drawGauge(sess) {
     const box = $("gauge");
-    const g = sess && sess.state !== "done" ? Gauge.gauge(S.stream.result, Date.now()) : null;
+    const g = sess && sess.state !== "done" ? Gauge.gauge(S.stream.result, Date.now(), S.stream.busy) : null;
     show("gauge", !!g);
     if (!g) return;
     box.textContent = "";
