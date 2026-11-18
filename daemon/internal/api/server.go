@@ -31,6 +31,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/repoowns"
 	"ccmux.dev/ccmuxd/internal/tailnet"
 	"ccmux.dev/ccmuxd/internal/taskq"
+	"ccmux.dev/ccmuxd/internal/todos"
 	"ccmux.dev/ccmuxd/internal/version"
 	"ccmux.dev/ccmuxd/web"
 )
@@ -68,6 +69,10 @@ type Server struct {
 	// taskRunner is the queue's runner once started (nil before, or when
 	// there is no queue): a person's "Send back to worker" goes through it.
 	taskRunner *taskq.Runner
+	// todos is every repo's to-do list (todos.go); nil answers 503 on its
+	// routes. todoKeys names the list a folder's items go on.
+	todos    *todos.Book
+	todoKeys *todos.Keys
 	// owns keeps each repo's "owns" line for the bus (owns.go); nil shows
 	// none and answers 503 on its routes.
 	owns      *repoowns.Service
@@ -412,6 +417,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/tasks/{id}/parts/{part}/send-back", s.sendBackPart)
 	mux.HandleFunc("DELETE /v1/tasks/{id}", s.deleteTask)
 	mux.HandleFunc("POST /v1/panes/{id}/tasks", s.paneTasks)
+	s.todoRoutes(mux)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-signal", s.agentSignal)
 	mux.HandleFunc("POST /v1/panes/{id}/agent-ask", s.agentAsk)
 	mux.HandleFunc("POST /v1/panes/{id}/notices", s.paneNotices)

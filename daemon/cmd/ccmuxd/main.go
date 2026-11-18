@@ -222,6 +222,7 @@ func runDaemon() {
 	// busy the whole time) skips to its next slot rather than firing late.
 	apiSrv.SetSchedules(st, 6*time.Hour)
 	apiSrv.SetTasks(st)
+	apiSrv.SetTodos(st)
 	// Each repo's "owns" line for the bus: Haiku's summary of its
 	// CLAUDE.md and README, on the subscription accounts.
 	apiSrv.SetOwns(repoowns.New(st, llmSvc.Complete), st)

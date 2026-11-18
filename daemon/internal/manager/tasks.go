@@ -13,6 +13,10 @@ import (
 // reads the list again. The queue itself lives in the store (internal/taskq).
 func (m *Manager) TasksChanged() { m.events.publish(Event{Kind: "tasks-changed"}) }
 
+// TodosChanged tells every lens a repo's to-do list changed (internal/todos),
+// so a page showing the lists reads them again.
+func (m *Manager) TodosChanged() { m.events.publish(Event{Kind: "todos-changed"}) }
+
 // taskRunner is the createdBy stamp on a task worker's pane.
 const taskRunner = "task-runner"
 
