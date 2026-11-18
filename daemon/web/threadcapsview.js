@@ -1,6 +1,6 @@
 // threadcapsview.js: the drawing of the thread page's skills and plugins
-// screens: the Settings dialog's tab, the panel a right-click on a repo or
-// a group opens, and that right-click's menu. Each function takes the rows
+// screens: its tab in the Settings window, the panel a right-click on a
+// repo or a group opens, and that right-click's menu. Each function takes the rows
 // threadcaps.js made and the callbacks threadcapsctl.js gives; nothing
 // here fetches or keeps state. Text always goes in as text.
 (() => {
@@ -83,20 +83,12 @@
     return add(box, list);
   }
 
-  // The tabs the dialog has. Only one for now; the rest of the terminal
-  // lens's settings come later and slot in here.
-  const tabs = [["caps", "Skills and plugins"]];
-
-  function settings(box, v, ctx) {
+  // tab draws the Skills and plugins tab into box, the page the Settings
+  // window gave it. The window's title, tab bar and close button are the
+  // window's own (settingsmodal.js).
+  function tab(box, v, ctx) {
     box.textContent = "";
-    const bar = el("div", "sheet-tabs");
-    bar.setAttribute("role", "tablist");
-    for (const [id, label] of tabs) {
-      const t = button(label, "sheet-tab" + (id === "caps" ? " on" : ""), () => {});
-      t.setAttribute("role", "tab");
-      add(bar, t);
-    }
-    return add(box, head("Settings", ctx.close), bar, capsTab(el("div", "sheet-body"), v, ctx));
+    return capsTab(box, v, ctx);
   }
 
   const repoStates = [["group", "As group"], ["on", "On"], ["off", "Off"]];
@@ -135,5 +127,5 @@
     return add(box, list);
   }
 
-  window.ccmuxThreadCapsView = { settings, panel, menu };
+  window.ccmuxThreadCapsView = { tab, panel, menu };
 })();

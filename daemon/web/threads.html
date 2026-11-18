@@ -7,6 +7,7 @@
   <meta name="theme-color" content="#EDEDE8">
   <link rel="icon" href="/icons/icon-192.png">
   <link rel="stylesheet" href="/threads.css">
+  <link rel="stylesheet" href="/settings.css">
 </head>
 <body>
   <!-- The thread page: runner sessions (Claude on the Agent SDK) worked with
@@ -20,7 +21,7 @@
       </div>
       <div id="tree"></div>
       <div class="side-foot">
-        <button id="open-settings" class="plain small" type="button" title="Skills and plugins, and where each is on">Settings</button>
+        <button id="open-settings" class="plain small" type="button" title="Settings">Settings</button>
         <span id="side-version"></span>
       </div>
     </nav>
@@ -103,13 +104,31 @@
     </aside>
   </div>
 
-  <!-- Skills and plugins (threadcapsctl.js): the Settings dialog or a repo's
-       or group's panel, and the sidebar's right-click menu. -->
+  <!-- Skills and plugins (threadcapsctl.js): a repo's or group's panel, and
+       the sidebar's right-click menu. The whole list is a tab of the
+       Settings window. -->
   <div id="caps-overlay" class="overlay hidden">
-    <div id="caps-sheet" class="sheet" role="dialog" aria-modal="true"></div>
+    <div id="caps-sheet" class="sheet narrow" role="dialog" aria-modal="true"></div>
   </div>
   <div id="caps-menu" class="menu-layer hidden"></div>
 
+  <!-- The Settings window (settingsmodal.js) makes its own markup, and each
+       tab is its own file; the lens loads the same block. This page's own
+       tab, Skills and plugins, joins it from threadcapsctl.js. -->
+  <script src="/dom.js"></script>
+  <script src="/identity.js"></script>
+  <script src="/settingsmodal.js"></script>
+  <script src="/settingsllm.js"></script>
+  <script src="/settingsllmedit.js"></script>
+  <script src="/settingsaccounts.js"></script>
+  <script src="/settingsharness.js"></script>
+  <script src="/settingsharnesses.js"></script>
+  <script src="/settingsharnessrules.js"></script>
+  <script src="/settingsagents.js"></script>
+  <script src="/tasksettings.js"></script>
+  <script src="/push.js"></script>
+  <script src="/agentcaps.js"></script>
+  <script src="/agentmodal.js"></script>
   <script src="/retry.js"></script>
   <script src="/route.js"></script>
   <script src="/agentchat.js"></script>

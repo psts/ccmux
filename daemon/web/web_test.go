@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -139,6 +140,36 @@ func TestEveryThreadPageFileIsServed(t *testing.T) {
 	// above and 404 only in a browser.
 	if rel := matches(`(?:src|href)="([^/"#][^"]*)"`, html); len(rel) != 0 {
 		t.Errorf("threads.html loads by relative path, which nothing checks: %v", rel)
+	}
+}
+
+// The Settings window is one piece of code for both pages: the block of
+// scripts that makes it (dom.js to the agent editor) must be the same files
+// in the same order on each, beside its stylesheet. A tab file added to one
+// page alone would show as a missing tab, or as a script that dies on load,
+// in a browser only.
+func TestBothPagesLoadTheSameSettingsWindow(t *testing.T) {
+	block := func(name string) []string {
+		html, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scripts := matches(`<script src="(/[^"]+)"`, html)
+		from, to := slices.Index(scripts, "/dom.js"), slices.Index(scripts, "/agentmodal.js")
+		if from < 0 || to < from {
+			t.Fatalf("%s: no settings block from /dom.js to /agentmodal.js in %v", name, scripts)
+		}
+		if !slices.Contains(matches(`<link rel="stylesheet" href="(/[^"]+)"`, html), "/settings.css") {
+			t.Errorf("%s does not link /settings.css, so the window would open unstyled", name)
+		}
+		return scripts[from : to+1]
+	}
+	lens, threads := block("index.html"), block("threads.html")
+	if len(lens) < 10 {
+		t.Fatalf("the lens's settings block is %v; the frame and five tabs are more files than that", lens)
+	}
+	if !slices.Equal(lens, threads) {
+		t.Errorf("the two pages load different Settings windows:\n lens    %v\n threads %v", lens, threads)
 	}
 }
 

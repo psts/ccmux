@@ -16,7 +16,7 @@
     `<div class="sheet settings-sheet">` +
     `<header><span>Settings</span><button id="settings-close" title="Close">&times;</button></header>` +
     `<nav id="settings-tabs" class="settings-tabs"></nav>` +
-    `<div class="settings-body"></div>` +
+    `<div id="settings-body" class="settings-body"></div>` +
     `</div></div>`;
 
   // The shell of a window that opens above Settings to edit one thing (an
@@ -55,7 +55,7 @@
     sec.className = "settings-page";
     sec.dataset.page = page;
     sec.innerHTML = html;
-    const bar = $("settings-tabs"), body = $("settings-modal").querySelector(".settings-body");
+    const bar = $("settings-tabs"), body = $("settings-body");
     if (first) { bar.prepend(btn); body.prepend(sec); tabs.unshift({ page, btn, sec, opened, closed }); }
     else { bar.appendChild(btn); body.appendChild(sec); tabs.push({ page, btn, sec, opened, closed }); }
     show(tabs[0].page);
@@ -81,9 +81,8 @@
     }
   }
 
-  // open shows the window, on page when one is named, else where it was left.
-  function open(page) {
-    if (page) show(page);
+  // open shows the window on the tab it was left on.
+  function open() {
     $("settings-modal").classList.remove("hidden");
     tell("opened");
   }
@@ -92,8 +91,6 @@
     $("settings-modal").classList.add("hidden");
     tell("closed");
   }
-
-  const isOpen = () => !$("settings-modal").classList.contains("hidden");
 
   // escape closes the window on top, the way its own close button does: an
   // editor if one is open, else Settings. false when nothing was open, so
@@ -104,7 +101,7 @@
       $(id + "-close").click();
       return true;
     }
-    if (!isOpen()) return false;
+    if ($("settings-modal").classList.contains("hidden")) return false;
     close();
     return true;
   }
@@ -138,7 +135,7 @@
   // The one opener. The page's own Settings button is the frame's: no other
   // script hangs a handler on it.
   const opener = $("open-settings");
-  if (opener) opener.onclick = () => open();
+  if (opener) opener.onclick = open;
 
-  window.ccmuxSettings = { addTab, addEditor, open, close, isOpen, escape, read, put };
+  window.ccmuxSettings = { addTab, addEditor, escape, read, put };
 })();

@@ -44,7 +44,10 @@ class Node {
   }
   get textContent() { return this.tagName === "#TEXT" ? this.text : this.children.map((c) => c.textContent).join(""); }
   set textContent(v) { this.children.forEach((c) => { c.parentNode = null; }); this.children = v === "" || v == null ? [] : [Object.assign(new Node("#text"), { text: String(v), parentNode: this })]; }
-  set innerHTML(_) { /* a fixed icon: nothing a test reads */ }
+  // Markup set on a node keeps what page code looks up afterwards: every
+  // element in it that has an id, hung flat under the node (see page()).
+  set innerHTML(html) { this.textContent = ""; this.insertAdjacentHTML("beforeend", html); }
+  insertAdjacentHTML(_where, html) { for (const el of this.ownerDocument.withIds(String(html))) this.appendChild(el); }
   get firstChild() { return this.children[0] || null; }
   get nextSibling() { const sibs = this.parentNode ? this.parentNode.children : []; return sibs[sibs.indexOf(this) + 1] || null; }
   get childElementCount() { return this.children.filter((c) => c.tagName !== "#TEXT").length; }
@@ -88,6 +91,8 @@ class Node {
 
 // page builds the document threads.html describes: every element that has an
 // id, hung flat under the body with its tag and classes.
+// Markup a script adds later (the Settings window makes its own) goes through
+// the same reading: its elements with an id, findable by that id.
 function page() {
   const html = fs.readFileSync(path.join(__dirname, "threads.html"), "utf8");
   const body = new Node("body");
@@ -100,14 +105,17 @@ function page() {
     querySelector: (sel) => body.querySelector(sel),
     querySelectorAll: (sel) => body.querySelectorAll(sel),
     addEventListener: (type, fn) => { doc.handlers[type] = fn; },
+    dispatchEvent: (ev) => { if (doc.handlers[ev.type]) doc.handlers[ev.type](ev); },
+    withIds: (markup) => [...markup.matchAll(/<(\w+)([^>]*\bid="([^"]+)"[^>]*)>/g)].map((m) => {
+      const el = doc.createElement(m[1]);
+      el.id = m[3];
+      el.className = (/\bclass="([^"]*)"/.exec(m[2]) || [, ""])[1];
+      byId.set(el.id, el);
+      return el;
+    }),
   };
-  for (const m of html.matchAll(/<(\w+)([^>]*\bid="([^"]+)"[^>]*)>/g)) {
-    const el = doc.createElement(m[1]);
-    el.id = m[3];
-    el.className = (/\bclass="([^"]*)"/.exec(m[2]) || [, ""])[1];
-    byId.set(el.id, el);
-    body.appendChild(el);
-  }
+  body.ownerDocument = doc;
+  body.insertAdjacentHTML("beforeend", html);
   byId.get("composer").appendChild(doc.createElement("label"));
   return doc;
 }
@@ -145,10 +153,14 @@ async function boot(opts = {}) {
     console, document: doc, fetch, URLSearchParams, URL: Object.assign(function (...a) { return new URL(...a); }, { createObjectURL: () => "blob:x", revokeObjectURL() {} }), Blob,
     location: { search: opts.search || "", protocol: "http:", host: "d", href: "" },
     history: { pushState: (_s, _t, url) => book.pushed.push(url) },
-    localStorage: { getItem: () => "stored-name" }, navigator: {},
+    localStorage: { getItem: () => "stored-name" }, navigator: opts.push ? pushBrowser(book).navigator : {},
     WebSocket: function (url) { const s = { url: String(url), readyState: 1, sent: [], send: (x) => s.sent.push(JSON.parse(x)), close() { s.closed = true; } }; book.sockets.push(s); return s; },
     requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval() {},
     addEventListener() {}, confirm: opts.confirm || (() => true), prompt: () => "Renamed", createImageBitmap: async () => ({ width: 10, height: 10 }),
+    // The Settings window's tabs: identity.js bounds its whoami read, and the
+    // Agents tab says on document when it read the bases.
+    AbortController, Event: function (type) { this.type = type; },
+    ...(opts.push ? pushBrowser(book).globals : {}),
   };
   ctx.window = ctx;
   vm.createContext(ctx);
@@ -158,7 +170,27 @@ async function boot(opts = {}) {
   const $ = (id) => doc.getElementById(id);
   const stream = () => book.sockets.filter((s) => s.url.includes("/ws?")).pop();
   const frame = async (f) => { stream().onmessage({ data: JSON.stringify(f) }); await settle(); };
-  return { doc, book, $, settle, stream, frame, lists, posts: () => book.calls.filter((c) => c.method === "POST") };
+  return { doc, book, $, settle, stream, frame, lists, posts: () => book.calls.filter((c) => c.method === "POST"), where: () => ctx.location.href };
+}
+
+// pushBrowser is a browser that can do web push, for the Notifications tab:
+// a service worker that registers, a push manager that holds one
+// subscription, and a cache whose every open is counted (the stash a
+// notification tap waits in). Made once per boot and kept on the book.
+function pushBrowser(book) {
+  if (book.push) return book.push;
+  Object.assign(book, { swMessage: [], cacheOpens: 0, subscription: null });
+  const made = { endpoint: "https://push.example.invalid/abc", toJSON: () => ({ endpoint: made.endpoint, keys: { p256dh: "k", auth: "a" } }), unsubscribe: async () => { book.subscription = null; } };
+  const reg = { pushManager: { getSubscription: async () => book.subscription, subscribe: async () => { book.subscription = made; return made; } } };
+  book.push = {
+    navigator: { userAgent: "node", serviceWorker: { register: async () => reg, ready: Promise.resolve(reg), addEventListener: (type, fn) => { if (type === "message") book.swMessage.push(fn); } } },
+    globals: {
+      PushManager: function () {}, Notification: { permission: "default", requestPermission: async () => "granted" },
+      atob: (x) => Buffer.from(x, "base64").toString("binary"), Uint8Array,
+      caches: { open: async () => { book.cacheOpens++; return { match: async () => undefined, delete: async () => true }; } },
+    },
+  };
+  return book.push;
 }
 
 const snapshot = (over = {}) => ({ t: "snapshot", boot: "b1", seq: 5, data: { messages: [{ info: { id: "u1", role: "user" }, parts: [{ id: "u1.0", messageID: "u1", type: "text", text: "hello there" }] }], permissions: [], questions: [], info: {}, todos: [], ...over } });
@@ -621,7 +653,10 @@ const capRoutes = (repoChoices) => [
   [/^GET \/v1\/workspaces\/ws1\/capabilities$/, () => ({ window: "w1", group: ["qa"], choices: repoChoices, effective: repoChoices.qa === "off" ? [] : ["qa"], missing: [] })],
   [/^GET \/v1\/windows\/w1\/capabilities$/, () => ({ on: ["qa"], missing: [] })],
 ];
-const capRows = (p) => p.$("caps-sheet").querySelectorAll(".cap-item").map((r) => [r.dataset.cap, (r.querySelector(".cap-meta") || {}).textContent, (r.querySelector(".seg-opt.on") || {}).textContent]);
+// capsTab is this page's tab in the Settings window; capRows reads the rows
+// of a panel (the sheet of one repo or group) unless handed the tab.
+const capsTab = (p) => p.doc.querySelector(".caps-tab");
+const capRows = (p, box = p.$("caps-sheet")) => box.querySelectorAll(".cap-item").map((r) => [r.dataset.cap, (r.querySelector(".cap-meta") || {}).textContent, (r.querySelector(".seg-opt.on") || {}).textContent]);
 
 test("a right-click on a repo opens its menu, and Skills and plugins its panel; Off is sent and read back", async () => {
   const choices = {};
@@ -670,8 +705,9 @@ test("an Update that answers after another sheet was opened says nothing on that
   const p = await boot({ sessions: [lead], routes: [[/^POST \/v1\/capabilities\/sources\/personal\/update$/, () => late], ...capRoutes({})] });
   p.$("open-settings").click();
   await p.settle();
-  p.$("caps-sheet").querySelector(".cap-src button").click();
+  capsTab(p).querySelector(".cap-src button").click();
   p.doc.handlers.keydown({ key: "Escape", target: p.doc.body, preventDefault() {} });
+  assert.equal(p.$("settings-modal").classList.contains("hidden"), true, "Escape closes the Settings window");
   p.$("tree").querySelector(".group-head .side-more").click();
   p.$("caps-menu").querySelector(".ctx-item").click();
   await p.settle();
@@ -729,13 +765,16 @@ test("a running session whose skills changed says so in its header, with Restart
 
 test("Settings lists the sources and every entry, and Update says what it pulled", async () => {
   const p = await boot({ sessions: [lead], routes: [[/^POST \/v1\/capabilities\/sources\/personal\/update$/, () => ({ source: { id: "personal" }, changed: [{ id: "chrome-pool" }], added: [] })], ...capRoutes({})] });
+  assert.equal(p.$("settings-modal").classList.contains("hidden"), true, "closed until asked for");
   p.$("open-settings").click();
   await p.settle();
-  const sheet = p.$("caps-sheet");
-  assert.deepEqual(sheet.querySelectorAll(".sheet-tab").map((t) => t.textContent), ["Skills and plugins"]);
+  assert.equal(p.$("settings-modal").classList.contains("hidden"), false, "the Settings button opens the one window");
+  assert.equal(p.$("caps-overlay").classList.contains("hidden"), true, "and no sheet of this page's own beside it");
+  const sheet = capsTab(p);
+  assert.equal(sheet.classList.contains("hidden"), false, "this page's own tab is the one on show");
   assert.equal(sheet.querySelector(".cap-where").textContent, "git · me/claude-personal · 4f2a91c · checked today");
   assert.equal(sheet.querySelector(".cap-src .cap-tag").textContent, "1 update", "the pinned qa is behind");
-  assert.deepEqual(capRows(p).map((r) => r[1]), [
+  assert.deepEqual(capRows(p, sheet).map((r) => r[1]), [
     "personal · ~1.4k tokens · pinned at 1.9.0 · on in ChartLabs",
     "personal · ~0.9k tokens · 2.0.0 · follows newest · on nowhere",
   ]);
@@ -743,5 +782,63 @@ test("Settings lists the sources and every entry, and Update says what it pulled
   sheet.querySelector(".cap-src button").click();
   await p.settle();
   assert.equal(p.posts().pop().url, "/v1/capabilities/sources/personal/update");
-  assert.equal(p.$("caps-sheet").querySelector(".cap-note").textContent, "personal: 1 changed.");
+  assert.equal(capsTab(p).querySelector(".cap-note").textContent, "personal: 1 changed.");
+});
+
+test("Notifications on this page: Enable files the device under the page's own name, and a tap stays the page's to follow", async () => {
+  const vapid = [/^GET \/v1\/push\/vapid/, () => ({ key: "QUJD" })];
+  const p = await boot({ sessions: [lead], push: true, routes: [vapid, ...capRoutes({})] });
+  p.$("open-settings").click();
+  await p.settle();
+  assert.equal(p.$("notif-status").textContent, "Get a push when a session needs you — even with ccmux closed.");
+  assert.equal(p.$("notif-enable").classList.contains("hidden"), false);
+  assert.equal(p.posts().length, 0, "opening Settings subscribes nothing");
+  p.$("notif-enable").click();
+  await p.settle();
+  const sent = p.posts().filter((c) => c.url.startsWith("/v1/push/subscriptions"));
+  assert.deepEqual(sent.map((c) => [c.url, c.body]), [["/v1/push/subscriptions?user=Pat", { endpoint: "https://push.example.invalid/abc", keys: { p256dh: "k", auth: "a" } }]]);
+  assert.equal(p.book.sockets[0].url, "ws://d/v1/events?user=Pat&device=web", "the same name the page's presence goes by");
+  assert.equal(p.$("notif-status").textContent, "Notifications are on for this device.");
+  p.$("notif-disable").click();
+  await p.settle();
+  assert.deepEqual(p.book.calls.filter((c) => c.method === "DELETE").map((c) => [c.url, c.body]), [["/v1/push/subscriptions", { endpoint: "https://push.example.invalid/abc" }]]);
+  assert.equal(p.book.subscription, null);
+  // A tap: this page follows it itself (threads.js). push.js, which on the
+  // lens reads and clears the stashed tap, must leave the stash alone here.
+  assert.equal(p.book.swMessage.length, 1, "one listener for a tap, the page's own");
+  p.book.swMessage[0]({ data: { type: "ccmux-navigate", url: "/?ws=ws1" } });
+  await p.settle();
+  assert.equal(p.where(), "/?ws=ws1");
+  assert.equal(p.book.cacheOpens, 0, "the stashed tap is left for a lens to take");
+  // A daemon that cannot vouch: the stored name, as on the events socket.
+  const plain = await boot({ sessions: [lead], push: true, routes: [vapid, [/^GET \/v1\/whoami/, () => ({ vouched: false, login: "stored-name" })], ...capRoutes({})] });
+  plain.$("open-settings").click();
+  await plain.settle();
+  plain.$("notif-enable").click();
+  await plain.settle();
+  assert.deepEqual(plain.posts().map((c) => c.url), ["/v1/push/subscriptions?user=stored-name"]);
+  assert.equal(plain.book.sockets[0].url, "ws://d/v1/events?user=stored-name&device=web");
+});
+
+test("the Settings window is the lens's, whole, with this page's tab in front", async () => {
+  const p = await boot({ sessions: [lead], routes: capRoutes({}) });
+  const tabs = p.$("settings-tabs").querySelectorAll(".settings-tab");
+  assert.deepEqual(tabs.map((t) => t.textContent), ["Skills and plugins", "Accounts", "Harnesses", "Agents", "Tasks", "Notifications"]);
+  p.$("open-settings").click();
+  await p.settle();
+  const reads = p.book.calls.filter((c) => c.method === "GET").map((c) => c.url);
+  for (const url of ["/v1/capabilities", "/v1/settings", "/v1/agents"]) assert.ok(reads.includes(url), `opening reads ${url}`);
+  assert.ok(reads.some((u) => u.startsWith("/v1/whoami?user=")), "and asks who this page is, for the Notifications tab");
+  assert.equal(p.$("whoami").textContent, "Signed in as Pat (pat@example.invalid).");
+  assert.equal(p.$("agent-state").textContent, "No agents yet.", "the Agents tab read its list on a page with no agent menu");
+  tabs[1].click();
+  assert.equal(capsTab(p).classList.contains("hidden"), true, "picking Accounts puts this page's tab away");
+  assert.equal(p.doc.querySelector('section[data-page="accounts"]').classList.contains("hidden"), false);
+  p.$("settings-close").click();
+  assert.equal(p.$("settings-modal").classList.contains("hidden"), true);
+  p.$("tree").querySelector(".group-head .side-more").click();
+  p.$("caps-menu").querySelector(".ctx-item").click();
+  await p.settle();
+  assert.equal(p.$("caps-overlay").classList.contains("hidden"), false, "a group's panel still opens as its own sheet");
+  assert.equal(p.$("settings-modal").classList.contains("hidden"), true);
 });

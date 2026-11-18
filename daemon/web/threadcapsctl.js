@@ -1,10 +1,12 @@
 // threadcapsctl.js: the thread page's skills and plugins screens, wired.
+// There are two: the whole list, which is this page's own tab in the
+// Settings window (settingsmodal.js), and the panel of one repo or group.
 // It reads the catalog and the choices from the daemon, keeps what the open
-// sheet shows, and sends what the human picks: Update, Add source, Pin, a
+// screen shows, and sends what the human picks: Update, Add source, Pin, a
 // repo's or group's choice, and Restart. threads.js makes one with the
-// page's own fetch and lists (create) and calls it from the sidebar, the
-// Escape key and each new read of the lists. Meaning is threadcaps.js's,
-// the look threadcapsview.js's.
+// page's own fetch and lists and the Settings window (create) and calls it
+// from the sidebar, the Escape key and each new read of the lists. Meaning
+// is threadcaps.js's, the look threadcapsview.js's.
 (() => {
   "use strict";
   const Caps = window.ccmuxThreadCaps, CV = window.ccmuxThreadCapsView;
@@ -12,6 +14,7 @@
 
   const $ = (id) => document.getElementById(id);
   let deps = null;
+  let tabBox = null; // this page's page in the Settings window
   const C = { mode: "", target: null, caps: [], sources: [], choices: {}, data: null, busy: "", note: "", error: "", adding: false, url: "", loading: false, staleSig: "" };
 
   const windowName = (id) => { const w = deps.lists().windows.find((x) => x.id === id); return w ? w.name : ""; };
@@ -23,7 +26,10 @@
     return w ? w.workspaceIds || [] : [];
   }
 
-  const staleNow = () => (C.mode === "repo" || C.mode === "group" ? Caps.stale(deps.lists().sessions, members()) : []);
+  // A panel is the sheet of one repo or group; the other screen ("settings")
+  // is the tab in the Settings window.
+  const isPanel = () => C.mode === "repo" || C.mode === "group";
+  const staleNow = () => (isPanel() ? Caps.stale(deps.lists().sessions, members()) : []);
 
   // --- reading ---
 
@@ -83,14 +89,11 @@
   };
 
   function draw() {
-    const box = $("caps-overlay");
-    box.classList.toggle("hidden", !C.mode);
+    $("caps-overlay").classList.toggle("hidden", !isPanel());
     if (!C.mode) return;
-    const sheet = $("caps-sheet");
-    sheet.className = "sheet " + (C.mode === "settings" ? "wide" : "narrow");
     const ctx = { ...handlers, busy: C.busy };
-    if (C.mode === "settings") CV.settings(sheet, settingsView(), ctx);
-    else CV.panel(sheet, panelView(), ctx);
+    if (isPanel()) CV.panel($("caps-sheet"), panelView(), ctx);
+    else CV.tab(tabBox, settingsView(), ctx);
     C.staleSig = staleNow().map((s) => s.id).join(",");
   }
 
@@ -118,10 +121,11 @@
     box.classList.remove("hidden");
   }
 
-  // escape closes the menu, else the sheet; false when neither is open.
+  // escape closes the menu, else the panel; false when neither is open.
+  // The Settings window closes itself (its own escape), and with it the tab.
   function escape() {
     if (!$("caps-menu").classList.contains("hidden")) { closeMenu(); return true; }
-    if (!C.mode) return false;
+    if (!isPanel()) return false;
     close();
     return true;
   }
@@ -129,7 +133,7 @@
   // listsChanged redraws an open panel when who runs on the old list
   // changed: a restart landed, or a choice made another session stale.
   function listsChanged() {
-    if ((C.mode === "repo" || C.mode === "group") && staleNow().map((s) => s.id).join(",") !== C.staleSig) draw();
+    if (isPanel() && staleNow().map((s) => s.id).join(",") !== C.staleSig) draw();
   }
 
   // --- acting ---
@@ -190,11 +194,20 @@
 
   // create wires the screens to the page: deps.call is its fetch,
   // deps.lists() its windows, workspaces and sessions, deps.changed() has
-  // them read again, deps.confirm asks the human. One page, one of these.
+  // them read again, deps.confirm asks the human, and deps.settings is the
+  // Settings window, which gets this page's tab at its front. The tab reads
+  // its list each time the window opens, and lets go when it closes. One
+  // page, one of these.
   function create(d) {
     deps = d;
     wire();
-    return { openSettings: () => open("settings", null), openRepo: (r) => open("repo", r), openGroup: (g) => open("group", g), menu, escape, listsChanged, close };
+    tabBox = d.settings.addTab({
+      page: "caps", label: "Skills and plugins", first: true,
+      opened: () => open("settings", null),
+      closed: () => { if (C.mode === "settings") close(); },
+    });
+    tabBox.classList.add("caps-tab");
+    return { menu, escape, listsChanged };
   }
 
   // pointOf is where a menu opens: at a right-click, else under the

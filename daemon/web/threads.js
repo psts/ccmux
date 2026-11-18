@@ -21,9 +21,12 @@
     draftModel: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
   };
 
-  // The skills and plugins screens: the Settings dialog, and the panel a
+  // The Settings window is the one the lens has (settingsmodal.js and the
+  // tab files threads.html loads); it owns the Settings button. This page
+  // adds its own tab to it, skills and plugins, and keeps the panel a
   // right-click on a repo or group opens (threadcapsctl.js).
-  const Caps = window.ccmuxThreadCapsCtl.create({ call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q) });
+  const Settings = window.ccmuxSettings;
+  const Caps = window.ccmuxThreadCapsCtl.create({ call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings });
 
   // --- the daemon ---
 
@@ -703,7 +706,7 @@
   const editable = (t) => !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
   function onKey(e) {
-    if (e.key === "Escape" && Caps.escape()) return;
+    if (e.key === "Escape" && (Caps.escape() || Settings.escape())) return;
     if (e.key === "Escape" && S.menu) { S.menu = false; drawCommands(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey || editable(e.target)) return; // a digit typed into the composer is a digit
     if ("1234".includes(e.key) && View.pressKey($("cards"), e.key)) e.preventDefault();
@@ -730,7 +733,6 @@
     $("restart-now").onclick = restartNow;
     $("restart-later").onclick = restartNow;
     $("loadout-restart").onclick = restartNow;
-    $("open-settings").onclick = () => Caps.openSettings();
     $("later").onclick = () => { const sess = session(); if (sess) S.later.add(sess.id); drawAll(); };
     $("stop").onclick = () => act((sess) => call("POST", `/v1/sessions/${sess.id}/abort`));
     $("sleep").onclick = () => setWanted("asleep");
