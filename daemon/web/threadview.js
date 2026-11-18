@@ -240,7 +240,7 @@
     target.oncontextmenu = (e) => { e.preventDefault(); ctx.menu(kind, item, e); };
     const more = el("button", "side-more", "⋯");
     more.type = "button";
-    more.title = "Skills and plugins…";
+    more.title = kind === "group" ? "Move, open alone, skills and plugins…" : "Skills and plugins…";
     more.setAttribute("aria-label", `More for ${item.name}`);
     more.onclick = (e) => ctx.menu(kind, item, e);
     return more;
@@ -323,20 +323,71 @@
   }
 
   // groupHead is a group's name; a group that is a window (not "Other")
-  // has the menu that sets its skills and plugins.
+  // has the menu that sets its skills and plugins, and, from the person's
+  // own sidebar (ctx.side, threadsidectl.js), a chevron that folds it, the
+  // alert of what is inside while folded, and a drag handle.
   function groupHead(g, ctx) {
     const name = el("div", "group-name", g.name);
     if (!g.id) return name;
+    const S = ctx.side;
     const headEl = el("div", "group-head");
-    return add(headEl, name, withMenu(headEl, "group", g, ctx));
+    if (!S) return add(headEl, name, withMenu(headEl, "group", g, ctx));
+    const fold = S.canFold(g) ? foldButton(g, S) : null;
+    if (fold) { name.classList.add("foldable"); name.onclick = () => S.toggle(g); }
+    const alert = S.folded(g) ? S.alert(g) : null;
+    if (alert && alert.cls) headEl.classList.add("att-" + alert.cls);
+    if (S.canDrag(g)) dragHandle(headEl, g, S);
+    const count = alert && alert.count ? el("span", "group-count", String(alert.count)) : null;
+    if (count) count.title = alert.text;
+    return add(headEl, fold, name, count, withMenu(headEl, "group", g, ctx));
+  }
+
+  function foldButton(g, S) {
+    const shut = S.folded(g);
+    const b = el("button", "group-fold", shut ? "▸" : "▾");
+    b.type = "button";
+    b.title = shut ? "Show this group's repos" : "Fold this group into its name (its sessions keep running)";
+    b.setAttribute("aria-expanded", String(!shut));
+    b.setAttribute("aria-label", (shut ? "Show " : "Fold ") + g.name);
+    b.onclick = () => S.toggle(g);
+    return b;
+  }
+
+  // dragHandle lets a mouse move the group by its header.
+  function dragHandle(headEl, g, S) {
+    headEl.draggable = true;
+    headEl.title = "Drag to move this group";
+    headEl.ondragstart = (e) => S.dragStart(g, e);
+    headEl.ondragend = () => S.dragEnd();
+  }
+
+  // groupEl is one group: its header, then (unless folded) its Tasks row
+  // and its repos. Any part of a window's group is a place to drop a
+  // dragged one.
+  function groupEl(g, ctx) {
+    const S = ctx.side;
+    const box = el("div", "group");
+    if (g.id) box.dataset.gid = g.id;
+    if (S && g.id) {
+      box.ondragover = (e) => S.dragOver(g, e, box);
+      box.ondrop = (e) => S.drop(e);
+    }
+    add(box, groupHead(g, ctx));
+    if (S && S.folded(g)) { box.classList.add("folded"); return box; }
+    const tasks = g.id && ctx.tasks ? tasksRow(g, ctx) : null;
+    return add(box, tasks, ...g.repos.map((r) => repoEl(r, ctx, g)));
   }
 
   function sidebar(tree, groups, ctx) {
     tree.textContent = "";
-    for (const g of groups) {
-      const tasks = g.id && ctx.tasks ? tasksRow(g, ctx) : null;
-      add(tree, add(el("div", "group"), groupHead(g, ctx), tasks, ...g.repos.map((r) => repoEl(r, ctx, g))));
+    const note = ctx.side ? ctx.side.note() : "";
+    if (note) add(tree, el("div", "side-note", note));
+    if (ctx.side && ctx.side.allHref) {
+      const all = el("a", "side-alone", "Only this group. Show every group");
+      all.href = ctx.side.allHref;
+      add(tree, all);
     }
+    for (const g of groups) add(tree, groupEl(g, ctx));
     if (!groups.length) add(tree, el("div", "quiet", "No repos yet. Open one in the terminal lens first."));
   }
 

@@ -113,11 +113,14 @@
   function closeMenu() { $("caps-menu").classList.add("hidden"); }
 
   // menu opens the right-click menu of a repo row (kind "repo") or a
-  // group's name ("group") where the click was, or under the button.
+  // group's name ("group") where the click was, or under the button. A
+  // group's menu starts with the page's own entries for it
+  // (deps.groupItems: move it, open it alone, threadsidectl.js).
   function menu(kind, item, ev) {
     const box = $("caps-menu");
     const pick = kind === "repo" ? () => open("repo", { id: item.id, name: item.name }) : () => open("group", { id: item.id, name: item.name });
-    CV.menu(box, [["Skills and plugins…", pick]], pointOf(ev), closeMenu);
+    const own = kind === "group" && deps.groupItems ? deps.groupItems(item) : [];
+    CV.menu(box, [["Skills and plugins…", pick], ...own], pointOf(ev), closeMenu);
     box.classList.remove("hidden");
   }
 
@@ -195,9 +198,10 @@
   // create wires the screens to the page: deps.call is its fetch,
   // deps.lists() its windows, workspaces and sessions, deps.changed() has
   // them read again, deps.confirm asks the human, and deps.settings is the
-  // Settings window, which gets this page's tab at its front. The tab reads
-  // its list each time the window opens, and lets go when it closes. One
-  // page, one of these.
+  // Settings window, which gets this page's tab at its front;
+  // deps.groupItems(group), optional, adds [label, fn] entries to a group's
+  // menu. The tab reads its list each time the window opens, and lets go
+  // when it closes. One page, one of these.
   function create(d) {
     deps = d;
     wire();

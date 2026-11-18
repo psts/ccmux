@@ -26,7 +26,17 @@
   // adds its own tab to it, skills and plugins, and keeps the panel a
   // right-click on a repo or group opens (threadcapsctl.js).
   const Settings = window.ccmuxSettings;
-  const Caps = window.ccmuxThreadCapsCtl.create({ call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings });
+
+  // Each person's own sidebar (threadsidectl.js): the groups in their
+  // order, folded or not, kept by the daemon per login. Its group entries
+  // (Move up/down, Open alone) lead the group's right-click menu.
+  const Side = window.ccmuxThreadSideCtl.create({
+    call, user: () => S.user, changed: () => { if (S.listed) schedule(); }, tree: () => $("tree"),
+    taskAlerts: (g) => (g.id ? Tasks.sidebar.taskSum(g).alert || 0 : 0), threadsPath: R.THREADS,
+  });
+  const Caps = window.ccmuxThreadCapsCtl.create({
+    call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings, groupItems: (g) => Side.menuItems(g),
+  });
 
   // A group's task queue (threadtasks.js) shows in the main area in place
   // of a conversation: opening it leaves the one on screen, and picking
@@ -73,6 +83,7 @@
     S.listError = failed;
     S.listed = true;
     drawAll();
+    Side.load();
     Caps.listsChanged();
     maybeActed();
     loadTeam();
@@ -118,7 +129,7 @@
   // to-do list.
   function pick(sel, push = true) {
     S.sel = sel;
-    if (push) history.pushState(null, "", R.threadHref(sel));
+    if (push) history.pushState(null, "", Side.keepAlone(R.threadHref(sel)));
     S.stream = Stream.fresh();
     S.drawn.clear();
     $("blocks").textContent = "";
@@ -203,10 +214,20 @@
     drawComposer();
   }
 
+  // drawSide leaves the sidebar alone while a group is being dragged: a
+  // redraw would take away the element the drag started on.
   function drawSide() {
     const sess = session();
     const ws = workspace();
-    View.sidebar($("tree"), Team.decorate(Model.tree(S.windows, S.workspaces, S.sessions), S.sessions, S.workspaces, S.threads), {
+    if (!Side.dragging()) drawTree(sess, ws);
+    $("new-thread").disabled = !ws;
+    const info = S.stream.info || {};
+    $("side-version").textContent = info.claudeCode || S.stream.sdk ? `Claude Code ${info.claudeCode || "?"} · SDK ${S.stream.sdk || "?"}` : "";
+  }
+
+  function drawTree(sess, ws) {
+    const groups = Team.decorate(Model.tree(S.windows, S.workspaces, S.sessions), S.sessions, S.workspaces, S.threads);
+    View.sidebar($("tree"), Side.arrange(groups), {
       isLead: (r) => (sess ? !!r.lead && r.lead.id === sess.id : S.sel.kind === "draft" && S.sel.as === "lead" && S.sel.ws === r.id),
       isSession: (s) => !!sess && s.id === sess.id,
       inRepo: (r) => !!ws && ws.id === r.id,
@@ -215,10 +236,8 @@
       menu: (kind, item, e) => Caps.menu(kind, item, e),
       tasks: Tasks.sidebar,
       todos: Todo.sidebar,
+      side: Side.side,
     });
-    $("new-thread").disabled = !ws;
-    const info = S.stream.info || {};
-    $("side-version").textContent = info.claudeCode || S.stream.sdk ? `Claude Code ${info.claudeCode || "?"} · SDK ${S.stream.sdk || "?"}` : "";
   }
 
   // liveState is where the picked session is right now: its row's word,
@@ -805,6 +824,7 @@
     // A notification tap that lands on this page names where to go.
     if (navigator.serviceWorker) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "ccmux-navigate" && e.data.url) location.href = e.data.url; });
     S.user = await identity();
+    await Side.load(); // before the first draw, so the groups do not jump into place
     Tasks.refresh();
     Todo.refresh();
     connectFeed();

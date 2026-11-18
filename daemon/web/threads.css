@@ -374,3 +374,27 @@ span.cap-kind { font-size: 11px; font-weight: 600; color: var(--fg2); background
   .cap-src { grid-template-columns: minmax(0, 1fr) auto; }
   .cap-src > .cap-tag, .cap-src > span:empty { grid-column: 1; grid-row: 2; justify-self: start; }
 }
+/* Each person's own sidebar (threadsidectl.js): a chevron folds a group
+   into its name; a folded group's name pulses like a row when anything
+   inside needs someone (orange) or finished unseen (green), with a count;
+   a mouse drags a group by its name and a line shows where it lands. */
+.group-head .group-name { flex: 1; min-width: 0; }
+.group-head .group-name.foldable { cursor: pointer; padding-left: 2px; }
+.group-fold { border: 0; background: transparent; color: var(--muted); width: 20px; padding: 0 0 4px 6px; font-size: 11px; line-height: 1; flex: none; }
+.group-fold:hover { color: var(--fg); }
+.group-head[draggable="true"] { cursor: grab; }
+.group-head.att-waiting, .group-head.att-done { border-radius: 8px; padding-top: 4px; }
+.group-head.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
+.group-head.att-waiting .group-name { color: var(--wait); }
+.group-head.att-done { background: rgba(21, 128, 61, .10); box-shadow: inset 3px 0 0 var(--run); }
+@media (prefers-reduced-motion: no-preference) {
+  .group-head.att-waiting { animation: row-pulse-wait 1.6s ease-in-out infinite; }
+  .group-head.att-done { animation: row-pulse-done 1.6s ease-in-out infinite; }
+}
+.group-count { flex: none; min-width: 18px; padding: 0 6px; margin: 0 4px 4px 0; border-radius: 9px; font-size: 11px; font-weight: 600; text-align: center; color: var(--on-accent); background: var(--muted); }
+.group-head.att-waiting .group-count { background: var(--wait); }
+.group-head.att-done .group-count { background: var(--run); }
+.group.drop-before { box-shadow: 0 -3px 0 var(--blue); }
+.group.drop-after { box-shadow: 0 3px 0 var(--blue); }
+.side-note { font-size: 12px; color: var(--red); background: var(--red-bg); border: 1px solid var(--red-line); border-radius: 8px; padding: 6px 8px; }
+.side-alone { font-size: 12px; padding: 0 8px; }

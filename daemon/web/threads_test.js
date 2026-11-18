@@ -130,7 +130,7 @@ const lead = { id: "lead1", workspaceId: "ws1", kind: "lead", cwd: "/p/app", mod
 
 async function boot(opts = {}) {
   const doc = page();
-  const book = { calls: [], sockets: [], timers: [], frames: [], pushed: [] };
+  const book = { calls: [], sockets: [], timers: [], frames: [], pushed: [], opened: [] };
   const workspaces = opts.workspaces || [repo];
   const lists = { windows: opts.windows || [{ id: "w1", name: "ChartLabs", workspaceIds: workspaces.map((w) => w.id) }], workspaces, sessions: opts.sessions || [] };
   const routes = [
@@ -157,6 +157,7 @@ async function boot(opts = {}) {
     localStorage: { getItem: () => "stored-name" }, navigator: opts.push ? pushBrowser(book).navigator : {},
     WebSocket: function (url) { const s = { url: String(url), readyState: 1, sent: [], send: (x) => s.sent.push(JSON.parse(x)), close() { s.closed = true; } }; book.sockets.push(s); return s; },
     requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval() {},
+    open: (url, target) => book.opened.push([url, target]),
     addEventListener() {}, confirm: opts.confirm || (() => true), prompt: () => "Renamed", createImageBitmap: async () => ({ width: 10, height: 10 }),
     // The Settings window's tabs: identity.js bounds its whoami read, and the
     // Agents tab says on document when it read the bases.
@@ -1108,4 +1109,74 @@ test("the session's own step list is the Steps tab, apart from the repo's to-do 
   const empty = await todoPage([]);
   await empty.p.frame(snapshot());
   assert.equal(empty.p.$("tab-steps").textContent, "No step list in this session.");
+});
+
+// --- each person's own sidebar (threadsidectl.js) ---
+
+const twoGroups = () => {
+  const app = repo, dash = { id: "ws2", name: "shop", repoPath: "/p/shop" };
+  const helpMe = { ...lead, id: "d1", workspaceId: "ws2", attention: "needs_input" };
+  return {
+    workspaces: [app, dash], sessions: [lead, helpMe],
+    windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1"] }, { id: "w2", name: "dasha", workspaceIds: ["ws2"] }],
+  };
+};
+const groupNames = (p) => p.$("tree").querySelectorAll(".group-name").map((n) => n.textContent);
+const puts = (p) => p.book.calls.filter((c) => c.method === "PUT").map((c) => [c.url, c.body]);
+
+test("the person's order and folds draw at once: a folded group is its name, pulsing with a count", async () => {
+  const mine = [{ windowId: "w2", collapsed: true, position: 0 }];
+  const p = await boot({ ...twoGroups(), routes: [[/^GET \/v1\/me\/sidebar/, () => ({ groups: mine })]] });
+  assert.ok(p.book.calls.some((c) => c.url === "/v1/me/sidebar?user=Pat"), "asked as the page's own name");
+  assert.deepEqual(groupNames(p), ["dasha", "ChartLabs"]);
+  const folded = p.$("tree").querySelector(".group.folded");
+  assert.equal(folded.dataset.gid, "w2");
+  assert.equal(folded.querySelectorAll(".row").length, 0, "its repos are folded away");
+  const head = folded.querySelector(".group-head");
+  assert.ok(head.classList.contains("att-waiting"), "a session inside needs someone");
+  assert.equal(head.querySelector(".group-count").textContent, "1");
+  head.querySelector(".group-fold").click();
+  await p.settle();
+  assert.deepEqual(puts(p), [["/v1/me/sidebar/w2?user=Pat", { collapsed: false }]]);
+  assert.equal(p.$("tree").querySelector(".group.folded"), null, "shown at once");
+  assert.equal(p.$("tree").querySelectorAll(".row-name").map((n) => n.textContent).join(","), "shop,app");
+});
+
+test("a fold that cannot be saved goes back and says so", async () => {
+  const p = await boot({ ...twoGroups(), routes: [[/^PUT \/v1\/me\/sidebar\//, () => ({ fail: 503, error: "store down" })]] });
+  p.$("tree").querySelector(".group-fold").click();
+  await p.settle();
+  assert.equal(p.$("tree").querySelector(".group.folded"), null, "back as it was");
+  assert.match(p.$("tree").querySelector(".side-note").textContent, /^Could not save the fold \(store down\)/);
+});
+
+test("a group's menu moves it and opens it alone; Other has none of that", async () => {
+  const p = await boot({ ...twoGroups(), workspaces: [...twoGroups().workspaces, { id: "ws3", name: "loose", repoPath: "/p/loose" }] });
+  p.$("tree").querySelectorAll(".group-head .side-more")[0].click();
+  const items = () => p.$("caps-menu").querySelectorAll(".ctx-item");
+  assert.deepEqual(items().map((b) => b.textContent), ["Skills and plugins…", "Move down", "Open alone in a new window"]);
+  items()[1].click();
+  await p.settle();
+  assert.deepEqual(puts(p), [["/v1/me/sidebar/order?user=Pat", { windowIds: ["w2", "w1"] }]]);
+  assert.deepEqual(groupNames(p), ["dasha", "ChartLabs", "Other"], "moved at once");
+  p.$("tree").querySelectorAll(".group-head .side-more")[1].click();
+  assert.deepEqual(items().map((b) => b.textContent), ["Skills and plugins…", "Move up", "Open alone in a new window"]);
+  items()[2].click();
+  assert.deepEqual(p.book.opened, [["/threads.html?g=w1", "_blank"]]);
+  assert.deepEqual(groupNames(p), ["dasha", "ChartLabs", "Other"], "Other stays last");
+  assert.equal(p.$("tree").querySelectorAll(".group-fold").length, 2, "Other has no chevron");
+});
+
+test("a page opened for one group shows it alone, unfolded, and keeps to it", async () => {
+  const mine = [{ windowId: "w2", collapsed: true, position: 0 }];
+  const p = await boot({ ...twoGroups(), search: "?g=w2", routes: [[/^GET \/v1\/me\/sidebar/, () => ({ groups: mine })]] });
+  assert.deepEqual(groupNames(p), ["dasha"]);
+  assert.equal(p.$("tree").querySelector(".group-fold"), null, "nothing to fold here");
+  assert.equal(p.$("tree").querySelectorAll(".row").length, 1, "its repos show though the person folded it");
+  assert.equal(p.$("tree").querySelector(".side-alone").href, "/threads.html");
+  p.$("tree").querySelector(".group-head .side-more").click();
+  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…"]);
+  p.$("tree").querySelector(".row").click();
+  await p.settle();
+  assert.equal(p.book.pushed.pop(), "/threads.html?s=d1&g=w2");
 });
