@@ -95,7 +95,7 @@ func TestBrief_ForYouRuleAndHint(t *testing.T) {
 	plain := store.Task{ID: 7, Title: "Export"}
 	looked := store.Task{ID: 7, Title: "Export", Look: true}
 	b := briefText(plain, part, layoutOf("/root", plain, part), "dev", nil, "")
-	for _, want := range []string{`carry "read"`, "at most 3 short lines", "under 140", "existing data changed or deleted",
+	for _, want := range []string{`carry "read"`, "at most 3 short lines", "at most 140", "existing data changed or deleted",
 		"money", "anything sent to people", "security", "Most tasks have none"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("brief lacks %q", want)

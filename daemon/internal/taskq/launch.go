@@ -183,7 +183,7 @@ const briefDone = `## When you are done
 const briefForYou = `
 ## For you: what a person must check
 
-Your report may carry "read": at most 3 short lines (each under 140
+Your report may carry "read": at most 3 short lines (at most 140
 characters) saying what a person must check before this ships, and why.
 Only for:
 - existing data changed or deleted (a migration that rewrites or drops,

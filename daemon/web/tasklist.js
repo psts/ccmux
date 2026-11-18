@@ -158,9 +158,46 @@
   // needsPerson is whether a task waits on a person (the row's highlight).
   function needsPerson(t) { return t.status === "needs_you" || t.status === "merge_failed"; }
 
+  // forYou is what a task's builders say a person must check before it
+  // ships, its parts' lines in order; a task of several parts names the
+  // repo on each (taskq.ForYouOf words them the same way for the tool).
+  function forYou(t) {
+    const mine = partsOf(t);
+    return mine.flatMap((p) => (p.forYou || []).map((line) => (mine.length > 1 ? `${p.repo}: ${line}` : line)));
+  }
+
+  // preview is a note as a row shows it: its first line, cut short. The
+  // whole note is under "Full report".
+  const PREVIEW_CUT = 120;
+  function preview(note) {
+    const first = String(note || "").split("\n").map((l) => l.trim()).find((l) => l) || "";
+    return first.length > PREVIEW_CUT ? first.slice(0, PREVIEW_CUT - 1).trimEnd() + "…" : first;
+  }
+
+  // reportHtml draws a builder's report as markup, from threadmd.js's
+  // blocks (parse): headings, lists, code. Every text and link goes
+  // through esc, so a report can never become markup of its own.
+  function reportHtml(blocks, esc) {
+    const inline = (list) => list.map((sp) => {
+      if (sp.t === "code") return `<code>${esc(sp.text)}</code>`;
+      if (sp.t === "b") return `<strong>${esc(sp.text)}</strong>`;
+      if (sp.t === "a") return `<a href="${esc(sp.href)}" target="_blank" rel="noopener noreferrer">${esc(sp.text)}</a>`;
+      return esc(sp.text);
+    }).join("");
+    const draw = {
+      p: (b) => `<p class="md-p">${b.lines.map(inline).join("<br>")}</p>`,
+      h: (b) => `<div class="md-h md-h${Math.min(b.level, 3)}">${inline(b.spans)}</div>`,
+      li: (b) => `<div class="md-li" style="margin-left:${b.depth * 16}px"><span class="md-mark">${esc(b.marker)}</span>` +
+        `<span class="md-item">${inline(b.spans)}</span></div>`,
+      code: (b) => `<pre class="md-code"><code>${esc(b.text)}</code></pre>`,
+      pre: (b) => `<pre class="md-pre">${esc(b.text)}</pre>`,
+    };
+    return blocks.map((b) => draw[b.type](b)).join("");
+  }
+
   const api = {
     sections, repos, summary, waitsOn, moveLabel, partWord, builtWith, slotChoices, priorityChoices,
-    repoTasks, statusWord, needsPerson, SECTIONS,
+    repoTasks, statusWord, needsPerson, forYou, preview, reportHtml, SECTIONS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxTaskList = api;

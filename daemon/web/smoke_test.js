@@ -481,7 +481,7 @@ async function tasksCases() {
     return { ok: true, status: 200, json: async () => reply, text: async () => "" };
   };
   const { box, on, line } = taskBox(r);
-  for (const f of ["tasklist.js", "taskview.js", "tasks.js"]) {
+  for (const f of ["threadmd.js", "tasklist.js", "taskview.js", "tasks.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), r.ctx, { filename: f });
   }
   await settle();
@@ -571,31 +571,47 @@ async function taskAfterChecks(r, box, on, setReply) {
   await taskLookChecks(r, box, on, setReply);
 }
 
-// A task its planner marked for a person to read says so on its row,
-// merged or not, and "Mark as read" clears the mark and nothing else. A
-// task without the mark shows neither. Runs on the same open queue, task
-// #2 expanded.
+// A task is marked only when a builder listed something a person must
+// check: its row says "For you", the opened task shows the lines in a box
+// above the folded full report, and "Mark as read" sends read and nothing
+// else. The planner's look alone marks nothing. Runs on the same open
+// queue, task #2 expanded.
 async function taskLookChecks(r, box, on, setReply) {
-  const task = (look) => ({ id: 2, title: "y", status: "done", windowId: "win-a", moves: [], removable: true, look,
-    parts: [{ id: 5, repo: "app", status: "ready", plan: "p", busName: "app-task-2" }] });
+  const report = "## Built\n- the `prices` table\n\nchecked with go test";
+  const task = (marked, forYou) => ({ id: 2, title: "y", status: "done", windowId: "win-a", moves: [], removable: true, look: true, marked,
+    parts: [{ id: 5, repo: "app", status: "ready", plan: "p", busName: "app-task-2", note: report, forYou }] });
   setReply({ tasks: [task(false)], counts: {} });
   r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
   await settle();
-  check("a task with no mark shows none", !box.innerHTML.includes("tq-look") && !box.innerHTML.includes("Mark as read"), box.innerHTML.slice(0, 900));
-  setReply({ tasks: [task(true)], counts: {} });
+  check("a task with no For-you lines shows no mark, even with the planner's look",
+    !box.innerHTML.includes("tq-look") && !box.innerHTML.includes("Mark as read") && !box.innerHTML.includes("tq-foryou"), box.innerHTML.slice(0, 900));
+  check("its report is folded away under Full report and read as Markdown, not shown inline",
+    box.innerHTML.includes('<details class="tq-report" data-report="5"><summary>Full report</summary>') &&
+    box.innerHTML.includes('<div class="md-h md-h2">Built</div>') && box.innerHTML.includes("<code>prices</code>") &&
+    box.innerHTML.includes('<span class="tq-note">## Built</span>'), box.innerHTML.slice(0, 1500));
+  setReply({ tasks: [task(true, ["Prices change for every plan: check the table."])], counts: {} });
   r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
   await settle();
-  check("a marked task says a person should read it before it ships",
-    box.innerHTML.includes('class="tq-look"') && box.innerHTML.includes(">read before shipping</span>"), box.innerHTML.slice(0, 900));
-  check("and offers to clear the mark", box.innerHTML.includes('data-act="read">Mark as read<'), box.innerHTML.slice(0, 1500));
+  check("a task with lines says For you on its row",
+    box.innerHTML.includes('class="tq-look"') && box.innerHTML.includes(">For you</span>"), box.innerHTML.slice(0, 900));
+  check("and shows the lines in a box",
+    box.innerHTML.includes('<div class="tq-foryou"><div class="tq-foryou-head">For you</div><ul><li>Prices change for every plan: check the table.</li></ul></div>'),
+    box.innerHTML.slice(0, 1500));
+  check("and offers to mark it read", box.innerHTML.includes('data-act="read">Mark as read<'), box.innerHTML.slice(0, 1500));
   const sent = [], okFetch = r.ctx.fetch;
   r.ctx.fetch = async (u, opts) => { if (opts && opts.method === "PATCH") sent.push([String(u).split("?")[0], opts.body]); return okFetch(u, opts); };
   const button = { dataset: { act: "read" }, closest: () => null };
   on.click({ target: { closest: (sel) => (sel === "[data-act]" ? button : sel === ".tq-task" ? { dataset: { id: "2" } } : null) } });
   await settle();
   r.ctx.fetch = okFetch;
-  check("Mark as read clears the mark and sends nothing else",
-    sent.length === 1 && sent[0][0] === "/v1/tasks/2" && sent[0][1] === '{"look":false}', JSON.stringify(sent));
+  check("Mark as read sends read and nothing else",
+    sent.length === 1 && sent[0][0] === "/v1/tasks/2" && sent[0][1] === '{"read":true}', JSON.stringify(sent));
+  setReply({ tasks: [task(false, ["Prices change for every plan: check the table."])], counts: {} });
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
+  check("once read, the mark goes and the lines stay, quieter",
+    !box.innerHTML.includes('class="tq-look"') && !box.innerHTML.includes("Mark as read") &&
+    box.innerHTML.includes('<div class="tq-foryou read"><div class="tq-foryou-head">For you · read</div>'), box.innerHTML.slice(0, 1500));
 }
 
 // An open window with no session still gets its section, so its Tasks row
@@ -959,7 +975,7 @@ async function pageWindowCases() {
     !boarded.ctx.ccmuxBoard.isOpen() && boarded.ctx.ccmuxPage.current() === "win-b",
     `board open: ${boarded.ctx.ccmuxBoard.isOpen()}, current ${boarded.ctx.ccmuxPage.current()}`);
   // Each window has its own task queue, so the old window's goes the same way.
-  for (const f of ["tasklist.js", "taskview.js", "tasks.js"]) {
+  for (const f of ["threadmd.js", "tasklist.js", "taskview.js", "tasks.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), boarded.ctx, { filename: f });
   }
   boarded.ctx.ccmuxTasks.open({ id: "win-b", name: "ChartLabs" });

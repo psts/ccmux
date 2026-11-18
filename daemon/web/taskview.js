@@ -15,15 +15,17 @@
 //   show() / hide()  put the view on screen and take it off
 //   changed()        the counts or the open window changed: redraw the sidebar
 //   openSession(ws, pane)  show a part's worker session
-// and uses only dom.js's esc and tasklist.js (ccmuxTaskList) besides.
+// and uses only dom.js's esc, tasklist.js (ccmuxTaskList) and threadmd.js
+// (ccmuxThreadMD, to read a builder's report) besides.
 (() => {
   "use strict";
   const L = () => window.ccmuxTaskList;
+  const MD = () => window.ccmuxThreadMD;
 
   function create(host) {
     // win is the window whose queue the view shows ("" while it is closed);
     // counts are keyed by window id.
-    const q = { tasks: [], counts: {}, win: "", winName: "", repo: "", expanded: new Set(), drafts: new Map(), pending: false };
+    const q = { tasks: [], counts: {}, win: "", winName: "", repo: "", expanded: new Set(), reports: new Set(), drafts: new Map(), pending: false };
     const shown = () => q.tasks.filter((t) => t.windowId === q.win);
     const url = (p) => `/v1/tasks${p || ""}?user=${encodeURIComponent(host.user())}`;
     const box = () => host.box();
@@ -203,8 +205,8 @@
         `<div class="tq-line" data-act="toggle"><span class="tq-id">#${t.id}</span>` +
         `<span class="tq-name">${esc(t.title)}</span>${chips}` +
         (w ? `<span class="tq-after${w.blocked ? " blocked" : ""}">${esc(w.text)}</span>` : "") +
-        (t.look ? `<span class="tq-look" title="Its plan asks a person to read this work before it ships. It merges on its own all the same.">read before shipping</span>` : "") +
-        (t.note ? `<span class="tq-note">${esc(t.note.split("\n")[0])}</span>` : "") + `</div>` +
+        (t.marked ? `<span class="tq-look" title="Its builder lists something a person must check before it ships. It merges on its own all the same.">For you</span>` : "") +
+        (t.note ? `<span class="tq-note">${esc(L().preview(t.note))}</span>` : "") + `</div>` +
         (open ? detailHtml(t) : "") + `</div>`;
     }
 
@@ -218,9 +220,28 @@
         : "";
       // A note of several lines (a failed merge's check output) shows in full here.
       const note = t.note && t.note.includes("\n") ? `<pre class="tq-plan tq-full-note">${esc(t.note)}</pre>` : "";
-      return `<div class="tq-detail">${title}${note}${(t.parts || []).map((p) => partHtml(t, p)).join("")}` +
+      return `<div class="tq-detail">${forYouHtml(t)}${title}${note}${(t.parts || []).map((p) => partHtml(t, p)).join("")}` +
         `<div class="tq-meta">filed by ${esc(t.filedBy || "?")}</div>` +
         `<div class="tq-actions">${buttonsHtml(t)}</div></div>`;
+    }
+
+    // forYouHtml is the small box of what a task's builders say a person
+    // must check, and why: at most three short lines a part. Once a person
+    // has marked them read the box stays, quieter, for the record.
+    function forYouHtml(t) {
+      const lines = L().forYou(t);
+      if (!lines.length) return "";
+      return `<div class="tq-foryou${t.marked ? "" : " read"}"><div class="tq-foryou-head">For you${t.marked ? "" : " · read"}</div>` +
+        `<ul>${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`;
+    }
+
+    // reportHtml is a part's report, folded away under "Full report" and
+    // read as Markdown; it stays open across redraws once a person opens it.
+    function reportHtml(p) {
+      if (!p.note) return "";
+      const open = q.reports.has(p.id) ? " open" : "";
+      return `<details class="tq-report" data-report="${p.id}"${open}><summary>Full report</summary>` +
+        `<div class="md">${L().reportHtml(MD().parse(p.note), esc)}</div></details>`;
     }
 
     function partHtml(t, p) {
@@ -236,8 +257,8 @@
         `<span class="tq-repo-chip tq-part-${esc(p.status)}">${esc(p.repo)}</span>` +
         `<span class="tq-part-status">${esc(L().partWord(p.status))}</span>` +
         (run ? `<span class="tq-meta" title="The model and effort this part's Claude starts with">${esc(run)}</span>` : "") +
-        (p.note ? `<span class="tq-note">${esc(p.note)}</span>` : "") +
-        `<span class="tq-meta">${where}</span>${buttons ? `<span class="tq-actions">${buttons}</span>` : ""}</div>${plan}</div>`;
+        (p.note ? `<span class="tq-note">${esc(L().preview(p.note))}</span>` : "") +
+        `<span class="tq-meta">${where}</span>${buttons ? `<span class="tq-actions">${buttons}</span>` : ""}</div>${reportHtml(p)}${plan}</div>`;
     }
 
     function buttonsHtml(t) {
@@ -247,7 +268,7 @@
       if (t.canUp) out.push(b("up", "↑"));
       if (t.canDown) out.push(b("down", "↓"));
       for (const dep of (t.orderable && t.afterIds) || []) out.push(b("unwait", `Stop waiting on #${dep}`, ` data-to="${dep}"`));
-      if (t.look) out.push(b("read", "Mark as read"));
+      if (t.marked) out.push(b("read", "Mark as read"));
       for (const to of t.moves || []) out.push(b("move", L().moveLabel(to), ` data-to="${to}"`));
       if (t.removable) out.push(b("remove", "Remove"));
       return out.join("");
@@ -269,6 +290,13 @@
         if (kind === "repo") { q.repo = e.target.value; render(); }
         if (kind === "slots" || kind === "priority") setNumber(kind, Number(e.target.value));
       });
+      // A report's <details> keeps its open state across redraws. toggle
+      // does not bubble, so it is caught on the way down.
+      b.addEventListener("toggle", (e) => {
+        const id = Number(e.target.dataset && e.target.dataset.report);
+        if (!id) return;
+        if (e.target.open) q.reports.add(id); else q.reports.delete(id);
+      }, true);
       b.addEventListener("focusout", () => setTimeout(() => { if (q.pending) render(); }, 0));
     }
 
@@ -332,8 +360,8 @@
       down: (id) => send(`/${id}/move`, "POST", { dir: "down" }),
       move: (id, to) => send(`/${id}`, "PATCH", { status: to }),
       unwait,
-      // A person has read the work its plan asked them to: the mark goes.
-      read: (id) => send(`/${id}`, "PATCH", { look: false }),
+      // A person has read what its builders listed: the mark goes, the lines stay.
+      read: (id) => send(`/${id}`, "PATCH", { read: true }),
       session: openSession,
       retry: (id, _to, partId) => send(`/${id}/parts/${partId}`, "PATCH", { retry: true }),
       // The worker gets the task's failure note and the part runs again.

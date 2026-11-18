@@ -138,3 +138,28 @@ test("a repo lists the unfinished tasks it has a part in, in its window, needs-y
   assert.strictEqual(L.statusWord("needs_you"), "Needs you");
   assert.ok(L.needsPerson(ts[5]) && !L.needsPerson(ts[0]));
 });
+
+test("forYou lists the builders' lines, naming the repo only when there are several parts", () => {
+  assert.deepStrictEqual(L.forYou({ parts: [{ repo: "app" }] }), []);
+  assert.deepStrictEqual(L.forYou({ parts: [{ repo: "app", forYou: ["Prices change."] }] }), ["Prices change."]);
+  assert.deepStrictEqual(L.forYou({ parts: [{ repo: "app", forYou: ["Email goes out."] }, { repo: "api" }, { repo: "web", forYou: ["New endpoint."] }] }),
+    ["app: Email goes out.", "web: New endpoint."]);
+});
+
+test("preview is a note's first line, cut short", () => {
+  assert.strictEqual(L.preview("\n  DECISIONS I MADE\n- one"), "DECISIONS I MADE");
+  assert.strictEqual(L.preview(""), "");
+  const long = L.preview("x".repeat(300));
+  assert.ok(long.length === 120 && long.endsWith("…"), long);
+});
+
+test("reportHtml draws headings, lists and code, and escapes every text", () => {
+  const esc = (s) => String(s).replace(/[<>&"']/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c]));
+  const md = require("./threadmd.js");
+  const html = L.reportHtml(md.parse("## Built\n- a `<b>` tag\n  - nested **bold**\n\n```go\nx := 1 < 2\n```\n[docs](https://e.x/\"a)"), esc);
+  assert.ok(html.includes('<div class="md-h md-h2">Built</div>'), html);
+  assert.ok(html.includes('<span class="md-item">a <code>&lt;b&gt;</code> tag</span>'), html);
+  assert.ok(html.includes('margin-left:16px') && html.includes("<strong>bold</strong>"), html);
+  assert.ok(html.includes('<pre class="md-code"><code>x := 1 &lt; 2</code></pre>'), html);
+  assert.ok(!html.includes("<b>") && !html.includes('"a)'), html);
+});

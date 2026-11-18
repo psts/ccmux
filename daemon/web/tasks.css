@@ -31,6 +31,20 @@
 .tasks .tq-after, .tasks .tq-note { font-size: 11px; color: var(--muted); }
 .tasks .tq-after.blocked { color: var(--tq-needs); }
 .tasks .tq-look { font-size: 11px; color: var(--tq-needs); border: 1px solid var(--tq-needs); border-radius: 4px; padding: 0 6px; white-space: nowrap; }
+.tasks .tq-foryou { border: 1px solid var(--tq-needs); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+.tasks .tq-foryou.read { border-color: var(--line); color: var(--muted); }
+.tasks .tq-foryou-head { font-size: 11px; font-weight: 600; color: var(--tq-needs); text-transform: uppercase; letter-spacing: .04em; }
+.tasks .tq-foryou.read .tq-foryou-head { color: var(--muted); }
+.tasks .tq-foryou ul { margin: 4px 0 0; padding-left: 18px; }
+.tasks .tq-foryou li { margin: 2px 0; overflow-wrap: anywhere; }
+.tasks .tq-report > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.tasks .tq-report .md { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; padding: 6px 0 0; max-height: 60vh; overflow: auto; }
+.tasks .tq-report .md-p { margin: 0 0 6px; }
+.tasks .tq-report .md-h { font-weight: 600; margin: 8px 0 4px; }
+.tasks .tq-report .md-li { display: flex; gap: 8px; margin: 2px 0; }
+.tasks .tq-report .md-mark { color: var(--muted); flex: none; min-width: 12px; }
+.tasks .tq-report code, .tasks .tq-report .md-pre { font: 12px/1.45 ui-monospace, Menlo, monospace; }
+.tasks .tq-report .md-code, .tasks .tq-report .md-pre { margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; overflow-x: auto; white-space: pre; }
 .tasks .tq-detail { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .tasks .tq-edit-title, .tasks .tq-edit-plan {
   background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px;
