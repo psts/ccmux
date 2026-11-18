@@ -481,7 +481,7 @@ async function tasksCases() {
     return { ok: true, status: 200, json: async () => reply, text: async () => "" };
   };
   const { box, on, line } = taskBox(r);
-  for (const f of ["tasklist.js", "tasks.js"]) {
+  for (const f of ["tasklist.js", "taskview.js", "tasks.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), r.ctx, { filename: f });
   }
   await settle();
@@ -516,6 +516,14 @@ async function tasksCases() {
   check("a failed change keeps saying why", line.textContent.includes("Couldn't change how many run at once"), line.textContent);
   check("and the picker stays at the stored number", /<option value="0" selected>Paused/.test(box.innerHTML), box.innerHTML.slice(0, 600));
   r.ctx.fetch = okFetch;
+  check("beside it, the window's priority, none until one is set",
+    /data-act="priority"[^]*<option value="0" selected>No priority/.test(box.innerHTML), box.innerHTML.slice(0, 900));
+  on.change({ target: { dataset: { act: "priority" }, value: "1" } });
+  await settle();
+  check("picking Priority 1 stores 1 for that window",
+    puts.some(([u, b]) => u === "/v1/windows/win-a/priority" && JSON.parse(b).priority === 1), JSON.stringify(puts));
+  check("the picker then shows Priority 1", /<option value="1" selected>Priority 1/.test(box.innerHTML), box.innerHTML.slice(0, 900));
+  check("and the window list holds it", r.evalIn("state.windows[0].taskPriority") === 1);
   await taskPartChecks(r, box, on, (v) => { reply = v; });
   check("opening the task view leaves the session", r.ctx.ccmuxTasks.isOpen() && r.evalIn("state.wsId") === null);
   check("the view holds the window it was opened for", r.ctx.ccmuxTasks.openWindow() === "win-a", r.ctx.ccmuxTasks.openWindow());
@@ -951,7 +959,7 @@ async function pageWindowCases() {
     !boarded.ctx.ccmuxBoard.isOpen() && boarded.ctx.ccmuxPage.current() === "win-b",
     `board open: ${boarded.ctx.ccmuxBoard.isOpen()}, current ${boarded.ctx.ccmuxPage.current()}`);
   // Each window has its own task queue, so the old window's goes the same way.
-  for (const f of ["tasklist.js", "tasks.js"]) {
+  for (const f of ["tasklist.js", "taskview.js", "tasks.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), boarded.ctx, { filename: f });
   }
   boarded.ctx.ccmuxTasks.open({ id: "win-b", name: "ChartLabs" });

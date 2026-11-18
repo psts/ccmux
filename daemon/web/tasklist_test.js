@@ -108,3 +108,33 @@ test("waiting lists the next to start first: the daemon's ahead, then queue orde
   const running = L.sections(ts, "").find((s) => s.key === "running");
   assert.deepStrictEqual(running.tasks.map((t) => t.id), [10], "other lists keep queue order");
 });
+
+test("the priority picker offers none and 1 to 9, on the number the window has", () => {
+  const c = L.priorityChoices(1, undefined);
+  assert.deepStrictEqual(c.map((x) => x.value), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepStrictEqual(c.filter((x) => x.selected).map((x) => x.label), ["No priority"]);
+  assert.deepStrictEqual(L.priorityChoices(0, 2).filter((x) => x.selected).map((x) => x.label), ["Priority 2"]);
+});
+
+test("no task runner, no priority picker", () => {
+  assert.deepStrictEqual(L.priorityChoices(undefined, 1), []);
+  assert.deepStrictEqual(L.priorityChoices(null, undefined), []);
+});
+
+test("a repo lists the unfinished tasks it has a part in, in its window, needs-you first", () => {
+  const p = (repoPath) => ({ repo: repoPath.split("/").pop(), repoPath });
+  const ts = [
+    { id: 1, windowId: "w", status: "waiting", parts: [p("/r/app")] },
+    { id: 2, windowId: "w", status: "running", parts: [p("/r/blog"), p("/r/app")] }, // filed by blog, has a part in app
+    { id: 3, windowId: "w", status: "done", parts: [p("/r/app")] },
+    { id: 4, windowId: "w", status: "cancelled", parts: [p("/r/app")] },
+    { id: 5, windowId: "other", status: "waiting", parts: [p("/r/app")] },
+    { id: 6, windowId: "w", status: "needs_you", parts: [p("/r/app")] },
+    { id: 7, windowId: "w", status: "planning", parts: [p("/r/blog")] },
+  ];
+  assert.deepStrictEqual(L.repoTasks(ts, "w", "/r/app").map((t) => t.id), [6, 2, 1]);
+  assert.deepStrictEqual(L.repoTasks(ts, "w", "/r/blog").map((t) => t.id), [2, 7]);
+  assert.deepStrictEqual(L.repoTasks(ts, "w", "/r/none"), []);
+  assert.strictEqual(L.statusWord("needs_you"), "Needs you");
+  assert.ok(L.needsPerson(ts[5]) && !L.needsPerson(ts[0]));
+});

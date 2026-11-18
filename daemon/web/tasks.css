@@ -1,0 +1,52 @@
+/* The task queue (taskview.js), on both pages: the lens (dark, style.css)
+   and the thread page (light, threads.css). Every rule hangs off .tasks, the
+   box the queue draws into, so nothing here reaches the page around it.
+
+   Colours come from the tokens below: each reads the page's own variable
+   where both pages have one (--bg, --fg, --muted, --line, --done) and falls
+   back where only one does (the lens has --bg2, --accent and --needs, the
+   thread page --card, --blue and --amber). */
+.tasks {
+  --tq-panel: var(--bg2, var(--card));
+  --tq-accent: var(--accent, var(--blue));
+  --tq-needs: var(--needs, var(--amber));
+  --tq-done: var(--done);
+}
+.tasks { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px 24px; font-size: 13px; }
+.tasks .tq-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.tasks .tq-title { font-weight: 600; font-size: 14px; }
+.tasks .tq-repo { background: var(--tq-panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font-size: 12px; padding: 2px 4px; }
+.tasks .tq-status { color: var(--muted); font-size: 12px; }
+.tasks .tq-status.bad { color: var(--tq-needs); }
+.tasks .tq-empty { color: var(--muted); max-width: 520px; line-height: 1.5; }
+.tasks .tq-sec h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+.tasks .tq-sec.tq-needs_you h3, .tasks .tq-sec.tq-merge_failed h3 { color: var(--tq-needs); }
+.tasks .tq-detail > .tq-full-note { color: var(--tq-needs); }
+.tasks .tq-n { font-weight: 400; }
+.tasks .tq-task { border: 1px solid var(--line); border-radius: 6px; background: var(--tq-panel); margin-bottom: 6px; }
+.tasks .tq-line { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; flex-wrap: wrap; }
+.tasks .tq-id { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tasks .tq-repo-chip { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; color: var(--muted); }
+.tasks .tq-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.tasks .tq-after, .tasks .tq-note { font-size: 11px; color: var(--muted); }
+.tasks .tq-after.blocked { color: var(--tq-needs); }
+.tasks .tq-look { font-size: 11px; color: var(--tq-needs); border: 1px solid var(--tq-needs); border-radius: 4px; padding: 0 6px; white-space: nowrap; }
+.tasks .tq-detail { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.tasks .tq-edit-title, .tasks .tq-edit-plan {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px;
+  font: inherit; padding: 4px 6px; width: 100%; box-sizing: border-box;
+}
+.tasks .tq-edit-plan { min-height: 180px; font: 12px/1.45 ui-monospace, Menlo, monospace; resize: vertical; }
+.tasks .tq-plan { margin: 0; white-space: pre-wrap; font: 12px/1.45 ui-monospace, Menlo, monospace; max-height: 50vh; overflow: auto; }
+.tasks .tq-meta { font-size: 11px; color: var(--muted); }
+.tasks .tq-part { border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.tasks .tq-part-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tasks .tq-part-status { font-size: 12px; }
+.tasks .tq-repo-chip.tq-part-running { border-color: var(--tq-accent); color: var(--fg); }
+.tasks .tq-repo-chip.tq-part-ready { border-color: var(--tq-done); color: var(--tq-done); }
+.tasks .tq-repo-chip.tq-part-needs_you, .tasks .tq-repo-chip.tq-part-failed { border-color: var(--tq-needs); color: var(--tq-needs); }
+.tasks .tq-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.tasks .tq-actions button {
+  background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+  font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+}

@@ -122,7 +122,46 @@
     return out;
   }
 
-  const api = { sections, repos, summary, waitsOn, moveLabel, partWord, builtWith, slotChoices, SECTIONS };
+  // priorityChoices is the Tasks header's priority picker beside the slots
+  // one, for a window whose slots are slots and priority is prio: none (0,
+  // served after every numbered window) and 1 to MAX_PRIORITY, the daemon's
+  // own bound (manager.MaxTaskPriority). No slots number means no task
+  // runner, and so no picker either.
+  const MAX_PRIORITY = 9;
+  function priorityChoices(slots, prio) {
+    if (typeof slots !== "number") return [];
+    const now = typeof prio === "number" ? prio : 0;
+    const out = [{ value: 0, label: "No priority", selected: now === 0 }];
+    for (let v = 1; v <= MAX_PRIORITY; v++) out.push({ value: v, label: `Priority ${v}`, selected: v === now });
+    return out;
+  }
+
+  // ORDER is each status's place in the page's sections; FINISHED is what
+  // a repo's row leaves out.
+  const ORDER = new Map(SECTIONS.map(([key], i) => [key, i]));
+  const FINISHED = new Set(["done", "cancelled"]);
+
+  // repoTasks is what a repo's row on the thread page lists: the unfinished
+  // tasks of window windowId with a part in the repo at repoPath, whoever
+  // filed them, in the order the queue's sections read (what needs a
+  // person first). A task with parts in two repos is under both.
+  function repoTasks(tasks, windowId, repoPath) {
+    const mine = (tasks || []).filter((t) => t.windowId === windowId && !FINISHED.has(t.status) &&
+      partsOf(t).some((p) => p.repoPath === repoPath));
+    return mine.sort((a, b) => (ORDER.get(a.status) ?? 99) - (ORDER.get(b.status) ?? 99));
+  }
+
+  // statusWord is a task's status as its section's title says it.
+  const TITLES = new Map(SECTIONS);
+  function statusWord(status) { return TITLES.get(status) || status; }
+
+  // needsPerson is whether a task waits on a person (the row's highlight).
+  function needsPerson(t) { return t.status === "needs_you" || t.status === "merge_failed"; }
+
+  const api = {
+    sections, repos, summary, waitsOn, moveLabel, partWord, builtWith, slotChoices, priorityChoices,
+    repoTasks, statusWord, needsPerson, SECTIONS,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxTaskList = api;
 })(typeof window !== "undefined" ? window : this);
