@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/hooktrace"
+	"ccmux.dev/ccmuxd/internal/tmux/tmuxtest"
 )
 
 // TestMain redirects the hook trace for every test in this package.
@@ -13,8 +14,10 @@ import (
 // hooktrace defaults to ~/Library/Logs/ccmux-hooks.jsonl — the file a developer
 // tails to debug their own notifications. Without this, running the suite
 // injects fabricated push decisions ("suppressed alice@example.com") into that
-// log and makes it lie about what the daemon did.
+// log and makes it lie about what the daemon did. Its tmux servers are its
+// own too (tmuxtest), so a second test run on the host cannot kill them.
 func TestMain(m *testing.M) {
+	freeServers := tmuxtest.PrivateServers()
 	dir, err := os.MkdirTemp("", "ccmux-api-trace")
 	if err != nil {
 		panic(err)
@@ -22,6 +25,7 @@ func TestMain(m *testing.M) {
 	hooktrace.SetPath(filepath.Join(dir, "trace.jsonl"))
 	code := m.Run()
 	_ = os.RemoveAll(dir)
+	freeServers()
 	// The ccmuxd a test built for its panes (envExecBinary) goes with the
 	// run: left behind, each run kept 45 MB in the temp folder, and they
 	// filled the disk (78 of them by 2026-11-17).

@@ -20,6 +20,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
+	"ccmux.dev/ccmuxd/internal/tmux/tmuxtest"
 )
 
 // TestAPI_CreateAttachInput drives the whole daemon stack over HTTP+WS against a
@@ -133,7 +134,7 @@ func TestAPI_HookAttentionReachesLens(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	hookSock := "/tmp/ccmux-hookattn.sock"
+	hookSock := tmuxtest.Socket("ccmux-hookattn.sock")
 	_ = os.Remove(hookSock)
 	hl, err := hooks.Listen(hookSock, mgr)
 	if err != nil {
@@ -209,7 +210,7 @@ func TestAPI_EventsFirehose(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	hookSock := "/tmp/ccmux-events.sock"
+	hookSock := tmuxtest.Socket("ccmux-events.sock")
 	_ = os.Remove(hookSock)
 	hl, err := hooks.Listen(hookSock, mgr)
 	if err != nil {

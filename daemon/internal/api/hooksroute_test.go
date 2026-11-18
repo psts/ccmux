@@ -13,6 +13,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
+	"ccmux.dev/ccmuxd/internal/tmux/tmuxtest"
 )
 
 // TestAPI_HostedHookRoutesToDaemonSocket proves the hooks-socket collision fix
@@ -53,9 +54,9 @@ func TestAPI_HostedHookRoutesToDaemonSocket(t *testing.T) {
 
 	// The daemon owns a DISTINCT hooks socket (mirrors the new default that is
 	// separate from the app's /tmp/ccmux-hooks.sock). Injected into hosted panes.
-	// A short /tmp path (macOS caps Unix socket paths at ~104 bytes; t.TempDir is
-	// too long).
-	daemonSock := "/tmp/ccmuxd-hooks-routetest.sock"
+	// A short path (macOS caps Unix socket paths at ~104 bytes; t.TempDir is
+	// too long), in this test binary's own folder (tmuxtest).
+	daemonSock := tmuxtest.Socket("ccmuxd-hooks-routetest.sock")
 	_ = os.Remove(daemonSock)
 	t.Cleanup(func() { _ = os.Remove(daemonSock) })
 	mgr.HooksSocket = daemonSock
