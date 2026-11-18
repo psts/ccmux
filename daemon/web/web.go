@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-//go:embed index.html dom.js identity.js settingsmodal.js settingsllm.js settingsllmedit.js settingsaccounts.js settingsharness.js settingsharnesses.js settingsharnessrules.js settingsagents.js retry.js app.js route.js pagewin.js touchscroll.js drawerswipe.js agentchat.js scratchpad.js board.js tasklist.js tasks.js sidebarresize.js tasksettings.js owns.js agentcaps.js agentmodal.js peers.js push.js paste.js keys.js flash.js windowwake.js update.js sw.js style.css manifest.webmanifest vendor icons threads.html threads.css threads.js threadview.js threadmodel.js threadteam.js threadstream.js threadwork.js threadmd.js threadimage.js threadpending.js threadcaps.js threadcapsview.js threadcapsctl.js
+//go:embed index.html dom.js identity.js settingsmodal.js settingsllm.js settingsllmedit.js settingsaccounts.js settingsharness.js settingsharnesses.js settingsharnessrules.js settingsagents.js retry.js app.js route.js pagewin.js touchscroll.js drawerswipe.js agentchat.js scratchpad.js board.js tasklist.js tasks.js sidebarresize.js tasksettings.js owns.js agentcaps.js agentmodal.js peers.js push.js paste.js keys.js flash.js windowwake.js update.js sw.js style.css settings.css manifest.webmanifest vendor icons threads.html threads.css threads.js threadview.js threadmodel.js threadteam.js threadstream.js threadwork.js threadmd.js threadimage.js threadpending.js threadcaps.js threadcapsview.js threadcapsctl.js
 var Files embed.FS
 
 // Build names this exact set of lens files: a short hash of every embedded
