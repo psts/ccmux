@@ -141,7 +141,7 @@ func (l Lander) prepare(i int, w Work) (checked, error) {
 		return checked{}, err
 	}
 	if left != "" {
-		return checked{}, fixable{i, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it", cut(left, 300))}
+		return checked{}, fixable{i, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it%s", cut(left, 300), linkHint(w.Worktree, left))}
 	}
 	rev, err := l.MergeGit.Rebase(w.Worktree, trunk)
 	var clash rebaseClash

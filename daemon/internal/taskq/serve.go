@@ -158,6 +158,11 @@ const serverRules = `
 - Start servers in the background and give the port on the command line
   (next dev -p PORT, uvicorn ... --port PORT and so on). The repo's own dev
   script usually fixes the usual port, so do not run it as it is.
+- Make your own tool folders in your worktree, never a link or copy of the
+  main checkout's: git ignores a real .venv/ folder but not a link, and the
+  merge refuses a stray file. For Python: uv venv, then uv pip install the
+  repo's requirements (uv shares files with its cache, so it costs little
+  disk; plain pip copies everything). For JS: the repo's own install.
 - Your worktree has none of the repo's untracked files. Copy the env files you
   need (.env.local and the like) from %s, and point every address of a server
   in this feature at its task name above. Leave other addresses as they are.
