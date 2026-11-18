@@ -130,14 +130,29 @@ func (s *Server) reportPart(who taskFiler, req paneTaskReq) (string, int, error)
 	if !isWorker {
 		return "", http.StatusNotFound, errors.New("this session is not building a part of a queued task, so there is nothing to report on")
 	}
-	next, err := taskq.Report(mine, req.Status, strings.TrimSpace(req.Note), s.taskNow())
+	next, err := taskq.Report(mine, req.Status, strings.TrimSpace(req.Note), req.Read, s.taskNow())
 	if err != nil {
 		return "", http.StatusConflict, err
 	}
 	if err := s.savePart(next); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
+	if err := s.unreadForYou(next, req.Read != nil); err != nil {
+		return "", http.StatusInternalServerError, err
+	}
 	return reportReply(mine.TaskID, next.Status), 0, nil
+}
+
+// unreadForYou puts the mark back on p's task when its report brought
+// lines (said is whether it gave any list at all): in a task of two parts,
+// a person may have read the first part's while the second was still
+// building. A report that did not say keeps the old lines and their read.
+func (s *Server) unreadForYou(p store.Part, said bool) error {
+	if !said || len(p.ForYou) == 0 {
+		return nil
+	}
+	_, err := s.tasks.SetTaskForYouRead(p.TaskID, false)
+	return err
 }
 
 // reportReply is what a worker reads back after a report. A built part is

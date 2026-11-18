@@ -99,7 +99,7 @@ func Retry(t store.Task, p store.Part) (store.Part, error) {
 	if p.Status != Failed || (t.Status != Running && t.Status != NeedsYou) {
 		return p, fmt.Errorf("only a failed part of a running task can be retried")
 	}
-	p.Status, p.Note = Pending, ""
+	p.Status, p.Note, p.ForYou = Pending, "", nil
 	return p, nil
 }
 
@@ -121,7 +121,7 @@ func RetryTask(t store.Task, mine []store.Part, p store.Part) (store.Task, []sto
 		case Running, NeedsYou:
 			return t, []store.Part{next}, nil
 		case Failed:
-			o.Status, o.Note = Pending, ""
+			o.Status, o.Note, o.ForYou = Pending, "", nil
 			again = append(again, o)
 		}
 	}
@@ -135,7 +135,7 @@ func Requeued(parts []store.Part) []store.Part {
 	var out []store.Part
 	for _, p := range parts {
 		if p.Status != Ready && p.Status != Pending {
-			p.Status, p.Note = Pending, ""
+			p.Status, p.Note, p.ForYou = Pending, "", nil
 			out = append(out, p)
 		}
 	}

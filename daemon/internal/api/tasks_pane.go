@@ -38,15 +38,18 @@ type paneTaskReq struct {
 	// Repo names a repo by its folder name: the one a worker adds a part
 	// for, or the part an edit's plan replaces (this repo's when empty).
 	Repo string `json:"repo"`
-	// Status and Note are a worker's report on its own part.
-	Status string `json:"status"`
-	Note   string `json:"note"`
+	// Status and Note are a worker's report on its own part, and Read its
+	// For-you lines (taskq.ForYouLines): absent keeps the part's, [] clears.
+	Status string   `json:"status"`
+	Note   string   `json:"note"`
+	Read   []string `json:"read"`
 	// Hard says a part is hard to build, so its Claude starts with the
 	// stronger model (taskq.HardRun): this repo's part on a filing, the one
 	// an edit's plan would go to on an edit, where nil leaves it as it is.
 	Hard *bool `json:"hard"`
-	// Look marks the task for a person to read its work before it ships
-	// (store.Task.Look); on an edit, nil leaves the mark as it is.
+	// Look is the planner's hint that the task may need a person's eye
+	// (store.Task.Look; the builder's brief carries it); on an edit, nil
+	// leaves it as it is.
 	Look *bool `json:"look"`
 	// Todo is the to-do item a filing is for (todos_tasks.go): the item is
 	// tasked from then on, and turns done when the task is merged.
@@ -264,7 +267,7 @@ func fileMessage(id int64, parts []store.Part, after []int64, look bool) string 
 		msg += fmt.Sprintf(", and will not start before %s done and merged", tasksAre(after))
 	}
 	if look {
-		return msg + ". It is marked for a person to read before it ships; it still merges on its own."
+		return msg + ". Its builder is told you think it touches something a person must check; the mark shows only if the builder lists something."
 	}
 	return msg + "."
 }

@@ -327,3 +327,39 @@ func TestTasks_FixPartRoundTrip(t *testing.T) {
 	}
 	_ = b
 }
+
+// A part's For-you lines come back as they were saved, and a person's
+// "read" is its own write: a stale save of the task keeps it, and the
+// lines stay after it.
+func TestTasks_ForYouLinesAndRead(t *testing.T) {
+	st := taskStore(t)
+	id, err := addTask(st, Task{Title: "billing", Status: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, _ := st.Parts()
+	p := parts[0]
+	if p.ForYou != nil {
+		t.Fatalf("a new part has lines %q", p.ForYou)
+	}
+	p.ForYou = []string{"Prices change for every plan: check the table.", "The receipt email goes to customers."}
+	if ok, err := st.SavePart(p); !ok || err != nil {
+		t.Fatalf("save part = %v, %v", ok, err)
+	}
+	stale, _ := st.Task(id)
+	if ok, err := st.SetTaskForYouRead(id, true); !ok || err != nil {
+		t.Fatalf("read = %v, %v", ok, err)
+	}
+	stale.Status = "done"
+	if _, err := st.SaveTask(*stale); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.Task(id)
+	parts, _ = st.Parts()
+	if !got.ForYouRead || got.Status != "done" || len(parts[0].ForYou) != 2 || parts[0].ForYou[1] != "The receipt email goes to customers." {
+		t.Fatalf("after read and a stale save: read %v, %s, lines %q", got.ForYouRead, got.Status, parts[0].ForYou)
+	}
+	if ok, _ := st.SetTaskForYouRead(999, true); ok {
+		t.Fatal("reading a task that is not there reported a change")
+	}
+}

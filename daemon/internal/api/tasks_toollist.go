@@ -30,13 +30,16 @@ const (
 // toolTask is a task as the tool lists it: what the shim prints, no more.
 // A part's plan is the bulk of a task and the tool never shows it.
 type toolTask struct {
-	ID       int64      `json:"id"`
-	Title    string     `json:"title"`
-	Status   string     `json:"status"`
-	AfterIDs []int64    `json:"afterIds,omitempty"`
-	Look     bool       `json:"look,omitempty"`
-	Note     string     `json:"note,omitempty"`
-	Parts    []toolPart `json:"parts"`
+	ID       int64   `json:"id"`
+	Title    string  `json:"title"`
+	Status   string  `json:"status"`
+	AfterIDs []int64 `json:"afterIds,omitempty"`
+	Look     bool    `json:"look,omitempty"`
+	// ForYou is what its builders say a person must check, while nobody
+	// has marked it read (taskq.Marked); the shim's mark keys on it.
+	ForYou []string   `json:"forYou,omitempty"`
+	Note   string     `json:"note,omitempty"`
+	Parts  []toolPart `json:"parts"`
 }
 
 type toolPart struct {
@@ -96,6 +99,9 @@ func toolAnswerOf(mine []store.Task, parts []store.Part, shows toolShows) toolAn
 	for _, t := range listed {
 		v := toolTask{ID: t.ID, Title: t.Title, Status: t.Status, AfterIDs: t.AfterIDs, Look: t.Look,
 			Note: toolNote(t.ID, t.Note, shows.whole), Parts: []toolPart{}}
+		if taskq.Marked(t, parts) {
+			v.ForYou = taskq.ForYouOf(t.ID, parts)
+		}
 		for _, p := range taskq.PartsOf(parts, t.ID) {
 			v.Parts = append(v.Parts, toolPart{Repo: filepath.Base(p.RepoPath), Status: p.Status,
 				Note: toolNote(t.ID, p.Note, shows.whole), BusName: taskq.BusName(p.RepoPath, t.ID),

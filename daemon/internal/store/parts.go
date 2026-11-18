@@ -12,22 +12,26 @@ import (
 // (taskq.WithRun) and saved again by the runner when it starts, empty on a
 // part from before parts had them.
 type Part struct {
-	ID         int64  `json:"id"`
-	TaskID     int64  `json:"taskId"`
-	RepoPath   string `json:"repoPath"`
-	Plan       string `json:"plan"`
-	Status     string `json:"status"`
-	Note       string `json:"note,omitempty"`
-	FiledBy    string `json:"filedBy,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	Worktree   string `json:"worktree,omitempty"`
-	PaneID     string `json:"paneId,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Effort     string `json:"effort,omitempty"`
-	CreatedAt  int64  `json:"createdAt"`
-	UpdatedAt  int64  `json:"updatedAt"`
-	StartedAt  int64  `json:"startedAt,omitempty"`
-	FinishedAt int64  `json:"finishedAt,omitempty"`
+	ID       int64  `json:"id"`
+	TaskID   int64  `json:"taskId"`
+	RepoPath string `json:"repoPath"`
+	Plan     string `json:"plan"`
+	Status   string `json:"status"`
+	Note     string `json:"note,omitempty"`
+	FiledBy  string `json:"filedBy,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Worktree string `json:"worktree,omitempty"`
+	PaneID   string `json:"paneId,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+	// ForYou is what its builder says a person must check before the work
+	// ships (taskq.ForYouLines has the rules): at most three short lines,
+	// none on most parts. A line here is what puts the mark on its task.
+	ForYou     []string `json:"forYou,omitempty"`
+	CreatedAt  int64    `json:"createdAt"`
+	UpdatedAt  int64    `json:"updatedAt"`
+	StartedAt  int64    `json:"startedAt,omitempty"`
+	FinishedAt int64    `json:"finishedAt,omitempty"`
 }
 
 const addPartSQL = `
@@ -40,7 +44,7 @@ func addPartArgs(taskID int64, p Part) []any {
 	return []any{taskID, p.RepoPath, p.Plan, p.Status, p.Note, p.FiledBy, p.Model, p.Effort, p.CreatedAt, p.UpdatedAt}
 }
 
-const partCols = "id,task_id,repo_path,plan,status,note,filed_by,branch,worktree,pane_id,model,effort,created_at,updated_at,started_at,finished_at"
+const partCols = "id,task_id,repo_path,plan,status,note,filed_by,branch,worktree,pane_id,model,effort,for_you,created_at,updated_at,started_at,finished_at"
 
 // AddPart inserts a part. A task has at most one part per repo, so a second
 // one for the same repo is an error.
@@ -62,9 +66,13 @@ func (s *SQLite) Parts() ([]Part, error) {
 	out := []Part{}
 	for rows.Next() {
 		var p Part
+		var forYou string
 		if err := rows.Scan(&p.ID, &p.TaskID, &p.RepoPath, &p.Plan, &p.Status, &p.Note, &p.FiledBy,
-			&p.Branch, &p.Worktree, &p.PaneID, &p.Model, &p.Effort,
+			&p.Branch, &p.Worktree, &p.PaneID, &p.Model, &p.Effort, &forYou,
 			&p.CreatedAt, &p.UpdatedAt, &p.StartedAt, &p.FinishedAt); err != nil {
+			return nil, err
+		}
+		if p.ForYou, err = linesOf(forYou); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -80,11 +88,11 @@ func (s *SQLite) SavePart(p Part) (bool, error) {
 
 const savePartSQL = `
 UPDATE task_parts SET plan=?, status=?, note=?, branch=?, worktree=?, pane_id=?,
-  model=?, effort=?, updated_at=?, started_at=?, finished_at=? WHERE id=?`
+  model=?, effort=?, for_you=?, updated_at=?, started_at=?, finished_at=? WHERE id=?`
 
 func partArgs(p Part) []any {
 	return []any{p.Plan, p.Status, p.Note, p.Branch, p.Worktree, p.PaneID, p.Model, p.Effort,
-		p.UpdatedAt, p.StartedAt, p.FinishedAt, p.ID}
+		linesText(p.ForYou), p.UpdatedAt, p.StartedAt, p.FinishedAt, p.ID}
 }
 
 // migratePartRun adds the model and effort a part's Claude starts with.

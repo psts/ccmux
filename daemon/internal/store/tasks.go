@@ -28,18 +28,23 @@ type Task struct {
 	// FixPart is the part a failed merge is waiting to send back to its
 	// worker until the window has a slot free (taskq/sendback.go); 0 for none.
 	FixPart int64 `json:"fixPart,omitempty"`
-	// Look marks the task for a person to read its work before it ships:
-	// its planner set it (a migration, access rules). It changes nothing
-	// about how the task waits, builds or merges. SetTaskLook writes it,
-	// never SaveTask.
-	Look       bool  `json:"look,omitempty"`
+	// Look is the planner's hint that the task may touch something a
+	// person must check (a migration, access rules). It no longer makes the
+	// mark a person sees: it goes into the builder's brief, and the builder
+	// decides (Part.ForYou). It changes nothing about how the task waits,
+	// builds or merges. SetTaskLook writes it, never SaveTask.
+	Look bool `json:"look,omitempty"`
+	// ForYouRead says a person has read its builders' For-you lines, which
+	// takes the mark away; the lines stay. SetTaskForYouRead writes it,
+	// never SaveTask, for the same reason as Look.
+	ForYouRead bool  `json:"forYouRead,omitempty"`
 	CreatedAt  int64 `json:"createdAt"`
 	UpdatedAt  int64 `json:"updatedAt"`
 	StartedAt  int64 `json:"startedAt,omitempty"`
 	FinishedAt int64 `json:"finishedAt,omitempty"`
 }
 
-const taskCols = "id,title,status,after_ids,position,note,filed_by,window_id,auto_fixes,fix_part,look,created_at,updated_at,started_at,finished_at"
+const taskCols = "id,title,status,after_ids,position,note,filed_by,window_id,auto_fixes,fix_part,look,for_you_read,created_at,updated_at,started_at,finished_at"
 
 // AddTaskWithParts files a task at the back of the queue together with all
 // its parts, in one step: a task left without parts could never start, and
@@ -110,6 +115,12 @@ func taskArgs(t Task) []any {
 // back a mark a person had just cleared.
 func (s *SQLite) SetTaskLook(id int64, look bool) (bool, error) {
 	return execSaved(s.db, `UPDATE tasks SET look=? WHERE id=?`, look, id)
+}
+
+// SetTaskForYouRead records whether a person has read a task's For-you
+// lines; false when there is no such task. Its own write, like SetTaskLook.
+func (s *SQLite) SetTaskForYouRead(id int64, read bool) (bool, error) {
+	return execSaved(s.db, `UPDATE tasks SET for_you_read=? WHERE id=?`, read, id)
 }
 
 // SwapTaskPositions trades two tasks' places in the queue in one step, so a
@@ -261,7 +272,7 @@ func (s *SQLite) queryTasks(query string, args ...any) ([]Task, error) {
 		var t Task
 		var after string
 		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &after, &t.Position, &t.Note, &t.FiledBy,
-			&t.WindowID, &t.AutoFixes, &t.FixPart, &t.Look, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
+			&t.WindowID, &t.AutoFixes, &t.FixPart, &t.Look, &t.ForYouRead, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.FinishedAt); err != nil {
 			return nil, err
 		}
 		if t.AfterIDs, err = idsOf(after); err != nil {

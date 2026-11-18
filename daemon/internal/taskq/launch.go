@@ -104,7 +104,8 @@ Your name on the peers bus is %s. %s
 
 %s
 `, t.ID, t.Title, filepath.Base(p.RepoPath), l.worktree, l.branch, trunk, l.busName,
-		teamLine(team), BusName("<repo>", t.ID), servers) + briefDecisions + briefDone + "\n## Your plan\n\n" + p.Plan + "\n"
+		teamLine(team), BusName("<repo>", t.ID), servers) + briefDecisions + briefDone + briefForYou + plannerHint(t) +
+		"\n## Your plan\n\n" + p.Plan + "\n"
 }
 
 // briefDecisions is the brief's rule for a choice the plan did not settle,
@@ -174,6 +175,36 @@ const briefDone = `## When you are done
   call the tasks tool with action "report", status "stuck" and a note
   saying exactly what you need, then stop.
 `
+
+// briefForYou is the rule for the report's "read" lines, the only thing
+// that puts the mark on a task for a person. The planner's flag made the
+// mark before, on 22 of 168 tasks, for things like a new column; the
+// builder sees what it built, so it decides, from this strict list.
+const briefForYou = `
+## For you: what a person must check
+
+Your report may carry "read": at most 3 short lines (each under 140
+characters) saying what a person must check before this ships, and why.
+Only for:
+- existing data changed or deleted (a migration that rewrites or drops,
+  a cleanup of real rows);
+- access, login or permission rules;
+- money (billing, payments, prices);
+- anything sent to people (email, push, posts, messages outside ccmux);
+- security (secrets, something newly exposed on the network).
+Not for a table or column that is only added, UI, a refactor, or a
+decision of yours (those go in the note). Most tasks have none: then
+leave "read" out.
+`
+
+// plannerHint is the planner's look flag, as a hint: it no longer makes
+// the mark, the builder does.
+func plannerHint(t store.Task) string {
+	if !t.Look {
+		return ""
+	}
+	return "\nYour planner thinks this task touches something on that list: check\nwhether anything here is on it, and give \"read\" lines only if it is.\n"
+}
 
 // teamLine names the other parts' Claudes, or says there are none yet.
 func teamLine(team []string) string {

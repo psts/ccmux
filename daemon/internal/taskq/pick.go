@@ -123,10 +123,18 @@ func Rollup(parts []store.Part) string {
 }
 
 // Report applies a worker's own report on its part: "done" (the work is
-// committed on its branch) or "stuck" (it needs a person).
-func Report(p store.Part, kind, note string, now int64) (store.Part, error) {
+// committed on its branch) or "stuck" (it needs a person), with its
+// For-you lines (ForYouLines: nil keeps the ones it had).
+func Report(p store.Part, kind, note string, forYou []string, now int64) (store.Part, error) {
 	if p.Status != Running && p.Status != NeedsYou {
 		return p, fmt.Errorf("this part is %s, so there is nothing to report on", p.Status)
+	}
+	lines, err := ForYouLines(forYou)
+	if err != nil {
+		return p, err
+	}
+	if lines != nil {
+		p.ForYou = lines
 	}
 	switch kind {
 	case "done":

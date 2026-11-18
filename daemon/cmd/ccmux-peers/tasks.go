@@ -2,19 +2,24 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+
+	"ccmux.dev/ccmuxd/internal/taskq"
 )
 
 // queuedTask is the part of a daemon task the tool shows.
 type queuedTask struct {
-	ID       int64        `json:"id"`
-	Title    string       `json:"title"`
-	Status   string       `json:"status"`
-	AfterIDs []int64      `json:"afterIds"`
-	Look     bool         `json:"look"`
-	Note     string       `json:"note"`
-	Parts    []queuedPart `json:"parts"`
+	ID       int64   `json:"id"`
+	Title    string  `json:"title"`
+	Status   string  `json:"status"`
+	AfterIDs []int64 `json:"afterIds"`
+	// ForYou is what its builders say a person must check, while nobody
+	// has read it: the daemon sends it only then.
+	ForYou []string     `json:"forYou"`
+	Note   string       `json:"note"`
+	Parts  []queuedPart `json:"parts"`
 }
 
 // queuedPart is one repo's part of a task, as the tool shows it. Model and
@@ -38,6 +43,9 @@ func (a *app) toolTasks(args json.RawMessage) any {
 	var in map[string]any
 	if err := json.Unmarshal(args, &in); err != nil {
 		return toolText("Bad arguments: "+err.Error(), true)
+	}
+	if err := checkRead(in); err != nil {
+		return toolText(err.Error(), true)
 	}
 	var resp struct {
 		Message string       `json:"message"`
@@ -64,14 +72,7 @@ func taskListText(message string, tasks []queuedTask, older int) string {
 	}
 	b.WriteString("Tasks with a part in this repo:\n")
 	for _, t := range tasks {
-		fmt.Fprintf(&b, "- #%d  %s  [%s]", t.ID, t.Title, t.Status)
-		if len(t.AfterIDs) > 0 {
-			b.WriteString("  after " + taskNumbers(t.AfterIDs))
-		}
-		if t.Look {
-			b.WriteString("  (a person reads it before it ships)")
-		}
-		b.WriteString("\n")
+		b.WriteString(taskHead(t))
 		for _, p := range t.Parts {
 			b.WriteString(partLine(p) + "\n")
 		}
@@ -80,6 +81,45 @@ func taskListText(message string, tasks []queuedTask, older int) string {
 		fmt.Fprintf(&b, "(%d older finished tasks are not listed; list with an id shows one whole.)", older)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// checkRead refuses a report's "read" lines before they go anywhere, so
+// the builder shortens them (taskq.ForYouLines has the rules; the daemon
+// checks them again for a shim from before them).
+func checkRead(in map[string]any) error {
+	raw, ok := in["read"]
+	if !ok || raw == nil {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return errors.New("read must be a list of short lines")
+	}
+	lines := make([]string, len(list))
+	for i, v := range list {
+		if lines[i], ok = v.(string); !ok {
+			return errors.New("read must be a list of short lines")
+		}
+	}
+	_, err := taskq.ForYouLines(lines)
+	return err
+}
+
+// taskHead is a task's own lines in the list: number, title, status, what
+// it starts after, and, while nobody has read them, its For-you lines.
+func taskHead(t queuedTask) string {
+	line := fmt.Sprintf("- #%d  %s  [%s]", t.ID, t.Title, t.Status)
+	if len(t.AfterIDs) > 0 {
+		line += "  after " + taskNumbers(t.AfterIDs)
+	}
+	if len(t.ForYou) == 0 {
+		return line + "\n"
+	}
+	line += "  (a person reads it before it ships)\n"
+	for _, f := range t.ForYou {
+		line += "    for you: " + f + "\n"
+	}
+	return line
 }
 
 // taskNumbers names tasks in a row: "#58, #71".

@@ -972,7 +972,7 @@ func TestRunner_AnOldFolderWaitIsForgotten(t *testing.T) {
 // built reports part p done at the rig's clock, as its worker's own report
 // does (Report), and leaves its pane showing st.
 func (g *rig) built(p store.Part, st PaneState) {
-	next, err := Report(p, "done", "built", g.now.UnixMilli())
+	next, err := Report(p, "done", "built", nil, g.now.UnixMilli())
 	if err != nil {
 		panic(err)
 	}
@@ -1577,17 +1577,17 @@ func TestJudge(t *testing.T) {
 
 func TestReport(t *testing.T) {
 	run := store.Part{ID: 1, Status: Running}
-	got, err := Report(run, "done", "built it", 5)
+	got, err := Report(run, "done", "built it", nil, 5)
 	if err != nil || got.Status != Ready || got.Note != "built it" || got.FinishedAt != 5 {
 		t.Fatalf("done = %+v, %v", got, err)
 	}
-	if got, _ := Report(run, "stuck", "need a key", 5); got.Status != NeedsYou {
+	if got, _ := Report(run, "stuck", "need a key", nil, 5); got.Status != NeedsYou {
 		t.Fatalf("stuck = %+v", got)
 	}
-	if _, err := Report(store.Part{Status: Pending}, "done", "", 5); err == nil {
+	if _, err := Report(store.Part{Status: Pending}, "done", "", nil, 5); err == nil {
 		t.Fatal("a pending part took a report")
 	}
-	if _, err := Report(run, "maybe", "", 5); err == nil {
+	if _, err := Report(run, "maybe", "", nil, 5); err == nil {
 		t.Fatal("an unknown report was taken")
 	}
 }

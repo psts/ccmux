@@ -264,17 +264,16 @@ func TestTasks_LensRoutes(t *testing.T) {
 	}
 }
 
-// A planner marks a task for a person to read before it ships. The mark is
-// only a mark: the task waits, builds and merges like any other. It shows
-// in the tool's list and on the lens, a person clears it once they have
-// read the work, whatever the task's status by then, and the planner can
-// set or drop it too.
+// A planner's look is a hint for the builder: the task waits, builds and
+// merges like any other, and the hint alone puts no mark on it (the
+// builder's For-you lines do, TestTasks_ForYouMark). The planner can set
+// or drop the hint, and a lens can still clear it.
 func TestTasks_LookMark(t *testing.T) {
 	s := taskServer(t)
 	msg := call(t, s, appRepo, paneTaskReq{Action: "file", Title: "migration", Plan: "p", Look: boolp(true)})
 	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "plain", Plan: "p"})
-	if !strings.Contains(msg, "marked for a person to read before it ships") {
-		t.Fatalf("file message = %q, want it to confirm the mark", msg)
+	if !strings.Contains(msg, "the mark shows only if the builder lists something") {
+		t.Fatalf("file message = %q, want it to say the builder decides", msg)
 	}
 	looks := func() string {
 		t.Helper()
@@ -285,8 +284,11 @@ func TestTasks_LookMark(t *testing.T) {
 		t.Fatalf("filed = %s, want the first marked, the second not, and the first waiting like any task", looks())
 	}
 	tasks, parts, _ := s.board()
-	if listed := toolAnswerOf(tasks, parts, toolShows{}).Tasks; !listed[0].Look || listed[1].Look {
-		t.Fatalf("the tool lists look = %v, %v", listed[0].Look, listed[1].Look)
+	if listed := toolAnswerOf(tasks, parts, toolShows{}).Tasks; !listed[0].Look || listed[1].Look || listed[0].ForYou != nil {
+		t.Fatalf("the tool lists look = %v, %v, for you %q", listed[0].Look, listed[1].Look, listed[0].ForYou)
+	}
+	if v := tasksOf(t, s).Tasks[0]; v.Marked {
+		t.Fatal("the planner's hint alone marked the task on the lens")
 	}
 
 	done, _ := s.tasks.Task(1)
@@ -734,5 +736,72 @@ func TestStartTaskRunner_ReadsTheCapAcrossWindows(t *testing.T) {
 	}
 	if n, err := s.taskRunner.TotalSlots(); n != 2 || err != nil {
 		t.Fatalf("after the cap is set to 2 the runner reads %d %v", n, err)
+	}
+}
+
+// runningWorker starts task id's only part in pane, the way the runner
+// does, and returns who that worker is.
+func runningWorker(t *testing.T, s *Server, id int64, pane string) taskFiler {
+	t.Helper()
+	task, _ := s.tasks.Task(id)
+	task.Status = taskq.Running
+	s.tasks.SaveTask(*task)
+	parts, _ := s.tasks.Parts()
+	for _, p := range parts {
+		if p.TaskID == id {
+			p.Status, p.PaneID = taskq.Running, pane
+			s.tasks.SavePart(p)
+		}
+	}
+	w := appRepo
+	w.pane = pane
+	return w
+}
+
+// The builder decides the mark: a report with no lines leaves the task
+// unmarked, one with lines marks it on the lens and in the tool's list. A
+// person marking it read takes the mark away and keeps the lines; a later
+// report with lines puts it back. Too many lines are refused.
+func TestTasks_ForYouMark(t *testing.T) {
+	s := taskServer(t)
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "plain", Plan: "p", Look: boolp(true)})
+	call(t, s, appRepo, paneTaskReq{Action: "file", Title: "billing", Plan: "p"})
+	quiet, busy := runningWorker(t, s, 1, "pane-1"), runningWorker(t, s, 2, "pane-2")
+	if _, status, err := s.applyPaneTask(busy, paneTaskReq{Action: "report", Status: "done", Read: []string{"a", "b", "c", "d"}}); status != 409 || err == nil {
+		t.Fatalf("four lines = %d %v, want 409", status, err)
+	}
+	call(t, s, quiet, paneTaskReq{Action: "report", Status: "done", Note: "built"})
+	call(t, s, busy, paneTaskReq{Action: "report", Status: "stuck", Note: "half", Read: []string{"Prices change for every plan.", " Receipts email customers. "}})
+	marks := func() string {
+		t.Helper()
+		v := tasksOf(t, s).Tasks
+		return fmt.Sprintf("%v %v %q", v[0].Marked, v[1].Marked, v[1].Parts[0].ForYou)
+	}
+	if got := marks(); got != `false true ["Prices change for every plan." "Receipts email customers."]` {
+		t.Fatalf("after the reports = %s", got)
+	}
+	tasks, parts, _ := s.board()
+	listed := toolAnswerOf(tasks, parts, toolShows{}).Tasks
+	if listed[0].ForYou != nil || len(listed[1].ForYou) != 2 {
+		t.Fatalf("the tool lists for you = %q, %q", listed[0].ForYou, listed[1].ForYou)
+	}
+	if rec := do(t, s, "PATCH", "/v1/tasks/2", `{"read":true}`); rec.Code != 200 || marks() != `false false ["Prices change for every plan." "Receipts email customers."]` {
+		t.Fatalf("mark as read = %d %s, now %s", rec.Code, rec.Body, marks())
+	}
+	tasks, parts, _ = s.board()
+	if listed := toolAnswerOf(tasks, parts, toolShows{}).Tasks; listed[1].ForYou != nil {
+		t.Fatalf("the tool still lists read lines: %q", listed[1].ForYou)
+	}
+	call(t, s, busy, paneTaskReq{Action: "report", Status: "done", Note: "all of it"}) // no read: lines kept, still read
+	if got := marks(); got != `false false ["Prices change for every plan." "Receipts email customers."]` {
+		t.Fatalf("a report without read = %s", got)
+	}
+	parts, _ = s.tasks.Parts()
+	p := parts[1]
+	p.Status = taskq.Running
+	s.tasks.SavePart(p)
+	call(t, s, busy, paneTaskReq{Action: "report", Status: "done", Read: []string{"Also drops old rows."}})
+	if got := marks(); got != `false true ["Also drops old rows."]` {
+		t.Fatalf("new lines after a read = %s", got)
 	}
 }

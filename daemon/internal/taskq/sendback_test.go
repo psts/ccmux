@@ -116,7 +116,7 @@ func TestSendBack_Rule(t *testing.T) {
 		"no worker pane":     {failed, store.Part{Status: Ready}},
 	} {
 		gt, gp, err := SendBack(c.t, c.p, now)
-		if err == nil || !reflect.DeepEqual(gt, c.t) || gp != c.p {
+		if err == nil || !reflect.DeepEqual(gt, c.t) || !reflect.DeepEqual(gp, c.p) {
 			t.Errorf("%s: SendBack = %+v %+v %v, want refused and unchanged", name, gt, gp, err)
 		}
 	}
@@ -146,7 +146,7 @@ func TestSendBack_UnsavedIsAnError(t *testing.T) {
 	if got := g.st.part(backend.ID); got.Status != Ready {
 		t.Fatalf("sent part = %s, want still built", got.Status)
 	}
-	if got := g.st.part(app.ID); got != app {
+	if got := g.st.part(app.ID); !reflect.DeepEqual(got, app) {
 		t.Fatalf("the other part changed: %+v", got)
 	}
 }

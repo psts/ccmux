@@ -24,6 +24,7 @@ type taskStore interface {
 	Tasks() ([]store.Task, error)
 	SaveTask(store.Task) (bool, error)
 	SetTaskLook(id int64, look bool) (bool, error)
+	SetTaskForYouRead(id int64, read bool) (bool, error)
 	SwapTaskPositions(a, b store.Task) error
 	DeleteTask(id int64) (bool, error)
 	AddPart(store.Part) (int64, error)
@@ -54,6 +55,9 @@ type taskView struct {
 	Ahead   int  `json:"ahead"`
 	CanUp   bool `json:"canUp"`
 	CanDown bool `json:"canDown"`
+	// Marked: a builder listed something a person must check, and nobody
+	// has marked it read yet (taskq.Marked). The lines are on the parts.
+	Marked bool `json:"marked"`
 }
 
 // partView is a part with its repo's short name, its Claude's bus name, and
@@ -78,6 +82,7 @@ func (s *Server) taskViewsOf(tasks []store.Task, parts []store.Part) []taskView 
 			Task: t, Parts: []partView{}, Moves: taskq.Moves(t.Status),
 			Editable: taskq.Editable(t.Status), Orderable: taskq.Orderable(t.Status),
 			Removable: taskq.Removable(t.Status), Ahead: taskq.Ahead(queue, t.ID),
+			Marked: taskq.Marked(t, parts),
 		}
 		if v.Editable {
 			_, v.CanUp = taskq.Neighbour(queue, t.ID, true)
@@ -177,15 +182,17 @@ func (s *Server) saveTask(t store.Task) error {
 }
 
 // taskPatch is what a lens may change on a task: what the rules judge
-// (taskq.Edit), and the mark for a person to read its work, which a person
-// clears once they have, whatever the task's status by then.
+// (taskq.Edit), the planner's hint (Look), and Read, which a person sets
+// once they have read its builders' For-you lines, whatever the task's
+// status by then: the mark goes, the lines stay.
 type taskPatch struct {
 	taskq.Edit
 	Look *bool `json:"look"`
+	Read *bool `json:"read"`
 }
 
 // patchTask: PATCH /v1/tasks/{id} with any of {title, status, afterIds,
-// look}. A cancelled task queued again has its unbuilt parts set to start
+// look, read}. A cancelled task queued again has its unbuilt parts set to start
 // again.
 func (s *Server) patchTask(w http.ResponseWriter, r *http.Request) {
 	if !s.tasksReady(w) {
@@ -227,11 +234,26 @@ func (s *Server) applyTaskPatch(t store.Task, all []store.Task, p taskPatch) (st
 	if err := s.markLook(t.ID, p.Look); err != nil {
 		return t, http.StatusInternalServerError, err
 	}
+	if err := s.markRead(t.ID, p.Read); err != nil {
+		return t, http.StatusInternalServerError, err
+	}
 	return next, 0, nil
 }
 
-// markLook sets or clears task id's mark for a person to read its work, and
-// tells the lenses. nil leaves the mark as it is.
+// markRead records whether a person has read task id's For-you lines, and
+// tells the lenses. nil leaves it as it is.
+func (s *Server) markRead(id int64, read *bool) error {
+	if read == nil {
+		return nil
+	}
+	if _, err := s.tasks.SetTaskForYouRead(id, *read); err != nil {
+		return err
+	}
+	s.mgr.TasksChanged()
+	return nil
+}
+
+// markLook sets or clears task id's planner hint, and tells the lenses. nil leaves the mark as it is.
 func (s *Server) markLook(id int64, look *bool) error {
 	if look == nil {
 		return nil

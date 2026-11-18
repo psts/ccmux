@@ -189,7 +189,7 @@ var toolsList = []map[string]any{
 	},
 	{
 		"name":        "tasks",
-		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel). Each ccmux window has its own queue; a task goes into this session's window's queue (a session in no window cannot file). A task is one feature with one part per repo; when it starts, a fresh Claude builds every part at once, each in its own git worktree of its repo, and they coordinate over the peers bus. File only when the human says the plan is ready, and always from this session: one file call holds the whole feature, this repo's part (plan) and every other repo's part (parts, repos in this window only), and it waits in the queue at once. You write every part's plan yourself. If you need a fact about another repo to write its plan, ask that repo's session over the bus first (send_message), then file. Each plan is all its builder gets: write it for a fresh Claude that knows its repo but not this conversation (goal, files, steps, how to verify, what it needs from the other parts). Actions: file (title, plan, parts, optional after, hard and look), list (this repo's open tasks and its latest finished ones, notes cut short; with id, that one task with its builders' reports whole), edit (id + any of title, after, look, plan, hard; plan and hard with repo change that repo's part), cancel (id). A Claude started to BUILD a part uses report (status done or stuck, plus note) and add_part (repo, plan) as its brief says.",
+		"description": "ccmux's task queue: features planned with the human now, built later (overnight or in parallel). Each ccmux window has its own queue; a task goes into this session's window's queue (a session in no window cannot file). A task is one feature with one part per repo; when it starts, a fresh Claude builds every part at once, each in its own git worktree of its repo, and they coordinate over the peers bus. File only when the human says the plan is ready, and always from this session: one file call holds the whole feature, this repo's part (plan) and every other repo's part (parts, repos in this window only), and it waits in the queue at once. You write every part's plan yourself. If you need a fact about another repo to write its plan, ask that repo's session over the bus first (send_message), then file. Each plan is all its builder gets: write it for a fresh Claude that knows its repo but not this conversation (goal, files, steps, how to verify, what it needs from the other parts). Actions: file (title, plan, parts, optional after, hard and look), list (this repo's open tasks and its latest finished ones, notes cut short; with id, that one task with its builders' reports whole), edit (id + any of title, after, look, plan, hard; plan and hard with repo change that repo's part), cancel (id). A Claude started to BUILD a part uses report (status done or stuck, plus note and, rarely, read) and add_part (repo, plan) as its brief says.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -238,7 +238,7 @@ var toolsList = []map[string]any{
 				},
 				"look": map[string]any{
 					"type":        "boolean",
-					"description": "file/edit: true marks the task for a person to read its work before it ships: a migration, access rules, money, anything where a wrong guess is costly. It is only a mark: the task still builds and merges on its own, and its row shows the mark until the person clears it. Do not write \"read before merging\" in a plan instead; nothing stops the merge. On edit, false removes the mark.",
+					"description": "file/edit: true tells the builder you think the task touches something a person must check (existing data changed or deleted, access rules, money, anything sent to people, security). It is a hint, not the mark: the builder decides, and the task shows the mark only if its report lists something. On edit, false removes the hint.",
 				},
 				"status": map[string]any{
 					"type":        "string",
@@ -248,6 +248,12 @@ var toolsList = []map[string]any{
 				"note": map[string]any{
 					"type":        "string",
 					"description": "report: what you built and how you checked it, or what you need.",
+				},
+				"read": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string", "maxLength": 140},
+					"maxItems":    3,
+					"description": "report: at most 3 short lines (140 characters each) of what a person must check before this ships, and why. Only for: existing data changed or deleted, access/login/permission rules, money, anything sent to people outside ccmux, security (secrets, something newly exposed on the network). Not for an added table or column, UI, refactors or your decisions (those go in note). Leave it out when nothing is on the list; that is the normal case.",
 				},
 				"todo": map[string]any{
 					"type":        "integer",

@@ -1,6 +1,7 @@
 package taskq
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestRun_EditOnlyBeforeItStarts(t *testing.T) {
 	}
 	for _, status := range []string{Running, NeedsYou, ReadyToMerge, Done} {
 		got, err := EditRun(store.Task{ID: 1, Status: status}, p, true)
-		if err == nil || got != p {
+		if err == nil || !reflect.DeepEqual(got, p) {
 			t.Errorf("a %s task's part was changed: %+v, %v", status, got, err)
 		}
 	}
