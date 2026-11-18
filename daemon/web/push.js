@@ -1,7 +1,10 @@
 // ccmux push client: registers the service worker (makes the lens installable),
-// drives the notification opt-in/settings UI, and handles the deep-link when a
-// notification is tapped. Kept separate from app.js — the terminal works with or
-// without notifications.
+// is the Settings window's Notifications tab (the opt-in), and handles the
+// deep-link when a notification is tapped. Kept separate from app.js — the
+// terminal works with or without notifications. Both pages load it: the
+// thread page gets the tab and the worker, but takes no deep-link here (it
+// has no terminal to attach; threads.js follows a tap itself). Loads after
+// settingsmodal.js, which gives it its tab, and identity.js.
 "use strict";
 
 (function () {
@@ -10,6 +13,20 @@
   const NAV_CACHE = "ccmux-nav";
   const PENDING_NAV = "/__ccmux_pending_nav";
   let reg = null;
+
+  window.ccmuxSettings.addTab({
+    page: "notifications", label: "Notifications", opened: tabOpened,
+    html:
+      `<p id="whoami" class="hint"></p>` +
+      `<p id="notif-status" class="status"></p>` +
+      `<p id="ios-hint" class="hint hidden"></p>` +
+      `<div class="sheet-actions">` +
+      `<button id="notif-enable" class="primary hidden">Enable notifications</button>` +
+      `<button id="notif-disable" class="hidden">Turn off</button>` +
+      `</div>`,
+  });
+  document.getElementById("notif-enable").onclick = enableNotifications;
+  document.getElementById("notif-disable").onclick = disableNotifications;
 
   // app.js resolves who this lens is before anything sends a presence name;
   // a deep-link attach from here (navToURL) must wait for the same answer or
@@ -29,15 +46,22 @@
       } catch (e) {
         console.warn("[ccmux] service worker registration failed", e);
       }
-      navigator.serviceWorker.addEventListener("message", onSWMessage);
-      // Frozen/backgrounded PWAs (iOS) can drop the postMessage above, so also
-      // pull any deep-link the SW stashed — on load and each time we're shown.
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") consumePendingNav();
-      });
-      consumePendingNav();
+      if (window.ccmux) takeTaps();
     }
-    wireSettings();
+  }
+
+  // takeTaps has this page follow notification taps. Only a page that can
+  // attach a workspace does (the lens, which sets window.ccmux): on any
+  // other page the tap would be read, cleared from the stash and then
+  // dropped, so the lens it was meant for never saw it.
+  function takeTaps() {
+    navigator.serviceWorker.addEventListener("message", onSWMessage);
+    // Frozen/backgrounded PWAs (iOS) can drop the postMessage above, so also
+    // pull any deep-link the SW stashed — on load and each time we're shown.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") consumePendingNav();
+    });
+    consumePendingNav();
   }
 
   // Attach to the workspace named by a deep-link URL (/?ws=<id>).
@@ -85,18 +109,14 @@
     } catch (_) {}
   }
 
-  // --- settings sheet ---
-  function wireSettings() {
-    const open = document.getElementById("open-settings");
-    const modal = document.getElementById("settings-modal");
-    const close = document.getElementById("settings-close");
-    if (open) open.onclick = () => { modal.classList.remove("hidden"); refreshState(); };
-    if (close) close.onclick = () => modal.classList.add("hidden");
-    if (modal) modal.onclick = (e) => { if (e.target === modal) modal.classList.add("hidden"); };
-    const enable = document.getElementById("notif-enable");
-    const disable = document.getElementById("notif-disable");
-    if (enable) enable.onclick = enableNotifications;
-    if (disable) disable.onclick = disableNotifications;
+  // --- the Notifications tab ---
+
+  // Each time Settings opens: who the daemon takes this page for (the line
+  // is drawn here because the tab is made after identity may have answered,
+  // and the thread page asks only now), and where this device stands.
+  function tabOpened() {
+    askIdentityOnce().then(renderWhoAmI);
+    refreshState();
   }
 
   const isStandalone = () =>
@@ -137,8 +157,12 @@
     }
   }
 
-  function user() {
-    return (window.ccmux && window.ccmux.getUser && window.ccmux.getUser()) || "anon";
+  // The name a subscription is filed under when the daemon cannot vouch for
+  // the caller: the same one on both pages (identity.js), asked for once if
+  // nothing is stored, never a silent "anon".
+  async function user() {
+    await askIdentityOnce();
+    return getUser();
   }
 
   async function enableNotifications() {
@@ -152,7 +176,7 @@
         userVisibleOnly: true,
         applicationServerKey: urlB64ToUint8Array(key),
       });
-      const r = await fetch("/v1/push/subscriptions?user=" + encodeURIComponent(user()), {
+      const r = await fetch("/v1/push/subscriptions?user=" + encodeURIComponent(await user()), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sub.toJSON()),

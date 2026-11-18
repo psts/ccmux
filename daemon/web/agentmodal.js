@@ -6,6 +6,8 @@
 // and the Instances section restarts running copies on request.
 (() => {
   let cur = null; // { name, isNew, cfg }
+  // Its window is one of the Settings frame's editor shells (settingsmodal.js).
+  window.ccmuxSettings.addEditor("agent", "agent-sheet", "Agent");
   const modal = () => $("agent-modal");
   const q = (sel) => modal().querySelector(sel);
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };

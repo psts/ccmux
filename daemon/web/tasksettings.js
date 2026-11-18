@@ -1,8 +1,9 @@
-// tasksettings.js: the Settings page's Tasks tab, the most queued tasks
+// tasksettings.js: the Settings window's Tasks tab, the most queued tasks
 // built at once across every window (GET/PUT /v1/settings taskSlotsTotal,
 // 0 for no limit). Each window's own number sits in its Tasks header
 // (tasks.js); this cap holds on top of those. The bound is the daemon's
-// (manager.MaxTaskSlotsTotal). Runs after app.js and uses its $ at call time.
+// (manager.MaxTaskSlotsTotal). Loads after settingsmodal.js, which gives it
+// its tab, and dom.js, whose $ it uses.
 (function (root) {
   "use strict";
 
@@ -24,8 +25,14 @@
   if (typeof module !== "undefined" && module.exports) { module.exports = api; return; }
   root.ccmuxTaskSettings = api;
 
+  root.ccmuxSettings.addTab({
+    page: "tasks", label: "Tasks", opened: load,
+    html:
+      `<label class="setting-label" for="task-cap">Running at once, all windows</label>` +
+      `<select id="task-cap" class="setting-input"></select>` +
+      `<p id="task-cap-state" class="hint setting-hint"></p>`,
+  });
   const sel = $("task-cap"), note = $("task-cap-state");
-  if (!sel) return;
 
   function draw(n) {
     const choices = capChoices(n);
@@ -59,6 +66,4 @@
       note.textContent = "Couldn't save: " + e.message;
     }
   });
-
-  $("open-settings").addEventListener("click", load);
 })(typeof window !== "undefined" ? window : this);

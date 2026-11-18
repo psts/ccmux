@@ -932,7 +932,7 @@ func TestAccountStateAndRoutability(t *testing.T) {
 }
 
 // The state strings are a wire contract: both lenses key their labels on
-// these exact values (daemon/web/app.js statusLine, DaemonSettingsView
+// these exact values (daemon/web/settingsllm.js statusLine, DaemonSettingsView
 // accountStatusText). Renaming one here without both lenses drops that row to
 // its raw string, which no test in either lens would catch.
 func TestStateStringsAreTheWireContract(t *testing.T) {

@@ -166,6 +166,10 @@ function makeContext(opts, book) {
   };
 }
 
+// The Settings window: its frame, then each tab's files, in page order.
+const SETTINGS_FILES = ["settingsmodal.js", "settingsllm.js", "settingsllmedit.js", "settingsaccounts.js",
+  "settingsharnesses.js", "settingsagents.js", "tasksettings.js", "agentcaps.js", "agentmodal.js"];
+
 // Boots app.js (and push.js when asked) in a fresh fake browser and hands
 // back the handles the cases assert on.
 function run(opts = {}) {
@@ -176,10 +180,13 @@ function run(opts = {}) {
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
   // Same order as index.html: dom.js and identity.js, whose helpers and
-  // identity app.js uses as globals, retry.js, which app.js reads at load,
-  // app.js, then the per-window glue that boots it, and windowwake.js, which
-  // a window's open and close call (app.js).
-  for (const f of ["dom.js", "identity.js", "retry.js", "app.js", "route.js", "pagewin.js", "windowwake.js"]) {
+  // identity app.js uses as globals, the Settings window and its tabs (the
+  // block both pages load), retry.js, which app.js reads at load, app.js,
+  // then the per-window glue that boots it, and windowwake.js, which a
+  // window's open and close call (app.js). push.js is the one file out of
+  // place: on the page it sits in the settings block and boots when the
+  // page has loaded, which here is after app.js.
+  for (const f of ["dom.js", "identity.js", ...SETTINGS_FILES, "retry.js", "app.js", "route.js", "pagewin.js", "windowwake.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), ctx, { filename: f });
   }
   if (withPush) vm.runInContext(fs.readFileSync(path.join(__dirname, "push.js"), "utf8"), ctx, { filename: "push.js" });
