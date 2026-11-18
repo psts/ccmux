@@ -499,3 +499,67 @@ func TestKeys_ARepoWithNoDotGitFolderIsNamedByItsTop(t *testing.T) {
 		t.Errorf("Of(a repo with no work tree) = %q, %v; want no key and git's error", key, err)
 	}
 }
+
+// An item whose task was cancelled or removed is handed on again: it must
+// start clean, with no trace of the old task. Left linked to the cancelled
+// one, the page would show that task as having it, and the next pass would
+// put the item straight back to open.
+func TestTaskedAgain_AnItemLetsGoOfItsOldTask(t *testing.T) {
+	b, _, _ := book(t)
+	it := add(t, b, "/r/app", "Fix the flaky test", Low)
+	other := add(t, b, "/r/app", "Update the readme", Low)
+	if err := b.Filed(it.ID, 11); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Filed(other.ID, 12); err != nil {
+		t.Fatal(err)
+	}
+	states := map[int64]string{11: TaskCancelled, 12: TaskActive}
+	state := func(id int64) string { return states[id] }
+	if err := b.Settle(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// A person presses Make task again.
+	again, err := b.Change(it.ID, Edit{Status: sp(Tasked)})
+	if err != nil || again.Status != Tasked || again.TaskID != 0 || again.Note != "" {
+		t.Fatalf("handed on again = %+v, %v; want tasked, with the cancelled task and its note gone", again, err)
+	}
+	if err := b.Settle(state); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Tasked {
+		t.Fatalf("the cancelled task pulled the item back to %s", got.Status)
+	}
+	// The session files a new task for it, which is merged.
+	if err := b.Filed(it.ID, 21); err != nil {
+		t.Fatal(err)
+	}
+	states[21] = TaskMerged
+	if err := b.Settle(state); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Done || got.DoneBy != "task #21" || got.Note != "" {
+		t.Fatalf("after the new task merged: %+v, want done by task #21 with no stale note", got)
+	}
+	// The item beside it, whose task is on its way, kept its task throughout.
+	if got, _ := b.Get(other.ID); got.Status != Tasked || got.TaskID != 12 {
+		t.Fatalf("an item with a live task lost it: %+v", got)
+	}
+
+	// A removed task's note goes with the next filing too.
+	gone := add(t, b, "/r/app", "Drop the dead flag", Low)
+	if err := b.Filed(gone.ID, 31); err != nil {
+		t.Fatal(err)
+	}
+	states[31] = TaskGone
+	if err := b.Settle(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Filed(gone.ID, 32); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(gone.ID); got.Status != Tasked || got.TaskID != 32 || got.Note != "" {
+		t.Fatalf("filed again after its task was removed: %+v, want tasked under #32 with no note", got)
+	}
+}

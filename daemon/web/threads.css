@@ -301,13 +301,17 @@ a:hover { color: var(--blue-d); }
    own. --- */
 .side-foot { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; }
 .side-foot .plain.small { margin-top: 0; }
-.repo { position: relative; }
+/* A repo's menu button sits over the bottom right of the repo's own row,
+   whatever hangs below that row (its to-do list, its threads, its tasks):
+   the two share the first cell of the repo's grid. */
+.repo { display: grid; grid-template-columns: minmax(0, 1fr); }
+.repo > .row:first-child, .repo > .side-more { grid-area: 1 / 1; }
 .group-head { display: flex; align-items: center; justify-content: space-between; }
 /* The "⋯" on a repo or group repeats its right-click menu, so a computer
    does without it; a phone has no right-click, so there it stays. */
 .side-more { display: none; border: 0; background: transparent; color: var(--muted); border-radius: 6px; width: 28px; height: 24px; font-size: 15px; line-height: 1; }
 .group-head .side-more { margin-top: -4px; }
-.repo > .side-more { position: absolute; right: 4px; bottom: 6px; }
+.repo > .side-more { position: relative; align-self: end; justify-self: end; margin: 0 4px 6px 0; }
 @media (hover: none) { .side-more { display: block; } }
 .side-more:hover { background: var(--card); color: var(--fg); }
 

@@ -34,8 +34,15 @@
   // opens in the lens.
   const Tasks = window.ccmuxThreadTasks.create({
     user: () => S.user, windows: () => S.windows, changed: () => schedule(),
-    leave: () => pick({ kind: "none" }, S.sel.kind !== "none"),
+    leave: () => { Todo.close(); pick({ kind: "none" }, S.sel.kind !== "none"); },
     openSession: (wsId, _paneId) => window.open(R.href(R.windowOf(S.windows, wsId), wsId), "_blank"),
+  });
+
+  // A repo's to-do list (threadtodoview.js) takes the main area the same
+  // way, and the two never show together: opening one closes the other.
+  const Todo = window.ccmuxThreadTodoView.create({
+    user: () => S.user, model: () => S.draftModel, call, changed: () => schedule(), confirm: (q) => confirm(q),
+    leave: () => { Tasks.close(); pick({ kind: "none" }, S.sel.kind !== "none"); },
   });
 
   // --- the daemon ---
@@ -103,10 +110,12 @@
 
   function select(sel, push = true) {
     Tasks.close();
+    Todo.close();
     pick(sel, push);
   }
 
-  // pick puts sel on screen: select, minus closing the task queue.
+  // pick puts sel on screen: select, minus closing the task queue and the
+  // to-do list.
   function pick(sel, push = true) {
     S.sel = sel;
     if (push) history.pushState(null, "", R.threadHref(sel));
@@ -205,6 +214,7 @@
       pickSession: (s) => select({ kind: "session", id: s.id }),
       menu: (kind, item, e) => Caps.menu(kind, item, e),
       tasks: Tasks.sidebar,
+      todos: Todo.sidebar,
     });
     $("new-thread").disabled = !ws;
     const info = S.stream.info || {};
@@ -223,6 +233,7 @@
 
   function headText(sess, ws) {
     if (Tasks.isOpen()) return Tasks.title();
+    if (Todo.isOpen()) return Todo.title();
     const repo = ws ? Model.repoName(ws) : "";
     const group = groupOf(ws);
     if (sess && sess.threadId) return { title: Model.titleOf(sess, ws), meta: Team.metaLine(sess, S.sessions, S.workspaces, group) };
@@ -453,7 +464,7 @@
       canStandDown: !!sess && sess.role === "lead",
       standDown: (r) => threadAct("stand-down", { repo: r.name }, `Stand the ${r.name} helper down? Work it has not committed stays in its worktree.`),
     });
-    View.todoTab($("tab-todo"), S.stream.todos, S.stream.result);
+    View.stepsTab($("tab-steps"), S.stream.todos, S.stream.result);
   }
 
   // threadAct runs one action on the picked session's thread (merge, end,
@@ -698,8 +709,9 @@
   }
 
   const feedHandlers = new Map([
-    ["hello", (m) => { Tasks.refresh(); return (m.attention || []).map(noteAttention).some(Boolean); }], // and the queue changes missed while away
+    ["hello", (m) => { Tasks.refresh(); Todo.refresh(); return (m.attention || []).map(noteAttention).some(Boolean); }], // and the queue and to-do changes missed while away
     ["tasks-changed", () => { Tasks.refresh(); }],
+    ["todos-changed", () => { Todo.refresh(); }],
     ["attention", noteAttention],
     ["sessions-changed", reloadSoon], ["workspace-added", reloadSoon], ["workspace-removed", reloadSoon],
     ["workspace-status", reloadSoon], ["workspace-git", reloadSoon],
@@ -778,7 +790,7 @@
     for (const tab of document.querySelectorAll(".tab")) {
       tab.onclick = () => {
         for (const t of document.querySelectorAll(".tab")) t.classList.toggle("on", t === tab);
-        for (const name of ["changes", "team", "todo"]) show("tab-" + name, tab.dataset.tab === name);
+        for (const name of ["changes", "team", "steps"]) show("tab-" + name, tab.dataset.tab === name);
       };
     }
   }
@@ -794,6 +806,7 @@
     if (navigator.serviceWorker) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "ccmux-navigate" && e.data.url) location.href = e.data.url; });
     S.user = await identity();
     Tasks.refresh();
+    Todo.refresh();
     connectFeed();
     if (S.sel.kind === "session") openSock();
     await loadLists();

@@ -38,6 +38,7 @@ func (s *Server) todoRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/todos", s.addTodo)
 	mux.HandleFunc("PATCH /v1/todos/{id}", s.patchTodo)
 	mux.HandleFunc("DELETE /v1/todos/{id}", s.deleteTodo)
+	mux.HandleFunc("POST /v1/todos/{id}/task", s.makeTodoTask)
 	mux.HandleFunc("POST /v1/panes/{id}/todo", s.paneTodo)
 }
 

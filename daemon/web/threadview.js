@@ -60,7 +60,7 @@
   }
 
   // stepMore is what an opened step shows under its line: the diff it made,
-  // the to-do list it set, the images it returned, its output or its error.
+  // the step list it set, the images it returned, its output or its error.
   function stepMore(s, ctx) {
     const st = s.part.state || {};
     const more = el("div", "step-more");
@@ -278,6 +278,26 @@
     return box;
   }
 
+  // todoRow is a repo's to-do list in the sidebar, right under the repo's
+  // own row (ctx.todos, threadtodoview.js): how many items wait for
+  // someone, coloured by the most urgent of them, and what they are. It
+  // opens the list in the main area. A repo with nothing on its list has
+  // no row, except the repo the page is in, so a person can always add the
+  // first item. Its classes are its own, like a Tasks row's.
+  function todoRow(r, ctx) {
+    const D = ctx.todos;
+    if (!D) return null;
+    const s = D.sum(r);
+    const on = D.on(r);
+    if (!s.open && !s.tasked && !on && !ctx.inRepo(r)) return null;
+    const row = el("button", "side-todo" + (on ? " on" : ""));
+    row.type = "button";
+    row.title = "This repo's to-do list: what its sessions noticed and left";
+    row.onclick = () => D.open(r);
+    return add(row, el("span", "sd-icon", "☑"), add(el("span", "sd-body"), el("span", "sd-name", "To-do"), el("span", "sd-sub", s.text || "nothing open")),
+      s.open ? el("span", "sd-count u-" + s.top, String(s.open)) : null);
+  }
+
   // attClass makes a row pulse like the lens's session list: orange until it
   // is answered, green until someone looks. Other states are the dot alone.
   const attClass = (state) => (state === "waiting" || state === "done" ? " att-" + state : "");
@@ -291,6 +311,7 @@
     row.onclick = () => ctx.pickRepo(r);
     const top = add(el("span", "row-top"), el("span", "row-name", r.name), gitBadges(r.git));
     add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
+    add(box, todoRow(r, ctx));
     for (const t of r.threads) {
       const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : "") + attClass(t.state));
       tr.type = "button";
@@ -376,9 +397,12 @@
     return box;
   }
 
-  function todoTab(box, todos, result) {
+  // stepsTab is the session's own step list (Claude's TodoWrite), and what
+  // its last turn cost. The repo's to-do list is another thing
+  // (threadtodoview.js): what sessions noticed and left, kept by the daemon.
+  function stepsTab(box, todos, result) {
     box.textContent = "";
-    add(box, todos.length ? todoList(todos) : el("div", "quiet", "No to-do list in this session."));
+    add(box, todos.length ? todoList(todos) : el("div", "quiet", "No step list in this session."));
     // A result can be the context report alone (session.context before any
     // bill), so the line needs both numbers.
     if (result && typeof result.durationMs === "number" && typeof result.costUSD === "number") {
@@ -386,5 +410,5 @@
     }
   }
 
-  window.ccmuxThreadView = { el, block, sig, card, pressKey, frameAnswer, sidebar, changesTab, helpersTab, todoTab, diff, mediaURL };
+  window.ccmuxThreadView = { el, block, sig, card, pressKey, frameAnswer, sidebar, changesTab, helpersTab, stepsTab, diff, mediaURL };
 })();

@@ -1,0 +1,64 @@
+/* A repo's to-do list on the thread page (threadtodoview.js): its row in
+   the sidebar, under the repo's own row (.side-todo, drawn by threadview.js),
+   and the list itself (.rt), which takes the conversation's place while it
+   is open (#page.todo-mode). Colours come from threads.css's tokens only.
+   The session's own step list (the Steps tab, .todo in threads.css) is
+   another thing and shares no rule with this file. */
+
+/* Urgency, the same three colours wherever it shows: the sidebar's count,
+   an item's left edge and its picker. */
+.rt, .side-todo { --u-high: var(--red); --u-medium: var(--wait); --u-low: var(--asleep); }
+
+/* --- the sidebar row --- */
+.side-todo { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; padding: 5px 8px 5px 26px; border-radius: 8px; border: 0; background: transparent; }
+.side-todo:hover { background: rgba(255, 255, 255, .5); }
+.side-todo.on { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
+.sd-icon { width: 10px; flex: none; font-size: 12px; line-height: 19px; color: var(--muted); }
+.sd-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.sd-name { font-size: 13px; font-weight: 500; }
+.sd-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-count { flex: none; margin-top: 2px; border-radius: 8px; font-size: 10px; font-weight: 700; padding: 0 6px; line-height: 16px; color: #FFFFFF; background: var(--u-low); }
+.sd-count.u-high { background: var(--u-high); }
+.sd-count.u-medium { background: var(--u-medium); }
+
+/* --- the list, in the main area --- */
+#page.todo-mode #stream, #page.todo-mode #goal, #page.todo-mode #detail { display: none !important; }
+.rt { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px 32px; font-size: 13px; display: flex; flex-direction: column; gap: 12px; }
+.rt-head { min-height: 18px; }
+.rt-status { font-size: 12.5px; color: var(--muted); }
+.rt-status.bad { color: var(--red); }
+.rt-add { display: flex; gap: 8px; align-items: center; max-width: 860px; }
+.rt-text { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line3); background: var(--card); font-size: 13.5px; }
+.rt-text:focus-visible { outline: 2px solid var(--blue-line); border-color: var(--blue); }
+.rt-add .primary.small { height: 34px; flex: none; }
+.rt-urgency { height: 26px; flex: none; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); font-size: 12px; padding: 0 4px; color: var(--fg); }
+.rt-add .rt-urgency { height: 34px; }
+.rt-item .rt-urgency { width: 86px; } /* one width, so every item's text starts in the same place */
+.rt-urgency.u-high { border-color: var(--u-high); color: var(--u-high); font-weight: 600; }
+.rt-urgency.u-medium { border-color: var(--u-medium); color: var(--u-medium); }
+.rt-list { display: flex; flex-direction: column; gap: 6px; max-width: 860px; }
+.rt-empty { color: var(--muted); line-height: 1.5; margin: 4px 0; }
+.rt-item { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border: 1px solid var(--line); border-left: 3px solid var(--u-low); border-radius: 8px; background: var(--card); }
+.rt-item.u-high { border-left-color: var(--u-high); }
+.rt-item.u-medium { border-left-color: var(--u-medium); }
+.rt-item.s-tasked { background: var(--blue-bg); }
+.rt-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rt-item-text { font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.rt-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.rt-id { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.rt-chip { color: var(--blue-d); border: 1px solid var(--blue-line); background: var(--card); border-radius: 999px; padding: 0 7px; line-height: 17px; }
+.rt-note { font-style: italic; }
+.rt-actions { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.rt-actions .plain.small { margin-top: 0; }
+.rt-act-task, .rt-act-again { border-color: var(--blue); color: var(--blue-d); font-weight: 600; }
+.rt-act-delete { color: var(--red); }
+.rt-done { margin-top: 10px; }
+.rt-done > summary { cursor: pointer; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 4px 0; }
+.rt-done > .rt-item { margin-top: 6px; border-left-color: var(--green); }
+.rt-item.s-done .rt-item-text { color: var(--muted); text-decoration: line-through; }
+
+@media (max-width: 900px) {
+  .rt { padding: 12px 14px 24px; }
+  .rt-item { flex-wrap: wrap; }
+  .rt-actions { width: 100%; justify-content: flex-start; }
+}

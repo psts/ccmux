@@ -12,6 +12,7 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/loadout"
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -199,15 +200,39 @@ func newSessionProblem(cwd, kind string) string {
 // answerLead answers with the workspace's lead when it has one, and says
 // whether it did.
 func (s *Server) answerLead(w http.ResponseWriter, wsID string) bool {
-	lead, err := s.runnerRows.RunnerLead(wsID)
-	if err != nil {
-		log.Printf("sessions: lead of workspace %s not read: %v", wsID, err)
-	}
+	lead := s.leadOf(wsID)
 	if lead == nil {
 		return false
 	}
 	writeJSON(w, http.StatusOK, s.viewOf(*lead))
 	return true
+}
+
+// leadOf is a workspace's lead session that has not ended, or nil. A row
+// that could not be read is logged and reads as none: the caller then
+// makes one, and the store refuses a second lead (store.ErrLeadExists).
+func (s *Server) leadOf(wsID string) *store.RunnerSession {
+	lead, err := s.runnerRows.RunnerLead(wsID)
+	if err != nil {
+		log.Printf("sessions: lead of workspace %s not read: %v", wsID, err)
+	}
+	return lead
+}
+
+// ensureLead is a repo session's lead, made (on model, "" for the default)
+// when the workspace has none: what a page's own first message to a repo
+// does, for a daemon route that has something to say to the repo's session.
+func (s *Server) ensureLead(ws *model.Workspace, modelName string) (store.RunnerSession, error) {
+	if lead := s.leadOf(ws.ID); lead != nil {
+		return *lead, nil
+	}
+	sess, err := s.runners.Create(runner.NewSession{Cwd: ws.RepoPath, Model: modelName, WorkspaceID: ws.ID, Kind: store.SessionLead})
+	if errors.Is(err, store.ErrLeadExists) {
+		if lead := s.leadOf(ws.ID); lead != nil {
+			return *lead, nil // another page made it between the look and the insert
+		}
+	}
+	return sess, err
 }
 
 // maxSessionTitle bounds a title: it is one line in a sidebar row.

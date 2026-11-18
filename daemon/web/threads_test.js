@@ -421,7 +421,8 @@ test("the repo the page is in shows its git state inside its own card, and the o
   assert.deepEqual(detail.children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
   assert.deepEqual(rows[0].querySelector(".row-git").children.map((c) => c.textContent), ["dev", "●1", "↑2"], "branch, changes and ahead sit by the name");
   assert.equal(rows[1].querySelector(".git-detail"), null, "a repo the page is not in keeps to one line");
-  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more"], "nothing hangs below the card but its menu button, which only a phone shows (threads.css)");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more", "side-todo"], "under the card: its menu button, which only a phone shows (threads.css) and which sits over the card, and the repo's to-do row");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[1].children.map((c) => c.className), ["row", "side-more"], "a repo the page is not in, with nothing on its list, has no to-do row");
 });
 
 test("the firehose moves a session's dot and has the lists read again", async () => {
@@ -940,4 +941,171 @@ test("the goal line shows only a goal the session wrote, never help text", async
   const q = await boot({ sessions: [{ ...lead, attention: "idle", goal: "Reading the trades routes." }], search: "?s=lead1" });
   assert.equal(q.$("goal").classList.contains("hidden"), false);
   assert.equal(q.$("goal-text").textContent, "Reading the trades routes.");
+});
+
+// A repo's to-do list: its row under the repo with how many items wait and
+// how urgent the worst is, the list in place of the conversation, and every
+// button a person has on an item sent to the daemon as that item's change.
+const todoItem = (id, over = {}) => ({ id, repo: "/p/app", text: "item " + id, urgency: "low", status: "open", addedBy: "app", createdAt: id * 1000, updatedAt: id * 1000, ...over });
+
+async function todoPage(todos, opts = {}) {
+  const blog = { id: "ws2", name: "blog", repoPath: "/p/blog-worktree", git: { isGitRepo: true, branch: "main" } };
+  const state = { todos, confirmed: [] };
+  const p = await boot({
+    workspaces: [repo, blog], sessions: [lead], search: opts.search === undefined ? "?s=lead1" : opts.search,
+    windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "ws2"], taskSlots: 1 }],
+    confirm: (q) => { state.confirmed.push(q); return opts.confirm !== false; },
+    // blog's session is open on a worktree: the daemon names its list's key.
+    routes: [[/^GET \/v1\/todos$/, () => ({ todos: state.todos, repos: { ws1: "/p/app", ws2: "/p/blog" } })], ...(opts.routes || [])],
+  });
+  const repoBox = (name) => p.$("tree").querySelectorAll(".repo").find((r) => r.querySelector(".row-name").textContent === name);
+  const changes = () => p.book.calls.filter((c) => c.url.startsWith("/v1/todos") && c.method !== "GET").map((c) => [c.method, c.url, c.body]);
+  const items = () => p.$("repo-todo").querySelectorAll(".rt-item");
+  const itemOf = (id) => items().find((i) => i.dataset.id === String(id));
+  return { p, state, repoBox, changes, items, itemOf };
+}
+
+test("a repo's row shows how many to-do items wait and how urgent the worst is; the list opens in the conversation's place", async () => {
+  const { p, repoBox, items } = await todoPage([
+    todoItem(1), todoItem(2, { urgency: "high", addedBy: "app-task-7" }), todoItem(3, { urgency: "medium", status: "tasked", taskId: 41 }),
+    todoItem(4, { status: "done", doneBy: "Pat", doneAt: 9000 }), todoItem(5, { repo: "/p/blog", urgency: "medium" }),
+  ]);
+  assert.deepEqual(p.$("tree").querySelectorAll(".row-name").map((n) => n.textContent), ["app", "blog"], "the to-do rows are not repos");
+  const appRow = repoBox("app").querySelector(".side-todo");
+  assert.equal(appRow.querySelector(".sd-count").textContent, "2", "what a task has, and what is done, does not wait for anyone");
+  assert.equal(appRow.querySelector(".sd-count").className, "sd-count u-high");
+  assert.equal(appRow.querySelector(".sd-sub").textContent, "1 high · 1 low · 1 tasked");
+  const blogRow = repoBox("blog").querySelector(".side-todo");
+  assert.equal(blogRow.querySelector(".sd-count").className, "sd-count u-medium", "a session on a worktree shows its repo's list, by the daemon's key");
+
+  appRow.click();
+  await p.settle();
+  assert.ok(p.$("page").classList.contains("todo-mode"), "the list takes the conversation's place");
+  assert.ok(!p.$("repo-todo").classList.contains("hidden"));
+  assert.equal(p.$("title").textContent, "To-do");
+  assert.match(p.$("meta").textContent, /^app · /);
+  assert.equal(p.book.pushed.pop(), "/threads.html", "the conversation is left");
+  assert.ok(repoBox("app").querySelector(".side-todo").classList.contains("on"));
+  assert.ok(p.$("composer").classList.contains("hidden"), "there is nobody to message on a list");
+
+  assert.deepEqual(items().map((i) => i.dataset.id), ["2", "3", "1", "4"], "high, then medium, then low; the done one last, folded");
+  assert.deepEqual(items().map((i) => i.className), ["rt-item u-high s-open", "rt-item u-medium s-tasked", "rt-item u-low s-open", "rt-item s-done"]);
+  assert.match(items()[0].querySelector(".rt-meta").textContent, /^#2added by app-task-7 · /);
+  assert.equal(items()[1].querySelector(".rt-chip").textContent, "task #41");
+  assert.deepEqual(items().map((i) => i.querySelectorAll(".rt-actions button").map((b) => b.textContent)),
+    [["Make task", "Done", "Delete"], ["Done", "Delete"], ["Make task", "Done", "Delete"], ["Put back", "Delete"]]);
+  const fold = p.$("repo-todo").querySelector(".rt-done");
+  assert.equal(fold.open, false, "what is done is folded away");
+  assert.equal(fold.querySelector("summary").textContent, "Done (1)");
+  assert.match(fold.querySelector(".rt-meta").textContent, /done by Pat/);
+});
+
+test("on a to-do item a person changes its urgency, ticks it off, puts it back, deletes it and adds one", async () => {
+  const { p, state, repoBox, changes, itemOf } = await todoPage([todoItem(1), todoItem(2, { urgency: "high" }), todoItem(4, { status: "done", doneBy: "Pat", doneAt: 9000 })]);
+  repoBox("app").querySelector(".side-todo").click();
+  await p.settle();
+
+  const pick = itemOf(1).querySelector(".rt-urgency");
+  assert.equal(pick.value, "low");
+  pick.value = "high";
+  pick.onchange();
+  itemOf(2).querySelector(".rt-act-done").click();
+  itemOf(4).querySelector(".rt-act-reopen").click();
+  await p.settle();
+  itemOf(2).querySelector(".rt-act-delete").click();
+  await p.settle();
+  assert.deepEqual(changes(), [
+    ["PATCH", "/v1/todos/1", { urgency: "high" }], ["PATCH", "/v1/todos/2", { status: "done", by: "Pat" }],
+    ["PATCH", "/v1/todos/4", { status: "open" }], ["DELETE", "/v1/todos/2", undefined],
+  ]);
+  assert.deepEqual(state.confirmed, ["Delete to-do #2? It is gone for good."], "only a delete asks first");
+
+  const form = p.$("repo-todo").querySelector(".rt-add");
+  const text = form.querySelector(".rt-text");
+  await form.onsubmit({ preventDefault() {} });
+  assert.equal(changes().length, 4, "an empty line adds nothing");
+  text.value = "The export button does nothing on Safari";
+  form.querySelector(".rt-urgency").value = "medium";
+  await form.onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(changes()[4], ["POST", "/v1/todos", { repo: "/p/app", text: "The export button does nothing on Safari", urgency: "medium", by: "Pat" }]);
+  assert.equal(text.value, "", "the line is emptied for the next one");
+});
+
+test("a delete that is not confirmed deletes nothing, and a refusal is said on the list", async () => {
+  const { p, repoBox, changes, itemOf } = await todoPage([todoItem(1)], { confirm: false, routes: [[/^PATCH \/v1\/todos\/1$/, () => ({ fail: 409, error: "the same thing is on the list already as #9" })]] });
+  repoBox("app").querySelector(".side-todo").click();
+  await p.settle();
+  itemOf(1).querySelector(".rt-act-delete").click();
+  await p.settle();
+  assert.deepEqual(changes(), []);
+  itemOf(1).querySelector(".rt-act-done").click();
+  await p.settle();
+  const status = p.$("repo-todo").querySelector(".rt-status");
+  assert.equal(status.textContent, "the same thing is on the list already as #9");
+  assert.ok(status.classList.contains("bad"));
+});
+
+test("Make task sends the item to its repo's session through the daemon, and an item sent but not filed can be sent again", async () => {
+  const { p, state, repoBox, changes, itemOf } = await todoPage([todoItem(1), todoItem(2, { status: "tasked" })]);
+  repoBox("app").querySelector(".side-todo").click();
+  await p.settle();
+  assert.deepEqual(itemOf(2).querySelectorAll(".rt-actions button").map((b) => b.textContent), ["Send again", "Done", "Delete"]);
+  assert.equal(itemOf(2).querySelector(".rt-chip").textContent, "sent to the repo's session to file");
+  state.todos = [todoItem(1, { status: "tasked" }), todoItem(2, { status: "tasked" })]; // what the daemon answers once the item is sent
+  itemOf(1).querySelector(".rt-act-task").click();
+  await p.settle();
+  assert.deepEqual(changes(), [["POST", "/v1/todos/1/task", { workspaceId: "ws1", sender: "Pat", model: "" }]]);
+  assert.equal(p.$("repo-todo").querySelector(".rt-status").textContent, "Sent #1 to app's session to plan and file as a task.");
+  assert.equal(itemOf(1).className, "rt-item u-low s-tasked", "the list is read again and shows it tasked");
+  assert.equal(p.book.calls.filter((c) => c.method === "POST" && /^\/v1\/sessions/.test(c.url)).length, 0, "the daemon reaches the session; the page starts none");
+});
+
+test("a todos-changed frame reads the lists again, and picking a repo or the task queue closes the list", async () => {
+  const { p, state, repoBox, items } = await todoPage([todoItem(1)], { routes: [[/^GET \/v1\/tasks/, () => ({ tasks: [], counts: {} })]] });
+  repoBox("app").querySelector(".side-todo").click();
+  await p.settle();
+  const reads = () => p.book.calls.filter((c) => c.method === "GET" && c.url === "/v1/todos").length;
+  const before = reads();
+  const typed = p.$("repo-todo").querySelector(".rt-text");
+  typed.value = "half a thou";
+  state.todos = [todoItem(1), todoItem(7, { urgency: "high", addedBy: "app-task-9" })]; // an agent added one meanwhile
+  p.book.sockets[0].onmessage({ data: JSON.stringify({ t: "todos-changed" }) });
+  await p.settle();
+  assert.equal(reads(), before + 1);
+  assert.deepEqual(items().map((i) => i.dataset.id), ["7", "1"], "the new item is on the list, in its urgency's place");
+  assert.equal(repoBox("app").querySelector(".sd-count").textContent, "2");
+  assert.equal(p.$("repo-todo").querySelector(".rt-text"), typed, "the line being typed on is the same element");
+  assert.equal(typed.value, "half a thou", "and what was typed is still there");
+
+  p.$("tree").querySelector(".side-tasks").click();
+  await p.settle();
+  assert.ok(p.$("page").classList.contains("tasks-mode") && !p.$("page").classList.contains("todo-mode"), "the queue takes the list's place");
+  assert.ok(p.$("repo-todo").classList.contains("hidden"));
+  assert.equal(p.$("title").textContent, "Tasks");
+  // With nothing picked, a repo's row is still there while its list has items.
+  p.$("tree").querySelectorAll(".repo")[0].querySelector(".side-todo").click();
+  await p.settle();
+  assert.ok(p.$("page").classList.contains("todo-mode") && !p.$("page").classList.contains("tasks-mode"), "and the list takes the queue's");
+  assert.ok(p.$("tasks").classList.contains("hidden"));
+
+  p.$("tree").querySelector(".row").click();
+  await p.settle();
+  assert.ok(!p.$("page").classList.contains("todo-mode"), "picking a repo closes the list");
+  assert.ok(p.$("repo-todo").classList.contains("hidden"));
+  assert.equal(p.$("title").textContent, "app");
+});
+
+test("the session's own step list is the Steps tab, apart from the repo's to-do list", async () => {
+  const { p } = await todoPage([todoItem(1)]);
+  await p.frame(snapshot({ todos: [{ id: "1", text: "Write the test", status: "in_progress" }] }));
+  assert.equal(p.$("tab-todo"), null, "no tab is called to-do any more");
+  assert.deepEqual(p.$("tab-steps").querySelectorAll(".todo-text").map((n) => n.textContent), ["Write the test"]);
+  assert.equal(p.$("repo-todo").querySelectorAll(".todo-text").length, 0, "a session's steps are never on the repo's list");
+  const html = fs.readFileSync(path.join(__dirname, "threads.html"), "utf8");
+  assert.deepEqual([...html.matchAll(/class="tab[^"]*"[^>]*data-tab="(\w+)"[^>]*>([^<]+)</g)].map((m) => [m[1], m[2]]),
+    [["changes", "Changes"], ["team", "Helpers"], ["steps", "Steps"]]);
+  const empty = await todoPage([]);
+  await empty.p.frame(snapshot());
+  assert.equal(empty.p.$("tab-steps").textContent, "No step list in this session.");
 });

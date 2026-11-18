@@ -230,7 +230,8 @@ func setUrgency(t *store.Todo, e Edit) error {
 
 // setStatus moves an item: done records who finished it and when; open
 // takes it back onto the list, with what it had of a task or a finish
-// cleared; tasked is an open item handed on to be filed as a task.
+// cleared; tasked is an open item handed on to be filed as a task, which
+// lets go of any task it had before.
 func (b *Book) setStatus(t *store.Todo, e Edit) error {
 	if e.Status == nil || *e.Status == t.Status {
 		return nil
@@ -250,7 +251,9 @@ func (b *Book) setStatus(t *store.Todo, e Edit) error {
 		if t.Status == Done {
 			return problem(Conflict, "to-do #%d is done; put it back on the list before making it a task", t.ID)
 		}
-		t.Status = Tasked
+		// Handed on anew: a task it had before (cancelled, since the item
+		// was open) and what was noted of that are history.
+		t.Status, t.TaskID, t.Note = Tasked, 0, ""
 		return nil
 	}
 	return problem(Invalid, "status is open, tasked or done, not %q", *e.Status)
@@ -285,7 +288,7 @@ func (b *Book) Filed(id, taskID int64) error {
 	if t.Status == Done {
 		return nil // finished between the check and the filing: it stays done
 	}
-	t.Status, t.TaskID = Tasked, taskID
+	t.Status, t.TaskID, t.Note = Tasked, taskID, "" // a note on an earlier task is not about this one
 	_, err = b.save(t)
 	return err
 }
@@ -334,7 +337,7 @@ func settled(t store.Todo, state string, now int64) store.Todo {
 			t.Status, t.Note = Tasked, ""
 		}
 	case TaskMerged:
-		t.Status, t.DoneBy, t.DoneAt = Done, task, now
+		t.Status, t.DoneBy, t.DoneAt, t.Note = Done, task, now, ""
 	case TaskCancelled:
 		if t.Status != Open {
 			t.Status, t.Note = Open, task+" was cancelled before it was built"

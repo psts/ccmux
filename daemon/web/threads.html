@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/threads.css">
   <link rel="stylesheet" href="/settings.css">
   <link rel="stylesheet" href="/tasks.css">
+  <link rel="stylesheet" href="/threadtodo.css">
 </head>
 <body>
   <!-- The thread page: runner sessions (Claude on the Agent SDK) worked with
@@ -81,6 +82,11 @@
            the conversation while it is open. -->
       <div id="tasks" class="tasks hidden"></div>
 
+      <!-- A repo's to-do list (threadtodoview.js), in place of the
+           conversation while it is open: what its sessions noticed and
+           left. Not a session's own steps, which are the Steps tab. -->
+      <div id="repo-todo" class="rt hidden"></div>
+
       <form id="composer" class="composer ac-compose hidden">
         <label for="input">Message the lead, or type / for commands</label>
         <div id="attached" class="attached"></div>
@@ -102,11 +108,11 @@
       <div class="tabs" role="tablist">
         <button class="tab on" role="tab" data-tab="changes" type="button">Changes</button>
         <button class="tab" role="tab" data-tab="team" type="button">Helpers</button>
-        <button class="tab" role="tab" data-tab="todo" type="button">To-do</button>
+        <button class="tab" role="tab" data-tab="steps" type="button" title="This session's own step list">Steps</button>
       </div>
       <div id="tab-changes" class="tab-body"></div>
       <div id="tab-team" class="tab-body hidden"></div>
-      <div id="tab-todo" class="tab-body hidden"></div>
+      <div id="tab-steps" class="tab-body hidden"></div>
     </aside>
   </div>
 
@@ -149,6 +155,8 @@
   <script src="/tasklist.js"></script>
   <script src="/taskview.js"></script>
   <script src="/threadtasks.js"></script>
+  <script src="/threadtodo.js"></script>
+  <script src="/threadtodoview.js"></script>
   <script src="/threadview.js"></script>
   <script src="/threadcaps.js"></script>
   <script src="/threadcapsview.js"></script>
