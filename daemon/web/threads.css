@@ -46,6 +46,11 @@ a:hover { color: var(--blue-d); }
 .dot.running { background: var(--run); }
 .dot.waiting { background: var(--wait); }
 .dot.done { background: var(--run); }
+/* The header's context and cache gauge (threadgauge.js): orange when the
+   window is near full or the cache is about to go, struck when it went. */
+.gauge { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gauge .warn { color: var(--wait); font-weight: 600; }
+.gauge .cold { text-decoration: line-through; }
 /* A sidebar row that needs you pulses orange until answered, one that is
    done pulses green until looked at: the lens's rule (style.css .ws.att-*). */
 .row.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }

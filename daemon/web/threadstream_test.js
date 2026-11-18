@@ -122,3 +122,13 @@ test("a delta for a part that is not there is dropped, not invented", () => {
   st.apply(s, ev(11, "message.part.delta", { messageID: "nope", partID: "nope.0", field: "text", delta: "x" }), 0);
   assert.equal(s.turns.length, 1);
 });
+
+test("a context event lands on the turn's result", () => {
+  const s = st.apply(st.fresh(), snapshot(), 0).state;
+  st.apply(s, ev(11, "session.idle", { result: { costUSD: 1 } }), 0);
+  st.apply(s, ev(12, "session.context", { context: { percent: 42, used: 84000, max: 200000 } }), 0);
+  assert.deepEqual(s.result, { costUSD: 1, context: { percent: 42, used: 84000, max: 200000 } });
+  const t = st.apply(st.fresh(), snapshot(), 0).state;
+  st.apply(t, ev(11, "session.context", { context: { percent: 5, used: 1, max: 2 } }), 0);
+  assert.deepEqual(t.result, { context: { percent: 5, used: 1, max: 2 } });
+});

@@ -86,6 +86,7 @@
     "session.error": (s, p) => { s.error = typeof p.error === "string" ? p.error : JSON.stringify(p.error); return { meta: true }; },
     "session.info": (s, p) => { s.info = p.info || {}; return { meta: true }; },
     "session.todos": (s, p) => { s.todos = p.todos || []; return { todos: true }; },
+    "session.context": (s, p) => { s.result = { ...(s.result || {}), context: p.context }; return { meta: true }; },
   };
 
   // apply folds one frame into s and returns what changed:

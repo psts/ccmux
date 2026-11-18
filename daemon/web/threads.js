@@ -6,7 +6,7 @@
 // threadview.js; this file is the glue, and owns the page's state.
 (() => {
   "use strict";
-  const R = window.ccmuxRoute, Model = window.ccmuxThreadModel, Stream = window.ccmuxThreadStream;
+  const R = window.ccmuxRoute, Model = window.ccmuxThreadModel, Stream = window.ccmuxThreadStream, Gauge = window.ccmuxThreadGauge;
   const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage, Team = window.ccmuxThreadTeam;
   const Pending = window.ccmuxThreadPending;
   const $ = (id) => document.getElementById(id);
@@ -260,6 +260,22 @@
     show("merge-thread", leads);
     show("end-thread", leads);
     drawModel(sess);
+    drawGauge(sess);
+  }
+
+  // drawGauge is the header's context and cache gauge for the open session;
+  // a tick redraws it so the cache counts down between messages.
+  function drawGauge(sess) {
+    const box = $("gauge");
+    const g = sess && sess.state !== "done" ? Gauge.gauge(S.stream.result, Date.now()) : null;
+    show("gauge", !!g);
+    if (!g) return;
+    box.textContent = "";
+    g.parts.forEach((p, i) => {
+      if (i) box.appendChild(document.createTextNode(" · "));
+      box.appendChild(View.el("span", p.cls, p.text));
+    });
+    box.title = g.title;
   }
 
   function drawModel(sess) {
@@ -784,6 +800,7 @@
     if (S.sel.kind === "session") openSock();
     await loadLists();
     setInterval(loadLists, 20000);
+    setInterval(() => drawGauge(session()), 15000);
   }
 
   boot();

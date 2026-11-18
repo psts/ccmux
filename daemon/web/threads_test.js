@@ -916,3 +916,13 @@ test("a group's tasks show under the group and under every repo they have a part
   assert.ok(p.$("tasks").classList.contains("hidden"));
   assert.equal(p.$("title").textContent, "app");
 });
+
+test("the header shows how full the context is and how long the cache has left, and hides with nothing known", async () => {
+  const p = await boot({ sessions: [{ ...lead, attention: "idle" }], search: "?s=lead1" });
+  assert.equal(p.$("gauge").classList.contains("hidden"), true);
+  const result = { costUSD: 0.5, endedAt: Date.now() - 14 * 60000, cacheTtlMs: 3600000, context: { percent: 42, used: 84000, max: 200000 } };
+  await p.frame({ t: "snapshot", boot: "b1", seq: 0, data: { messages: [], info: {}, result } });
+  assert.equal(p.$("gauge").classList.contains("hidden"), false);
+  assert.equal(p.$("gauge").textContent, "42% · cache 46 min");
+  assert.match(p.$("gauge").title, /last reply 14 min ago/);
+});
