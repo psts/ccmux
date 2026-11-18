@@ -775,8 +775,37 @@ test("a turn no prompt opened makes a runner busy until its result, which carrie
   assert.equal(agent.busy, false);
   assert.deepEqual(signals, ["busy", "idle"]);
   const idle = events.filter((e) => e.type === "session.idle").pop();
-  assert.deepEqual(idle.properties.result, { costUSD: 0.02, durationMs: 900, turns: 1, usage: { input: 3, output: 7, cacheRead: 0, cacheWrite: 0 } });
+  const { endedAt, ...bill } = idle.properties.result;
+  assert.deepEqual(bill, { costUSD: 0.02, durationMs: 900, turns: 1, usage: { input: 3, output: 7, cacheRead: 0, cacheWrite: 0 }, cacheTtlMs: 0 });
+  assert.equal(typeof endedAt, "number");
   assert.deepEqual(agent.snapshot().result, idle.properties.result);
+});
+
+test("after a turn a runner says how full the context window is, in the event and the snapshot", async () => {
+  const { agent, events, sdk } = runnerAgent();
+  agent.ensureQuery();
+  const asked = [];
+  sdk.queries[0].getContextUsage = async (o) => { asked.push(o); return { totalTokens: 84000, maxTokens: 200000, percentage: 42 }; };
+  agent.onMessage(initMsg());
+  agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Done." }] } });
+  agent.onMessage(resultMsg);
+  await tick();
+  assert.deepEqual(asked, [{ detail: "summary" }], "summary: no token-count calls");
+  const ev = events.filter((e) => e.type === "session.context").pop();
+  assert.deepEqual(ev.properties.context, { percent: 42, used: 84000, max: 200000 });
+  assert.deepEqual(agent.snapshot().result.context, ev.properties.context);
+});
+
+test("a runner whose SDK cannot say how full the context is goes on without a number", async () => {
+  const { agent, events, sdk } = runnerAgent();
+  agent.ensureQuery();
+  sdk.queries[0].getContextUsage = async () => { throw new Error("not supported"); };
+  agent.onMessage(initMsg());
+  agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Done." }] } });
+  agent.onMessage(resultMsg);
+  await tick();
+  assert.equal(events.filter((e) => e.type === "session.context").length, 0);
+  assert.equal(agent.snapshot().result.context, undefined);
 });
 
 test("a runner puts what Claude Code says beside the conversation into it, and its to-do list in the snapshot", () => {

@@ -13,7 +13,7 @@ import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.m
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
-import { fromInit, fromInitialization, commandList, resultOf } from "./sessionself.mjs";
+import { fromInit, fromInitialization, commandList, resultOf, contextOf } from "./sessionself.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
 const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
@@ -490,9 +490,25 @@ export class Agent {
       this.log("! " + text);
     }
     const idle = { sessionID: this.sid };
-    if (this.turns) idle.result = this.result = resultOf(m); // what the turn cost, for the session's page
+    if (this.turns) idle.result = this.result = resultOf(m, this.result && this.result.cacheTtlMs); // what the turn cost, for the session's page
     this.broadcast({ type: "session.idle", properties: idle });
     this.setBusy(this.turns ? this.turns.busy() : false);
+    if (this.turns) this.readContext(this.result);
+  }
+
+  // readContext asks the SDK how full the context window is, from the last
+  // response's usage (detail "summary": no token-count calls), and sends it
+  // to the page as session.context. It rides on the turn's result so a page
+  // that connects later gets it in the snapshot. A query that cannot say
+  // (an older SDK, a query that ended) leaves the page without a number.
+  readContext(result) {
+    const q = this.q;
+    if (!q || typeof q.getContextUsage !== "function") return;
+    q.getContextUsage({ detail: "summary" }).then((r) => {
+      if (this.result !== result) return; // a newer turn has its own
+      result.context = contextOf(r);
+      this.broadcast({ type: "session.context", properties: { sessionID: this.sid, context: result.context } });
+    }).catch((e) => this.log("context usage unreadable: " + (e && e.message ? e.message : e)));
   }
 
   // print is the terminal view: reply text as it streams, tool calls on

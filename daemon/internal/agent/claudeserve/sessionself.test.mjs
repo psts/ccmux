@@ -1,7 +1,7 @@
 // node --test sessionself.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { commandList, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
+import { commandList, contextOf, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
 
 test("commands are listed once, the first row of a name standing", () => {
   const list = commandList([
@@ -47,7 +47,22 @@ test("before any turn a query says its commands and the models to pick from", ()
 });
 
 test("a result is the turn's bill", () => {
-  const r = resultOf({ total_cost_usd: 0.0123, duration_ms: 4100, num_turns: 3, usage: { input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 40 } });
-  assert.deepEqual(r, { costUSD: 0.0123, durationMs: 4100, turns: 3, usage: { input: 10, output: 200, cacheRead: 3000, cacheWrite: 40 } });
+  const r = resultOf({ total_cost_usd: 0.0123, duration_ms: 4100, num_turns: 3, usage: { input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 3000, cache_creation_input_tokens: 40 } }, 0, 1000);
+  assert.deepEqual(r, { costUSD: 0.0123, durationMs: 4100, turns: 3, usage: { input: 10, output: 200, cacheRead: 3000, cacheWrite: 40 }, endedAt: 1000, cacheTtlMs: 0 });
   assert.deepEqual(resultOf({}).usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+});
+
+test("a result says how long its prompt cache lives, from what the turn wrote", () => {
+  const hour = { usage: { cache_creation: { ephemeral_1h_input_tokens: 500, ephemeral_5m_input_tokens: 0 } } };
+  assert.equal(resultOf(hour, 0, 1).cacheTtlMs, 3600000);
+  const five = { modelUsage: { "claude-opus-5-5": { cacheCreationEphemeral5mInputTokens: 80 } } };
+  assert.equal(resultOf(five, 0, 1).cacheTtlMs, 300000);
+  const both = { modelUsage: { a: { cacheCreationEphemeral5mInputTokens: 80 }, b: { cacheCreationEphemeral1hInputTokens: 9 } } };
+  assert.equal(resultOf(both, 0, 1).cacheTtlMs, 3600000, "the hour wins: the long-lived prefix is what a cold start loses");
+  assert.equal(resultOf({}, 3600000, 1).cacheTtlMs, 3600000, "a turn that only read the cache keeps the lifetime it had");
+});
+
+test("context usage is the percent of the window in use", () => {
+  assert.deepEqual(contextOf({ totalTokens: 84000, maxTokens: 200000, percentage: 42 }), { percent: 42, used: 84000, max: 200000 });
+  assert.deepEqual(contextOf({}), { percent: 0, used: 0, max: 0 });
 });
