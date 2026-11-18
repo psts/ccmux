@@ -108,6 +108,43 @@ func TestTaskQueueRuleOnlyWhereFilingWorks(t *testing.T) {
 	}
 }
 
+// The to-do rule is what makes sessions add to their repo's list unasked.
+// It goes to every session with a repo's list behind it: a ccmux pane's
+// own, in a window or not. A role agent has no repo and a Claude outside
+// ccmux has no pane to be known by, so neither is told to use a tool that
+// would refuse them.
+func TestTodoRuleOnlyWhereThereIsAList(t *testing.T) {
+	const addUnasked = "add it with the todo tool, unasked"
+	reader, sessions := `{"agent":false,"self":"app"}`, `[{"name":"app","repoPath":"/r/app","status":"live"}]`
+	srv := sessionsServer(t, &reader, &sessions)
+	a := &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1", paneID: "pane-1"}
+	got := a.instructions()
+	if !strings.Contains(got, addUnasked) {
+		t.Fatal("a repo session was not told to add to its to-do list")
+	}
+	for _, want := range []string{"Also found", "high if", "medium if", "else low", "List first", "mark an item done"} {
+		if !strings.Contains(todoRule, want) {
+			t.Errorf("the rule lost %q", want)
+		}
+	}
+	sessions = `[]`
+	if got := a.instructions(); !strings.Contains(got, addUnasked) || strings.Contains(got, buildOrFile) {
+		t.Fatal("a repo session in no window has a list but no task queue: the to-do rule alone")
+	}
+	reader, sessions = `{"agent":true}`, `[{"name":"app","repoPath":"/r/app","status":"live"}]`
+	if strings.Contains(a.instructions(), addUnasked) {
+		t.Fatal("a role agent, which has no repo, was told to add to-dos")
+	}
+	reader = `{"agent":false,"self":"app"}`
+	a.paneID = ""
+	if strings.Contains(a.instructions(), addUnasked) {
+		t.Fatal("a Claude with no ccmux pane was told to add to-dos")
+	}
+	if strings.Contains(serverInstructions, addUnasked) {
+		t.Fatal("the rule is in the fixed text every session gets")
+	}
+}
+
 // Claude Code keeps only the first instructionsCap characters. The fixed
 // rules and the task-queue rule must end inside that, and stay ahead of the
 // window's lists however long those get.
@@ -124,6 +161,12 @@ func TestInstructionsKeepTheRulesInsideTheCap(t *testing.T) {
 	end := strings.Index(got, taskQueueRule) + len(taskQueueRule)
 	if strings.Index(got, taskQueueRule) != len(serverInstructions) || end > buscontext.DefaultCap {
 		t.Fatalf("the task-queue rule ends at %d (cap %d), right after the fixed rules: %v", end, buscontext.DefaultCap, strings.Index(got, taskQueueRule) == len(serverInstructions))
+	}
+	if strings.Index(got, todoRule) != end {
+		t.Fatalf("the to-do rule starts at %d, want right after the task-queue rule at %d", strings.Index(got, todoRule), end)
+	}
+	if end += len(todoRule); end > buscontext.DefaultCap {
+		t.Fatalf("the to-do rule ends at %d, past the cap of %d", end, buscontext.DefaultCap)
 	}
 	if !strings.Contains(got, "PROJECT SESSIONS IN THIS WINDOW") || strings.Index(got, "PROJECT SESSIONS") < end {
 		t.Fatal("the window's lists must come after the rules")
@@ -186,9 +229,9 @@ func TestInstructionsFitTheWindowsListsInsideTheCap(t *testing.T) {
 			}
 		}
 	}
-	check("a repo session", serverInstructions+taskQueueRule)
-	// A role agent has no task-queue rule, so more room: it keeps the folders
-	// it reads the code at.
+	check("a repo session", serverInstructions+taskQueueRule+todoRule)
+	// A role agent has no task-queue rule and no to-do rule, so more room:
+	// it keeps the folders it reads the code at.
 	reader = `{"agent":true}`
 	check("a role agent", serverInstructions)
 	if got := a.instructions(); !strings.Contains(got, "/r/repo-7") || !strings.Contains(got, "agent-7") {
@@ -210,7 +253,10 @@ func TestInstructionsUseTheCapClaudeCodeWasGiven(t *testing.T) {
 	}
 	got := a.instructions()
 	if len(got) > buscontext.RaisedCap || strings.Count(got, agentDoes) != 8 || !strings.Contains(got, "Its .env is loaded") {
-		t.Fatalf("with the raised cap the whole paragraph fits (%d chars), yet it was shortened:\n%s", len(got), got[len(serverInstructions)+len(taskQueueRule):])
+		t.Fatalf("with the raised cap the whole paragraph fits (%d chars), yet it was shortened:\n%s", len(got), got[len(serverInstructions)+len(taskQueueRule)+len(todoRule):])
+	}
+	if !strings.HasPrefix(got, serverInstructions+taskQueueRule+todoRule) {
+		t.Fatal("with the raised cap the rules still come first, the to-do rule last of them")
 	}
 
 	t.Setenv(buscontext.CapEnv, "plenty")

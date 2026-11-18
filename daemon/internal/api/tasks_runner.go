@@ -15,6 +15,9 @@ import (
 type taskHost struct {
 	mgr   *manager.Manager
 	peers *peers.Service // nil when this daemon runs no bus
+	// settle runs after each change the runner makes to the queue
+	// (todos_tasks.go); nil for none.
+	settle func()
 }
 
 // TellWorker sends a worker's Claude text over the bus, then counts the
@@ -39,7 +42,16 @@ func (h taskHost) StartTaskPane(wsID, cwd, cmd string) (string, error) {
 	return h.mgr.StartTaskPane(wsID, cwd, cmd)
 }
 func (h taskHost) ClearTaskFolder(dir string) error { return h.mgr.ClearTaskFolder(dir) }
-func (h taskHost) TasksChanged()                    { h.mgr.TasksChanged() }
+
+// TasksChanged tells the lenses, and lets what follows a task follow it
+// (settle: a merged task's to-do item turns done).
+func (h taskHost) TasksChanged() {
+	h.mgr.TasksChanged()
+	if h.settle != nil {
+		h.settle()
+	}
+}
+
 func (h taskHost) TaskHostnames(repo, windowID string) ([]model.Hostname, error) {
 	return h.mgr.TaskHostnames(repo, windowID)
 }
@@ -66,7 +78,7 @@ func (s *Server) StartTaskRunner(ctx context.Context, every time.Duration, slots
 		return
 	}
 	r := &taskq.Runner{
-		Store: s.tasks, Host: taskHost{mgr: s.mgr, peers: s.peersSvc}, Git: taskq.ExecGit{}, MergeGit: taskq.ExecGit{},
+		Store: s.tasks, Host: taskHost{mgr: s.mgr, peers: s.peersSvc, settle: s.settleTodos}, Git: taskq.ExecGit{}, MergeGit: taskq.ExecGit{},
 		Checks: taskq.GateChecks{PerLine: 20 * time.Minute}, Lock: &s.tasksMu,
 		Slots: slots, WindowSlots: s.mgr.WindowSlots, TotalSlots: s.mgr.TaskSlotsTotal, WindowPriorities: s.mgr.WindowPriorities,
 		Root: root, Now: time.Now,

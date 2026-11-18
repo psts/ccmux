@@ -172,6 +172,7 @@ func (s *Server) saveTask(t store.Task) error {
 		return err
 	}
 	s.mgr.TasksChanged()
+	s.settleTodos()
 	return nil
 }
 
@@ -352,5 +353,6 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mgr.TasksChanged()
+	s.settleTodos()
 	w.WriteHeader(http.StatusNoContent)
 }

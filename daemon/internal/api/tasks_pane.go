@@ -48,6 +48,9 @@ type paneTaskReq struct {
 	// Look marks the task for a person to read its work before it ships
 	// (store.Task.Look); on an edit, nil leaves the mark as it is.
 	Look *bool `json:"look"`
+	// Todo is the to-do item a filing is for (todos_tasks.go): the item is
+	// tasked from then on, and turns done when the task is merged.
+	Todo int64 `json:"todo"`
 }
 
 // afterList is the tool's "after": a list of task numbers. A session still
@@ -196,6 +199,9 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 	if err := taskq.CheckAfter(taskq.InWindow(all, who.window), 0, after); err != nil {
 		return "", http.StatusBadRequest, err
 	}
+	if status, err := s.todoToFile(who, req.Todo); err != nil {
+		return "", status, err
+	}
 	now := s.taskNow()
 	for i := range parts {
 		parts[i].Status, parts[i].FiledBy, parts[i].CreatedAt, parts[i].UpdatedAt = taskq.Pending, who.session, now, now
@@ -207,7 +213,7 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 		return "", http.StatusInternalServerError, err
 	}
 	s.mgr.TasksChanged()
-	return fileMessage(id, parts, after, deref(req.Look)), 0, nil
+	return fileMessage(id, parts, after, deref(req.Look)) + s.todoFiled(req.Todo, id), 0, nil
 }
 
 // partsToFile is a feature's parts: this repo's, always (the filing session

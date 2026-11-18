@@ -249,10 +249,15 @@ var toolsList = []map[string]any{
 					"type":        "string",
 					"description": "report: what you built and how you checked it, or what you need.",
 				},
+				"todo": map[string]any{
+					"type":        "integer",
+					"description": "file: the number of the to-do item this task is for, when it is for one. The item then follows the task and turns done when it is merged.",
+				},
 			},
 			"required": []string{"action"},
 		},
 	},
+	todoTool,
 	{
 		"name":        "thread",
 		"description": threadToolText,
@@ -315,7 +320,8 @@ var toolsList = []map[string]any{
 // The cost is real and is the reason this is a deliberate list rather than a
 // default: these schemas sit in every session's context from startup. `tasks`
 // is loaded for a near reason: a human's "file it" names no tool, and a session
-// that cannot see one will write the plan to a file instead. Drop
+// that cannot see one will write the plan to a file instead. `todo` is
+// loaded because the instructions tell every session to add to it unasked. Drop
 // a tool from the loop below if that trade stops being worth it, but drop
 // any mention of it from the instructions in the same edit.
 func init() {
@@ -334,6 +340,7 @@ var toolHandlers = map[string]func(*app, json.RawMessage) any{
 	"check_messages": func(a *app, _ json.RawMessage) any { return a.toolCheckMessages() },
 	"schedule":       (*app).toolSchedule,
 	"tasks":          (*app).toolTasks,
+	"todo":           (*app).toolTodo,
 	"thread":         (*app).toolThread,
 	"page":           (*app).toolPage,
 }

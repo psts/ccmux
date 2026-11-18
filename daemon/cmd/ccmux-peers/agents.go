@@ -87,7 +87,7 @@ var ownsPaneBus = isBusOwner
 const registerWait = 2 * time.Second
 
 // instructions is what initialize and server/discover send: the fixed rules,
-// then the task-queue rule, then the window's lists, in that order, so the
+// then the task-queue rule and the to-do rule, then the window's lists, so the
 // rules are always inside instructionsCap. The lists get what is left of it,
 // made shorter to fit rather than cut by Claude Code (windowLists).
 func (a *app) instructions() string {
@@ -98,9 +98,27 @@ func (a *app) instructions() string {
 		a.waitOnce.Do(func() { a.waitRegistered(registerWait) })
 	}
 	w := a.sessions()
-	rules := serverInstructions + a.taskQueueParagraph(w)
+	rules := serverInstructions + a.taskQueueParagraph(w) + a.todoParagraph(w)
 	return rules + a.windowLists(w, instructionsCap()-len(rules))
 }
+
+// todoParagraph is the to-do rule, for a session that has a repo's list to
+// add to: a ccmux pane, and not a role agent's (its folder is no repo, and
+// no row on the thread page shows a list for it).
+func (a *app) todoParagraph(w windowSessions) string {
+	if a.paneID == "" || w.Reader.Agent {
+		return ""
+	}
+	return todoRule
+}
+
+// todoRule is what makes the to-do lists fill by themselves: every repo
+// session is told, once, to add what it notices and leaves, with no human
+// asking each time. The tool's own description says it too (todoToolText);
+// this is the standing order.
+const todoRule = `
+
+TO-DO: When you notice something you are not fixing now (an "Also found", a finding you leave, a follow-up, a bug on the way), add it with the todo tool, unasked. Urgency: high if it breaks things or loses data, medium if it will bite soon, else low. List first to avoid repeats; mark an item done when you fix it.`
 
 // taskQueueParagraph is the build-or-file rule, only for a session that can
 // file a task: a ccmux pane, in a window (the daemon lists no sessions
