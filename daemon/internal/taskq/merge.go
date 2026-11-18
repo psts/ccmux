@@ -45,11 +45,13 @@ func (r *Runner) recoverMerges(tasks []store.Task) bool {
 	return changed
 }
 
-// pickMerge claims the first built feature that can merge now; one that
-// has to wait says why in its note (mergeWait). Under the lock.
-func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part) (*mergeJob, bool) {
+// pickMerge claims the first built feature that can merge now, walking
+// tasks in order (ByPriority); one that has to wait says why in its note
+// (mergeWait). Under the lock.
+func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part, order []int) (*mergeJob, bool) {
 	changed := false
-	for i, t := range tasks {
+	for _, i := range order {
+		t := tasks[i]
 		if t.Status != ReadyToMerge {
 			continue
 		}

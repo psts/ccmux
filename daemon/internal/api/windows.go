@@ -137,6 +137,9 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		// How many queued tasks the window builds at once: its own number,
 		// else the daemon's default. Absent when no task runner runs here.
 		TaskSlots *int `json:"taskSlots,omitempty"`
+		// Which window's tasks the runner serves first, 1 first; absent
+		// when the window has none, or no task runner runs here.
+		TaskPriority *int `json:"taskPriority,omitempty"`
 	}
 	windows, err := s.mgr.WindowsListStrict()
 	if err != nil {
@@ -156,13 +159,13 @@ func (s *Server) listWindows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sizes := s.mgr.WindowSizes()
-	slots := s.taskSlotsOf()
+	slots, prio := s.taskSlotsOf(), s.taskPriorityOf()
 	out := make([]windowResp, 0, len(windows))
 	for _, win := range windows {
 		size := sizes[win.ID]
 		wr := windowResp{ID: win.ID, Name: win.Name, WorkspaceIDs: win.WorkspaceIDs,
 			OpenBy: win.OpenBy, OpenHere: here[win.ID], Width: size.Width, Height: size.Height,
-			TaskSlots: slots(win.ID)}
+			TaskSlots: slots(win.ID), TaskPriority: prio(win.ID)}
 		for _, l := range win.OpenBy {
 			if l == login {
 				wr.Open = true

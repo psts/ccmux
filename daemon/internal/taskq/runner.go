@@ -62,8 +62,12 @@ type Runner struct {
 	// TotalSlots returns the most features at once across every window, 0
 	// for no cap. Nil means no cap. An error starts nothing new that pass.
 	TotalSlots func() (int, error)
-	Root       string // where worktrees and briefs go
-	Now        func() time.Time
+	// WindowPriorities returns the windows that have a task priority,
+	// window id -> 1 to 9, 1 served first (ByPriority). Nil, or an error,
+	// serves every window in queue order.
+	WindowPriorities func() (map[string]int, error)
+	Root             string // where worktrees and briefs go
+	Now              func() time.Time
 
 	merging bool           // a merge is in flight; guarded by Lock
 	merges  sync.WaitGroup // the merge in flight, for tests to wait on
@@ -143,20 +147,22 @@ func (r *Runner) decide() ([]job, *mergeJob, bool) {
 		changed = true
 	}
 	// The merge step goes first: the slots are then handed out knowing what
-	// this pass put into the merge line and what it parked.
-	mj, picked := r.mergeStep(tasks, parts)
-	jobs, sent := r.claim(tasks, parts)
+	// this pass put into the merge line and what it parked. Both serve the
+	// windows by priority.
+	order := r.priorityOrder(tasks)
+	mj, picked := r.mergeStep(tasks, parts, order)
+	jobs, sent := r.claim(inOrder(tasks, order), parts)
 	return jobs, mj, changed || sent || picked || len(jobs) > 0
 }
 
 // mergeStep recovers a merge the daemon dropped and picks the next one,
 // unless one is in flight.
-func (r *Runner) mergeStep(tasks []store.Task, parts []store.Part) (*mergeJob, bool) {
+func (r *Runner) mergeStep(tasks []store.Task, parts []store.Part, order []int) (*mergeJob, bool) {
 	if r.merging {
 		return nil, false
 	}
 	recovered := r.recoverMerges(tasks)
-	mj, picked := r.pickMerge(tasks, parts)
+	mj, picked := r.pickMerge(tasks, parts, order)
 	return mj, recovered || picked
 }
 
@@ -232,6 +238,9 @@ func (r *Runner) rollup(tasks []store.Task, parts []store.Part) bool {
 // so nothing new starts on top of its merge.
 // Ahead of both, a failed merge waiting for a slot goes back to its worker
 // (claimFixes). It reports whether such a send-back went out.
+// tasks come in priority order (ByPriority), so within each of the three
+// kinds a window at priority 1 is served before one at 2; the kinds keep
+// their order, so a send-back at 2 still goes ahead of a new start at 1.
 func (r *Runner) claim(tasks []store.Task, parts []store.Part) ([]job, bool) {
 	book := r.slotBook(tasks, parts)
 	sent := r.claimFixes(tasks, parts, book)

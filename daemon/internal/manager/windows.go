@@ -30,12 +30,17 @@ var (
 	ErrNameTaken     = errors.New("window name already taken")
 	ErrBadWindowSize = errors.New("window size out of range")
 	ErrBadTaskSlots  = errors.New("task slots out of range")
+	ErrBadPriority   = errors.New("task priority out of range")
 )
 
 // MaxTaskSlots is the most queued tasks a window may build at once: the
 // lens offers Paused (0) to this. Three heavy builds on one window already
 // ran the host out of memory (2026-11-10), so more is not offered.
 const MaxTaskSlots = 3
+
+// MaxTaskPriority is the lowest task priority a window can have; 1 is
+// served first, and no number at all after every numbered one.
+const MaxTaskPriority = 9
 
 // WindowInfo is one shared window as lenses see it (GET /v1/windows).
 type WindowInfo struct {
@@ -458,6 +463,36 @@ func (m *Manager) WindowSlots() (map[string]int, error) {
 		return map[string]int{}, nil
 	}
 	return m.store.WindowSlots()
+}
+
+// SetWindowPriority records which window's queued tasks the runner serves
+// first when windows compete for a slot (1 first, up to MaxTaskPriority);
+// 0 clears it. Nothing is published, as with SetWindowSlots.
+func (m *Manager) SetWindowPriority(id string, priority int) error {
+	if m.store == nil {
+		return errors.New("no store: windows are not available")
+	}
+	if priority < 0 || priority > MaxTaskPriority {
+		return fmt.Errorf("%w: %d (1 to %d, 0 for none)", ErrBadPriority, priority, MaxTaskPriority)
+	}
+	ok, err := m.store.SetWindowPriority(id, priority)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrUnknownWindow, id)
+	}
+	return nil
+}
+
+// WindowPriorities returns the windows that have a task priority. The
+// runner falls back to queue order on an error, the windows list serves
+// no priority.
+func (m *Manager) WindowPriorities() (map[string]int, error) {
+	if m.store == nil {
+		return map[string]int{}, nil
+	}
+	return m.store.WindowPriorities()
 }
 
 // WindowSizes returns every shared window's stored size. Best effort, unlike

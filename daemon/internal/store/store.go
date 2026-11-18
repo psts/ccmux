@@ -88,6 +88,11 @@ type Store interface {
 	// exists, like SetWindowSize.
 	SetWindowSlots(id string, slots int) (bool, error)
 	WindowSlots() (map[string]int, error) // window id → slots
+	// Which window's queued tasks the runner serves first, for the windows
+	// that have a priority (1 first); 0 clears it. Reports whether the
+	// window exists, like SetWindowSize.
+	SetWindowPriority(id string, priority int) (bool, error)
+	WindowPriorities() (map[string]int, error) // window id → priority
 	// Wake marks: the sessions awake when their window was last closed
 	// (windowwake.go).
 	SetWakeMarks(members, awake []string) error
@@ -212,6 +217,9 @@ CREATE TABLE IF NOT EXISTS window_sizes (
 );
 CREATE TABLE IF NOT EXISTS window_slots (
   window_id TEXT PRIMARY KEY, slots INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS window_priority (
+  window_id TEXT PRIMARY KEY, priority INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS session_wake (
   ws_id TEXT PRIMARY KEY
@@ -730,7 +738,7 @@ func (s *SQLite) RenameWindow(id, name string) error {
 }
 
 // DeleteWindow removes a window entity plus its membership, open flags, size,
-// task slots and its skills and plugins choices.
+// task slots and priority, and its skills and plugins choices.
 func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_members WHERE window_id=?`, id); err != nil {
 		return err
@@ -748,6 +756,9 @@ func (s *SQLite) DeleteWindow(id string) error {
 		return err
 	}
 	if _, err := s.db.Exec(`DELETE FROM window_slots WHERE window_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM window_priority WHERE window_id=?`, id); err != nil {
 		return err
 	}
 	return s.deleteChoicesOf(ChoiceWindow, id)
@@ -817,7 +828,50 @@ ON CONFLICT(window_id) DO UPDATE SET slots=excluded.slots`,
 
 // WindowSlots returns every window's own task slots, id → slots.
 func (s *SQLite) WindowSlots() (map[string]int, error) {
-	rows, err := s.db.Query(`SELECT window_id, slots FROM window_slots`)
+	return s.intByWindow(`SELECT window_id, slots FROM window_slots`)
+}
+
+// SetWindowPriority upserts a window's task priority, only while the
+// window exists, in one statement for the same reason as SetWindowSize.
+// Priority 0 clears it: the window then has none.
+func (s *SQLite) SetWindowPriority(id string, priority int) (bool, error) {
+	if priority == 0 {
+		return s.clearWindowPriority(id)
+	}
+	res, err := s.db.Exec(`
+INSERT INTO window_priority (window_id, priority)
+SELECT ?, ? WHERE EXISTS (SELECT 1 FROM windows WHERE id=?)
+ON CONFLICT(window_id) DO UPDATE SET priority=excluded.priority`,
+		id, priority, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// clearWindowPriority drops a window's priority and reports whether the
+// window exists: clearing one that has none is not an unknown window.
+func (s *SQLite) clearWindowPriority(id string) (bool, error) {
+	if _, err := s.db.Exec(`DELETE FROM window_priority WHERE window_id=?`, id); err != nil {
+		return false, err
+	}
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM windows WHERE id=?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// WindowPriorities returns every window's task priority, id → priority.
+func (s *SQLite) WindowPriorities() (map[string]int, error) {
+	return s.intByWindow(`SELECT window_id, priority FROM window_priority`)
+}
+
+// intByWindow reads a query of (window id, number) rows into a map.
+func (s *SQLite) intByWindow(query string) (map[string]int, error) {
+	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
 	}

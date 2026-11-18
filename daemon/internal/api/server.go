@@ -459,6 +459,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/windows/{id}", s.renameWindow)
 	mux.HandleFunc("PUT /v1/windows/{id}/size", s.setWindowSize)
 	mux.HandleFunc("PUT /v1/windows/{id}/slots", s.setWindowSlots)
+	mux.HandleFunc("PUT /v1/windows/{id}/priority", s.setWindowPriority)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/hostnames", s.hostnamesRoute(s.putHostnames))
 	mux.HandleFunc("GET /v1/workspaces/{id}/port-suggestions", s.scoped(s.portSuggestions))
 	mux.HandleFunc("GET /v1/workspaces/{id}/listeners", s.scoped(s.listeners))
