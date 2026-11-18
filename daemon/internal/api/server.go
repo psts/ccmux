@@ -484,6 +484,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/panes/{id}/agent/reply", s.scoped(s.paneAgentReply))
 	mux.HandleFunc("GET /v1/panes/{id}/agent/ws", s.paneAgentChat)
 	mux.HandleFunc("GET /v1/me/last-session", s.lastSession) // where a phone opens: the session you last typed in
+	mux.HandleFunc("GET /v1/me/sidebar", s.sidebarPrefs)     // the thread page's groups, folded and ordered per person
+	mux.HandleFunc("PUT /v1/me/sidebar/order", s.setSidebarOrder)
+	mux.HandleFunc("PUT /v1/me/sidebar/{id}", s.setSidebarCollapsed)
 	mux.HandleFunc("GET /v1/push/vapid", s.pushVAPID)
 	mux.HandleFunc("GET /v1/push/subscriptions", s.listSubscriptions)
 	mux.HandleFunc("POST /v1/push/subscriptions", s.createSubscription)

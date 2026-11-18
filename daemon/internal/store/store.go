@@ -93,6 +93,12 @@ type Store interface {
 	// window exists, like SetWindowSize.
 	SetWindowPriority(id string, priority int) (bool, error)
 	WindowPriorities() (map[string]int, error) // window id → priority
+	// Each person's own thread-page sidebar (sidebarprefs.go): a group
+	// folded or not, and the order of the groups. Both report whether the
+	// window exists, like SetWindowSize; the order skips unknown ids.
+	SetSidebarCollapsed(login, windowID string, collapsed bool) (bool, error)
+	SetSidebarOrder(login string, windowIDs []string) error
+	SidebarPrefs(login string) ([]SidebarPref, error)
 	// Wake marks: the sessions awake when their window was last closed
 	// (windowwake.go).
 	SetWakeMarks(members, awake []string) error
@@ -220,6 +226,13 @@ CREATE TABLE IF NOT EXISTS window_slots (
 );
 CREATE TABLE IF NOT EXISTS window_priority (
   window_id TEXT PRIMARY KEY, priority INTEGER NOT NULL
+);
+-- Each person's own thread-page sidebar (sidebarprefs.go): whether a
+-- group is folded into its header, and where it sits. position is NULL for
+-- a group the person never placed: it then keeps the default order.
+CREATE TABLE IF NOT EXISTS sidebar_prefs (
+  login TEXT NOT NULL, window_id TEXT NOT NULL, collapsed INTEGER NOT NULL DEFAULT 0,
+  position INTEGER, PRIMARY KEY (login, window_id)
 );
 CREATE TABLE IF NOT EXISTS session_wake (
   ws_id TEXT PRIMARY KEY
@@ -738,7 +751,8 @@ func (s *SQLite) RenameWindow(id, name string) error {
 }
 
 // DeleteWindow removes a window entity plus its membership, open flags, size,
-// task slots and priority, and its skills and plugins choices.
+// task slots and priority, every person's sidebar place for it, and its
+// skills and plugins choices.
 func (s *SQLite) DeleteWindow(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM window_members WHERE window_id=?`, id); err != nil {
 		return err
@@ -759,6 +773,9 @@ func (s *SQLite) DeleteWindow(id string) error {
 		return err
 	}
 	if _, err := s.db.Exec(`DELETE FROM window_priority WHERE window_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM sidebar_prefs WHERE window_id=?`, id); err != nil {
 		return err
 	}
 	return s.deleteChoicesOf(ChoiceWindow, id)
