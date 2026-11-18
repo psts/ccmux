@@ -483,7 +483,16 @@ func TestSendKeysAsync_ReturnsBeforeDelivery(t *testing.T) {
 			"waiting on tmux", submitTook, deliverTook)
 	}
 
-	got, err := os.ReadFile(sink)
+	// Delivered means tmux took the keys; the pane's cat may still be
+	// writing the last of them, so wait for the file like the tests above.
+	var got []byte
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, err = os.ReadFile(sink); len(got) >= len(want) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("pane received %d bytes (err %v), want %d byte-identical",
 			len(got), err, len(want))
@@ -620,7 +629,7 @@ func TestCaptureScreen_ReportsMouseModes(t *testing.T) {
 
 	waitMouse := func(want MouseModes) {
 		t.Helper()
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		var got MouseModes
 		for time.Now().Before(deadline) {
 			_, scr, err := c.CaptureScreen("it")
