@@ -926,3 +926,10 @@ test("the header shows how full the context is and how long the cache has left, 
   assert.equal(p.$("gauge").textContent, "42% · cache 46 min");
   assert.match(p.$("gauge").title, /last reply 14 min ago/);
 });
+
+test("while a turn runs the header says the cache is live, not counting down", async () => {
+  const p = await boot({ sessions: [{ ...lead, attention: "running" }], search: "?s=lead1" });
+  const result = { endedAt: Date.now() - 70 * 60000, cacheTtlMs: 3600000, context: { percent: 42, used: 84000, max: 200000 } };
+  await p.frame({ t: "snapshot", boot: "b1", seq: 0, data: { messages: [], info: {}, result, busy: true } });
+  assert.equal(p.$("gauge").textContent, "42% · cache live", "a turn that runs past the hour keeps its cache warm");
+});

@@ -1010,3 +1010,19 @@ test("a runner restarted on purpose says what the restart was for, once, and not
   assert.deepEqual(sent, ["[ccmux] You now work in /wt/api/thread-3."]);
   assert.equal(JSON.parse(files["/st/s.json"]).note, "", "said once");
 });
+
+test("a failed turn that touched no cache leaves the previous turn's cache countdown standing", async () => {
+  const { agent, events } = runnerAgent();
+  agent.ensureQuery();
+  agent.onMessage(initMsg());
+  agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "One." }] } });
+  agent.onMessage({ ...resultMsg, usage: { input_tokens: 3, output_tokens: 7, cache_read_input_tokens: 900, cache_creation: { ephemeral_1h_input_tokens: 40 } } });
+  await tick();
+  const first = events.filter((e) => e.type === "session.idle").pop().properties.result;
+  assert.equal(first.cacheTtlMs, 3600000);
+  agent.onMessage({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "Two." }] } });
+  agent.onMessage({ type: "result", subtype: "error", is_error: true, result: "overloaded", usage: {} });
+  await tick();
+  const second = events.filter((e) => e.type === "session.idle").pop().properties.result;
+  assert.deepEqual([second.endedAt, second.cacheTtlMs], [first.endedAt, 3600000], "the runner hands the turn before's result on, so nothing restarts the countdown");
+});

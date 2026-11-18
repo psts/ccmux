@@ -379,7 +379,11 @@
   function todoTab(box, todos, result) {
     box.textContent = "";
     add(box, todos.length ? todoList(todos) : el("div", "quiet", "No to-do list in this session."));
-    if (result) add(box, el("div", "cost", `Last turn ${(result.durationMs / 1000).toFixed(1)} s · session so far $${result.costUSD.toFixed(2)}`));
+    // A result can be the context report alone (session.context before any
+    // bill), so the line needs both numbers.
+    if (result && typeof result.durationMs === "number" && typeof result.costUSD === "number") {
+      add(box, el("div", "cost", `Last turn ${(result.durationMs / 1000).toFixed(1)} s · session so far $${result.costUSD.toFixed(2)}`));
+    }
   }
 
   window.ccmuxThreadView = { el, block, sig, card, pressKey, frameAnswer, sidebar, changesTab, helpersTab, todoTab, diff, mediaURL };
