@@ -278,20 +278,25 @@
     return box;
   }
 
+  // attClass makes a row pulse like the lens's session list: orange until it
+  // is answered, green until someone looks. Other states are the dot alone.
+  const attClass = (state) => (state === "waiting" || state === "done" ? " att-" + state : "");
+
   function repoEl(r, ctx, g) {
     const box = el("div", "repo");
     const open = !!r.git && ctx.inRepo(r);
-    const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + (open ? " open" : ""));
+    const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + (open ? " open" : "") + attClass(r.state));
     row.type = "button";
+    row.title = r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet";
     row.onclick = () => ctx.pickRepo(r);
     const top = add(el("span", "row-top"), el("span", "row-name", r.name), gitBadges(r.git));
-    const sub = r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet";
-    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, el("span", "row-sub", sub), open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
+    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
     for (const t of r.threads) {
-      const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : ""));
+      const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : "") + attClass(t.state));
       tr.type = "button";
+      tr.title = t.sub || Model.stateLabel(t.state).toLowerCase();
       tr.onclick = () => ctx.pickSession(t.session);
-      add(box, add(tr, el("span", "dot " + t.state), add(el("span", "row-body"), el("span", "row-name", t.title), el("span", "row-sub", t.sub || Model.stateLabel(t.state).toLowerCase()))));
+      add(box, add(tr, el("span", "dot " + t.state), add(el("span", "row-body"), el("span", "row-name", t.title))));
     }
     return add(box, g ? repoTaskRows(g, r, ctx) : null);
   }

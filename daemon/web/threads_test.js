@@ -549,8 +549,14 @@ test("a new thread is made as a thread, with its lead, by its first message", as
 
 test("a thread is filed under its lead's repo with who it works with, and its helper is no thread of the helper's repo", async () => {
   const p = await team();
-  const rows = p.$("tree").querySelectorAll(".row").map((r) => [r.querySelector(".row-name").textContent, r.querySelector(".row-sub").textContent]);
-  assert.deepEqual(rows, [["app", "lead idle"], ["Trade CSV export", "with backend · needs you"], ["backend", "no lead yet"]]);
+  const att = (r) => (r.className.match(/att-\w+/) || [""])[0];
+  const rows = p.$("tree").querySelectorAll(".row").map((r) => [r.querySelector(".row-name").textContent, r.title, att(r)]);
+  assert.deepEqual(rows, [
+    ["app", "lead idle", ""],
+    ["Trade CSV export", "with backend · needs you", "att-waiting"],
+    ["backend", "no lead yet", ""],
+  ], "no second line: the state is a hover tip, and a row that needs you pulses like the lens");
+  assert.equal(p.$("tree").querySelectorAll(".row-sub").length, 0);
   assert.equal(p.$("tree").querySelectorAll(".row.thread")[0].querySelector(".dot").className, "dot waiting", "the helper's question shows on the thread");
   assert.equal(p.$("meta").textContent, "ChartLabs · lead: app · helper: backend");
 });

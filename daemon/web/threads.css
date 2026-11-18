@@ -45,7 +45,18 @@ a:hover { color: var(--blue-d); }
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--asleep); }
 .dot.running { background: var(--run); }
 .dot.waiting { background: var(--wait); }
-.dot.done { background: var(--done); }
+.dot.done { background: var(--run); }
+/* A sidebar row that needs you pulses orange until answered, one that is
+   done pulses green until looked at: the lens's rule (style.css .ws.att-*). */
+.row.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
+.row.att-waiting .row-name { color: var(--wait); }
+.row.att-done { background: rgba(21, 128, 61, .10); box-shadow: inset 3px 0 0 var(--run); }
+@media (prefers-reduced-motion: no-preference) {
+  .row.att-waiting { animation: row-pulse-wait 1.6s ease-in-out infinite; }
+  .row.att-done { animation: row-pulse-done 1.6s ease-in-out infinite; }
+}
+@keyframes row-pulse-wait { 0%, 100% { background: rgba(180, 83, 9, .08); } 50% { background: rgba(180, 83, 9, .22); } }
+@keyframes row-pulse-done { 0%, 100% { background: rgba(21, 128, 61, .06); } 50% { background: rgba(21, 128, 61, .20); } }
 .dot.unknown { background: transparent; border: 1.5px solid var(--asleep); }
 .row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -55,7 +66,6 @@ a:hover { color: var(--blue-d); }
 .branch { font-family: var(--mono); font-size: 11px; color: var(--fg2); background: var(--chip); border-radius: 4px; padding: 0 5px; line-height: 17px; min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dirty { font-family: var(--mono); font-size: 11px; color: var(--amber); }
 .ab { font-family: var(--mono); font-size: 11px; color: var(--amber); }
-.row-sub { font-size: 11.5px; color: var(--muted); }
 .git-detail { margin-top: 4px; display: flex; flex-direction: column; gap: 3px; font-family: var(--mono); font-size: 11.5px; color: var(--fg2); overflow-wrap: anywhere; }
 .git-path { color: var(--muted); }
 .git-clean { color: var(--green); }
