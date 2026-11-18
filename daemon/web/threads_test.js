@@ -421,7 +421,7 @@ test("the repo the page is in shows its git state inside its own card, and the o
   assert.deepEqual(detail.children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
   assert.deepEqual(rows[0].querySelector(".row-git").children.map((c) => c.textContent), ["dev", "●1", "↑2"], "branch, changes and ahead sit by the name");
   assert.equal(rows[1].querySelector(".git-detail"), null, "a repo the page is not in keeps to one line");
-  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more"], "nothing hangs below the card but its menu button, which sits over it");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more"], "nothing hangs below the card but its menu button, which only a phone shows (threads.css)");
 });
 
 test("the firehose moves a session's dot and has the lists read again", async () => {
