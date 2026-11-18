@@ -28,6 +28,16 @@
   const Settings = window.ccmuxSettings;
   const Caps = window.ccmuxThreadCapsCtl.create({ call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings });
 
+  // A group's task queue (threadtasks.js) shows in the main area in place
+  // of a conversation: opening it leaves the one on screen, and picking
+  // anything (select) closes it. A worker's session is a terminal, so it
+  // opens in the lens.
+  const Tasks = window.ccmuxThreadTasks.create({
+    user: () => S.user, windows: () => S.windows, changed: () => schedule(),
+    leave: () => pick({ kind: "none" }, S.sel.kind !== "none"),
+    openSession: (wsId, _paneId) => window.open(R.href(R.windowOf(S.windows, wsId), wsId), "_blank"),
+  });
+
   // --- the daemon ---
 
   async function call(method, path, body) {
@@ -92,6 +102,12 @@
   // --- what is on screen ---
 
   function select(sel, push = true) {
+    Tasks.close();
+    pick(sel, push);
+  }
+
+  // pick puts sel on screen: select, minus closing the task queue.
+  function pick(sel, push = true) {
     S.sel = sel;
     if (push) history.pushState(null, "", R.threadHref(sel));
     S.stream = Stream.fresh();
@@ -188,6 +204,7 @@
       pickRepo: (r) => select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" }),
       pickSession: (s) => select({ kind: "session", id: s.id }),
       menu: (kind, item, e) => Caps.menu(kind, item, e),
+      tasks: Tasks.sidebar,
     });
     $("new-thread").disabled = !ws;
     const info = S.stream.info || {};
@@ -205,6 +222,7 @@
   }
 
   function headText(sess, ws) {
+    if (Tasks.isOpen()) return Tasks.title();
     const repo = ws ? Model.repoName(ws) : "";
     const group = groupOf(ws);
     if (sess && sess.threadId) return { title: Model.titleOf(sess, ws), meta: Team.metaLine(sess, S.sessions, S.workspaces, group) };
@@ -666,7 +684,8 @@
   }
 
   const feedHandlers = new Map([
-    ["hello", (m) => (m.attention || []).map(noteAttention).some(Boolean)],
+    ["hello", (m) => { Tasks.refresh(); return (m.attention || []).map(noteAttention).some(Boolean); }], // and the queue changes missed while away
+    ["tasks-changed", () => { Tasks.refresh(); }],
     ["attention", noteAttention],
     ["sessions-changed", reloadSoon], ["workspace-added", reloadSoon], ["workspace-removed", reloadSoon],
     ["workspace-status", reloadSoon], ["workspace-git", reloadSoon],
@@ -760,6 +779,7 @@
     // A notification tap that lands on this page names where to go.
     if (navigator.serviceWorker) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "ccmux-navigate" && e.data.url) location.href = e.data.url; });
     S.user = await identity();
+    Tasks.refresh();
     connectFeed();
     if (S.sel.kind === "session") openSock();
     await loadLists();

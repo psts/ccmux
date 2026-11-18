@@ -60,6 +60,23 @@ a:hover { color: var(--blue-d); }
 .git-path { color: var(--muted); }
 .git-clean { color: var(--green); }
 .git-dirty { color: var(--amber); }
+/* A group's Tasks row and, under a repo, the tasks it has a part in
+   (threadview.js). The queue itself is tasks.css; while it is open it takes
+   the conversation's place (#page.tasks-mode). */
+.side-tasks, .side-task { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; padding: 6px 8px; border-radius: 8px; border: 0; background: transparent; }
+.side-task { padding-left: 26px; }
+.side-tasks:hover, .side-task:hover { background: rgba(255, 255, 255, .5); }
+.side-tasks.on, .side-task.on { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
+.st-icon { width: 8px; flex: none; font-size: 12px; line-height: 20px; color: var(--muted); }
+.st-id { flex: none; font-family: var(--mono); font-size: 11px; line-height: 19px; color: var(--muted); }
+.st-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.st-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-tasks .st-name { font-weight: 600; }
+.st-sub { font-size: 11.5px; color: var(--muted); }
+.side-task.alert .st-sub { color: var(--amber); }
+.st-alert { flex: none; margin-top: 2px; background: var(--amber); color: #FFFFFF; border-radius: 8px; font-size: 10px; font-weight: 700; padding: 0 6px; line-height: 16px; }
+#page.tasks-mode #stream, #page.tasks-mode #goal, #page.tasks-mode #detail { display: none !important; }
+#main > #tasks { padding: 16px 24px 32px; }
 .side-foot { margin-top: auto; padding: 10px 8px; border-top: 1px solid var(--line2); font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
 
 /* --- the thread --- */
@@ -233,7 +250,7 @@ a:hover { color: var(--blue-d); }
   #page.side-open #side { display: flex; }
   #side-toggle { display: block; }
   #main { flex: none; min-height: 100vh; }
-  #head, .bar, .goal { padding-left: 16px; padding-right: 16px; }
+  #head, .bar, .goal, #main > #tasks { padding-left: 16px; padding-right: 16px; }
   .stream { padding: 16px; }
   .composer { width: calc(100% - 32px); position: sticky; bottom: 12px; }
   #detail { flex: none; max-width: none; width: 100%; border-left: 0; border-top: 1px solid var(--line); }

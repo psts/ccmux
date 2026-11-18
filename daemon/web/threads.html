@@ -8,6 +8,7 @@
   <link rel="icon" href="/icons/icon-192.png">
   <link rel="stylesheet" href="/threads.css">
   <link rel="stylesheet" href="/settings.css">
+  <link rel="stylesheet" href="/tasks.css">
 </head>
 <body>
   <!-- The thread page: runner sessions (Claude on the Agent SDK) worked with
@@ -75,6 +76,10 @@
         <div id="empty" class="empty">Pick a repo on the left to talk to its lead, or start a thread.</div>
       </div>
 
+      <!-- A group's task queue (taskview.js, threadtasks.js), in place of
+           the conversation while it is open. -->
+      <div id="tasks" class="tasks hidden"></div>
+
       <form id="composer" class="composer ac-compose hidden">
         <label for="input">Message the lead, or type / for commands</label>
         <div id="attached" class="attached"></div>
@@ -139,6 +144,9 @@
   <script src="/threadmd.js"></script>
   <script src="/threadimage.js"></script>
   <script src="/threadpending.js"></script>
+  <script src="/tasklist.js"></script>
+  <script src="/taskview.js"></script>
+  <script src="/threadtasks.js"></script>
   <script src="/threadview.js"></script>
   <script src="/threadcaps.js"></script>
   <script src="/threadcapsview.js"></script>

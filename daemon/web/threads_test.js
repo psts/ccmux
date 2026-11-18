@@ -52,6 +52,7 @@ class Node {
   get nextSibling() { const sibs = this.parentNode ? this.parentNode.children : []; return sibs[sibs.indexOf(this) + 1] || null; }
   get childElementCount() { return this.children.filter((c) => c.tagName !== "#TEXT").length; }
   get isConnected() { return true; }
+  contains(n) { for (let p = n; p; p = p.parentNode) if (p === this) return true; return false; }
   remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((c) => c !== this); this.parentNode = null; }
   insertBefore(node, before) {
     node.remove();
@@ -131,7 +132,7 @@ async function boot(opts = {}) {
   const doc = page();
   const book = { calls: [], sockets: [], timers: [], frames: [], pushed: [] };
   const workspaces = opts.workspaces || [repo];
-  const lists = { windows: [{ id: "w1", name: "ChartLabs", workspaceIds: workspaces.map((w) => w.id) }], workspaces, sessions: opts.sessions || [] };
+  const lists = { windows: opts.windows || [{ id: "w1", name: "ChartLabs", workspaceIds: workspaces.map((w) => w.id) }], workspaces, sessions: opts.sessions || [] };
   const routes = [
     ...(opts.routes || []), // a case's own answers win over the usual ones
     [/^GET \/v1\/windows/, () => lists.windows], [/^GET \/v1\/workspaces/, () => lists.workspaces], [/^GET \/v1\/sessions$/, () => ({ sessions: lists.sessions })],
@@ -841,4 +842,62 @@ test("the Settings window is the lens's, whole, with this page's tab in front", 
   await p.settle();
   assert.equal(p.$("caps-overlay").classList.contains("hidden"), false, "a group's panel still opens as its own sheet");
   assert.equal(p.$("settings-modal").classList.contains("hidden"), true);
+});
+
+// The task queue on the thread page: a Tasks row per group with its counts,
+// under each repo the unfinished tasks it has a PART in (one with parts in
+// two repos is under both), the queue in place of the conversation, and the
+// header's two pickers storing the group's numbers.
+test("a group's tasks show under the group and under every repo they have a part in", async () => {
+  const blog = { id: "ws2", name: "blog", repoPath: "/p/blog", git: { isGitRepo: true, branch: "main" } };
+  const part = (id, repoPath) => ({ id, repoPath, repo: repoPath.split("/").pop(), status: "pending", plan: "p" });
+  const tasks = [
+    { id: 7, windowId: "w1", title: "Export", status: "waiting", parts: [part(1, "/p/app"), part(2, "/p/blog")], moves: [] },
+    { id: 8, windowId: "w1", title: "Old", status: "done", parts: [part(3, "/p/app")], moves: [] },
+    { id: 9, windowId: "w1", title: "Fix", status: "needs_you", parts: [part(4, "/p/blog")], moves: [] },
+  ];
+  const windows = [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "ws2"], taskSlots: 1 }];
+  const p = await boot({ workspaces: [repo, blog], windows, sessions: [lead], search: "?s=lead1",
+    routes: [[/^GET \/v1\/tasks\?user=Pat$/, () => ({ tasks, counts: { w1: { waiting: 1, done: 1, needs_you: 1 } } })]] });
+  const tree = p.$("tree");
+  assert.deepEqual(tree.querySelectorAll(".row-name").map((n) => n.textContent), ["app", "blog"], "the Tasks rows are not repos");
+  const row = tree.querySelector(".side-tasks");
+  assert.equal(row.querySelector(".st-sub").textContent, "1 waiting · 1 done");
+  assert.equal(row.querySelector(".st-alert").textContent, "1");
+  const under = (name) => tree.querySelectorAll(".repo").find((r) => r.querySelector(".row-name").textContent === name)
+    .querySelectorAll(".side-task").map((t) => t.querySelector(".st-id").textContent);
+  assert.deepEqual(under("app"), ["#7"], "done tasks are not listed");
+  assert.deepEqual(under("blog"), ["#9", "#7"], "the task with a part in blog is under blog too, what needs a person first");
+
+  row.click();
+  await p.settle();
+  assert.ok(p.$("page").classList.contains("tasks-mode"), "the queue takes the conversation's place");
+  assert.ok(!p.$("tasks").classList.contains("hidden"));
+  assert.equal(p.$("title").textContent, "Tasks");
+  assert.equal(p.book.pushed.pop(), "/threads.html", "the conversation is left");
+  assert.ok(p.$("tree").querySelector(".side-tasks").classList.contains("on"));
+
+  p.$("tasks").onchange({ target: { dataset: { act: "priority" }, value: "2" } });
+  p.$("tasks").onchange({ target: { dataset: { act: "slots" }, value: "0" } });
+  await p.settle();
+  const puts = p.book.calls.filter((c) => c.method === "PUT").map((c) => [c.url, c.body]);
+  assert.deepEqual(puts, [["/v1/windows/w1/priority", { priority: 2 }], ["/v1/windows/w1/slots", { slots: 0 }]]);
+  assert.equal(windows[0].taskPriority, 2, "the page's own window list holds the number at once");
+
+  const reads = () => p.book.calls.filter((c) => c.url.startsWith("/v1/tasks")).length;
+  const before = reads();
+  p.book.sockets[0].onmessage({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await p.settle();
+  assert.equal(reads(), before + 1, "a tasks-changed frame reads the queue again");
+
+  tree.querySelectorAll(".repo").find((r) => r.querySelector(".row-name").textContent === "blog").querySelector(".side-task").click();
+  await p.settle();
+  assert.ok(p.$("tree").querySelectorAll(".side-task").filter((t) => t.classList.contains("on")).length === 2, "blog's tasks are the ones on show");
+  assert.ok(!p.$("tree").querySelector(".side-tasks").classList.contains("on"));
+
+  p.$("tree").querySelector(".row").click();
+  await p.settle();
+  assert.ok(!p.$("page").classList.contains("tasks-mode"), "picking a repo closes the queue");
+  assert.ok(p.$("tasks").classList.contains("hidden"));
+  assert.equal(p.$("title").textContent, "app");
 });

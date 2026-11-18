@@ -6,6 +6,7 @@
   "use strict";
   const MD = window.ccmuxThreadMD;
   const Model = window.ccmuxThreadModel;
+  const Tq = window.ccmuxTaskList;
 
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
@@ -245,7 +246,39 @@
     return more;
   }
 
-  function repoEl(r, ctx) {
+  // tasksRow is a group's Tasks entry: its queue's counts, the number that
+  // needs a person highlighted (ctx.tasks, threadtasks.js). Its classes are
+  // its own, not a repo row's, so nothing that walks the repos finds it.
+  function tasksRow(g, ctx) {
+    const T = ctx.tasks;
+    const s = T.taskSum(g);
+    const row = el("button", "side-tasks" + (T.tasksOn(g) ? " on" : ""));
+    row.type = "button";
+    row.title = "The group's task queue";
+    row.onclick = () => T.openGroup(g);
+    return add(row, el("span", "st-icon", "☰"), add(el("span", "st-body"), el("span", "st-name", "Tasks"), el("span", "st-sub", s.text || (s.alert ? "needs you" : "nothing queued"))),
+      s.alert ? el("span", "st-alert", String(s.alert)) : null);
+  }
+
+  // repoTaskRows are the unfinished tasks a repo has a part in, under its
+  // row like its threads; one opens the group's queue at that task.
+  function repoTaskRows(g, r, ctx) {
+    const T = ctx.tasks;
+    const list = T ? T.repoTasks(g, r) : [];
+    if (!list.length) return null;
+    const on = T.taskOn(g, r);
+    const box = el("div", "repo-tasks");
+    for (const t of list) {
+      const row = el("button", "side-task" + (on ? " on" : "") + (Tq.needsPerson(t) ? " alert" : ""));
+      row.type = "button";
+      row.title = "Open it in the group's task queue";
+      row.onclick = () => T.pickTask(g, r, t);
+      add(box, add(row, el("span", "st-id", "#" + t.id), add(el("span", "st-body"), el("span", "st-name", t.title), el("span", "st-sub", Tq.statusWord(t.status).toLowerCase()))));
+    }
+    return box;
+  }
+
+  function repoEl(r, ctx, g) {
     const box = el("div", "repo");
     const open = !!r.git && ctx.inRepo(r);
     const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + (open ? " open" : ""));
@@ -260,7 +293,7 @@
       tr.onclick = () => ctx.pickSession(t.session);
       add(box, add(tr, el("span", "dot " + t.state), add(el("span", "row-body"), el("span", "row-name", t.title), el("span", "row-sub", t.sub || Model.stateLabel(t.state).toLowerCase()))));
     }
-    return box;
+    return add(box, g ? repoTaskRows(g, r, ctx) : null);
   }
 
   // groupHead is a group's name; a group that is a window (not "Other")
@@ -274,7 +307,10 @@
 
   function sidebar(tree, groups, ctx) {
     tree.textContent = "";
-    for (const g of groups) add(tree, add(el("div", "group"), groupHead(g, ctx), ...g.repos.map((r) => repoEl(r, ctx))));
+    for (const g of groups) {
+      const tasks = g.id && ctx.tasks ? tasksRow(g, ctx) : null;
+      add(tree, add(el("div", "group"), groupHead(g, ctx), tasks, ...g.repos.map((r) => repoEl(r, ctx, g))));
+    }
     if (!groups.length) add(tree, el("div", "quiet", "No repos yet. Open one in the terminal lens first."));
   }
 
