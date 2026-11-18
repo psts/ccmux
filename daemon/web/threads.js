@@ -321,13 +321,11 @@
     const error = S.error || S.stream.error || S.listError;
     show("error-bar", !!error);
     $("error-bar").textContent = error;
-    const ws = workspace();
-    show("goal", !!sess || S.sel.kind === "draft");
-    const repo = ws ? Model.repoName(ws) : "this repo";
-    const lead = sess ? sess.kind === "lead" : S.sel.as === "lead";
-    $("goal-text").textContent = (sess && sess.goal) || (lead
-      ? `The repo's own lead. Ask it anything about ${repo}, or start a thread from here; the thread is filed under ${repo}.`
-      : "No goal noted yet. The session writes it here as it works.");
+    // The goal line is only there when the session wrote one (a helper's
+    // task); help text in its place said the same thing every time.
+    const goal = (sess && sess.goal) || "";
+    show("goal", !!goal);
+    $("goal-text").textContent = goal;
   }
 
   const viewCtx = () => {

@@ -933,3 +933,11 @@ test("while a turn runs the header says the cache is live, not counting down", a
   await p.frame({ t: "snapshot", boot: "b1", seq: 0, data: { messages: [], info: {}, result, busy: true } });
   assert.equal(p.$("gauge").textContent, "42% · cache live", "a turn that runs past the hour keeps its cache warm");
 });
+
+test("the goal line shows only a goal the session wrote, never help text", async () => {
+  const p = await boot({ sessions: [{ ...lead, attention: "idle" }], search: "?s=lead1" });
+  assert.equal(p.$("goal").classList.contains("hidden"), true, "a lead with no goal has no goal line");
+  const q = await boot({ sessions: [{ ...lead, attention: "idle", goal: "Reading the trades routes." }], search: "?s=lead1" });
+  assert.equal(q.$("goal").classList.contains("hidden"), false);
+  assert.equal(q.$("goal-text").textContent, "Reading the trades routes.");
+});
