@@ -430,6 +430,7 @@ test("the firehose moves a session's dot and has the lists read again", async ()
   feed.onmessage({ data: JSON.stringify({ t: "attention", workspace: "ws1", pane: "pane1", state: "needs_input", since: 9 }) });
   await p.settle();
   assert.equal(p.$("tree").querySelector(".dot").className, "dot waiting");
+  assert.match(p.$("tree").querySelector(".row").className, /\batt-waiting\b/, "a lead that asks something pulses orange on its repo row");
   feed.onmessage({ data: JSON.stringify({ t: "attention", workspace: "ws1", pane: "another-pane", state: "done" }) });
   const reads = () => p.book.calls.filter((c) => c.url === "/v1/sessions" && c.method === "GET").length;
   const before = reads();
@@ -468,6 +469,14 @@ test("the conversation stays pinned to its end, also when a picture loads late, 
   box.onload();
   await p.frame({ t: "event", seq: 6, data: { type: "message.updated", properties: { info: { id: "m1", role: "assistant" } } } });
   assert.equal(box.scrollTop, 200, "and is left where they are");
+});
+
+test("a finished turn nobody has looked at pulses green on its repo row, and an idle one does not pulse", async () => {
+  const p = await boot({ sessions: [{ ...lead, attention: "done", attentionSince: 77 }] });
+  await p.settle();
+  assert.match(p.$("tree").querySelector(".row").className, /\batt-done\b/);
+  const q = await boot({ sessions: [{ ...lead, attention: "idle" }] });
+  assert.doesNotMatch(q.$("tree").querySelector(".row").className, /\batt-/);
 });
 
 test("a finished turn on screen is reported as seen, once", async () => {
