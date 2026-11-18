@@ -1999,6 +1999,9 @@ async function startHarness(paneId, name) {
 // --- Agents: the window's catalog (icons, drift) and the wake call the
 // sidebar menu uses. The pane-level chat view lives in agentchat.js. ---
 const agentCatalog = { winId: "", list: [], at: 0 };
+// The Settings window's Agents tab (settingsagents.js) says when it read or
+// changed the bases; what is held here is then out of date.
+document.addEventListener("ccmux-agents-changed", () => { agentCatalog.at = 0; });
 
 // windowOf is the shared window a workspace sits in (by its group name), or
 // null for an ungrouped one — agents live on windows, so an ungrouped agent
@@ -2342,81 +2345,6 @@ async function createWorkspace(p) {
 
 // The Settings window is not in this file: its frame is settingsmodal.js,
 // and each tab is a file of its own (settingsaccounts.js and the rest).
-
-// --- Agents tab: base agents are folders the daemon owns, listed here; New
-// and Edit open the editor (agentmodal.js), which does the PUT. Delete is
-// explicit and confirmed: the folder holds skills a human wrote. ---
-function wireAgentSettings() {
-  const box = $("agent-list"), addBtn = $("agent-add"), statusEl = $("agent-state");
-  if (!box) return;
-  let cfg = {};
-
-  function agentRow(a) {
-    const row = document.createElement("div");
-    row.className = "entry-card agent-card";
-    row.innerHTML =
-      `<div class="entry-line">` +
-      `<span class="agent-icon">${esc(a.icon || "")}</span>` +
-      `<span class="agent-name">${esc(a.name)}</span>` +
-      `<span class="agent-version">v${esc(a.version || "")}</span>` +
-      `<span class="agent-harness">${esc(a.harness || "")}</span>` +
-      `<span class="grow"></span>` +
-      `<button class="rule-add ag-edit" type="button">Edit</button>` +
-      `<button class="rule-del" type="button" title="Delete agent and its folder">&times;</button>` +
-      `</div>` +
-      `<div class="agent-desc">${esc(a.description || "")}</div>`;
-    row.querySelector(".ag-edit").onclick = () => window.ccmuxAgentModal.open(a, cfg, load);
-    row.querySelector(".rule-del").onclick = () => deleteAgent(a.name);
-    return row;
-  }
-
-  async function deleteAgent(name) {
-    if (!confirm(`Delete agent "${name}" and its folder (skills included)? Project instance folders stay.`)) return;
-    try {
-      const r = await fetch(`/v1/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
-      if (!r.ok && r.status !== 404) throw new Error(await r.text());
-    } catch (e) {
-      statusEl.textContent = "Not deleted: " + e.message;
-      return;
-    }
-    statusEl.textContent = `Deleted ${name}.`;
-    agentCatalog.at = 0;
-    load();
-  }
-
-  // sdkLine is the "agents on X, latest Y" line, the same words as the Mac
-  // app's: what claude agents run, and the newest on npm when it differs.
-  function sdkLine(v) {
-    if (!v || !v.pinned) return "";
-    let line = `Claude agents run Agent SDK ${v.pinned}`;
-    if (v.installed && v.installed !== v.pinned) line += ` (installed ${v.installed}; ${v.pinned} lands at the next claude start)`;
-    if (v.latest && v.latest !== v.pinned) line += ` · newest is ${v.latest}`;
-    return line + ".";
-  }
-
-  async function load() {
-    try {
-      const [c, r] = await Promise.all([(await fetch("/v1/settings")).json(), fetch("/v1/agents")]);
-      cfg = c;
-      box.innerHTML = "";
-      if (r.status === 503) { statusEl.textContent = "This daemon has no agents support."; addBtn.disabled = true; return; }
-      addBtn.disabled = false;
-      if (!r.ok) { statusEl.textContent = "Couldn't load agents: " + (await r.text()); return; } // names the broken folder
-      const body = await r.json();
-      const list = body.agents || [];
-      $("agent-sdk").textContent = sdkLine(body.sdk);
-      for (const a of list) box.appendChild(agentRow(a));
-      statusEl.textContent = list.length ? "" : "No agents yet.";
-      agentCatalog.at = 0;
-    } catch (_) {
-      statusEl.textContent = "Couldn't load agents.";
-    }
-  }
-
-  $("open-settings").addEventListener("click", load);
-  addBtn.addEventListener("click", () => window.ccmuxAgentModal.open(null, cfg, load));
-}
-wireAgentSettings();
 
 // Opened from a notification tap (/?ws=<id>): attach straight to that workspace.
 // Without a deep link there's nothing on screen but "Select a workspace", so
