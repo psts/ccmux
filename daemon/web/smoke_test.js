@@ -175,10 +175,11 @@ function run(opts = {}) {
   const ctx = makeContext(opts, book);
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
   vm.createContext(ctx);
-  // Same order as index.html: retry.js, which app.js reads at load, app.js,
-  // then the per-window glue that boots it, and windowwake.js, which a
-  // window's open and close call (app.js).
-  for (const f of ["retry.js", "app.js", "route.js", "pagewin.js", "windowwake.js"]) {
+  // Same order as index.html: dom.js and identity.js, whose helpers and
+  // identity app.js uses as globals, retry.js, which app.js reads at load,
+  // app.js, then the per-window glue that boots it, and windowwake.js, which
+  // a window's open and close call (app.js).
+  for (const f of ["dom.js", "identity.js", "retry.js", "app.js", "route.js", "pagewin.js", "windowwake.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), ctx, { filename: f });
   }
   if (withPush) vm.runInContext(fs.readFileSync(path.join(__dirname, "push.js"), "utf8"), ctx, { filename: "push.js" });
@@ -215,7 +216,7 @@ async function scratchEnv(daemon, storage) {
   const line = { textContent: "", classList: { toggle() {} } };
   const box = { dataset: {}, innerHTML: "", querySelector: (q) => (q === "textarea" ? ta : line) };
   const appEl = el();
-  // app.js's $ is a const over document.getElementById, so the fake goes there.
+  // dom.js's $ asks document.getElementById at call time, so the fake goes there.
   const byId = (id) => (id === "scratchpad" ? box : id === "app" ? appEl : el());
   r.ctx.document = new Proxy({}, { get: (_t, k) => (k === "getElementById" ? byId : el()) });
   r.ctx.fetch = async (u, o = {}) => {
