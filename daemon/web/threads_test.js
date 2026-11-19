@@ -154,7 +154,7 @@ async function boot(opts = {}) {
     console, document: doc, fetch, URLSearchParams, URL: Object.assign(function (...a) { return new URL(...a); }, { createObjectURL: () => "blob:x", revokeObjectURL() {} }), Blob,
     location: { search: opts.search || "", protocol: "http:", host: "d", href: "" },
     history: { pushState: (_s, _t, url) => book.pushed.push(url) },
-    localStorage: { getItem: () => "stored-name" }, navigator: opts.push ? pushBrowser(book).navigator : {},
+    localStorage: opts.storage || { getItem: () => "stored-name" }, navigator: opts.push ? pushBrowser(book).navigator : {},
     WebSocket: function (url) { const s = { url: String(url), readyState: 1, sent: [], send: (x) => s.sent.push(JSON.parse(x)), close() { s.closed = true; } }; book.sockets.push(s); return s; },
     requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval() {},
     open: (url, target) => book.opened.push([url, target]),
@@ -226,6 +226,34 @@ test("a repo with no lead opens as a draft, and its first message makes the lead
   assert.equal(p.book.pushed.pop(), "/threads.html?s=lead1");
   assert.match(p.stream().url, /\/v1\/sessions\/lead1\/ws\?boot=&after=0$/);
   assert.equal(p.$("input").value, "", "sent, so the composer is empty");
+});
+
+test("a draft offers the commands its repo's last session said, before its own session starts", async () => {
+  const kept = { "ccmux-user": "stored-name" };
+  const storage = { getItem: (k) => kept[k] || null, setItem: (k, v) => { kept[k] = v; } };
+  const seen = await boot({ sessions: [lead], search: "?s=lead1", storage });
+  await seen.frame(snapshot({ info: { commands: [{ name: "review", description: "Review the diff", hint: "" }, { name: "doctor", description: "", hint: "" }], terminalCommands: ["doctor"] } }));
+  const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread", storage });
+  p.$("input").value = "/";
+  p.$("input").oninput();
+  assert.deepEqual(p.$("commands").querySelectorAll(".cmd-name").map((n) => n.textContent), ["/review"], "terminal-only commands stay hidden");
+  assert.equal(p.posts().length, 0, "showing the list starts nothing");
+  const cold = await boot({ search: "?ws=ws1&new=thread" });
+  cold.$("input").value = "/";
+  cold.$("input").oninput();
+  assert.match(cold.$("commands").textContent, /Type the command and send it/);
+});
+
+test("a session's commands are remembered even when its snapshot lands before the lists", async () => {
+  const kept = {};
+  const storage = { getItem: (k) => kept[k] || null, setItem: (k, v) => { kept[k] = v; } };
+  let lists;
+  const p = await boot({ sessions: [lead], search: "?s=lead1", storage, listsWait: new Promise((r) => { lists = r; }) });
+  await p.frame(snapshot({ info: { commands: [{ name: "review", description: "", hint: "" }] } }));
+  assert.equal(kept["ccmux-thread-commands"], undefined, "whose session it is is not known yet");
+  lists();
+  await p.settle();
+  assert.deepEqual(Object.keys(JSON.parse(kept["ccmux-thread-commands"])), ["ws1:lead"]);
 });
 
 test("a message that cannot be sent stays where it was sent, says why, and is sent again by Retry", async () => {

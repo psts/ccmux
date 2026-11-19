@@ -8,7 +8,8 @@
   "use strict";
   const R = window.ccmuxRoute, Model = window.ccmuxThreadModel, Stream = window.ccmuxThreadStream, Gauge = window.ccmuxThreadGauge;
   const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage, Team = window.ccmuxThreadTeam;
-  const Pending = window.ccmuxThreadPending;
+  const Pending = window.ccmuxThreadPending, Cmds = window.ccmuxThreadCmds;
+  const storage = () => { try { return window.localStorage; } catch (_) { return null; } }; // blocked: nothing kept
   const $ = (id) => document.getElementById(id);
   const show = (id, on) => $(id).classList.toggle("hidden", !on);
 
@@ -19,6 +20,7 @@
     drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), file: "", dirty: false, jump: false,
     user: "anon", feed: null, acted: "", images: [], pending: [], pendingKey: 0, pumping: false, error: "", listError: "", menu: false,
     draftModel: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
+    cmds: Cmds.load(storage()), cmdsFrom: null, // each repo's last command list, for its drafts (threadcmds.js)
   };
 
   // The Settings window is the one the lens has (settingsmodal.js and the
@@ -82,6 +84,7 @@
     if (sessions) S.sessions = sessions;
     S.listError = failed;
     S.listed = true;
+    rememberCommands();
     drawAll();
     Side.load();
     Caps.listsChanged();
@@ -179,8 +182,32 @@
       return;
     }
     if (out.all) afterSnapshot();
+    rememberCommands();
     schedule();
   }
+
+  // rememberCommands keeps the command list the session on screen said, so
+  // a draft of its repo can offer it before its own session starts. Called
+  // on every frame and when the lists load (a snapshot can land before the
+  // page knows whose session it is); it acts once per new info. It starts
+  // from what storage holds now, so another tab's lists are not lost.
+  function rememberCommands() {
+    const sess = session();
+    if (!sess || S.stream.info === S.cmdsFrom) return;
+    S.cmdsFrom = S.stream.info;
+    const next = Cmds.remember(cmdMemo(), sess.workspaceId, sess.kind === "lead", S.stream.info, Date.now());
+    if (next === S.cmds) return;
+    S.cmds = next;
+    Cmds.save(storage(), next);
+  }
+
+  // cmdMemo is the remembered lists: storage's, which other tabs write too,
+  // or this page's own when storage holds none (blocked, or nothing yet).
+  const cmdMemo = () => { const kept = Cmds.load(storage()); return Object.keys(kept).length ? kept : S.cmds; };
+
+  // cmdInfo is where the picked conversation's commands come from: its
+  // session's own word, or for a draft what its repo's sessions said last.
+  const cmdInfo = () => (S.sel.kind === "draft" ? Cmds.forDraft(cmdMemo(), S.sel.ws, S.sel.as === "lead") : S.stream.info || {});
 
   // afterSnapshot: a snapshot from another runner process than the one
   // "Restart now" was pressed on is that restart having happened.
@@ -532,7 +559,7 @@
   // commandsFor is the session's slash commands that fit what is typed,
   // without the ones that only make sense in a terminal.
   function commandsFor(typed) {
-    const info = S.stream.info || {};
+    const info = cmdInfo();
     const hidden = new Set(info.terminalCommands || []);
     const want = typed.startsWith("/") ? typed.slice(1).toLowerCase() : "";
     const fits = (info.commands || []).filter((c) => !hidden.has(c.name) && c.name.toLowerCase().includes(want));
@@ -548,7 +575,7 @@
     if (!S.menu && !typing) return;
     box.textContent = "";
     const list = commandsFor(typing ? input.value : "");
-    if (!list.length) box.appendChild(View.el("div", "cmd-none", (S.stream.info.commands || []).length ? "No command matches." : "The commands are listed once the session has started."));
+    if (!list.length) box.appendChild(View.el("div", "cmd-none", (cmdInfo().commands || []).length ? "No command matches." : "No list yet. Type the command and send it: it runs all the same."));
     for (const c of list) {
       const row = View.el("button", "cmd");
       row.type = "button";
