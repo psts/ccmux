@@ -21,6 +21,8 @@ type memStore struct {
 	parts    []store.Part
 	tasksErr error
 	partErr  error // SavePart fails with it
+	notices  []store.TaskNotice
+	endErr   error // EndTaskNotice fails with it
 }
 
 func (m *memStore) Tasks() ([]store.Task, error) {
@@ -51,7 +53,7 @@ func (m *memStore) SavePart(p store.Part) (bool, error) {
 	}
 	return false, nil
 }
-func (m *memStore) SaveTaskAndPart(t store.Task, p store.Part) (bool, error) {
+func (m *memStore) SaveSendBack(t store.Task, p store.Part, n store.TaskNotice) (bool, error) {
 	if m.partErr != nil {
 		return false, m.partErr
 	}
@@ -69,9 +71,36 @@ func (m *memStore) SaveTaskAndPart(t store.Task, p store.Part) (bool, error) {
 	if ti < 0 || pi < 0 {
 		return false, nil
 	}
+	for _, had := range m.notices {
+		if had.ID == n.ID {
+			return false, errors.New("UNIQUE constraint failed: task_notices.id")
+		}
+	}
 	m.tasks[ti], m.parts[pi] = t, p
+	m.notices = append(m.notices, n)
 	return true, nil
 }
+func (m *memStore) WaitingTaskNotices() ([]store.TaskNotice, error) {
+	var out []store.TaskNotice
+	for _, n := range m.notices {
+		if n.Waiting() {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+func (m *memStore) EndTaskNotice(id string, sentAt int64, failed string) error {
+	if m.endErr != nil {
+		return m.endErr
+	}
+	for i := range m.notices {
+		if m.notices[i].ID == id {
+			m.notices[i].SentAt, m.notices[i].Failed = sentAt, failed
+		}
+	}
+	return nil
+}
+func (m *memStore) PruneTaskNotices(int64) error { return nil }
 func (m *memStore) task(id int64) store.Task {
 	for _, t := range m.tasks {
 		if t.ID == id {
@@ -102,8 +131,11 @@ type fakeHost struct {
 	hostnames map[string][]model.Hostname // by repo folder name
 	nameErr   map[string]error            // by repo folder name
 	routes    map[string]int              // the last routes sent
-	told      map[string][]string         // pane → what TellWorker sent it
-	deaf      bool                        // TellWorker finds no Claude
+	told      map[string][]string         // pane → what its Claude heard from TellWorker
+	heard     map[string]bool             // the fixed ids the bus has taken, as the real bus keeps them
+	tells     int                         // calls of TellWorker that reached the bus
+	deaf      bool                        // TellWorker finds no Claude on the bus
+	prompted  func() int64                // when set, the clock a told worker's pane is marked as prompted by
 	domain    string
 }
 
@@ -137,16 +169,24 @@ func (h *fakeHost) TaskHostnames(repo, _ string) ([]model.Hostname, error) {
 }
 func (h *fakeHost) SetTaskRoutes(routes map[string]int) { h.routes = routes }
 func (h *fakeHost) DevDomain() string                   { return h.domain }
-func (h *fakeHost) TellWorker(paneID, text string) error {
+func (h *fakeHost) TellWorker(paneID, msgID, text string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.deaf {
 		return errors.New("no Claude is on the bus in that pane")
 	}
-	if h.told == nil {
-		h.told = map[string][]string{}
+	h.tells++
+	if msgID != "" && h.heard[msgID] {
+		return nil // the bus has it already: said, and heard once
 	}
+	if h.told == nil {
+		h.told, h.heard = map[string][]string{}, map[string]bool{}
+	}
+	h.heard[msgID] = true
 	h.told[paneID] = append(h.told[paneID], text)
+	if h.prompted != nil { // as the real host does: a told worker counts as prompted from now
+		h.panes[paneID] = PaneState{Attention: model.AttentionIdle, At: h.prompted()}
+	}
 	return nil
 }
 func (h *fakeHost) TasksChanged() {

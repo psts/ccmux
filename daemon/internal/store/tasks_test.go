@@ -262,10 +262,12 @@ func TestTasks_AutoFixesRoundTrip(t *testing.T) {
 	}
 }
 
-// A task and its part are saved together or not at all: with the part's row
-// gone, the task's change is rolled back too; with both rows there, both
-// land; another task is never touched.
-func TestTasks_SaveTaskAndPartIsAllOrNothing(t *testing.T) {
+// A send-back is saved whole or not at all: the task, its part and the
+// notice to the part's worker. With the part's row gone nothing is written,
+// the notice neither; with both rows there all three land; another task is
+// never touched. A notice waits until it is ended, and the same id cannot
+// be saved a second time.
+func TestTasks_SaveSendBackIsAllOrNothing(t *testing.T) {
 	st := taskStore(t)
 	a, _ := addTask(st, Task{Title: "one", Status: "merge_failed"})
 	b, _ := addTask(st, Task{Title: "two", Status: "merge_failed"})
@@ -278,15 +280,19 @@ func TestTasks_SaveTaskAndPartIsAllOrNothing(t *testing.T) {
 		}
 	}
 	task.Status, part.Status = "running", "running"
+	notice := TaskNotice{ID: "merge-task-1-ab12cd:part-1:send-back", TaskID: a, PartID: part.ID, PaneID: "pane-1", Text: "the merge failed", CreatedAt: 500}
 	missing := part
 	missing.ID = 999
-	if ok, err := st.SaveTaskAndPart(*task, missing); ok || err != nil {
+	if ok, err := st.SaveSendBack(*task, missing, notice); ok || err != nil {
 		t.Fatalf("save with a missing part = %v, %v; want false, nil", ok, err)
 	}
 	if got, _ := st.Task(a); got.Status != "merge_failed" {
 		t.Fatalf("task saved without its part: %s", got.Status)
 	}
-	if ok, err := st.SaveTaskAndPart(*task, part); !ok || err != nil {
+	if waiting, _ := st.WaitingTaskNotices(); len(waiting) != 0 {
+		t.Fatalf("a notice was saved without the rows it is about: %+v", waiting)
+	}
+	if ok, err := st.SaveSendBack(*task, part, notice); !ok || err != nil {
 		t.Fatalf("save = %v, %v", ok, err)
 	}
 	got, _ := st.Task(a)
@@ -300,6 +306,42 @@ func TestTasks_SaveTaskAndPartIsAllOrNothing(t *testing.T) {
 	}
 	if got.Status != "running" || saved != "running" || other.Status != "merge_failed" {
 		t.Fatalf("after save: task %s, part %s, other task %s", got.Status, saved, other.Status)
+	}
+	waiting, err := st.WaitingTaskNotices()
+	if err != nil || len(waiting) != 1 || waiting[0] != notice || !waiting[0].Waiting() {
+		t.Fatalf("the notice waits in the outbox as it was saved: %+v %v", waiting, err)
+	}
+
+	// The same send-back a second time: an error, and nothing written.
+	task.Note = "again"
+	if ok, err := st.SaveSendBack(*task, part, notice); ok || err == nil {
+		t.Fatalf("a second notice with the same id = %v, %v; want an error", ok, err)
+	}
+	if got, _ := st.Task(a); got.Note == "again" {
+		t.Fatal("the task was saved though its notice was refused")
+	}
+
+	// Ended, it no longer waits; pruning takes only ended ones.
+	second := notice
+	second.ID, second.CreatedAt = "merge-task-1-ef34ab:part-1:send-back", 600
+	if ok, err := st.SaveSendBack(*task, part, second); !ok || err != nil {
+		t.Fatalf("a later send-back = %v, %v", ok, err)
+	}
+	if err := st.EndTaskNotice(notice.ID, 700, ""); err != nil {
+		t.Fatal(err)
+	}
+	if waiting, _ := st.WaitingTaskNotices(); len(waiting) != 1 || waiting[0].ID != second.ID {
+		t.Fatalf("only the one not delivered waits: %+v", waiting)
+	}
+	if err := st.PruneTaskNotices(10_000); err != nil {
+		t.Fatal(err)
+	}
+	if waiting, _ := st.WaitingTaskNotices(); len(waiting) != 1 {
+		t.Fatalf("pruning removed a notice that still waits: %+v", waiting)
+	}
+	var rows int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM task_notices`).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("pruning leaves the waiting one and takes the delivered one: %d rows, %v", rows, err)
 	}
 }
 

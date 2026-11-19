@@ -44,6 +44,7 @@ type Hook interface {
 // Store is the slice of the registry store the bus needs (see store.Store).
 type Store interface {
 	AppendPeerEvent(*model.PeerEvent) (int64, error)
+	HasPeerMsg(msgID string) (bool, error)
 	PeerEventsAfter(toID string, afterSeq int64) ([]*model.PeerEvent, error)
 	PeerCursor(peerID string) (int64, error)
 	AdvancePeerCursor(peerID string, seq int64) error

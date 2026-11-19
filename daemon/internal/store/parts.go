@@ -121,25 +121,3 @@ func execSaved(ex execer, query string, args ...any) (bool, error) {
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }
-
-// SaveTaskAndPart writes a task and one of its parts together, or neither:
-// a part sent back to its worker must never run again under a task still
-// saved as failed, where its fix would be accepted and never merged. False
-// (and nothing written) when either row no longer exists.
-func (s *SQLite) SaveTaskAndPart(t Task, p Part) (bool, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, step := range []struct {
-		query string
-		args  []any
-	}{{saveTaskSQL, taskArgs(t)}, {savePartSQL, partArgs(p)}} {
-		ok, err := execSaved(tx, step.query, step.args...)
-		if err != nil || !ok {
-			return false, err
-		}
-	}
-	return true, tx.Commit()
-}

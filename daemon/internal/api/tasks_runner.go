@@ -23,12 +23,14 @@ type taskHost struct {
 // TellWorker sends a worker's Claude text over the bus, then counts the
 // worker as prompted from now: a turn a bus message starts fires no
 // user_prompt_submit hook, and the runner must not read its last Stop as
-// "finished without reporting".
-func (h taskHost) TellWorker(paneID, text string) error {
+// "finished without reporting". msgID is the message's fixed id ("" for
+// none): said again under the same id, the worker hears it once, and still
+// counts as prompted.
+func (h taskHost) TellWorker(paneID, msgID, text string) error {
 	if h.peers == nil {
 		return errors.New("this daemon runs no peers bus")
 	}
-	if err := h.peers.NotifyPane(paneID, text); err != nil {
+	if err := h.peers.NotifyPaneAs(paneID, msgID, text); err != nil {
 		return err
 	}
 	h.mgr.NoteTaskPrompt(paneID)

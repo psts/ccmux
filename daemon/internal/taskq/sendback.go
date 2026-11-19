@@ -84,7 +84,7 @@ func (r *Runner) SendBackPart(taskID, partID int64) error {
 	if err != nil {
 		return err
 	}
-	if _, err := r.sendBack(t, p, strings.TrimSuffix(t.Note, noteWaitsForSlot)); err != nil {
+	if _, err := r.sendBack(t, p, strings.TrimSuffix(t.Note, noteWaitsForSlot), ""); err != nil {
 		return err
 	}
 	r.Host.TasksChanged()
@@ -113,34 +113,62 @@ func (r *Runner) taskAndPart(taskID, partID int64) (store.Task, store.Part, erro
 	return store.Task{}, store.Part{}, fmt.Errorf("task #%d has no part %d", taskID, partID)
 }
 
-// sendBack tells part p's worker why the merge failed and saves the part
-// and its task running again. The worker hears first: a part saved running
-// that nobody told would only sit until the watcher flags it. The part and
-// the task are saved in one step: a part running again under a task still
-// failed would have its fix accepted and never merged. A save that fails is
-// an error, never a quiet log: nothing changed, and the worker's report will
-// bounce until it is sent back again. Under the lock.
-func (r *Runner) sendBack(t store.Task, p store.Part, why string) (store.Task, error) {
+// sendBack saves part p and its task running again, together with the
+// notice that tells p's worker why the merge failed, and then delivers the
+// notice. Saved first, told second: a daemon that stops between the two
+// finds the notice in its outbox and delivers it then (notices.go), where
+// the other order left a worker fixing a part the queue still had as built.
+// The three rows are written in one step: a part running again under a task
+// still failed would have its fix accepted and never merged, and one nobody
+// is going to tell would only sit.
+//
+// A worker that is plainly gone (its session closed, its Claude exited) is
+// an error before anything is saved, and so is a save that fails: nothing
+// changed. jobID is the merge job the failure came from, "" when it is not
+// at hand. Under the lock.
+func (r *Runner) sendBack(t store.Task, p store.Part, why, jobID string) (store.Task, error) {
 	nt, np, err := SendBack(t, p, r.Now())
 	if err != nil {
 		return t, err
+	}
+	if err := r.workerThere(p); err != nil {
+		return t, fmt.Errorf("its worker cannot be told: %w", err)
 	}
 	trunk, err := r.Git.Trunk(p.RepoPath)
 	if err != nil {
 		return t, fmt.Errorf("reading %s's trunk: %w", filepath.Base(p.RepoPath), err)
 	}
-	if err := r.Host.TellWorker(p.PaneID, sendBackText(t.ID, trunk, why)); err != nil {
-		return t, fmt.Errorf("its worker did not hear it: %w", err)
-	}
 	nt.Note = noteOf(fmt.Errorf("sent back to its worker in %s after a failed merge:\n%s",
 		filepath.Base(p.RepoPath), why))
 	saveAt := r.Now().UnixMilli()
 	nt.UpdatedAt, np.UpdatedAt = saveAt, saveAt
-	if ok, err := r.Store.SaveTaskAndPart(nt, np); err != nil || !ok {
-		log.Printf("tasks: #%d sent back to its worker but not saved (found %v): %v", t.ID, ok, err)
-		return t, errors.New("its worker was told, but nothing was saved, so the queue will refuse its report; send it back again")
+	notice := store.TaskNotice{ID: noticeID(p, jobID), TaskID: t.ID, PartID: p.ID, PaneID: p.PaneID,
+		Text: sendBackText(t.ID, trunk, why), CreatedAt: saveAt}
+	if ok, err := r.Store.SaveSendBack(nt, np, notice); err != nil || !ok {
+		log.Printf("tasks: #%d not sent back to its worker: nothing saved (found %v): %v", t.ID, ok, err)
+		return t, errors.New("nothing could be saved, so its worker was not told; send it back again")
+	}
+	if err := r.tell(notice); err != nil {
+		r.missedSince(notice.ID)
+		log.Printf("tasks: #%d part in %s is back with its worker, which has not heard why yet (%v); it is told again on every pass", t.ID, p.RepoPath, err)
 	}
 	return nt, nil
+}
+
+// workerThere says why part p's worker cannot be told anything, nil when it
+// can: its session is open and its Claude runs in it. Whether that Claude
+// is on the bus this second is not asked: right after a daemon start none
+// is, for a few seconds, and that is when a merge that ended during the
+// restart is settled.
+func (r *Runner) workerThere(p store.Part) error {
+	st, ok := r.Host.TaskPane(p.PaneID)
+	switch {
+	case !ok:
+		return errors.New("its session is closed")
+	case st.AtShell:
+		return errors.New("its Claude has exited")
+	}
+	return nil
 }
 
 // sendBackText is what the worker reads: why, and what it may do about it
@@ -196,7 +224,7 @@ const noteWaitsForSlot = "\n(waiting for a free slot to send it back to its work
 // failure for a person with the reason it could not. Under the lock.
 func (r *Runner) autoSendBack(t store.Task, p store.Part, why string) store.Task {
 	t.FixPart = 0
-	sent, err := r.sendBack(t, p, why)
+	sent, err := r.sendBack(t, p, why, "")
 	if err != nil {
 		t.Note = noteOf(errors.New(why + "\n(the send-back to its worker failed: " + err.Error() + ")"))
 		return t

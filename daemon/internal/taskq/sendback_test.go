@@ -63,22 +63,37 @@ func TestSendBack_RedCheckGoesToItsWorkerOnce(t *testing.T) {
 	}
 }
 
-// A worker nobody can reach keeps the failure for a person, says so, and
-// spends the automatic try.
-func TestSendBack_DeafWorkerStopsForAPerson(t *testing.T) {
+// A worker that is plainly gone (its session closed) keeps the failure for
+// a person, says so, and spends the automatic try. Nothing is saved for it
+// and no notice waits.
+func TestSendBack_AGoneWorkerStopsForAPerson(t *testing.T) {
 	g := newRig(t)
 	g.feature(1, 0, "app")
 	g.tick()
 	g.doneParts(1)
-	g.host.deaf = true
+	delete(g.host.panes, g.partsOf(1)[0].PaneID)
 	g.git.clash["/p/app"] = true
 	g.tick()
 	got := g.st.task(1)
-	if got.Status != MergeFailed || got.AutoFixes != 1 || !strings.Contains(got.Note, "send-back to its worker failed") {
-		t.Fatalf("deaf worker = %+v", got)
+	if got.Status != MergeFailed || got.AutoFixes != 1 || !strings.Contains(got.Note, "send-back to its worker failed: its worker cannot be told: its session is closed") {
+		t.Fatalf("gone worker = %+v", got)
 	}
-	if p := g.st.part(g.partsOf(1)[0].ID); p.Status != Ready {
-		t.Fatalf("its part = %s, want still built", p.Status)
+	if p := g.st.part(g.partsOf(1)[0].ID); p.Status != Ready || len(g.st.notices) != 0 {
+		t.Fatalf("its part = %s, notices %+v; want still built and nothing in the outbox", p.Status, g.st.notices)
+	}
+}
+
+// The same for a worker whose Claude has exited to the shell.
+func TestSendBack_AWorkerBackAtItsShellStopsForAPerson(t *testing.T) {
+	g := newRig(t)
+	g.feature(1, 0, "app")
+	g.tick()
+	g.doneParts(1)
+	g.host.panes[g.partsOf(1)[0].PaneID] = PaneState{AtShell: true}
+	g.git.clash["/p/app"] = true
+	g.tick()
+	if got := g.st.task(1); got.Status != MergeFailed || !strings.Contains(got.Note, "its Claude has exited") {
+		t.Fatalf("worker at its shell = %+v", got)
 	}
 }
 
@@ -122,9 +137,9 @@ func TestSendBack_Rule(t *testing.T) {
 	}
 }
 
-// A send-back whose save fails says so: the worker was told, but its next
-// report would bounce off a part still built, so "ok" would be a lie. The
-// feature stays failed and its other part untouched.
+// A send-back whose save fails says so, and its worker is told nothing: the
+// rows are saved before the word goes out. The feature stays failed and its
+// other part untouched.
 func TestSendBack_UnsavedIsAnError(t *testing.T) {
 	g := newRig(t)
 	g.feature(1, 0, "app", "backend")
@@ -136,8 +151,11 @@ func TestSendBack_UnsavedIsAnError(t *testing.T) {
 	app, backend := g.partsOf(1)[0], g.partsOf(1)[1]
 	g.st.partErr = errors.New("database is locked")
 	err := g.r.SendBackPart(1, backend.ID)
-	if err == nil || !strings.Contains(err.Error(), "nothing was saved") {
+	if err == nil || !strings.Contains(err.Error(), "nothing could be saved") {
 		t.Fatalf("SendBackPart with a failing save = %v, want an error", err)
+	}
+	if len(g.host.told[backend.PaneID]) != 0 || len(g.st.notices) != 0 {
+		t.Fatalf("a worker was told of a send-back that was not saved: %v %+v", g.host.told, g.st.notices)
 	}
 	g.st.partErr = nil
 	if got := g.st.task(1); got.Status != MergeFailed {
@@ -349,13 +367,13 @@ func TestSendBack_WaitingFixFollowsTheWindowsNumber(t *testing.T) {
 	}
 }
 
-// A waiting send-back that cannot be delivered once a slot frees stops for
-// a person: merge failed, the wait spent, the note says why, the part still
+// A waiting send-back whose worker is gone once a slot frees stops for a
+// person: merge failed, the wait spent, the note says why, the part still
 // built, and later passes leave it alone.
 func TestSendBack_UndeliveredWaitingFixStopsForAPerson(t *testing.T) {
 	g := newRig(t)
 	app := waitingFix(t, g)
-	g.host.deaf = true
+	delete(g.host.panes, app.PaneID)
 	g.doneParts(2)
 	g.tick() // #2 merges
 	g.tick() // the slot is free: the send-back is tried

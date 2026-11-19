@@ -16,8 +16,13 @@ type Store interface {
 	Parts() ([]store.Part, error)
 	SaveTask(store.Task) (bool, error)
 	SavePart(store.Part) (bool, error)
-	// SaveTaskAndPart writes both or neither (a part sent back, sendback.go).
-	SaveTaskAndPart(store.Task, store.Part) (bool, error)
+	// SaveSendBack writes a task, its part and the notice to the part's
+	// worker, all or none (sendback.go); the two after it are the outbox
+	// that notice is delivered from (notices.go).
+	SaveSendBack(store.Task, store.Part, store.TaskNotice) (bool, error)
+	WaitingTaskNotices() ([]store.TaskNotice, error)
+	EndTaskNotice(id string, sentAt int64, failed string) error
+	PruneTaskNotices(beforeMillis int64) error
 }
 
 // Host is the daemon the workers run on: it finds a repo's session, clears
@@ -35,8 +40,10 @@ type Host interface {
 	SetTaskRoutes(routes map[string]int)
 	DevDomain() string
 	// TellWorker sends text to the Claude in a worker's pane over the bus,
-	// and errors when no Claude there can hear it (sendback.go).
-	TellWorker(paneID, text string) error
+	// and errors when no Claude there can hear it. msgID is the message's
+	// fixed id, "" for none: said again under the same id it is heard once
+	// (notices.go).
+	TellWorker(paneID, msgID, text string) error
 }
 
 // Runner starts waiting tasks while slots are free (a slot is a feature:
@@ -76,6 +83,11 @@ type Runner struct {
 	// (SlotsHeld). Guarded by Lock. Empty after a restart, so such a
 	// feature holds its slot for the one pass it takes to look again.
 	parked map[int64]bool
+	// missed is when this daemon first failed to deliver each notice that
+	// still waits in the outbox (notices.go), by the notice's id. Guarded by
+	// Lock. Empty after a restart, on purpose: the time a notice is tried
+	// for counts from the daemon that tries.
+	missed map[string]time.Time
 }
 
 // job is one claimed part to start, with its teammates' parts and bus names.
@@ -88,6 +100,7 @@ type job struct {
 
 // Start ticks the runner every `every` for the life of ctx.
 func (r *Runner) Start(ctx context.Context, every time.Duration) {
+	r.pruneNotices()
 	go func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
@@ -141,7 +154,8 @@ func (r *Runner) decide() ([]job, *mergeJob, bool) {
 		return nil, nil, false
 	}
 	r.forgetParked(tasks)
-	changed := r.watch(parts)
+	untold, told := r.deliverNotices(parts)
+	changed := r.watch(parts, untold) || told
 	r.publishRoutes(tasks, parts)
 	if r.rollup(tasks, parts) {
 		changed = true
@@ -166,12 +180,15 @@ func (r *Runner) mergeStep(tasks []store.Task, parts []store.Part, order []int) 
 	return mj, recovered || picked
 }
 
-// watch judges every working part against its pane, updating parts in place.
-func (r *Runner) watch(parts []store.Part) bool {
+// watch judges every working part against its pane, updating parts in
+// place. A part in untold is left alone: it was sent back to its worker
+// and the worker has not been told yet (notices.go), so its pane still
+// shows the turn that ended before the merge, which says nothing about now.
+func (r *Runner) watch(parts []store.Part, untold map[int64]bool) bool {
 	changed := false
 	now := r.Now()
 	for i, p := range parts {
-		if p.Status != Running && p.Status != NeedsYou {
+		if (p.Status != Running && p.Status != NeedsYou) || untold[p.ID] {
 			continue
 		}
 		st, ok := r.Host.TaskPane(p.PaneID)
@@ -198,7 +215,7 @@ func (r *Runner) nudge(was, quiet store.Part) store.Part {
 	if was.Note == noteNudged {
 		return quiet
 	}
-	if err := r.Host.TellWorker(was.PaneID, nudgeText(was.TaskID)); err != nil {
+	if err := r.Host.TellWorker(was.PaneID, "", nudgeText(was.TaskID)); err != nil {
 		log.Printf("tasks: #%d part in %s stopped without reporting and could not be asked: %v", was.TaskID, was.RepoPath, err)
 		return quiet
 	}

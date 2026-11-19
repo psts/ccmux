@@ -67,7 +67,7 @@ func TestSendBack_ThroughTheRealBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.ApplyAgentSignal(deaf, model.AttentionDone, model.ReasonFinished)
-	if err := (taskHost{mgr: mgr, peers: f.srv.peersSvc}).TellWorker(deaf, "hi"); err == nil {
+	if err := (taskHost{mgr: mgr, peers: f.srv.peersSvc}).TellWorker(deaf, "", "hi"); err == nil {
 		t.Fatal("a pane with no Claude on the bus was reported told")
 	}
 	if st, _ := mgr.TaskPane(deaf); st.Signal.Attention != model.AttentionDone {

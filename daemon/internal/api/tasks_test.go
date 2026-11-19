@@ -577,7 +577,7 @@ func TestTasks_SendBackRoute(t *testing.T) {
 // With no bus, the runner's message reaches nobody and says so.
 func TestTaskHost_TellWorkerWithoutABus(t *testing.T) {
 	s := taskServer(t)
-	if err := (taskHost{mgr: s.mgr}).TellWorker("pane-1", "hi"); err == nil {
+	if err := (taskHost{mgr: s.mgr}).TellWorker("pane-1", "", "hi"); err == nil {
 		t.Fatal("a message with no bus was reported delivered")
 	}
 }

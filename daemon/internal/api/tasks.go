@@ -30,7 +30,11 @@ type taskStore interface {
 	AddPart(store.Part) (int64, error)
 	Parts() ([]store.Part, error)
 	SavePart(store.Part) (bool, error)
-	SaveTaskAndPart(store.Task, store.Part) (bool, error)
+	// The runner's send-backs and their outbox (taskq/notices.go).
+	SaveSendBack(store.Task, store.Part, store.TaskNotice) (bool, error)
+	WaitingTaskNotices() ([]store.TaskNotice, error)
+	EndTaskNotice(id string, sentAt int64, failed string) error
+	PruneTaskNotices(beforeMillis int64) error
 }
 
 // SetTasks wires the task queue's store.

@@ -50,3 +50,41 @@ func TestNotifyPane_ReachesOnlyThatPane(t *testing.T) {
 		t.Fatal("a notice to a pane with no session was reported delivered")
 	}
 }
+
+// A pane notice with a fixed id is stored and pushed once, however often it
+// is said: the task runner's outbox says a notice again when it was cut off
+// before it wrote down that it was said. Another id is another message, and
+// a notice with no id is never taken for a repeat.
+func TestNotifyPaneAs_TheSameIDIsHeardOnce(t *testing.T) {
+	svc, _ := newTestService(t)
+	worker := registerPane(svc, "p-worker", "/r/app-task-1")
+	const id = "merge-task-1-ab12cd:part-1:send-back"
+	for i := 0; i < 3; i++ {
+		if err := svc.NotifyPaneAs("p-worker", id, "the merge failed"); err != nil {
+			t.Fatalf("say %d: %v", i, err)
+		}
+	}
+	evs, err := svc.Poll(worker.PeerID)
+	if err != nil || len(evs) != 1 || evs[0].Text != "the merge failed" {
+		t.Fatalf("said three times under one id, the worker has %v %v", evs, err)
+	}
+	if err := svc.NotifyPaneAs("p-worker", "merge-task-1-ef34ab:part-1:send-back", "it failed again"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := svc.NotifyPane("p-worker", "report, please"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if evs, _ := svc.Poll(worker.PeerID); len(evs) != 3 {
+		t.Fatalf("another id and two notices with none are three more messages: %v", evs)
+	}
+	// A notice nobody is there to hear is an error the first time; said
+	// again after it was heard, it is no error even with the worker gone.
+	if err := svc.NotifyPaneAs("p-nobody", "some-id", "hello"); err == nil {
+		t.Fatal("a notice to a pane with no session was reported delivered")
+	}
+	if err := svc.NotifyPaneAs("p-nobody", id, "the merge failed"); err != nil {
+		t.Fatalf("a notice that was heard is said again to nobody: %v", err)
+	}
+}

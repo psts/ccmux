@@ -240,3 +240,38 @@ func TestQuietNotices_NotRelaySendersAndKeptWhileWaiting(t *testing.T) {
 		t.Fatalf("waiting notice = %+v, want it kept", left)
 	}
 }
+
+// An event's fixed id is kept, one event per id: the bus asks before it
+// says a thing again, and the index refuses a second row whatever raced.
+// Events with no id are never told apart by it.
+func TestPeerEvents_OneEventPerFixedID(t *testing.T) {
+	st := openTestStore(t)
+	first := msgEvent("claude-peers", "w", "G", "the merge failed", 1)
+	first.MsgID = "merge-task-1-ab12cd:part-1:send-back"
+	if has, err := st.HasPeerMsg(first.MsgID); has || err != nil {
+		t.Fatalf("before it is said: %v %v", has, err)
+	}
+	if _, err := st.AppendPeerEvent(first); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := st.HasPeerMsg(first.MsgID); !has || err != nil {
+		t.Fatalf("once said: %v %v", has, err)
+	}
+	again := msgEvent("claude-peers", "w", "G", "the merge failed", 2)
+	again.MsgID = first.MsgID
+	if _, err := st.AppendPeerEvent(again); err == nil {
+		t.Fatal("a second event with the same fixed id was stored")
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := st.AppendPeerEvent(msgEvent("a", "w", "G", "plain", 3)); err != nil {
+			t.Fatalf("events with no id are not held to the index: %v", err)
+		}
+	}
+	if has, _ := st.HasPeerMsg(""); has {
+		t.Fatal("no id is not an id that was said")
+	}
+	evs, _ := st.PeerEventsAfter("w", 0)
+	if len(evs) != 3 {
+		t.Fatalf("the addressee has the one message and the two plain ones: %d", len(evs))
+	}
+}

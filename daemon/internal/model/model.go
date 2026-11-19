@@ -324,6 +324,12 @@ type PeerEvent struct {
 	// to the lenses, never pushed, and handed to the addressee only inside
 	// its next delivery, start or check_messages.
 	Quiet bool `json:"quiet,omitempty"`
+	// MsgID is a fixed id the sender made for this one message (a task's
+	// send-back, named after its merge job and part), "" for none. A second
+	// event with the same id is never stored, so a sender that is cut off
+	// and says it again says it once. It stays in the daemon: a client
+	// tells events apart by Seq.
+	MsgID string `json:"-"`
 }
 
 // PeerEventMessage, PeerEventVerdict and PeerEventAnswer are the PeerEvent

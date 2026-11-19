@@ -7,6 +7,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 
 	"ccmux.dev/ccmuxd/internal/model"
 )
@@ -16,10 +18,10 @@ const peerEventCols = `seq,kind,from_id,from_name,from_summary,from_cwd,to_id,to
 // AppendPeerEvent stores one event and returns (also setting) its seq.
 func (s *SQLite) AppendPeerEvent(ev *model.PeerEvent) (int64, error) {
 	res, err := s.db.Exec(`
-INSERT INTO peer_events (kind,from_id,from_name,from_summary,from_cwd,to_id,to_name,grp,text,request_id,behavior,sent_at,quiet)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+INSERT INTO peer_events (kind,from_id,from_name,from_summary,from_cwd,to_id,to_name,grp,text,request_id,behavior,sent_at,quiet,msg_id)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		ev.Kind, ev.FromID, ev.FromName, ev.FromSummary, ev.FromCWD,
-		ev.ToID, ev.ToName, ev.Group, ev.Text, ev.RequestID, ev.Behavior, ev.SentAt, quietCol(ev.Quiet))
+		ev.ToID, ev.ToName, ev.Group, ev.Text, ev.RequestID, ev.Behavior, ev.SentAt, quietCol(ev.Quiet), ev.MsgID)
 	if err != nil {
 		return 0, err
 	}
@@ -29,6 +31,32 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 	}
 	ev.Seq = seq
 	return seq, nil
+}
+
+// migratePeerMsgID adds an event's fixed id (model.PeerEvent.MsgID) and
+// the index that keeps one id to one event. Strict: every append writes the
+// column. Events from before have none, and the index leaves those out.
+func migratePeerMsgID(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE peer_events ADD COLUMN msg_id TEXT DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate peer_events.msg_id: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS peer_events_by_msg ON peer_events(msg_id) WHERE msg_id != ''`); err != nil {
+		return fmt.Errorf("migrate peer_events.msg_id index: %w", err)
+	}
+	return nil
+}
+
+// HasPeerMsg reports whether an event with this fixed id is in the log: it
+// was said already. An event that was pruned since no longer counts, so a
+// sender must keep its own word that it is done, not ask here for long.
+func (s *SQLite) HasPeerMsg(msgID string) (bool, error) {
+	if msgID == "" {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM peer_events WHERE msg_id=?`, msgID).Scan(&n)
+	return n > 0, err
 }
 
 // PeerEventsAfter returns a peer's events with seq > afterSeq, in seq order —
