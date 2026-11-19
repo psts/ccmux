@@ -197,7 +197,17 @@ func (ExecGit) FastForward(repo, rev, trunk string) error {
 // branch goes only when the trunk holds every commit on it: git's own safe
 // delete judges against the folder's current branch instead, which is not
 // the trunk when the folder sits on another branch.
+//
+// It can be asked again for a worktree it already removed (a tidy-up that
+// was cut off and is run again): a folder that is gone is not an error, and
+// what is left of the job, the branch, is finished.
 func (ExecGit) RemoveWorktree(repo, path, branch, trunk string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if _, err := runGit(repo, "worktree", "prune"); err != nil {
+			return fmt.Errorf("worktree gone, git's record of it not cleared: %w", err)
+		}
+		return dropMergedBranch(repo, branch, trunk)
+	}
 	if err := dropCopiedSettings(path); err != nil {
 		return fmt.Errorf("kept: %w", err)
 	}
@@ -205,6 +215,15 @@ func (ExecGit) RemoveWorktree(repo, path, branch, trunk string) error {
 		return fmt.Errorf("left half removed: %w", err)
 	} else if err != nil {
 		return fmt.Errorf("kept, it holds uncommitted files: %w", err)
+	}
+	return dropMergedBranch(repo, branch, trunk)
+}
+
+// dropMergedBranch deletes a removed worktree's branch when the trunk holds
+// every commit on it. A branch that is gone already is done.
+func dropMergedBranch(repo, branch, trunk string) error {
+	if has, err := branchExists(repo, branch); err == nil && !has {
+		return nil
 	}
 	merged, err := gitYes(repo, "merge-base", "--is-ancestor", branch, trunk)
 	if err != nil {

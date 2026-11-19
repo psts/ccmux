@@ -439,3 +439,47 @@ func TestRunGitFor_SaysItTimedOut(t *testing.T) {
 		t.Fatalf("git inside its time = %v", err)
 	}
 }
+
+// A tidy-up that is run again (the daemon was cut off between the worktree
+// and the branch, or right after both) finishes what is left and is not an
+// error: the worktree's folder being gone is where it was headed.
+func TestExecGit_RemoveWorktreeCanBeAskedAgain(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	wt := filepath.Join(t.TempDir(), "thread-1")
+	g.AddWorktree(repo, wt, "thread/1-x", "main")
+	// Cut off after the folder went, before the branch did.
+	if _, err := runGit(repo, "worktree", "remove", wt); err != nil {
+		t.Fatal(err)
+	}
+	if !hasBranch(t, repo, "thread/1-x") {
+		t.Fatal("the rig: the branch is still there")
+	}
+	if err := g.RemoveWorktree(repo, wt, "thread/1-x", "main"); err != nil {
+		t.Fatalf("asked again with the folder gone = %v", err)
+	}
+	if hasBranch(t, repo, "thread/1-x") {
+		t.Fatal("the branch the first try left was not finished")
+	}
+	if err := g.RemoveWorktree(repo, wt, "thread/1-x", "main"); err != nil {
+		t.Fatalf("asked a third time, with nothing left = %v", err)
+	}
+	// A folder deleted by hand leaves git's record of the worktree; that goes too.
+	other := filepath.Join(t.TempDir(), "thread-2")
+	g.AddWorktree(repo, other, "thread/2-y", "main")
+	os.RemoveAll(other)
+	if err := g.RemoveWorktree(repo, other, "thread/2-y", "main"); err != nil {
+		t.Fatalf("a folder that vanished = %v", err)
+	}
+	if list, _ := runGit(repo, "worktree", "list"); strings.Contains(list, "thread-2") || hasBranch(t, repo, "thread/2-y") {
+		t.Fatalf("git still lists the vanished worktree, or kept its branch: %s", list)
+	}
+	// And a branch with work the trunk lacks is still never deleted.
+	third := filepath.Join(t.TempDir(), "thread-3")
+	g.AddWorktree(repo, third, "thread/3-z", "main")
+	commitFile(t, third, "kept.txt", "work")
+	runGit(repo, "worktree", "remove", third)
+	if err := g.RemoveWorktree(repo, third, "thread/3-z", "main"); err == nil || !strings.Contains(err.Error(), "it has commits main does not") || !hasBranch(t, repo, "thread/3-z") {
+		t.Fatalf("unmerged work is kept, asked again or not: %v", err)
+	}
+}

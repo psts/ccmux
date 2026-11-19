@@ -32,7 +32,51 @@ type Lander struct {
 	MergeGit MergeGit
 	Checks   Checks
 	Tag      string
+	// Steps and Halt are for a landing that runs as a job (landjob.go),
+	// which can be cut off and run again. Both nil, a landing runs as it
+	// always did.
+	//
+	// Steps remembers the steps a landing finished: a second run skips the
+	// checks of a commit they already passed on, and says what it is doing
+	// meanwhile.
+	Steps Steps
+	// Halt is asked before each piece of work is prepared and once more
+	// before the first trunk moves; an error stops the landing there. It is
+	// never asked between two trunks: a landing that started moving them
+	// moves them all.
+	Halt func() error
 }
+
+// Steps is a record of finished steps that outlives the run that made it
+// (a job's journal). A key names exactly what was done, so work that
+// changed since has another key.
+type Steps interface {
+	Done(key string, into any) bool
+	Begin(key, label string)
+	Finished(key string, data any)
+}
+
+func (l Lander) begin(key, label string) {
+	if l.Steps != nil {
+		l.Steps.Begin(key, label)
+	}
+}
+
+func (l Lander) finished(key string, data any) {
+	if l.Steps != nil {
+		l.Steps.Finished(key, data)
+	}
+}
+
+func (l Lander) halted() error {
+	if l.Halt == nil {
+		return nil
+	}
+	return l.Halt()
+}
+
+// landedKey names the step that moved a repo's trunk to a commit.
+const landedKey = "landed:"
 
 // fixable is a failure inside one piece of work's own worktree (its branch
 // clashes with the trunk, the checks failed on it, it left work uncommitted,
@@ -90,6 +134,9 @@ type checked struct {
 func (l Lander) Land(work []Work) (string, error) {
 	oks, revs := make([]checked, len(work)), make([]string, len(work))
 	for i, w := range work {
+		if err := l.halted(); err != nil {
+			return "", err
+		}
 		ok, err := l.prepare(i, w)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", filepath.Base(w.RepoPath), err)
@@ -103,15 +150,32 @@ func (l Lander) Land(work []Work) (string, error) {
 	if err := l.unmovedSinceChecks(work, revs); err != nil {
 		return "", err
 	}
+	if err := l.halted(); err != nil {
+		return "", err
+	}
+	done, err := l.forward(work, oks)
+	if err != nil {
+		return "", err
+	}
+	return "merged " + strings.Join(done, ", ") + rerunNote(work, oks), nil
+}
+
+// forward moves each repo's trunk to its checked commit and returns what
+// landed. Moving a trunk that is there already changes nothing, so a
+// landing run again after it was cut off here goes through the repos it
+// had done and carries on with the rest.
+func (l Lander) forward(work []Work, oks []checked) ([]string, error) {
 	var done []string
 	for i, w := range work {
 		name := filepath.Base(w.RepoPath)
+		l.begin("landing:"+w.RepoPath, name+": moving "+oks[i].trunk+" forward")
 		if err := l.MergeGit.FastForward(w.RepoPath, oks[i].rev, oks[i].trunk); err != nil {
-			return "", fmt.Errorf("%s did not merge: %v%s", name, err, mergedSoFar(done))
+			return nil, fmt.Errorf("%s did not merge: %v%s", name, err, mergedSoFar(done))
 		}
 		done = append(done, name+" into "+oks[i].trunk)
+		l.finished(landedKey+w.RepoPath+"@"+oks[i].rev, name+" into "+oks[i].trunk)
 	}
-	return "merged " + strings.Join(done, ", ") + rerunNote(work, oks), nil
+	return done, nil
 }
 
 // rerunNote says, per repo, which checks failed once and passed when run
@@ -143,6 +207,7 @@ func (l Lander) prepare(i int, w Work) (checked, error) {
 	if left != "" {
 		return checked{}, fixable{i, fmt.Errorf("uncommitted work in its worktree (%s); commit it or remove it%s", cut(left, 300), linkHint(w.Worktree, left))}
 	}
+	l.begin("rebase:"+w.Worktree, filepath.Base(w.RepoPath)+": rebasing onto "+trunk)
 	rev, err := l.MergeGit.Rebase(w.Worktree, trunk)
 	var clash rebaseClash
 	if errors.As(err, &clash) {
@@ -154,11 +219,31 @@ func (l Lander) prepare(i int, w Work) (checked, error) {
 	if err := l.gateFilesUntouched(w.RepoPath, trunk, rev); err != nil {
 		return checked{}, err
 	}
-	flaked, err := l.check(i, w, trunk)
+	flaked, err := l.checkOnce(i, w, trunk, rev)
 	if err != nil {
 		return checked{}, err
 	}
 	return checked{trunk: trunk, rev: rev, flaked: flaked}, nil
+}
+
+// checkOnce runs the work's checks unless an earlier run of this landing
+// already saw them pass on this very commit: the checks are the minutes of
+// a landing, and a second run on the same files proves nothing new. A
+// commit that changed since (the trunk moved, so the rebase gave another)
+// has another key and is checked.
+func (l Lander) checkOnce(i int, w Work, trunk, rev string) (string, error) {
+	key := "checked:" + w.Worktree + "@" + rev
+	var flaked string
+	if l.Steps != nil && l.Steps.Done(key, &flaked) {
+		log.Printf("%s: %s part in %s: its checks passed on %s in an earlier run; not run again", l.Tag, w.Label, w.RepoPath, rev)
+		return flaked, nil
+	}
+	l.begin(key, filepath.Base(w.RepoPath)+": checks running")
+	flaked, err := l.check(i, w, trunk)
+	if err == nil {
+		l.finished(key, flaked)
+	}
+	return flaked, err
 }
 
 // maxCheckLog is the most of a failed check's output kept in its file: the

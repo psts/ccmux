@@ -57,6 +57,16 @@ type Flake struct {
 // failed run printed, so a test that fails now and then stays seen, by name.
 type GateChecks struct {
 	PerLine time.Duration // how long one line may run
+	// Ctx ends every line still running when it ends (a job at its time
+	// limit). Nil never does.
+	Ctx context.Context
+}
+
+func (g GateChecks) ctx() context.Context {
+	if g.Ctx == nil {
+		return context.Background()
+	}
+	return g.Ctx
 }
 
 const gatesFile = ".claude/qa-gates"
@@ -153,7 +163,7 @@ type lineRun struct {
 // group is killed: killing bash alone leaves what it started (go test, a
 // server) holding the output open, and the run would hang past its limit.
 func (g GateChecks) runLine(dir, line string) lineRun {
-	ctx, cancel := context.WithTimeout(context.Background(), g.PerLine)
+	ctx, cancel := context.WithTimeout(g.ctx(), g.PerLine)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-lc", line)
 	cmd.Dir = dir

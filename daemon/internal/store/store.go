@@ -299,7 +299,7 @@ func Open(path string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema + sessionsSchema + threadsSchema + capChoicesSchema + todosSchema); err != nil {
+	if _, err := db.Exec(schema + sessionsSchema + threadsSchema + capChoicesSchema + todosSchema + jobsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
