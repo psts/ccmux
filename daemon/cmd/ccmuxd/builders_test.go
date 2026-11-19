@@ -78,9 +78,6 @@ func TestABuilderHasNoLoadout(t *testing.T) {
 // Gap 10: only a builder gets the login shell's PATH; a person's session
 // keeps the daemon's, as before.
 func TestOnlyABuilderGetsTheLoginPath(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash not installed")
-	}
 	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -91,8 +88,42 @@ func TestOnlyABuilderGetsTheLoginPath(t *testing.T) {
 	if _, has := plain["PATH"]; has || plain["CCMUX_PANE_ID"] != "p1" {
 		t.Fatalf("a person's session's own variables = %v", plain)
 	}
+	// The shell is not asked here: under a loaded host it can run out of
+	// its ten seconds, and what is tested is who gets the answer.
+	was := loginPaths
+	loginPaths = &pathCache{now: time.Now, read: func() string { return "/usr/local/go/bin:/usr/bin" }}
+	defer func() { loginPaths = was }()
 	b := sessionEnv(mgr, store.RunnerSession{PaneID: "p2", Role: store.RoleBuilder})
-	if b["CCMUX_PANE_ID"] != "p2" || b["PATH"] == "" || !strings.Contains(b["PATH"], filepath.Join(".local", "bin")) {
+	if b["CCMUX_PANE_ID"] != "p2" || !strings.HasSuffix(b["PATH"], ":/usr/local/go/bin:/usr/bin") || !strings.Contains(b["PATH"], filepath.Join(".local", "bin")) {
 		t.Fatalf("a builder's own variables = %v", b)
+	}
+	if again := sessionEnv(mgr, store.RunnerSession{PaneID: "p1"}); again["PATH"] != "" {
+		t.Fatalf("a person's session got the login PATH: %v", again)
+	}
+}
+
+// A read that failed must not stand for the daemon's whole life: one slow
+// shell at boot would leave every builder on the bare PATH until a restart.
+func TestAFailedLoginPathIsAskedAgainAndAnAnswerIsKept(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	answers, asked := []string{"", "", "/usr/local/go/bin:/usr/bin", "never read"}, 0
+	c := &pathCache{now: func() time.Time { return now }, read: func() string { asked++; return answers[asked-1] }}
+	if got := c.get(); got != "" || asked != 1 {
+		t.Fatalf("a failed read = %q after %d asks", got, asked)
+	}
+	if got := c.get(); got != "" || asked != 1 {
+		t.Fatalf("inside the minute a failed read is not asked again: %q after %d asks", got, asked)
+	}
+	now = now.Add(loginPathRetry + time.Second)
+	if got := c.get(); got != "" || asked != 2 {
+		t.Fatalf("after the minute it is asked again: %q after %d asks", got, asked)
+	}
+	now = now.Add(loginPathRetry + time.Second)
+	if got := c.get(); got != "/usr/local/go/bin:/usr/bin" || asked != 3 {
+		t.Fatalf("the first answer = %q after %d asks", got, asked)
+	}
+	now = now.Add(24 * time.Hour)
+	if got := c.get(); got != "/usr/local/go/bin:/usr/bin" || asked != 3 {
+		t.Fatalf("an answer is kept for good: %q after %d asks", got, asked)
 	}
 }

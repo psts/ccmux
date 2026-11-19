@@ -73,20 +73,46 @@ func sessionLoadout(forSession func(store.RunnerSession) ([]byte, string, error)
 	}
 }
 
-var (
-	loginPathOnce sync.Once
-	loginPathText string
-)
+// pathCache keeps the login shell's PATH once it has been read. Only an
+// answer is kept for good: a read that failed (a boot or a deploy so busy
+// that the shell ran out of its ten seconds) is tried again, but not more
+// often than once a minute, so a profile that always hangs costs a builder's
+// start ten seconds now and then and never every time.
+type pathCache struct {
+	mu       sync.Mutex
+	text     string
+	failedAt time.Time
+	read     func() string
+	now      func() time.Time
+}
+
+// loginPathRetry is how long a failed read stands before the next try.
+const loginPathRetry = time.Minute
+
+func (c *pathCache) get() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.text != "" {
+		return c.text
+	}
+	if !c.failedAt.IsZero() && c.now().Sub(c.failedAt) < loginPathRetry {
+		return ""
+	}
+	if c.text = c.read(); c.text == "" {
+		c.failedAt = c.now()
+	}
+	return c.text
+}
+
+var loginPaths = &pathCache{read: func() string { return readLoginPath(10 * time.Second) }, now: time.Now}
 
 // loginPath is the PATH a login shell of this user has, read once: a
 // profile does not change under a running daemon often enough to ask at
 // every start, and asking costs a shell. "" when it cannot be read (no
 // bash, a profile that hangs or prints nothing); the session then keeps the
-// daemon's PATH, as every session did before, and the log says so.
-func loginPath() string {
-	loginPathOnce.Do(func() { loginPathText = readLoginPath(10 * time.Second) })
-	return loginPathText
-}
+// daemon's PATH, as every session did before, the log says so, and a later
+// start asks again.
+func loginPath() string { return loginPaths.get() }
 
 // loginPathMark fences the PATH off from whatever a profile prints.
 const loginPathMark = "__ccmux_path__"

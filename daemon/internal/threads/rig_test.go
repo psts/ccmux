@@ -486,7 +486,9 @@ func (r *rig) row(id string) store.RunnerSession {
 // eventually waits for something a goroutine does.
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Millisecond) {
+	// Ten seconds, not two: what is waited for takes milliseconds, but on a
+	// loaded host (the whole suite beside other work) two seconds lost once.
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Millisecond) {
 		if ok() {
 			return
 		}
