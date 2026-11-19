@@ -32,6 +32,9 @@ func (s *Service) Tool(sessionID, action, repo string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if sess.Role == store.RoleBuilder {
+		return "", fmt.Errorf("the thread tool is not for a task's builder: you build a part of queued task #%d, which the task queue merges and ends. Report with the tasks tool (action \"report\")", th.TaskID)
+	}
 	if sess.Role != store.RoleLead {
 		return "", fmt.Errorf("the thread tool is the lead's: you are a helper in thread #%d, so tell %s what you need", th.ID, s.leadName(th))
 	}

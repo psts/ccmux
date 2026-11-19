@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/threads"
 )
 
@@ -20,6 +21,12 @@ type fakeThreads struct {
 	acts      []string // merge, end, stand-down and tool calls, in order
 	refuse    error    // what the next action is refused with
 	changed   []string // session ids LeadChanged heard of
+	built     []taskq.Builder
+}
+
+func (f *fakeThreads) StartBuilder(b taskq.Builder) (string, error) {
+	f.built = append(f.built, b)
+	return "pane-" + b.Name, nil
 }
 
 func (f *fakeThreads) Create(n threads.New) (store.Thread, store.RunnerSession, error) {

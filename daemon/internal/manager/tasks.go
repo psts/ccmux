@@ -22,24 +22,15 @@ func (m *Manager) TodosChanged() { m.events.publish(Event{Kind: "todos-changed"}
 // since (builders.go).
 const taskRunner = "task-runner"
 
-// TaskWorkspace finds the session a task in repo runs in: a repo session
-// (not an agent's) on this daemon, one in the task's window before one in
-// another (the repo may have moved since the task was filed), and a live one
-// before a closed one. A closed one is reopened, the way a teammate start
-// reopens it, so a task filed in the evening still runs after its session
-// was closed for the night.
+// TaskWorkspace finds the ccmux session a task's part in repo belongs to:
+// a repo session (not an agent's) on this daemon, one in the task's window
+// before one in another (the repo may have moved since the task was filed),
+// and a live one before a closed one. A closed one is left closed: a
+// builder is a Claude session in a service of its own and needs no tmux
+// session, so a task filed in the evening still runs after its repo's
+// session was closed for the night, and opens nothing.
 func (m *Manager) TaskWorkspace(repo, windowID string) (string, error) {
-	best, err := m.taskSession(repo, windowID)
-	if err != nil {
-		return "", err
-	}
-	if m.Controller(best) != nil {
-		return best, nil
-	}
-	if _, err := m.ReviveWorkspace(best); err != nil {
-		return "", fmt.Errorf("reopening the session for %s: %w", repo, err)
-	}
-	return best, nil
+	return m.taskSession(repo, windowID)
 }
 
 // taskSession picks the session a task in repo runs in, live or closed.
@@ -95,9 +86,14 @@ func (m *Manager) windowMembers() (map[string]string, error) {
 	return m.store.WindowMembers()
 }
 
-// StartTaskPane adds a pane in cwd (the task's worktree) and types cmd into
-// it once. Ephemeral, like a teammate's: a revive brings it back as a plain
-// shell instead of starting the task a second time.
+// StartTaskPane adds a tmux pane in cwd and types cmd into it once, stamped
+// as a task worker's. Ephemeral, like a teammate's: a revive brings it back
+// as a plain shell instead of starting the task a second time.
+//
+// The queue no longer starts workers this way: since task #176 a builder is
+// a session (taskq.Host.StartBuilder). It stays for the workers that were
+// running in tmux when that shipped, whose rules (TaskPane, ClearTaskFolder,
+// their signals) are still tested through it; it goes when they are gone.
 func (m *Manager) StartTaskPane(wsID, cwd, cmd string) (string, error) {
 	p, err := m.spawnPane(wsID, cwd, "", cmd, taskRunner, "claude", true, "")
 	if err != nil {

@@ -35,6 +35,7 @@ type Store interface {
 	AddThread(store.Thread) (store.Thread, error)
 	SaveThread(store.Thread) error
 	Thread(id int64) (*store.Thread, error)
+	TaskThread(taskID int64) (*store.Thread, error)
 	Threads() ([]store.Thread, error)
 	ThreadMembers(threadID int64) ([]store.RunnerSession, error)
 	RunnerSession(id string) (*store.RunnerSession, error)

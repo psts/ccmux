@@ -146,9 +146,14 @@ func (s *Service) standAllDown(threadID int64) ([]string, error) {
 // off its lock). A lead that ended takes its thread with it: its helpers
 // are stood down, since nothing would ever merge or end them, and its own
 // worktree goes when nothing in it would be lost. A helper that ended only
-// leaves the team.
+// leaves the team. A task's builder that ended takes nobody with it
+// (builders.go).
 func (s *Service) SessionEnded(sess store.RunnerSession) {
 	if sess.ThreadID == 0 {
+		return
+	}
+	if sess.Role == store.RoleBuilder {
+		s.builderEnded(sess) // a task's part: its teammates are the queue's to end
 		return
 	}
 	defer s.reindex()

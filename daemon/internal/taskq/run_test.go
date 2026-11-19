@@ -2,7 +2,6 @@ package taskq
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/store"
@@ -41,21 +40,6 @@ func TestRun_EditOnlyBeforeItStarts(t *testing.T) {
 		got, err := EditRun(store.Task{ID: 1, Status: status}, p, true)
 		if err == nil || !reflect.DeepEqual(got, p) {
 			t.Errorf("a %s task's part was changed: %+v, %v", status, got, err)
-		}
-	}
-}
-
-// The model and effort are flags of claude itself: after the "--" they
-// would be read as part of the prompt.
-func TestLaunchCommand_StartsOnThePartsRun(t *testing.T) {
-	cmd := launchCommand(layout{dir: "/w/app-1", brief: "/w/app-1/task-7.md", busName: "app-task-7"}, HardRun)
-	flags, prompt, found := strings.Cut(cmd, " -- ")
-	if !found || !strings.Contains(prompt, "/w/app-1/task-7.md") {
-		t.Fatalf("launch = %s", cmd)
-	}
-	for _, want := range []string{"--model 'fable'", "--effort 'high'", "--permission-mode auto", "CLAUDE_PEERS_NAME='app-task-7'", "--add-dir '/w/app-1'"} {
-		if !strings.Contains(flags, want) {
-			t.Errorf("launch flags = %s, want %s among them", flags, want)
 		}
 	}
 }

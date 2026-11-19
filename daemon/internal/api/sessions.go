@@ -403,7 +403,26 @@ func (s *Server) answerPrompt(w http.ResponseWriter, sessionID, text, id string,
 		return
 	}
 	s.titleFromFirstPrompt(sessionID, text)
+	s.personTyped(sessionID)
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
+}
+
+// personTyped tells the task queue's watchdog that a person sent this
+// session a prompt, when the session is a task's builder (the manager
+// keeps the mark for no other pane). A tmux worker's own hook says so; a
+// builder's is not heard (manager.ApplyAttention), and its runner's "busy"
+// a second later looks the same for a person's prompt and a teammate's bus
+// message. The mark is what puts a part that reported "stuck" back to work
+// once a person has answered it in its session.
+func (s *Server) personTyped(sessionID string) {
+	if s.mgr == nil {
+		return
+	}
+	sess, err := s.runnerRows.RunnerSession(sessionID)
+	if err != nil || sess == nil || sess.PaneID == "" {
+		return
+	}
+	s.mgr.NoteTaskPrompt(sess.PaneID)
 }
 
 func (s *Server) setRunnerWanted(w http.ResponseWriter, r *http.Request) {

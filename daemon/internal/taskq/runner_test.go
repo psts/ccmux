@@ -121,8 +121,8 @@ func (m *memStore) part(id int64) store.Part {
 type fakeHost struct {
 	mu        sync.Mutex // a test may play a job's end beside a pass
 	noSession bool
-	started   []string // commands typed, in order
-	cleared   []string // worktrees cleared of past workers
+	started   []Builder // the builders started, in order
+	cleared   []string  // worktrees cleared of past workers
 	clearErr  error
 	panes     map[string]PaneState
 	changed   int
@@ -154,11 +154,11 @@ func (h *fakeHost) ClearTaskFolder(dir string) error {
 	h.cleared = append(h.cleared, dir)
 	return h.clearErr
 }
-func (h *fakeHost) StartTaskPane(wsID, cwd, cmd string) (string, error) {
+func (h *fakeHost) StartBuilder(b Builder) (string, error) {
 	if h.onStart != nil {
 		h.onStart()
 	}
-	h.started = append(h.started, cmd)
+	h.started = append(h.started, b)
 	id := fmt.Sprintf("pane-%d", len(h.started))
 	h.panes[id] = PaneState{}
 	return id, nil
@@ -439,8 +439,55 @@ func TestRunner_StartsWholeFeatures(t *testing.T) {
 		!strings.Contains(string(brief), `"add_part"`) || strings.Contains(string(brief), "backend plan") {
 		t.Fatalf("app brief = %q, %v", brief, err)
 	}
-	if !strings.Contains(g.host.started[0], "CLAUDE_PEERS_NAME='app-task-1'") || !strings.Contains(g.host.started[0], "--permission-mode auto") {
-		t.Fatalf("launch = %s", g.host.started[0])
+	// Its builder: a session in the part's worktree, in the repo's ccmux
+	// session and the task's window, under the name its teammates know.
+	b := g.host.started[0]
+	if b.Name != "app-task-1" || b.TaskID != 1 || b.Worktree != app.Worktree || b.Branch != app.Branch || b.WorkspaceID != "ws-app" || !strings.HasSuffix(b.Repo, "/app") {
+		t.Fatalf("builder = %+v", b)
+	}
+	// Its brief is its standing prompt (ReadBrief is what the host gives it),
+	// and its first prompt points at it rather than repeating it.
+	if text, err := ReadBrief(b.Worktree); err != nil || text != string(brief) {
+		t.Fatalf("the brief its builder starts with = %q, %v", text, err)
+	}
+	if !strings.Contains(b.Prompt, "task #1") || !strings.Contains(b.Prompt, BriefFile(b.Worktree)) || strings.Contains(b.Prompt, "app plan") {
+		t.Fatalf("first prompt = %q", b.Prompt)
+	}
+}
+
+// A brief that is gone or empty is an error: its builder must not start
+// without knowing what to build.
+func TestReadBrief_AMissingOrEmptyBriefIsAnError(t *testing.T) {
+	wt := filepath.Join(t.TempDir(), "task-3")
+	if _, err := ReadBrief(wt); err == nil {
+		t.Fatal("a missing brief read as a brief")
+	}
+	if err := os.WriteFile(BriefFile(wt), []byte("  \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadBrief(wt); err == nil {
+		t.Fatal("an empty brief read as a brief")
+	}
+}
+
+// On a daemon that runs no Claude sessions a waiting task waits and says
+// why; nothing is claimed, so nothing fails.
+func TestRunner_WaitsWhereNoBuildersStart(t *testing.T) {
+	g := newRig(t)
+	g.r.BuildersOff = "it runs no Claude sessions"
+	g.feature(1, 0, "app")
+	g.r.Tick()
+	g.r.Tick()
+	if got := g.st.task(1); got.Status != Waiting || !strings.Contains(got.Note, "starts no builders (it runs no Claude sessions)") {
+		t.Fatalf("task = %s %q", got.Status, got.Note)
+	}
+	if len(g.host.started) != 0 || g.partsOf(1)[0].Status != Pending {
+		t.Fatalf("started %d, part %s", len(g.host.started), g.partsOf(1)[0].Status)
+	}
+	g.r.BuildersOff = ""
+	g.r.Tick()
+	if got := g.st.task(1); got.Status != Running || got.Note != "" || len(g.host.started) != 1 {
+		t.Fatalf("with builders back: %s %q, started %d", got.Status, got.Note, len(g.host.started))
 	}
 }
 
@@ -455,11 +502,11 @@ func TestRunner_StartsEachPartOnItsRun(t *testing.T) {
 	if len(g.host.started) != 2 {
 		t.Fatalf("started %d Claudes, want 2", len(g.host.started))
 	}
-	if cmd := g.host.started[0]; !strings.Contains(cmd, "--model 'opus' --effort 'medium'") {
-		t.Fatalf("a part filed with no model started as %s", cmd)
+	if b := g.host.started[0]; b.Run != NormalRun {
+		t.Fatalf("a part filed with no model started as %+v", b.Run)
 	}
-	if cmd := g.host.started[1]; !strings.Contains(cmd, "--model 'fable' --effort 'high'") {
-		t.Fatalf("a hard part started as %s", cmd)
+	if b := g.host.started[1]; b.Run != HardRun {
+		t.Fatalf("a hard part started as %+v", b.Run)
 	}
 	app, be := g.partsOf(1)[0], g.partsOf(1)[1]
 	if RunOf(app) != NormalRun || app.Model == "" || RunOf(be) != HardRun || be.PaneID == "" {

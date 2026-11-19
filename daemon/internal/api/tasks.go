@@ -66,12 +66,15 @@ type taskView struct {
 
 // partView is a part with its repo's short name, its Claude's bus name, and
 // the session holding its pane (empty once that pane is gone), so a lens
-// can open it.
+// can open it. SessionID is its builder's own session (a conversation on
+// the thread page), "" for a worker from before builders were sessions,
+// whose pane is a terminal in the repo's tmux session.
 type partView struct {
 	store.Part
 	Repo        string `json:"repo"`
 	BusName     string `json:"busName"`
 	WorkspaceID string `json:"workspaceId,omitempty"`
+	SessionID   string `json:"sessionId,omitempty"`
 	Retryable   bool   `json:"retryable"`
 	// SendBackable: the feature failed to merge, this part is built, and
 	// its worker's pane is still open (taskq.SendBack has the rule).
@@ -104,6 +107,9 @@ func (s *Server) partViewOf(t store.Task, p store.Part) partView {
 	v := partView{Part: p, Repo: filepath.Base(p.RepoPath), BusName: taskq.BusName(p.RepoPath, t.ID)}
 	if p.PaneID != "" {
 		v.WorkspaceID = s.mgr.WorkspaceForPane(p.PaneID)
+		if info, ok := s.mgr.RunnerPane(p.PaneID); ok {
+			v.SessionID = info.SessionID
+		}
 	}
 	_, err := taskq.Retry(t, p)
 	v.Retryable = err == nil

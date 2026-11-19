@@ -124,6 +124,18 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if err != nil {
 		return Spec{}, fmt.Errorf("session runner: %w", err)
 	}
+	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess)}
+	files, err := c.attach(&sp, sess, paths)
+	if err != nil {
+		return Spec{}, err
+	}
+	sp.Args = append(c.startArgs(sess, paths), files...)
+	return sp, nil
+}
+
+// startArgs are the flags every start of a session has, from its row: where
+// its runner listens and keeps its state, what it runs, and its fences.
+func (c Config) startArgs(sess store.RunnerSession, paths Paths) []string {
 	args := []string{
 		"--socket", paths.Socket(sess.ID), "--state", paths.StateFile(sess.ID), "--session-auto", sess.ID,
 		"--detached", "1", "--setting-sources", settingSources, "--agent", sessionLabel(sess),
@@ -139,11 +151,20 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 		args = append(args, "--peers-command", c.Peers)
 	}
 	args = append(args, runArgs(sess)...)
-	args = append(args, fenceArgs(sess)...)
-	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess)}
+	return append(args, fenceArgs(sess)...)
+}
+
+// attach reads a session's brief and its loadout into sp, and returns the
+// flags that name their files. Each is named only when there is one: a
+// session with no brief has no standing prompt, and a nil loadout is a
+// session that loads the user's whole Claude setup (a task's builder
+// does), whose file is then removed, so the flag would name nothing.
+func (c Config) attach(sp *Spec, sess store.RunnerSession, paths Paths) ([]string, error) {
+	var args []string
+	var err error
 	if c.Brief != nil {
 		if sp.Brief, err = c.Brief(sess); err != nil {
-			return Spec{}, fmt.Errorf("session runner: its brief: %w", err)
+			return nil, fmt.Errorf("session runner: its brief: %w", err)
 		}
 	}
 	if sp.Brief != "" {
@@ -151,17 +172,13 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	}
 	if c.Loadout != nil {
 		if sp.Loadout, sp.LoadoutRecord, err = c.Loadout(sess); err != nil {
-			return Spec{}, fmt.Errorf("session runner: %w", err)
+			return nil, fmt.Errorf("session runner: %w", err)
 		}
 	}
-	// Named only when there is one: a nil loadout is a session that loads
-	// the user's whole Claude setup (a task's builder does), and its file is
-	// then removed, so the flag would name nothing.
 	if sp.Loadout != nil {
 		args = append(args, "--loadout", paths.LoadoutFile(sess.ID))
 	}
-	sp.Args = args
-	return sp, nil
+	return args, nil
 }
 
 // runArgs are what a session's Claude runs with besides its model: its

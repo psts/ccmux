@@ -2,6 +2,7 @@ package taskq
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -26,12 +27,18 @@ type Store interface {
 }
 
 // Host is the daemon the workers run on: it finds a repo's session, clears
-// a worktree of past workers, starts a worker's pane, reads it back, and
-// tells the lenses something changed.
+// a worktree of past workers, starts a part's builder, reads its pane back,
+// and tells the lenses something changed.
+//
+// A builder is a Claude session in a service of its own (launch.go
+// Builder), a member of the task's thread; StartBuilder returns the pane id
+// it is known by everywhere else here. A worker started before builders
+// were sessions is a tmux pane, and TaskPane, ClearTaskFolder and
+// TellWorker serve both.
 type Host interface {
 	TaskWorkspace(repo, windowID string) (string, error)
 	ClearTaskFolder(dir string) error
-	StartTaskPane(wsID, cwd, cmd string) (string, error)
+	StartBuilder(Builder) (paneID string, err error)
 	TaskPane(paneID string) (PaneState, bool)
 	TasksChanged()
 	// TaskHostnames, SetTaskRoutes and DevDomain serve the workers' own dev
@@ -63,6 +70,10 @@ type Runner struct {
 	// JobsOff saying why: built features then wait and say so.
 	Jobs    Jobs
 	JobsOff string
+	// BuildersOff says why this daemon starts no builders ("" when it does):
+	// builders are Claude sessions in services of their own, and a host
+	// without them builds nothing. Waiting tasks then wait and say so.
+	BuildersOff string
 	// CheckLine is how long one line of a repo's checks may run in a merge's
 	// job; 0 is twenty minutes.
 	CheckLine time.Duration
@@ -273,6 +284,9 @@ func (r *Runner) rollup(tasks []store.Task, parts []store.Part) bool {
 // kinds a window at priority 1 is served before one at 2; the kinds keep
 // their order, so a send-back at 2 still goes ahead of a new start at 1.
 func (r *Runner) claim(tasks []store.Task, parts []store.Part) ([]job, bool) {
+	if r.BuildersOff != "" {
+		return nil, r.waitForBuilders(tasks, parts)
+	}
 	book := r.slotBook(tasks, parts)
 	sent := r.claimFixes(tasks, parts, book)
 	jobs := r.claimStarted(tasks, parts, book)
@@ -280,6 +294,26 @@ func (r *Runner) claim(tasks []store.Task, parts []store.Part) ([]job, bool) {
 		return jobs, sent
 	}
 	return append(jobs, r.claimNew(tasks, parts, book)...), sent
+}
+
+// noteNoBuilders is a waiting task's note on a daemon that starts no
+// builders; %s is why.
+const noteNoBuilders = "not started: this daemon starts no builders (%s)"
+
+// waitForBuilders says on every task that could start why it does not, on
+// a daemon that starts no builders. It reports whether a note changed.
+// Under the lock.
+func (r *Runner) waitForBuilders(tasks []store.Task, parts []store.Part) bool {
+	why := fmt.Sprintf(noteNoBuilders, r.BuildersOff)
+	changed := false
+	for _, t := range Startable(tasks, parts) {
+		if t.Note == why {
+			continue
+		}
+		t.Note = why
+		changed = r.saveTask(t) || changed
+	}
+	return changed
 }
 
 // claimStarted starts the pending parts of running and needs-you tasks: at
@@ -441,7 +475,7 @@ func (r *Runner) prepareAndStart(j job, l layout, run Run) (string, error) {
 	if err := writeBrief(j.task, j.part, l, trunk, j.team, servers); err != nil {
 		return "", err
 	}
-	return r.Host.StartTaskPane(wsID, l.worktree, launchCommand(l, run))
+	return r.Host.StartBuilder(builderOf(j, l, run, wsID))
 }
 
 func (r *Runner) saveTask(t store.Task) bool {

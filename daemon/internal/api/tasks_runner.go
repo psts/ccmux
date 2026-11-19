@@ -19,6 +19,9 @@ type taskHost struct {
 	// settle runs after each change the runner makes to the queue
 	// (todos_tasks.go); nil for none.
 	settle func()
+	// build starts a part's builder as a session in the task's thread
+	// (threads.Service.StartBuilder); nil on a daemon that runs no sessions.
+	build func(taskq.Builder) (string, error)
 }
 
 // TellWorker sends a worker's Claude text over the bus, then counts the
@@ -41,9 +44,17 @@ func (h taskHost) TellWorker(paneID, msgID, text string) error {
 func (h taskHost) TaskWorkspace(repo, windowID string) (string, error) {
 	return h.mgr.TaskWorkspace(repo, windowID)
 }
-func (h taskHost) StartTaskPane(wsID, cwd, cmd string) (string, error) {
-	return h.mgr.StartTaskPane(wsID, cwd, cmd)
+func (h taskHost) StartBuilder(b taskq.Builder) (string, error) {
+	if h.build == nil {
+		return "", errors.New(noBuilders)
+	}
+	return h.build(b)
 }
+
+// noBuilders is why a daemon without the session runners builds no task: a
+// builder is a Claude session in a systemd service of its own.
+const noBuilders = "it runs no Claude sessions (they need systemd)"
+
 func (h taskHost) ClearTaskFolder(dir string) error { return h.mgr.ClearTaskFolder(dir) }
 
 // TasksChanged tells the lenses, and lets what follows a task follow it
@@ -75,7 +86,9 @@ func (h taskHost) TaskPane(paneID string) (taskq.PaneState, bool) {
 // routes' lock, so a person's edit never lands in the middle of a pass.
 // slots 0 runs nothing: filed tasks just wait. Call it after EnablePeers:
 // the runner takes the bus here, once, and without it no worker hears that
-// its merge failed.
+// its merge failed. And after SetThreads: a part's builder is a session in
+// the task's thread, and a daemon with no threads service starts none
+// (waiting tasks say so).
 //
 // A built feature's merge runs as a job under merges (taskq.Jobs; nil with
 // jobsOff saying why this daemon runs none, and built features then wait
@@ -85,8 +98,13 @@ func (s *Server) StartTaskRunner(ctx context.Context, every time.Duration, slots
 	if s.tasks == nil {
 		return
 	}
+	host := taskHost{mgr: s.mgr, peers: s.peersSvc, settle: s.settleTodos}
+	buildersOff := noBuilders
+	if s.threads != nil {
+		host.build, buildersOff = s.threads.StartBuilder, ""
+	}
 	r := &taskq.Runner{
-		Store: s.tasks, Host: taskHost{mgr: s.mgr, peers: s.peersSvc, settle: s.settleTodos}, Git: taskq.ExecGit{}, MergeGit: taskq.ExecGit{},
+		Store: s.tasks, Host: host, Git: taskq.ExecGit{}, MergeGit: taskq.ExecGit{}, BuildersOff: buildersOff,
 		Jobs: merges, JobsOff: jobsOff, CheckLine: 20 * time.Minute, Lock: &s.tasksMu,
 		Slots: slots, WindowSlots: s.mgr.WindowSlots, TotalSlots: s.mgr.TaskSlotsTotal, WindowPriorities: s.mgr.WindowPriorities,
 		Root: root, Now: time.Now,

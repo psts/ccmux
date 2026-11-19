@@ -75,15 +75,15 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 		log.Printf("session runners: no claude on this host (%v); sessions use the SDK's bundled Claude Code", err)
 	}
 	cfg := runnerConfig(w, claude)
-	// A thread member starts with its thread's brief. The threads service
-	// needs the supervisor, which needs this config: so the config asks it
-	// late, once both are there.
+	// A thread member starts with its thread's brief, and a task's builder
+	// with its part's. The threads service needs the supervisor, which needs
+	// this config: so the config asks it late, once both are there.
 	var team *threads.Service
 	cfg.Brief = func(sess store.RunnerSession) (string, error) {
 		if team == nil {
 			return "", nil
 		}
-		return team.Brief(sess), nil
+		return team.SessionBrief(sess)
 	}
 	sup := runner.New(w.st, units, paths, cfg)
 	jobMgr, jobsOff := newJobs(w.st, w.jobPrefix)
@@ -115,11 +115,11 @@ func runnerConfig(w runnerWiring, claude string) runner.Config {
 		// A session's own identity: what a tmux pane's shell is given that
 		// applies to Claude (its pane id and bus token, the daemon, its
 		// hooks socket and its route through the LLM proxy).
-		SessionEnv: func(sess store.RunnerSession) map[string]string { return w.mgr.RunnerEnv(sess.PaneID) },
+		SessionEnv: func(sess store.RunnerSession) map[string]string { return sessionEnv(w.mgr, sess) },
 		// What its group and repo chose from the catalog, and nothing else of
 		// the user's Claude setup (loadouts.go). The day-one choices are
 		// written here, before the supervisor starts a session.
-		Loadout: wireLoadouts(w).ForSession,
+		Loadout: sessionLoadout(wireLoadouts(w).ForSession),
 	}
 }
 

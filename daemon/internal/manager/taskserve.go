@@ -37,7 +37,7 @@ func (m *Manager) TaskRoutes() map[string]int {
 }
 
 // TaskHostnames is the hostname rows (name and port only) of the session a
-// task in repo runs in: TaskWorkspace's choice, without reopening it. They
+// task in repo runs in: TaskWorkspace's choice. They
 // are what a worker's own servers stand in for. An error (no session, or the
 // window list unreadable) is never "no hostnames": a caller that took it so
 // would tell a worker it has no ports, or drop live routes.

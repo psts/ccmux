@@ -11,10 +11,11 @@ import (
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
 
-// A task runs in its repo's own session: never an agent's on the same
-// folder, a live one before a closed one (nothing is reopened then), and a
-// closed one reopened only when it is the only one there is. A repo with no
-// session at all is an error the task can show.
+// A task's part belongs to its repo's own session: never an agent's on the
+// same folder, one in the task's window before one in another, a live one
+// before a closed one. A closed one is never reopened: a builder is a
+// session of its own and needs no tmux. A repo with no session at all is
+// an error the task can show.
 func TestTaskWorkspace(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
@@ -71,14 +72,15 @@ func TestTaskWorkspace(t *testing.T) {
 	}
 
 	// The task's own window wins over being live: the closed admin is in
-	// window w1, so a w1 task reopens it rather than run in admin-2.
+	// window w1, so a w1 task belongs to it rather than to admin-2, and it
+	// stays closed.
 	if err := mgr.SeedWindowMembership(closed.ID, "w1"); err != nil {
 		t.Fatal(err)
 	}
 	members, _ := st.WindowMembers()
 	id, err = mgr.TaskWorkspace(repo, members[closed.ID])
-	if err != nil || id != closed.ID || mgr.Controller(closed.ID) == nil {
-		t.Fatalf("a task of w1 = %s, %v; want its window's session %s, reopened", id, err, closed.ID)
+	if err != nil || id != closed.ID || mgr.Controller(closed.ID) != nil {
+		t.Fatalf("a task of w1 = %s, %v (reopened=%v); want its window's session %s, left closed", id, err, mgr.Controller(closed.ID) != nil, closed.ID)
 	}
 	if got, _ := mgr.WindowOfWorkspace(closed.ID); got != members[closed.ID] || got == "" {
 		t.Fatalf("window of the w1 session = %q", got)
@@ -86,13 +88,12 @@ func TestTaskWorkspace(t *testing.T) {
 	if got, _ := mgr.WindowOfWorkspace(live.ID); got != "" {
 		t.Fatalf("a session in no window is in %q", got)
 	}
-	closeWS(closed)
 
 	closeWS(live)
 	mgr.Workspace(live.ID).RepoPath = t.TempDir() // leave only the closed one on repo
 	id, err = mgr.TaskWorkspace(repo, "")
-	if err != nil || id != closed.ID || mgr.Controller(closed.ID) == nil {
-		t.Fatalf("only a closed session = %s, %v (live=%v); want it reopened", id, err, mgr.Controller(closed.ID) != nil)
+	if err != nil || id != closed.ID || mgr.Controller(closed.ID) != nil {
+		t.Fatalf("only a closed session = %s, %v (reopened=%v); want it, left closed", id, err, mgr.Controller(closed.ID) != nil)
 	}
 }
 

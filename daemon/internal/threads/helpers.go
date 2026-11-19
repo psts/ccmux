@@ -114,7 +114,9 @@ func repoAt(list []*model.Workspace, repo string) *model.Workspace {
 }
 
 // led reads a thread with its lead session. A thread whose lead has ended
-// is over: nothing joins it and nothing of it is merged.
+// is over: nothing joins it and nothing of it is merged. A queued task's
+// thread has no lead at all, and everything a lead may do to its thread is
+// refused for it with that reason.
 func (s *Service) led(threadID int64) (store.Thread, store.RunnerSession, error) {
 	th, err := s.St.Thread(threadID)
 	if err != nil {
@@ -122,6 +124,9 @@ func (s *Service) led(threadID int64) (store.Thread, store.RunnerSession, error)
 	}
 	if th == nil {
 		return store.Thread{}, store.RunnerSession{}, store.ErrNoThread
+	}
+	if th.TaskID != 0 {
+		return *th, store.RunnerSession{}, taskOnly(*th) // the queue leads it (builders.go)
 	}
 	lead, err := s.St.RunnerSession(th.LeadSession)
 	if err != nil {

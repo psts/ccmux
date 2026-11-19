@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/threads"
 )
 
@@ -27,6 +28,9 @@ type threadService interface {
 	StandDown(threadID int64, repo, by string) (string, error)
 	Tool(sessionID, action, repo string) (string, error)
 	LeadChanged(sessionID string)
+	// StartBuilder starts one part of a queued task as a member of the
+	// task's thread; the task queue calls it (tasks_runner.go).
+	StartBuilder(taskq.Builder) (string, error)
 }
 
 // SetThreads turns the thread routes on.

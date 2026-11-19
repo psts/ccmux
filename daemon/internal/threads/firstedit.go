@@ -36,6 +36,11 @@ func (s *Service) FirstEdit(sessionID string) (Moved, error) {
 	if err != nil {
 		return Moved{}, err
 	}
+	if sess.Role == store.RoleBuilder {
+		// A builder has been in its worktree since it started and never asks;
+		// a stray ask must not restart it in the middle of its work.
+		return movedText(sess, ""), nil
+	}
 	if !sess.ReadOnly {
 		s.relocateSoon(sessionID)
 		return movedText(sess, ""), nil

@@ -31,7 +31,7 @@ func layoutOf(root string, t store.Task, p store.Part) layout {
 	return layout{
 		dir:      dir,
 		worktree: filepath.Join(dir, name),
-		brief:    filepath.Join(dir, name+".md"),
+		brief:    BriefFile(filepath.Join(dir, name)),
 		branch:   branch,
 		busName:  BusName(p.RepoPath, t.ID),
 	}
@@ -222,19 +222,58 @@ func writeBrief(t store.Task, p store.Part, l layout, trunk string, team []strin
 	return os.WriteFile(l.brief, []byte(briefText(t, p, l, trunk, team, servers)), 0o644)
 }
 
-// launchCommand starts the worker's Claude: on the peers bus under its own
-// name (so the repo's own session keeps the repo's name), with the model
-// and effort its part was filed with, in auto mode because nobody is there
-// to answer a permission prompt, allowed to read its brief beside the
-// worktree, and told to begin with it. Every flag comes before the "--":
-// what follows it is the prompt.
-func launchCommand(l layout, run Run) string {
-	prompt := fmt.Sprintf("Read %s and carry out the task it describes.", l.brief)
-	return "env -u CLAUDE_PEERS_PROJECT CLAUDE_PEERS_NAME=" + shellQuote(l.busName) +
-		" claude --dangerously-load-development-channels server:claude-peers" +
-		" --model " + shellQuote(run.Model) + " --effort " + shellQuote(run.Effort) +
-		" --permission-mode auto --add-dir " + shellQuote(l.dir) + " -- " + shellQuote(prompt)
+// BriefFile is where the brief of the part built in worktree is kept:
+// beside the worktree, never in it, so it is no stray file of the branch.
+// The tidy-up removes it with the worktree.
+func BriefFile(worktree string) string { return worktree + ".md" }
+
+// ReadBrief reads the brief of the part built in worktree, for its
+// builder's standing prompt. One that is missing or empty is an error: a
+// builder started without it would not know what to build.
+func ReadBrief(worktree string) (string, error) {
+	text, err := os.ReadFile(BriefFile(worktree))
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(string(text)) == "" {
+		return "", fmt.Errorf("%s is empty", BriefFile(worktree))
+	}
+	return string(text), nil
 }
 
-// shellQuote wraps s for POSIX shells.
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+// Builder is one part's Claude as the host starts it (Host.StartBuilder):
+// a session of its own in the part's worktree, on the peers bus under Name
+// (so the repo's own session keeps the repo's name), with the model and
+// effort its part was filed with, in auto mode because nobody is there to
+// answer a permission prompt. Its brief is the file beside its worktree
+// (BriefFile), which the host gives it as its standing prompt at every
+// start; Prompt is the first thing it is told.
+type Builder struct {
+	TaskID      int64
+	Title       string // the task's
+	WindowID    string // the task's window, its queue
+	WorkspaceID string // the repo's ccmux session (Host.TaskWorkspace)
+	Repo        string
+	Worktree    string
+	Branch      string
+	Name        string
+	Run         Run
+	Prompt      string
+}
+
+// builderOf is the builder of job j's part, in workspace wsID.
+func builderOf(j job, l layout, run Run, wsID string) Builder {
+	return Builder{
+		TaskID: j.task.ID, Title: j.task.Title, WindowID: j.task.WindowID, WorkspaceID: wsID,
+		Repo: j.part.RepoPath, Worktree: l.worktree, Branch: l.branch, Name: l.busName, Run: run,
+		Prompt: firstPrompt(j.task, l),
+	}
+}
+
+// firstPrompt starts a builder on its brief. The brief is in its standing
+// prompt, where a long session never loses it; the file is named too, so a
+// builder that wants to read it again knows where it is.
+func firstPrompt(t store.Task, l layout) string {
+	return fmt.Sprintf("Carry out ccmux task #%d (%s): your part of it is described in your brief, which is in your instructions "+
+		"under the heading \"# ccmux task #%d\". The same text is in %s. Start now.", t.ID, t.Title, t.ID, l.brief)
+}
