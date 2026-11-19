@@ -6,6 +6,15 @@ set -e
 # is restarted the OS's way. Hosted tmux sessions survive the bounce; running
 # Claude sessions keep their old ccmux-peers until they restart.
 #
+# What restarts: ccmuxd, always. The LLM proxy is its own service on Linux
+# (ccmux-llm-proxy, the same ccmuxd binary run as `ccmuxd llm-proxy`), and it
+# restarts ONLY when the proxy's own code changed, so a deploy does not cut
+# the replies sessions are streaming through it. This script does not decide
+# that: it stamps the binary with a hash of the proxy's code, and the daemon
+# it starts compares that with what the running service reports and restarts
+# the service on a difference (cmd/ccmuxd/llmproxyunit.go). Below, the script
+# only waits to see the service answer with this build's hash.
+#
 # The build is stamped with `git describe`, so `ccmuxd version` and /v1/health
 # tell a source build from a release. Heads up: `ccmuxd upgrade` compares that
 # stamp against the latest release and would happily "upgrade" a source build
@@ -20,10 +29,24 @@ BUILD="$(git -C "$(dirname "$0")" describe --tags --dirty --always 2>/dev/null |
 BUILD="${BUILD#v}"
 
 cd "$(dirname "$0")/daemon"
-echo "Building ccmuxd + ccmux-peers ($BUILD) → $BINDIR"
+# The hash of the LLM proxy's own code (see scripts/llm-proxy-hash.sh for what
+# goes into it). Same code, same hash, whatever else in the daemon changed.
+PROXY_HASH="$(bash scripts/llm-proxy-hash.sh)"
+echo "Building ccmuxd + ccmux-peers ($BUILD, llm proxy code $PROXY_HASH) → $BINDIR"
 mkdir -p "$BINDIR"
-go build -ldflags "-X ccmux.dev/ccmuxd/internal/version.Build=$BUILD" -o "$BINDIR/ccmuxd" ./cmd/ccmuxd
-go build -o "$BINDIR/ccmux-peers" ./cmd/ccmux-peers
+
+# install_built NAME PACKAGE LDFLAGS: build beside the target, then rename
+# over it. The old binary is still running when this happens, as the proxy
+# service and as every session's runner, long after the daemon itself has
+# restarted. A rename gives the name a new file and leaves the running one
+# its own (the kernel keeps a replaced file for whoever has it open); writing
+# into the file in place is what must never happen, and a rename cannot.
+install_built() {
+	go build -ldflags "$3" -o "$BINDIR/.$1.new" "$2"
+	mv -f "$BINDIR/.$1.new" "$BINDIR/$1"
+}
+install_built ccmuxd ./cmd/ccmuxd "-X ccmux.dev/ccmuxd/internal/version.Build=$BUILD -X ccmux.dev/ccmuxd/internal/llmserve.codeHash=$PROXY_HASH"
+install_built ccmux-peers ./cmd/ccmux-peers ""
 
 echo "Restarting ccmuxd..."
 case "$(uname -s)" in
@@ -56,3 +79,45 @@ if [ "$LIVE" != "$BUILD" ]; then
 	echo "Its service file points at a different binary — run 'ccmuxd install' once to repoint it at $BINDIR." >&2
 	exit 1
 fi
+
+# The LLM proxy. Panes cannot reach their models without it, so a proxy that
+# is not serving this build's proxy code is a FAILED deploy too. The daemon
+# says where the proxy runs; when that is its own service, wait for it: the
+# daemon restarts it in the background when its code changed, and the old
+# one is given up to 10s to finish what it is streaming.
+case "$HEALTH" in
+*'"mode":"service"'*)
+	PROXY_URL=$(printf '%s' "$HEALTH" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+	if [ -z "$PROXY_URL" ]; then
+		echo "the daemon runs the LLM proxy as a service but its health names no address for it:" >&2
+		echo "$HEALTH" >&2
+		exit 1
+	fi
+	PROXY=""
+	for _ in $(seq 40); do
+		PROXY=$(curl -sf --max-time 2 "$PROXY_URL/health") || PROXY=""
+		case "$PROXY" in *"\"codeHash\":\"$PROXY_HASH\""*) break ;; esac
+		PROXY=""
+		sleep 1
+	done
+	if [ -z "$PROXY" ]; then
+		echo "the LLM proxy at $PROXY_URL is not serving this build's proxy code ($PROXY_HASH) after 40s." >&2
+		echo "Panes cannot reach their models. See: journalctl --user -u ccmux-llm-proxy, and journalctl --user -u ccmuxd | grep 'llm proxy'" >&2
+		curl -s --max-time 2 http://127.0.0.1:7900/v1/health >&2 || true
+		exit 1
+	fi
+	# What the daemon did to it, in its own words ("left running: ..." or
+	# "restarted: ..."). It records that a moment after the service answers.
+	sleep 1
+	ACTION=$(curl -sf --max-time 2 http://127.0.0.1:7900/v1/health | sed -n 's/.*"action":"\([^"]*\)".*/\1/p') || ACTION=""
+	echo "LLM proxy ($PROXY_URL, code $PROXY_HASH): ${ACTION:-serving}"
+	;;
+*'"mode":"in-process"'*)
+	# Normal on macOS. On Linux it means the service is switched off or was
+	# refused (its unit belongs to another daemon, say), and every deploy cuts
+	# the replies being streamed: say why, in the daemon's words.
+	WHY=$(printf '%s' "$HEALTH" | sed -n 's/.*"why":"\([^"]*\)".*/\1/p')
+	echo "LLM proxy: runs INSIDE the daemon, so it restarted with it and replies being streamed were cut."
+	echo "  why: ${WHY:-the daemon did not say}"
+	;;
+esac

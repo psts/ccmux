@@ -32,6 +32,14 @@ func harnessStack(t *testing.T) (*manager.Manager, string) {
 // or make the store unreadable mid-test.
 func harnessStackServer(t *testing.T) (*Server, *manager.Manager, string, *store.SQLite) {
 	t.Helper()
+	return harnessStackAt(t, t.TempDir()+"/reg.db")
+}
+
+// harnessStackAt is harnessStackServer on a database file the test names,
+// for a test that opens the same file a second time (the llm proxy service
+// reads the daemon's database).
+func harnessStackAt(t *testing.T, dbPath string) (*Server, *manager.Manager, string, *store.SQLite) {
+	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
@@ -39,7 +47,7 @@ func harnessStackServer(t *testing.T) (*Server, *manager.Manager, string, *store
 	_ = tsrv.KillServer()
 	t.Cleanup(func() { _ = tsrv.KillServer() })
 
-	st, err := store.Open(t.TempDir() + "/reg.db")
+	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

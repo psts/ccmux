@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"strings"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/buscontext"
@@ -30,6 +31,32 @@ func TestManager_PaneEnv_InjectsHooksSocket(t *testing.T) {
 	// The pane id must still be present (the hook needs it to attribute the event).
 	if env["CCMUX_PANE_ID"] != paneID {
 		t.Fatalf("CCMUX_PANE_ID = %q, want %q", env["CCMUX_PANE_ID"], paneID)
+	}
+}
+
+// With the proxy in its own service, a pane's LLM address is the service's,
+// so that a daemon restart cannot cut a reply being streamed; the daemon's
+// own address still goes out as CCMUX_DAEMON_URL, which hooks call. Tmux
+// panes and runner sessions take the same address (claudeEnv is shared).
+func TestManager_PaneEnv_PointsAtTheProxyService(t *testing.T) {
+	const paneID = "pane-proxy-service-test"
+	t.Cleanup(func() { shellint.Cleanup(paneID) })
+	m := &Manager{LocalURL: "http://127.0.0.1:7900", LLMProxyURL: "http://127.0.0.1:7901"}
+	want := "http://127.0.0.1:7901/llm/pane/" + paneID
+	for name, env := range map[string]map[string]string{"tmux pane": m.paneEnv(nil, paneID), "runner session": m.RunnerEnv(paneID)} {
+		if env["ANTHROPIC_BASE_URL"] != want {
+			t.Errorf("%s: ANTHROPIC_BASE_URL = %q, want %q", name, env["ANTHROPIC_BASE_URL"], want)
+		}
+		if env["CCMUX_DAEMON_URL"] != "http://127.0.0.1:7900" {
+			t.Errorf("%s: CCMUX_DAEMON_URL = %q, want the daemon's own", name, env["CCMUX_DAEMON_URL"])
+		}
+		if env["_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"] != "1" {
+			t.Errorf("%s: the first-party flag did not ride along", name)
+		}
+	}
+	// opencode reads its provider from config, built on the same address.
+	if cfg := m.paneEnv(nil, paneID)["OPENCODE_CONFIG_CONTENT"]; !strings.Contains(cfg, want) {
+		t.Errorf("opencode's config does not point at the proxy service: %s", cfg)
 	}
 }
 

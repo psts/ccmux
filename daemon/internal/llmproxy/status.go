@@ -1,6 +1,9 @@
 package llmproxy
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // AccountStatus is one row of the settings Accounts tab: the account joined
 // with what the proxy has learned from its traffic. Usage percentages are
@@ -32,6 +35,13 @@ type AccountStatus struct {
 // Statuses reports every configured account's live health, in settings
 // order. Unreadable is not empty, same as Accounts.
 func (s *Service) Statuses() ([]AccountStatus, error) {
+	if s.remote != nil {
+		sts, err := s.remote.Statuses(context.Background())
+		if err == nil {
+			return sts, nil
+		}
+		remoteDown("the accounts' health", err)
+	}
 	accs, err := s.Accounts()
 	if err != nil {
 		return nil, err

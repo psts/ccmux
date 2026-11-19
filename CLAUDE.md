@@ -34,6 +34,44 @@ that got better while holding its old number. Those REPORT, they do not fail —
 a refactor that improved something should not turn the gate red — so the list
 still only shrinks when a human acts on that output.
 
+## The LLM proxy is its own service (Linux)
+
+Since task #173 the LLM routing proxy does not run inside ccmuxd on Linux. It
+is the same binary run as `ccmuxd llm-proxy` (`daemon/internal/llmserve`),
+under the systemd user unit `ccmux-llm-proxy.service`, on the port after the
+daemon's (7901 beside a daemon on 7900). A pane's `ANTHROPIC_BASE_URL` names
+it, so restarting ccmuxd no longer cuts a reply a session is streaming.
+
+- **It restarts only when its own code or its unit file changed.** The daemon
+  decides at its own start (`cmd/ccmuxd/llmproxyunit.go`), from what the running
+  service reports on `GET /health`: its code (`llmserve.CodeHash()`, stamped by
+  `build-daemon.sh` from `daemon/scripts/llm-proxy-hash.sh`) and the mark of the
+  unit file it was started from (`-unit`).
+- **Keep `internal/llmserve`'s imports small.** The hash covers that package
+  and every package of this module it imports (today: `llmproxy`, `harness`).
+  Import `store`, `manager` or `api` there and nearly every deploy restarts the
+  proxy again. It reads the daemon's database itself, read only
+  (`reader.go`); the daemon stays the only writer.
+- **A change under `internal/llmproxy`, `internal/harness` or
+  `internal/llmserve` restarts the proxy on the next deploy**, after a 10s
+  drain, and cuts whatever is still streaming then. Claude Code retries a cut
+  reply by itself (seen live 2026-11-19), so it costs tokens, not work.
+- A pane keeps the address it started with. Panes from before the move still
+  call `http://127.0.0.1:7900/llm/pane/<id>`; the daemon passes those on to the
+  service, and they get the benefit at their next start.
+- Its log is its own: `journalctl --user -u ccmux-llm-proxy` (the `llm: pane …`
+  lines used to be in ccmuxd's). `GET /v1/health` on the daemon carries
+  `llmProxy` (mode, url, serving, what the last daemon start did to it).
+- **A scratch daemon never touches the live unit.** With `CCMUXD_ROOT` set it
+  keeps the proxy in its own process unless it is given `-llm-proxy-unit
+  <its own name>`; and any daemon that finds a unit file serving another
+  database leaves it alone. A test that names a unit must disable and delete
+  that unit file afterwards.
+- macOS, and any host without systemd, keep the proxy inside the daemon
+  (`-llm-proxy-unit none` forces that on Linux too).
+- Not moved: the meridian sidecars still run under the daemon and restart with
+  it.
+
 ## Shipping
 
 `/ship` runs direct-trunk here: `main` is both the working branch and the
@@ -46,9 +84,10 @@ is empty on this branch model and would review nothing.
 release workflow runs by hand only, and the last published release is v0.1.88.
 After `/ship` pushes the tag it runs `./build-daemon.sh` from the clean tagged
 checkout on verkstan (listed in `.claude/ship-after-release`). It builds ccmuxd and ccmux-peers, installs them in
-`~/.local/bin`, restarts the service and fails unless the running daemon reports
-the version it just built; that is the deploy, and its health line is the live
-check. The web lens is embedded in ccmuxd, so it ships with it. Never run
+`~/.local/bin` (by rename, never by writing into a running binary), restarts
+the service and fails unless the running daemon reports the version it just
+built, and unless the LLM proxy service answers with this build's proxy code;
+that is the deploy, and its health line is the live check. The web lens is embedded in ccmuxd, so it ships with it. Never run
 `ccmuxd upgrade` without a tag here: it fetches the latest GitHub release and
 would put verkstan back on v0.1.88.
 

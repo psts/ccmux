@@ -1,6 +1,7 @@
 package llmproxy
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"slices"
@@ -123,6 +124,13 @@ func (s *Service) candidatesFor(paneID string) ([]Account, bool, error) {
 // ordinary, and the only record of why was a daemon log neither lens shows.
 // One pane's broken routing must still not blank the chain for the others.
 func (s *Service) PaneOrders(paneIDs []string) (orders map[string][]string, failures map[string]string, err error) {
+	if s.remote != nil {
+		orders, failures, err := s.remote.PaneOrders(context.Background(), paneIDs)
+		if err == nil {
+			return orders, failures, nil
+		}
+		remoteDown("the panes' routes", err)
+	}
 	st, err := s.readRouteState()
 	if err != nil {
 		return nil, nil, err

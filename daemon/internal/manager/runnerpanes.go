@@ -314,6 +314,18 @@ func (m *Manager) RunnerEnv(paneID string) map[string]string {
 	return env
 }
 
+// llmProxyBase is where a pane's LLM traffic goes: the proxy's own service
+// when it has one (LLMProxyURL), so that a daemon restart cannot cut a reply
+// being streamed; this daemon otherwise. A pane keeps the address it started
+// with, which is why the daemon's own /llm/pane route stays mounted either
+// way.
+func (m *Manager) llmProxyBase() string {
+	if m.LLMProxyURL != "" {
+		return m.LLMProxyURL
+	}
+	return m.LocalURL
+}
+
 // claudeEnv adds what Claude Code and its hooks need to know about the pane
 // they run in: the daemon, the pane's LLM route through it, the hooks
 // socket, the raised cap on MCP instructions, and the extras (the bus
@@ -332,11 +344,11 @@ func (m *Manager) claudeEnv(env map[string]string, paneID string) {
 		// the proxy is a pure Anthropic pass-through — auth untouched, so a
 		// Max OAuth login behaves exactly as without it. Injected even into
 		// plain shells: a claude started by hand in a hosted pane should route
-		// the same as one ccmux started. The trade: while the daemon is down,
+		// the same as one ccmux started. The trade: while the proxy is down,
 		// pane LLM calls fail instead of reaching Anthropic directly. The off
 		// switch is the shell itself — an `export ANTHROPIC_BASE_URL=…` in the
 		// user's rc runs after tmux stamps this and wins.
-		env["ANTHROPIC_BASE_URL"] = m.LocalURL + "/llm/pane/" + paneID
+		env["ANTHROPIC_BASE_URL"] = m.llmProxyBase() + "/llm/pane/" + paneID
 		// Claude Code gates its model catalog and the 1M-context beta on the
 		// base URL being api.anthropic.com. Pointing it at our loopback proxy
 		// silently downgraded every hosted pane: a static built-in model list

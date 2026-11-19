@@ -64,6 +64,11 @@ type Manager struct {
 	// injected into every hosted pane's env as CCMUX_DAEMON_URL so on-host hooks
 	// (the git co-author trailer) reach the daemon with zero config. Empty = omit.
 	LocalURL string
+	// LLMProxyURL is the base URL of the LLM proxy when it runs as its own
+	// service (internal/llmserve), e.g. http://127.0.0.1:7901. "" means the
+	// proxy runs in this daemon, at LocalURL. A pane's ANTHROPIC_BASE_URL is
+	// built on it (claudeEnv).
+	LLMProxyURL string
 
 	// HooksSocket is the daemon's Claude Code hooks Unix socket path, injected into
 	// every hosted pane's env as CCMUX_HOOKS_SOCK so ccmux-notify.sh sends hosted

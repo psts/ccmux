@@ -54,6 +54,11 @@ var ErrNotCheckable = errors.New("cannot be checked")
 // error naming what the upstream said, and the row stays as it was. A dead
 // credential is still found, by the next live request.
 func (s *Service) CheckAccount(ctx context.Context, name string) (AccountStatus, error) {
+	if s.remote != nil {
+		// No local fallback: the answer has to land in the health the service
+		// routes by, and a check recorded here would change nothing.
+		return s.remote.CheckAccount(ctx, name)
+	}
 	a, err := s.checkable(name)
 	if err != nil {
 		return AccountStatus{}, err

@@ -86,6 +86,8 @@ func runDaemon() {
 	agentsModel := flag.String("agents-model", agent.DefaultModel, "model an agent instance runs on when its base pins none (opencode provider/model form; the anthropic provider rides the pane proxy)")
 	runnerPrefix := flag.String("runner-unit-prefix", runner.DefaultPrefix, "name of the systemd user unit template session runners start under (<prefix>@.service); a scratch daemon passes its own so the live daemon's template is never rewritten")
 	peersShimPath := flag.String("peers-shim", "", "ccmux-peers binary session runners load as their bus shim (default: the one beside this binary, else on the PATH)")
+	proxyUnit := flag.String("llm-proxy-unit", "", "name of the systemd user unit the LLM proxy runs under (default "+llmProxyUnitDefault+"; a second daemon on this host passes its own name, and \""+llmProxyInProcess+"\" keeps the proxy inside the daemon, where a daemon restart cuts replies being streamed)")
+	proxyAddr := flag.String("llm-proxy-addr", "", "loopback address the LLM proxy's service listens on (default: the port after -addr's, on 127.0.0.1)")
 	hubEnabled := flag.Bool("hub", false, "run hub-role services: aggregate every tag:ccmux host into one lens surface, own the peers bus + dev registrar + push (requires -tsnet)")
 	flag.Parse()
 
@@ -123,6 +125,10 @@ func runDaemon() {
 	srv := &tmux.Server{Socket: *socket, ConfigPath: cfgPath}
 	mgr := manager.New(ctx, srv, st)
 	mgr.LocalURL = loopbackURL(*addr)
+	// Where the LLM proxy runs (its own service on Linux, llmproxyunit.go),
+	// decided before anything can make a pane: a pane's ANTHROPIC_BASE_URL is
+	// stamped once and names it.
+	proxy := planProxyFor(mgr, *proxyUnit, *proxyAddr, *addr, *dbPath)
 	mgr.HooksSocket = *hooksSock // hosted panes hit THIS path, not the app's
 	// Harness registry: named ways of working (claude built in, more via
 	// settings). It is the single source of what a pane runs; the migration
@@ -200,12 +206,15 @@ func runDaemon() {
 
 	apiSrv.SetProjectsRoot(*projectsRoot)
 	// LLM routing proxy: every pane's ANTHROPIC_BASE_URL points at
-	// /llm/pane/<id> on this daemon (stamped in paneEnv); accounts and the
-	// route live in the settings table, resolved per request. The manager
+	// /llm/pane/<id> on the proxy (stamped in claudeEnv); accounts and the
+	// route live in the settings table, resolved per request. The proxy is
+	// its own service where it can be (proxy.wire); this daemon keeps the
+	// settings side either way, and is the only one that writes them. The manager
 	// holds the route setter too: harness starts that require a specific
 	// account kind (codex) point their pane at it before the command types.
 	llmSvc := llmproxy.New(st)
 	apiSrv.SetLLMProxy(llmSvc)
+	proxy.wire(ctx, llmSvc, apiSrv)
 	mgr.PaneLLMRoute = llmSvc.SetPaneRoute
 	sidecars := wireSidecars(ctx, llmSvc, apiSrv, mgr)
 	defer sidecars.Stop() // waits for the children: the unit's KillMode=process would not reap them

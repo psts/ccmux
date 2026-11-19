@@ -18,6 +18,7 @@
 package llmproxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,6 +129,9 @@ type Service struct {
 	// wired (tests and the bare proxy), which routes every pane as if it had
 	// no recorded harness. See SetPaneHarness.
 	harnessFor PaneHarness
+	// remote is the proxy service when it runs as its own process; nil when
+	// the proxy runs in this one. See Remote.
+	remote Remote
 }
 
 func New(store Store) *Service {
@@ -503,6 +507,13 @@ func (s *Service) Apply(accs *[]Account, route *string) error {
 // head is the account traffic actually reaches rather than the one that was
 // configured — those differ whenever the first choice is at its limit.
 func (s *Service) PaneStatus(paneID string) (explicit string, order []string, err error) {
+	if s.remote != nil {
+		explicit, order, err := s.remote.PaneStatus(context.Background(), paneID)
+		if err == nil {
+			return explicit, order, nil
+		}
+		remoteDown("a pane's route", err)
+	}
 	routes, err := s.PaneRoutes()
 	if err != nil {
 		return "", nil, err

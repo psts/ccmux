@@ -64,6 +64,7 @@ func stopAndRemoveService(purge bool) error {
 	if err := os.Remove(unitPath()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	removeLLMProxyUnit() // the daemon's own proxy service goes with it
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	fmt.Printf("  removed systemd user service %s\n", linuxUnit)
 	if purge {

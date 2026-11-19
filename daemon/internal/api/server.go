@@ -23,6 +23,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/childproc"
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
+	"ccmux.dev/ccmuxd/internal/llmserve"
 	"ccmux.dev/ccmuxd/internal/loadout"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/meridian"
@@ -154,6 +155,13 @@ type Server struct {
 	// exercise it — the settings surface then rejects llm fields rather than
 	// half-applying them.
 	llm *llmproxy.Service
+	// llmForward is set when the proxy runs as its own service
+	// (internal/llmserve): the pane routes on this daemon then pass requests
+	// on to it instead of serving them here. nil serves them in this process.
+	llmForward http.Handler
+	// llmProxyHealth is the "llmProxy" part of GET /v1/health: where the
+	// proxy runs and whether it answers. nil leaves the field out.
+	llmProxyHealth func() map[string]any
 
 	// focus answers "is anybody at a screen?" for the alert flag and for push.
 	// On a single host that is this daemon's own presence; on a hub it is the
@@ -277,28 +285,22 @@ func (s *Server) SetLLMProxy(svc *llmproxy.Service) {
 	svc.SetPaneHarness(s.paneHarnessRules)
 }
 
+// SetLLMForward hands this daemon's pane routes (/llm/pane/...) to the proxy
+// service. They stay mounted for the panes that still carry this daemon's
+// address in their environment; see llmserve.Client.Forward.
+func (s *Server) SetLLMForward(h http.Handler) { s.llmForward = h }
+
+// SetLLMProxyHealth supplies the "llmProxy" part of GET /v1/health.
+func (s *Server) SetLLMProxyHealth(f func() map[string]any) { s.llmProxyHealth = f }
+
 // paneHarnessRules answers the proxy's "what does this pane run, and what may
-// it use". known is false for a pane ccmux did not start under a named
-// harness (a plain shell, a tool the user typed) AND for one whose recorded
-// harness no longer resolves: both leave no declaration to filter accounts
-// by, so the pane follows the default account.
+// it use", from the manager's memory. The rule itself is llmserve's, shared
+// with the proxy service, which asks the database instead.
 func (s *Server) paneHarnessRules(paneID string) (kinds, order []string, known bool) {
-	name := s.mgr.HarnessForPane(paneID)
-	if name == "" || s.mgr.Harnesses == nil {
+	if s.mgr.Harnesses == nil {
 		return nil, nil, false
 	}
-	h, err := s.mgr.Harnesses.Resolve(name)
-	if err != nil {
-		// An unknown name is ordinary (renamed or removed under a running
-		// pane). An unreadable or corrupt registry is not: it moves every
-		// harness pane onto the default account, a routing change nothing
-		// else would report.
-		if !strings.Contains(err.Error(), "unknown harness") {
-			log.Printf("llm: pane %s: harness %q unreadable, routing as if it had none: %v", paneID, name, err)
-		}
-		return nil, nil, false
-	}
-	return h.AccountKinds, h.AccountOrder, true
+	return llmserve.HarnessRules(s.mgr.HarnessForPane, s.mgr.Harnesses)(paneID)
 }
 
 // SetLocalGroupsForwarder arms the onward push of this host's local-pane map to
@@ -531,6 +533,10 @@ func (s *Server) Handler() http.Handler {
 		// Per-METHOD patterns for the same reason as the relay below; GET also
 		// covers HEAD (claude probes HEAD /api/hello on startup).
 		llmH := s.llm.Handler()
+		if s.llmForward != nil {
+			// The proxy is its own service: pass on what still arrives here.
+			llmH = s.llmForward
+		}
 		guarded := func(w http.ResponseWriter, r *http.Request) {
 			if !requireLoopback(w, r) {
 				return
@@ -642,7 +648,7 @@ func (s *Server) hubInfo(w http.ResponseWriter, _ *http.Request) {
 // build string and the wire-contract integer the hub gates host compatibility on
 // (see internal/version, daemon/docs/multihost-plan.md).
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"ok":       true,
 		"version":  version.Build,
 		"contract": version.Contract,
@@ -662,7 +668,14 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		// that booted with another one moves onto it (web/update.js).
 		// Additive: an old lens ignores the field.
 		"web": web.Build,
-	})
+	}
+	// Where the LLM proxy runs and whether it answers: it is its own service
+	// on Linux, and a daemon that is up says nothing about it by itself.
+	// Additive: an old lens or hub ignores the field.
+	if s.llmProxyHealth != nil {
+		resp["llmProxy"] = s.llmProxyHealth()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // listWorkspaces serves the local list, window-stamped. ?raw=1 skips the

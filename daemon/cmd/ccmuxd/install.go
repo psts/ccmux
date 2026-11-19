@@ -24,6 +24,7 @@ import (
 
 	"tailscale.com/tsnet"
 
+	"ccmux.dev/ccmuxd/internal/llmserve"
 	"ccmux.dev/ccmuxd/internal/version"
 )
 
@@ -58,6 +59,8 @@ func runSubcommand(name string, args []string) {
 		err = cmdEnvExec(args)
 	case "runner-exec": // a session runner's systemd unit (internal/runner)
 		err = cmdRunnerExec(args)
+	case "llm-proxy": // the LLM proxy's systemd unit (internal/llmserve)
+		err = llmserve.Main(args)
 	case "version": // -version/--version arrive here via main's carve-out
 		fmt.Printf("ccmuxd %s (wire contract %d)\n", version.Build, version.Contract)
 		os.Exit(0)
