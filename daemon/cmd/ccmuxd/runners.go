@@ -79,11 +79,11 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	// needs the supervisor, which needs this config: so the config asks it
 	// late, once both are there.
 	var team *threads.Service
-	cfg.Brief = func(sess store.RunnerSession) string {
+	cfg.Brief = func(sess store.RunnerSession) (string, error) {
 		if team == nil {
-			return ""
+			return "", nil
 		}
-		return team.Brief(sess)
+		return team.Brief(sess), nil
 	}
 	sup := runner.New(w.st, units, paths, cfg)
 	jobMgr, jobsOff := newJobs(w.st, w.jobPrefix)

@@ -96,8 +96,11 @@ type Config struct {
 	Peers string
 	// Brief is the standing text a session starts with, on top of Claude
 	// Code's own system prompt: for a thread member, who it is in its thread
-	// and how the thread works (threads.Brief). Nil, or "" from it, is none.
-	Brief func(store.RunnerSession) string
+	// and how the thread works (threads.Brief); for a task's builder, its
+	// whole brief. Nil, or "" from it, is none. An error fails the start,
+	// which is tried again: a builder started without its brief would not
+	// know what to build.
+	Brief func(store.RunnerSession) (string, error)
 	// Loadout is what a session loads from the capability catalog, as its
 	// group and repo chose (internal/loadout): the file its runner reads
 	// (claudeserve/loadout.mjs) and the record its row keeps. An error fails
@@ -135,33 +138,62 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if c.Peers != "" && sess.PaneID != "" {
 		args = append(args, "--peers-command", c.Peers)
 	}
+	args = append(args, runArgs(sess)...)
 	args = append(args, fenceArgs(sess)...)
-	brief := ""
+	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess)}
 	if c.Brief != nil {
-		brief = c.Brief(sess)
+		if sp.Brief, err = c.Brief(sess); err != nil {
+			return Spec{}, fmt.Errorf("session runner: its brief: %w", err)
+		}
 	}
-	if brief != "" {
+	if sp.Brief != "" {
 		args = append(args, "--system-prompt-file", paths.BriefFile(sess.ID))
 	}
-	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess), Brief: brief}
 	if c.Loadout != nil {
 		if sp.Loadout, sp.LoadoutRecord, err = c.Loadout(sess); err != nil {
 			return Spec{}, fmt.Errorf("session runner: %w", err)
 		}
+	}
+	// Named only when there is one: a nil loadout is a session that loads
+	// the user's whole Claude setup (a task's builder does), and its file is
+	// then removed, so the flag would name nothing.
+	if sp.Loadout != nil {
 		args = append(args, "--loadout", paths.LoadoutFile(sess.ID))
 	}
 	sp.Args = args
 	return sp, nil
 }
 
+// runArgs are what a session's Claude runs with besides its model: its
+// effort and its permission mode, each only when its row names one. A
+// person's own session names neither and keeps what their settings choose.
+func runArgs(sess store.RunnerSession) []string {
+	var args []string
+	if sess.Effort != "" {
+		args = append(args, "--effort", sess.Effort)
+	}
+	if sess.PermissionMode != "" {
+		args = append(args, "--permission-mode", sess.PermissionMode)
+	}
+	return args
+}
+
 // fenceArgs are a thread member's fences (claudeserve/readonly.mjs): read
 // only while it is in its repo's own folder, and kept out of that folder
 // once it works in its worktree. A session in no thread has neither.
+//
+// A task's builder is kept out with its file tools only: its brief tells it
+// to copy the env files it needs from the repo's own folder, and the full
+// fence refuses any shell command that names that folder and is not a plain
+// read ("cp <repo>/.env.local ." among them).
 func fenceArgs(sess store.RunnerSession) []string {
+	inWorktree := sess.Worktree != "" && sess.Cwd == sess.Worktree && sess.Repo != ""
 	switch {
 	case sess.ReadOnly:
 		return []string{"--read-only", "1"}
-	case sess.Worktree != "" && sess.Cwd == sess.Worktree && sess.Repo != "":
+	case inWorktree && sess.Role == store.RoleBuilder:
+		return []string{"--keep-out-files", sess.Repo}
+	case inWorktree:
 		return []string{"--keep-out", sess.Repo}
 	}
 	return nil

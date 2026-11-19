@@ -20,11 +20,11 @@ func argsOf(t *testing.T, r *rig, id string) (Spec, string) {
 
 func TestAThreadMemberStartsReadOnlyWithItsBrief(t *testing.T) {
 	r := newRig(t)
-	r.sup.cfg.Brief = func(s store.RunnerSession) string {
+	r.sup.cfg.Brief = func(s store.RunnerSession) (string, error) {
 		if s.ThreadID == 0 {
-			return ""
+			return "", nil
 		}
-		return "You help thread " + s.Role
+		return "You help thread " + s.Role, nil
 	}
 	member, err := r.sup.Create(NewSession{Cwd: "/r/api", ThreadID: 3, Role: store.RoleHelper, Repo: "/r/api", ReadOnly: true})
 	if err != nil {

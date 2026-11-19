@@ -139,12 +139,19 @@ func (s *Supervisor) Kick() {
 // ThreadID, Role, Repo and ReadOnly are its place in a thread with helpers
 // (store/threads.go); a second member of a thread for the same repo is
 // refused with store.ErrMemberExists.
+//
+// Worktree and Branch are for a member that starts in its worktree from its
+// first moment, a task's builder (a thread's own members get theirs later,
+// by Place). Effort and PermissionMode are what its Claude runs with
+// (store.RunnerSession); "" keeps what the person's settings choose.
 type NewSession struct {
 	Cwd, Name, Model, WorkspaceID string
 	Kind, Title                   string
 	ThreadID                      int64
 	Role, Repo                    string
 	ReadOnly                      bool
+	Worktree, Branch              string
+	Effort, PermissionMode        string
 }
 
 // Create records a new session and starts it. Once the row exists the
@@ -154,7 +161,8 @@ type NewSession struct {
 func (s *Supervisor) Create(n NewSession) (store.RunnerSession, error) {
 	now := s.millis()
 	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID, Kind: n.Kind, Title: n.Title,
-		ThreadID: n.ThreadID, Role: n.Role, Repo: n.Repo, ReadOnly: n.ReadOnly}
+		ThreadID: n.ThreadID, Role: n.Role, Repo: n.Repo, ReadOnly: n.ReadOnly,
+		Worktree: n.Worktree, Branch: n.Branch, Effort: n.Effort, PermissionMode: n.PermissionMode}
 	if n.WorkspaceID != "" {
 		sess.PaneID = uuid.NewString()
 	}

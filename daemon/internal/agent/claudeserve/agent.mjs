@@ -233,8 +233,12 @@ export class Agent {
       stderr: (data) => this.sdk.err(data),
     };
     // An agent pane asks by its base's rules; a runner is the user's own
-    // session and keeps the mode their settings choose.
+    // session and keeps the mode their settings choose, unless its row
+    // names one (a queued task's builder runs in auto: nobody is there to
+    // answer a prompt). The same goes for its effort.
     if (!o.socket) opts.permissionMode = "default";
+    else if (o.permissionMode) opts.permissionMode = o.permissionMode;
+    if (o.effort) opts.effort = o.effort;
     if (this.resume) opts.resume = this.sid;
     else opts.sessionId = this.sid;
     if (o.pluginDirs.length) opts.plugins = o.pluginDirs.map((path) => ({ type: "local", path }));
@@ -272,7 +276,7 @@ export class Agent {
     const o = this.o;
     const hooks = [];
     if (o.writeRoots && o.writeRoots.length) hooks.push({ matcher: WRITE_MATCHER, hooks: [(input) => this.wallHook(input)] });
-    if (o.readOnly || o.keepOut) hooks.push({ hooks: [(input) => this.readOnlyHook(input)], timeout: READ_ONLY_HOOK_SECONDS });
+    if (o.readOnly || o.keepOut || o.keepOutFiles) hooks.push({ hooks: [(input) => this.readOnlyHook(input)], timeout: READ_ONLY_HOOK_SECONDS });
     return hooks;
   }
 

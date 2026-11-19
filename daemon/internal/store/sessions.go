@@ -102,6 +102,13 @@ type RunnerSession struct {
 	Worktree string `json:"worktree,omitempty"`
 	Branch   string `json:"branch,omitempty"`
 	ReadOnly bool   `json:"readOnly,omitempty"`
+	// Effort and PermissionMode are what a session's Claude starts with on
+	// top of its model: Claude Code's --effort and --permission-mode. Both
+	// "" on a person's own session, which keeps what their settings choose;
+	// a task builder (store/builders.go) carries its part's effort and
+	// "auto", since nobody is there to answer a permission prompt.
+	Effort         string `json:"effort,omitempty"`
+	PermissionMode string `json:"permissionMode,omitempty"`
 	// Loadout is what the session loaded from the capability catalog at its
 	// last start (internal/loadout's record, JSON; "" before its first start
 	// with one). The routes serve it parsed (api.sessionView), never raw.
@@ -169,7 +176,7 @@ type SessionCard struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
-const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at,pane_id,workspace_id,attention,attention_reason,attention_since,kind,title,goal,thread_id,role,repo,worktree,branch,read_only,loadout"
+const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at,pane_id,workspace_id,attention,attention_reason,attention_since,kind,title,goal,thread_id,role,repo,worktree,branch,read_only,loadout,effort,permission_mode"
 
 // migrateSessionThreads gives a session row its kind, title and goal, and
 // the rule that a workspace has one lead that has not ended. Strict, as
@@ -217,10 +224,10 @@ func migrateSessionPanes(db *sql.DB) error {
 // has one is ErrLeadExists; a second member of a thread for a repo that has
 // one is ErrMemberExists.
 func (s *SQLite) AddRunnerSession(r RunnerSession) error {
-	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.Name, r.Cwd, r.Model, r.Wanted, r.Note, r.CreatedAt, r.UpdatedAt,
 		r.PaneID, r.WorkspaceID, r.Attention, r.AttentionReason, r.AttentionSince, r.Kind, r.Title, r.Goal,
-		r.ThreadID, r.Role, r.Repo, r.Worktree, r.Branch, r.ReadOnly, r.Loadout)
+		r.ThreadID, r.Role, r.Repo, r.Worktree, r.Branch, r.ReadOnly, r.Loadout, r.Effort, r.PermissionMode)
 	if err != nil && r.Kind == SessionLead && strings.Contains(err.Error(), "UNIQUE constraint failed: sessions.workspace_id") {
 		return ErrLeadExists
 	}
@@ -301,7 +308,7 @@ func (s *SQLite) querySessions(q string, args ...any) ([]RunnerSession, error) {
 		var r RunnerSession
 		if err := rows.Scan(&r.ID, &r.Name, &r.Cwd, &r.Model, &r.Wanted, &r.Note, &r.CreatedAt, &r.UpdatedAt,
 			&r.PaneID, &r.WorkspaceID, &r.Attention, &r.AttentionReason, &r.AttentionSince, &r.Kind, &r.Title, &r.Goal,
-			&r.ThreadID, &r.Role, &r.Repo, &r.Worktree, &r.Branch, &r.ReadOnly, &r.Loadout); err != nil {
+			&r.ThreadID, &r.Role, &r.Repo, &r.Worktree, &r.Branch, &r.ReadOnly, &r.Loadout, &r.Effort, &r.PermissionMode); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

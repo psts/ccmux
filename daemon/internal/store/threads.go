@@ -34,10 +34,12 @@ const (
 	ThreadEnded   = "ended"
 )
 
-// The roles of a thread's members.
+// The roles of a thread's members. A builder is a member of a queued
+// task's thread (store/builders.go): it has no lead, the task queue leads.
 const (
-	RoleLead   = "lead"
-	RoleHelper = "helper"
+	RoleLead    = "lead"
+	RoleHelper  = "helper"
+	RoleBuilder = "builder"
 )
 
 // Thread is one row of threads. Times are unix milliseconds.
@@ -50,11 +52,14 @@ type Thread struct {
 	State       string `json:"state"`
 	Model       string `json:"model,omitempty"`
 	Note        string `json:"note,omitempty"`
-	CreatedAt   int64  `json:"createdAt"`
-	UpdatedAt   int64  `json:"updatedAt"`
+	// TaskID is the queued task this thread builds (store/builders.go), 0
+	// for a thread a person started. Such a thread has no lead session.
+	TaskID    int64 `json:"taskId,omitempty"`
+	CreatedAt int64 `json:"createdAt"`
+	UpdatedAt int64 `json:"updatedAt"`
 }
 
-const threadCols = "id,ws_group,lead_session,title,goal,state,model,note,created_at,updated_at"
+const threadCols = "id,ws_group,lead_session,title,goal,state,model,note,created_at,updated_at,task_id"
 
 // ErrMemberExists is a second member of a thread for a repo that already
 // has one that has not ended.
@@ -88,8 +93,8 @@ WHERE thread_id<>0 AND wanted<>'done'`); err != nil {
 
 // AddThread inserts a thread and returns it with its id.
 func (s *SQLite) AddThread(t Thread) (Thread, error) {
-	res, err := s.db.Exec(`INSERT INTO threads (ws_group,lead_session,title,goal,state,model,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
-		t.Group, t.LeadSession, t.Title, t.Goal, t.State, t.Model, t.Note, t.CreatedAt, t.UpdatedAt)
+	res, err := s.db.Exec(`INSERT INTO threads (ws_group,lead_session,title,goal,state,model,note,created_at,updated_at,task_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		t.Group, t.LeadSession, t.Title, t.Goal, t.State, t.Model, t.Note, t.CreatedAt, t.UpdatedAt, t.TaskID)
 	if err != nil {
 		return t, err
 	}
@@ -123,7 +128,9 @@ func (s *SQLite) Thread(id int64) (*Thread, error) {
 // Threads lists every thread whose lead session has not ended, oldest
 // first. A thread lives as long as its lead does: one its lead closed
 // (ended) or merged is still there to read, and opens again when the lead
-// has new work.
+// has new work. A queued task's thread has no lead and is never listed
+// here: the task queue leads it (TaskThread finds it), so nothing that
+// walks this list routes, merges or recovers it.
 func (s *SQLite) Threads() ([]Thread, error) {
 	return s.queryThreads(`SELECT ` + threadCols + ` FROM threads
 WHERE EXISTS (SELECT 1 FROM sessions WHERE sessions.id=threads.lead_session AND sessions.wanted<>'done') ORDER BY id`)
@@ -138,7 +145,7 @@ func (s *SQLite) queryThreads(q string, args ...any) ([]Thread, error) {
 	var out []Thread
 	for rows.Next() {
 		var t Thread
-		if err := rows.Scan(&t.ID, &t.Group, &t.LeadSession, &t.Title, &t.Goal, &t.State, &t.Model, &t.Note, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Group, &t.LeadSession, &t.Title, &t.Goal, &t.State, &t.Model, &t.Note, &t.CreatedAt, &t.UpdatedAt, &t.TaskID); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

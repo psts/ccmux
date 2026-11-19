@@ -537,6 +537,20 @@ test("a runner loads the user's own settings, keeps their connectors and runs th
   const pane = makeAgent();
   pane.agent.prompt("hi");
   assert.equal(pane.sdk.queries[0].options.permissionMode, "default", "an agent pane keeps its fixed mode");
+  assert.equal(o.effort, undefined, "and their settings choose the effort");
+});
+
+test("a task's builder runs in the mode and at the effort its row names", () => {
+  const { agent, sdk } = runnerAgent({ permissionMode: "auto", effort: "medium", model: "opus" });
+  agent.prompt("build it", "p1");
+  const o = sdk.queries[0].options;
+  assert.equal(o.permissionMode, "auto", "nobody is there to answer a permission prompt");
+  assert.equal(o.effort, "medium");
+  assert.equal(o.model, "opus");
+  // An agent pane's mode is its base's, whatever the line says.
+  const pane = makeAgent({ permissionMode: "auto" });
+  pane.agent.prompt("hi");
+  assert.equal(pane.sdk.queries[0].options.permissionMode, "default");
 });
 
 // --- a runner's loadout (--loadout, loadout.mjs) ---
@@ -995,6 +1009,11 @@ test("a member in its worktree is kept out of the repo's own folder, with no wor
   assert.deepEqual(await hook({ tool_name: "Write", tool_input: { file_path: "/inst/a.go" } }), {});
   assert.match(denied(await hook({ tool_name: "Write", tool_input: { file_path: "/r/api/a.go" } })), /the repo's own folder/);
   assert.deepEqual(firstEdits, []);
+  // A task's builder: the same fence for its file tools, none for its shell.
+  const { agent: builder } = runnerAgent({ keepOutFiles: "/r/api" });
+  const fence = builder.options().hooks.PreToolUse[0].hooks[0];
+  assert.match(denied(await fence({ tool_name: "Edit", tool_input: { file_path: "/r/api/a.go" } })), /the repo's own folder/);
+  assert.deepEqual(await fence({ tool_name: "Bash", tool_input: { command: "cp /r/api/.env.local ." } }), {});
   const { agent: walled } = makeAgent({ writeRoots: ["/inst"], readOnly: true });
   assert.deepEqual(walled.options().hooks.PreToolUse.map((h) => h.matcher), ["Edit|Write|MultiEdit|NotebookEdit", undefined], "the walls keep their own hook");
 });

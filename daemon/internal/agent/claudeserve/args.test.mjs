@@ -88,3 +88,14 @@ test("a thread member's line: read only in its repo's folder, or kept out of it 
   assert.equal(working.readOnly, undefined);
   assert.equal(parseArgs(["--read-only", "0"]).readOnly, false, "only 1 is read only");
 });
+
+test("a task builder's line: the file fence, its effort and its permission mode", () => {
+  const b = parseArgs(["--socket", "/s.sock", "--model", "opus", "--effort", "medium", "--permission-mode", "auto", "--keep-out-files", "/r/api"]);
+  assert.equal(b.effort, "medium");
+  assert.equal(b.permissionMode, "auto");
+  assert.equal(b.keepOutFiles, "/r/api");
+  assert.equal(b.keepOut, undefined, "not the full fence");
+  const plain = parseArgs(["--socket", "/s.sock"]);
+  assert.equal(plain.effort, undefined);
+  assert.equal(plain.permissionMode, undefined);
+});

@@ -13,6 +13,10 @@
 //   serve   (as a session runner, under systemd) --socket PATH --state FILE
 //           --session-auto ID [--claude PATH] [--detached 1] [--media DIR]
 //           [--read-only 1 | --keep-out DIR] (a thread member, readonly.mjs)
+//           [--keep-out-files DIR] [--effort LEVEL] [--permission-mode MODE]
+//           (a queued task's builder: the fence for file tools only, and
+//           what its Claude runs with; without the last two a runner keeps
+//           what the person's settings choose)
 //           [--loadout FILE] (what its group and repo chose, loadout.mjs)
 //           and the flags above
 //   sessions --dir DIR
@@ -47,6 +51,9 @@ const flags = {
   "--media": (o, v) => { o.media = v; },
   "--read-only": (o, v) => { o.readOnly = v === "1"; },
   "--keep-out": (o, v) => { o.keepOut = v; },
+  "--keep-out-files": (o, v) => { o.keepOutFiles = v; },
+  "--effort": (o, v) => { o.effort = v; },
+  "--permission-mode": (o, v) => { o.permissionMode = v; },
   "--loadout": (o, v) => { o.loadout = v; },
 };
 

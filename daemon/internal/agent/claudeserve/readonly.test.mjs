@@ -54,3 +54,21 @@ test("a member in its worktree may read the repo's folder from the shell, not ch
   assert.match(verdict("Bash", { command: "cp a.go /r/api/" }, o, wt).deny, /the repo's own folder/);
   assert.match(verdict("Bash", { command: "git -C /r/api checkout main" }, o, wt).deny, /the repo's own folder/);
 });
+
+test("a task's builder is kept out with its file tools only", () => {
+  const o = { keepOutFiles: "/r/api" };
+  const wt = "/wt/api/task-12";
+  assert.match(verdict("Write", { file_path: "/r/api/src/a.go" }, o, wt).deny, /Its copy in your worktree is \/wt\/api\/task-12\/src\/a.go/);
+  assert.match(verdict("Edit", { file_path: "/r/api/a.go" }, o, wt).deny, /the repo's own folder/);
+  assert.equal(verdict("Write", { file_path: wt + "/src/a.go" }, o, wt), null);
+  // What its brief tells it to do: copy the env files out of the main checkout.
+  for (const command of ["cp /r/api/.env.local .", "cp /r/api/.env.local ./.env.local && ls", "cat /r/api/.env > .env", "ln -s /r/api/x y"]) {
+    assert.equal(verdict("Bash", { command }, o, wt), null, command);
+  }
+  // The full fence refuses the same copy, which is why a builder has the other one.
+  assert.match(verdict("Bash", { command: "cp /r/api/.env.local ." }, { keepOut: "/r/api" }, wt).deny, /names \/r\/api/);
+  // Claude Code's own worktrees are off for it too, said without the read-only hint.
+  const own = verdict("EnterWorktree", {}, o, wt).deny;
+  assert.match(own, /made by ccmux, so/);
+  assert.match(verdict("EnterWorktree", {}, { readOnly: true }).deny, /the first change you make moves you/);
+});
