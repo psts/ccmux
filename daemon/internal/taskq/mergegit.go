@@ -123,8 +123,13 @@ func trunkElsewhere(repo, trunk string) (string, error) {
 	return "", nil
 }
 
+// Uncommitted asks git without its optional locks: a plain `git status`
+// rewrites the index when a file's timestamp changed, under index.lock, and
+// a thread's page asks this every few seconds while a merge runs
+// (ReadBranchChanges). A merge's rebase that starts in that moment would
+// fail on the lock and read as a clash that is not there.
 func (ExecGit) Uncommitted(worktree string) (string, error) {
-	out, err := runGit(worktree, "status", "--porcelain", "--untracked-files=all")
+	out, err := runGit(worktree, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return "", err
 	}
