@@ -19,7 +19,7 @@ import (
 // its server does not answer: busy or stuck, and still holding the card.
 func (s *Server) paneAgentReply(w http.ResponseWriter, r *http.Request) {
 	p := s.agentPaneOr404(w, r)
-	if p == nil {
+	if p == nil || sessionAgentPane(w, p) {
 		return
 	}
 	var f chatFrame

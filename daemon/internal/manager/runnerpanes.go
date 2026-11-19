@@ -126,7 +126,8 @@ func (m *Manager) SyncRunnerPane(sess store.RunnerSession) {
 		return
 	}
 	p := runnerPaneIn(e, sess.PaneID)
-	if p == nil {
+	made := p == nil
+	if made {
 		p = newRunnerPane(sess)
 		e.runners = append(e.runners, p)
 	}
@@ -136,7 +137,12 @@ func (m *Manager) SyncRunnerPane(sess store.RunnerSession) {
 	if sess.Wanted == store.SessionRunning {
 		p.Status = model.StatusLive
 	}
+	stampRunnerAgent(p, sess)
+	pane := *p
 	m.mu.Unlock()
+	if made {
+		m.seedAgentClock(pane)
+	}
 }
 
 // newRunnerPane is a session's pane as its row describes it. The attention

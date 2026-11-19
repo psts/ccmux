@@ -32,11 +32,24 @@ import (
 //     loads what its worktree's own settings turn on (the queue copies the
 //     repo's .claude/settings.local.json into it), as it did in a pane.
 
+// A role agent's session (task #177) is given the same two, for the same
+// reasons: it ran in a pane's login shell too, where its MCP servers (npx,
+// uvx) and its shell commands found the person's tools, and its base, not
+// the catalog, says what it loads.
+
+// ownSetup reports a session that brings its own setup instead of a
+// loadout, and needs the login shell's PATH: a task's builder and a role
+// agent.
+func ownSetup(sess store.RunnerSession) bool {
+	return sess.Role == store.RoleBuilder || sess.Kind == store.SessionAgent
+}
+
 // sessionEnv is a session's own variables (runner.Config.SessionEnv): its
-// pane's, and for a builder the login shell's PATH when that can be read.
+// pane's, and for a builder or an agent the login shell's PATH when that
+// can be read.
 func sessionEnv(mgr *manager.Manager, sess store.RunnerSession) map[string]string {
 	env := mgr.RunnerEnv(sess.PaneID)
-	if sess.Role != store.RoleBuilder {
+	if !ownSetup(sess) {
 		return env
 	}
 	if path := loginPath(); path != "" {
@@ -62,11 +75,12 @@ func withLocalBin(path string) string {
 	return local + string(os.PathListSeparator) + path
 }
 
-// sessionLoadout is the loadout of every session but a builder, which has
-// none (nil is "the user's whole Claude setup", runner.Config.Loadout).
+// sessionLoadout is the loadout of every session but a builder and a role
+// agent, which have none (nil is "the user's whole Claude setup",
+// runner.Config.Loadout; an agent's own flags then narrow it).
 func sessionLoadout(forSession func(store.RunnerSession) ([]byte, string, error)) func(store.RunnerSession) ([]byte, string, error) {
 	return func(sess store.RunnerSession) ([]byte, string, error) {
-		if sess.Role == store.RoleBuilder {
+		if ownSetup(sess) {
 			return nil, "", nil
 		}
 		return forSession(sess)

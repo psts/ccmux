@@ -212,8 +212,12 @@ mailbox stay the same. tmux is no longer what keeps an agent alive.
   instance is not running in a tmux pane right now. A claude agent that was
   running in its pane at the deploy keeps every pane path (chat port, push,
   ctrl-d) until that run ends, and moves at its next start
-  (`manager.RetireAgentTmux`: its tmux session is closed, its pane rows go,
-  and its session's pane takes the old pane's id). Other harnesses
+  (`api.makeAgentSession`): its session is made under the old pane's id
+  first, and only then is its tmux session closed and its pane rows removed
+  (`manager.TmuxAgentPane`, then `RetireAgentTmux`), so a session that could
+  not be made costs the agent nothing. What the bus had already sent the
+  pane is marked read before that (`peers.SettlePaneMailbox`), or it would
+  all run again as prompts. Other harnesses
   (opencode, pi, codex) and hosts without systemd keep the pane, unchanged.
 - **Its spec is its base's, read at every start** (`runner.Config.Agent` →
   `api.AgentStart`): the same flags the pane's launch line carries

@@ -12,6 +12,7 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/schedule"
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -111,7 +112,7 @@ func (s *Server) pauseBroken(sc store.AgentSchedule, why string) {
 func (s *Server) deliverSchedule(action fireAction, paneID string, win manager.WindowInfo, name, text string) (bool, error) {
 	switch action {
 	case firePush:
-		if err := s.mgr.PushToAgentPane(paneID, text); err != nil {
+		if err := s.sendToAgentPane(paneID, text, scheduleSource); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -162,15 +163,16 @@ func (s *Server) dropOrphan(sc store.AgentSchedule, what string) {
 }
 
 // decideFire reads the instance's state: not running means start it with
-// the prompt; running with a chat port (opencode, the claude sidecar) means
-// push when idle and wait when busy; running without one is skipped.
+// the prompt; running as a session, or with a chat port (opencode, a claude
+// sidecar still in its pane), means push when idle and wait when busy;
+// running with neither is skipped.
 func (s *Server) decideFire(win manager.WindowInfo, d agent.Definition) (fireAction, string) {
 	inst := s.instanceOf(win, d)
 	if inst.State != "running" {
 		return fireStart, ""
 	}
 	p := s.mgr.AgentPane(inst.Workspace, d.Name)
-	if p == nil || agent.ChatPort(p.StartupCommand) == 0 {
+	if p == nil || (p.Runtime != model.RuntimeRunner && agent.ChatPort(p.StartupCommand) == 0) {
 		return fireSkip, ""
 	}
 	if s.mgr.AgentBusy(p.ID) {

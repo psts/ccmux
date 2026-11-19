@@ -53,5 +53,7 @@ func (r *reminders) set(paneID string, armed bool, fire func()) {
 // remindRunnerLater starts, or calls off, a runner pane's reminder for the
 // attention it was just given: only a finished turn waits for one.
 func (m *Manager) remindRunnerLater(p model.Pane) {
-	m.runnerReminders.set(p.ID, p.Attention == model.AttentionDone, func() { m.Remind(p.ID) })
+	// Not for a role agent: its pane never sent that reminder when it was a
+	// tmux pane, and an agent that finishes a run is not waiting on anyone.
+	m.runnerReminders.set(p.ID, p.Attention == model.AttentionDone && p.Agent == "", func() { m.Remind(p.ID) })
 }

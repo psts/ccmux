@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -37,6 +38,16 @@ func (f *fakeRunners) Create(n runner.NewSession) (store.RunnerSession, error) {
 }
 
 func (f *fakeRunners) MediaDir(string) string { return f.mediaDir }
+
+func (f *fakeRunners) Sleep(id string, fresh bool) error {
+	f.wanted = append(f.wanted, fmt.Sprintf("%s=sleep fresh=%v", id, fresh))
+	return nil
+}
+
+func (f *fakeRunners) SetFresh(id string, fresh bool) error {
+	f.wanted = append(f.wanted, fmt.Sprintf("%s=fresh %v", id, fresh))
+	return nil
+}
 
 func (f *fakeRunners) SendPrompt(id string, p runner.Prompt) (string, error) {
 	if id != "s1" {
@@ -141,7 +152,8 @@ func (f *fakeRunners) SetModel(id, model string) error {
 
 type fakeRunnerRows struct{}
 
-func (fakeRunnerRows) RunnerSessions() ([]store.RunnerSession, error) { return nil, nil }
+func (fakeRunnerRows) RunnerSessions() ([]store.RunnerSession, error)    { return nil, nil }
+func (fakeRunnerRows) AgentSession(string) (*store.RunnerSession, error) { return nil, nil }
 func (fakeRunnerRows) RunnerSession(id string) (*store.RunnerSession, error) {
 	if id != "s1" {
 		return nil, nil

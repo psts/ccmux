@@ -65,6 +65,8 @@ type chatFrame struct {
 	Text   string `json:"text,omitempty"`
 	Resume *bool  `json:"resume,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// moved: the agent left this pane for a session; URL is its page.
+	URL string `json:"url,omitempty"`
 }
 
 // historySessions is how many of an agent's conversations a chat shows in
@@ -103,7 +105,7 @@ func newChatConn(s *Server, p *model.Pane, cancel context.CancelFunc) *chatConn 
 // tile no cards while the agent still waits on one.
 func (s *Server) paneAgentHistory(w http.ResponseWriter, r *http.Request) {
 	p := s.agentPaneOr404(w, r)
-	if p == nil {
+	if p == nil || sessionAgentPane(w, p) {
 		return
 	}
 	tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
@@ -142,7 +144,7 @@ func tailTurns(hello chatFrame, n int) chatFrame {
 // follows the agent between asleep and running.
 func (s *Server) paneAgentChat(w http.ResponseWriter, r *http.Request) {
 	p := s.agentPaneOr404(w, r)
-	if p == nil {
+	if p == nil || sessionAgentPane(w, p) {
 		return
 	}
 	conn, err := s.upgrader.Upgrade(w, r, nil)
@@ -336,6 +338,9 @@ func (c *chatConn) awaitWake(ctx context.Context) {
 				c.send(chatFrame{T: "error", Error: msg})
 				continue
 			}
+			if c.movedToSession() {
+				return
+			}
 			c.setStarting(true)
 			c.send(chatFrame{T: "state", State: "starting"})
 			c.awaitServer(ctx)
@@ -347,6 +352,21 @@ func (c *chatConn) awaitWake(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// movedToSession says the start that just went through moved the agent off
+// its tmux pane onto a session (task #177), and tells the lens where its
+// conversation is now: no chat port will ever answer on this socket. The
+// text is for a lens from before the "moved" frame, which shows it.
+func (c *chatConn) movedToSession() bool {
+	p := c.s.mgr.PaneByID(c.paneID)
+	if p == nil || p.Runtime != model.RuntimeRunner {
+		return false
+	}
+	url := "/threads.html?s=" + p.SessionID
+	c.send(chatFrame{T: "error", Error: c.agent + " now runs as a session. Its conversation is at " + url})
+	c.send(chatFrame{T: "moved", URL: url})
+	return true
 }
 
 func (c *chatConn) setStarting(v bool) {

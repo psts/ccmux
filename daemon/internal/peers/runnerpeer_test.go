@@ -365,3 +365,37 @@ func TestARunnersPeerFollowsItsSessionIntoAnotherFolder(t *testing.T) {
 		t.Fatalf("it is listed where it works, and still as its repo's: cwd %q, repo %q", cwd, root)
 	}
 }
+
+// An agent that moves from a tmux pane onto a session keeps its pane id and
+// so its mailbox. What was pushed into its pane's chat is still there,
+// unacknowledged, and must not run again as prompts.
+func TestAPaneThatBecomesARunnersDoesNotReplayItsMailbox(t *testing.T) {
+	svc, _, box, setState := runnerBus(t)
+	setState("done") // run1 is still a tmux pane: its peer is its shim's
+	agentPeer := registerPane(svc, "run1", "/r/app")
+	lead := registerPane(svc, "tmux1", "/r/app")
+	for _, text := range []string{"post the thread", "and the follow-up"} {
+		if resp := svc.Send(SendReq{FromID: lead.PeerID, ToID: agentPeer.PeerID, Text: text}); !resp.OK {
+			t.Fatalf("send: %+v", resp)
+		}
+	}
+	// Its move: the mailbox is settled, then the pane is a runner's.
+	if err := svc.SettlePaneMailbox("run1"); err != nil {
+		t.Fatal(err)
+	}
+	setState("running")
+	svc.EnsureRunnerPeer("run1", "/r/app")
+	time.Sleep(80 * time.Millisecond)
+	if got := box.got(); len(got) != 0 {
+		t.Fatalf("messages its pane already had ran again: %q", got)
+	}
+	// What comes after the move is a prompt, once.
+	svc.Send(SendReq{FromID: lead.PeerID, ToID: agentPeer.PeerID, Text: "a new one"})
+	eventually(t, "the new message", func() bool { return len(box.got()) == 1 })
+	if got := box.got()[0]; !strings.Contains(got, "a new one") {
+		t.Fatalf("the prompt: %q", got)
+	}
+	if err := svc.SettlePaneMailbox("no-such-pane"); err != nil {
+		t.Fatalf("a pane with no mailbox has nothing to settle: %v", err)
+	}
+}

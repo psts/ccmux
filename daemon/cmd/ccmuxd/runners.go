@@ -96,12 +96,14 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	w.mgr.RunnerLiveness = sup.Liveness
 	w.mgr.EndRunnerSession = func(id string) error { return sup.SetWanted(id, store.SessionDone) }
 	w.api.SetRunners(sup, w.st)
+	// After SetRunners: the door asks the supervisor.
+	w.mgr.SleepAgentSession = w.api.SleepAgentSession
 	w.api.SetRunnerDoors(api.RunnerDoors{
 		Dial: func(sessionID string) api.SessionRunner { return sup.Runner(sessionID) },
 		// A session whose runner is down is read from Claude Code's own store,
 		// through the sidecar's export (it lands with the first session).
 		History: func(ctx context.Context, sess store.RunnerSession) (json.RawMessage, error) {
-			return agent.ClaudeOfflineMessages(ctx, w.agents.Root, sess.Cwd, sess.ID, "--media", sup.MediaDir(sess.ID))
+			return agent.ClaudeOfflineMessages(ctx, w.agents.Root, sess.Cwd, sess.ConversationID(), "--media", sup.MediaDir(sess.ID))
 		},
 	})
 	go sup.Run(ctx)
@@ -120,6 +122,9 @@ func runnerConfig(w runnerWiring, claude string) runner.Config {
 		// the user's Claude setup (loadouts.go). The day-one choices are
 		// written here, before the supervisor starts a session.
 		Loadout: sessionLoadout(wireLoadouts(w).ForSession),
+		// A role agent's session starts on what its base says, read at
+		// every start (api/agentsessions.go).
+		Agent: w.api.AgentStart,
 	}
 }
 

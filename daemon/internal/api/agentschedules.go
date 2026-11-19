@@ -152,16 +152,11 @@ func (s *Server) paneSchedules(w http.ResponseWriter, r *http.Request) {
 
 // instanceOfPane names the window and agent an agent pane belongs to.
 func (s *Server) instanceOfPane(paneID string) (manager.WindowInfo, string, int, string) {
-	ws := s.mgr.Workspace(s.mgr.WorkspaceForPane(paneID))
-	if ws == nil {
+	p := s.mgr.PaneByID(paneID) // a tmux pane, or an agent session's
+	if p == nil {
 		return manager.WindowInfo{}, "", http.StatusNotFound, "unknown pane"
 	}
-	name := ""
-	for _, p := range ws.Panes {
-		if p.ID == paneID {
-			name = p.Agent
-		}
-	}
+	name := p.Agent
 	if name == "" {
 		return manager.WindowInfo{}, "", http.StatusBadRequest, "not an agent pane: only an agent can schedule its own runs"
 	}

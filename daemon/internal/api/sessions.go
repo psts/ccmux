@@ -37,6 +37,8 @@ type runnerSupervisor interface {
 	SetModel(sessionID, model string) error
 	Restart(sessionID string) error
 	Liveness(sessionID string) (string, error)
+	Sleep(sessionID string, fresh bool) error
+	SetFresh(sessionID string, fresh bool) error
 	ReplyCard(ctx context.Context, sessionID string, r runner.CardReply) (bool, error)
 }
 
@@ -48,6 +50,7 @@ type runnerRows interface {
 	OpenSessionCards(sessionID string) ([]store.SessionCard, error)
 	SetSessionCardState(sessionID, id, state string, now int64) error
 	RunnerLead(workspaceID string) (*store.RunnerSession, error)
+	AgentSession(workspaceID string) (*store.RunnerSession, error)
 	SetRunnerSessionTitle(id, title string, now int64) error
 	SetRunnerSessionGoal(id, goal string, now int64) error
 }
@@ -355,7 +358,8 @@ func orNoRunner(err error) error {
 }
 
 func writeRunnerError(w http.ResponseWriter, err error) {
-	if errors.Is(err, runner.ErrSessionDone) {
+	var capped errAgentCap
+	if errors.Is(err, runner.ErrSessionDone) || errors.Is(err, runner.ErrPromptWaiting) || errors.As(err, &capped) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -384,6 +388,9 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := r.PathValue("id")
+	if s.agentWakeRefused(w, sessionID) {
+		return
+	}
 	if len(in.Images) == 0 {
 		id, err := s.runners.Send(sessionID, in.Text, in.Sender)
 		s.answerPrompt(w, sessionID, in.Text, id, err)
@@ -439,7 +446,11 @@ func (s *Server) setRunnerWanted(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "wanted is running, asleep or done")
 		return
 	}
-	if err := s.runners.SetWanted(r.PathValue("id"), in.Wanted); err != nil {
+	handled, err := s.setAgentWanted(r.PathValue("id"), in.Wanted)
+	if !handled {
+		err = s.runners.SetWanted(r.PathValue("id"), in.Wanted)
+	}
+	if err != nil {
 		writeRunnerError(w, err)
 		return
 	}
@@ -456,6 +467,10 @@ func (s *Server) setRunnerModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Model == "" {
 		writeError(w, http.StatusBadRequest, "no model named")
+		return
+	}
+	if sess, _ := s.runnerRows.RunnerSession(r.PathValue("id")); sess != nil && sess.Kind == store.SessionAgent {
+		writeError(w, http.StatusConflict, "an agent runs on the model its base names: change it in the agent editor")
 		return
 	}
 	if err := s.runners.SetModel(r.PathValue("id"), in.Model); err != nil {
@@ -476,6 +491,9 @@ func (s *Server) setRunnerModel(w http.ResponseWriter, r *http.Request) {
 // row as it is, so a model just set takes effect.
 func (s *Server) restartRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if !s.runnersReady(w) {
+		return
+	}
+	if s.agentWakeRefused(w, r.PathValue("id")) {
 		return
 	}
 	if err := s.runners.Restart(r.PathValue("id")); err != nil {

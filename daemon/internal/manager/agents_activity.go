@@ -175,6 +175,11 @@ func (a *agentActivity) reset(paneID string) {
 
 // persistActivity is agentActivity.save for a manager with a store.
 func (m *Manager) persistActivity(paneID string, a activity) {
+	if m.runnerPaneID(paneID) {
+		// A session's pane has no row in panes. Its clock is read back from
+		// the attention its session row keeps (seedAgentClock).
+		return
+	}
 	var since int64
 	if a.state != "" {
 		since = a.since.UnixMilli()

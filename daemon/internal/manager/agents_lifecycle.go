@@ -104,21 +104,19 @@ func (m *Manager) StartAgentLifecycle(ctx context.Context, every time.Duration) 
 	}()
 }
 
-// agentTick applies decideAgent to every agent pane in a live workspace.
+// agentTick applies decideAgent to every agent pane in a live workspace,
+// and to every agent session's pane (whose home has no tmux session to be
+// live or not).
 func (m *Manager) agentTick(now time.Time) {
-	type target struct {
-		wsID string
-		p    model.Pane
-	}
-	var targets []target
 	m.mu.RLock()
+	targets := m.runnerAgentPanesLocked()
 	for _, e := range m.byID {
 		if e.ctrl == nil {
 			continue
 		}
 		for _, p := range e.ws.Panes {
 			if p.Agent != "" {
-				targets = append(targets, target{e.ws.ID, *p})
+				targets = append(targets, agentTarget{e.ws.ID, *p})
 			}
 		}
 	}
@@ -139,7 +137,7 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 	}
 	switch decideAgent(m.agentViewFor(p, d, now), now) {
 	case actExit:
-		_ = m.exitAgent(p.ID, wsID, "idle past its cap") // logged inside; the next tick retries
+		_ = m.endAgentSession(p, wsID, "idle past its cap") // logged inside; the next tick retries
 	case actWake:
 		m.wakeWithBackoff(wsID, p, now)
 	}
@@ -150,7 +148,7 @@ func (m *Manager) applyAgentTick(wsID string, p model.Pane, now time.Time) {
 // delegations.
 func (m *Manager) agentViewFor(p model.Pane, d agent.Definition, now time.Time) agentView {
 	v := agentView{
-		atShell:     atBareShell(&p),
+		atShell:     agentAsleep(&p),
 		keepAlive:   d.KeepAlive,
 		idleExit:    time.Duration(d.IdleExitMinutes) * time.Minute,
 		cardWait:    time.Duration(d.CardWaitMinutes) * time.Minute,
@@ -269,6 +267,16 @@ func (b *wakeBackoff) forget(paneID string) {
 // ErrPaneGone says the pane (or its session) vanished before an action
 // reached it — the tick's snapshot was stale.
 var ErrPaneGone = errors.New("pane is gone")
+
+// endAgentSession ends an agent's session for now: an agent that runs as a
+// session is put to sleep through the supervisor; one in a tmux pane gets
+// the end-of-input (exitAgent).
+func (m *Manager) endAgentSession(p model.Pane, wsID, why string) error {
+	if p.Runtime == model.RuntimeRunner {
+		return m.sleepRunnerAgent(p, wsID, why)
+	}
+	return m.exitAgent(p.ID, wsID, why)
+}
 
 // exitAgent ends the harness session with an end-of-input: Claude Code and
 // opencode both quit on ctrl-d at their prompt, which is where an idle

@@ -102,6 +102,40 @@ func TestOnlyABuilderGetsTheLoginPath(t *testing.T) {
 	}
 }
 
+// A role agent's session brings its own setup too (task #177): its base
+// says what it loads, and its MCP servers and shell tools need the PATH
+// its pane's login shell had. A repo's lead beside it keeps its loadout and
+// the daemon's PATH.
+func TestARoleAgentHasNoLoadoutAndTheLoginPath(t *testing.T) {
+	asked := 0
+	choose := sessionLoadout(func(store.RunnerSession) ([]byte, string, error) {
+		asked++
+		return []byte(`{}`), `{"signature":"x"}`, nil
+	})
+	if file, record, err := choose(store.RunnerSession{Kind: store.SessionAgent, Name: "radar"}); file != nil || record != "" || err != nil || asked != 0 {
+		t.Fatalf("an agent's loadout = %q %q %v (asked %d), want none", file, record, err, asked)
+	}
+	if file, _, err := choose(store.RunnerSession{Kind: store.SessionLead}); file == nil || err != nil || asked != 1 {
+		t.Fatalf("a lead keeps its loadout: %q %v", file, err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mgr := manager.New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	was := loginPaths
+	loginPaths = &pathCache{now: time.Now, read: func() string { return "/opt/node/bin:/usr/bin" }}
+	defer func() { loginPaths = was }()
+	a := sessionEnv(mgr, store.RunnerSession{PaneID: "a1", Kind: store.SessionAgent})
+	if a["CCMUX_PANE_ID"] != "a1" || !strings.HasSuffix(a["PATH"], ":/opt/node/bin:/usr/bin") {
+		t.Fatalf("an agent's own variables = %v", a)
+	}
+	if lead := sessionEnv(mgr, store.RunnerSession{PaneID: "l1", Kind: store.SessionLead}); lead["PATH"] != "" {
+		t.Fatalf("a lead got the login PATH: %v", lead)
+	}
+}
+
 // A read that failed must not stand for the daemon's whole life: one slow
 // shell at boot would leave every builder on the bare PATH until a restart.
 func TestAFailedLoginPathIsAskedAgainAndAnAnswerIsKept(t *testing.T) {

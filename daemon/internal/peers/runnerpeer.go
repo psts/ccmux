@@ -115,6 +115,28 @@ func (s *Service) EnsureRunnerPeer(paneID, cwd string) {
 	go s.drainInbox(id, paneID)
 }
 
+// SettlePaneMailbox marks everything waiting in the mailbox of paneID's
+// peer as read. It is for a pane that changes hands: a role agent that ran
+// in a tmux pane and moves onto a session keeps its pane id, and with it
+// its peer and its mailbox. What the bus sent the pane was typed into its
+// chat as it came, and its shim seldom said so, so the mailbox still holds
+// messages the agent acted on long ago. Drained into the session's inbox,
+// every one of them would run again.
+func (s *Service) SettlePaneMailbox(paneID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := derivedID(paneID)
+	cursor, err := s.st.PeerCursor(id)
+	if err != nil {
+		return err
+	}
+	evs, err := s.st.PeerEventsAfter(id, cursor)
+	if err != nil || len(evs) == 0 {
+		return err
+	}
+	return s.st.AdvancePeerCursor(id, evs[len(evs)-1].Seq)
+}
+
 // ForgetRunnerPeer drops the peer of a runner session that has ended, and
 // its mailbox: nothing will read it again, and until the sweep noticed the
 // pane gone it would still be listed, taking messages nobody answers.

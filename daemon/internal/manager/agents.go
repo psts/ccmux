@@ -139,7 +139,8 @@ func (m *Manager) forgetAgentStarts(wsID, group string, panes []*model.Pane) {
 
 // SleepAgent ends a running instance's harness session the way idle exit
 // does (ctrl-d at its prompt): the pane drops to its shell with history
-// intact, and the next message wakes it. Refuses a non-agent pane; an
+// intact, and the next message wakes it. An agent that runs as a session is
+// put to sleep instead (endAgentSession). Refuses a non-agent pane; an
 // instance already asleep is left alone; a keystroke that did not go in is
 // an error, never a silent 204.
 func (m *Manager) SleepAgent(paneID string) error {
@@ -149,12 +150,12 @@ func (m *Manager) SleepAgent(paneID string) error {
 		m.mu.RUnlock()
 		return ErrNotAgent
 	}
-	wsID, asleep := e.ws.ID, atBareShell(p)
+	wsID, asleep, pane := e.ws.ID, agentAsleep(p), *p
 	m.mu.RUnlock()
 	if asleep {
 		return nil
 	}
-	return m.exitAgent(paneID, wsID, "asked to sleep")
+	return m.endAgentSession(pane, wsID, "asked to sleep")
 }
 
 // StartAgentInPane restarts an instance whose pane sits at a bare shell — the
@@ -262,7 +263,8 @@ func (m *Manager) stampAgent(paneID string, l AgentLaunch) *model.Pane {
 }
 
 // AgentPane returns a copy of the pane that is workspace wsID's instance of
-// agent name, or nil when the agent was never added there.
+// agent name (a tmux pane, or the pane of its session), or nil when the
+// agent was never added there or has no pane yet.
 func (m *Manager) AgentPane(wsID, name string) *model.Pane {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -270,30 +272,46 @@ func (m *Manager) AgentPane(wsID, name string) *model.Pane {
 	if e == nil {
 		return nil
 	}
-	for _, p := range e.ws.Panes {
-		if p.Agent == name {
-			cp := *p
-			return &cp
+	// The session's pane first: a home that moved onto a session has no
+	// tmux pane left, and one found in both lists is the session's.
+	for _, list := range [][]*model.Pane{e.runners, e.ws.Panes} {
+		for _, p := range list {
+			if p.Agent == name {
+				cp := *p
+				return &cp
+			}
 		}
 	}
 	return nil
 }
 
 // RunningAgents counts agent panes whose foreground is not a bare shell
-// across live workspaces — the number the concurrency cap is checked
-// against. An agent pane at a shell is asleep and costs nothing.
+// across live workspaces, and agent sessions that are not asleep — the
+// number the concurrency cap is checked against. An agent pane at a shell,
+// or an agent's session asleep, costs nothing.
 func (m *Manager) RunningAgents() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	n := 0
 	for _, e := range m.byID {
-		if e.ctrl == nil {
-			continue
+		n += runningAgentsIn(e)
+	}
+	return n
+}
+
+func runningAgentsIn(e *entry) int {
+	n := 0
+	for _, p := range e.runners {
+		if p.Agent != "" && !agentAsleep(p) {
+			n++
 		}
-		for _, p := range e.ws.Panes {
-			if p.Agent != "" && !atBareShell(p) {
-				n++
-			}
+	}
+	if e.ctrl == nil {
+		return n
+	}
+	for _, p := range e.ws.Panes {
+		if p.Agent != "" && !atBareShell(p) {
+			n++
 		}
 	}
 	return n

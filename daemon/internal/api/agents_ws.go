@@ -16,6 +16,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
+	"ccmux.dev/ccmuxd/internal/runner"
 )
 
 // agentInstance is one base agent as seen from one shared window: the base's
@@ -36,6 +37,9 @@ type agentInstance struct {
 	// says the base has moved since — a restart picks the new one up.
 	PaneVersion string `json:"paneVersion,omitempty"`
 	Drift       bool   `json:"drift,omitempty"`
+	// Session is the agent's runner session, when it runs as one: a lens
+	// opens its conversation on the thread page (/threads.html?s=<id>).
+	Session string `json:"session,omitempty"`
 }
 
 // listWindowAgents: GET /v1/windows/{id}/agents.
@@ -164,10 +168,21 @@ func (s *Server) instanceOf(win manager.WindowInfo, d agent.Definition) agentIns
 		return inst
 	}
 	inst.Pane, inst.PaneVersion, inst.Drift = p.ID, p.AgentVersion, agent.Drifted(p.AgentVersion, d.Version)
-	if ws.Status == model.StatusLive && !s.mgr.PaneAtShell(p.ID) {
+	inst.Session = p.SessionID
+	if agentPaneUp(s.mgr, ws, p) {
 		inst.State = "running"
 	}
 	return inst
+}
+
+// agentPaneUp says whether an instance's pane has its agent running: a
+// session that is not asleep, or a tmux pane in a live session whose
+// foreground is not the shell.
+func agentPaneUp(mgr *manager.Manager, ws *model.Workspace, p *model.Pane) bool {
+	if p.Runtime == model.RuntimeRunner {
+		return p.Status == model.StatusLive
+	}
+	return ws.Status == model.StatusLive && !mgr.PaneAtShell(p.ID)
 }
 
 type startAgentReq struct {
@@ -216,6 +231,17 @@ func (s *Server) startWindowAgent(win manager.WindowInfo, name, prompt, createdB
 	if ws := s.agentWorkspace(win, name); ws != nil {
 		return s.startExistingInstance(ws, d, prompt, resume)
 	}
+	if s.onSession(d, nil) {
+		return s.addAgentSession(win, d, prompt, createdBy, resume)
+	}
+	return s.addAgentPane(win, d, prompt, createdBy, resume)
+}
+
+// addAgentPane adds base d to window win as a tmux session whose first pane
+// runs it: the way of every harness but claude, and of claude on a daemon
+// with no session runners.
+func (s *Server) addAgentPane(win manager.WindowInfo, d agent.Definition, prompt, createdBy string, resume *bool) startOutcome {
+	name := d.Name
 	if msg := s.agentCapMessage(); msg != "" {
 		return startOutcome{status: http.StatusConflict, msg: msg, err: manager.ErrAgentCap}
 	}
@@ -507,7 +533,17 @@ func (s *Server) agentRoute(d agent.Definition, h harness.Harness) (string, int,
 // persisted line. Returns the pane, the HTTP status a transport would answer
 // with (200 woken) and the refusal message, "" when it went through. The
 // window route, the bus and the lifecycle loop are all adapters over this.
+//
+// An instance that runs as a session, not in a pane, is started by its own
+// flow (agentsessions.go); what follows here is the pane's.
 func (s *Server) startAgent(wsID, name, prompt string, resume *bool) startOutcome {
+	if out, ok := s.startAgentSession(wsID, name, prompt, resume); ok {
+		return out
+	}
+	return s.startAgentPane(wsID, name, prompt, resume)
+}
+
+func (s *Server) startAgentPane(wsID, name, prompt string, resume *bool) startOutcome {
 	ws, existing, refusal := s.agentSessionReady(wsID, name)
 	if refusal.msg != "" {
 		return refusal
@@ -616,6 +652,15 @@ func agentErrStatus(err error) int {
 	return http.StatusBadRequest
 }
 
+// sleepErrStatus is 409 for a sleep that is refused for now (a message the
+// agent has not read yet), 500 for one that failed.
+func sleepErrStatus(err error) int {
+	if errors.Is(err, runner.ErrPromptWaiting) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+
 // agentCapMessage is "" while another agent may start.
 func (s *Server) agentCapMessage() string {
 	if s.agentsMax > 0 && s.mgr.RunningAgents() >= s.agentsMax {
@@ -639,9 +684,9 @@ func (s *Server) sleepWindowAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agent not added to this window")
 		return
 	}
-	if p := s.mgr.AgentPane(ws.ID, ws.Agent); p != nil && ws.Status == model.StatusLive {
+	if p := s.mgr.AgentPane(ws.ID, ws.Agent); p != nil && (p.Runtime == model.RuntimeRunner || ws.Status == model.StatusLive) {
 		if err := s.mgr.SleepAgent(p.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, sleepErrStatus(err), err.Error())
 			return
 		}
 	}

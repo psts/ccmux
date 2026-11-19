@@ -142,6 +142,10 @@ type Manager struct {
 	// under it. Both are wired at startup when session runners are on.
 	RunnerLiveness   func(sessionID string) (string, error)
 	EndRunnerSession func(sessionID string) error
+	// SleepAgentSession puts a role agent's session to sleep (the api's one
+	// door, which knows whether its base starts fresh the next time). Nil on
+	// a daemon with no session supervisor.
+	SleepAgentSession func(sessionID string) error
 
 	// OnDevhostChange, when set, is invoked (on its own goroutine) after any
 	// dev-hostname or dev-setting mutation so the devhost server reconciles.
@@ -1087,17 +1091,20 @@ func (m *Manager) publishAttention(ctrl *session.Controller, wsID string, p mode
 		Attention: p.Attention, Reason: p.AttentionReason, Since: p.AttentionSince})
 }
 
-// findPaneLocked finds a pane by id among the tmux panes and the runner
-// sessions' panes of every workspace.
+// findPaneLocked finds a pane by id among the runner sessions' panes and
+// the tmux panes of every workspace. A session's pane first: for the moment
+// in which a role agent moves off tmux its session's pane and its old tmux
+// pane share one id (agentsessions.go), and from the moment the session is
+// made, the id is the session's.
 func (m *Manager) findPaneLocked(paneID string) (*entry, *model.Pane) {
 	for _, e := range m.byID {
+		if p := runnerPaneIn(e, paneID); p != nil {
+			return e, p
+		}
 		for _, p := range e.ws.Panes {
 			if p.ID == paneID {
 				return e, p
 			}
-		}
-		if p := runnerPaneIn(e, paneID); p != nil {
-			return e, p
 		}
 	}
 	return nil, nil

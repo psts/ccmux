@@ -280,7 +280,7 @@ func (s *Server) restartInstance(name string, inst agentDeployment) {
 		return
 	}
 	deadline := time.Now().Add(30 * time.Second)
-	for !s.mgr.PaneAtShell(inst.Pane) {
+	for !s.mgr.AgentAsleep(inst.Pane) {
 		if time.Now().After(deadline) {
 			log.Printf("agent %s in %s: restart: did not go to sleep within 30s (a permission dialog up?); left as is", name, inst.Window)
 			return

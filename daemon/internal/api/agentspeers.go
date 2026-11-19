@@ -98,7 +98,21 @@ func (s *Server) startAgentForPeer(group, name, prompt string) error {
 	if msg != "" {
 		return errors.New(msg)
 	}
-	return peerStartError(s.startWindowAgent(win, name, prompt, "claude-peers", nil))
+	return peerStartError(s.startWindowAgent(win, name, s.birthPromptFor(win, name, prompt), "claude-peers", nil))
+}
+
+// birthPromptFor is the first prompt of an agent the bus starts: the birth
+// prompt for one that starts in a pane, nothing for one that runs as a
+// session. A session takes the request that started it as a prompt the
+// moment its peer is on the bus, and starts on that alone, as an asleep one
+// wakes on a message alone; the birth prompt would race it into the inbox
+// as a second turn about nothing.
+func (s *Server) birthPromptFor(win manager.WindowInfo, name, prompt string) string {
+	d, _, msg := s.agentDefinition(name)
+	if msg == "" && s.onSession(d, s.agentWorkspace(win, name)) {
+		return ""
+	}
+	return prompt
 }
 
 // peerStartError is the bus's reading of a start: "already running" (a live

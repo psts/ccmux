@@ -50,6 +50,9 @@ func (s *Server) runnerInbox(paneID, promptID, text, sender string) error {
 	if !ok {
 		return peers.ErrInboxClosed
 	}
+	if held := s.agentWakeHeld(info.SessionID); held != "" {
+		return errors.New(held) // stays in the mailbox; the bus hands it over again at its next sweep
+	}
 	_, err := s.runners.SendAs(info.SessionID, promptID, text, sender)
 	if errors.Is(err, runner.ErrSessionDone) || errors.Is(err, store.ErrNoSession) {
 		return peers.ErrInboxClosed
