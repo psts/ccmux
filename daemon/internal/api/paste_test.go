@@ -28,6 +28,10 @@ func TestSniffImageExt(t *testing.T) {
 }
 
 func TestPasteImageRoute(t *testing.T) {
+	// Its own runtime folder: the route stores under XDG_RUNTIME_DIR, and a
+	// test that writes the person's real one fails behind the sandbox's
+	// walls, where a merge's checks run.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	base, wsID, _ := filesStack(t)
 	pasteURL := base + "/v1/workspaces/" + wsID + "/paste"
 

@@ -77,7 +77,7 @@ func (h taskHost) TaskPane(paneID string) (taskq.PaneState, bool) {
 	}
 	st, ok := h.mgr.TaskPane(paneID)
 	sig := st.Signal
-	return taskq.PaneState{Attention: sig.Attention, Reason: sig.Reason, At: sig.At, AtShell: st.AtShell}, ok
+	return taskq.PaneState{Attention: sig.Attention, Reason: sig.Reason, At: sig.At, AtShell: st.AtShell, Why: st.Why}, ok
 }
 
 // StartTaskRunner starts the task queue's runner: up to slots tasks at once

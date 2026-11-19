@@ -958,7 +958,7 @@ test("Notifications on this page: Enable files the device under the page's own n
 test("the Settings window is the lens's, whole, with this page's tab in front", async () => {
   const p = await boot({ sessions: [lead], routes: capRoutes({}) });
   const tabs = p.$("settings-tabs").querySelectorAll(".settings-tab");
-  assert.deepEqual(tabs.map((t) => t.textContent), ["Skills and plugins", "Accounts", "Harnesses", "Agents", "Tasks", "Notifications"]);
+  assert.deepEqual(tabs.map((t) => t.textContent), ["Skills and plugins", "Accounts", "Harnesses", "Agents", "Tasks", "Sandbox", "Notifications"]);
   p.$("open-settings").click();
   await p.settle();
   const reads = p.book.calls.filter((c) => c.method === "GET").map((c) => c.url);

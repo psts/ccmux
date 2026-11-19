@@ -95,6 +95,11 @@
   color: var(--s-muted); font-size: 11px; padding: 4px 8px;
 }
 .ccmux-settings .rule-add:hover { color: var(--s-fg); border-color: var(--s-muted); }
+/* The Sandbox tab: a switch is a whole line that may wrap, its two buttons
+   sit side by side, and a command to paste keeps its line breaks out. */
+.ccmux-settings .sandbox-switch { display: flex; align-items: flex-start; gap: 6px; margin: 4px 0; font-size: 12px; color: var(--s-fg); }
+.ccmux-settings .sandbox-actions { display: flex; gap: 8px; }
+.ccmux-settings .sandbox-fix { white-space: pre-wrap; word-break: break-all; margin: 0; user-select: all; }
 
 /* --- the windows: Settings itself and the editors above it --- */
 .ccmux-settings.hidden, .ccmux-settings .hidden { display: none !important; }

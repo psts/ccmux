@@ -274,6 +274,10 @@ type TaskPaneStatus struct {
 	// exited, or never started. For a builder session, which has no shell,
 	// it is true once the session is asleep (builderGone).
 	AtShell bool
+	// Why is what a builder session's row says of why it sleeps (its note:
+	// "put to sleep: the sandbox is on, and its walls were not up ..."), ""
+	// for a tmux worker and for a builder that runs.
+	Why string
 }
 
 // TaskPane reports a worker pane's state. False when no LIVE session holds
@@ -282,11 +286,11 @@ type TaskPaneStatus struct {
 func (m *Manager) TaskPane(paneID string) (TaskPaneStatus, bool) {
 	m.mu.RLock()
 	e, p := m.findPaneLocked(paneID)
-	live, atShell := false, false
+	live, atShell, session, dir := false, false, "", ""
 	switch {
 	case p == nil:
 	case p.Runtime == model.RuntimeRunner:
-		live, atShell = true, builderGone(p)
+		live, atShell, session, dir = true, builderGone(p), p.SessionID, p.CWD
 	default:
 		live = e.ctrl != nil
 		atShell = live && atBareShell(p)
@@ -295,7 +299,34 @@ func (m *Manager) TaskPane(paneID string) (TaskPaneStatus, bool) {
 	if !live {
 		return TaskPaneStatus{}, false
 	}
-	return TaskPaneStatus{Signal: m.taskSigs.get(paneID), AtShell: atShell}, true
+	st := TaskPaneStatus{Signal: m.taskSigs.get(paneID), AtShell: atShell}
+	if atShell && session != "" {
+		st.Why = m.builderNote(session, dir)
+	}
+	return st, true
+}
+
+// builderNote is the note on the row of the builder session that works in
+// dir: why the supervisor put it to sleep. Read off the lock. The note only
+// adds to what the task says and decides nothing, so a read that fails
+// still answers "": but it is logged, because the part is judged once, and
+// a reason lost here is otherwise lost without a trace.
+func (m *Manager) builderNote(sessionID, dir string) string {
+	if m.store == nil {
+		return ""
+	}
+	builders, err := m.store.BuildersIn(dir)
+	if err != nil {
+		log.Printf("tasks: why builder %s in %s sleeps was not read, so its task will not say: %v", sessionID, dir, err)
+		return ""
+	}
+	for _, b := range builders {
+		if b.ID == sessionID {
+			return b.Note
+		}
+	}
+	log.Printf("tasks: builder %s has no row in %s, so its task will not say why it sleeps", sessionID, dir)
+	return ""
 }
 
 // WindowPeers lists the workspaces sharing a ccmux window with paneID's

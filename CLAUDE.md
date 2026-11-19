@@ -146,8 +146,86 @@ a person), the task's row, the slots.
   A test that names a prefix must stop its units and delete
   `~/.config/systemd/user/<prefix>@.service` afterwards.
 - A new kind of job is a `jobs.Runner` in `jobKinds` and a `jobs.Handler` in
-  `wireJobs` (`cmd/ccmuxd/jobs.go`). Keep `internal/jobs` free of the packages
+  `wireJobs` (`cmd/ccmuxd/jobs.go`), and a case in `workOf`
+  (`cmd/ccmuxd/sandbox.go`): with the sandbox on, a job whose work the walls
+  do not know is not started. Keep `internal/jobs` free of the packages
   that own the work.
+
+## Caps and walls: the sandbox (Linux)
+
+Since task #178 every session service and every job service runs under caps,
+and task and thread work can be walled into its worktree
+(`daemon/internal/walls`, wired in `cmd/ccmuxd/sandbox.go`). Settings >
+Sandbox holds both (`GET/PUT /v1/sandbox`, `POST /v1/sandbox/check`), and
+shows what this host allows with the command that fixes what it lacks.
+
+- **Caps are in the two unit templates** (`MemoryMax`, `CPUQuota`,
+  `TasksMax`, `NoNewPrivileges=yes`, and `RuntimeMaxSec` for a job). Defaults:
+  75% of memory, every core but one, 8192 processes, 6 hours. A changed cap
+  rewrites the templates and reloads systemd, which **applies it to the
+  running units at once** (seen live), a deploy included. So keep the
+  defaults loose: they stop a runaway, nothing else.
+- **Walls are a drop-in file per unit**
+  (`~/.config/systemd/user/<unit>.d/50-ccmux-walls.conf`), because the paths
+  differ per worktree and the template is shared. A session's is rewritten at
+  every start from what the setting says then, and removed when the session
+  ends or starts open; a job's is written once and removed when the job has
+  ended. A test that names a unit prefix must remove what is left of these.
+- **Only task and thread work is walled:** sessions with a role (a thread's
+  lead and helpers, a task's builders) and the merge and tidy-up jobs. A
+  repo's own session, a person's plain session and a role agent run under
+  the caps only.
+- **`ProtectSystem=strict` leaves `/home`, `/root` and `/run/user`
+  writable** (seen live on systemd 255): `ProtectHome=read-only` is what
+  closes home, and both are always written together.
+- **What is open** (`walls.WorktreeWalls`, `walls.RepoWalls`, `walls.Caches`):
+  a session gets its worktree, of the repo's `.git` only `objects`, `refs`,
+  `logs` and its own `worktrees/<name>` entry, its own folder in the
+  sessions' state, the sockets' folder, and under home `~/.cache`,
+  `~/go/pkg/mod`, `~/.npm`, `~/.claude` and `~/.claude.json`. A merge or
+  tidy-up job gets each repo's own folder (a fast-forward rewrites it) with
+  `.git/hooks` and `.git/config` sealed read-only, the folder its worktrees
+  are in, and the same caches. A tidy-up has no network; a merge keeps it
+  (checks fetch). More folders: "Extra folders" in Settings.
+- **Never open more of `.git` to a session, and never `~/go` or `~/.config`.**
+  Hooks, the config (hooksPath, fsmonitor) and anything on the PATH would run
+  later, outside the walls.
+- **The self-check is the guarantee** (`walls.Check`). On a host that does
+  not allow walls systemd starts the unit fully open and says nothing. So a
+  walled unit's spec carries what it must find (`Spec.Walls`: another mount
+  namespace than the daemon's, the paths that must refuse a write as a
+  read-only file system, the folders that must take one), and `job-exec` and
+  `runner-exec` check before any work. A job that fails it ends with a
+  result that says so (the task reads merge failed, for a person). A session
+  exits with status 97 (`walls.ExitRefused`), which systemd does not restart
+  (`RestartPreventExitStatus`); the supervisor puts it to sleep with the
+  reason, and a builder's part carries that reason. Before that, the daemon
+  refuses to start a walled unit at all when its probe of the host (a real
+  trial unit, `ccmuxd walls-probe`) says no. Settings that cannot be read
+  start nothing: "off" is never guessed.
+- **A walled session keeps its state file in `<state>/<id>.own/`**, not
+  beside every other session's spec, which it must not be able to rewrite
+  (systemd restarts a crashed session on the spec that is on disk). The file
+  follows the session when it becomes walled or open (`moveState`).
+- **Claude Code's own sandbox for shell commands is a second switch, off by
+  default** (`claudeserve/shellbox.mjs`, `--shell-box-write`). Seen live: a
+  sandboxed command has a network of its own, so it reaches no loopback
+  address (not a builder's dev servers, not this daemon) and only the hosts
+  the person's Claude settings allow. Switched on where bubblewrap or socat
+  is missing, walled sessions do not start, and say why.
+- **The user's bus is hidden** (`InaccessiblePaths`, `sandbox.go` `userBus`),
+  and the self-check tries a real connection to it: through it
+  `systemd-run --user` ran a command outside the walls (seen live).
+- **Walls stop accidents, not a determined session.** The daemon's API is
+  open on loopback: a walled session can still switch the sandbox off there,
+  or ask for an open pane. `ssh localhost` and a docker socket are ways out
+  too, where the person has them.
+- **Claude Code cannot save `~/.claude.json` from behind walls** (it writes
+  through a lock folder and a temp file in home; traced live). The turn
+  works; what it would have saved there is dropped.
+- A walled path cannot be under `/tmp` (the unit's `/tmp` is its own), and a
+  folder its walls name must exist, or systemd fails the unit with status
+  226 and no path; `Plan.Validate` refuses both first, by name.
 
 ## A queued task's builders are sessions (Linux)
 

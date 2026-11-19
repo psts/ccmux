@@ -1,8 +1,11 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +59,7 @@ func TestABuildersPaneCarriesTheTaskWorkersStamp(t *testing.T) {
 // A builder has no tmux at all: it is there until its session has ended,
 // and its Claude counts as gone once the session is asleep.
 func TestABuilderIsAliveWithoutATmuxSession(t *testing.T) {
-	m, _, b := builderManager(t)
+	m, rows, b := builderManager(t)
 	st, ok := m.TaskPane("build1")
 	if !ok || st.AtShell {
 		t.Fatalf("a running builder in a closed tmux session is alive: %+v %v", st, ok)
@@ -65,6 +68,13 @@ func TestABuilderIsAliveWithoutATmuxSession(t *testing.T) {
 	m.SyncRunnerPane(b)
 	if st, ok := m.TaskPane("build1"); !ok || !st.AtShell {
 		t.Fatalf("an asleep builder is one whose Claude exited: %+v %v", st, ok)
+	}
+	// Why it sleeps, as its row says it, goes to the task with it.
+	if err := rows.SetRunnerSessionNote(b.ID, "put to sleep: its walls were not up", 7); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := m.TaskPane("build1"); st.Why != "put to sleep: its walls were not up" {
+		t.Fatalf("the row's note is the reason: %q", st.Why)
 	}
 	b.Wanted = store.SessionDone
 	m.SyncRunnerPane(b)
@@ -242,5 +252,49 @@ func TestABuildersDevServerIsNotItsSessions(t *testing.T) {
 	m.mu.RUnlock()
 	if !held {
 		t.Fatal("the builder's port is held by a task worker")
+	}
+}
+
+// brokenBuilders is a store whose builders cannot be read; everything else
+// reads as it is.
+type brokenBuilders struct{ store.Store }
+
+func (brokenBuilders) BuildersIn(string) ([]store.RunnerSession, error) {
+	return nil, errors.New("database is locked")
+}
+
+// The reason a builder sleeps only adds to what its task says. When it
+// cannot be read the builder still counts as gone (that is the row, not
+// the note), the task gets no reason, and the log says one was lost: the
+// part is judged once, so nothing would say it later.
+func TestAReasonThatCannotBeReadIsLoggedAndChangesNothingElse(t *testing.T) {
+	m, rows, b := builderManager(t)
+	if err := rows.SetRunnerSessionNote(b.ID, "put to sleep: its walls were not up", 7); err != nil {
+		t.Fatal(err)
+	}
+	b.Wanted = store.SessionAsleep
+	m.SyncRunnerPane(b)
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	// Only this code's own lines count: the manager's loops may log too.
+	lost := func() bool { return strings.Contains(logged.String(), "its task will not say") }
+	if st, ok := m.TaskPane("build1"); !ok || st.Why != "put to sleep: its walls were not up" || lost() {
+		t.Fatalf("a readable row: its note, and no log line: %+v %v %q", st, ok, logged.String())
+	}
+	if st, ok := m.TaskPane("run1"); !ok || st.Why != "" || lost() {
+		t.Fatalf("a session that runs is asked nothing: %+v %v %q", st, ok, logged.String())
+	}
+
+	m.store = brokenBuilders{m.store}
+	st, ok := m.TaskPane("build1")
+	if !ok || !st.AtShell || st.Why != "" {
+		t.Fatalf("still gone, with no reason: %+v %v", st, ok)
+	}
+	for _, want := range []string{b.ID, b.Worktree, "database is locked"} {
+		if !strings.Contains(logged.String(), want) {
+			t.Errorf("the log line misses %q: %s", want, logged.String())
+		}
 	}
 }

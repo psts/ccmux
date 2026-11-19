@@ -168,7 +168,7 @@ function makeContext(opts, book) {
 
 // The Settings window: its frame, then each tab's files, in page order.
 const SETTINGS_FILES = ["settingsmodal.js", "settingsllm.js", "settingsllmedit.js", "settingsaccounts.js",
-  "settingsharness.js", "settingsharnesses.js", "settingsharnessrules.js", "settingsagents.js", "tasksettings.js", "agentcaps.js", "agentmodal.js"];
+  "settingsharness.js", "settingsharnesses.js", "settingsharnessrules.js", "settingsagents.js", "tasksettings.js", "settingssandbox.js", "agentcaps.js", "agentmodal.js"];
 
 // Boots app.js (and push.js when asked) in a fresh fake browser and hands
 // back the handles the cases assert on.

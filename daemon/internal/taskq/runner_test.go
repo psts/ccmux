@@ -1764,3 +1764,20 @@ func TestRunner_TotalCapAcrossWindows(t *testing.T) {
 		t.Fatalf("no cap: #3 = %s, want running in its own window's slot", g.st.task(3).Status)
 	}
 }
+
+// A builder whose Claude is gone carries its session's own reason onto the
+// part: one that refused to run because the sandbox's walls were not up
+// says so on its task, where a person looks, not only in its unit's log.
+func TestAnExitedBuildersOwnReasonIsOnItsPart(t *testing.T) {
+	now := time.UnixMilli(10_000_000)
+	late := store.Part{Status: Running, PaneID: "p", StartedAt: now.Add(-StartGrace - time.Minute).UnixMilli()}
+	why := "put to sleep: the sandbox is on, and its walls were not up when it started, so it did not run"
+	got, changed := Judge(late, PaneState{AtShell: true, Why: why}, true, now)
+	if !changed || got.Status != Failed || got.Note != noteExited+": "+why {
+		t.Fatalf("the reason is on the part: %+v", got)
+	}
+	got, _ = Judge(late, PaneState{AtShell: true}, true, now)
+	if got.Note != noteExited {
+		t.Fatalf("no reason, the plain note: %q", got.Note)
+	}
+}

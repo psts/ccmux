@@ -16,6 +16,19 @@ type PaneState struct {
 	Reason    model.AttentionReason
 	At        int64 // when that signal arrived, unix ms; 0 for none yet
 	AtShell   bool
+	// Why is what the session itself says of why its Claude is gone (a
+	// builder the supervisor put to sleep carries a note), "" for none.
+	Why string
+}
+
+// exited is the note of a part whose Claude is gone, with the session's
+// own reason when it gave one: a builder that refused to run because the
+// sandbox's walls were not up says so on its task, not only in its log.
+func (st PaneState) exited() string {
+	if st.Why == "" {
+		return noteExited
+	}
+	return noteExited + ": " + st.Why
 }
 
 // asking is a question or a permission prompt: blocked on a person.
@@ -127,7 +140,7 @@ func Judge(t store.Part, st PaneState, ok bool, now time.Time) (store.Part, bool
 	case !ok:
 		return finish(t, Failed, noteGone, now), true
 	case st.AtShell && now.Sub(time.UnixMilli(t.StartedAt)) > StartGrace:
-		return finish(t, Failed, noteExited, now), true
+		return finish(t, Failed, st.exited(), now), true
 	}
 	if t.Status == Running {
 		return judgeRunning(t, st, now)
