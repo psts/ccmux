@@ -82,3 +82,20 @@ test("a member whose repo session is not in the lists is named after its folder"
   assert.equal(t.repoOf({ workspaceId: "nope", repo: "/p/payments" }, workspaces), "payments");
   assert.equal(t.repoOf({ workspaceId: "api" }, workspaces), "backend");
 });
+
+test("the merge bar says which step a running merge is in and for how long, and where a failed one's output is", () => {
+  assert.equal(t.mergeLine(null, 0), null, "no merge job, no bar");
+  assert.equal(t.mergeLine(undefined, 0), null);
+  const running = { job: "merge-thread-3-ab12cd", unit: "ccmux-job@merge-thread-3-ab12cd.service", state: "running", doing: "backend: checks running", startedAt: 1000, attempts: 1 };
+  assert.deepEqual(t.mergeLine(running, 73000), { running: true, stopping: false, text: "Merging · backend: checks running · 1m 12s" });
+  assert.equal(t.mergeLine({ ...running, doing: "" }, 9000).text, "Merging · between steps · 8s", "between two steps it still says it runs");
+  assert.equal(t.mergeLine({ ...running, attempts: 2 }, 3700000 + 1000).text, "Merging · backend: checks running · 1h 01m · started again after it was cut off (try 2)");
+  assert.equal(t.mergeLine(running, 0).text, "Merging · backend: checks running · 0s", "a clock that runs behind the daemon's shows no negative time");
+  assert.deepEqual(t.mergeLine({ ...running, state: "stopping" }, 5000), { running: true, stopping: true, text: "Stopping the merge…" });
+  const failed = t.mergeLine({ ...running, state: "failed", checkLog: "/wt/backend-b4/thread-3.check.log" }, 5000);
+  assert.deepEqual(failed, { running: false, stopping: false, text: "The last merge failed. The failed check's whole output is in /wt/backend-b4/thread-3.check.log" });
+  assert.equal(t.mergeLine({ ...running, state: "failed" }, 5000).text, "The last merge failed.", "a failure that was no check names no file");
+  assert.equal(t.mergeLine({ ...running, state: "lost" }, 5000).text, "The last merge did not finish. Its log: journalctl --user -u ccmux-job@merge-thread-3-ab12cd.service");
+  assert.equal(t.mergeLine({ ...running, state: "stopped" }, 5000), null, "a merge someone stopped needs no bar");
+  assert.deepEqual([0, 59000, 60000, 3599000, 3600000].map(t.elapsed), ["0s", "59s", "1m 00s", "59m 59s", "1h 00m"]);
+});

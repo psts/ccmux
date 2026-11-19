@@ -110,6 +110,34 @@
     if ((now ? now.threadId : 0) !== id) return; // another session was picked meanwhile
     S.detail = detail && detail.thread ? detail : null;
     schedule();
+    watchMerge();
+  }
+
+  // mergeNow is the merge job of the thread on screen (threads.MergeView),
+  // null when it has none to show.
+  function mergeNow() {
+    const sess = session();
+    return sess && S.detail && S.detail.thread.id === sess.threadId ? S.detail.merge || null : null;
+  }
+
+  // watchMerge reads the thread again in a moment while its merge runs: the
+  // merge is a job outside the daemon, and nothing on the feed says which
+  // step it has reached. One read is ever waiting, however often this is
+  // asked.
+  function watchMerge() {
+    const line = Team.mergeLine(mergeNow(), Date.now());
+    if (!line || !line.running || S.mergeWatch) return;
+    S.mergeWatch = true;
+    setTimeout(() => { S.mergeWatch = false; loadTeam(); }, 3000);
+  }
+
+  // drawMerge is the bar about the thread's merge: running (with Stop), or
+  // how the last one that did not land ended.
+  function drawMerge() {
+    const line = Team.mergeLine(mergeNow(), Date.now());
+    $("merge-bar").className = "bar " + (line && !line.running ? "amber" : "blue") + (line ? "" : " hidden");
+    $("merge-text").textContent = line ? line.text : "";
+    show("stop-merge", !!line && line.running && !line.stopping);
   }
 
   const session = () => (S.sel.kind === "session" ? S.sessions.find((s) => s.id === S.sel.id) || null : null);
@@ -392,6 +420,7 @@
     const note = [S.said, S.stream.note || (sess && sess.note) || ""].filter(Boolean).join(" ");
     show("notice-bar", !!note);
     $("notice-bar").textContent = note;
+    drawMerge();
     const error = S.error || S.stream.error || S.listError;
     show("error-bar", !!error);
     $("error-bar").textContent = error;
@@ -850,6 +879,7 @@
     $("rename").onclick = rename;
     $("merge-thread").onclick = () => threadAct("merge");
     $("end-thread").onclick = () => threadAct("end", undefined, "Close this thread? Its helpers are stood down. Work that is not merged stays on its branch.");
+    $("stop-merge").onclick = () => threadAct("stop-merge", undefined, "Stop this merge? Its checks are ended. A repo that already landed stays landed.");
     $("new-thread").onclick = () => { const ws = workspace(); if (ws) select({ kind: "draft", ws: ws.id, as: "thread" }); };
     $("side-toggle").onclick = () => $("page").classList.toggle("side-open");
     for (const tab of document.querySelectorAll(".tab")) {
@@ -878,6 +908,7 @@
     await loadLists();
     setInterval(loadLists, 20000);
     setInterval(() => drawGauge(session()), 15000);
+    setInterval(drawMerge, 1000); // a running merge counts its seconds
   }
 
   boot();

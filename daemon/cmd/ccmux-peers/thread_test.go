@@ -58,7 +58,7 @@ func TestThreadToolTextIsShort(t *testing.T) {
 	if n := len(threadToolText); n > 700 {
 		t.Fatalf("the thread tool's description is %d characters; keep it under 700", n)
 	}
-	for _, action := range []string{"helpers", "stand_down", "merge", "end"} {
+	for _, action := range []string{"helpers", "stand_down", "merge", "stop_merge", "end"} {
 		if !strings.Contains(threadToolText, action+" (") {
 			t.Fatalf("the description explains %q", action)
 		}

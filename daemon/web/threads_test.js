@@ -689,6 +689,46 @@ test("Merge thread asks the daemon, and says what it said or why it would not", 
   assert.equal(other.$("merge-thread").classList.contains("hidden"), true, "a repo's own lead leads no thread");
 });
 
+test("a running merge shows its step and a Stop, is read again while it runs, and a failed one says where its output is", async () => {
+  const merging = { job: "merge-thread-3-ab12cd", unit: "ccmux-job@merge-thread-3-ab12cd.service", state: "running", doing: "backend: checks running", startedAt: Date.now() - 5000, attempts: 1 };
+  let now = { ...detail, thread: { ...detail.thread, state: "merging" }, merge: merging };
+  const p = await team({ routes: [[/^GET \/v1\/threads\/3$/, () => now], [/^POST \/v1\/threads\/3\/stop-merge$/, () => ({ message: "Stopping the merge of thread #3." })]] });
+  assert.equal(p.$("merge-bar").classList.contains("hidden"), false);
+  assert.match(p.$("merge-text").textContent, /^Merging · backend: checks running · \d+s$/);
+  assert.equal(p.$("merge-bar").className, "bar blue");
+  assert.equal(p.$("stop-merge").classList.contains("hidden"), false);
+  // Nothing on the feed says which step a job has reached: the page asks again.
+  const reads = () => p.book.calls.filter((c) => c.method === "GET" && c.url === "/v1/threads/3").length;
+  const before = reads();
+  const again = p.book.timers.filter((t) => t.ms === 3000);
+  assert.equal(again.length, 1, "one read is waiting, not one per draw");
+  now = { ...now, merge: { ...merging, doing: "backend: moving main forward" } };
+  again[0].fn();
+  await p.settle();
+  assert.equal(reads(), before + 1);
+  assert.match(p.$("merge-text").textContent, /^Merging · backend: moving main forward · /);
+  p.$("stop-merge").click();
+  await p.settle();
+  assert.equal(p.posts().pop().url, "/v1/threads/3/stop-merge");
+  assert.equal(p.$("notice-bar").textContent, "Stopping the merge of thread #3.");
+  // It failed on a check: the bar says where the whole output is, and has no Stop.
+  now = { ...detail, merge: { ...merging, state: "failed", checkLog: "/wt/backend-b4/thread-3.check.log" } };
+  p.book.timers.filter((t) => t.ms === 3000).pop().fn();
+  await p.settle();
+  assert.equal(p.$("merge-text").textContent, "The last merge failed. The failed check's whole output is in /wt/backend-b4/thread-3.check.log");
+  assert.equal(p.$("merge-bar").className, "bar amber");
+  assert.equal(p.$("stop-merge").classList.contains("hidden"), true);
+  const timers = p.book.timers.filter((t) => t.ms === 3000).length;
+  p.$("merge-thread").click();
+  await p.settle();
+  assert.equal(p.book.timers.filter((t) => t.ms === 3000).length, timers, "a merge that has ended is not polled");
+  // A thread with no merge job has no bar; neither has a session in no thread.
+  const quiet = await team();
+  assert.equal(quiet.$("merge-bar").classList.contains("hidden"), true);
+  const plain = await boot({ sessions: [lead], search: "?s=lead1" });
+  assert.equal(plain.$("merge-bar").classList.contains("hidden"), true);
+});
+
 test("what a thread action said shows beside the session's own notice, and neither hides the other", async () => {
   const noted = { ...threadLead, note: "start failed (1 of 5), trying again: no node" };
   const p = await boot({ workspaces: [repo, backendRepo], sessions: [noted, { ...helper }], search: "?s=t1",

@@ -39,7 +39,8 @@ func (f *fakeThreads) Detail(id int64) (threads.Detail, error) {
 	if id != 7 {
 		return threads.Detail{}, store.ErrNoThread
 	}
-	return threads.Detail{Thread: store.Thread{ID: 7, State: store.ThreadOpen}, Members: []threads.Member{{Repo: "app", Status: "Reading only"}}}, nil
+	return threads.Detail{Thread: store.Thread{ID: 7, State: store.ThreadMerging}, Members: []threads.Member{{Repo: "app", Status: "Reading only"}},
+		Merge: &threads.MergeView{Job: "merge-thread-7-ab12cd", Unit: "ccmux-job@merge-thread-7-ab12cd.service", State: "running", Doing: "app: checks running", StartedAt: 5, Attempts: 1}}, nil
 }
 
 // act notes an action on a thread and answers as the service would.
@@ -56,6 +57,9 @@ func (f *fakeThreads) act(what string, id int64) (string, error) {
 
 func (f *fakeThreads) Merge(id int64, by string) (string, error) { return f.act("merge by "+by, id) }
 func (f *fakeThreads) End(id int64, by string) (string, error)   { return f.act("end by "+by, id) }
+func (f *fakeThreads) StopMerge(id int64, by string) (string, error) {
+	return f.act("stop-merge by "+by, id)
+}
 func (f *fakeThreads) StandDown(id int64, repo, by string) (string, error) {
 	return f.act("stand-down "+repo+" by "+by, id)
 }
@@ -161,6 +165,9 @@ func TestAThreadIsReadAndActedOnFromItsPage(t *testing.T) {
 	if w := callSessions(t, s, "GET", "/v1/threads/7", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"Reading only"`) {
 		t.Fatalf("one thread comes with its members: %d %s", w.Code, w.Body)
 	}
+	if w := callSessions(t, s, "GET", "/v1/threads/7", ""); !strings.Contains(w.Body.String(), `"merge":{"job":"merge-thread-7-ab12cd","unit":"ccmux-job@merge-thread-7-ab12cd.service","state":"running","doing":"app: checks running","startedAt":5,"attempts":1}`) {
+		t.Fatalf("and with its merge job, while one runs: %s", w.Body)
+	}
 	if w := callSessions(t, s, "GET", "/v1/threads/8", ""); w.Code != http.StatusNotFound {
 		t.Fatalf("an unknown thread is not found: %d", w.Code)
 	}
@@ -169,6 +176,7 @@ func TestAThreadIsReadAndActedOnFromItsPage(t *testing.T) {
 	}
 	for _, c := range []struct{ path, body, did string }{
 		{"/v1/threads/7/merge", "", "merge by person"},
+		{"/v1/threads/7/stop-merge", "", "stop-merge by person"},
 		{"/v1/threads/7/stand-down", `{"repo":"backend"}`, "stand-down backend by person"},
 		{"/v1/threads/7/end", "", "end by person"},
 	} {
@@ -176,7 +184,7 @@ func TestAThreadIsReadAndActedOnFromItsPage(t *testing.T) {
 			t.Fatalf("%s answers with what was done: %d %s", c.path, w.Code, w.Body)
 		}
 	}
-	if strings.Join(f.acts, "|") != "merge by person|stand-down backend by person|end by person" {
+	if strings.Join(f.acts, "|") != "merge by person|stop-merge by person|stand-down backend by person|end by person" {
 		t.Fatalf("each route is its own action, asked for by a person: %v", f.acts)
 	}
 	f.refuse = errors.New("backend-thread-7 is still working; wait for it to report, then merge")
@@ -186,7 +194,7 @@ func TestAThreadIsReadAndActedOnFromItsPage(t *testing.T) {
 	if w := callSessions(t, s, "POST", "/v1/threads/8/merge", ""); w.Code != http.StatusNotFound {
 		t.Fatalf("an action on an unknown thread is not found: %d", w.Code)
 	}
-	if len(f.acts) != 3 {
+	if len(f.acts) != 4 {
 		t.Fatalf("a refused action did nothing: %v", f.acts)
 	}
 }

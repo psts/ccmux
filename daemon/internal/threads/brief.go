@@ -77,7 +77,8 @@ func leadBrief(th store.Thread, sess store.RunnerSession) string {
 			"\"merge\" lands every member's branch (each is rebased onto its repo's trunk, the repo's checks run, and all of them fast-forward or none does); " +
 			"\"end\" stands every helper down and closes the thread.",
 		"- Merge when the work is done: yours and every helper's is committed and its reviews are dealt with. The merge takes minutes and answers with a message, " +
-			"so end your turn after asking for it and change nothing meanwhile. A merge that fails leaves the thread open and says why: fix it, or pass it to the helper it names, then merge again.",
+			"so end your turn after asking for it and change nothing meanwhile. A merge that fails leaves the thread open and says why: fix it, or pass it to the helper it names, then merge again. " +
+			"It runs outside ccmux's own process, so a restart of ccmux does not cut it off; \"stop_merge\" stops one that is running, when the person asks or something is plainly wrong.",
 		"- When a choice is the person's, ask them with a question card (AskUserQuestion). They see it in this thread.",
 	}, "\n")
 }

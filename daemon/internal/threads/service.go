@@ -7,7 +7,8 @@
 // where it only reads, and is moved into its own git worktree by its first
 // change. At the end the lead merges: every member's branch lands through
 // the task queue's own merge (taskq.Lander: rebase, the repo's checks,
-// fast-forward), and the helpers are stood down.
+// fast-forward), run as a job in a service of its own (mergejob.go), and
+// the helpers are stood down.
 //
 // The thread has a row (store/threads.go) and its members are session rows
 // that carry the thread's id; this package owns the rules. The sessions
@@ -47,6 +48,10 @@ type Sessions interface {
 	SetWanted(sessionID, wanted string) error
 	SetModel(sessionID, model string) error
 	Send(sessionID, text, sender string) (string, error)
+	// SendAs is Send under an id the caller names: the same id sent again
+	// queues nothing, which is how a notice that may be sent twice (a job's
+	// end, settled again after a restart) is read once.
+	SendAs(sessionID, promptID, text, sender string) (string, error)
 }
 
 // Host is the manager as a thread uses it: the repo sessions (workspaces)
@@ -65,6 +70,18 @@ type Service struct {
 	// Lander is the task queue's own merge (taskq/land.go): its git makes a
 	// member's worktree, and a thread's branches land through it.
 	Lander taskq.Lander
+	// Jobs runs a thread's merge outside this daemon (mergejob.go). Nil is a
+	// daemon that runs no jobs: its threads are not merged, and JobsOff says
+	// why.
+	Jobs    Jobs
+	JobsOff string
+	// CheckLine is how long one line of a repo's checks may run in a merge;
+	// zero is the usual (checkLine).
+	CheckLine time.Duration
+	// Changed hears that a thread looks different now (its merge started, or
+	// ended), with its lead: whoever shows the thread reads it again. Nil
+	// hears nothing.
+	Changed func(lead store.RunnerSession)
 	// Changes reads what a member's branch holds (taskq.ReadBranchChanges).
 	Changes func(worktree, trunk string) (taskq.BranchChanges, error)
 	// Root is where worktrees go: the task queue's own folder, a thread's

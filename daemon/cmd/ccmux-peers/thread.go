@@ -9,7 +9,7 @@ import "encoding/json"
 const threadToolText = "For the lead of a ccmux thread (a session whose brief says it leads one), about its own thread and its helpers, " +
 	"the sessions it stood up in other repos by messaging those repos by name. Actions: helpers (who they are, where each works, what its branch holds), " +
 	"stand_down (end the helper for repo), merge (land every member's branch: each repo's checks run, all land or none; it takes minutes and the result comes as a message), " +
-	"end (stand every helper down and close the thread). Any other session is refused."
+	"stop_merge (stop a merge that is running), end (stand every helper down and close the thread). Any other session is refused."
 
 // toolThread hands the call to the daemon's pane route, which knows whose
 // thread the pane's session leads; the shim adds nothing but the identity.

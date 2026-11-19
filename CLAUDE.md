@@ -72,6 +72,56 @@ it, so restarting ccmuxd no longer cuts a reply a session is streaming.
 - Not moved: the meridian sidecars still run under the daemon and restart with
   it.
 
+## Long work runs as jobs (Linux)
+
+Since task #174 a thread's merge does not run inside ccmuxd. It is a job: one
+run of the systemd user unit `ccmux-job@<id>`, which is this binary as
+`ccmuxd job-exec <spec>` (`daemon/internal/jobs`). The daemon writes the spec,
+starts the unit, and acts on the result file when the unit has ended. A deploy,
+a crash of the daemon or a reboot during a merge neither loses it nor runs it
+twice. The task queue's own checks and landing still run in the daemon; they
+move onto the same service in the next step.
+
+- **Watch one:** `journalctl --user -u 'ccmux-job@<id>'` is its log (the checks'
+  own lines are in it); `systemctl --user list-units 'ccmux-job@*'` lists the
+  ones running. The thread page shows the step and the time, and
+  `GET /v1/threads/{id}` carries it as `merge`. Its files are in
+  `~/.local/state/ccmux/jobs/<id>/`: `spec.json`, `journal.jsonl` (the steps the
+  job finished), `result.json`, and `applied.jsonl` (what the daemon did with
+  the result). The `jobs` table is the daemon's record. Files go two weeks after
+  a job ended; rows stay.
+- **The daemon is the only writer of the database.** A job writes files. What
+  the daemon does with a result (`jobs.Handler`) is called again after a crash,
+  so every handler must be safe to repeat: record each step in the applied
+  journal, and name a message to a session after the job (`SendAs`), never
+  `Send`.
+- **A job can be run again at any time**, so every step must be safe to repeat
+  too. The journal saves the minutes (checks that passed on a commit are not run
+  again on it); it is not what makes a rerun correct.
+- **"Is it dead" is systemd's to say, in so many words.** Only `inactive` or
+  `failed` counts (`jobs.UnitState.Dead`). No answer, or any other state, means
+  keep watching: taking a hiccup for a death would run a merge twice.
+- A job that ends with no result is started again, three times at most; then
+  it is lost, the thread is open again and its lead is told. The unit stops a
+  job at 6 hours (`RuntimeMaxSec`), a merge stops itself at 3.
+- One job at a time works in a repo: it holds `~/.local/state/ccmux/locks/<repo>-<hash>.lock`
+  (flock, so a dead job holds nothing). Queue merges do not take it yet.
+- The unit caps a job at 75% of memory and every core but one, and kills its
+  whole process group when it stops. A check sees the daemon's own environment
+  (it rides in the spec, which is why the spec is 0600).
+- Spec, result and what the daemon keeps of a merge carry a format number. A
+  daemon that reads another one says so and guesses nothing: the thread is open
+  again and the lead is told to look at the trunks. Raise `jobs.Version` (or
+  `askFormat` in `threads/mergejob.go`) when a format changes.
+- **A scratch daemon runs no jobs unless it is given `-job-unit-prefix <its
+  own name>`**, and any daemon that finds a template for another daemon's job
+  folder leaves it alone. Without jobs, a thread's merge is refused with the
+  reason. A test that names a prefix must stop its units and delete
+  `~/.config/systemd/user/<prefix>@.service` afterwards.
+- A new kind of job is a `jobs.Runner` in `jobKinds` and a `jobs.Handler` in
+  `wireJobs` (`cmd/ccmuxd/jobs.go`). Keep `internal/jobs` free of the packages
+  that own the work.
+
 ## Shipping
 
 `/ship` runs direct-trunk here: `main` is both the working branch and the

@@ -22,6 +22,7 @@ type threadService interface {
 	List() ([]store.Thread, error)
 	Detail(threadID int64) (threads.Detail, error)
 	Merge(threadID int64, by string) (string, error)
+	StopMerge(threadID int64, by string) (string, error)
 	End(threadID int64, by string) (string, error)
 	StandDown(threadID int64, repo, by string) (string, error)
 	Tool(sessionID, action, repo string) (string, error)
@@ -37,6 +38,11 @@ func (s *Server) threadRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/threads/{id}", s.getThread)
 	mux.HandleFunc("POST /v1/threads/{id}/merge", s.threadAction(func(t threadService, id int64, _ string) (string, error) {
 		return t.Merge(id, threads.ByPerson)
+	}))
+	// A merge runs as a job in its own service (internal/jobs); this stops
+	// the one that is running. 409 with the reason when there is none.
+	mux.HandleFunc("POST /v1/threads/{id}/stop-merge", s.threadAction(func(t threadService, id int64, _ string) (string, error) {
+		return t.StopMerge(id, threads.ByPerson)
 	}))
 	mux.HandleFunc("POST /v1/threads/{id}/end", s.threadAction(func(t threadService, id int64, _ string) (string, error) {
 		return t.End(id, threads.ByPerson)
@@ -148,7 +154,8 @@ func threadID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 }
 
 // getThread: GET /v1/threads/{id} is one thread with its members, each with
-// what its branch holds against its repo's trunk.
+// what its branch holds against its repo's trunk, and its merge job while
+// one runs or the last one did not land (threads.MergeView).
 func (s *Server) getThread(w http.ResponseWriter, r *http.Request) {
 	if !s.threadsReady(w) {
 		return
@@ -176,8 +183,8 @@ func writeThreadError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusConflict, err.Error())
 }
 
-// threadAction is a route a person's page calls on a thread: merge, end,
-// or stand one helper down ({repo}). 200 with what was done, in words. The
+// threadAction is a route a person's page calls on a thread: merge, stop
+// its merge, end, or stand one helper down ({repo}). 200 with what was done, in words. The
 // thread's lead is told a person did it (threads.ByPerson).
 func (s *Server) threadAction(run func(t threadService, id int64, repo string) (string, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

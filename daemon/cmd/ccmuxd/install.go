@@ -47,34 +47,35 @@ const minTmux = "3.3"
 // process. Anything starting with "-" (e.g. the launchd/systemd `-addr …`
 // invocation) never reaches here, so the daemon path is untouched.
 func runSubcommand(name string, args []string) {
-	var err error
-	switch name {
-	case "install":
-		err = cmdInstall(args)
-	case "uninstall":
-		err = cmdUninstall(args)
-	case "upgrade":
-		err = cmdUpgrade(args)
-	case "env-exec":
-		err = cmdEnvExec(args)
-	case "runner-exec": // a session runner's systemd unit (internal/runner)
-		err = cmdRunnerExec(args)
-	case "llm-proxy": // the LLM proxy's systemd unit (internal/llmserve)
-		err = llmserve.Main(args)
-	case "version": // -version/--version arrive here via main's carve-out
+	if name == "version" { // -version/--version arrive here via main's carve-out
 		fmt.Printf("ccmuxd %s (wire contract %d)\n", version.Build, version.Contract)
 		os.Exit(0)
-	default:
+	}
+	run, ok := subcommands[name]
+	if !ok {
 		fmt.Fprintf(os.Stderr, "ccmuxd: unknown command %q\n\n", name)
 		printUsage()
 		os.Exit(2)
 	}
+	err := run(args)
 	if errors.Is(err, flag.ErrHelp) {
 		return // flag already printed usage
 	}
 	if err != nil {
 		log.Fatalf("%s: %v", name, err)
 	}
+}
+
+// subcommands are the verbs but version: the ones a person types, and the
+// ones only a systemd unit's ExecStart does.
+var subcommands = map[string]func(args []string) error{
+	"install":     cmdInstall,
+	"uninstall":   cmdUninstall,
+	"upgrade":     cmdUpgrade,
+	"env-exec":    cmdEnvExec,
+	"runner-exec": cmdRunnerExec, // a session runner's systemd unit (internal/runner)
+	"llm-proxy":   llmserve.Main, // the LLM proxy's systemd unit (internal/llmserve)
+	"job-exec":    cmdJobExec,    // a job's systemd unit (internal/jobs)
 }
 
 func printUsage() {

@@ -1,6 +1,7 @@
 package threads
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/jobs"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
@@ -22,8 +24,11 @@ type fakeSessions struct {
 	mu        sync.Mutex
 	st        *store.SQLite
 	n         int
+	sends     int // the prompts Send has named
 	relocated []string
 	sent      map[string][]string // session id → prompts
+	ids       map[string]bool     // the prompt ids queued
+	sendErr   error               // what SendAs fails with, when set
 	createErr error
 	moveErr   error // what Relocate fails with, when set
 }
@@ -72,11 +77,34 @@ func (f *fakeSessions) SetModel(id, m string) error { return f.st.SetRunnerSessi
 func (f *fakeSessions) Send(id, text, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.sent == nil {
-		f.sent = map[string][]string{}
+	f.sends++
+	return f.queue(id, fmt.Sprintf("prompt-%d", f.sends), text)
+}
+
+// SendAs queues a prompt once per id, as the supervisor does: the same id
+// sent again queues nothing. A session that has ended takes none.
+func (f *fakeSessions) SendAs(id, promptID, text, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sendErr != nil {
+		return "", f.sendErr
 	}
+	if sess, err := f.st.RunnerSession(id); err == nil && sess != nil && sess.Wanted == store.SessionDone {
+		return "", runner.ErrSessionDone
+	}
+	return f.queue(id, promptID, text)
+}
+
+func (f *fakeSessions) queue(id, promptID, text string) (string, error) {
+	if f.sent == nil {
+		f.sent, f.ids = map[string][]string{}, map[string]bool{}
+	}
+	if f.ids[promptID] {
+		return promptID, nil
+	}
+	f.ids[promptID] = true
 	f.sent[id] = append(f.sent[id], text)
-	return "prompt", nil
+	return promptID, nil
 }
 
 func (f *fakeSessions) moves() []string {
@@ -207,14 +235,142 @@ func repoOfWorktree(worktree string) string {
 	return dir[:strings.LastIndex(dir, "-")]
 }
 
+// fakeJobs is the job manager as a thread uses it, over the real registry
+// (so a thread has one open merge job at a time, by the same index) and
+// with no systemd: a started job lands through the rig's own Lander on its
+// own goroutine, as the job's service would, and its end is handed to the
+// thread's handler. A test that wants to play the daemon itself (a restart
+// between a job's end and its settling) sets manual and hands the end over
+// by hand.
+type fakeJobs struct {
+	mu       sync.Mutex
+	r        *rig
+	dir      string
+	n        int
+	startErr error
+	openErr  error // what OpenJob fails with, when set
+	manual   bool
+	started  []jobs.New
+	stopped  []string
+	results  map[string]jobs.Result
+	wg       sync.WaitGroup
+}
+
+func (f *fakeJobs) Start(n jobs.New) (store.Job, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return store.Job{}, f.startErr
+	}
+	f.n++
+	kept, _ := json.Marshal(n.Ctx)
+	job := store.Job{ID: fmt.Sprintf("%s-%d", n.Name, f.n), Kind: n.Kind, Subject: n.Subject, State: store.JobRunning, Ctx: string(kept), Attempts: 1, StartedAt: int64(f.n)}
+	if err := f.r.st.AddJob(job); err != nil {
+		return store.Job{}, err
+	}
+	f.started = append(f.started, n)
+	if !f.manual {
+		f.wg.Add(1)
+		go func() {
+			defer f.wg.Done()
+			// The row is done before the thread hears: a test that asks for
+			// the next merge the moment the thread is open finds no job in
+			// its way. (The real manager writes the row right after the
+			// handler, for a crash in between; here nothing crashes.)
+			res := f.land(job, n.Input.(taskq.LandInput))
+			f.done(job, store.JobApplied)
+			f.r.svc.MergeHandler().Apply(job, res)
+		}()
+	}
+	return job, nil
+}
+
+// land is the job itself: the landing, and its result.
+func (f *fakeJobs) land(job store.Job, in taskq.LandInput) jobs.Result {
+	note, err := f.r.svc.Lander.Land(in.Work)
+	raw, _ := json.Marshal(taskq.LandResult(in.Work, note, err, nil))
+	res := jobs.Result{ID: job.ID, Kind: job.Kind, Output: raw}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.results == nil {
+		f.results = map[string]jobs.Result{}
+	}
+	f.results[job.ID] = res
+	return res
+}
+
+func (f *fakeJobs) done(job store.Job, outcome string) {
+	job.State, job.Outcome, job.EndedAt = store.JobDone, outcome, 99
+	if err := f.r.st.SaveJob(job); err != nil {
+		f.r.t.Errorf("job %s not marked done: %v", job.ID, err)
+	}
+}
+
+func (f *fakeJobs) Stop(id, note string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	job, err := f.r.st.Job(id)
+	if err != nil || job == nil {
+		return store.ErrNoJob
+	}
+	job.State, job.Note = store.JobStopping, note
+	f.stopped = append(f.stopped, id)
+	return f.r.st.SaveJob(*job)
+}
+
+func (f *fakeJobs) OpenJob(subject string) (*store.Job, error) {
+	f.mu.Lock()
+	err := f.openErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return f.r.st.OpenJob(subject)
+}
+
+func (f *fakeJobs) LastJob(subject string) (*store.Job, error) { return f.r.st.LastJob(subject) }
+func (f *fakeJobs) Unit(id string) string                      { return "ccmux-job-test@" + id + ".service" }
+
+func (f *fakeJobs) Steps(id string) ([]jobs.Entry, error) {
+	return jobs.ReadJournal(filepath.Join(f.dir, id, "journal.jsonl"))
+}
+
+func (f *fakeJobs) Result(id string) (jobs.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	res, ok := f.results[id]
+	if !ok {
+		return jobs.Result{}, os.ErrNotExist
+	}
+	return res, nil
+}
+
+func (f *fakeJobs) Applied(id string) (*jobs.Journal, error) {
+	return jobs.OpenJournal(filepath.Join(f.dir, id, "applied.jsonl"))
+}
+
+// job reads the thread's last merge job fresh.
+func (f *fakeJobs) job(threadID int64) store.Job {
+	f.r.t.Helper()
+	job, err := f.r.st.LastJob(mergeSubject(threadID))
+	if err != nil || job == nil {
+		f.r.t.Fatalf("thread %d has no merge job: %v", threadID, err)
+	}
+	return *job
+}
+
 type rig struct {
-	t    *testing.T
-	st   *store.SQLite
-	sess *fakeSessions
-	host *fakeHost
-	git  *fakeGit
-	svc  *Service
-	root string // holds the repos
+	jobs *fakeJobs
+	// reread is the workspaces whose pages were told to read their thread
+	// again (Service.Changed), in order.
+	reread []string
+	t      *testing.T
+	st     *store.SQLite
+	sess   *fakeSessions
+	host   *fakeHost
+	git    *fakeGit
+	svc    *Service
+	root   string // holds the repos
 }
 
 // newRig is a threads service over a real registry and three repo sessions
@@ -238,6 +394,14 @@ func newRig(t *testing.T) *rig {
 	r.svc = &Service{St: st, Sessions: r.sess, Host: r.host, Lander: taskq.Lander{Git: r.git, MergeGit: r.git, Checks: r.git, Tag: "threads"}, Root: filepath.Join(root, "wt"),
 		Changes: r.git.changes,
 		Now:     func() time.Time { return time.UnixMilli(1000) }, MoveAfter: time.Millisecond}
+	r.svc.Changed = func(lead store.RunnerSession) {
+		r.sess.mu.Lock()
+		defer r.sess.mu.Unlock()
+		r.reread = append(r.reread, lead.WorkspaceID)
+	}
+	r.jobs = &fakeJobs{r: r, dir: filepath.Join(root, "jobs")}
+	r.svc.Jobs = r.jobs
+	t.Cleanup(r.jobs.wg.Wait) // before the registry closes under a job's end
 	return r
 }
 
@@ -283,6 +447,13 @@ func (r *rig) edits(id string) store.RunnerSession {
 	}
 	eventually(r.t, "the member's restart into its worktree", func() bool { return len(r.sess.moves()) > before })
 	return r.row(id)
+}
+
+// rereads is the workspaces whose pages were told to read again, so far.
+func (r *rig) rereads() []string {
+	r.sess.mu.Lock()
+	defer r.sess.mu.Unlock()
+	return append([]string(nil), r.reread...)
 }
 
 // state reads a thread's row fresh.

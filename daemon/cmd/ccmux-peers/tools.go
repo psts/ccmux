@@ -272,7 +272,7 @@ var toolsList = []map[string]any{
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []string{"helpers", "stand_down", "merge", "end"},
+					"enum":        []string{"helpers", "stand_down", "merge", "stop_merge", "end"},
 					"description": "What to do with your thread.",
 				},
 				"repo": map[string]any{

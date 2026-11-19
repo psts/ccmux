@@ -15,6 +15,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/api"
 	"ccmux.dev/ccmuxd/internal/harness"
+	"ccmux.dev/ccmuxd/internal/jobs"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/peers"
 	"ccmux.dev/ccmuxd/internal/runner"
@@ -39,6 +40,10 @@ type runnerWiring struct {
 	// worktrees is where a thread member's worktree goes (-worktrees-dir):
 	// the task queue's own folder.
 	worktrees string
+	// jobPrefix names the systemd unit template jobs run under
+	// (-job-unit-prefix); "" is the installed daemon's, and a scratch
+	// daemon that names none runs no jobs (jobs.go).
+	jobPrefix string
 }
 
 // wireRunners starts the session-runner supervisor (internal/runner): Claude
@@ -77,9 +82,13 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		return team.Brief(sess)
 	}
 	sup := runner.New(w.st, units, paths, cfg)
-	team = newThreads(w, sup)
+	jobMgr, jobsOff := newJobs(w.st, w.jobPrefix)
+	team = newThreads(w, sup, jobMgr, jobsOff)
 	w.api.SetThreads(team)
 	sup.Changed = sessionChanged(w.mgr, w.peers, team)
+	// Only now: what Recover does reaches the sessions through the
+	// supervisor, which has to tell the panes and the bus of it (Changed).
+	team.Recover()
 	w.mgr.RunnerLiveness = sup.Liveness
 	w.mgr.EndRunnerSession = func(id string) {
 		if err := sup.SetWanted(id, store.SessionDone); err != nil {
@@ -96,6 +105,10 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		},
 	})
 	go sup.Run(ctx)
+	// Last, with everything above in place: the job loop's first look
+	// settles what ended while the daemon was down, and that stands helpers
+	// down and restarts a lead through the supervisor.
+	wireJobs(ctx, jobMgr, team)
 }
 
 // runnerConfig is what every session's spec is built from.
@@ -115,14 +128,24 @@ func runnerConfig(w runnerWiring, claude string) runner.Config {
 
 // newThreads makes the threads service (internal/threads): threads with
 // helpers, over the session supervisor, landing through the task queue's own
-// merge. The bus asks it where a thread member's message to a repo goes, and
+// merge, run as a job by jobMgr (jobs.go; nil with jobsOff saying why this
+// daemon runs none). The bus asks it where a thread member's message to a repo goes, and
 // has it stand that repo's helper up.
-func newThreads(w runnerWiring, sup *runner.Supervisor) *threads.Service {
+func newThreads(w runnerWiring, sup *runner.Supervisor, jobMgr *jobs.Manager, jobsOff string) *threads.Service {
 	git := taskq.ExecGit{}
 	team := &threads.Service{
 		St: w.st, Sessions: sup, Host: w.mgr, Root: w.worktrees, Now: time.Now, MoveAfter: time.Second,
-		Lander:  taskq.Lander{Git: git, MergeGit: git, Checks: taskq.GateChecks{PerLine: 20 * time.Minute}, Tag: "threads"},
+		// The checks run in the merge's job (jobs.go), with a Lander of its
+		// own; this one is the daemon's git: worktrees made and removed, and
+		// whether a repo's folder can take a merge.
+		Lander:  taskq.Lander{Git: git, MergeGit: git, Tag: "threads"},
 		Changes: taskq.ReadBranchChanges,
+		// The thread page reads its rows again when a merge starts or ends.
+		Changed: func(lead store.RunnerSession) { w.mgr.SessionsChanged(lead.WorkspaceID) },
+		JobsOff: jobsOff,
+	}
+	if jobMgr != nil { // a nil manager must stay a nil Jobs, not a Jobs that holds nil
+		team.Jobs = jobMgr
 	}
 	if w.peers != nil {
 		w.peers.ThreadRoute = func(senderPane, toName string) (peers.HelperRoute, bool) {
@@ -131,7 +154,6 @@ func newThreads(w runnerWiring, sup *runner.Supervisor) *threads.Service {
 		}
 		w.peers.StartHelper = team.StartHelper
 	}
-	team.Recover()
 	return team
 }
 

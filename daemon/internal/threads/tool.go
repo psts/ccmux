@@ -19,8 +19,9 @@ var toolActions = map[string]func(s *Service, threadID int64, repo string) (stri
 	"stand_down": func(s *Service, id int64, repo string) (string, error) {
 		return s.StandDown(id, strings.TrimSpace(repo), ByLead)
 	},
-	"merge": func(s *Service, id int64, _ string) (string, error) { return s.Merge(id, ByLead) },
-	"end":   func(s *Service, id int64, _ string) (string, error) { return s.End(id, ByLead) },
+	"merge":      func(s *Service, id int64, _ string) (string, error) { return s.Merge(id, ByLead) },
+	"stop_merge": func(s *Service, id int64, _ string) (string, error) { return s.StopMerge(id, ByLead) },
+	"end":        func(s *Service, id int64, _ string) (string, error) { return s.End(id, ByLead) },
 }
 
 // Tool runs one action of the thread tool for the session that called it.
@@ -36,7 +37,7 @@ func (s *Service) Tool(sessionID, action, repo string) (string, error) {
 	}
 	run, ok := toolActions[action]
 	if !ok {
-		return "", fmt.Errorf(`action is "helpers", "stand_down" (with repo), "merge" or "end"`)
+		return "", fmt.Errorf(`action is "helpers", "stand_down" (with repo), "merge", "stop_merge" or "end"`)
 	}
 	return run(s, th.ID, repo)
 }
@@ -54,6 +55,9 @@ func (s *Service) Describe(threadID int64) (string, error) {
 		b.WriteString(" (" + d.Thread.Note + ")")
 	}
 	b.WriteString(".\n")
+	if d.Merge != nil && d.Merge.Running() {
+		b.WriteString("Its merge is running: " + d.Merge.line() + "\n")
+	}
 	if len(d.Members) == 1 {
 		b.WriteString("No helpers. Message a repo of this window by its name to stand one up.\n")
 	}

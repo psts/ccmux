@@ -80,14 +80,14 @@ func stayed(left []string) string {
 // branch with a commit its trunk lacks. It returns what stayed. A session
 // that would not stop keeps its worktree: its Claude may still be in it.
 func (s *Service) standDown(m store.RunnerSession) []string {
-	if err := s.Sessions.SetWanted(m.ID, store.SessionDone); err != nil {
+	if err := s.Sessions.SetWanted(m.ID, store.SessionDone); err != nil && !gone(err) {
 		log.Printf("threads: #%d helper %s did not stop: %v", m.ThreadID, m.Name, err)
 		return []string{fmt.Sprintf("%s (it did not stop: %v)", m.Name, err)}
 	}
 	if m.Worktree == "" {
 		return nil
 	}
-	if why := s.Lander.Remove(workOf(m)); why != "" {
+	if why := s.Lander.Remove(workOf(m), taskq.RebaseMark(m.Worktree)); why != "" {
 		log.Printf("threads: #%d helper %s stood down; %s", m.ThreadID, m.Name, why)
 		return []string{why}
 	}
@@ -113,7 +113,7 @@ func (s *Service) End(threadID int64, by string) (string, error) {
 		return "", err
 	}
 	if th.State == store.ThreadMerging {
-		return "", fmt.Errorf("thread #%d is being merged; end it once the merge has answered", threadID)
+		return "", fmt.Errorf("thread #%d is being merged; end it once the merge has answered, or stop the merge first", threadID)
 	}
 	left, err := s.standAllDown(threadID)
 	if err != nil {
@@ -162,7 +162,7 @@ func (s *Service) SessionEnded(sess store.RunnerSession) {
 		return
 	}
 	if sess.Worktree != "" {
-		if why := s.Lander.Remove(workOf(sess)); why != "" {
+		if why := s.Lander.Remove(workOf(sess), taskq.RebaseMark(sess.Worktree)); why != "" {
 			left = append(left, why)
 		}
 	}

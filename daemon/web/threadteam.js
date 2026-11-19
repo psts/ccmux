@@ -106,7 +106,40 @@
     }));
   }
 
-  const api = { isHelper, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, changeGroups };
+  // elapsed is how long something has run, as a person reads it: "45s",
+  // "3m 05s", "1h 02m".
+  function elapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const two = (n) => String(n).padStart(2, "0");
+    if (s < 60) return s + "s";
+    if (s < 3600) return `${Math.floor(s / 60)}m ${two(s % 60)}s`;
+    return `${Math.floor(s / 3600)}h ${two(Math.floor((s % 3600) / 60))}m`;
+  }
+
+  const ended = {
+    failed: (m) => "The last merge failed." + (m.checkLog ? " The failed check's whole output is in " + m.checkLog : ""),
+    lost: (m) => "The last merge did not finish. Its log: journalctl --user -u " + m.unit,
+  };
+
+  // mergeLine is the bar about a thread's merge job (the daemon's
+  // threads.MergeView), null for nothing to say. A merge runs in a service
+  // of its own, for minutes: while it does, the bar says which step it is in
+  // and for how long, and that it was started again when it was cut off.
+  // One that did not land says where to read why. A merge that was stopped
+  // on purpose says nothing: whoever stopped it knows.
+  function mergeLine(merge, now) {
+    if (!merge) return null;
+    if (merge.state === "stopping") return { running: true, stopping: true, text: "Stopping the merge…" };
+    if (merge.state === "running") {
+      const parts = ["Merging", merge.doing || "between steps", elapsed(now - merge.startedAt)];
+      if (merge.attempts > 1) parts.push(`started again after it was cut off (try ${merge.attempts})`);
+      return { running: true, stopping: false, text: parts.join(" · ") };
+    }
+    const say = ended[merge.state];
+    return say ? { running: false, stopping: false, text: say(merge) } : null;
+  }
+
+  const api = { isHelper, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, changeGroups, elapsed, mergeLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadTeam = api;
 })(typeof window !== "undefined" ? window : this);

@@ -37,6 +37,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/hooks"
 	"ccmux.dev/ccmuxd/internal/hub"
+	"ccmux.dev/ccmuxd/internal/jobs"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/peers"
@@ -85,6 +86,7 @@ func runDaemon() {
 	agentsMax := flag.Int("agents-max", 6, "how many agent instances may run at once on this daemon (0 = no cap); asleep instances do not count")
 	agentsModel := flag.String("agents-model", agent.DefaultModel, "model an agent instance runs on when its base pins none (opencode provider/model form; the anthropic provider rides the pane proxy)")
 	runnerPrefix := flag.String("runner-unit-prefix", runner.DefaultPrefix, "name of the systemd user unit template session runners start under (<prefix>@.service); a scratch daemon passes its own so the live daemon's template is never rewritten")
+	jobPrefix := flag.String("job-unit-prefix", "", "name of the systemd user unit template jobs (a thread's merge) run under (<prefix>@.service; default "+jobs.DefaultPrefix+"); a second daemon on this host passes its own name, and a scratch daemon (CCMUXD_ROOT) that passes none runs no jobs")
 	peersShimPath := flag.String("peers-shim", "", "ccmux-peers binary session runners load as their bus shim (default: the one beside this binary, else on the PATH)")
 	proxyUnit := flag.String("llm-proxy-unit", "", "name of the systemd user unit the LLM proxy runs under (default "+llmProxyUnitDefault+"; a second daemon on this host passes its own name, and \""+llmProxyInProcess+"\" keeps the proxy inside the daemon, where a daemon restart cuts replies being streamed)")
 	proxyAddr := flag.String("llm-proxy-addr", "", "loopback address the LLM proxy's service listens on (default: the port after -addr's, on 127.0.0.1)")
@@ -222,7 +224,7 @@ func runDaemon() {
 	agentStore := agent.NewStore(*agentsDir)
 	agentStore.AskNPMForLatestSDK() // the lenses' "agents on X, latest Y"
 	apiSrv.SetAgents(agentStore, *agentsMax)
-	wireRunners(ctx, runnerWiring{st: st, agents: agentStore, api: apiSrv, mgr: mgr, peers: peersSvc, prefix: *runnerPrefix, shim: *peersShimPath, worktrees: *worktreesDir})
+	wireRunners(ctx, runnerWiring{st: st, agents: agentStore, api: apiSrv, mgr: mgr, peers: peersSvc, prefix: *runnerPrefix, shim: *peersShimPath, worktrees: *worktreesDir, jobPrefix: *jobPrefix})
 	// Repo sessions write their own shared/<repo>/ folder without asking;
 	// joins after this are granted as they happen (window notices).
 	go apiSrv.GrantSharedFolders()
