@@ -149,6 +149,54 @@ a person), the task's row, the slots.
   `wireJobs` (`cmd/ccmuxd/jobs.go`). Keep `internal/jobs` free of the packages
   that own the work.
 
+## A queued task's builders are sessions (Linux)
+
+Since task #176 the Claude that builds one part of a queued task is a runner
+session (`ccmux-session@<id>`, Agent SDK), not a Claude typed into a tmux
+pane. A task is a thread the queue leads: a row in `threads` with the task's
+number (`task_id`) and no lead session, whose members are builders (role
+`builder`), one per part, each in its part's worktree from its first moment.
+The queue still owns everything it did: parts, starts-after, slots, the
+watchdog, reports, the merge and tidy-up jobs, send-back.
+
+- **The seam is `taskq.Host.StartBuilder`** (`threads/builders.go` makes the
+  thread and the session). Its answer is the session's pane id, which is what
+  a part's `pane_id` holds and how the tasks tool, the bus and the watchdog
+  know the builder. A daemon with no session runners starts none, and waiting
+  tasks say so in their note.
+- **The pane's stamp is what makes it a worker.** A builder's runner pane
+  carries `createdBy: "task-runner"` like the tmux workers before it
+  (`manager/builders.go`); its signals, its dev servers' ports and the
+  clearing of its worktree all key on that. Builders in a worktree are read
+  from the session rows (`store.BuildersIn`), never from the pane list.
+- **A runner's signals are translated for the watchdog** (`builderSignal`):
+  busy is "at work" but never replaces a prompt's mark, and stopped is a turn
+  that ended, not a person typing. "A person typed" comes from the prompt
+  route (`api.personTyped`), because a runner's own prompt hook is not heard.
+  A new way to prompt a builder as a person must call `NoteTaskPrompt` too.
+- **Gone means asleep.** A builder's Claude counts as exited when its row
+  says asleep, never when its unit is down between two restarts.
+- **Names are the task's**: `<repo>-task-<n>` on the bus. A repo's plain name
+  is still the repo's own session; a task's thread reroutes nothing and
+  stands up no helper (`store.Threads` leaves it out on purpose, so the
+  routing, the thread merge and its recovery never meet one).
+- **The brief is the file beside the worktree** (`taskq.BriefFile`) and is
+  the session's standing prompt at every start; a missing one fails the
+  start. The tidy-up removes it after the session has ended.
+- **A builder runs with** its part's model and effort, `--permission-mode
+  auto`, the login shell's PATH, no loadout (it loads the person's whole
+  Claude setup, as it did in a pane, so the repo's gates and commit review
+  come along), and `--keep-out-files <repo>`: its file tools cannot write in
+  the repo's own folder, its shell is not judged (its brief tells it to `cp`
+  env files out of that folder).
+- **A builder's dev servers die with its unit** (`KillMode=control-group`)
+  when it is restarted or ended. Ports still come from the part's block.
+- **Tmux workers from before still finish the old way.** `TaskPane`,
+  `ClearTaskFolder` and `TellWorker` serve both; `Manager.StartTaskPane` is
+  kept only for them and their tests, and goes when they are gone.
+- "Open session" on a part opens the builder's conversation
+  (`/threads.html?s=<session>`); the part's view carries `sessionId`.
+
 ## Shipping
 
 `/ship` runs direct-trunk here: `main` is both the working branch and the

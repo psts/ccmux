@@ -1638,6 +1638,64 @@ func TestJudge(t *testing.T) {
 	}
 }
 
+// A builder session's runner says one thing a tmux worker's hooks never
+// did: "running", while a turn runs (manager.builderSignal keeps a prompt's
+// mark over it, so what reaches Judge as running is a turn nobody of the
+// queue or a person started: its first prompt, a teammate's message, an
+// answered card). It is a builder at work: never timed, never an answer to
+// a "stuck" report, and not a turn that has ended.
+func TestJudge_ABuildersRunningSignal(t *testing.T) {
+	now := time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC)
+	ms := func(d time.Duration) int64 { return now.Add(d).UnixMilli() }
+	at := func(d time.Duration) PaneState { return PaneState{Attention: model.AttentionRunning, At: ms(d)} }
+	cases := []struct {
+		name   string
+		part   store.Part
+		st     PaneState
+		want   string
+		change bool
+	}{
+		{"at work for hours in one turn: never timed", store.Part{Status: Running, PaneID: "p", StartedAt: ms(-3 * time.Hour)}, at(-3 * time.Hour), Running, false},
+		{"silent too long, then it runs", store.Part{Status: NeedsYou, PaneID: "p", Note: noteSilent, UpdatedAt: ms(-2 * time.Minute)}, at(-time.Minute), Running, true},
+		{"its card was answered", store.Part{Status: NeedsYou, PaneID: "p", Note: noteAsking, UpdatedAt: ms(-5 * time.Minute)}, at(-time.Minute), Running, true},
+		{"it reported stuck and a teammate's message started a turn: no answer", store.Part{Status: NeedsYou, PaneID: "p", Note: "need a key", UpdatedAt: ms(-5 * time.Minute)}, at(-time.Minute), NeedsYou, false},
+		{"asked to report and a later turn runs: alive, not unanswered", store.Part{Status: Running, PaneID: "p", Note: noteNudged, StartedAt: ms(-5 * time.Hour), UpdatedAt: ms(-4 * time.Hour)}, at(-time.Hour), Running, false},
+	}
+	for _, c := range cases {
+		got, changed := Judge(c.part, c.st, true, now)
+		if got.Status != c.want || changed != c.change {
+			t.Errorf("%s: %s changed=%v, want %s changed=%v", c.name, got.Status, changed, c.want, c.change)
+		}
+	}
+	// A whole run of a part that reports stuck and is answered by a person:
+	// each step is the signal the manager keeps at that moment.
+	part := store.Part{Status: Running, PaneID: "p", StartedAt: ms(-time.Hour), UpdatedAt: ms(-time.Hour)}
+	step := func(what string, st PaneState, want string) {
+		t.Helper()
+		next, _ := Judge(part, st, true, now)
+		if next.Status != want {
+			t.Fatalf("%s: %s, want %s", what, next.Status, want)
+		}
+		part = next
+	}
+	step("its first turn runs", at(-50*time.Minute), Running)
+	part.Status, part.Note, part.UpdatedAt = NeedsYou, "need the color", ms(-40*time.Minute) // its own report
+	step("the turn that reported ends", PaneState{Attention: model.AttentionDone, Reason: model.ReasonFinished, At: ms(-39 * time.Minute)}, NeedsYou)
+	step("the idle reminder comes", PaneState{Attention: model.AttentionNeedsInput, Reason: model.ReasonFinished, At: ms(-38 * time.Minute)}, NeedsYou)
+	// A person answers in its session. The mark stands while that turn runs
+	// (busy does not replace it), so a pass seconds or minutes later sees it.
+	step("a person typed", PaneState{Attention: model.AttentionIdle, At: ms(-5 * time.Minute)}, Running)
+	step("and that turn is still running", PaneState{Attention: model.AttentionIdle, At: ms(-5 * time.Minute)}, Running)
+	// And a merge does not run its checks under a builder that is at work.
+	built := store.Part{Status: Ready, PaneID: "p", FinishedAt: ms(-2 * time.Minute)}
+	if Settled(built, at(-time.Minute), true, now) {
+		t.Fatal("a builder running a turn after its report read as settled")
+	}
+	if !Settled(built, PaneState{Attention: model.AttentionNeedsInput, Reason: model.ReasonFinished, At: ms(-time.Minute)}, true, now) {
+		t.Fatal("its idle reminder after the report did not settle it")
+	}
+}
+
 func TestReport(t *testing.T) {
 	run := store.Part{ID: 1, Status: Running}
 	got, err := Report(run, "done", "built it", nil, 5)

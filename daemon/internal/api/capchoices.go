@@ -228,8 +228,12 @@ func (s *Server) sessionLoadouts() *loadout.Snapshot {
 }
 
 // loadoutOf is what a session started with and whether it is out of date.
+// A queued task's builder has no loadout, on purpose (it loads the person's
+// whole Claude setup, cmd/ccmuxd/builders.go), so it is never out of date:
+// "no loadout" otherwise reads as a session from before loadouts, and the
+// page would offer a restart to every builder.
 func loadoutOf(snap *loadout.Snapshot, sess store.RunnerSession) (*agent.LoadoutRecord, bool) {
-	if snap == nil {
+	if snap == nil || sess.Role == store.RoleBuilder {
 		return nil, false
 	}
 	stale := snap.Stale(sess)

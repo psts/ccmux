@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/loadout"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/taskq"
@@ -93,5 +94,20 @@ func TestTheQueueStartsBuildersThroughTheThreadsService(t *testing.T) {
 	pane, err := s.taskRunner.Host.StartBuilder(taskq.Builder{Name: "app-task-3", TaskID: 3})
 	if err != nil || pane != "pane-app-task-3" || len(f.built) != 1 || f.built[0].TaskID != 3 {
 		t.Fatalf("the builder went to the threads service: %q %v %+v", pane, err, f.built)
+	}
+}
+
+// Gap 10: a builder has no loadout on purpose, so "no loadout" must not
+// read as "started before loadouts, restart it": the page would offer a
+// restart to every builder.
+func TestABuilderWithNoLoadoutIsNotOutOfDate(t *testing.T) {
+	snap := &loadout.Snapshot{}
+	old := store.RunnerSession{ID: "old", Wanted: store.SessionRunning}
+	if _, stale := loadoutOf(snap, old); !stale {
+		t.Fatal("a person's running session with no loadout is still out of date: that rule is unchanged")
+	}
+	b := store.RunnerSession{ID: "b", Wanted: store.SessionRunning, Role: store.RoleBuilder}
+	if rec, stale := loadoutOf(snap, b); rec != nil || stale {
+		t.Fatalf("a builder's loadout = %+v stale=%v, want none and never out of date", rec, stale)
 	}
 }
