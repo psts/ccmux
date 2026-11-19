@@ -248,7 +248,7 @@ func TestDeletingAWorkspaceEndsItsRunnerSessions(t *testing.T) {
 	m, _, sess := runnerManager(t)
 	m.SyncRunnerPane(sess)
 	ended := make(chan string, 1)
-	m.EndRunnerSession = func(id string) { ended <- id }
+	m.EndRunnerSession = func(id string) error { ended <- id; return nil }
 	if err := m.KillWorkspace("ws"); err != nil {
 		t.Fatal(err)
 	}

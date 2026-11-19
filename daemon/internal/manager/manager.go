@@ -141,7 +141,7 @@ type Manager struct {
 	// the pane's last row. EndRunnerSession ends one, for a workspace deleted
 	// under it. Both are wired at startup when session runners are on.
 	RunnerLiveness   func(sessionID string) (string, error)
-	EndRunnerSession func(sessionID string)
+	EndRunnerSession func(sessionID string) error
 
 	// OnDevhostChange, when set, is invoked (on its own goroutine) after any
 	// dev-hostname or dev-setting mutation so the devhost server reconciles.
@@ -1038,7 +1038,7 @@ func (m *Manager) applyAttention(paneID string, att model.Attention, reason mode
 	saved := *p
 	m.mu.Unlock()
 	m.restart.clocks.attention(paneID, att, reason, time.Now())
-	m.taskSigs.note(saved, att, reason)
+	m.taskSigs.heard(saved, att, reason)
 	if saved.Agent != "" {
 		// The harness's own signal (Claude's hooks, the opencode plugin) is
 		// the lifecycle's state; agentStateFor reads it.

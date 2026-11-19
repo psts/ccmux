@@ -94,11 +94,7 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	// supervisor, which has to tell the panes and the bus of it (Changed).
 	team.Recover()
 	w.mgr.RunnerLiveness = sup.Liveness
-	w.mgr.EndRunnerSession = func(id string) {
-		if err := sup.SetWanted(id, store.SessionDone); err != nil {
-			log.Printf("session runners: session %s of a deleted workspace was not ended: %v", id, err)
-		}
-	}
+	w.mgr.EndRunnerSession = func(id string) error { return sup.SetWanted(id, store.SessionDone) }
 	w.api.SetRunners(sup, w.st)
 	w.api.SetRunnerDoors(api.RunnerDoors{
 		Dial: func(sessionID string) api.SessionRunner { return sup.Runner(sessionID) },

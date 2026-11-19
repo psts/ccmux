@@ -36,6 +36,12 @@ type Store interface {
 	// read once at start so a restart keeps what each worker last said.
 	UpdateTaskSignal(paneID string, sig TaskSignal) error
 	TaskSignals() (map[string]TaskSignal, error)
+	// A task's builder is a runner session (builders.go): its signal is
+	// kept on its session's row, and the builders in a worktree are read
+	// from the rows, with or without a pane.
+	UpdateRunnerTaskSignal(paneID string, sig TaskSignal) error
+	RunnerTaskSignals() (map[string]TaskSignal, error)
+	BuildersIn(worktree string) ([]RunnerSession, error)
 	UpdatePanePositions(wsID string, orderedIDs []string) error
 	DeleteWorkspace(id string) error
 	DeletePane(id string) error

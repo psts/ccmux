@@ -17,7 +17,9 @@ func (m *Manager) TasksChanged() { m.events.publish(Event{Kind: "tasks-changed"}
 // so a page showing the lists reads them again.
 func (m *Manager) TodosChanged() { m.events.publish(Event{Kind: "todos-changed"}) }
 
-// taskRunner is the createdBy stamp on a task worker's pane.
+// taskRunner is the createdBy stamp on a task worker's pane: the tmux pane
+// of a worker started before task #176, and the pane of a builder session
+// since (builders.go).
 const taskRunner = "task-runner"
 
 // TaskWorkspace finds the session a task in repo runs in: a repo session
@@ -104,10 +106,12 @@ func (m *Manager) StartTaskPane(wsID, cwd, cmd string) (string, error) {
 	return p.ID, nil
 }
 
-// ClearTaskFolder closes every task worker's pane started in dir, before a
-// new worker starts there: one Claude per worktree, whatever a past run
-// left behind (a failed or cancelled run's pane, or one whose start was never
-// recorded). A person's own panes in that folder are left alone.
+// ClearTaskFolder closes every task worker in dir, before a new worker
+// starts there: one Claude per worktree, whatever a past run left behind (a
+// failed or cancelled run's worker, or one whose start was never recorded).
+// A worker is a builder session that works in dir (builders.go), or, from
+// before task #176, a tmux pane the queue started there. A person's own
+// panes in that folder are left alone.
 func (m *Manager) ClearTaskFolder(dir string) error {
 	type target struct{ ws, pane string }
 	var found []target
@@ -125,7 +129,7 @@ func (m *Manager) ClearTaskFolder(dir string) error {
 			return fmt.Errorf("closing the last run's pane: %w", err)
 		}
 	}
-	return nil
+	return m.endBuildersIn(dir)
 }
 
 // TaskSignal is a worker's last hook signal, kept apart from the pane's
@@ -137,12 +141,14 @@ type TaskSignal = store.TaskSignal
 type taskSignals struct {
 	mu   sync.Mutex
 	last map[string]TaskSignal
-	save func(paneID string, sig TaskSignal) // nil in tests without a store
+	save func(p model.Pane, sig TaskSignal) // nil in tests without a store
 }
 
-// note keeps the signal when the pane is a task worker's, and saves it.
-// Under the lock, so two signals in a row are saved in the order they came.
-func (s *taskSignals) note(p model.Pane, att model.Attention, reason model.AttentionReason) {
+// put changes a task worker's last signal: change is given the one kept
+// and returns the one to keep, or false to keep it. A pane that is no task
+// worker's keeps none. Under the lock, so two signals in a row are judged
+// and saved in the order they came.
+func (s *taskSignals) put(p model.Pane, change func(last TaskSignal) (TaskSignal, bool)) {
 	if p.CreatedBy != taskRunner {
 		return
 	}
@@ -151,11 +157,31 @@ func (s *taskSignals) note(p model.Pane, att model.Attention, reason model.Atten
 	if s.last == nil {
 		s.last = map[string]TaskSignal{}
 	}
-	sig := TaskSignal{Attention: att, Reason: reason, At: nowMillis()}
+	sig, ok := change(s.last[p.ID])
+	if !ok {
+		return
+	}
+	sig.At = nowMillis()
 	s.last[p.ID] = sig
 	if s.save != nil {
-		s.save(p.ID, sig)
+		s.save(p, sig)
 	}
+}
+
+// note keeps the signal when the pane is a task worker's, and saves it.
+func (s *taskSignals) note(p model.Pane, att model.Attention, reason model.AttentionReason) {
+	s.put(p, func(TaskSignal) (TaskSignal, bool) { return TaskSignal{Attention: att, Reason: reason}, true })
+}
+
+// heard keeps what a worker's Claude just said of itself. A tmux worker's
+// hooks say it the way the queue's watchdog reads it; a builder session's
+// runner says more, and some of it differently (builderSignal).
+func (s *taskSignals) heard(p model.Pane, att model.Attention, reason model.AttentionReason) {
+	if p.Runtime != model.RuntimeRunner {
+		s.note(p, att, reason)
+		return
+	}
+	s.put(p, func(last TaskSignal) (TaskSignal, bool) { return builderSignal(last, att, reason) })
 }
 
 // remind keeps Claude's idle reminder as a worker's last signal: the proof
@@ -164,10 +190,12 @@ func (s *taskSignals) note(p model.Pane, att model.Attention, reason model.Atten
 // prompt, but if one ever arrived late it must not take a question off the
 // list of what needs a person.
 func (s *taskSignals) remind(p model.Pane) {
-	if last := s.get(p.ID); last.Attention == model.AttentionNeedsInput && last.Reason != model.ReasonFinished {
-		return
-	}
-	s.note(p, model.AttentionNeedsInput, model.ReasonFinished)
+	s.put(p, func(last TaskSignal) (TaskSignal, bool) {
+		if last.Attention == model.AttentionNeedsInput && last.Reason != model.ReasonFinished {
+			return last, false
+		}
+		return TaskSignal{Attention: model.AttentionNeedsInput, Reason: model.ReasonFinished}, true
+	})
 }
 
 // seed loads the saved signals at start, keeping any already noted.
@@ -184,22 +212,35 @@ func (s *taskSignals) seed(stored map[string]TaskSignal) {
 	}
 }
 
-// persistTaskSignal is taskSignals.save for a manager with a store.
-func (m *Manager) persistTaskSignal(paneID string, sig TaskSignal) {
-	if err := m.store.UpdateTaskSignal(paneID, sig); err != nil {
-		log.Printf("task pane %s: signal %q not persisted (a restart forgets it): %v", paneID, sig.Attention, err)
+// persistTaskSignal is taskSignals.save for a manager with a store: on the
+// pane's row for a tmux worker, on the session's row for a builder, whose
+// pane has no row.
+func (m *Manager) persistTaskSignal(p model.Pane, sig TaskSignal) {
+	var err error
+	if p.Runtime == model.RuntimeRunner {
+		err = m.store.UpdateRunnerTaskSignal(p.ID, sig)
+	} else {
+		err = m.store.UpdateTaskSignal(p.ID, sig)
+	}
+	if err != nil {
+		log.Printf("task pane %s: signal %q not persisted (a restart forgets it): %v", p.ID, sig.Attention, err)
 	}
 }
 
-// loadTaskSignals seeds the workers' signals from the registry. A failure
-// costs only those: every worker then starts with no signal, as before.
+// loadTaskSignals seeds the workers' signals from the registry, the tmux
+// workers' and the builders'. A failure costs only those: every such
+// worker then starts with no signal, as before.
 func (m *Manager) loadTaskSignals() {
 	stored, err := m.store.TaskSignals()
 	if err != nil {
 		log.Printf("task signals unreadable, workers start with none: %v", err)
-		return
 	}
 	m.taskSigs.seed(stored)
+	builders, err := m.store.RunnerTaskSignals()
+	if err != nil {
+		log.Printf("builders' task signals unreadable, they start with none: %v", err)
+	}
+	m.taskSigs.seed(builders)
 }
 
 // NoteTaskPrompt records that a prompt went into a task worker's pane from
@@ -207,6 +248,10 @@ func (m *Manager) loadTaskSignals() {
 // prompt would: the runner then counts the worker as busy from now, not as
 // finished since its last Stop. A bus message starts a turn with no
 // user_prompt_submit hook, so without this the old Stop would stand.
+//
+// For a builder session it is also how "a person typed" is known at all:
+// its user_prompt_submit hook is not heard (ApplyAttention), so the route
+// that queues a person's prompt for it says so here.
 func (m *Manager) NoteTaskPrompt(paneID string) {
 	m.mu.RLock()
 	_, p := m.findPaneLocked(paneID)
@@ -230,17 +275,26 @@ func (s *taskSignals) get(paneID string) TaskSignal {
 type TaskPaneStatus struct {
 	Signal TaskSignal
 	// AtShell is true once the pane's foreground is a shell again: Claude
-	// exited, or never started.
+	// exited, or never started. For a builder session, which has no shell,
+	// it is true once the session is asleep (builderGone).
 	AtShell bool
 }
 
 // TaskPane reports a worker pane's state. False when no LIVE session holds
-// it: a closed session keeps its panes on record, but its Claude is gone.
+// it: a closed tmux session keeps its panes on record, but its Claude is
+// gone; a builder session's pane is there until the session has ended.
 func (m *Manager) TaskPane(paneID string) (TaskPaneStatus, bool) {
 	m.mu.RLock()
 	e, p := m.findPaneLocked(paneID)
-	live := p != nil && e.ctrl != nil
-	atShell := live && atBareShell(p)
+	live, atShell := false, false
+	switch {
+	case p == nil:
+	case p.Runtime == model.RuntimeRunner:
+		live, atShell = true, builderGone(p)
+	default:
+		live = e.ctrl != nil
+		atShell = live && atBareShell(p)
+	}
 	m.mu.RUnlock()
 	if !live {
 		return TaskPaneStatus{}, false

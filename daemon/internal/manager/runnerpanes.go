@@ -148,7 +148,7 @@ func newRunnerPane(sess store.RunnerSession) *model.Pane {
 	}
 	return &model.Pane{
 		ID: sess.PaneID, WorkspaceID: sess.WorkspaceID, Runtime: model.RuntimeRunner, SessionID: sess.ID,
-		CWD: sess.Cwd, Harness: harness.Builtin, HostedClaude: true, CreatedBy: "runner", CreatedAt: sess.CreatedAt,
+		CWD: sess.Cwd, Harness: harness.Builtin, HostedClaude: true, CreatedBy: runnerStamp(sess), CreatedAt: sess.CreatedAt,
 		Attention: att, AttentionReason: model.AttentionReason(sess.AttentionReason), AttentionSince: sess.AttentionSince,
 	}
 }
@@ -396,7 +396,11 @@ func (m *Manager) endRunnerSessions(panes []*model.Pane) {
 	for _, p := range panes {
 		m.dropRunnerPane(p.ID)
 		if m.EndRunnerSession != nil {
-			go m.EndRunnerSession(p.SessionID)
+			go func(id string) {
+				if err := m.EndRunnerSession(id); err != nil {
+					log.Printf("session runners: session %s of a deleted workspace was not ended: %v", id, err)
+				}
+			}(p.SessionID)
 		}
 	}
 }
