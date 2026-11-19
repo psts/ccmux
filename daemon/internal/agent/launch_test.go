@@ -158,3 +158,53 @@ func TestLaunchCommandClaudeIsolated(t *testing.T) {
 		t.Errorf("a start that is not isolated reads every setting source: %s", l)
 	}
 }
+
+// lineFlags reads a pane's launch line back into flag and value pairs, in
+// order. The test's lines hold no quoted spaces, so splitting on spaces and
+// dropping the quotes is the whole of it.
+func lineFlags(t *testing.T, line string) [][2]string {
+	t.Helper()
+	_, rest, ok := strings.Cut(line, " serve ")
+	if !ok {
+		t.Fatalf("no serve verb in %q", line)
+	}
+	words := strings.Fields(rest)
+	if len(words)%2 != 0 {
+		t.Fatalf("odd number of words after serve: %q", rest)
+	}
+	var out [][2]string
+	for i := 0; i < len(words); i += 2 {
+		out = append(out, [2]string{words[i], strings.Trim(words[i+1], "'")})
+	}
+	return out
+}
+
+// A role agent that runs as a session gets the flags its pane's line had,
+// in the same order, less the four its runner says itself.
+func TestRunnerArgsAreThePaneLinesFlags(t *testing.T) {
+	h := harness.Harness{Name: harness.Builtin}
+	isolated := &IsolatedLaunch{PluginDirs: []string{"/cache/kb/1.0"}, MCPFile: "/agents/.ccmux/mcp/radar.json", PeersCommand: "/bin/ccmux-peers", Skills: []string{"kb:search"}}
+	cases := map[string]struct {
+		d Definition
+		o LaunchOpts
+	}{
+		"plain":    {Definition{Name: "kb-writer", Model: "opus", AddDirs: []string{"/srv/kb"}}, LaunchOpts{Dirs: []string{"/repo", "/shared"}}},
+		"gates":    {Definition{Name: "x-post", Permissions: Permissions{Read: "allow", Edit: "allow", Bash: "ask", Webfetch: "deny", BashAllow: []string{"git:*"}}, ToolAllow: []string{"mcp__kb"}, ToolDeny: []string{"NotebookEdit"}}, LaunchOpts{}},
+		"walls":    {Definition{Name: "radar", Model: "sonnet", Walls: true, Permissions: Permissions{Edit: "allow"}}, LaunchOpts{Dirs: []string{"/repo"}, WriteRoots: []string{"/w/agents/radar", "/w/shared/radar"}}},
+		"isolated": {Definition{Name: "radar", Isolated: true}, LaunchOpts{Isolated: isolated}},
+	}
+	own := map[string]bool{"--port": true, "--agent": true, "--model": true, "--peers-command": true}
+	for name, c := range cases {
+		c.o.Port, c.o.Serve = 7, "/s.mjs"
+		var want []string
+		for _, f := range lineFlags(t, LaunchCommand(c.d, h, "/agents/"+c.d.Name, c.o).Persist) {
+			if !own[f[0]] {
+				want = append(want, f[0], f[1])
+			}
+		}
+		got := ClaudeRunnerArgs(c.d, "/agents/"+c.d.Name, c.o)
+		if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+			t.Errorf("%s: a session's flags differ from its pane's line\n got %q\nwant %q", name, got, want)
+		}
+	}
+}

@@ -23,6 +23,10 @@ type Store interface {
 	SetRunnerSessionNote(id, note string, now int64) error
 	SetRunnerSessionPlace(id string, p store.SessionPlace, now int64) error
 	SetRunnerSessionLoadout(id, loadout string) error
+	SetRunnerSessionAgentVersion(id, version string) error
+	SleepRunnerSession(id string, fresh bool, now int64) error
+	SetRunnerSessionFresh(id string, fresh bool, now int64) error
+	RotateRunnerConversation(id, conversation string, now int64) error
 	AddInboxPromptAndWake(p store.InboxPrompt, wake bool, now int64) error
 	HasInboxPrompt(id string) (bool, error)
 	UndeliveredPrompts(sessionID string) ([]store.InboxPrompt, error)
@@ -144,6 +148,11 @@ func (s *Supervisor) Kick() {
 // first moment, a task's builder (a thread's own members get theirs later,
 // by Place). Effort and PermissionMode are what its Claude runs with
 // (store.RunnerSession); "" keeps what the person's settings choose.
+//
+// PaneID and Conversation are for a role agent's session (agentsleep.go):
+// the pane id its home already had, so its peer on the bus and what waits
+// for it there carry over, and the conversation it continues. "" makes a
+// pane id (with a workspace) and runs the session's own conversation.
 type NewSession struct {
 	Cwd, Name, Model, WorkspaceID string
 	Kind, Title                   string
@@ -152,6 +161,7 @@ type NewSession struct {
 	ReadOnly                      bool
 	Worktree, Branch              string
 	Effort, PermissionMode        string
+	PaneID, Conversation          string
 }
 
 // Create records a new session and starts it. Once the row exists the
@@ -162,8 +172,9 @@ func (s *Supervisor) Create(n NewSession) (store.RunnerSession, error) {
 	now := s.millis()
 	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID, Kind: n.Kind, Title: n.Title,
 		ThreadID: n.ThreadID, Role: n.Role, Repo: n.Repo, ReadOnly: n.ReadOnly,
-		Worktree: n.Worktree, Branch: n.Branch, Effort: n.Effort, PermissionMode: n.PermissionMode}
-	if n.WorkspaceID != "" {
+		Worktree: n.Worktree, Branch: n.Branch, Effort: n.Effort, PermissionMode: n.PermissionMode,
+		PaneID: n.PaneID, Conversation: n.Conversation}
+	if n.WorkspaceID != "" && sess.PaneID == "" {
 		sess.PaneID = uuid.NewString()
 	}
 	defer s.lock(sess.ID)()
@@ -571,12 +582,20 @@ func (s *Supervisor) writeSpec(sess store.RunnerSession) error {
 	// The row says what the process about to start loads. Written before
 	// the start, so a start that follows never runs on a list the row does
 	// not name; one that fails is tried again and writes it again.
-	return s.st.SetRunnerSessionLoadout(sess.ID, sp.LoadoutRecord)
+	if err := s.st.SetRunnerSessionLoadout(sess.ID, sp.LoadoutRecord); err != nil {
+		return err
+	}
+	return s.keepAgentVersion(sess, sp.AgentVersion)
 }
 
 // start writes the spec and starts the session's unit. The runner resumes
-// its transcript itself.
+// its transcript itself; an agent that slept with its next start marked
+// fresh gets a new conversation first (agentsleep.go).
 func (s *Supervisor) start(sess store.RunnerSession) error {
+	sess, err := s.freshen(sess)
+	if err != nil {
+		return err
+	}
 	if err := s.writeSpec(sess); err != nil {
 		return err
 	}

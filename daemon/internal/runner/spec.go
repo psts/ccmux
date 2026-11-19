@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 
@@ -31,6 +30,9 @@ type Spec struct {
 	// empty for a session started with no loadout (Config.Loadout nil).
 	Loadout       []byte `json:"-"`
 	LoadoutRecord string `json:"-"`
+	// AgentVersion is the base version a role agent's session starts with
+	// (AgentStart.Version), which its row keeps; "" for any other session.
+	AgentVersion string `json:"-"`
 }
 
 // Paths are where the runner files live. Specs and state files are kept
@@ -109,6 +111,10 @@ type Config struct {
 	// Nil starts every session with the user's whole Claude setup, as
 	// before loadouts.
 	Loadout func(store.RunnerSession) (file []byte, record string, err error)
+	// Agent is what a role agent's session starts with, from its base as it
+	// is now (agent.go). Nil on a daemon with no agents: an agent's session
+	// then fails its start, and says so.
+	Agent func(store.RunnerSession) (AgentStart, error)
 }
 
 // settingSources loads the user's own settings, as in a terminal session:
@@ -125,6 +131,9 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 		return Spec{}, fmt.Errorf("session runner: %w", err)
 	}
 	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess)}
+	if sess.Kind == store.SessionAgent {
+		return c.agentSpec(sp, sess, paths)
+	}
 	files, err := c.attach(&sp, sess, paths)
 	if err != nil {
 		return Spec{}, err
@@ -136,11 +145,7 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 // startArgs are the flags every start of a session has, from its row: where
 // its runner listens and keeps its state, what it runs, and its fences.
 func (c Config) startArgs(sess store.RunnerSession, paths Paths) []string {
-	args := []string{
-		"--socket", paths.Socket(sess.ID), "--state", paths.StateFile(sess.ID), "--session-auto", sess.ID,
-		"--detached", "1", "--setting-sources", settingSources, "--agent", sessionLabel(sess),
-		"--media", paths.MediaDir(sess.ID),
-	}
+	args := ownArgs(sess, paths)
 	if c.Claude != "" {
 		args = append(args, "--claude", c.Claude)
 	}
@@ -152,6 +157,19 @@ func (c Config) startArgs(sess store.RunnerSession, paths Paths) []string {
 	}
 	args = append(args, runArgs(sess)...)
 	return append(args, fenceArgs(sess)...)
+}
+
+// ownArgs are the flags of a session's runner itself: where it listens and
+// keeps its state, which conversation it runs (its own id, or the one an
+// agent has moved on to, whose state file is then its own too), and the
+// user's settings.
+func ownArgs(sess store.RunnerSession, paths Paths) []string {
+	conv := sess.ConversationID()
+	return []string{
+		"--socket", paths.Socket(sess.ID), "--state", paths.StateFile(conv), "--session-auto", conv,
+		"--detached", "1", "--setting-sources", settingSources, "--agent", sessionLabel(sess),
+		"--media", paths.MediaDir(sess.ID),
+	}
 }
 
 // attach reads a session's brief and its loadout into sp, and returns the
@@ -249,22 +267,13 @@ func (c Config) env(sess store.RunnerSession) []string {
 	if c.SessionEnv != nil && sess.PaneID != "" {
 		own = c.SessionEnv(sess)
 	}
-	out := make([]string, 0, len(base)+len(own))
+	kept := make([]string, 0, len(base))
 	for _, kv := range base {
-		name, _, _ := strings.Cut(kv, "=")
-		if _, replaced := own[name]; !replaced && !dropped(kv) {
-			out = append(out, kv)
+		if !dropped(kv) {
+			kept = append(kept, kv)
 		}
 	}
-	names := make([]string, 0, len(own))
-	for name := range own {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		out = append(out, name+"="+own[name])
-	}
-	return out
+	return withEnv(kept, own)
 }
 
 func dropped(kv string) bool {

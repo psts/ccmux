@@ -130,25 +130,53 @@ func claudeServeLine(d Definition, baseDir string, o LaunchOpts) string {
 	if node == "" {
 		node = "node"
 	}
-	parts := []string{shellQuote(node), shellQuote(o.Serve), "serve",
-		"--port", strconv.Itoa(o.Port),
-		"--agent", shellQuote(d.Name),
-		"--plugin-dir", shellQuote(baseDir),
-		"--system-prompt-file", shellQuote(filepath.Join(baseDir, fileAgents)),
-		"--mcp-file", shellQuote(filepath.Join(baseDir, fileMCP)),
+	parts := []string{node, o.Serve, "serve", "--port", strconv.Itoa(o.Port), "--agent", d.Name}
+	parts = append(parts, baseFlags(d, baseDir, o)...)
+	if d.Model != "" {
+		parts = append(parts, "--model", d.Model)
+	}
+	parts = append(parts, isolatedFlags(o.Isolated, true)...)
+	parts = append(parts, gateFlags(d, o)...)
+	for i, p := range parts {
+		parts[i] = shellQuote(p)
+	}
+	return strings.Join(parts, " ")
+}
+
+// ClaudeRunnerArgs are the same base's flags for an agent that runs as a
+// session (internal/runner) instead of in a pane: every flag of the pane's
+// line that says what the base loads and may do, as plain arguments. What
+// the session's runner says itself is left out: where it listens (a socket,
+// not --port), its name, its model (AgentStart.Model) and the peers shim
+// (the runner names the daemon's own, as the pane's bus owner). The two
+// must not drift apart: an agent behaves the same in a pane and as a
+// session, and launch_test.go holds them to that.
+func ClaudeRunnerArgs(d Definition, baseDir string, o LaunchOpts) []string {
+	args := baseFlags(d, baseDir, o)
+	args = append(args, isolatedFlags(o.Isolated, false)...)
+	return append(args, gateFlags(d, o)...)
+}
+
+// baseFlags hand the sidecar the base itself: its folder as a plugin, its
+// instructions, its MCP servers, and the folders the agent reaches.
+func baseFlags(d Definition, baseDir string, o LaunchOpts) []string {
+	out := []string{
+		"--plugin-dir", baseDir,
+		"--system-prompt-file", filepath.Join(baseDir, fileAgents),
+		"--mcp-file", filepath.Join(baseDir, fileMCP),
 	}
 	for _, dir := range o.Dirs {
-		parts = append(parts, "--add-dir", shellQuote(dir))
+		out = append(out, "--add-dir", dir)
 	}
 	for _, dir := range d.AddDirs {
-		parts = append(parts, "--add-dir", shellQuote(dir))
+		out = append(out, "--add-dir", dir)
 	}
-	if d.Model != "" {
-		parts = append(parts, "--model", shellQuote(d.Model))
-	}
-	parts = append(parts, isolatedFlags(o.Isolated)...)
-	parts = append(parts, claudePermissionFlags(d, len(o.WriteRoots) > 0)...)
-	return strings.Join(append(parts, wallFlags(d.Permissions, o.WriteRoots)...), " ")
+	return out
+}
+
+// gateFlags are what the base may do: its permission gates, then its walls.
+func gateFlags(d Definition, o LaunchOpts) []string {
+	return append(claudePermissionFlags(d, len(o.WriteRoots) > 0), wallFlags(d.Permissions, o.WriteRoots)...)
 }
 
 // claudeTools maps the neutral permission gates onto Claude Code tool names.
@@ -158,20 +186,24 @@ var claudeTools = map[string][]string{
 
 // isolatedFlags are an isolated start's (Definition.Isolated): only the
 // home's project settings, the capability plugins after the base, their
-// MCP servers in a second --mcp-file, the peers shim (it otherwise comes
-// from the user's own config, which an isolated start does not read), and
-// the enabled skills when some are off. Nothing for any other start.
-func isolatedFlags(in *IsolatedLaunch) []string {
+// MCP servers in a second --mcp-file, the peers shim when the caller wants
+// it named here (it otherwise comes from the user's own config, which an
+// isolated start does not read; a session's runner names its own), and the
+// enabled skills when some are off. Nothing for any other start.
+func isolatedFlags(in *IsolatedLaunch, peers bool) []string {
 	if in == nil {
 		return nil
 	}
 	out := []string{"--setting-sources", "project"}
 	for _, dir := range in.PluginDirs {
-		out = append(out, "--plugin-dir", shellQuote(dir))
+		out = append(out, "--plugin-dir", dir)
 	}
-	out = append(out, "--mcp-file", shellQuote(in.MCPFile), "--peers-command", shellQuote(in.PeersCommand))
+	out = append(out, "--mcp-file", in.MCPFile)
+	if peers {
+		out = append(out, "--peers-command", in.PeersCommand)
+	}
 	if in.Skills != nil {
-		out = append(out, "--skills", shellQuote(strings.Join(in.Skills, ",")))
+		out = append(out, "--skills", strings.Join(in.Skills, ","))
 	}
 	return out
 }
@@ -203,10 +235,10 @@ func claudePermissionFlags(d Definition, walled bool) []string {
 	sort.Strings(deny)
 	var out []string
 	if len(allow) > 0 {
-		out = append(out, "--allowed-tools", shellQuote(strings.Join(allow, ",")))
+		out = append(out, "--allowed-tools", strings.Join(allow, ","))
 	}
 	if len(deny) > 0 {
-		out = append(out, "--disallowed-tools", shellQuote(strings.Join(deny, ",")))
+		out = append(out, "--disallowed-tools", strings.Join(deny, ","))
 	}
 	return out
 }
@@ -216,7 +248,7 @@ func claudePermissionFlags(d Definition, walled bool) []string {
 func wallFlags(p Permissions, roots []string) []string {
 	var out []string
 	for _, r := range roots {
-		out = append(out, "--write-root", shellQuote(r))
+		out = append(out, "--write-root", r)
 	}
 	if len(roots) > 0 && p.Edit == "allow" {
 		out = append(out, "--write-inside", "allow")
