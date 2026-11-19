@@ -31,13 +31,13 @@ test("the full launch line the daemon writes parses into the sidecar's options",
 
 test("a minimal line leaves the lists empty and the optional flags unset", () => {
   const o = parseArgs(["--port", "7", "--agent", "probe"]);
-  assert.deepEqual(o, { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [], port: 7, agent: "probe" });
+  assert.deepEqual(o, { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [], shellBoxWrite: [], port: 7, agent: "probe" });
   assert.deepEqual(parseArgs(["--allowed-tools", ""]).allowed, [], "an empty list is no tools, not one empty name");
-  assert.deepEqual(parseArgs([]), { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [] });
+  assert.deepEqual(parseArgs([]), { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [], shellBoxWrite: [] });
 });
 
 test("the offline verbs' flags", () => {
-  assert.deepEqual(parseArgs(["--dir", "/inst", "--session", "s1"]), { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [], dir: "/inst", session: "s1" });
+  assert.deepEqual(parseArgs(["--dir", "/inst", "--session", "s1"]), { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [], shellBoxWrite: [], dir: "/inst", session: "s1" });
 });
 
 test("a flag the daemon and the sidecar disagree on fails at once", () => {

@@ -62,23 +62,27 @@ func jobPrefix(flagValue, scratch string) (prefix, why string) {
 // newJobs makes the job manager and writes its unit template. Nil and why
 // when this daemon runs no jobs; its threads then refuse to merge and say
 // that reason.
-func newJobs(st *store.SQLite, prefixFlag string) (*jobs.Manager, string) {
+func newJobs(st *store.SQLite, prefixFlag string, sb *sandbox) (*jobs.Manager, *jobs.Paths, string) {
 	prefix, why := jobPrefix(prefixFlag, scratchRoot())
 	if prefix == "" {
 		log.Printf("jobs off: %s; threads on this daemon cannot be merged", why)
-		return nil, why
+		return nil, nil, why
 	}
 	paths := jobs.Paths{State: jobsStateDir(), Locks: jobLocksDir(), Prefix: prefix}
 	units := jobs.Systemctl{}
 	if err := os.MkdirAll(paths.State, 0o700); err != nil {
 		log.Printf("jobs off: %v; threads on this daemon cannot be merged", err)
-		return nil, err.Error()
+		return nil, nil, err.Error()
 	}
-	if err := jobs.EnsureTemplate(systemdUserDir(), selfExecutable(), paths, jobs.DefaultLimits(), units); err != nil {
+	if err := jobs.EnsureTemplate(systemdUserDir(), selfExecutable(), paths, sb.caps(), units); err != nil {
 		log.Printf("jobs off: unit template: %v; threads on this daemon cannot be merged", err)
-		return nil, err.Error()
+		return nil, nil, err.Error()
 	}
-	return jobs.NewManager(st, units, paths), ""
+	mgr := jobs.NewManager(st, units, paths)
+	// A job is walled, or not, by what the Sandbox setting says when it is
+	// made (sandbox.go).
+	mgr.Walls, mgr.UnitDir = sb.jobWalls, systemdUserDir()
+	return mgr, &paths, ""
 }
 
 // wireJobs gives each kind its handler and starts the manager's loop. It

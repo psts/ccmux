@@ -13,7 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 // templateText is the unit template. Each instance reads its spec file
@@ -23,7 +26,13 @@ import (
 // sessions should run. KillMode=control-group stops a session's commands
 // with it. StandardInput is /dev/null: a runner has no terminal. The start
 // limit is the restart cap (startLimitBurst).
-func templateText(execPath, specDir string) string {
+//
+// The caps (walls.Caps) hold for every session, and systemd applies a
+// changed one to the running sessions too, at the reload that follows a
+// changed template. A runner that refused to start because its walls are
+// not up (walls.ExitRefused) is not started again by systemd: the next
+// start would find the same host.
+func templateText(execPath, specDir string, caps walls.Caps) string {
 	return fmt.Sprintf(`[Unit]
 Description=ccmux session %%i
 StartLimitIntervalSec=%d
@@ -34,10 +43,11 @@ Type=simple
 ExecStart=%s runner-exec %s/%%i.json
 Restart=on-failure
 RestartSec=2
+RestartPreventExitStatus=%d
 KillMode=control-group
 TimeoutStopSec=20
-StandardInput=null
-`, startLimitWindow, startLimitBurst, execPath, specDir)
+%sStandardInput=null
+`, startLimitWindow, startLimitBurst, execPath, specDir, walls.ExitRefused, caps.Lines())
 }
 
 // startLimitBurst starts in startLimitWindow seconds, crashes and the
@@ -52,6 +62,12 @@ const (
 // startLimitHit is systemd's result for a unit past its start limit.
 const startLimitHit = "start-limit-hit"
 
+// wallsRefused is this package's own word, beside systemd's, for how a
+// unit last ended: its process found its walls not up and refused to run
+// (Exec). Units.Result answers it for a unit that ended with exit status
+// walls.ExitRefused.
+const wallsRefused = "walls-refused"
+
 // Units is what the supervisor asks of systemd.
 type Units interface {
 	Start(unit string) error
@@ -59,7 +75,7 @@ type Units interface {
 	Restart(unit string) error
 	Active(unit string) (bool, error)
 	// Result is systemd's word for how the unit last ended ("success",
-	// "exit-code", "start-limit-hit", ...).
+	// "exit-code", "start-limit-hit", ...), or wallsRefused.
 	Result(unit string) (string, error)
 	ResetFailed(unit string) error
 	Reload() error
@@ -68,8 +84,8 @@ type Units interface {
 // EnsureTemplate writes the unit template under dir (the user's systemd
 // folder) and reloads systemd, only when the file is missing or differs:
 // every daemon start calls it, and an unchanged file needs no reload.
-func EnsureTemplate(dir, execPath string, paths Paths, u Units) error {
-	want := []byte(templateText(execPath, paths.State))
+func EnsureTemplate(dir, execPath string, paths Paths, caps walls.Caps, u Units) error {
+	want := []byte(templateText(execPath, paths.State, caps))
 	path := filepath.Join(dir, paths.Template())
 	if have, err := os.ReadFile(path); err == nil && bytes.Equal(have, want) {
 		return nil
@@ -103,11 +119,31 @@ func (s Systemctl) ResetFailed(unit string) error {
 }
 
 func (Systemctl) Result(unit string) (string, error) {
-	out, err := exec.Command("systemctl", "--user", "show", "-p", "Result", "--value", unit).Output()
+	out, err := exec.Command("systemctl", "--user", "show", "-p", "Result", "-p", "ExecMainStatus", unit).Output()
 	if err != nil {
 		return "", fmt.Errorf("systemctl show %s: %w", unit, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return unitResult(string(out)), nil
+}
+
+// unitResult reads how a unit last ended off systemctl's answer. A unit
+// that failed on its exit status, and whose status is the walls' own,
+// reads wallsRefused; reset-failed puts systemd's result back to success,
+// so a session that is woken is not refused on its last run's status.
+func unitResult(out string) string {
+	var result, status string
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "Result="); ok {
+			result = strings.TrimSpace(v)
+		}
+		if v, ok := strings.CutPrefix(line, "ExecMainStatus="); ok {
+			status = strings.TrimSpace(v)
+		}
+	}
+	if result == "exit-code" && status == strconv.Itoa(walls.ExitRefused) {
+		return wallsRefused
+	}
+	return result
 }
 
 // Active reports whether the unit is running or coming up. is-active exits

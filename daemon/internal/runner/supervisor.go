@@ -296,6 +296,7 @@ func (s *Supervisor) want(sessionID, wanted string) error {
 		if err := s.units.Stop(s.paths.Unit(sessionID)); err != nil {
 			return err
 		}
+		s.unwall(sessionID)
 	case store.SessionRunning:
 		return s.wake(sessionID)
 	}
@@ -528,6 +529,9 @@ func (s *Supervisor) startOrPark(sess store.RunnerSession) error {
 	if result == startLimitHit {
 		return s.park(sess.ID, fmt.Sprintf("put to sleep: it stopped %d times in %d minutes; send it a prompt or wake it to try again", startLimitBurst, startLimitWindow/60))
 	}
+	if result == wallsRefused {
+		return s.park(sess.ID, refusedNote(s.paths.Unit(sess.ID)))
+	}
 	if err := s.start(sess); err != nil {
 		s.startFailed(sess, err)
 		return err
@@ -574,6 +578,10 @@ func (s *Supervisor) writeSpec(sess store.RunnerSession) error {
 		return err
 	}
 	if err := writeLoadout(s.paths.LoadoutFile(sess.ID), sp.Loadout); err != nil {
+		return err
+	}
+	// The walls before the spec: the spec says what the runner must find.
+	if err := s.wall(sess, &sp); err != nil {
 		return err
 	}
 	if err := WriteSpec(s.paths.SpecFile(sess.ID), sp); err != nil {

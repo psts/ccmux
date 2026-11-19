@@ -18,6 +18,8 @@
 //           what its Claude runs with; without the last two a runner keeps
 //           what the person's settings choose)
 //           [--loadout FILE] (what its group and repo chose, loadout.mjs)
+//           [--shell-box-write DIR]... (a session the daemon walled: Claude
+//           Code's own sandbox for its shell commands, shellbox.mjs)
 //           and the flags above. A role agent that runs as a session gets
 //           its base's flags this way, after the runner's own: a flag that
 //           holds one value keeps the last one given, so an isolated base's
@@ -58,13 +60,14 @@ const flags = {
   "--effort": (o, v) => { o.effort = v; },
   "--permission-mode": (o, v) => { o.permissionMode = v; },
   "--loadout": (o, v) => { o.loadout = v; },
+  "--shell-box-write": (o, v) => { o.shellBoxWrite.push(v); },
 };
 
 // parseArgs reads the flags after the verb. An unknown flag, or a flag with
 // no value, throws: a launch line the daemon and the sidecar disagree on
 // must fail at the start, where the pane shows why, not later.
 export function parseArgs(argv) {
-  const o = { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [] };
+  const o = { addDirs: [], allowed: [], disallowed: [], writeRoots: [], pluginDirs: [], mcpFiles: [], shellBoxWrite: [] };
   for (let i = 0; i < argv.length; i += 2) {
     const set = flags[argv[i]];
     if (!set) throw new Error("unknown flag " + argv[i]);

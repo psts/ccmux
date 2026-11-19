@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 // Spec is how one session's runner starts: the program, its arguments,
@@ -33,6 +34,12 @@ type Spec struct {
 	// AgentVersion is the base version a role agent's session starts with
 	// (AgentStart.Version), which its row keeps; "" for any other session.
 	AgentVersion string `json:"-"`
+	// Walls is what a walled session's runner checks before it starts
+	// (walls.Check), and Plan the walls themselves, which the supervisor
+	// writes as the unit's drop-in file (sessionwalls.go). Both nil for a
+	// session that runs open.
+	Walls *walls.Expect `json:"walls,omitempty"`
+	Plan  *walls.Plan   `json:"-"`
 }
 
 // Paths are where the runner files live. Specs and state files are kept
@@ -41,6 +48,9 @@ type Paths struct {
 	State   string // e.g. ~/.local/state/ccmux/sessions
 	Runtime string // e.g. $XDG_RUNTIME_DIR/ccmuxd/s
 	Prefix  string // the unit template's name before "@"; "" is DefaultPrefix
+	// UnitDir is the user's systemd folder, where a walled session's drop-in
+	// file goes; "" on a daemon that walls none.
+	UnitDir string
 }
 
 // DefaultPrefix names the systemd template every session runs under, one
@@ -64,6 +74,14 @@ func (p Paths) Unit(id string) string { return p.prefix() + "@" + id + ".service
 func (p Paths) SpecFile(id string) string  { return filepath.Join(p.State, id+".json") }
 func (p Paths) StateFile(id string) string { return filepath.Join(p.State, id+".state.json") }
 func (p Paths) Socket(id string) string    { return filepath.Join(p.Runtime, id+".sock") }
+
+// OwnDir is the one folder of State a walled session may write: its state
+// file is kept there (WalledStateFile), not beside every other session's
+// spec, which a walled session must not be able to rewrite.
+func (p Paths) OwnDir(id string) string { return filepath.Join(p.State, id+".own") }
+
+// WalledStateFile is a walled session's state file.
+func (p Paths) WalledStateFile(id string) string { return filepath.Join(p.OwnDir(id), "state.json") }
 
 // BriefFile holds a thread member's standing brief (Config.Brief), which its
 // runner reads at every start.
@@ -115,6 +133,11 @@ type Config struct {
 	// is now (agent.go). Nil on a daemon with no agents: an agent's session
 	// then fails its start, and says so.
 	Agent func(store.RunnerSession) (AgentStart, error)
+	// Walls is the walls a session starts behind, asked at every start: nil
+	// (the func, or its answer) for one that runs open, an error for one
+	// that must not start at all (the sandbox is on and this host cannot
+	// wall it). The runner's own folders are added to the answer here.
+	Walls func(store.RunnerSession) (*walls.Plan, error)
 }
 
 // settingSources loads the user's own settings, as in a terminal session:
@@ -134,11 +157,17 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if sess.Kind == store.SessionAgent {
 		return c.agentSpec(sp, sess, paths)
 	}
+	if sp.Plan, err = c.plan(sess, paths); err != nil {
+		return Spec{}, err
+	}
 	files, err := c.attach(&sp, sess, paths)
 	if err != nil {
 		return Spec{}, err
 	}
 	sp.Args = append(c.startArgs(sess, paths), files...)
+	if sp.Plan != nil {
+		sp.Args = walledArgs(sp.Args, sess, paths, *sp.Plan)
+	}
 	return sp, nil
 }
 
@@ -352,11 +381,19 @@ func ReadSpec(path string) (Spec, error) {
 }
 
 // Exec is the runner-exec verb: it reads the spec and replaces this
-// process with the runner, so systemd supervises the runner itself.
+// process with the runner, so systemd supervises the runner itself. A
+// walled session's walls are proved first (walls.Check): the error of one
+// that is not behind them is a walls.ErrNoWalls, which the verb turns into
+// exit status walls.ExitRefused, and nothing of the session runs.
 func Exec(specPath string) error {
 	sp, err := ReadSpec(specPath)
 	if err != nil {
 		return err
+	}
+	if sp.Walls != nil {
+		if err := walls.Check(*sp.Walls); err != nil {
+			return err
+		}
 	}
 	if err := os.Chdir(sp.Dir); err != nil {
 		return fmt.Errorf("session folder: %w", err)

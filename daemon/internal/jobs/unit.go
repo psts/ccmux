@@ -6,35 +6,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
+
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
-// Limits are the caps every job's service runs under.
-type Limits struct {
-	// Longest is the unit's own time limit: the backstop above every kind's
-	// own limit (Spec.MaxSeconds), for a job that no longer even notices it
-	// is late.
-	Longest time.Duration
-	// CPUPercent is CPUQuota, in percent of one core; MemoryMax and TasksMax
-	// are systemd's own words.
-	CPUPercent int
-	MemoryMax  string
-	TasksMax   int
-}
+// Limits are the caps every job's service runs under (walls.Caps): its
+// time limit, the backstop above every kind's own limit (Spec.MaxSeconds)
+// for a job that no longer even notices it is late, and the memory, CPU
+// and process caps a session's service has too.
+type Limits = walls.Caps
 
-// DefaultLimits are caps that only stop a job that ran away: three quarters
-// of the machine's memory, every core but one, and far more processes than
-// a test run starts. A check under them runs as it does without them,
-// unless it alone would have starved everything else on the host.
-func DefaultLimits() Limits {
-	cores := runtime.NumCPU() - 1
-	if cores < 1 {
-		cores = 1
-	}
-	return Limits{Longest: 6 * time.Hour, CPUPercent: cores * 100, MemoryMax: "75%", TasksMax: 8192}
-}
+// DefaultLimits are the caps of a daemon whose Settings name none
+// (walls.Defaults): they only stop a job that ran away.
+func DefaultLimits() Limits { return walls.Defaults().Caps() }
 
 // ownerMark is the line of the template that says whose it is: the folder
 // its jobs' files live in. It is a comment to systemd and the ownership
@@ -63,22 +48,8 @@ ExecStart=%s job-exec %s/%%i/spec.json
 KillMode=control-group
 TimeoutStopSec=20
 RuntimeMaxSec=%d
-MemoryMax=%s
-CPUQuota=%d%%
-TasksMax=%d
-StandardInput=null
-`, ownerMark, p.State, unitWord(execPath), unitWord(p.State), int(l.Longest.Seconds()), l.MemoryMax, l.CPUPercent, l.TasksMax)
-}
-
-// unitWord quotes one word of a unit file line: "%" is systemd's specifier
-// sign, and a word with a space or a quote in it needs quoting.
-func unitWord(s string) string {
-	s = strings.ReplaceAll(s, "%", "%%")
-	if !strings.ContainsAny(s, " \t\"'\\") {
-		return s
-	}
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+%sStandardInput=null
+`, ownerMark, p.State, walls.Word(execPath), walls.Word(p.State), int(l.Longest.Seconds()), l.Lines())
 }
 
 // Units is what the jobs ask of systemd.

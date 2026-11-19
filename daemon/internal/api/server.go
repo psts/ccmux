@@ -167,6 +167,9 @@ type Server struct {
 	// llmProxyHealth is the "llmProxy" part of GET /v1/health: where the
 	// proxy runs and whether it answers. nil leaves the field out.
 	llmProxyHealth func() map[string]any
+	// sandbox is the caps and walls of the session and job services
+	// (sandbox.go); nil turns its routes off.
+	sandbox sandboxService
 
 	// focus answers "is anybody at a screen?" for the alert flag and for push.
 	// On a single host that is this daemon's own presence; on a hub it is the
@@ -380,6 +383,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/projects", s.listProjects)
 	mux.HandleFunc("POST /v1/projects", s.createProject)
 	mux.HandleFunc("GET /v1/settings", s.getSettings)
+	mux.HandleFunc("GET /v1/sandbox", s.getSandbox)
+	mux.HandleFunc("PUT /v1/sandbox", s.putSandbox)
+	mux.HandleFunc("POST /v1/sandbox/check", s.checkSandbox)
 	s.sessionRoutes(mux)
 	s.threadRoutes(mux)
 	s.choiceRoutes(mux)

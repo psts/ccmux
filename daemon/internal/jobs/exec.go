@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 // Run is one run of a job, as its kind's Runner sees it.
@@ -85,6 +87,9 @@ func Exec(specPath string, kinds map[string]Runner) error {
 	if !ok {
 		return refuse(resultPath, sp.ID, fmt.Errorf("this ccmuxd runs no job of kind %q", sp.Kind))
 	}
+	if err := checkWalls(sp); err != nil {
+		return refuse(resultPath, sp.ID, err)
+	}
 	applyEnv(sp.Env)
 	journal, err := OpenJournal(filepath.Join(filepath.Dir(specPath), "journal.jsonl"))
 	if err != nil {
@@ -103,6 +108,21 @@ func Exec(specPath string, kinds map[string]Runner) error {
 		return fmt.Errorf("job %s: its result was not written: %w", sp.ID, err)
 	}
 	log.Printf("job %s ends%s", sp.ID, errorNote(res.Error))
+	return nil
+}
+
+// checkWalls proves a walled job's walls before any of its work runs
+// (walls.Check). A job that is meant to be walled and is not ends with a
+// result that says so: its kind's handler hands that to a person, and
+// nothing of the job runs open.
+func checkWalls(sp Spec) error {
+	if sp.Walls == nil {
+		return nil
+	}
+	if err := walls.Check(*sp.Walls); err != nil {
+		return errors.New(walls.Refusal(err))
+	}
+	log.Printf("job %s: its walls are up", sp.ID)
 	return nil
 }
 

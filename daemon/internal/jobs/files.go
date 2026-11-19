@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 // Version is the format of the spec and result files. Raise it when either
@@ -108,6 +110,11 @@ type Spec struct {
 	// Locks is the folder of the per-repo lock files.
 	Locks     string `json:"locks"`
 	CreatedAt int64  `json:"createdAt"`
+	// Walls is what a walled job checks before it does any work
+	// (walls.Check); nil for a job that runs open. An added field, not a
+	// new format: a binary from before it reads the spec as it did, and the
+	// walls themselves are the unit's drop-in file, not this.
+	Walls *walls.Expect `json:"walls,omitempty"`
 }
 
 // Result is how a job ended, written once by the job as its last act.

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -169,6 +170,46 @@ func TestAFreshSleepWakesInANewConversation(t *testing.T) {
 	again, _ := a.st.RunnerSession(sess.ID)
 	if again.Conversation != row.Conversation {
 		t.Fatalf("a restart that was no sleep resumes: %q then %q", row.Conversation, again.Conversation)
+	}
+}
+
+// A fresh conversation starts with no state: the old conversation's file
+// (which prompts it had, and a turn it was stopped in) stays where it is,
+// under the old conversation's name. Carried across, it would tell the new
+// conversation to carry on with work a person had just stopped.
+func TestAFreshConversationDoesNotInheritTheOldOnesState(t *testing.T) {
+	a := newAgentRig(t)
+	sess, _ := a.sup.Create(agentSession())
+	old := a.paths.StateFile(sess.ID)
+	held := `{"open":[{"id":"p1","text":"the long job"}],"delivered":["p1"]}`
+	if err := os.WriteFile(old, []byte(held), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.sup.Sleep(sess.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.sup.Send(sess.ID, "the morning run", "bus"); err != nil {
+		t.Fatal(err)
+	}
+	a.reconcile()
+	row, _ := a.st.RunnerSession(sess.ID)
+	if row.Conversation == "" || row.Conversation == sess.ID {
+		t.Fatalf("a new conversation: %+v", row)
+	}
+	if _, err := os.Stat(a.paths.StateFile(row.Conversation)); !os.IsNotExist(err) {
+		t.Fatalf("the new conversation has no state file until its runner writes one: %v", err)
+	}
+	if b, _ := os.ReadFile(old); string(b) != held {
+		t.Fatalf("the old conversation's file is left as it was: %q", b)
+	}
+	// A plain restart keeps reading the file of the conversation it is in.
+	if err := os.WriteFile(a.paths.StateFile(row.Conversation), []byte(`{"delivered":["p2"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a.units.set(a.paths.Unit(sess.ID), false)
+	a.reconcile()
+	if b, _ := os.ReadFile(a.paths.StateFile(row.Conversation)); string(b) != `{"delivered":["p2"]}` {
+		t.Fatalf("a restart moves nothing: %q", b)
 	}
 }
 

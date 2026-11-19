@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 // Store is the part of the registry the jobs read and write
@@ -63,6 +64,12 @@ type Manager struct {
 	// RetryAfter is how long a job whose handler failed waits for the next
 	// try.
 	RetryAfter time.Duration
+	// Walls is the walls a new job runs behind: nil (the func, or its
+	// answer) for a job that runs open, an error for one that must not
+	// start at all (the sandbox is on and the host cannot wall it). UnitDir
+	// is the user's systemd folder, where a walled job's drop-in goes.
+	Walls   func(New) (*walls.Plan, error)
+	UnitDir string
 
 	handlers map[string]Handler
 	locks    sync.Map // job id → *sync.Mutex
@@ -129,12 +136,19 @@ func (m *Manager) Start(n New) (store.Job, error) {
 	defer m.lock(id)()
 	now := m.Now().UnixMilli()
 	sp := Spec{ID: id, Kind: n.Kind, Subject: n.Subject, Input: input, Env: m.Env(), MaxSeconds: int(n.Limit.Seconds()), Locks: m.Paths.Locks, CreatedAt: now}
+	if sp.Walls, err = m.wall(id, n); err != nil {
+		os.RemoveAll(m.Paths.Dir(id))
+		return store.Job{}, err
+	}
 	if err := WriteSpec(m.Paths.SpecFile(id), sp); err != nil {
+		os.RemoveAll(m.Paths.Dir(id))
+		m.unwall(id)
 		return store.Job{}, fmt.Errorf("the job's spec was not written: %w", err)
 	}
 	job := store.Job{ID: id, Kind: n.Kind, Subject: n.Subject, State: store.JobRunning, Ctx: string(kept), Attempts: 1, StartedAt: now}
 	if err := m.St.AddJob(job); err != nil {
 		os.RemoveAll(m.Paths.Dir(id))
+		m.unwall(id)
 		return store.Job{}, err
 	}
 	if err := m.Units.Start(m.Paths.Unit(id)); err != nil {
@@ -209,6 +223,7 @@ func (m *Manager) Applied(id string) (*Journal, error) { return OpenJournal(m.Pa
 // job open, and it is settled again on the next look: which is why a
 // handler must be safe to repeat.
 func (m *Manager) finish(job store.Job, outcome, note string) {
+	defer m.unwall(job.ID)
 	job.State, job.Outcome, job.EndedAt = store.JobDone, outcome, m.Now().UnixMilli()
 	if note != "" {
 		job.Note = note

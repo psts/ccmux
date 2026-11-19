@@ -62,9 +62,10 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 		log.Printf("session runners off: no systemctl on this host")
 		return jobWiring{off: "no systemctl on this host"}
 	}
-	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s"), Prefix: w.prefix}
+	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s"), Prefix: w.prefix, UnitDir: systemdUserDir()}
 	units := runner.Systemctl{}
-	if err := runner.EnsureTemplate(systemdUserDir(), selfExecutable(), paths, units); err != nil {
+	sb := newSandbox(w.mgr)
+	if err := runner.EnsureTemplate(systemdUserDir(), selfExecutable(), paths, sb.caps(), units); err != nil {
 		log.Printf("session runners off: unit template: %v", err)
 		return jobWiring{off: "the session runners are off, and the jobs with them"}
 	}
@@ -75,6 +76,9 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 		log.Printf("session runners: no claude on this host (%v); sessions use the SDK's bundled Claude Code", err)
 	}
 	cfg := runnerConfig(w, claude)
+	// A thread member or a task's builder starts behind walls when the
+	// Sandbox setting is on (sandbox.go).
+	cfg.Walls = sb.sessionWalls
 	// A thread member starts with its thread's brief, and a task's builder
 	// with its part's. The threads service needs the supervisor, which needs
 	// this config: so the config asks it late, once both are there.
@@ -86,7 +90,8 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 		return team.SessionBrief(sess)
 	}
 	sup := runner.New(w.st, units, paths, cfg)
-	jobMgr, jobsOff := newJobs(w.st, w.jobPrefix)
+	jobMgr, jobPaths, jobsOff := newJobs(w.st, w.jobPrefix, sb)
+	sb.serve(w.api, paths, jobPaths)
 	team = newThreads(w, sup, jobMgr, jobsOff)
 	w.api.SetThreads(team)
 	sup.Changed = sessionChanged(w.mgr, w.peers, team)

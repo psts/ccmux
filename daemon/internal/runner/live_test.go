@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 type live struct {
@@ -49,7 +50,7 @@ func newLive(t *testing.T) *live {
 	l.cfg = Config{Sidecar: func() (string, string, error) { return script, node, nil }, Claude: claude, Env: os.Environ}
 	home, _ := os.UserHomeDir()
 	unitDir := filepath.Join(home, ".config", "systemd", "user")
-	if err := EnsureTemplate(unitDir, os.Getenv("CCMUX_RUNNER_EXEC"), l.paths, Systemctl{}); err != nil {
+	if err := EnsureTemplate(unitDir, os.Getenv("CCMUX_RUNNER_EXEC"), l.paths, walls.Defaults().Caps(), Systemctl{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

@@ -14,6 +14,7 @@ import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
 import { fromInit, fromInitialization, commandList, resultOf, contextOf } from "./sessionself.mjs";
+import { shellBox } from "./shellbox.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
 const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
@@ -263,6 +264,10 @@ export class Agent {
     if (o.disallowed.length) opts.disallowedTools = o.disallowed;
     const before = this.preToolHooks();
     if (before.length) opts.hooks = { PreToolUse: before };
+    // A session the daemon walled: Claude Code's own sandbox around its
+    // shell commands, inside the same folders (shellbox.mjs).
+    const box = shellBox(o.shellBoxWrite);
+    if (box) opts.sandbox = box;
     // Last: what the session's group and repo chose narrows everything the
     // user's own settings would load (loadout.mjs).
     if (this.loadout) applyLoadout(opts, this.loadout, this.sdk.env);

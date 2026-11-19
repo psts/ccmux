@@ -26,6 +26,7 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/llmserve"
 	"ccmux.dev/ccmuxd/internal/version"
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 // serviceConfig is the portable description of the daemon invocation a service
@@ -61,6 +62,12 @@ func runSubcommand(name string, args []string) {
 	if errors.Is(err, flag.ErrHelp) {
 		return // flag already printed usage
 	}
+	if errors.Is(err, walls.ErrNoWalls) {
+		// A status of its own: systemd does not start the unit again on it,
+		// and the daemon reads it as "refused", not "crashed".
+		log.Printf("%s: REFUSED TO RUN: %s", name, walls.Refusal(err))
+		os.Exit(walls.ExitRefused)
+	}
 	if err != nil {
 		log.Fatalf("%s: %v", name, err)
 	}
@@ -69,13 +76,14 @@ func runSubcommand(name string, args []string) {
 // subcommands are the verbs but version: the ones a person types, and the
 // ones only a systemd unit's ExecStart does.
 var subcommands = map[string]func(args []string) error{
-	"install":     cmdInstall,
-	"uninstall":   cmdUninstall,
-	"upgrade":     cmdUpgrade,
-	"env-exec":    cmdEnvExec,
-	"runner-exec": cmdRunnerExec, // a session runner's systemd unit (internal/runner)
-	"llm-proxy":   llmserve.Main, // the LLM proxy's systemd unit (internal/llmserve)
-	"job-exec":    cmdJobExec,    // a job's systemd unit (internal/jobs)
+	"install":       cmdInstall,
+	"uninstall":     cmdUninstall,
+	"upgrade":       cmdUpgrade,
+	"env-exec":      cmdEnvExec,
+	"runner-exec":   cmdRunnerExec, // a session runner's systemd unit (internal/runner)
+	"llm-proxy":     llmserve.Main, // the LLM proxy's systemd unit (internal/llmserve)
+	"job-exec":      cmdJobExec,    // a job's systemd unit (internal/jobs)
+	walls.ProbeVerb: cmdWallsProbe, // the trial unit that tells whether this host walls one (internal/walls)
 }
 
 func printUsage() {

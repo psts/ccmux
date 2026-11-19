@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
+	"ccmux.dev/ccmuxd/internal/walls"
 )
 
 // fakeUnits is systemd as the supervisor sees it.
@@ -408,7 +409,7 @@ func TestTemplateIsWrittenOnceAndReloaded(t *testing.T) {
 	u := &fakeUnits{active: map[string]bool{}, result: map[string]string{}}
 	paths := Paths{State: "/st", Prefix: "ccmux-session-test"}
 	for i := 0; i < 2; i++ {
-		if err := EnsureTemplate(dir, "/bin/ccmuxd", paths, u); err != nil {
+		if err := EnsureTemplate(dir, "/bin/ccmuxd", paths, walls.Defaults().Caps(), u); err != nil {
 			t.Fatal(err)
 		}
 	}
