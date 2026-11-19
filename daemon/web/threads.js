@@ -264,6 +264,7 @@
       detailOpen: (r) => S.details.has(r.id),
       pickRepo,
       pickSession: (s) => select({ kind: "session", id: s.id }),
+      openAgent: (a, g) => { location.href = R.href(g.id, a.id); },
       menu: (kind, item, e) => Caps.menu(kind, item, e),
       tasks: Tasks.sidebar,
       todos: Todo.sidebar,

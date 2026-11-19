@@ -75,6 +75,11 @@ a:hover { color: var(--blue-d); }
 .row-top.cols .row-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-status { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .row-top.cols .branch { justify-self: end; max-width: 100%; }
+/* A role agent's row: its dot is green while it is up, and an "agent" tag
+   sits where a repo's branch does. */
+.dot.live { background: var(--run); }
+.agent-tag { justify-self: end; font-family: var(--mono); font-size: 11px; color: var(--fg2); line-height: 17px; }
+.row.agent .row-name { font-weight: 500; }
 .row-name { font-size: 13.5px; font-weight: 600; }
 .row.thread .row-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .branch { font-family: var(--mono); font-size: 11px; color: var(--fg2); background: var(--chip); border-radius: 4px; padding: 0 5px; line-height: 17px; min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

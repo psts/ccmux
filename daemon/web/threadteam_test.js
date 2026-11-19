@@ -44,7 +44,7 @@ test("the line under a thread says who it works with and where it stands", () =>
 test("the sidebar's thread rows carry their team's state and line, and helpers are no rows of their own", () => {
   const tree = Model.tree([{ id: "w", name: "Shop", workspaceIds: ["app", "api", "adm"] }], workspaces, [lead, backend, { ...admin, attention: "needs_input" }, plain]);
   t.decorate(tree, [lead, backend, { ...admin, attention: "needs_input" }, plain], workspaces, [{ id: 3, state: "open" }]);
-  const [app, api, adm] = tree[0].repos;
+  const [app, api, adm] = ["app", "api", "adm"].map((id) => tree[0].repos.find((r) => r.id === id)); // the sidebar lists them by name
   assert.deepEqual(app.threads.map((r) => [r.session.id, r.state, r.sub]), [["L", "waiting", "with admin, backend · needs you"], ["P", "running", "running"]]);
   assert.deepEqual([api.threads, adm.threads], [[], []], "a helper is filed under its thread, not under its repo");
 });

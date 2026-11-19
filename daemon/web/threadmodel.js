@@ -66,21 +66,36 @@
     };
   }
 
-  // tree is the sidebar: each window that holds a repo, in the daemon's
-  // order, then the repos in no window under "Other". Role agents' own
-  // workspaces are not repos and are left out.
+  // agentRow is a role agent's own workspace, listed after its group's
+  // repos: no lead or threads (it runs in the terminal lens), just whether
+  // it is up.
+  const agentRow = (ws) => ({ id: ws.id, name: repoName(ws), state: ws.status === "live" ? "live" : "asleep" });
+
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+
+  // groupOf is one sidebar group: its repos, then its agents, each by name.
+  function groupOf(id, name, list, sessions) {
+    return {
+      id, name,
+      repos: list.filter((ws) => !ws.agent).map((ws) => repoRow(ws, sessions)).sort(byName),
+      agents: list.filter((ws) => ws.agent).map(agentRow).sort(byName),
+    };
+  }
+
+  // tree is the sidebar: each window that holds a repo or an agent, in the
+  // daemon's order, then the ones in no window under "Other".
   function tree(windows, workspaces, sessions) {
-    const repos = (workspaces || []).filter((ws) => !ws.agent);
-    const byId = new Map(repos.map((ws) => [ws.id, ws]));
+    const all = workspaces || [];
+    const byId = new Map(all.map((ws) => [ws.id, ws]));
     const placed = new Set();
     const groups = [];
     for (const win of windows || []) {
       const mine = (win.workspaceIds || []).map((id) => byId.get(id)).filter(Boolean);
       mine.forEach((ws) => placed.add(ws.id));
-      if (mine.length) groups.push({ id: win.id, name: win.name, repos: mine.map((ws) => repoRow(ws, sessions || [])) });
+      if (mine.length) groups.push(groupOf(win.id, win.name, mine, sessions || []));
     }
-    const loose = repos.filter((ws) => !placed.has(ws.id));
-    if (loose.length) groups.push({ id: "", name: "Other", repos: loose.map((ws) => repoRow(ws, sessions || [])) });
+    const loose = all.filter((ws) => !placed.has(ws.id));
+    if (loose.length) groups.push(groupOf("", "Other", loose, sessions || []));
     return groups;
   }
 

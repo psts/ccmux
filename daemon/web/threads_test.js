@@ -441,7 +441,7 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
 });
 
 test("a repo's git details open on a click, stay open beside others, and close on a click on the repo the page is in", async () => {
-  const other = { id: "ws2", name: "api", repoPath: "/p/api", git: { isGitRepo: true, branch: "main" } };
+  const other = { id: "ws2", name: "web", repoPath: "/p/web", git: { isGitRepo: true, branch: "main" } };
   const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, modifiedFiles: ["a.ts"] } };
   const kept = {};
   const storage = { getItem: (k) => kept[k] || null, setItem: (k, v) => { kept[k] = v; } };
@@ -450,7 +450,7 @@ test("a repo's git details open on a click, stay open beside others, and close o
   const opened = () => rows().map((r) => !!r.querySelector(".git-detail"));
   assert.deepEqual(opened(), [false, false], "nothing opened yet");
   assert.deepEqual(rows()[0].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:app", "row-status:●1↑2", "branch:dev"], "name, then changes and ahead, then the branch last");
-  assert.deepEqual(rows()[1].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:api", "row-status:", "branch:main"], "a clean repo keeps its empty column, so the branches line up");
+  assert.deepEqual(rows()[1].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:web", "row-status:", "branch:main"], "a clean repo keeps its empty column, so the branches line up");
   rows()[0].click();
   await p.settle();
   assert.equal(p.book.pushed.length, 0, "the repo the page is in: no move");
@@ -467,6 +467,18 @@ test("a repo's git details open on a click, stay open beside others, and close o
   assert.deepEqual(opened(), [true, false], "a click on the repo the page is in closes its details");
   const again = await boot({ workspaces: [app, other], sessions: [lead], storage });
   assert.deepEqual(again.$("tree").querySelectorAll(".row").map((r) => !!r.querySelector(".git-detail")), [true, false], "kept for the next load");
+});
+
+test("a group lists its repos by name, then its agents by name, and an agent opens in the terminal lens", async () => {
+  const api = { id: "ws2", name: "api", repoPath: "/p/api" };
+  const agent = (id, status) => ({ id, name: id, agent: id, status });
+  const p = await boot({ workspaces: [repo, agent("x-post", "cold"), api, agent("radar", "live")], windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "x-post", "ws2", "radar"] }] });
+  const rows = p.$("tree").querySelectorAll(".row");
+  assert.deepEqual(rows.map((r) => r.querySelector(".row-name").textContent), ["api", "app", "radar", "x-post"]);
+  assert.deepEqual(rows.slice(2).map((r) => [r.className, r.querySelector(".dot").className, r.querySelector(".agent-tag").textContent]), [["row agent", "dot live", "agent"], ["row agent", "dot asleep", "agent"]]);
+  rows[2].click();
+  assert.equal(p.where(), "/?w=w1&ws=radar");
+  assert.equal(p.posts().length, 0, "opening an agent starts nothing");
 });
 
 test("the firehose moves a session's dot and has the lists read again", async () => {

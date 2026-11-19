@@ -34,12 +34,14 @@ test("git state reads like the lens: branch, dirty count, origin, and the defaul
 });
 
 test("the sidebar is windows, then repos with their lead, then the threads filed under each", () => {
-  const windows = [{ id: "w1", name: "ChartLabs", workspaceIds: ["app", "api", "gone"] }, { id: "w2", name: "Empty", workspaceIds: [] }];
+  const windows = [{ id: "w1", name: "ChartLabs", workspaceIds: ["x-post", "app", "radar", "api", "gone"] }, { id: "w2", name: "Empty", workspaceIds: [] }];
   const workspaces = [
     { id: "app", name: "app", repoPath: "/p/app", git: { isGitRepo: true, branch: "dev" } },
     { id: "api", name: "", repoPath: "/p/backend" },
-    { id: "radar", name: "radar", agent: "radar" },
+    { id: "radar", name: "radar", agent: "radar", status: "live" },
+    { id: "x-post", name: "X-post", agent: "x-post", status: "cold" },
     { id: "solo", name: "solo", repoPath: "/p/solo" },
+    { id: "lone", name: "lone", agent: "lone" },
   ];
   const sessions = [
     { id: "t2", workspaceId: "app", title: "Drawings lost on exit", createdAt: 30, state: "running", attention: "running" },
@@ -56,7 +58,11 @@ test("the sidebar is windows, then repos with their lead, then the threads filed
   assert.equal(app.git.branch, "dev");
   assert.deepEqual(app.threads.map((t) => [t.session.id, t.title, t.state]), [["t1", "New thread", "waiting"], ["t2", "Drawings lost on exit", "running"]]);
   assert.deepEqual([api.name, api.lead, api.state, api.threads.length, api.git], ["backend", null, "asleep", 0, null]);
+  assert.deepEqual(groups[0].repos.map((r) => r.name), ["app", "backend"], "repos by name, not the window's order");
+  assert.deepEqual(groups[0].agents, [{ id: "radar", name: "radar", state: "live" }, { id: "x-post", name: "X-post", state: "asleep" }], "agents apart from the repos, by name, ignoring case");
   assert.deepEqual(groups[1].repos.map((r) => r.name), ["solo"], "an agent's own workspace is not a repo");
+  assert.deepEqual(groups[1].agents.map((a) => a.name), ["lone"], "an agent in no window is under Other");
+  assert.deepEqual(m.tree([], [{ id: "a", name: "a", agent: "a" }], []).map((g) => [g.name, g.repos.length, g.agents.length]), [["Other", 0, 1]], "a group of agents alone is listed");
   assert.deepEqual(m.tree(undefined, undefined, undefined), []);
 });
 

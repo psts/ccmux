@@ -379,7 +379,19 @@
     add(box, groupHead(g, ctx));
     if (S && S.folded(g)) { box.classList.add("folded"); return box; }
     const tasks = g.id && ctx.tasks ? tasksRow(g, ctx) : null;
-    return add(box, tasks, ...g.repos.map((r) => repoEl(r, ctx, g)));
+    return add(box, tasks, ...g.repos.map((r) => repoEl(r, ctx, g)), ...(g.agents || []).map((a) => agentEl(a, ctx, g)));
+  }
+
+  // agentEl is a role agent's row, after its group's repos: its dot (up or
+  // asleep), its name and an "agent" tag in the branch column. A click opens
+  // it in the terminal lens, where its chat is.
+  function agentEl(a, ctx, g) {
+    const row = el("button", "row agent");
+    row.type = "button";
+    row.title = `${a.state === "live" ? "Running" : "Asleep"}. Opens in the terminal lens.`;
+    row.onclick = () => ctx.openAgent(a, g);
+    const top = add(el("span", "row-top cols"), el("span", "row-name", a.name), el("span", "row-status"), el("span", "agent-tag", "agent"));
+    return add(row, el("span", "dot " + a.state), add(el("span", "row-body"), top));
   }
 
   function sidebar(tree, groups, ctx) {
