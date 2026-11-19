@@ -49,6 +49,7 @@
   // titleOf is what a session's row and header show: a lead is its repo, a
   // thread its title (its first prompt names it; until then it is new).
   function titleOf(session, ws) {
+    if (session.kind === "agent") return ws ? repoName(ws) : session.title || session.name || "agent";
     if (session.kind === "lead") return ws ? repoName(ws) : session.title || "lead";
     return session.title || "New thread";
   }
@@ -67,9 +68,14 @@
   }
 
   // agentRow is a role agent's own workspace, listed after its group's
-  // repos: no lead or threads (it runs in the terminal lens), just whether
-  // it is up.
-  const agentRow = (ws) => ({ id: ws.id, name: repoName(ws), state: ws.status === "live" ? "live" : "asleep" });
+  // repos. An agent that runs as a session (kind "agent") carries it: its
+  // row says where that session is, and opens its conversation here. One
+  // that still runs in a terminal has none, and only says whether it is up.
+  function agentRow(ws, sessions) {
+    const session = sessions.find((s) => s.workspaceId === ws.id && s.kind === "agent" && s.state !== "done");
+    if (session) return { id: ws.id, name: repoName(ws), state: stateOf(session), session };
+    return { id: ws.id, name: repoName(ws), state: ws.status === "live" ? "live" : "asleep" };
+  }
 
   const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 
@@ -78,7 +84,7 @@
     return {
       id, name,
       repos: list.filter((ws) => !ws.agent).map((ws) => repoRow(ws, sessions)).sort(byName),
-      agents: list.filter((ws) => ws.agent).map(agentRow).sort(byName),
+      agents: list.filter((ws) => ws.agent).map((ws) => agentRow(ws, sessions)).sort(byName),
     };
   }
 

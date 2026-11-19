@@ -472,6 +472,25 @@ test("a repo's git details open on a click, stay open beside others, and close o
   assert.deepEqual(again.$("tree").querySelectorAll(".row").map((r) => !!r.querySelector(".git-detail")), [true, false], "kept for the next load");
 });
 
+test("an agent that runs as a session opens its conversation here, and shows no model picker", async () => {
+  const home = { id: "radar", name: "radar", agent: "radar", status: "cold", panes: null };
+  const sess = { id: "a1", workspaceId: "radar", kind: "agent", name: "radar", state: "asleep", agentVersion: "1.2.0" };
+  const p = await boot({ workspaces: [repo, home], sessions: [sess], windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "radar"] }] });
+  const row = p.$("tree").querySelectorAll(".row").find((r) => r.className.includes("agent"));
+  assert.equal(row.querySelector(".dot").className, "dot asleep");
+  row.click();
+  await p.settle();
+  assert.equal(p.where(), "", "it does not leave for the terminal lens");
+  assert.deepEqual(p.book.pushed.slice(-1), ["/threads.html?s=a1"]);
+  assert.equal(p.$("title").textContent, "radar");
+  assert.match(p.$("meta").textContent, /ChartLabs · role agent · base 1\.2\.0/);
+  assert.equal(p.$("model-box").classList.contains("hidden"), true, "its base names its model");
+  assert.equal(p.$("rename").classList.contains("hidden"), true, "and its name");
+  assert.equal(p.$("new-thread").disabled, true, "an agent's home holds no threads");
+  assert.equal(p.$("composer").classList.contains("hidden"), false, "a message wakes it");
+  assert.match(p.doc.querySelector("#composer label").textContent, /Message this agent/);
+});
+
 test("a group lists its repos by name, then its agents by name, and an agent opens in the terminal lens", async () => {
   const api = { id: "ws2", name: "api", repoPath: "/p/api" };
   const agent = (id, status) => ({ id, name: id, agent: id, status });

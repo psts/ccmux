@@ -426,9 +426,28 @@ function boardRow(group) {
 // openWorkspace is a deliberate open: its row, a menu, a task, a
 // notification tap. A sleeping session is woken first.
 function openWorkspace(wsId, wantPane) {
+  if (window.ccmuxRoute.sessionHome(wsById(wsId))) return openAgentSession(wsId);
   closeSessionlessViews();
   if (isAsleep(wsId)) return reviveWorkspace(wsId, wantPane);
   return attach(wsId, wantPane);
+}
+
+// openAgentSession shows a role agent that runs as a session, not in a
+// terminal: its home has nothing to attach or wake here, and its
+// conversation is on the thread page. An agent with no session yet (it
+// never started here, or its last one was ended) gets one from its next
+// message.
+async function openAgentSession(wsId) {
+  const name = (wsById(wsId) || {}).name || "This agent";
+  try {
+    const r = await fetch("/v1/sessions");
+    if (!r.ok) throw new Error(await refusalOf(r));
+    const href = window.ccmuxRoute.agentSessionHref((await r.json()).sessions, wsId);
+    if (href) location.href = href;
+    else alert(`${name} has no session yet. Message it, or wake it from the window's menu, and it starts.`);
+  } catch (e) {
+    alert(`Could not open ${name}: ${e.message}`);
+  }
 }
 
 // showWorkspace is the page putting back what it showed: a reload (also the
@@ -2038,6 +2057,11 @@ async function fetchWindowAgents(winId) {
 async function wakeAndOpen(winId, name, prompt) {
   const p = await wakeAgent(winId, name, prompt);
   if (!p || !p.id) return;
+  if (p.runtime === "runner" && p.sessionId) {
+    // It runs as a session: its conversation is on the thread page.
+    location.href = window.ccmuxRoute.threadHref({ kind: "session", id: p.sessionId });
+    return;
+  }
   await fetchWorkspaces();
   openWorkspace(p.workspaceId, p.id);
 }

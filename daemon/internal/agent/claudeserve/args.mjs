@@ -18,7 +18,10 @@
 //           what its Claude runs with; without the last two a runner keeps
 //           what the person's settings choose)
 //           [--loadout FILE] (what its group and repo chose, loadout.mjs)
-//           and the flags above
+//           and the flags above. A role agent that runs as a session gets
+//           its base's flags this way, after the runner's own: a flag that
+//           holds one value keeps the last one given, so an isolated base's
+//           --setting-sources replaces the runner's.
 //   sessions --dir DIR
 //   export   --dir DIR --session ID [--media DIR]   (with --media: the fuller
 //           transcript a runner keeps, its images stored in DIR)

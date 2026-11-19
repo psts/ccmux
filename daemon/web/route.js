@@ -50,6 +50,20 @@
     return THREADS + (q ? "?" + q : "");
   }
 
+  // sessionHome says a workspace is the home of a role agent that runs as a
+  // session: it names its base and has no terminal behind it (no panes).
+  // The terminal lens has nothing to attach there; the agent's conversation
+  // is on the thread page.
+  const sessionHome = (ws) => !!ws && !!ws.agent && !(ws.panes && ws.panes.length);
+
+  // agentSessionHref is the thread page's address for the session of the
+  // agent whose home is wsId, "" when it has none (it never started, or its
+  // session was ended): the next message to it makes one.
+  function agentSessionHref(sessions, wsId) {
+    const s = (sessions || []).find((x) => x.workspaceId === wsId && x.kind === "agent" && x.state !== "done");
+    return s ? threadHref({ kind: "session", id: s.id }) : "";
+  }
+
   // parseThread reads that address back. Anything it does not hold is
   // {kind: "none"}: the page then shows its sidebar and waits for a pick.
   function parseThread(search) {
@@ -214,7 +228,7 @@
 
   const api = {
     parse, href, windowOf, bootTarget, takesNav, remember, recall, known, beat, ended, takeRestoreSet, launchSet,
-    othersShow, reachable, showing, threadHref, parseThread,
+    othersShow, reachable, showing, threadHref, parseThread, sessionHome, agentSessionHref,
     BURST_MS, NAV_TTL_MS, THREADS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

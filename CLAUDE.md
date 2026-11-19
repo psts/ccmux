@@ -197,6 +197,60 @@ watchdog, reports, the merge and tidy-up jobs, send-back.
 - "Open session" on a part opens the builder's conversation
   (`/threads.html?s=<session>`); the part's view carries `sessionId`.
 
+## Claude role agents are sessions (Linux)
+
+Since task #177 a role agent on the claude harness (radar, x-post and the
+rest) is a runner session (`ccmux-session@<id>`), not the sidecar typed into
+a tmux pane on a loopback port. Its home is still its workspace in the
+window (the row whose `agent` names its base), with no tmux session and no
+panes behind it. The home has one session that has not ended, of kind
+`agent`, kept across sleeps: so its pane id, its peer on the bus and its
+mailbox stay the same. tmux is no longer what keeps an agent alive.
+
+- **Where an instance runs is decided by where it is** (`api.onSession`):
+  this daemon runs sessions, the base is on the claude harness, and the
+  instance is not running in a tmux pane right now. A claude agent that was
+  running in its pane at the deploy keeps every pane path (chat port, push,
+  ctrl-d) until that run ends, and moves at its next start
+  (`manager.RetireAgentTmux`: its tmux session is closed, its pane rows go,
+  and its session's pane takes the old pane's id). Other harnesses
+  (opencode, pi, codex) and hosts without systemd keep the pane, unchanged.
+- **Its spec is its base's, read at every start** (`runner.Config.Agent` →
+  `api.AgentStart`): the same flags the pane's launch line carries
+  (`agent.ClaudeRunnerArgs`; a test holds the two together), its `.env`
+  files' values in the spec's environment (the spec is 0600 for that), the
+  login shell's PATH, no loadout and no brief. Its flags come after the
+  runner's own, where the sidecar keeps the last `--setting-sources`: that is
+  how an isolated base wins. It runs the SDK's own Claude Code, as it did in
+  its pane (`--claude` is not passed).
+- **Sleep has one door** (`api.SleepAgentSession` → `runner.Supervisor.Sleep`):
+  the idle exit, a person's Sleep, the editor's restart and the thread
+  page's `/wanted` all go through it. It stops the unit under the session's
+  lock, refuses while a prompt has not been read, and marks the next start
+  fresh unless the base says `start: continue`. Put an agent to sleep any
+  other way and it wakes in the wrong conversation.
+- **Fresh means a new conversation in the same row.** `sessions.conversation`
+  is the Claude conversation the row runs (empty: its own id), and
+  `fresh_next` makes the next start open a new one. A crash, "Restart now" or
+  a reboot never set the mark: they resume. Read a session's conversation
+  with `RunnerSession.ConversationID()`, never its id.
+- **A message wakes it like any session** (the bus hands it to the inbox),
+  so `PushToAgentPane` and `WakePane` are never used for it. The cap on
+  running agents still holds: a message for an asleep agent over the cap
+  stays in its mailbox and is handed over at the bus's next sweep
+  (`api.agentWakeHeld`); a wake from the thread page over the cap is a 409.
+- **The lifecycle loop reads its pane** (`manager/agentsessions.go`): the
+  runner pane carries `agent` and `agentVersion`, so idle exit, keep-alive,
+  drift and the cap work as for a pane. Its idle clock is not in `panes`:
+  after a restart it comes back from the attention on its session row.
+- **Lenses:** the thread page opens an agent's conversation
+  (`/threads.html?s=<session>`), and the old lens sends a home with no panes
+  there. The old chat routes (`/v1/panes/{id}/agent...`) answer 409 for a
+  session's pane, and the attention board has no tile for one.
+- **A scratch daemon's agents are sessions too**, under its own
+  `-runner-unit-prefix`, and load the `-peers-shim` it names. Never start
+  the real role agents in a test: make a base on Haiku.
+
 ## Shipping
 
 `/ship` runs direct-trunk here: `main` is both the working branch and the

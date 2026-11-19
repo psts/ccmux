@@ -131,3 +131,17 @@ test("before a session says which models it offers, the picker names them withou
   assert.deepEqual(v.options.map((o) => [o.value, o.label]), [["opus", "Opus (default)"], ["fable", "Fable"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]]);
   assert.equal(m.modelView({ model: "sonnet" }, { models: [{ value: "sonnet", name: "Sonnet 6", model: "claude-sonnet-6" }] }).wantedName, "Sonnet 6", "once it says, its own names, with the version");
 });
+
+test("an agent that runs as a session carries it: its row is the session's state", () => {
+  const home = { id: "h", name: "radar", agent: "radar", status: "cold" };
+  const still = { id: "t", name: "x-post", agent: "x-post", status: "live", panes: [{ id: "p" }] };
+  const sess = { id: "a1", workspaceId: "h", kind: "agent", name: "radar", state: "running", attention: "needs_input" };
+  const ended = { id: "a0", workspaceId: "h", kind: "agent", state: "done" };
+  const [g] = m.tree([{ id: "w", name: "W", workspaceIds: ["h", "t"] }], [home, still], [ended, sess]);
+  assert.deepEqual(g.agents, [{ id: "h", name: "radar", state: "waiting", session: sess }, { id: "t", name: "x-post", state: "live" }]);
+  assert.equal(g.repos.length, 0, "its session is filed under no repo");
+  assert.equal(m.tree([], [home], [{ ...sess, state: "asleep" }])[0].agents[0].state, "asleep");
+  assert.equal(m.tree([], [home], [ended])[0].agents[0].session, undefined, "an ended session is not its session");
+  assert.equal(m.titleOf(sess, home), "radar", "its header is the agent's name");
+  assert.equal(m.titleOf({ kind: "agent", name: "radar" }, null), "radar");
+});

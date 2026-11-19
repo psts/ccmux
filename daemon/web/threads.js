@@ -282,7 +282,7 @@
     const sess = session();
     const ws = workspace();
     if (!Side.dragging()) drawTree(sess, ws);
-    $("new-thread").disabled = !ws;
+    $("new-thread").disabled = !ws || !!ws.agent; // an agent's home holds its one session, no threads
     const info = S.stream.info || {};
     $("side-version").textContent = info.claudeCode || S.stream.sdk ? `Claude Code ${info.claudeCode || "?"} · SDK ${S.stream.sdk || "?"}` : "";
   }
@@ -332,6 +332,7 @@
     const repo = ws ? Model.repoName(ws) : "";
     const group = groupOf(ws);
     if (sess && sess.threadId) return { title: Model.titleOf(sess, ws), meta: Team.metaLine(sess, S.sessions, S.workspaces, group) };
+    if (sess && sess.kind === "agent") return { title: Model.titleOf(sess, ws), meta: `${group} · role agent${sess.agentVersion ? " · base " + sess.agentVersion : ""} · a message starts it` };
     if (sess) {
       const lead = sess.kind === "lead";
       const filed = S.sessions.filter((s) => s.workspaceId === sess.workspaceId && s.kind !== "lead" && s.state !== "done").length;
@@ -358,10 +359,11 @@
     badge.className = "badge " + state + (sess ? "" : " hidden");
     badge.textContent = { starting: "Starting", updating: "Updating" }[state] || Model.stateLabel(state);
     const live = !!sess && sess.state !== "done";
-    show("model-box", live || (S.sel.kind === "draft" && !!ws));
+    const agent = !!sess && sess.kind === "agent"; // its base names its model, and its name
+    show("model-box", (live && !agent) || (S.sel.kind === "draft" && !!ws));
     show("stop", live && (S.stream.busy || S.stream.cards.length > 0));
     show("more", live);
-    show("rename", !!sess && sess.kind !== "lead");
+    show("rename", !!sess && sess.kind !== "lead" && !agent);
     const leads = live && !!sess.threadId && sess.role === "lead";
     show("merge-thread", leads);
     show("end-thread", leads);
@@ -581,7 +583,8 @@
     const usable = (sess && sess.state !== "done") || (S.sel.kind === "draft" && !!workspace());
     show("composer", usable);
     const lead = sess ? sess.kind === "lead" : S.sel.as === "lead";
-    document.querySelector("#composer label").textContent = `Message ${lead ? "the lead" : "this thread"}, or type / for commands`;
+    const whom = sess && sess.kind === "agent" ? "this agent" : lead ? "the lead" : "this thread";
+    document.querySelector("#composer label").textContent = `Message ${whom}, or type / for commands`;
     const here = R.threadHref(S.sel);
     $("hint").textContent = S.pending.some((p) => p.where === here && p.state === "new") ? "Sending…" : sess && sess.state === "asleep" ? "Asleep. A message wakes it." : "Lands as the next turn if Claude is busy";
     const box = $("attached");

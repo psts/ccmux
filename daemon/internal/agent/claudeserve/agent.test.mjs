@@ -3,6 +3,7 @@
 // signals the daemon gets, and how a failed query ends.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { parseArgs } from "./args.mjs";
 import { Agent, askID } from "./agent.mjs";
 
 // stubSDK records what the agent asks of it. query() returns an object the
@@ -551,6 +552,40 @@ test("a task's builder runs in the mode and at the effort its row names", () => 
   const pane = makeAgent({ permissionMode: "auto" });
   pane.agent.prompt("hi");
   assert.equal(pane.sdk.queries[0].options.permissionMode, "default");
+});
+
+// A role agent that runs as a session (the daemon's runner/agent.go): the
+// runner's own flags with its base's after them, parsed from one line as the
+// daemon writes it.
+test("a role agent's session runs as its pane did: its base's plugin, prompt, gates and walls, asking by its base's rules", async () => {
+  const line = [
+    "--socket", "/run/s.sock", "--state", "/st/c1.state.json", "--session-auto", "c1", "--detached", "1",
+    "--setting-sources", "user,project,local", "--agent", "radar", "--media", "/st/s.media",
+    "--model", "sonnet", "--peers-command", "/bin/ccmux-peers", "--permission-mode", "default",
+    "--plugin-dir", "/agents/radar", "--system-prompt-file", "/agents/radar/AGENTS.md", "--mcp-file", "/agents/radar/mcp.json",
+    "--add-dir", "/repo", "--allowed-tools", "Glob,Grep,Read", "--write-root", "/w/agents/radar", "--write-inside", "allow",
+  ];
+  const { agent, sdk } = runnerAgent({ ...parseArgs(line), claude: undefined, readFile: (p) => (p.endsWith("AGENTS.md") ? "# radar\n" : "{}") });
+  agent.prompt("the morning run", "p1");
+  const o = sdk.queries[0].options;
+  assert.equal(o.permissionMode, "default", "it asks by its base's gates, whatever the person's settings say");
+  assert.equal(o.pathToClaudeCodeExecutable, undefined, "the SDK's own Claude Code, as in its pane");
+  assert.deepEqual(o.plugins, [{ type: "local", path: "/agents/radar" }]);
+  assert.equal(o.systemPrompt.append, "# radar\n");
+  assert.equal(o.model, "sonnet");
+  assert.deepEqual(o.additionalDirectories, ["/repo"]);
+  assert.deepEqual(o.allowedTools, ["Glob", "Grep", "Read", "mcp__claude-peers"]);
+  assert.deepEqual(o.mcpServers["claude-peers"], { type: "stdio", command: "/bin/ccmux-peers", args: [], env: { CCMUX_BUS_OWNER: "1" } }, "the daemon's shim, as its pane's bus owner");
+  assert.equal(o.hooks.PreToolUse.length, 1, "its walls hold in a session too");
+  assert.equal(o.sessionId, "c1", "the conversation its row names");
+  // An isolated base's setting sources come after the runner's own on the
+  // line, and win: the home's project settings only, connectors off.
+  const isolated = runnerAgent({ ...parseArgs([...line, "--setting-sources", "project"]), readFile: () => "{}" });
+  isolated.agent.prompt("go", "p1");
+  const io = isolated.sdk.queries[0].options;
+  assert.deepEqual(io.settingSources, ["project"]);
+  assert.equal(io.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
+  assert.equal(io.mcpServers["claude-peers"].command, "/bin/ccmux-peers", "the bus is still the daemon's shim");
 });
 
 // --- a runner's loadout (--loadout, loadout.mjs) ---

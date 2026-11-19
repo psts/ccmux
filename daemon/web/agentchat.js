@@ -193,6 +193,9 @@
       case "question": return addQuestion(f.question);
       case "question-replied": return removeQuestion(f.id);
       case "error": return showError(f.error);
+      // The agent left its terminal for a session (its start just now):
+      // its conversation is on the thread page.
+      case "moved": if (f.url) location.href = f.url; return;
     }
   }
 

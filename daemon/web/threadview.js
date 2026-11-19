@@ -382,14 +382,16 @@
     return add(box, tasks, ...g.repos.map((r) => repoEl(r, ctx, g)), ...(g.agents || []).map((a) => agentEl(a, ctx, g)));
   }
 
-  // agentEl is a role agent's row, after its group's repos: its dot (up or
-  // asleep), its name and an "agent" tag in the branch column. A click opens
-  // it in the terminal lens, where its chat is.
+  // agentEl is a role agent's row, after its group's repos: its dot, its
+  // name and an "agent" tag in the branch column. An agent that runs as a
+  // session opens its conversation here, and its row pulses like a thread's;
+  // one still in a terminal opens in the terminal lens, where its chat is.
   function agentEl(a, ctx, g) {
-    const row = el("button", "row agent");
+    const here = !!a.session && ctx.isSession(a.session);
+    const row = el("button", "row agent" + (here ? " on" : "") + (a.session ? attClass(a.state) : ""));
     row.type = "button";
-    row.title = `${a.state === "live" ? "Running" : "Asleep"}. Opens in the terminal lens.`;
-    row.onclick = () => ctx.openAgent(a, g);
+    row.title = a.session ? `${Model.stateLabel(a.state)}. Opens its conversation.` : `${a.state === "live" ? "Running" : "Asleep"}. Opens in the terminal lens.`;
+    row.onclick = () => (a.session ? ctx.pickSession(a.session) : ctx.openAgent(a, g));
     const top = add(el("span", "row-top cols"), el("span", "row-name", a.name), el("span", "row-status"), el("span", "agent-tag", "agent"));
     return add(row, el("span", "dot " + a.state), add(el("span", "row-body"), top));
   }

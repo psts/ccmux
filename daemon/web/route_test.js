@@ -180,3 +180,19 @@ test("a thread address that names nothing, or the lens's own fields, shows no se
   // And the lens's own parse is as it was: it reads w and ws, nothing else.
   assert.deepStrictEqual(R.parse("?s=abc"), { w: "", ws: "" });
 });
+
+test("a role agent that runs as a session opens on the thread page", () => {
+  assert.equal(R.sessionHome({ id: "h", agent: "radar", status: "cold" }), true, "an agent's home with no terminal behind it");
+  assert.equal(R.sessionHome({ id: "h", agent: "radar", panes: [] }), true);
+  assert.equal(R.sessionHome({ id: "h", agent: "radar", panes: [{ id: "p" }] }), false, "an agent still in a terminal opens there");
+  assert.equal(R.sessionHome({ id: "r", panes: null }), false, "a repo is never one");
+  assert.equal(R.sessionHome(undefined), false);
+  const sessions = [
+    { id: "t1", workspaceId: "h", kind: "", state: "running" },
+    { id: "old", workspaceId: "h", kind: "agent", state: "done" },
+    { id: "a1", workspaceId: "h", kind: "agent", state: "asleep" },
+  ];
+  assert.equal(R.agentSessionHref(sessions, "h"), "/threads.html?s=a1", "its session that has not ended, asleep or not");
+  assert.equal(R.agentSessionHref(sessions, "other"), "", "a home with no session yet");
+  assert.equal(R.agentSessionHref(undefined, "h"), "");
+});
