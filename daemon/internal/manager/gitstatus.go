@@ -18,9 +18,14 @@ import (
 // single-digit milliseconds. Runs until the manager's ctx is cancelled. Called
 // from main (not Start) so unit tests asserting exact firehose sequences don't
 // see surprise events.
+//
+// A repo nobody works in (no terminal and no runner session there) is read
+// too, but only once an hour (idleGitEvery): the thread page lists every
+// repo with its branch, and such a repo's state rarely moves. Once a session
+// starts in it, it is read every interval again.
 func (m *Manager) StartGitStatus(interval time.Duration) {
 	go func() {
-		c := &gitCollector{m: m, last: map[string]string{}, defaults: map[string]string{}}
+		c := newGitCollector(m, idleGitEvery, time.Now)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -34,32 +39,60 @@ func (m *Manager) StartGitStatus(interval time.Duration) {
 	}()
 }
 
+// idleGitEvery is how often a repo nobody works in has its git state read.
+const idleGitEvery = time.Hour
+
 // gitCollector holds per-workspace collection state across ticks.
 type gitCollector struct {
-	m        *Manager
-	last     map[string]string // wsID → last published status (marshaled) for change detection
-	defaults map[string]string // wsID → cached default branch; key absent = not yet resolved
+	m         *Manager
+	last      map[string]string    // wsID → last published status (marshaled) for change detection
+	defaults  map[string]string    // wsID → cached default branch; key absent = not yet resolved
+	idleRead  map[string]time.Time // wsID → when an idle repo was last read; absent = read it now
+	idleEvery time.Duration
+	now       func() time.Time
+}
+
+func newGitCollector(m *Manager, idleEvery time.Duration, now func() time.Time) *gitCollector {
+	return &gitCollector{m: m, last: map[string]string{}, defaults: map[string]string{}, idleRead: map[string]time.Time{}, idleEvery: idleEvery, now: now}
 }
 
 func (c *gitCollector) collectOnce() {
 	seen := map[string]bool{}
 	for _, ws := range c.m.List() {
-		// A closed workspace is read too while a runner session works in it:
-		// the thread page shows its repo's git state, and Claude changes the
-		// tree there with no terminal session open.
-		if ws.Status != model.StatusLive && !c.m.hasRunnerPanes(ws.ID) {
-			continue
-		}
 		seen[ws.ID] = true
-		c.collectWorkspace(ws.ID, ws.RepoPath)
+		if c.due(ws) {
+			c.collectWorkspace(ws.ID, ws.RepoPath)
+		}
 	}
-	// Drop state for removed/cold workspaces so a revived one re-resolves fresh.
+	// Drop state for removed workspaces.
 	for id := range c.last {
 		if !seen[id] {
 			delete(c.last, id)
 			delete(c.defaults, id)
 		}
 	}
+	for id := range c.idleRead {
+		if !seen[id] {
+			delete(c.idleRead, id)
+		}
+	}
+}
+
+// due says whether a workspace is read this pass. One worked in (a live
+// terminal session, or a runner session, which changes the tree with no
+// terminal open) is read every pass; an idle one when it was never read or
+// idleEvery has passed. A repo that goes idle is read once more at once.
+func (c *gitCollector) due(ws *model.Workspace) bool {
+	if ws.Status == model.StatusLive || c.m.hasRunnerPanes(ws.ID) {
+		delete(c.idleRead, ws.ID)
+		return true
+	}
+	now := c.now()
+	if at, ok := c.idleRead[ws.ID]; ok && now.Sub(at) < c.idleEvery {
+		return false
+	}
+	c.idleRead[ws.ID] = now
+	return true
 }
 
 func (c *gitCollector) collectWorkspace(wsID, repoPath string) {

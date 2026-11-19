@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,9 +101,10 @@ func TestManager_GitStatusCollector(t *testing.T) {
 }
 
 // A runner session works in its repo with no terminal session open there, so
-// a closed workspace that holds one has its git state read; a closed
-// workspace with none is left alone, as before.
-func TestManager_GitStatusOfAClosedWorkspaceWithARunnerSession(t *testing.T) {
+// a closed workspace that holds one has its git state read every pass. A
+// closed workspace nobody works in is read once, then once per idle period,
+// so the thread page still shows its branch.
+func TestManager_GitStatusOfClosedWorkspaces(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -112,15 +114,10 @@ func TestManager_GitStatusOfAClosedWorkspaceWithARunnerSession(t *testing.T) {
 	}
 	defer st.Close()
 	repo := t.TempDir()
-	for _, args := range [][]string{{"init", "-b", "main"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+	cmd := exec.Command("git", "init", "-b", "main")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -130,33 +127,48 @@ func TestManager_GitStatusOfAClosedWorkspaceWithARunnerSession(t *testing.T) {
 	m.byID["worked"], m.byID["idle"] = &entry{ws: worked}, &entry{ws: idle}
 	m.SyncRunnerPane(store.RunnerSession{ID: "s1", Cwd: repo, Wanted: store.SessionRunning, PaneID: "run1", WorkspaceID: "worked"})
 
+	clock := time.Unix(1000, 0)
+	c := newGitCollector(m, time.Hour, func() time.Time { return clock })
 	id, ch := m.SubscribeEvents()
 	defer m.UnsubscribeEvents(id)
-	m.StartGitStatus(20 * time.Millisecond)
-	deadline := time.After(5 * time.Second)
-	for got := false; !got; {
-		select {
-		case ev := <-ch:
-			if ev.Kind == "workspace-git" && ev.WorkspaceID == "idle" {
-				t.Fatal("a closed workspace nobody works in was read")
+	// pass dirties the tree, so every read that happens publishes, and
+	// returns which workspaces were read.
+	n := 0
+	pass := func() map[string]bool {
+		t.Helper()
+		n++
+		if err := os.WriteFile(filepath.Join(repo, fmt.Sprintf("f%d.txt", n)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		c.collectOnce()
+		read := map[string]bool{}
+		for {
+			select {
+			case ev := <-ch:
+				if ev.Kind == "workspace-git" {
+					read[ev.WorkspaceID] = true
+				}
+			default:
+				return read
 			}
-			got = ev.Kind == "workspace-git" && ev.WorkspaceID == "worked"
-		case <-deadline:
-			t.Fatal("the closed workspace with a runner session never got its git state")
 		}
 	}
-	time.Sleep(60 * time.Millisecond) // a few more passes over the idle one
-	list := m.List()
-	for _, ws := range list {
-		switch ws.ID {
-		case "worked":
-			if ws.Git == nil || ws.Git.Branch != "main" || len(ws.Git.UntrackedFiles) != 1 {
-				t.Fatalf("its state: %+v", ws.Git)
-			}
-		case "idle":
-			if ws.Git != nil {
-				t.Fatalf("the idle one was read: %+v", ws.Git)
-			}
-		}
+	if got := pass(); !got["worked"] || !got["idle"] {
+		t.Fatalf("first pass read %v, want both", got)
+	}
+	if b := m.Workspace("idle").Git; b == nil || b.Branch != "main" {
+		t.Fatalf("idle repo's state: %+v", b)
+	}
+	clock = clock.Add(59 * time.Minute)
+	if got := pass(); !got["worked"] || got["idle"] {
+		t.Fatalf("within the hour read %v, want the worked one only", got)
+	}
+	clock = clock.Add(time.Minute)
+	if got := pass(); !got["idle"] {
+		t.Fatalf("after the hour read %v, want the idle one again", got)
+	}
+	m.SyncRunnerPane(store.RunnerSession{ID: "s2", Cwd: repo, Wanted: store.SessionRunning, PaneID: "run2", WorkspaceID: "idle"})
+	if got := pass(); !got["idle"] {
+		t.Fatalf("a session started in the idle repo: read %v, want it every pass", got)
 	}
 }
