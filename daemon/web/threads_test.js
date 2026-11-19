@@ -449,7 +449,8 @@ test("a repo's git details open on a click, stay open beside others, and close o
   const rows = () => p.$("tree").querySelectorAll(".row");
   const opened = () => rows().map((r) => !!r.querySelector(".git-detail"));
   assert.deepEqual(opened(), [false, false], "nothing opened yet");
-  assert.deepEqual(rows()[0].querySelector(".row-git").children.map((c) => c.textContent), ["dev", "●1", "↑2"], "branch, changes and ahead sit by the name");
+  assert.deepEqual(rows()[0].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:app", "row-status:●1↑2", "branch:dev"], "name, then changes and ahead, then the branch last");
+  assert.deepEqual(rows()[1].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:api", "row-status:", "branch:main"], "a clean repo keeps its empty column, so the branches line up");
   rows()[0].click();
   await p.settle();
   assert.equal(p.book.pushed.length, 0, "the repo the page is in: no move");

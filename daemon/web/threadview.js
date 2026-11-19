@@ -218,11 +218,15 @@
 
   // --- the sidebar ---
 
-  // gitBadges sit at the right of a repo's name: its branch, its changed
-  // files, and how far it is from its upstream.
-  function gitBadges(git) {
-    if (!git) return null;
-    return add(el("span", "row-git"), el("span", "branch", git.branch), git.dirty ? el("span", "dirty", "●" + git.dirty) : null, git.origin ? el("span", "ab", git.origin) : null);
+  // gitCols are a repo row's two right-hand columns (threads.css .cols):
+  // its changed files and how far it is from its upstream, then its branch,
+  // last, so every row's branch and changes line up whatever is shown.
+  function gitCols(git) {
+    if (!git) return [];
+    const status = add(el("span", "row-status"), git.dirty ? el("span", "dirty", "●" + git.dirty) : null, git.origin ? el("span", "ab", git.origin) : null);
+    const branch = el("span", "branch", git.branch);
+    branch.title = git.branch;
+    return [status, branch];
   }
 
   // gitDetail is the repo's git state written out, inside its row's card,
@@ -309,7 +313,7 @@
     row.type = "button";
     row.title = r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet";
     row.onclick = () => ctx.pickRepo(r);
-    const top = add(el("span", "row-top"), el("span", "row-name", r.name), gitBadges(r.git));
+    const top = add(el("span", "row-top cols"), el("span", "row-name", r.name), ...gitCols(r.git));
     add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
     add(box, todoRow(r, ctx));
     for (const t of r.threads) {
