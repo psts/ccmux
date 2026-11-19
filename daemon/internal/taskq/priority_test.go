@@ -101,12 +101,10 @@ func TestMerge_PriorityMergesFirst(t *testing.T) {
 	g.tick()
 	g.doneParts(1)
 	g.doneParts(2)
-	g.checks.hold = make(chan struct{})
 	g.r.Tick()
 	g.r.Tick()
 	first, second := g.st.task(1).Status, g.st.task(2).Status
-	close(g.checks.hold)
-	g.r.merges.Wait()
+	g.runJobs()
 	if first != ReadyToMerge || second != Merging {
 		t.Fatalf("while one merges: low %s, high %s; want the high one merging", first, second)
 	}

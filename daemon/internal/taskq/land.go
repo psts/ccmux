@@ -15,9 +15,10 @@ import (
 // trunk move forward, a fast-forward only. Nothing is pushed.
 //
 // Two callers land work this way: the task queue, a feature's parts
-// (merge.go), and a thread with helpers, its members' branches
-// (internal/threads). What differs between them (who is told of a failure,
-// who closes the worker) is theirs; the git and the checks are here.
+// (mergejob.go), and a thread with helpers, its members' branches
+// (internal/threads). Both run it as a job in a service of its own
+// (landjob.go). What differs between them (who is told of a failure, who
+// closes the worker) is theirs; the git and the checks are here.
 
 // Work is one branch to land: its repo, the worktree the branch is checked
 // out in, and the branch. Label says whose it is in the log ("#12").

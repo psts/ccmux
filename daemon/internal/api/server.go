@@ -70,6 +70,11 @@ type Server struct {
 	// taskRunner is the queue's runner once started (nil before, or when
 	// there is no queue): a person's "Send back to worker" goes through it.
 	taskRunner *taskq.Runner
+	// taskSettler is the same runner as the one that settles the queue's
+	// jobs (a merge, a tidy-up), there whenever there is a queue, also on a
+	// daemon whose runner is stopped (-task-slots 0): a merge the last
+	// daemon started still ends, and its end is still acted on.
+	taskSettler *taskq.Runner
 	// todos is every repo's to-do list (todos.go); nil answers 503 on its
 	// routes. todoKeys names the list a folder's items go on.
 	todos    *todos.Book

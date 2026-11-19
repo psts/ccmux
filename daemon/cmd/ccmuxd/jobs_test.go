@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/jobs"
+	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/threads"
 )
 
@@ -21,10 +22,24 @@ func TestOnlyTheInstalledDaemonRunsJobsUnderTheDefaultName(t *testing.T) {
 }
 
 func TestEveryJobKindTheDaemonStartsHasItsRunner(t *testing.T) {
-	if _, ok := jobKinds[threads.MergeKind]; !ok {
-		t.Fatal("a thread's merge has no runner: its job would be refused by job-exec")
+	for _, kind := range []string{threads.MergeKind, taskq.MergeKind, taskq.TidyKind} {
+		if _, ok := jobKinds[kind]; !ok {
+			t.Fatalf("a %s job has no runner: it would be refused by job-exec", kind)
+		}
 	}
 	if err := cmdJobExec(nil); err == nil || !strings.Contains(err.Error(), "usage") {
 		t.Fatalf("job-exec takes one spec file: %v", err)
 	}
+}
+
+// A daemon with no job manager hands the task queue a plain nil, so the
+// queue says "this daemon runs no jobs" instead of calling into nothing.
+func TestTheQueueGetsNoJobsFromADaemonThatRunsNone(t *testing.T) {
+	if got := (jobWiring{off: "no systemctl on this host"}).forQueue(); got != nil {
+		t.Fatalf("a nil manager reached the queue as a Jobs that is not nil: %#v", got)
+	}
+	if got := (jobWiring{mgr: &jobs.Manager{}}).forQueue(); got == nil {
+		t.Fatal("a daemon that runs jobs hands the queue none")
+	}
+	wireJobs(t.Context(), jobWiring{off: "no systemctl on this host"}, nil) // nothing to start, and no panic
 }

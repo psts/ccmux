@@ -415,3 +415,41 @@ func TestTheTemplateIsWrittenOnceAndNeverOverAnotherDaemons(t *testing.T) {
 		t.Fatal("and the file is as it was")
 	}
 }
+
+// Open lists the jobs of the kinds asked for that have not ended: what a
+// task queue asks to know whether its one merge line is taken. A job of
+// another kind, and one that is done, are not in it.
+func TestOpenListsTheUnfinishedJobsOfAKind(t *testing.T) {
+	r := newManagerRig(t)
+	merge := r.start()
+	tidy, err := r.m.Start(New{Kind: "tidy", Subject: "task-tidy:3", Name: "tidy-task-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended, err := r.m.Start(New{Kind: "tidy", Subject: "task-tidy:4", Name: "tidy-task-4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.m.finish(ended, store.JobApplied, "")
+	ids := func(kinds ...string) string {
+		t.Helper()
+		list, err := r.m.Open(kinds...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, j := range list {
+			out = append(out, j.ID)
+		}
+		return strings.Join(out, " ")
+	}
+	if got := ids("tidy"); got != tidy.ID {
+		t.Fatalf("the open jobs of one kind: %q", got)
+	}
+	if got := ids("merge", "tidy"); got != merge.ID+" "+tidy.ID {
+		t.Fatalf("of two kinds, oldest first: %q", got)
+	}
+	if got := ids("landing"); got != "" {
+		t.Fatalf("of a kind nothing runs: %q", got)
+	}
+}

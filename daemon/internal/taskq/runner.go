@@ -58,9 +58,16 @@ type Runner struct {
 	Host     Host
 	Git      Git
 	MergeGit MergeGit
-	Checks   Checks
-	Lock     sync.Locker
-	Slots    int // features running at once in a window with no number of its own
+	// Jobs runs a built feature's merge and its tidy-up, each as a job in
+	// its own service (mergejob.go). Nil on a daemon that runs no jobs, with
+	// JobsOff saying why: built features then wait and say so.
+	Jobs    Jobs
+	JobsOff string
+	// CheckLine is how long one line of a repo's checks may run in a merge's
+	// job; 0 is twenty minutes.
+	CheckLine time.Duration
+	Lock      sync.Locker
+	Slots     int // features running at once in a window with no number of its own
 	// WindowSlots returns the windows that have their own number, window id
 	// -> features at once (0 holds that window's queue). Nil means every
 	// window runs Slots. An error starts nothing new that pass: falling back
@@ -76,8 +83,6 @@ type Runner struct {
 	Root             string // where worktrees and briefs go
 	Now              func() time.Time
 
-	merging bool           // a merge is in flight; guarded by Lock
-	merges  sync.WaitGroup // the merge in flight, for tests to wait on
 	// parked is the built features waiting on a person's own folder (its
 	// trunk has uncommitted changes, say), by id: they hold no slot
 	// (SlotsHeld). Guarded by Lock. Empty after a restart, so such a
@@ -116,19 +121,15 @@ func (r *Runner) Start(ctx context.Context, every time.Duration) {
 }
 
 // Tick is one pass: decide under the lock, then start the claimed parts
-// without it, and hand a feature ready to merge to its own goroutine. (A
-// cancel closes its task's Claudes itself, at once.)
+// without it, and start the job of a feature ready to merge. (A cancel
+// closes its task's Claudes itself, at once.)
 func (r *Runner) Tick() {
 	jobs, mj, changed := r.decide()
 	for _, j := range jobs {
 		r.start(j)
 	}
 	if mj != nil {
-		r.merges.Add(1)
-		go func() {
-			defer r.merges.Done()
-			r.merge(*mj)
-		}()
+		r.startMerge(*mj)
 	}
 	if changed {
 		r.Host.TasksChanged()
@@ -169,13 +170,26 @@ func (r *Runner) decide() ([]job, *mergeJob, bool) {
 	return jobs, mj, changed || sent || picked || len(jobs) > 0
 }
 
-// mergeStep recovers a merge the daemon dropped and picks the next one,
-// unless one is in flight.
+// mergeStep puts a merge that never got its job back in line and picks the
+// next one, unless the merge line is taken: one merge at a time, and its
+// tidy-up is part of it. Whether it is taken is the registry's to say (an
+// open merge or tidy-up job), not this process's memory, so a daemon that
+// just started sees the merge the last one left running. When the jobs
+// cannot be read nothing is recovered and nothing picked: "I could not ask"
+// is never "none runs". Under the lock.
 func (r *Runner) mergeStep(tasks []store.Task, parts []store.Part, order []int) (*mergeJob, bool) {
-	if r.merging {
+	if r.Jobs == nil {
+		return nil, r.waitForJobs(tasks)
+	}
+	open, err := r.Jobs.Open(MergeKind, TidyKind)
+	if err != nil {
+		log.Printf("tasks: the merge jobs were not read, nothing is merged this pass: %v", err)
 		return nil, false
 	}
-	recovered := r.recoverMerges(tasks)
+	recovered := r.recoverMerges(tasks, open)
+	if len(open) > 0 {
+		return nil, recovered
+	}
 	mj, picked := r.pickMerge(tasks, parts, order)
 	return mj, recovered || picked
 }

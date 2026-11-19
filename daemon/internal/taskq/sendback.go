@@ -189,8 +189,9 @@ need.`, taskID, why, trunk, trunk, trunk)
 }
 
 // settleFailed decides where a failed merge goes, by its kind. Under the
-// lock; t is the task as it was claimed for the merge.
-func (r *Runner) settleFailed(t store.Task, err error) store.Task {
+// lock; t is the task as its row is now, still merging, and jobID the merge
+// job that failed.
+func (r *Runner) settleFailed(t store.Task, err error, jobID string) store.Task {
 	t.FixPart = 0 // a send-back still waiting from an earlier failure is spent
 	var blocked folderBlocked
 	if errors.As(err, &blocked) {
@@ -213,7 +214,7 @@ func (r *Runner) settleFailed(t store.Task, err error) store.Task {
 		t.Note = noteOf(errors.New(t.Note + noteWaitsForSlot))
 		return t
 	}
-	return r.autoSendBack(t, fix.part, t.Note)
+	return r.autoSendBack(t, fix.part, t.Note, jobID)
 }
 
 // noteWaitsForSlot ends the note of a failed merge whose send-back waits for
@@ -221,10 +222,12 @@ func (r *Runner) settleFailed(t store.Task, err error) store.Task {
 const noteWaitsForSlot = "\n(waiting for a free slot to send it back to its worker)"
 
 // autoSendBack sends part p back to its worker with why, or keeps the
-// failure for a person with the reason it could not. Under the lock.
-func (r *Runner) autoSendBack(t store.Task, p store.Part, why string) store.Task {
+// failure for a person with the reason it could not. jobID is the merge job
+// the failure came from, "" for a send-back that waited for a slot. Under
+// the lock.
+func (r *Runner) autoSendBack(t store.Task, p store.Part, why, jobID string) store.Task {
 	t.FixPart = 0
-	sent, err := r.sendBack(t, p, why, "")
+	sent, err := r.sendBack(t, p, why, jobID)
 	if err != nil {
 		t.Note = noteOf(errors.New(why + "\n(the send-back to its worker failed: " + err.Error() + ")"))
 		return t
@@ -268,7 +271,7 @@ func (r *Runner) claimFixes(tasks []store.Task, parts []store.Part, book *slotBo
 				p = o
 			}
 		}
-		next := r.autoSendBack(t, p, strings.TrimSuffix(t.Note, noteWaitsForSlot))
+		next := r.autoSendBack(t, p, strings.TrimSuffix(t.Note, noteWaitsForSlot), "")
 		if next.Status == Running {
 			book.take(t.WindowID)
 			changed = true

@@ -17,7 +17,8 @@ import (
 // that restarts mid-merge neither cuts it off nor leaves its checks running
 // with nobody waiting for them. The job holds each repo's lock for the
 // whole of it, journals what it finished, and writes how it went as its
-// result; whoever started it (a thread's merge) reads that in the daemon.
+// result; whoever started it (a thread's merge, a queued task's) reads that
+// in the daemon.
 
 // LandInput is what a landing job is started from.
 type LandInput struct {

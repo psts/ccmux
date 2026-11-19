@@ -13,16 +13,20 @@ import (
 	"ccmux.dev/ccmuxd/internal/threads"
 )
 
-// Job services. Long work (a thread's merge today, the task queue's checks
-// and landing next) does not run in this process: each job is one run of
+// Job services. Long work (a thread's merge, a queued task's merge and the
+// tidy-up after it) does not run in this process: each job is one run of
 // the systemd user unit ccmux-job@<id>, which is this binary as `ccmuxd
 // job-exec` (internal/jobs). This file is the daemon's side: the unit
 // template, the manager that watches the jobs, and the verb.
 
 // jobKinds is every kind of job this binary runs, by the name its spec
-// carries. A kind is added here and given its handler in wireJobs.
+// carries. A kind is added here and given its handler in wireJobs. A
+// thread's merge and a task's are the same landing, under the same lock per
+// repo, so the two never work in one repo at once.
 var jobKinds = map[string]jobs.Runner{
 	threads.MergeKind: taskq.RunLand,
+	taskq.MergeKind:   taskq.RunLand,
+	taskq.TidyKind:    taskq.RunTidy,
 }
 
 // cmdJobExec is the unit template's ExecStart: run the job a spec file
@@ -79,12 +83,34 @@ func newJobs(st *store.SQLite, prefixFlag string) (*jobs.Manager, string) {
 
 // wireJobs gives each kind its handler and starts the manager's loop. It
 // is called once everything a handler touches is wired (the supervisor's
-// Changed above all): the loop's first look is the recovery after a
-// restart, and it settles whatever ended while the daemon was down.
-func wireJobs(ctx context.Context, m *jobs.Manager, team *threads.Service) {
-	if m == nil {
+// Changed, the bus, the task queue's runner): the loop's first look is the
+// recovery after a restart, and it settles whatever ended while the daemon
+// was down. queue is the task queue's handlers, by kind.
+func wireJobs(ctx context.Context, w jobWiring, queue map[string]jobs.Handler) {
+	if w.mgr == nil {
 		return
 	}
-	m.Handle(threads.MergeKind, team.MergeHandler())
-	go m.Run(ctx)
+	w.mgr.Handle(threads.MergeKind, w.team.MergeHandler())
+	for kind, h := range queue {
+		w.mgr.Handle(kind, h)
+	}
+	go w.mgr.Run(ctx)
+}
+
+// jobWiring is what wireRunners leaves for the job loop, which starts
+// later: the manager (nil with off saying why this daemon runs no jobs)
+// and the threads service whose merges it settles.
+type jobWiring struct {
+	mgr  *jobs.Manager
+	off  string
+	team *threads.Service
+}
+
+// forQueue is the manager as the task queue takes it: a nil manager must
+// stay a nil taskq.Jobs, not a Jobs that holds nil.
+func (w jobWiring) forQueue() taskq.Jobs {
+	if w.mgr == nil {
+		return nil
+	}
+	return w.mgr
 }

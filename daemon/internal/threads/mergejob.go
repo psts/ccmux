@@ -200,7 +200,7 @@ func (h mergeHandler) Apply(job store.Job, res jobs.Result) error {
 	if err != nil {
 		return s.orphaned(job, err)
 	}
-	out, err := landOutput(res)
+	out, err := taskq.ReadLandOutput(res)
 	if err != nil {
 		return s.orphaned(job, err)
 	}
@@ -387,23 +387,6 @@ func readAsk(job store.Job) (mergeAsk, error) {
 		return ask, fmt.Errorf("what was kept of the merge is in format %d and this ccmuxd reads format %d", ask.Format, askFormat)
 	}
 	return ask, nil
-}
-
-// landOutput reads a merge job's result as a landing's end. A job that
-// could not do its work at all (its error) is a failed landing in nobody's
-// worktree in particular.
-func landOutput(res jobs.Result) (taskq.LandOutput, error) {
-	if res.Error != "" {
-		return taskq.LandOutput{Error: res.Error, Fixable: -1}, nil
-	}
-	var out taskq.LandOutput
-	if err := json.Unmarshal(res.Output, &out); err != nil {
-		return out, fmt.Errorf("the merge's result is not readable: %w", err)
-	}
-	if !out.OK && out.Error == "" {
-		return out, errors.New("the merge's result says neither that it landed nor why not")
-	}
-	return out, nil
 }
 
 // orphaned settles a merge job this daemon cannot read (what it kept of

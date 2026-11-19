@@ -596,9 +596,35 @@ func TestStartTaskRunner_TakesTheBus(t *testing.T) {
 	s.EnablePeers(peers.NewService(st, s.mgr, testSecret))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir())
+	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir(), nil, "a test")
 	if h, ok := s.taskRunner.Host.(taskHost); !ok || h.peers == nil {
 		t.Fatalf("the runner's host has no bus: %+v", s.taskRunner.Host)
+	}
+}
+
+// A daemon whose runner is stopped (-task-slots 0) still acts on the end of
+// a merge the last daemon started: the handlers are there, though nothing
+// ticks and the routes still answer that no runner runs. With no queue at
+// all there is nothing to hand the job manager.
+func TestStartTaskRunner_AStoppedRunnerStillSettlesJobs(t *testing.T) {
+	s := taskServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if got := s.TaskJobHandlers(); got != nil {
+		t.Fatalf("handlers before the runner is made: %v", got)
+	}
+	s.StartTaskRunner(ctx, time.Hour, 0, t.TempDir(), nil, "a test")
+	if s.taskRunner != nil {
+		t.Fatal("slots 0 started a runner")
+	}
+	got := s.TaskJobHandlers()
+	if got[taskq.MergeKind] == nil || got[taskq.TidyKind] == nil || len(got) != 2 {
+		t.Fatalf("a stopped runner hands over a handler per kind of job the queue starts: %v", got)
+	}
+	bare := &Server{}
+	bare.StartTaskRunner(ctx, time.Hour, 1, t.TempDir(), nil, "a test")
+	if bare.TaskJobHandlers() != nil || bare.taskRunner != nil {
+		t.Fatal("a daemon with no queue made a runner")
 	}
 }
 
@@ -660,7 +686,7 @@ func TestStartTaskRunner_ReadsEachWindowsNumber(t *testing.T) {
 	b, _ := s.mgr.WindowByName("BETA")
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir())
+	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir(), nil, "a test")
 	if err := s.mgr.SetWindowSlots(a, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +750,7 @@ func TestStartTaskRunner_ReadsTheCapAcrossWindows(t *testing.T) {
 	s.SetTasks(st)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir())
+	s.StartTaskRunner(ctx, time.Hour, 1, t.TempDir(), nil, "a test")
 	if s.taskRunner.TotalSlots == nil {
 		t.Fatal("the started runner reads no cap across windows")
 	}

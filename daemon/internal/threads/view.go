@@ -91,7 +91,7 @@ func (s *Service) endedMerge(job store.Job) (state, checkLog string) {
 	if err != nil {
 		return "failed", ""
 	}
-	out, _ := landOutput(res)
+	out, _ := taskq.ReadLandOutput(res)
 	return "failed", out.CheckLog
 }
 

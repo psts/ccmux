@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/jobs"
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/peers"
@@ -72,19 +73,41 @@ func (h taskHost) TaskPane(paneID string) (taskq.PaneState, bool) {
 // in a window with no number of its own (PUT /v1/windows/{id}/slots sets
 // one), each built in a worktree under root, checked every `every`. It shares the
 // routes' lock, so a person's edit never lands in the middle of a pass.
-// slots 0 (or no task store) runs nothing: filed tasks just wait. Call it
-// after EnablePeers: the runner takes the bus here, once, and without it no
-// worker hears that its merge failed.
-func (s *Server) StartTaskRunner(ctx context.Context, every time.Duration, slots int, root string) {
-	if s.tasks == nil || slots <= 0 {
+// slots 0 runs nothing: filed tasks just wait. Call it after EnablePeers:
+// the runner takes the bus here, once, and without it no worker hears that
+// its merge failed.
+//
+// A built feature's merge runs as a job under merges (taskq.Jobs; nil with
+// jobsOff saying why this daemon runs none, and built features then wait
+// and say so). The jobs' ends are acted on by TaskJobHandlers, which need
+// the runner made here, ticking or not.
+func (s *Server) StartTaskRunner(ctx context.Context, every time.Duration, slots int, root string, merges taskq.Jobs, jobsOff string) {
+	if s.tasks == nil {
 		return
 	}
 	r := &taskq.Runner{
 		Store: s.tasks, Host: taskHost{mgr: s.mgr, peers: s.peersSvc, settle: s.settleTodos}, Git: taskq.ExecGit{}, MergeGit: taskq.ExecGit{},
-		Checks: taskq.GateChecks{PerLine: 20 * time.Minute}, Lock: &s.tasksMu,
+		Jobs: merges, JobsOff: jobsOff, CheckLine: 20 * time.Minute, Lock: &s.tasksMu,
 		Slots: slots, WindowSlots: s.mgr.WindowSlots, TotalSlots: s.mgr.TaskSlotsTotal, WindowPriorities: s.mgr.WindowPriorities,
 		Root: root, Now: time.Now,
 	}
+	s.taskSettler = r
+	if slots <= 0 {
+		return
+	}
 	s.taskRunner = r
 	r.Start(ctx, every)
+}
+
+// TaskJobHandlers is the daemon's side of each kind of job the task queue
+// starts, by kind, for the job manager; none without a queue. Call it
+// after StartTaskRunner.
+func (s *Server) TaskJobHandlers() map[string]jobs.Handler {
+	if s.taskSettler == nil {
+		return nil
+	}
+	return map[string]jobs.Handler{
+		taskq.MergeKind: s.taskSettler.MergeHandler(),
+		taskq.TidyKind:  s.taskSettler.TidyHandler(),
+	}
 }

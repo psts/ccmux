@@ -50,19 +50,23 @@ type runnerWiring struct {
 // sessions on the Agent SDK, each in its own systemd user service. Linux
 // only, since it rides on systemd; anywhere else, or when systemd cannot be
 // reached, the routes answer that runners are off and the daemon goes on.
-func wireRunners(ctx context.Context, w runnerWiring) {
+//
+// It returns what the job loop needs (jobs.go). The loop is started by
+// main, later: a job's end is also the task queue's to act on, and the
+// queue's runner is made after the bus.
+func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	if runtime.GOOS != "linux" {
-		return
+		return jobWiring{off: "jobs are systemd services, and this is " + runtime.GOOS}
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		log.Printf("session runners off: no systemctl on this host")
-		return
+		return jobWiring{off: "no systemctl on this host"}
 	}
 	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s"), Prefix: w.prefix}
 	units := runner.Systemctl{}
 	if err := runner.EnsureTemplate(systemdUserDir(), selfExecutable(), paths, units); err != nil {
 		log.Printf("session runners off: unit template: %v", err)
-		return
+		return jobWiring{off: "the session runners are off, and the jobs with them"}
 	}
 	claude, err := harness.LookPath("claude")
 	if err != nil {
@@ -105,10 +109,7 @@ func wireRunners(ctx context.Context, w runnerWiring) {
 		},
 	})
 	go sup.Run(ctx)
-	// Last, with everything above in place: the job loop's first look
-	// settles what ended while the daemon was down, and that stands helpers
-	// down and restarts a lead through the supervisor.
-	wireJobs(ctx, jobMgr, team)
+	return jobWiring{mgr: jobMgr, off: jobsOff, team: team}
 }
 
 // runnerConfig is what every session's spec is built from.

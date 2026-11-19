@@ -119,7 +119,7 @@ func (m *memStore) part(id int64) store.Part {
 }
 
 type fakeHost struct {
-	mu        sync.Mutex // the merge goroutine reports while a pass runs
+	mu        sync.Mutex // a test may play a job's end beside a pass
 	noSession bool
 	started   []string // commands typed, in order
 	cleared   []string // worktrees cleared of past workers
@@ -196,7 +196,7 @@ func (h *fakeHost) TasksChanged() {
 }
 
 type fakeGit struct {
-	mu          sync.Mutex // the merge goroutine calls in while a pass runs
+	mu          sync.Mutex // a test may run a job beside a pass
 	added       []string
 	blocked     map[string]string   // repo -> why its trunk cannot move
 	clash       map[string]bool     // repo -> its rebase clashes
@@ -274,18 +274,13 @@ func (g *fakeGit) RemoveWorktree(repo, path, branch, trunk string) error {
 	return nil
 }
 
-// fakeChecks answers per repo; a repo not listed passes. hold, when set,
-// keeps every run waiting until it is closed.
+// fakeChecks answers per repo; a repo not listed passes.
 type fakeChecks struct {
 	results map[string]CheckResult
-	hold    chan struct{}
 	during  func() // runs while the checks run
 }
 
 func (c *fakeChecks) Run(repo, worktree, trunk string) CheckResult {
-	if c.hold != nil {
-		<-c.hold
-	}
 	if c.during != nil {
 		c.during()
 	}
@@ -304,6 +299,8 @@ func (g *fakeGit) AddWorktree(repo, path, branch, base string) error {
 }
 
 type rig struct {
+	t      *testing.T
+	jobs   *fakeJobs
 	r      *Runner
 	st     *memStore
 	host   *fakeHost
@@ -318,15 +315,19 @@ func newRig(t *testing.T) *rig {
 			gateChanges: map[string][]string{}},
 		checks: &fakeChecks{results: map[string]CheckResult{}},
 		now:    time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC)}
-	g.r = &Runner{Store: g.st, Host: g.host, Git: g.git, MergeGit: g.git, Checks: g.checks,
+	g.t, g.jobs = t, &fakeJobs{t: t, dir: t.TempDir(), startErr: map[string]error{}}
+	g.r = &Runner{Store: g.st, Host: g.host, Git: g.git, MergeGit: g.git, Jobs: g.jobs,
 		Lock: &sync.Mutex{}, Slots: 2, Root: t.TempDir(), Now: func() time.Time { return g.now }}
 	return g
 }
 
-// tick runs a pass and waits for a merge it started to finish.
+// tick runs a pass, then runs a merge it started to its end and settles it,
+// its tidy-up too. A test that looks at the queue while a merge runs calls
+// g.r.Tick() and g.runJobs() itself.
 func (g *rig) tick() {
+	g.t.Helper()
 	g.r.Tick()
-	g.r.merges.Wait()
+	g.runJobs()
 }
 
 // feature adds a waiting task with one pending part per repo.
@@ -690,7 +691,7 @@ func TestMerge_CleanupSaysWhatItLeft(t *testing.T) {
 		g.host.mu.Unlock()
 	}
 	g.r.Tick()
-	g.r.merges.Wait()
+	g.runJobs()
 	// No worker closed, so no worktree may be removed, and the note says so.
 	got := g.st.task(1)
 	if got.Status != Done || !strings.Contains(got.Note, "left for you") {
@@ -788,12 +789,10 @@ func TestMerge_OneAtATime(t *testing.T) {
 	g.tick()
 	g.doneParts(1)
 	g.doneParts(2)
-	g.checks.hold = make(chan struct{})
 	g.r.Tick()
 	g.r.Tick()
 	first, second := g.st.task(1).Status, g.st.task(2).Status
-	close(g.checks.hold)
-	g.r.merges.Wait()
+	g.runJobs()
 	if first != Merging || second != ReadyToMerge {
 		t.Fatalf("while one merges: %s, %s", first, second)
 	}
@@ -815,12 +814,10 @@ func TestRunner_KeepsItsSlotUntilMerged(t *testing.T) {
 	g.feature(2, 0, "backend")
 	g.tick()
 	g.doneParts(1)
-	g.checks.hold = make(chan struct{})
 	g.r.Tick() // #1 is built: its merge starts
 	g.r.Tick() // a pass while its checks run
 	first, second, started := g.st.task(1).Status, g.st.task(2).Status, len(g.host.started)
-	close(g.checks.hold)
-	g.r.merges.Wait()
+	g.runJobs()
 	if first != Merging || second != Waiting || started != 1 {
 		t.Fatalf("while #1's checks run: #1 %s, #2 %s, %d workers started; want merging, waiting, 1", first, second, started)
 	}
@@ -906,11 +903,9 @@ func TestRunner_AFolderDirtiedDuringTheChecksIsParkedAtOnce(t *testing.T) {
 	delete(g.git.blocked, "/p/app") // #1's folder is clean; #2's is not
 	g.feature(3, 0, "admin")
 	g.inWindow(3, "w2")
-	g.checks.hold = make(chan struct{})
 	g.r.Tick() // #1 is picked to merge: the pass never gets to #2
 	first, second, third := g.st.task(1).Status, g.st.task(2).Status, g.st.task(3).Status
-	close(g.checks.hold)
-	g.r.merges.Wait()
+	g.runJobs()
 	if first != Merging || second != ReadyToMerge || third != Running {
 		t.Fatalf("#1 %s, #2 %s, #3 %s; want merging, ready to merge, and #3 running in the slot #2 gave up", first, second, third)
 	}
@@ -929,11 +924,9 @@ func TestRunner_AFeatureLeavingAFolderWaitMergesAlone(t *testing.T) {
 	g.tick() // #1 waits on the folder, holding no slot
 	delete(g.git.blocked, "/p/app")
 	g.feature(2, 0, "backend")
-	g.checks.hold = make(chan struct{})
 	g.r.Tick() // the folder is clean and #2 is new, in one pass
 	first, second, started := g.st.task(1).Status, g.st.task(2).Status, len(g.host.started)
-	close(g.checks.hold)
-	g.r.merges.Wait()
+	g.runJobs()
 	if first != Merging || second != Waiting || started != 1 {
 		t.Fatalf("#1 %s, #2 %s, %d workers started; want merging, waiting, 1", first, second, started)
 	}
@@ -993,7 +986,6 @@ func TestRunner_AnOldFolderWaitIsForgotten(t *testing.T) {
 	g.st.SaveTask(one)
 	g.tick() // a pass sees it out of the merge line
 	g.doneParts(9)
-	g.checks.hold = make(chan struct{})
 	g.r.Tick() // w2's feature is merging: the merge line is taken
 	delete(g.git.blocked, "/p/app")
 	one.Status = ReadyToMerge // #1 is built again
@@ -1002,8 +994,7 @@ func TestRunner_AnOldFolderWaitIsForgotten(t *testing.T) {
 	g.inWindow(2, "w1")
 	g.r.Tick() // no merge step looks at #1 this pass
 	nine, first, second := g.st.task(9).Status, g.st.task(1).Status, g.st.task(2).Status
-	close(g.checks.hold)
-	g.r.merges.Wait()
+	g.runJobs()
 	if nine != Merging || first != ReadyToMerge || second != Waiting {
 		t.Fatalf("#9 %s, #1 %s, #2 %s; want merging, ready to merge, and #2 waiting: #1 holds w1's slot again", nine, first, second)
 	}
@@ -1187,21 +1178,6 @@ func TestMerge_AFlakeIsKeptWhenALaterCheckFails(t *testing.T) {
 	}
 	if kept, err := os.ReadFile(app.Worktree + ".flaky.log"); err != nil || !strings.Contains(string(kept), "redact.test.ts:111") {
 		t.Fatalf("the flake's output = %q, %v; want it kept", kept, err)
-	}
-}
-
-// A merge the daemon dropped mid-way (it stopped) is picked up again.
-func TestMerge_ResumesAfterARestart(t *testing.T) {
-	g := newRig(t)
-	g.feature(1, 0, "app")
-	g.tick()
-	g.doneParts(1)
-	task := g.st.task(1)
-	task.Status = Merging
-	g.st.SaveTask(task)
-	g.tick()
-	if g.st.task(1).Status != Done {
-		t.Fatalf("a dropped merge = %s", g.st.task(1).Status)
 	}
 }
 

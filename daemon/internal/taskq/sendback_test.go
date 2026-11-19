@@ -257,12 +257,9 @@ func TestSendBack_WaitsForAFreeSlot(t *testing.T) {
 	}
 
 	g.doneParts(2)
-	g.checks.hold = make(chan struct{})
 	g.r.Tick() // #2 is built and merging: it still holds the slot
 	held := g.st.task(1).Status
-	close(g.checks.hold)
-	g.r.merges.Wait()
-	g.checks.hold = nil
+	g.runJobs()
 	if held != MergeFailed || len(g.host.told[app.PaneID]) != 0 {
 		t.Fatalf("while #2 merges: #1 %s, told %v; want still waiting", held, g.host.told[app.PaneID])
 	}

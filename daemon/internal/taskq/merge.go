@@ -1,9 +1,7 @@
 package taskq
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"unicode/utf8"
 
@@ -13,12 +11,14 @@ import (
 // A feature whose every part is built is merged as one: each part's branch
 // is rebased onto its repo's trunk and checked there, and only when all of
 // them are green does each trunk move forward, a fast-forward only. Nothing
-// is pushed. One merge runs at a time, in its own goroutine, so a long
-// check never holds up the runner's other work.
+// is pushed. One merge runs at a time, as a job in its own service
+// (mergejob.go), so a long check never holds up the runner's other work and
+// does not end with the daemon.
 //
-// This file is the queue's side of a merge: which feature merges when, what
-// its task row says, where a failure goes. The merge itself (the git and
-// the checks) is land.go, which a thread with helpers lands through too.
+// This file is the queue's side of picking a merge: which feature merges
+// when, and what its task row says while it waits. The merge itself (the
+// git and the checks) is land.go, which a thread with helpers lands through
+// too; what is done with its end is mergejob.go and sendback.go.
 
 // mergeJob is a feature being merged, with its parts.
 type mergeJob struct {
@@ -27,23 +27,6 @@ type mergeJob struct {
 }
 
 const maxNote = 2000
-
-// recoverMerges puts a task the runner was merging when the daemon stopped
-// back to be merged again. Called under the lock, with no merge in flight.
-func (r *Runner) recoverMerges(tasks []store.Task) bool {
-	changed := false
-	for i, t := range tasks {
-		if t.Status != Merging {
-			continue
-		}
-		t.Status, t.Note = ReadyToMerge, ""
-		if r.saveTask(t) {
-			tasks[i] = t
-			changed = true
-		}
-	}
-	return changed
-}
 
 // pickMerge claims the first built feature that can merge now, walking
 // tasks in order (ByPriority); one that has to wait says why in its note
@@ -65,7 +48,6 @@ func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part, order []int) 
 			continue
 		}
 		tasks[i] = t
-		r.merging = true
 		return &mergeJob{task: t, parts: mine}, true
 	}
 	return nil, changed
@@ -131,9 +113,11 @@ func (r *Runner) forgetParked(tasks []store.Task) {
 	r.parked = waiting
 }
 
-// lander is the merge itself, over this runner's git and checks (land.go).
+// lander is the daemon's own look at a repo before a merge (whether its
+// folder can take one). The landing itself runs in the merge's job, with a
+// Lander of its own (RunLand).
 func (r *Runner) lander() Lander {
-	return Lander{Git: r.Git, MergeGit: r.MergeGit, Checks: r.Checks, Tag: "tasks"}
+	return Lander{Git: r.Git, MergeGit: r.MergeGit, Tag: "tasks"}
 }
 
 // workOf is a part as the merge sees it: its branch, where it is checked
@@ -155,45 +139,10 @@ func (r *Runner) mergeBlocked(parts []store.Part) string {
 	return r.lander().Blocked(worksOf(parts))
 }
 
-// merge runs one feature's merge and records how it went. A merged feature
-// is saved done before its tidy-up, which can take minutes (a worktree with
-// a node_modules in it): a daemon stopped meanwhile then finds work that is
-// in the trunks marked as such, not a merge to run again against a folder
-// half removed. The merge line stays taken until the tidy-up ends. The
-// note says the tidy-up is not finished until it is, then what it had to
-// leave; that last save always runs, so a first one that failed gets a
-// second go.
-func (r *Runner) merge(j mergeJob) {
-	note, err := r.mergeParts(j.parts)
-	if err != nil {
-		log.Printf("tasks: #%d merge failed: %v", j.task.ID, err)
-		r.Lock.Lock()
-		r.merging = false
-		saved := r.saveTask(r.settleFailed(j.task, err))
-		r.Lock.Unlock()
-		r.changed(saved)
-		return
-	}
-	done := j.task
-	done.Status, done.Note, done.FinishedAt = Done, note+noteTidying, r.Now().UnixMilli()
-	log.Printf("tasks: #%d %s", done.ID, note)
-	r.Lock.Lock()
-	saved := r.saveTask(done)
-	r.Lock.Unlock()
-	r.changed(saved)
-
-	done.Note = note + r.cleanUp(j)
-	r.Lock.Lock()
-	r.merging = false
-	saved = r.saveTask(done)
-	r.Lock.Unlock()
-	r.changed(saved)
-}
-
-// noteTidying ends a merged feature's note while its tidy-up runs. A
-// tidy-up cut short (the daemon stopped) leaves it there, the one sign that
-// a worktree, a branch or a worker may still be around: nothing takes a
-// tidy-up up again.
+// noteTidying ends a merged feature's note while its tidy-up runs. The
+// tidy-up's own end takes it away again (endTidy), or says after it why it
+// did not finish: the one sign that a worktree, a branch or a worker may
+// still be around.
 const noteTidying = "; tidy-up not finished"
 
 // changed tells the lenses the queue changed, when something was saved.
@@ -213,49 +162,6 @@ func noteOf(err error) string {
 	}
 	head = keepStart(head, maxNote/4)
 	return head + "\n" + cut(rest, maxNote-len(head)-1)
-}
-
-// mergeParts lands every part of a feature, or none (Lander.Land). A
-// failure inside one part's own worktree comes back naming that part, so it
-// can go back to its worker (sendback.go).
-func (r *Runner) mergeParts(parts []store.Part) (string, error) {
-	note, err := r.lander().Land(worksOf(parts))
-	var fix fixable
-	if errors.As(err, &fix) {
-		return "", workerFixable{part: parts[fix.index], err: err}
-	}
-	return note, err
-}
-
-// cleanUp closes a merged feature's workers and removes their worktrees,
-// branches and briefs. Nothing here is forced: a worktree whose worker did
-// not close, or that holds anything uncommitted, stays, and so does a branch
-// with a commit the trunk lacks. The returned text names what stayed, for
-// the done note; the merged work is in the trunks either way.
-func (r *Runner) cleanUp(j mergeJob) string {
-	var left []string
-	for _, p := range j.parts {
-		if p.Worktree == "" {
-			continue
-		}
-		if why := r.tidyPart(p); why != "" {
-			log.Printf("tasks: #%d merged; %s", j.task.ID, why)
-			left = append(left, why)
-		}
-	}
-	if len(left) == 0 {
-		return ""
-	}
-	return "; left for you: " + strings.Join(left, "; ")
-}
-
-// tidyPart closes one part's worker and removes its worktree, branch, brief
-// and any check output, saying what it had to leave ("" when nothing).
-func (r *Runner) tidyPart(p store.Part) string {
-	if err := r.Host.ClearTaskFolder(p.Worktree); err != nil {
-		return fmt.Sprintf("%s (its worker did not close: %v)", p.Worktree, err)
-	}
-	return r.lander().Remove(workOf(p), p.Worktree+".md")
 }
 
 // keepStart keeps the first n bytes of s, ending on a whole character.

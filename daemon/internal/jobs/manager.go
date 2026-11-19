@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -171,6 +172,21 @@ func (m *Manager) Stop(id, note string) error {
 
 // OpenJob is the job of subject that has not ended, or nil.
 func (m *Manager) OpenJob(subject string) (*store.Job, error) { return m.St.OpenJob(subject) }
+
+// Open lists the jobs of the kinds given that have not ended, oldest first.
+func (m *Manager) Open(kinds ...string) ([]store.Job, error) {
+	all, err := m.St.OpenJobs()
+	if err != nil {
+		return nil, err
+	}
+	var out []store.Job
+	for _, job := range all {
+		if slices.Contains(kinds, job.Kind) {
+			out = append(out, job)
+		}
+	}
+	return out, nil
+}
 
 // LastJob is the newest job of subject, ended or not, or nil.
 func (m *Manager) LastJob(subject string) (*store.Job, error) { return m.St.LastJob(subject) }

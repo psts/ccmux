@@ -74,18 +74,40 @@ it, so restarting ccmuxd no longer cuts a reply a session is streaming.
 
 ## Long work runs as jobs (Linux)
 
-Since task #174 a thread's merge does not run inside ccmuxd. It is a job: one
-run of the systemd user unit `ccmux-job@<id>`, which is this binary as
-`ccmuxd job-exec <spec>` (`daemon/internal/jobs`). The daemon writes the spec,
-starts the unit, and acts on the result file when the unit has ended. A deploy,
-a crash of the daemon or a reboot during a merge neither loses it nor runs it
-twice. The task queue's own checks and landing still run in the daemon; they
-move onto the same service in the next step.
+Since task #174 a thread's merge does not run inside ccmuxd, and since task
+#175 neither does a queued task's merge (rebase, checks, fast-forward) or the
+tidy-up after it. Each is a job: one run of the systemd user unit
+`ccmux-job@<id>`, which is this binary as `ccmuxd job-exec <spec>`
+(`daemon/internal/jobs`). The daemon writes the spec, starts the unit, and acts
+on the result file when the unit has ended. A deploy, a crash of the daemon or
+a reboot during a merge neither loses it nor runs it twice. The daemon keeps
+every decision: what a failed merge does (back to its worker, back in line, to
+a person), the task's row, the slots.
 
+- **The kinds:** `thread-merge` (`merge-thread-<n>-<hex>`), `task-merge`
+  (`merge-task-<n>-<hex>`) and `task-tidy` (`tidy-task-<n>-<hex>`). The first
+  two are the same landing (`taskq.RunLand`); the third removes a merged task's
+  worktrees, branches and briefs once the daemon has closed its workers.
+- **A task's row is the guard.** The end of a task's merge is acted on only
+  while the row still says `merging`, and acting on it moves the row off
+  `merging` first. So every path in `taskq/mergejob.go` that calls a merge job
+  settled must leave another status behind, and one that could not save
+  returns an error. A task that says `merging` with no open job is put back in
+  line; "the jobs could not be read" never counts as "no job".
+- **One task merge at a time**, tidy-up included: the line is taken while a
+  `task-merge` or `task-tidy` job is open (the `jobs` table says, not the
+  daemon's memory).
+- **What a worker is told is a row first** (`task_notices`, the outbox in
+  `taskq/notices.go`): saved with the rows that send the part back, delivered
+  on every pass until the bus took it, under a fixed id the bus keeps one
+  message for. Send a worker anything about a merge through it, never with a
+  bare `TellWorker`.
 - **Watch one:** `journalctl --user -u 'ccmux-job@<id>'` is its log (the checks'
   own lines are in it); `systemctl --user list-units 'ccmux-job@*'` lists the
   ones running. The thread page shows the step and the time, and
-  `GET /v1/threads/{id}` carries it as `merge`. Its files are in
+  `GET /v1/threads/{id}` carries it as `merge`. A task's merge has no page of
+  its own yet: its id is in ccmuxd's log (`jobs: merge-task-<n>-<hex> started`)
+  and in the `jobs` table under subject `task:<n>`. Its files are in
   `~/.local/state/ccmux/jobs/<id>/`: `spec.json`, `journal.jsonl` (the steps the
   job finished), `result.json`, and `applied.jsonl` (what the daemon did with
   the result). The `jobs` table is the daemon's record. Files go two weeks after
@@ -102,21 +124,26 @@ move onto the same service in the next step.
   `failed` counts (`jobs.UnitState.Dead`). No answer, or any other state, means
   keep watching: taking a hiccup for a death would run a merge twice.
 - A job that ends with no result is started again, three times at most; then
-  it is lost, the thread is open again and its lead is told. The unit stops a
+  it is lost: a thread is open again and its lead is told, a task reads merge
+  failed and its note says what had landed. The unit stops a
   job at 6 hours (`RuntimeMaxSec`), a merge stops itself at 3.
 - One job at a time works in a repo: it holds `~/.local/state/ccmux/locks/<repo>-<hash>.lock`
-  (flock, so a dead job holds nothing). Queue merges do not take it yet.
+  (flock, so a dead job holds nothing). Thread merges, task merges and task
+  tidy-ups all take it, so they never work in one repo at once.
 - The unit caps a job at 75% of memory and every core but one, and kills its
   whole process group when it stops. A check sees the daemon's own environment
   (it rides in the spec, which is why the spec is 0600).
 - Spec, result and what the daemon keeps of a merge carry a format number. A
   daemon that reads another one says so and guesses nothing: the thread is open
   again and the lead is told to look at the trunks. Raise `jobs.Version` (or
-  `askFormat` in `threads/mergejob.go`) when a format changes.
+  `askFormat` in `threads/mergejob.go` or `taskq/mergejob.go`) when a format
+  changes.
 - **A scratch daemon runs no jobs unless it is given `-job-unit-prefix <its
   own name>`**, and any daemon that finds a template for another daemon's job
   folder leaves it alone. Without jobs, a thread's merge is refused with the
-  reason. A test that names a prefix must stop its units and delete
+  reason, and a built task waits and says so in its note. The same holds on
+  macOS and any host without systemd: nothing merges in the daemon any more.
+  A test that names a prefix must stop its units and delete
   `~/.config/systemd/user/<prefix>@.service` afterwards.
 - A new kind of job is a `jobs.Runner` in `jobKinds` and a `jobs.Handler` in
   `wireJobs` (`cmd/ccmuxd/jobs.go`). Keep `internal/jobs` free of the packages
