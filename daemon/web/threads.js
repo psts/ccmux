@@ -588,11 +588,13 @@
     const input = $("input");
     const typing = /^\/\S*$/.test(input.value);
     const box = $("commands");
-    show("commands", S.menu || typing);
-    if (!S.menu && !typing) return;
+    // With nothing to offer (no list yet, or nothing matches what is typed)
+    // the menu stays shut: a note there would only cover the line being
+    // typed, and a command not listed is still sent as typed.
+    const list = S.menu || typing ? commandsFor(typing ? input.value : "") : [];
+    show("commands", list.length > 0);
+    if (!list.length) return;
     box.textContent = "";
-    const list = commandsFor(typing ? input.value : "");
-    if (!list.length) box.appendChild(View.el("div", "cmd-none", (cmdInfo().commands || []).length ? "No command matches." : "No list yet. Type the command and send it: it runs all the same."));
     for (const c of list) {
       const row = View.el("button", "cmd");
       row.type = "button";

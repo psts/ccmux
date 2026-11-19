@@ -251,7 +251,6 @@ a:hover { color: var(--blue-d); }
 .cmd:hover, .cmd.on { background: var(--side); }
 .cmd-name { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
 .cmd-desc { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cmd-none { padding: 8px 10px; font-size: 12.5px; color: var(--muted); }
 
 /* --- right panel: what changed, what is left to do --- */
 #detail { flex: 0 0 320px; max-width: 340px; min-width: 280px; border-left: 1px solid var(--line); background: var(--card); display: flex; flex-direction: column; overflow-y: auto; }

@@ -241,7 +241,10 @@ test("a draft offers the commands its repo's last session said, before its own s
   const cold = await boot({ search: "?ws=ws1&new=thread" });
   cold.$("input").value = "/";
   cold.$("input").oninput();
-  assert.match(cold.$("commands").textContent, /Type the command and send it/);
+  assert.equal(cold.$("commands").classList.contains("hidden"), true, "no list: no menu over the line being typed");
+  p.$("input").value = "/nosuch";
+  p.$("input").oninput();
+  assert.equal(p.$("commands").classList.contains("hidden"), true, "nothing matches: no menu either");
 });
 
 test("a session's commands are remembered even when its snapshot lands before the lists", async () => {
