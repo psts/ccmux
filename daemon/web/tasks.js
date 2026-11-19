@@ -26,7 +26,13 @@
     },
     hide: () => $("app").classList.remove("tasks-mode"),
     changed: () => renderList(),
-    openSession: (wsId, paneId) => openWorkspace(wsId, paneId), // openWorkspace leaves the view
+    // A builder is a session of its own: its conversation is on the thread
+    // page, in a tab of its own. A worker in a tmux pane (from before
+    // builders were sessions) is a terminal here; openWorkspace leaves the view.
+    openSession: (wsId, paneId, sessionId) => {
+      if (sessionId) window.open(window.ccmuxRoute.threadHref({ kind: "session", id: sessionId }), "_blank");
+      else openWorkspace(wsId, paneId);
+    },
   });
 
   // row is window win's Tasks entry ({id, name}).

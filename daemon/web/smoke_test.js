@@ -545,7 +545,39 @@ async function taskPartChecks(r, box, on, setReply) {
   check("an opened task's part says what it is built with", box.innerHTML.includes(">fable · high effort</span>"), box.innerHTML.slice(0, 1200));
   check("a part with no model says nothing about one",
     box.innerHTML.includes('data-part="6"') && box.innerHTML.split("Claude starts with").length === 2, box.innerHTML.slice(0, 1200));
+  await taskSessionChecks(r, box, on, setReply);
   await taskAfterChecks(r, box, on, setReply);
+}
+
+// "Open session" on a part: a builder that is a session of its own opens
+// as a conversation on the thread page, in a tab of its own; a worker in a
+// tmux pane (from before builders were sessions) opens as a terminal here.
+// Runs on the queue taskPartChecks left open, and leaves it as it found it.
+async function taskSessionChecks(r, box, on, setReply) {
+  const parts = [
+    { id: 5, repo: "app", status: "running", plan: "p", busName: "app-task-2", workspaceId: "ws-1", paneId: "run-5", sessionId: "sess-9" },
+    { id: 6, repo: "api", status: "running", plan: "p", busName: "api-task-2", workspaceId: "ws-1", paneId: "pane-6" },
+    { id: 7, repo: "old", status: "failed", plan: "p", busName: "old-task-2" }];
+  setReply({ tasks: [{ id: 2, title: "y", status: "running", windowId: "win-a", moves: [], parts }], counts: {} });
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
+  check("a part with a worker offers its session, one without does not", box.innerHTML.split('data-act="session"').length === 3, box.innerHTML.slice(0, 1500));
+  const press = (partId) => {
+    const btn = { dataset: { act: "session" }, closest: (sel) => (sel === "[data-part]" ? { dataset: { part: String(partId) } } : null) };
+    on.click({ target: { closest: (sel) => (sel === "[data-act]" ? btn : sel === ".tq-task" ? { dataset: { id: "2" } } : null) } });
+  };
+  const before = r.opened.length;
+  press(5);
+  check("a builder's session opens as a conversation on the thread page", r.opened[before] === "/threads.html?s=sess-9", String(r.opened.slice(before)));
+  check("and the task view stays open under it", r.ctx.ccmuxTasks.isOpen());
+  press(6);
+  check("a tmux worker's session opens as a terminal here, leaving the view", !r.ctx.ccmuxTasks.isOpen() && r.opened.length === before + 1, String(r.opened.slice(before)));
+  r.ctx.ccmuxTasks.open({ id: "win-a", name: "Mixed" });
+  setReply({ tasks: [{ id: 2, title: "y", status: "waiting", windowId: "win-a", moves: [], editable: true, parts: [
+    { id: 5, repo: "app", status: "pending", plan: "p", busName: "app-task-2", model: "fable", effort: "high" },
+    { id: 6, repo: "api", status: "pending", plan: "p", busName: "api-task-2" }] }], counts: {} });
+  r.ctx.onFirehose({ data: JSON.stringify({ t: "tasks-changed" }) });
+  await settle();
 }
 
 // A task that starts after several tasks has a "Stop waiting on" button

@@ -85,10 +85,21 @@
     });
   }
 
+  const isBuilder = (s) => !!s && s.role === "builder";
+
+  // builderLine is the header's line for a queued task's builder: the task
+  // queue leads its thread, so there is no lead to name, only the repo it
+  // builds in and the repos its teammates build in.
+  function builderLine(session, members, workspaces, group) {
+    const mates = members.filter((s) => s.id !== session.id).map((s) => repoOf(s, workspaces));
+    return `${group} · task builder in ${repoOf(session, workspaces)}` + (mates.length ? ` · with: ${mates.join(", ")}` : "");
+  }
+
   // metaLine is the header's line for a thread member: its window, who
   // leads, and who helps.
   function metaLine(session, sessions, workspaces, group) {
     const members = membersOf(session, sessions);
+    if (isBuilder(session)) return builderLine(session, members, workspaces, group);
     const lead = members.find((s) => s.role === "lead");
     const helpers = members.filter(isHelper).map((s) => repoOf(s, workspaces));
     const leadRepo = lead ? repoOf(lead, workspaces) : "?";

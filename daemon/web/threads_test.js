@@ -1017,6 +1017,39 @@ test("a group's tasks show under the group and under every repo they have a part
   assert.equal(p.$("title").textContent, "app");
 });
 
+// A part's builder is a session: "Open session" in the queue shows its
+// conversation here, in place of the queue. A worker from before builders
+// were sessions is a terminal, and still opens in the lens.
+test("a task part's builder opens as a conversation on this page, a tmux worker in the lens", async () => {
+  const builder = { id: "b1", workspaceId: "ws1", threadId: 9, role: "builder", cwd: "/wt/app/task-7", worktree: "/wt/app/task-7", branch: "task/7-export",
+    title: "Task #7: Export", name: "app-task-7", state: "running", attention: "running", paneId: "run-b1", createdAt: 2 };
+  const part = (id, more) => ({ id, repoPath: "/p/app", repo: "app", status: "running", plan: "p", workspaceId: "ws1", ...more });
+  const tasks = [{ id: 7, windowId: "w1", title: "Export", status: "running", moves: [],
+    parts: [part(1, { paneId: "run-b1", sessionId: "b1" }), part(2, { paneId: "pane-old" })] }];
+  const windows = [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1"], taskSlots: 1 }];
+  const p = await boot({ workspaces: [repo], windows, sessions: [lead, builder], search: "?s=lead1",
+    routes: [[/^GET \/v1\/tasks\?user=Pat$/, () => ({ tasks, counts: { w1: { running: 1 } } })]] });
+  assert.ok(p.$("tree").querySelectorAll(".row-name").map((n) => n.textContent).includes("Task #7: Export"), "the builder is a thread row of its repo");
+  p.$("tree").querySelector(".side-tasks").click();
+  await p.settle();
+  assert.ok(p.$("page").classList.contains("tasks-mode"));
+  const press = (partId) => {
+    const btn = { dataset: { act: "session" }, closest: (sel) => (sel === "[data-part]" ? { dataset: { part: String(partId) } } : null) };
+    p.$("tasks").onclick({ target: { closest: (sel) => (sel === "[data-act]" ? btn : sel === ".tq-task" ? { dataset: { id: "7" } } : null) } });
+  };
+  press(2);
+  await p.settle();
+  assert.equal(p.book.opened.length, 1, "the tmux worker opens in the lens, in a tab of its own");
+  assert.match(p.book.opened[0][0], /ws=ws1/);
+  assert.ok(p.$("page").classList.contains("tasks-mode"), "and the queue stays on this page");
+  press(1);
+  await p.settle();
+  assert.equal(p.book.pushed.pop(), "/threads.html?s=b1", "the builder's conversation is picked");
+  assert.ok(!p.$("page").classList.contains("tasks-mode"), "in place of the queue");
+  assert.equal(p.$("title").textContent, "Task #7: Export");
+  assert.equal(p.book.opened.length, 1, "and no tab was opened for it");
+});
+
 test("the header shows how full the context is and how long the cache has left, and hides with nothing known", async () => {
   const p = await boot({ sessions: [{ ...lead, attention: "idle" }], search: "?s=lead1" });
   assert.equal(p.$("gauge").classList.contains("hidden"), true);

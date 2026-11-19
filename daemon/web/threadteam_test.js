@@ -66,6 +66,25 @@ test("the header says who leads and who helps", () => {
   assert.equal(t.metaLine(backend, all, workspaces, "Shop"), "Shop · helper in backend · lead: app");
 });
 
+// A queued task's thread has no lead: the task queue leads it, and its
+// members are builders, one per repo, each a thread row of its own repo.
+test("a task's builder is named as one, with its teammates, and no lead is asked for", () => {
+  const appB = { id: "TA", workspaceId: "app", threadId: 9, role: "builder", state: "running", attention: "running", createdAt: 1, name: "app-task-12", title: "Task #12: Export", worktree: "/wt/app/task-12", branch: "task/12-export" };
+  const apiB = { id: "TB", workspaceId: "api", threadId: 9, role: "builder", state: "running", attention: "needs_input", createdAt: 2, name: "backend-task-12", worktree: "/wt/backend/task-12", branch: "task/12-export" };
+  const both = [...all, apiB, appB];
+  assert.equal(t.metaLine(appB, both, workspaces, "Shop"), "Shop · task builder in app · with: backend");
+  assert.equal(t.metaLine(appB, [appB], workspaces, "Shop"), "Shop · task builder in app");
+  assert.doesNotMatch(t.metaLine(apiB, both, workspaces, "Shop"), /lead/);
+  assert.deepEqual(t.helperRows(appB, both, workspaces).map((r) => [r.name, r.role, r.bus, r.where]), [
+    ["app", "builder", "app-task-12", "worktree · task/12-export"], ["backend", "builder", "backend-task-12", "worktree · task/12-export"]]);
+  // Each builder is a row under its own repo: a helper is hidden there, a builder is not.
+  const tree = t.decorate(Model.tree([], workspaces, both), both, workspaces, []);
+  const rows = (name) => tree[0].repos.find((r) => r.name === name).threads.map((x) => x.session.id);
+  assert.ok(rows("app").includes("TA"));
+  assert.deepEqual(rows("backend"), ["TB"]);
+  assert.equal(t.teamState(appB, both), "waiting", "a teammate's question shows on the task's rows");
+});
+
 test("changes are grouped by repo, with each member's branch and what it holds", () => {
   const detail = { thread: { id: 3 }, members: [
     { session: lead, repo: "app", status: "2 commits, all committed", changes: { commits: 2, files: [{ path: "src/a.js", added: 18, removed: 2 }, { path: "bin/logo.png" }] } },

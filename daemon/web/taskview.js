@@ -14,7 +14,10 @@
 //   box()            the element the list draws into
 //   show() / hide()  put the view on screen and take it off
 //   changed()        the counts or the open window changed: redraw the sidebar
-//   openSession(ws, pane)  show a part's worker session
+//   openSession(ws, pane, session)  show a part's worker: its builder's
+//                    conversation when session names one, else the worker's
+//                    terminal pane in its repo's tmux session (a worker from
+//                    before builders were sessions)
 // and uses only dom.js's esc, tasklist.js (ccmuxTaskList) and threadmd.js
 // (ccmuxThreadMD, to read a builder's report) besides.
 (() => {
@@ -251,7 +254,7 @@
       const where = p.branch ? ` · ${esc(p.busName)} on ${esc(p.branch)}` : "";
       const run = L().builtWith(p);
       const b = (act, label) => `<button type="button" data-act="${act}">${esc(label)}</button>`;
-      const buttons = (p.workspaceId ? b("session", "Open session") : "") + (p.retryable ? b("retry", "Retry") : "") +
+      const buttons = (p.workspaceId || p.sessionId ? b("session", "Open session") : "") + (p.retryable ? b("retry", "Retry") : "") +
         (p.sendBackable ? b("sendback", "Send back to worker") : "");
       return `<div class="tq-part" data-part="${p.id}"><div class="tq-part-head">` +
         `<span class="tq-repo-chip tq-part-${esc(p.status)}">${esc(p.repo)}</span>` +
@@ -348,7 +351,7 @@
     function openSession(id, _to, partId) {
       const t = q.tasks.find((x) => x.id === id);
       const p = t && (t.parts || []).find((x) => x.id === partId);
-      if (p && p.workspaceId) host.openSession(p.workspaceId, p.paneId);
+      if (p && (p.workspaceId || p.sessionId)) host.openSession(p.workspaceId, p.paneId, p.sessionId);
     }
 
     // What each button does, by its data-act.

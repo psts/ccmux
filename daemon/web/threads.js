@@ -45,12 +45,16 @@
 
   // A group's task queue (threadtasks.js) shows in the main area in place
   // of a conversation: opening it leaves the one on screen, and picking
-  // anything (select) closes it. A worker's session is a terminal, so it
-  // opens in the lens.
+  // anything (select) closes it. A part's builder is a session, so its
+  // conversation opens here, in place of the queue. A worker from before
+  // builders were sessions is a terminal, so it opens in the lens.
   const Tasks = window.ccmuxThreadTasks.create({
     user: () => S.user, windows: () => S.windows, changed: () => schedule(),
     leave: () => { Todo.close(); pick({ kind: "none" }, S.sel.kind !== "none"); },
-    openSession: (wsId, _paneId) => window.open(R.href(R.windowOf(S.windows, wsId), wsId), "_blank"),
+    openSession: (wsId, _paneId, sessionId) => {
+      if (sessionId) select({ kind: "session", id: sessionId });
+      else window.open(R.href(R.windowOf(S.windows, wsId), wsId), "_blank");
+    },
   });
 
   // A repo's to-do list (threadtodoview.js) takes the main area the same
