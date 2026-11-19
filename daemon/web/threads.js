@@ -10,6 +10,8 @@
   const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage, Team = window.ccmuxThreadTeam;
   const Pending = window.ccmuxThreadPending, Cmds = window.ccmuxThreadCmds;
   const storage = () => { try { return window.localStorage; } catch (_) { return null; } }; // blocked: nothing kept
+  const DETAILS = "ccmux-thread-details";
+  const loadDetails = () => { try { const v = JSON.parse(storage().getItem(DETAILS) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch (_) { return new Set(); } };
   const $ = (id) => document.getElementById(id);
   const show = (id, on) => $(id).classList.toggle("hidden", !on);
 
@@ -20,6 +22,7 @@
     drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), file: "", dirty: false, jump: false,
     user: "anon", feed: null, acted: "", images: [], pending: [], pendingKey: 0, pumping: false, error: "", listError: "", menu: false,
     draftModel: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
+    details: loadDetails(), // the repos whose git details are open in the sidebar
     cmds: Cmds.load(storage()), cmdsFrom: null, // each repo's last command list, for its drafts (threadcmds.js)
   };
 
@@ -258,13 +261,26 @@
       isLead: (r) => (sess ? !!r.lead && r.lead.id === sess.id : S.sel.kind === "draft" && S.sel.as === "lead" && S.sel.ws === r.id),
       isSession: (s) => !!sess && s.id === sess.id,
       inRepo: (r) => !!ws && ws.id === r.id,
-      pickRepo: (r) => select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" }),
+      detailOpen: (r) => S.details.has(r.id),
+      pickRepo,
       pickSession: (s) => select({ kind: "session", id: s.id }),
       menu: (kind, item, e) => Caps.menu(kind, item, e),
       tasks: Tasks.sidebar,
       todos: Todo.sidebar,
       side: Side.side,
     });
+  }
+
+  // pickRepo goes to a repo's lead and opens its git details; clicking the
+  // lead the page already shows opens or closes them instead. Open details
+  // stay open, several at once, and are kept for the next load.
+  function pickRepo(r) {
+    const here = S.sel.kind === "session" ? !!r.lead && r.lead.id === S.sel.id : S.sel.kind === "draft" && S.sel.as === "lead" && S.sel.ws === r.id;
+    if (here && S.details.has(r.id)) S.details.delete(r.id);
+    else S.details.add(r.id);
+    try { storage().setItem(DETAILS, JSON.stringify([...S.details])); } catch (_) { /* blocked: kept for this load */ }
+    if (here) drawAll();
+    else select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" });
   }
 
   // liveState is where the picked session is right now: its row's word,

@@ -226,7 +226,7 @@
   }
 
   // gitDetail is the repo's git state written out, inside its row's card,
-  // for the repo the page is in: where it is, how its branch stands, and
+  // for each repo whose details the person opened: where it is, how its branch stands, and
   // whether anything is changed.
   function gitDetail(r) {
     const g = r.git;
@@ -304,7 +304,7 @@
 
   function repoEl(r, ctx, g) {
     const box = el("div", "repo");
-    const open = !!r.git && ctx.inRepo(r);
+    const open = !!r.git && ctx.detailOpen(r);
     const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + (open ? " open" : "") + attClass(r.state));
     row.type = "button";
     row.title = r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet";

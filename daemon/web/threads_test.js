@@ -440,18 +440,32 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
   assert.equal(p.$("restarted-bar").textContent, "Restarted on Haiku. The session picked up where it was.");
 });
 
-test("the repo the page is in shows its git state inside its own card, and the other repos do not", async () => {
+test("a repo's git details open on a click, stay open beside others, and close on a click on the repo the page is in", async () => {
   const other = { id: "ws2", name: "api", repoPath: "/p/api", git: { isGitRepo: true, branch: "main" } };
   const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, modifiedFiles: ["a.ts"] } };
-  const p = await boot({ workspaces: [app, other], sessions: [lead], search: "?s=lead1" });
-  const rows = p.$("tree").querySelectorAll(".row");
-  assert.equal(rows[0].className, "row on open");
-  const detail = rows[0].querySelector(".git-detail");
-  assert.deepEqual(detail.children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
-  assert.deepEqual(rows[0].querySelector(".row-git").children.map((c) => c.textContent), ["dev", "●1", "↑2"], "branch, changes and ahead sit by the name");
-  assert.equal(rows[1].querySelector(".git-detail"), null, "a repo the page is not in keeps to one line");
+  const kept = {};
+  const storage = { getItem: (k) => kept[k] || null, setItem: (k, v) => { kept[k] = v; } };
+  const p = await boot({ workspaces: [app, other], sessions: [lead], search: "?s=lead1", storage });
+  const rows = () => p.$("tree").querySelectorAll(".row");
+  const opened = () => rows().map((r) => !!r.querySelector(".git-detail"));
+  assert.deepEqual(opened(), [false, false], "nothing opened yet");
+  assert.deepEqual(rows()[0].querySelector(".row-git").children.map((c) => c.textContent), ["dev", "●1", "↑2"], "branch, changes and ahead sit by the name");
+  rows()[0].click();
+  await p.settle();
+  assert.equal(p.book.pushed.length, 0, "the repo the page is in: no move");
+  assert.equal(rows()[0].className, "row on open");
+  assert.deepEqual(rows()[0].querySelector(".git-detail").children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
   assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more", "side-todo"], "under the card: its menu button, which only a phone shows (threads.css) and which sits over the card, and the repo's to-do row");
-  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[1].children.map((c) => c.className), ["row", "side-more"], "a repo the page is not in, with nothing on its list, has no to-do row");
+  rows()[1].click();
+  await p.settle();
+  assert.equal(p.book.pushed.pop(), "/threads.html?ws=ws2&new=lead", "another repo: the page goes there");
+  assert.deepEqual(opened(), [true, true], "and both stay open");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row open", "side-more"], "a repo the page is not in, with nothing on its list, has no to-do row");
+  rows()[1].click();
+  await p.settle();
+  assert.deepEqual(opened(), [true, false], "a click on the repo the page is in closes its details");
+  const again = await boot({ workspaces: [app, other], sessions: [lead], storage });
+  assert.deepEqual(again.$("tree").querySelectorAll(".row").map((r) => !!r.querySelector(".git-detail")), [true, false], "kept for the next load");
 });
 
 test("the firehose moves a session's dot and has the lists read again", async () => {
