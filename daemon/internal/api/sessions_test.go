@@ -83,6 +83,8 @@ func (f *fakeRunners) Rewind(_ context.Context, id, to string, dry bool) (runner
 		return runner.Rewind{}, fmt.Errorf("%w: Claude is working; stop the turn first", runner.ErrRewindRefused)
 	case "down":
 		return runner.Rewind{}, errors.New("dial unix: no such file")
+	case "disk":
+		return runner.Rewind{}, fmt.Errorf("%w: the conversation could not be cut: disk full", runner.ErrRewindFailed)
 	}
 	if id != "s1" {
 		return runner.Rewind{}, store.ErrNoSession
@@ -319,6 +321,7 @@ func TestRewindRoute(t *testing.T) {
 	}{
 		{"/v1/sessions/s1/rewind", `{"to":"busy"}`, http.StatusConflict, `"Claude is working; stop the turn first"`},
 		{"/v1/sessions/s1/rewind", `{"to":"down"}`, http.StatusBadGateway, "going back failed"},
+		{"/v1/sessions/s1/rewind", `{"to":"disk"}`, http.StatusBadGateway, `"going back failed: the conversation could not be cut: disk full"`},
 		{"/v1/sessions/nope/rewind", `{"to":"p1"}`, http.StatusNotFound, ""},
 		{"/v1/sessions/s1/rewind", `{}`, http.StatusBadRequest, "required"},
 	}
@@ -327,7 +330,7 @@ func TestRewindRoute(t *testing.T) {
 			t.Errorf("%s %s: want %d %q, got %d %s", c.path, c.body, c.code, c.says, w.Code, w.Body)
 		}
 	}
-	if len(f.rewinds) != 5 || f.rewinds[1] != "s1 p2 false" {
+	if len(f.rewinds) != 6 || f.rewinds[1] != "s1 p2 false" {
 		t.Fatalf("what the supervisor was asked: %v", f.rewinds)
 	}
 }

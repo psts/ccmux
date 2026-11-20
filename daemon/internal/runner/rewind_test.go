@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -141,5 +142,44 @@ func TestRewindFailureRestartsTheSessionButARefusalDoesNot(t *testing.T) {
 	r.reconcile()
 	if r.units.count("restart") != 1 {
 		t.Fatalf("restarted at the next pass: %v", r.units.calls)
+	}
+}
+
+// A runner that tried and says it failed answered, and takes prompts again:
+// its words reach the person, and nothing is restarted.
+func TestRewindFailureTheRunnerReportsIsSaidInItsWordsAndRestartsNothing(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.run[sess.ID].rewindFail = "the files were put back, but the conversation could not be cut: disk full"
+	_, err := r.sup.Rewind(context.Background(), sess.ID, "p1", false)
+	if !errors.Is(err, ErrRewindFailed) || !strings.HasSuffix(err.Error(), ": the files were put back, but the conversation could not be cut: disk full") || strings.Contains(err.Error(), "may have") {
+		t.Fatalf("in the runner's words: %v", err)
+	}
+	r.reconcile()
+	if r.units.count("restart") != 0 {
+		t.Fatalf("it answered, so nothing restarts: %v", r.units.calls)
+	}
+}
+
+// The caller leaving does not cut the runner's answer short: the fork is
+// still saved and the session started on it.
+func TestRewindLandsEvenWhenTheCallerLeaves(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	fr := r.run[sess.ID]
+	fr.rewindTo = Rewind{Dropped: 1, Conversation: "7d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6"}
+	fr.rewindWait = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.sup.Rewind(ctx, sess.ID, "p1", false); err != nil {
+		t.Fatalf("the answer came after the caller left, and was still taken: %v", err)
+	}
+	if row, _ := r.st.RunnerSession(sess.ID); row.ConversationID() != "7d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6" {
+		t.Fatalf("on the fork: %s", row.ConversationID())
+	}
+	if r.units.count("restart") != 1 {
+		t.Fatalf("started again once: %v", r.units.calls)
 	}
 }

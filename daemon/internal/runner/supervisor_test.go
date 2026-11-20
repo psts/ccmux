@@ -120,7 +120,9 @@ type fakeRunner struct {
 	rewinds    []string // "<to> <dry>" of each rewind asked
 	rewindTo   Rewind   // what a rewind answers; a 409 when rewindNo is set
 	rewindNo   string
-	replies    []string // "<path> <body>" of each card reply, in order
+	rewindFail string        // a 500 in the runner's words, when set
+	rewindWait time.Duration // how long a rewind takes to answer
+	replies    []string      // "<path> <body>" of each card reply, in order
 	srv        *http.Server
 }
 
@@ -132,8 +134,17 @@ func (r *fakeRunner) rewind(w http.ResponseWriter, req *http.Request) {
 	}
 	json.NewDecoder(req.Body).Decode(&in)
 	r.mu.Lock()
+	wait := r.rewindWait
+	r.mu.Unlock()
+	time.Sleep(wait)
+	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.rewinds = append(r.rewinds, fmt.Sprintf("%s %v", in.To, in.Dry))
+	if r.rewindFail != "" {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": r.rewindFail})
+		return
+	}
 	if r.rewindNo != "" {
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]string{"error": r.rewindNo})

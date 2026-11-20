@@ -72,6 +72,20 @@ test("going back puts the files back, forks before the prompt, and takes no more
   await assert.rejects(rewind(a, "p3", true), /already going back/);
 });
 
+test("while it goes back the runner counts as working, and stops counting when done or failed", async () => {
+  const { a } = stubAgent();
+  let during = null;
+  a.sdk.forkSession = async () => { during = a.rewinding; return { sessionId: "f1" }; };
+  await rewind(a, "p2", false);
+  assert.equal(during, true, "working while it writes");
+  assert.equal(a.rewinding, false);
+  const bad = stubAgent();
+  bad.a.sdk.forkSession = async () => { throw new Error("disk full"); };
+  await assert.rejects(rewind(bad.a, "p2", false));
+  assert.equal(bad.a.rewinding, false, "and after a failure");
+  await rewind(stubAgent().a, "p2", true);
+});
+
 test("going back to the first prompt opens a new conversation, with no fork", async () => {
   const { a, calls } = stubAgent();
   const out = await rewind(a, "p1", false);

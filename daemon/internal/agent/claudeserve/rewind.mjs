@@ -72,6 +72,7 @@ export async function rewind(a, to, dry) {
   // Held from the start: a prompt let in while this runs would open a turn
   // on the conversation being left.
   a.rewound = true;
+  a.rewinding = true; // said as busy in hello: the daemon restarts no runner mid-write
   let restored = false;
   try {
     const { point, files } = await look(a, to);
@@ -87,6 +88,8 @@ export async function rewind(a, to, dry) {
     if (err && err.refused) throw err; // a "no" stays a "no": nothing was changed
     const said = err && err.message ? err.message : String(err);
     throw new Error(restored ? `the files were put back, but the conversation could not be cut: ${said}` : said);
+  } finally {
+    a.rewinding = false;
   }
 }
 

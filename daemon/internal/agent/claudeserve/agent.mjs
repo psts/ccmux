@@ -113,6 +113,7 @@ export class Agent {
     this.turnLive = false; // a runner's turn is producing output (between its first reply and its result)
     this.interrupting = false;
     this.rewound = false; // gone back to an earlier prompt (rewind.mjs): prompts wait for the next start
+    this.rewinding = false; // going back right now: busy to the daemon, so no restart cuts it
     this.abort = new AbortController();
     this.daemon = deps.env.CCMUX_DAEMON_URL;
     this.pane = deps.env.CCMUX_PANE_ID;
@@ -605,7 +606,7 @@ export class Agent {
   // the session is.
   hello() {
     return {
-      protocol: RUNNER_PROTOCOL, boot: this.boot, session: this.sid, busy: this.busy, turnOpen: !!this.turns && this.turns.busy(),
+      protocol: RUNNER_PROTOCOL, boot: this.boot, session: this.sid, busy: this.busy || this.rewinding, turnOpen: !!this.turns && this.turns.busy(),
       seq: this.events.seq, model: this.o.model || "", claudeCode: this.claudeCode, sdk: this.sdk.sdkVersion || "",
     };
   }

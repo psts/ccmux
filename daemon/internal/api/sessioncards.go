@@ -112,6 +112,8 @@ func (s *Server) rewindRunnerSession(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, runner.ErrRewindRefused):
 		writeError(w, http.StatusConflict, strings.TrimPrefix(err.Error(), runner.ErrRewindRefused.Error()+": "))
+	case errors.Is(err, runner.ErrRewindFailed):
+		writeError(w, http.StatusBadGateway, "going back failed: "+strings.TrimPrefix(err.Error(), runner.ErrRewindFailed.Error()+": "))
 	case errors.Is(err, store.ErrNoSession):
 		writeError(w, http.StatusNotFound, err.Error())
 	case err != nil:

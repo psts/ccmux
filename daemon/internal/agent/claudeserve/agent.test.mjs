@@ -545,6 +545,9 @@ test("a runner keeps file checkpoints, and once it has gone back it takes no pro
   const { agent, sdk } = runnerAgent();
   assert.equal(agent.prompt("hi", "p1"), true);
   assert.equal(sdk.queries[0].options.enableFileCheckpointing, true);
+  agent.rewinding = true;
+  assert.equal(agent.hello().busy, true, "busy to the daemon while it goes back, so no restart cuts it");
+  agent.rewinding = false;
   agent.rewound = true;
   assert.equal(agent.prompt("more", "p2"), false, "the daemon keeps it for the fork's start");
   await tick();
