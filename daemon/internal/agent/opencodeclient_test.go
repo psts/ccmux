@@ -121,12 +121,47 @@ func TestOfflineSessionsFiltersByDirectory(t *testing.T) {
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode not installed")
 	}
+	// opencode writes a log in the person's home at every start, and has one
+	// managed service per user, so it cannot be given folders of this
+	// test's. Behind the sandbox's walls (where a merge job runs this suite)
+	// home is read-only: the command then fails for a reason that is not
+	// this code's, and the test has nothing to say.
+	if why := opencodeCannotWrite(); why != "" {
+		t.Skip(why)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	mine, err := OfflineSessions(ctx, "opencode", "", "/nowhere/at/all")
 	if err != nil || len(mine) != 0 {
 		t.Fatalf("a folder with no sessions lists none: %v %v", mine, err)
 	}
+}
+
+// opencodeCannotWrite says why opencode cannot write its own folder under
+// home here, "" when it can (or has none yet, and home takes a write).
+func opencodeCannotWrite() string {
+	data := os.Getenv("XDG_DATA_HOME")
+	if data == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		data = filepath.Join(home, ".local", "share")
+	}
+	dir := filepath.Join(data, "opencode", "log")
+	for dir != "/" {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	f, err := os.CreateTemp(dir, ".ccmux-test-*")
+	if err != nil {
+		return "opencode cannot write its log here (" + err.Error() + "): a read-only home, as behind the sandbox's walls"
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return ""
 }
 
 func TestSameDirResolvesSymlinks(t *testing.T) {
