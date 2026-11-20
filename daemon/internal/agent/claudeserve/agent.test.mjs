@@ -558,6 +558,24 @@ test("a runner keeps file checkpoints, and once it has gone back it takes no pro
   await assert.rejects(pane.agent.rewind("x", true), /only a session runner/);
 });
 
+test("a runner asks for a predicted next prompt, passes it on and in its snapshot, and a prompt spends it", async () => {
+  const { agent, sdk, events } = runnerAgent();
+  agent.prompt("hi", "p1");
+  assert.equal(sdk.queries[0].options.promptSuggestions, true);
+  agent.onMessage({ type: "prompt_suggestion", suggestion: "run the tests", uuid: "u1", session_id: "s" });
+  const said = () => events.filter((e) => e.type === "session.suggestion").map((e) => e.properties.suggestion);
+  assert.deepEqual(said(), ["run the tests"]);
+  assert.equal(agent.snapshot().suggestion, "run the tests", "a page that opens now gets it too");
+  agent.prompt("something else", "p2");
+  assert.deepEqual(said(), ["run the tests", ""], "a prompt clears it");
+  assert.equal(agent.snapshot().suggestion, "");
+  const pane = makeAgent();
+  pane.agent.prompt("hi");
+  assert.equal(pane.sdk.queries[0].options.promptSuggestions, undefined, "an agent pane asks for none");
+  pane.agent.onMessage({ type: "prompt_suggestion", suggestion: "x" });
+  assert.equal(pane.events.filter((e) => e.type === "session.suggestion").length, 0);
+});
+
 test("a task's builder runs in the mode and at the effort its row names", () => {
   const { agent, sdk } = runnerAgent({ permissionMode: "auto", effort: "medium", model: "opus" });
   agent.prompt("build it", "p1");

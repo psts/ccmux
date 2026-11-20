@@ -132,3 +132,17 @@ test("a context event lands on the turn's result", () => {
   st.apply(t, ev(11, "session.context", { context: { percent: 5, used: 1, max: 2 } }), 0);
   assert.deepEqual(t.result, { context: { percent: 5, used: 1, max: 2 } });
 });
+
+test("the predicted next prompt is offered only between turns, with nothing typed and no card up, and a prompt spends it", () => {
+  let s = st.fromSnapshot({ boot: "b", seq: 1, data: { messages: [], suggestion: "run the tests" } }, 0);
+  assert.equal(st.offer(s, ""), "run the tests");
+  assert.equal(st.offer(s, "  "), "run the tests", "blanks are nothing typed");
+  assert.equal(st.offer(s, "fix"), "", "something typed wins");
+  s = st.apply(s, { t: "event", seq: 2, data: { type: "session.suggestion", properties: { suggestion: "commit it" } } }, 0).state;
+  assert.equal(st.offer(s, ""), "commit it");
+  assert.equal(st.offer({ ...s, busy: true }, ""), "", "not while Claude works");
+  assert.equal(st.offer({ ...s, cards: [{}] }, ""), "", "not while a card waits");
+  s = st.apply(s, { t: "event", seq: 3, data: { type: "message.updated", properties: { info: { id: "u9", role: "user" } } } }, 0).state;
+  assert.equal(s.suggestion, "", "the person's prompt spends it");
+  assert.equal(st.offer(st.fresh(), ""), "");
+});

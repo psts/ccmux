@@ -48,6 +48,10 @@ function readIfPresent(readFile, path) {
   }
 }
 
+// ownMessages are the SDK messages the agent handles itself, by the method
+// that does; every other one goes through the transcript.
+const ownMessages = { command_lifecycle: "onLifecycle", system: "onSystem", result: "onResult", prompt_suggestion: "onSuggestion" };
+
 export class Agent {
   // o is the parsed command line; deps carries the SDK (query, listSessions,
   // getSessionMessages) and the process edges (cwd, env, readFile, out, err,
@@ -102,6 +106,7 @@ export class Agent {
     this.transcript = this.newTranscript(this.sid);
     this.info = {}; // what the session says of itself (sessionself.mjs), for a runner's page
     this.result = null; // the last finished turn's bill
+    this.suggestion = ""; // the next prompt Claude Code predicts, a runner's page offers it
     this.clients = new Set();
     this.permissions = new Map(); // id → {request, resolve}
     this.questions = new Map();
@@ -246,6 +251,10 @@ export class Agent {
     // A runner keeps a checkpoint of every file Claude edits, so going
     // back to an earlier prompt can put the files back (rewind.mjs).
     if (this.turns) opts.enableFileCheckpointing = true;
+    // ... and asks for a predicted next prompt after each turn, as Claude
+    // Code's own prompt box offers one (the person's promptSuggestionEnabled
+    // setting still turns it off). Nearly free: it rides the turn's cache.
+    if (this.turns) opts.promptSuggestions = true;
     if (this.resume) opts.resume = this.sid;
     else opts.sessionId = this.sid;
     if (o.pluginDirs.length) opts.plugins = o.pluginDirs.map((path) => ({ type: "local", path }));
@@ -405,17 +414,9 @@ export class Agent {
   onMessage(m) {
     if (m.type === "assistant") this.resume = true; // a reply is on disk: this conversation can be continued
     this.noteDelivered(m);
-    if (m.type === "command_lifecycle") {
-      this.onLifecycle(m);
-      return;
-    }
-    if (m.type === "system") {
-      this.onSystem(m);
-      return;
-    }
-    if (m.type === "result") {
-      this.turnLive = false;
-      this.onResult(m);
+    const own = ownMessages[m.type];
+    if (own) {
+      this[own](m);
       return;
     }
     // A runner's turn that no prompt of ours opened (a background hook woke
@@ -494,7 +495,21 @@ export class Agent {
     if (this.state.markDelivered(ids.filter(Boolean))) this.persist();
   }
 
+  // onSuggestion keeps the next prompt Claude Code predicts (a runner asks
+  // for one, promptSuggestions), for the page to offer in its empty box.
+  // It arrives after the turn's result; the next prompt clears it.
+  onSuggestion(m) {
+    this.setSuggestion(String(m.suggestion || ""));
+  }
+
+  setSuggestion(text) {
+    if (!this.turns || this.suggestion === text) return;
+    this.suggestion = text;
+    this.broadcast({ type: "session.suggestion", properties: { sessionID: this.sid, suggestion: text } });
+  }
+
   onResult(m) {
+    this.turnLive = false;
     if (this.turns && this.turns.result()) this.persist();
     const failed = m.is_error && !this.interrupting;
     this.interrupting = false;
@@ -563,6 +578,7 @@ export class Agent {
     if (id && (this.state.isDelivered(id) || this.queued.has(id))) return false;
     const uuid = id || randomUUID();
     this.queued.add(uuid);
+    this.setSuggestion(""); // a prompt is sent: what was predicted is spent
     const { content, files } = this.promptContent(text, images);
     this.emit(this.transcript.userTurn(text, uuid, files));
     this.log("> " + text + (files.length ? ` [+${files.length} image${files.length === 1 ? "" : "s"}]` : ""));
@@ -619,7 +635,7 @@ export class Agent {
     return {
       protocol: RUNNER_PROTOCOL, boot: this.boot, seq: this.events.seq, session: this.sid, busy: this.busy,
       messages: this.transcript.messages(), permissions: this.pendingPermissions(), questions: this.pendingQuestions(),
-      info: this.info, result: this.result, todos: this.transcript.todos || [], sdk: this.sdk.sdkVersion || "",
+      info: this.info, result: this.result, todos: this.transcript.todos || [], sdk: this.sdk.sdkVersion || "", suggestion: this.suggestion,
     };
   }
 

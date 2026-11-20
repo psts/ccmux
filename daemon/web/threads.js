@@ -635,6 +635,7 @@
     const lead = sess ? sess.kind === "lead" : S.sel.as === "lead";
     const whom = sess && sess.kind === "agent" ? "this agent" : lead ? "the lead" : "this thread";
     document.querySelector("#composer label").textContent = `Message ${whom}, or type / for commands`;
+    drawSuggestion();
     const here = R.threadHref(S.sel);
     $("hint").textContent = S.pending.some((p) => p.where === here && p.state === "new") ? "Sending…" : sess && sess.state === "asleep" ? "Asleep. A message wakes it." : "Lands as the next turn if Claude is busy";
     const box = $("attached");
@@ -908,11 +909,40 @@
     if ("1234".includes(e.key) && View.pressKey($("cards"), e.key)) e.preventDefault();
   }
 
+  // offered is the next message Claude Code predicts for the session on
+  // screen (threadstream.js offer), "" when there is none to show now.
+  const offered = () => (S.sel.kind === "session" && !Past.on() ? Stream.offer(S.stream, $("input").value) : "");
+
+  // drawSuggestion shows the prediction as the empty box's grey text, with
+  // a button for screens that have no Tab key.
+  function drawSuggestion() {
+    const text = offered();
+    $("input").placeholder = text;
+    show("suggest", !!text);
+  }
+
+  // useSuggestion puts the prediction in the box to send or change.
+  function useSuggestion() {
+    const text = offered();
+    if (!text) return false;
+    const input = $("input");
+    input.value = text;
+    input.focus();
+    drawSuggestion();
+    return true;
+  }
+
+  function onComposerKey(e) {
+    if (e.key === "Tab" && !e.shiftKey && useSuggestion()) { e.preventDefault(); return; }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  }
+
   function wireComposer() {
     const input = $("input");
     $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
-    input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
-    input.oninput = () => { S.menu = false; drawCommands(); };
+    input.onkeydown = onComposerKey;
+    input.oninput = () => { S.menu = false; drawCommands(); drawSuggestion(); };
+    $("suggest").onclick = useSuggestion;
     input.onpaste = (e) => {
       const files = Img.pasted(e.clipboardData);
       if (!files.length) return; // text pastes as text

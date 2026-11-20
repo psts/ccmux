@@ -1601,3 +1601,30 @@ test("Edit on a sent message goes back to it, after a yes, and puts its words ba
   assert.equal(p.$("input").value, "hello there");
   assert.match(p.$("notice-bar").textContent, /Went back/);
 });
+
+// --- the predicted next prompt ---
+
+test("Claude's predicted next message shows in the empty box, Tab or the button fills it in, and typing hides it", async () => {
+  const p = await boot({ sessions: [lead], search: "?s=lead1" });
+  await p.frame(snapshot({ suggestion: "run the tests" }));
+  const input = p.$("input");
+  assert.equal(input.placeholder, "run the tests");
+  assert.ok(!p.$("suggest").classList.contains("hidden"));
+  let prevented = false;
+  input.onkeydown({ key: "Tab", preventDefault: () => { prevented = true; } });
+  assert.equal(input.value, "run the tests", "Tab takes it");
+  assert.equal(prevented, true, "and does not move the focus");
+  assert.equal(input.placeholder, "", "typed now, so no grey text");
+  assert.ok(p.$("suggest").classList.contains("hidden"));
+  input.value = "";
+  input.oninput();
+  p.$("suggest").click();
+  assert.equal(input.value, "run the tests", "the button does the same, for a phone");
+  input.value = "";
+  input.oninput();
+  prevented = false;
+  await p.frame({ t: "event", seq: 6, data: { type: "session.suggestion", properties: { suggestion: "" } } });
+  input.onkeydown({ key: "Tab", preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, false, "with nothing offered, Tab moves the focus as always");
+  assert.equal(input.placeholder, "");
+});

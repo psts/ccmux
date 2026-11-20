@@ -14,7 +14,7 @@
   "use strict";
 
   function fresh() {
-    return { boot: "", seq: 0, turns: [], cards: [], info: {}, result: null, todos: [], busy: false, error: "", where: "", note: "", sdk: "" };
+    return { boot: "", seq: 0, turns: [], cards: [], info: {}, result: null, todos: [], busy: false, error: "", where: "", note: "", sdk: "", suggestion: "" };
   }
 
   const card = (kind, req, at) => ({ kind, id: req.id, req, at });
@@ -34,7 +34,15 @@
     s.todos = d.todos || [];
     s.busy = !!d.busy;
     s.sdk = d.sdk || "";
+    s.suggestion = d.suggestion || "";
     return s;
+  }
+
+  // offer is the predicted next prompt the empty box shows: only between
+  // turns, with nothing typed and no card waiting on an answer.
+  function offer(s, typed) {
+    if (!s.suggestion || s.busy || s.cards.length || String(typed || "").trim()) return "";
+    return s.suggestion;
   }
 
   const turnOf = (s, id) => s.turns.find((t) => t.info.id === id);
@@ -60,7 +68,7 @@
       // A failure is the failure of the turn it ended (that turn also shows
       // it, where it happened). The next prompt is a new start, and the page's
       // error bar must not go on reporting what is over.
-      if (p.info.role === "user" && !p.info.synthetic) s.error = "";
+      if (p.info.role === "user" && !p.info.synthetic) Object.assign(s, { error: "", suggestion: "" }); // a prompt also spends the prediction
       return { turn: turn.info.id };
     },
     "message.part.updated": (s, p) => {
@@ -86,6 +94,7 @@
     "session.error": (s, p) => { s.error = typeof p.error === "string" ? p.error : JSON.stringify(p.error); return { meta: true }; },
     "session.info": (s, p) => { s.info = p.info || {}; return { meta: true }; },
     "session.todos": (s, p) => { s.todos = p.todos || []; return { todos: true }; },
+    "session.suggestion": (s, p) => { s.suggestion = p.suggestion || ""; return { meta: true }; },
     "session.context": (s, p) => { s.result = { ...(s.result || {}), context: p.context }; return { meta: true }; },
   };
 
@@ -118,7 +127,7 @@
     return { boot: s.boot, after: s.seq };
   }
 
-  const api = { fresh, fromSnapshot, apply, cursor };
+  const api = { fresh, fromSnapshot, apply, cursor, offer };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadStream = api;
 })(typeof window !== "undefined" ? window : this);
