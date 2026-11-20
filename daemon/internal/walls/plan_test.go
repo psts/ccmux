@@ -115,3 +115,80 @@ func TestWhatAUnitChecksIsWhatItsPlanSays(t *testing.T) {
 		t.Errorf("refused: %v", e.Refused)
 	}
 }
+
+func TestASharedFolderIsEmptiedButForTheUnitsOwnPart(t *testing.T) {
+	p := Plan{
+		Write: []string{"/wt"},
+		Own: []Own{
+			{Dir: "/state/sessions", Write: []string{"/state/sessions/s1.own", "/state/sessions/s1.media"}, Read: []string{"/state/sessions/s1.json", "/state/sessions/s1.brief.md"}},
+			{Dir: "/run/ccmuxd/s", Write: []string{"/run/ccmuxd/s/s1.d"}},
+		},
+	}
+	text := p.DropIn()
+	for _, want := range []string{
+		"TemporaryFileSystem=/run/ccmuxd/s:ro /state/sessions:ro\n",
+		"BindPaths=/run/ccmuxd/s/s1.d /state/sessions/s1.media /state/sessions/s1.own\n",
+		"BindReadOnlyPaths=-/state/sessions/s1.brief.md -/state/sessions/s1.json\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the drop-in misses %q:\n%s", want, text)
+		}
+	}
+	e := p.Expect("mnt:[1]")
+	if got := strings.Join(e.Only["/state/sessions"], " "); got != "s1.media s1.own s1.brief.md s1.json" {
+		t.Errorf("the unit checks that the folder shows only its own: %q", got)
+	}
+	if got := strings.Join(e.Writable, " "); got != "/run/ccmuxd/s/s1.d /state/sessions/s1.media /state/sessions/s1.own /wt" {
+		t.Errorf("and that its own part takes a write: %q", got)
+	}
+	if got := strings.Join(p.Open(), " "); !strings.Contains(got, "/state/sessions/s1.own") {
+		t.Errorf("a second wall inside the first opens it too: %q", got)
+	}
+}
+
+func TestAPrivateFolderStandsInForTheSharedOne(t *testing.T) {
+	p := Plan{Write: []string{"/wt"}, Private: []string{"/home/u/.claude/shell-snapshots", "/home/u/.claude/session-env"}, PrivateRoot: "/state/sessions/s1.own"}
+	text := p.DropIn()
+	want := "BindPaths=/state/sessions/s1.own/private/home_u_.claude_session-env:/home/u/.claude/session-env /state/sessions/s1.own/private/home_u_.claude_shell-snapshots:/home/u/.claude/shell-snapshots\n"
+	if !strings.Contains(text, want) {
+		t.Fatalf("each private folder is the unit's own, mounted in the shared one's place:\n%s", text)
+	}
+	if e := p.Expect("mnt:[1]"); !strings.Contains(strings.Join(e.Writable, " "), "/home/u/.claude/shell-snapshots") {
+		t.Fatalf("the unit checks it can write them: %v", e.Writable)
+	}
+}
+
+func TestAPlanThatDoesNotHoldTogetherIsRefused(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	for name, p := range map[string]Plan{
+		"private folders and nowhere to keep them": {Private: []string{home}},
+		"an own part outside its shared folder":    {Own: []Own{{Dir: home, Write: []string{"/usr"}}}},
+		"the shared folder as its own part":        {Own: []Own{{Dir: home, Read: []string{home}}}},
+		"a shared folder that is not there":        {Own: []Own{{Dir: filepath.Join(home, ".ccmux-walls-test-not-there")}}},
+	} {
+		if err := p.Validate(); err == nil {
+			t.Errorf("%s: must be refused", name)
+		}
+	}
+}
+
+func TestMakePrivateMakesTheUnitsOwnFolders(t *testing.T) {
+	root := t.TempDir()
+	p := Plan{Private: []string{"/home/u/.claude/sessions"}, PrivateRoot: root}
+	if err := p.MakePrivate(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(root, "private", "home_u_.claude_sessions")); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the folder that stands in for it is there, and the unit's alone: %v %v", fi, err)
+	}
+}
+
+func TestHiddenFilesAndFoldersAreInaccessibleToo(t *testing.T) {
+	p := Plan{Write: []string{"/a"}, Hidden: []string{"/run/ccmuxd/private", "/home/u/.config/ccmux"}}
+	if text := p.DropIn(); !strings.Contains(text, "InaccessiblePaths=-/home/u/.config/ccmux -/run/ccmuxd/private\n") {
+		t.Fatalf("hidden:\n%s", text)
+	}
+}

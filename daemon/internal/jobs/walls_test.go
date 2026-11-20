@@ -60,8 +60,17 @@ func TestAWalledJobStartsBehindItsDropInAndIsToldWhatToCheck(t *testing.T) {
 			t.Errorf("the drop-in misses %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, r.m.Paths.State+" ") || strings.Contains(text, r.m.Paths.State+"\n") {
-		t.Errorf("the folder every job's spec is in must stay closed:\n%s", text)
+	// Of the folder every job's spec is in, it sees its own folder only:
+	// another job's spec carries the daemon's environment.
+	for _, want := range []string{"TemporaryFileSystem=" + r.m.Paths.State + ":ro\n", "BindPaths=" + r.m.Paths.Dir(job.ID) + "\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the drop-in misses %q:\n%s", want, text)
+		}
+	}
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(l, "ReadWritePaths=") && strings.Contains(l, r.m.Paths.State) {
+			t.Errorf("the jobs' folder is not opened whole: %s", l)
+		}
 	}
 	if _, err := os.Stat(r.m.Paths.Locks); err != nil {
 		t.Errorf("the locks' folder is made before the start: systemd fails a unit whose walls name a missing folder: %v", err)
@@ -74,8 +83,36 @@ func TestAWalledJobStartsBehindItsDropInAndIsToldWhatToCheck(t *testing.T) {
 	if sp.Walls == nil || sp.Walls.HostNS != ns || !sp.Walls.NoNetwork || !slices.Contains(sp.Walls.Refused, "/home/u") || !slices.Contains(sp.Walls.Writable, repo) {
 		t.Fatalf("the spec says what the job must find: %+v", sp.Walls)
 	}
+	if got := sp.Walls.Only[r.m.Paths.State]; len(got) != 1 || got[0] != job.ID {
+		t.Fatalf("the job checks that the jobs' folder shows only its own: %+v", sp.Walls.Only)
+	}
+	if !slices.Contains(sp.Walls.Writable, r.m.Paths.Dir(job.ID)) || !slices.Contains(sp.Walls.Writable, r.m.Paths.Locks) {
+		t.Fatalf("and that its own folder and the locks take a write: %v", sp.Walls.Writable)
+	}
 	if r.units.starts() != 1 {
 		t.Fatalf("started once: %v", r.units.asked)
+	}
+}
+
+// What Claude Code shares between sessions is the job's own behind its
+// walls, kept in the job's folder and made before the start.
+func TestAWalledJobsPrivateFoldersAreInItsOwnFolder(t *testing.T) {
+	r, repo, plan := walledManager(t)
+	shared := filepath.Join(t.TempDir(), ".claude", "sessions")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	*plan = func(New) (*walls.Plan, error) {
+		return &walls.Plan{Write: []string{repo}, Outside: []string{"/home/u"}, Private: []string{shared}}, nil
+	}
+	job := r.start()
+	text := jobDropIn(r, job.ID)
+	if !strings.Contains(text, filepath.Join(r.m.Paths.Dir(job.ID), "private")) || !strings.Contains(text, ":"+shared) {
+		t.Fatalf("its own folder stands in for the shared one:\n%s", text)
+	}
+	made, _ := filepath.Glob(filepath.Join(r.m.Paths.Dir(job.ID), "private", "*"))
+	if len(made) != 1 {
+		t.Fatalf("and is made before the start: %v", made)
 	}
 }
 

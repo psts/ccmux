@@ -83,7 +83,7 @@ a prompt (permission request / idle) so it emits a `needs_input` hook.
 write one hook message to the socket:
 
 ```sh
-PANE=$(curl -s http://127.0.0.1:7900/v1/workspaces | python3 -c \
+PANE=$(curl -s -H "Authorization: Bearer $(ccmuxd api-token)" http://127.0.0.1:7900/v1/workspaces | python3 -c \
   "import json,sys; print(json.load(sys.stdin)[0]['panes'][0]['id'])")
 python3 - "$PANE" <<'PY'
 import socket, sys
@@ -121,5 +121,5 @@ PY
 ```sh
 tailscale status | grep ccmuxd                        # the daemon's own node should be listed
 curl -s https://ccmuxd.tailb9053d.ts.net/v1/push/vapid   # VAPID public key over the node's HTTPS
-curl -s http://127.0.0.1:7900/v1/push/subscriptions?user=<you>   # your registered devices
+curl -s -H "Authorization: Bearer $(ccmuxd api-token)" "http://127.0.0.1:7900/v1/push/subscriptions?user=<you>"   # your registered devices
 ```

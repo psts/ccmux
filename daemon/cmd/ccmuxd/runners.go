@@ -65,6 +65,7 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s"), Prefix: w.prefix, UnitDir: systemdUserDir()}
 	units := runner.Systemctl{}
 	sb := newSandbox(w.mgr)
+	sb.sessions, sb.sockets = paths.State, paths.Runtime
 	if err := runner.EnsureTemplate(systemdUserDir(), selfExecutable(), paths, sb.caps(), units); err != nil {
 		log.Printf("session runners off: unit template: %v", err)
 		return jobWiring{off: "the session runners are off, and the jobs with them"}
@@ -91,6 +92,9 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	}
 	sup := runner.New(w.st, units, paths, cfg)
 	jobMgr, jobPaths, jobsOff := newJobs(w.st, w.jobPrefix, sb)
+	if jobPaths != nil {
+		sb.jobs = jobPaths.State
+	}
 	sb.serve(w.api, paths, jobPaths)
 	team = newThreads(w, sup, jobMgr, jobsOff)
 	w.api.SetThreads(team)

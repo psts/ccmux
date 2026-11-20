@@ -241,6 +241,10 @@ func runDaemon() {
 	mgr.OnMembershipChange = apiSrv.WindowNotice
 	apiSrv.StartScheduler(ctx, 30*time.Second)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
+	// The token a caller on this machine must show (apitoken.go). Fatal when
+	// it cannot be made: without it the API is open to every local process,
+	// and a daemon must not come up that way and say nothing.
+	armAPIToken(apiSrv, loopbackURL(*addr))
 	if peersSvc != nil {
 		apiSrv.EnablePeers(peersSvc)
 		registerRunnerPeers(mgr, peersSvc) // after the bus has its inbox hook, so what waits is handed over

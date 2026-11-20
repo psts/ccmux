@@ -77,13 +77,26 @@ func TestAWalledSessionStartsBehindItsDropInAndIsToldWhatToCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := w.dropIn(sess.ID)
-	for _, want := range []string{"ProtectSystem=strict", "ProtectHome=read-only", w.worktree, w.paths.OwnDir(sess.ID), w.paths.MediaDir(sess.ID), w.paths.Runtime} {
+	for _, want := range []string{"ProtectSystem=strict", "ProtectHome=read-only", w.worktree} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the drop-in misses %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, w.paths.State+" ") || strings.Contains(text, w.paths.State+"\n") {
-		t.Errorf("the folder every session's spec is in must stay closed:\n%s", text)
+	// The two folders every session shares: it sees its own part of each.
+	// The other sessions' specs carry their bus tokens, and their sockets
+	// take a prompt from whoever connects.
+	id := sess.ID
+	for _, want := range []string{
+		"TemporaryFileSystem=" + w.paths.Runtime + ":ro " + w.paths.State + ":ro\n",
+		"BindPaths=" + w.paths.SocketDir(id) + " " + w.paths.MediaDir(id) + " " + w.paths.OwnDir(id) + "\n",
+		"BindReadOnlyPaths=-" + w.paths.BriefFile(id) + " -" + w.paths.SpecFile(id) + " -" + w.paths.LoadoutFile(id) + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the drop-in misses %q:\n%s", want, text)
+		}
+	}
+	if rw := dropInLine(text, "ReadWritePaths="); strings.Contains(rw, w.paths.State) || strings.Contains(rw, w.paths.Runtime) {
+		t.Errorf("neither shared folder is opened whole: %s", rw)
 	}
 	if w.units.reloaded != reloads+1 {
 		t.Fatalf("systemd reads the new walls before the start: %d reloads", w.units.reloaded-reloads)
@@ -98,6 +111,14 @@ func TestAWalledSessionStartsBehindItsDropInAndIsToldWhatToCheck(t *testing.T) {
 	}
 	if got := stateArg(sp); got != w.paths.WalledStateFile(sess.ID) {
 		t.Fatalf("a walled session keeps its state in its own folder, not beside every spec: %s", got)
+	}
+	if got := sp.Walls.Only[w.paths.State]; !slices.Contains(got, id+".json") || !slices.Contains(got, id+".own") || len(sp.Walls.Only[w.paths.Runtime]) != 1 {
+		t.Fatalf("the runner checks that each shared folder shows only its own: %+v", sp.Walls.Only)
+	}
+	for _, dir := range []string{w.paths.OwnDir(id), w.paths.SocketDir(id)} {
+		if !slices.Contains(sp.Walls.Writable, dir) {
+			t.Fatalf("and that its own part takes a write: %v", sp.Walls.Writable)
+		}
 	}
 	// The same walls at the next start: nothing to write, nothing to reload.
 	w.units.set(w.paths.Unit(sess.ID), false)
@@ -310,5 +331,103 @@ func TestARunnerThatIsNotBehindItsWallsRefusesToBecomeOne(t *testing.T) {
 	}
 	if err := Exec(path); !errors.Is(err, walls.ErrNoWalls) {
 		t.Fatalf("the verb must refuse before it becomes the runner: %v", err)
+	}
+}
+
+// dropInLine is the drop-in's line that starts with key, "" for none.
+func dropInLine(text, key string) string {
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(l, key) {
+			return l
+		}
+	}
+	return ""
+}
+
+func socketArg(sp Spec) string {
+	for i := 0; i+1 < len(sp.Args); i += 2 {
+		if sp.Args[i] == "--socket" {
+			return sp.Args[i+1]
+		}
+	}
+	return ""
+}
+
+// A walled session listens in a folder of its own, and the daemon dials it
+// there; started open again, it is back beside the others; ended, the
+// folder is gone.
+func TestAWalledSessionsSocketIsInItsOwnFolder(t *testing.T) {
+	w := newWalledRig(t)
+	walled := true
+	w.plan = func(store.RunnerSession) (*walls.Plan, error) {
+		if !walled {
+			return nil, nil
+		}
+		return &walls.Plan{Write: []string{w.worktree}, Outside: []string{"/home/u"}}, nil
+	}
+	sess, err := w.sup.Create(NewSession{Cwd: "/r/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.ID
+	own := filepath.Join(w.paths.Runtime, id+".d", "sock")
+	if got := socketArg(w.spec(id)); got != own {
+		t.Fatalf("its runner listens in its own folder: %s", got)
+	}
+	if w.paths.Socket(id) != own {
+		t.Fatalf("and the daemon dials it there: %s", w.paths.Socket(id))
+	}
+	if fi, err := os.Stat(filepath.Dir(own)); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the folder is made before the start, and is this user's alone: %v %v", fi, err)
+	}
+	// The sandbox is switched off: at its next start it runs open.
+	walled = false
+	w.units.set(w.paths.Unit(id), false)
+	w.reconcile()
+	open := filepath.Join(w.paths.Runtime, id+".sock")
+	if got := socketArg(w.spec(id)); got != open || w.paths.Socket(id) != open {
+		t.Fatalf("an open session's socket is beside the others': %s, dialled at %s", got, w.paths.Socket(id))
+	}
+	// Walled again, then ended: nothing of it is left in the shared folder.
+	walled = true
+	w.units.set(w.paths.Unit(id), false)
+	w.reconcile()
+	if w.paths.Socket(id) != own {
+		t.Fatalf("walled again: %s", w.paths.Socket(id))
+	}
+	if err := w.sup.SetWanted(id, store.SessionDone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(own)); !os.IsNotExist(err) {
+		t.Fatalf("an ended session's socket folder is removed: %v", err)
+	}
+}
+
+// Claude Code's shared folders are the session's own behind its walls, and
+// the folders that stand in for them are made before the start.
+func TestAWalledSessionsPrivateFoldersAreMadeInItsOwnFolder(t *testing.T) {
+	w := newWalledRig(t)
+	shared := filepath.Join(t.TempDir(), ".claude", "shell-snapshots")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.plan = func(store.RunnerSession) (*walls.Plan, error) {
+		return &walls.Plan{Write: []string{w.worktree}, Outside: []string{"/home/u"}, Private: []string{shared}}, nil
+	}
+	sess, err := w.sup.Create(NewSession{Cwd: "/r/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind := dropInLine(w.dropIn(sess.ID), "BindPaths=")
+	i := strings.Index(bind, ":"+shared)
+	if i < 0 {
+		t.Fatalf("its own folder is mounted in the shared one's place: %s", bind)
+	}
+	from := bind[strings.LastIndex(bind[:i], " ")+1 : i]
+	if !strings.HasPrefix(from, w.paths.OwnDir(sess.ID)+"/private/") {
+		t.Fatalf("it is kept in the session's own folder: %s", from)
+	}
+	if _, err := os.Stat(from); err != nil {
+		t.Fatalf("and made before the start, or systemd fails the unit: %v", err)
 	}
 }

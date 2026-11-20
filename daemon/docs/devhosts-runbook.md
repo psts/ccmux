@@ -101,7 +101,7 @@ re-adopts them without re-registration.
   restart such a pane before `docker compose up`.
 - **Name resolves to nothing off-tailnet**: expected — that's the design.
 - **Who serves what**: `log stream`-free check —
-  `curl -s http://127.0.0.1:7900/v1/settings | jq '{devDomain, devCertStatus}'`
+  `curl -s -H "Authorization: Bearer $(ccmuxd api-token)" http://127.0.0.1:7900/v1/settings | jq '{devDomain, devCertStatus}'`
   and `tail ~/Library/Logs/ccmuxd.log` for `devhost:` lines.
 - Daemon restart after rebuild:
   `launchctl kickstart -k gui/501/com.ccmux.ccmuxd`.

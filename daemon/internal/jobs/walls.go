@@ -26,13 +26,7 @@ func (m *Manager) wall(id string, n New) (*walls.Expect, error) {
 	if err != nil || plan == nil {
 		return nil, err
 	}
-	for _, dir := range []string{m.Paths.Dir(id), m.Paths.Locks} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, err
-		}
-		plan.Write = append(plan.Write, dir)
-	}
-	if err := plan.Validate(); err != nil {
+	if err := m.ownFolders(id, plan); err != nil {
 		return nil, fmt.Errorf("the job cannot be walled: %w", err)
 	}
 	ns, err := walls.MountNS()
@@ -48,6 +42,26 @@ func (m *Manager) wall(id string, n New) (*walls.Expect, error) {
 		return nil, fmt.Errorf("the job's walls were written and systemd did not read them: %w", err)
 	}
 	return plan.Expect(ns), nil
+}
+
+// ownFolders adds a job's own folders to its plan and makes them: its own
+// folder in the jobs' (of which it sees nothing else: another job's spec
+// carries the daemon's environment), the locks' folder, and the folders
+// that stand in for what Claude Code shares between sessions.
+func (m *Manager) ownFolders(id string, plan *walls.Plan) error {
+	dir := m.Paths.Dir(id)
+	for _, made := range []string{dir, m.Paths.Locks} {
+		if err := os.MkdirAll(made, 0o700); err != nil {
+			return err
+		}
+	}
+	plan.Own = append(plan.Own, walls.Own{Dir: m.Paths.State, Write: []string{dir}})
+	plan.Write = append(plan.Write, m.Paths.Locks)
+	plan.PrivateRoot = dir
+	if err := plan.MakePrivate(); err != nil {
+		return err
+	}
+	return plan.Validate()
 }
 
 // unwall removes a job's drop-in file, once the job has ended or was never

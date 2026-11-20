@@ -136,16 +136,3 @@ func Caches(home string) []string {
 		filepath.Join(home, ".npm"),
 	}
 }
-
-// ClaudeHome is what Claude Code itself writes under home: its folder
-// (transcripts, memory, the credentials it renews) and its state file.
-//
-// Traced on a real turn behind walls (2026-11-19): everything it wrote was
-// in ~/.claude, but for ~/.claude.json, which it saves through a lock
-// folder and a temporary file beside it in home itself. Those are refused,
-// the turn goes on, and what it would have saved there is dropped. Naming
-// the file opens it for a write in place, which is all a wall can open of
-// it without opening home.
-func ClaudeHome(home string) []string {
-	return []string{filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")}
-}

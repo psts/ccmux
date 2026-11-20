@@ -21,7 +21,7 @@ import (
 // walls (or does not), with no real trial unit.
 func testSandbox(t *testing.T, set *walls.Settings, hostWalls *bool) *sandbox {
 	t.Helper()
-	home := t.TempDir()
+	home := claudeHome(t)
 	run := func(_ context.Context, name string, _ ...string) (string, error) {
 		if name == "systemd-run" && !*hostWalls {
 			return walls.ErrNoWalls.Error() + ": it runs in the daemon's own mount namespace", errors.New("exit status 97")
@@ -33,6 +33,22 @@ func testSandbox(t *testing.T, set *walls.Settings, hostWalls *bool) *sandbox {
 		home:     home,
 		host:     &walls.Prober{Self: "/bin/ccmuxd", Home: home, Run: run},
 	}
+}
+
+// claudeHome is a home folder in which Claude Code has run: its folder
+// with the person's settings and hooks in it, and its state file.
+func claudeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{filepath.Join(home, ".claude", "settings.json"), filepath.Join(home, ".claude.json")} {
+		if err := os.WriteFile(file, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return home
 }
 
 // gitRepo makes a real repo with one worktree under dir.
@@ -98,24 +114,76 @@ func TestAWalledSessionsPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{filepath.Join(sb.home, ".claude"), filepath.Join(sb.home, ".claude.json"), filepath.Join(sb.home, ".cache"), filepath.Join(sb.home, "go", "pkg", "mod"), "/opt/cache"} {
+	claude := filepath.Join(sb.home, ".claude")
+	for _, want := range []string{filepath.Join(claude, "projects"), filepath.Join(sb.home, ".cache"), filepath.Join(sb.home, "go", "pkg", "mod"), "/opt/cache"} {
 		if !slices.Contains(plan.Caches, want) {
 			t.Errorf("not opened: %s (%v)", want, plan.Caches)
 		}
 	}
-	for _, never := range []string{sb.home, filepath.Join(sb.home, "go"), filepath.Join(sb.home, "go", "bin"), filepath.Join(sb.home, ".config")} {
+	// Claude Code's own folder and its state file with the rest: what is
+	// written there runs in the person's next session, outside the walls.
+	for _, never := range []string{sb.home, filepath.Join(sb.home, "go"), filepath.Join(sb.home, "go", "bin"), filepath.Join(sb.home, ".config"), claude, filepath.Join(sb.home, ".claude.json"), filepath.Join(claude, "hooks"), filepath.Join(claude, "settings.json")} {
 		if slices.Contains(plan.Caches, never) || slices.Contains(plan.Write, never) {
 			t.Errorf("%s must stay closed", never)
 		}
 	}
-	if !slices.Contains(plan.Outside, sb.home) {
-		t.Errorf("home is what the check tries a write on: %v", plan.Outside)
+	for _, sealed := range []string{filepath.Join(claude, "settings.json"), filepath.Join(claude, "hooks"), filepath.Join(sb.home, ".claude.json")} {
+		if !slices.Contains(plan.Sealed, sealed) {
+			t.Errorf("%s is sealed, and the unit's check tries it: %v", sealed, plan.Sealed)
+		}
+	}
+	for _, own := range []string{"shell-snapshots", "session-env", "sessions"} {
+		if !slices.Contains(plan.Private, filepath.Join(claude, own)) {
+			t.Errorf("%s is sourced or read by the session that owns it, so each walled unit has its own: %v", own, plan.Private)
+		}
+	}
+	if !slices.Contains(plan.Outside, sb.home) || !slices.Contains(plan.Outside, claude) {
+		t.Errorf("home and Claude Code's folder are what the check tries a write on: %v", plan.Outside)
 	}
 	if plan.NoNetwork || plan.ShellBox {
 		t.Errorf("a session keeps its network, and has no shell sandbox unless asked: %+v", plan)
 	}
-	if len(plan.Hidden) != 2 || !strings.HasSuffix(plan.Hidden[0], "/bus") {
+	if len(plan.Hidden) < 2 || !strings.HasSuffix(plan.Hidden[0], "/bus") {
 		t.Errorf("the user's bus is hidden, or `systemd-run --user` is the way out: %v", plan.Hidden)
+	}
+}
+
+// What opens a door outside the walls to whoever reads it is hidden from
+// every walled unit: the API token's folder, the daemon's config folder
+// (the bus's secret, the accounts' keys), and the other kind of unit's
+// shared folders.
+func TestTheDaemonsSecretsAreHiddenFromEveryWalledUnit(t *testing.T) {
+	set, host := on(), true
+	sb := testSandbox(t, &set, &host)
+	sb.sessions, sb.sockets, sb.jobs = "/state/sessions", "/run/ccmuxd/s", "/state/jobs"
+	repo, worktree := gitRepo(t, t.TempDir())
+	session, err := sb.sessionWalls(store.RunnerSession{Role: store.RoleBuilder, Repo: repo, Worktree: worktree, Cwd: worktree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := sb.jobWalls(jobs.New{Kind: taskq.MergeKind, Input: taskq.LandInput{Work: []taskq.Work{{RepoPath: repo, Worktree: worktree}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, plan := range map[string]*walls.Plan{"a session": session, "a job": job} {
+		for _, secret := range []string{privateDir(), configDir(), filepath.Dir(apiTokenFile())} {
+			if !slices.Contains(plan.Hidden, secret) {
+				t.Errorf("%s can read %s: %v", name, secret, plan.Hidden)
+			}
+		}
+	}
+	if !slices.Contains(session.Hidden, "/state/jobs") {
+		t.Errorf("a session sees the jobs' specs, which carry the daemon's environment: %v", session.Hidden)
+	}
+	for _, theirs := range []string{"/state/sessions", "/run/ccmuxd/s"} {
+		if !slices.Contains(job.Hidden, theirs) {
+			t.Errorf("a job sees %s: a session's spec carries its bus token, and its socket takes a prompt: %v", theirs, job.Hidden)
+		}
+	}
+	// A session's own kind of folder is not hidden from it whole: it sees
+	// its own part (runner.Config.plan).
+	if slices.Contains(session.Hidden, "/state/sessions") || slices.Contains(job.Hidden, "/state/jobs") {
+		t.Error("a unit must still find its own spec")
 	}
 }
 
@@ -202,8 +270,11 @@ func TestAMergeIsWalledIntoItsReposWithHooksAndConfigSealed(t *testing.T) {
 	if plan.NoNetwork {
 		t.Error("a merge runs the repo's checks, which may fetch: it keeps its network")
 	}
-	if !slices.Contains(plan.Caches, filepath.Join(sb.home, ".claude")) {
-		t.Errorf("a repo's checks may drive Claude Code: %v", plan.Caches)
+	if !slices.Contains(plan.Caches, filepath.Join(sb.home, ".claude", "projects")) || slices.Contains(plan.Caches, filepath.Join(sb.home, ".claude")) {
+		t.Errorf("a repo's checks may drive Claude Code, which saves its conversations and nothing else of its folder: %v", plan.Caches)
+	}
+	if !slices.Contains(plan.Sealed, filepath.Join(sb.home, ".claude", "hooks")) {
+		t.Errorf("a job seals Claude Code's config like a session: %v", plan.Sealed)
 	}
 }
 

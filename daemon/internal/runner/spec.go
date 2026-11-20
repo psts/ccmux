@@ -73,7 +73,30 @@ func (p Paths) Unit(id string) string { return p.prefix() + "@" + id + ".service
 
 func (p Paths) SpecFile(id string) string  { return filepath.Join(p.State, id+".json") }
 func (p Paths) StateFile(id string) string { return filepath.Join(p.State, id+".state.json") }
-func (p Paths) Socket(id string) string    { return filepath.Join(p.Runtime, id+".sock") }
+
+// Socket is where a session's runner listens now: in the session's own
+// folder when it has one (a walled session), else beside every other
+// session's. The folder is made when a session starts walled and removed
+// when it starts open or ends (Supervisor.wall), so its being there says
+// which.
+func (p Paths) Socket(id string) string {
+	if _, err := os.Stat(p.SocketDir(id)); err == nil {
+		return p.WalledSocket(id)
+	}
+	return p.OpenSocket(id)
+}
+
+// OpenSocket is the socket of a session that runs open.
+func (p Paths) OpenSocket(id string) string { return filepath.Join(p.Runtime, id+".sock") }
+
+// SocketDir is the one folder of Runtime a walled session sees: its socket
+// is made there (WalledSocket), not beside the others'. A runner takes a
+// prompt from whoever connects to its socket, so a walled session that
+// could reach an open session's socket would prompt it, outside the walls.
+func (p Paths) SocketDir(id string) string { return filepath.Join(p.Runtime, id+".d") }
+
+// WalledSocket is a walled session's socket.
+func (p Paths) WalledSocket(id string) string { return filepath.Join(p.SocketDir(id), "sock") }
 
 // OwnDir is the one folder of State a walled session may write: its state
 // file is kept there (WalledStateFile), not beside every other session's
@@ -195,7 +218,7 @@ func (c Config) startArgs(sess store.RunnerSession, paths Paths) []string {
 func ownArgs(sess store.RunnerSession, paths Paths) []string {
 	conv := sess.ConversationID()
 	return []string{
-		"--socket", paths.Socket(sess.ID), "--state", paths.StateFile(conv), "--session-auto", conv,
+		"--socket", paths.OpenSocket(sess.ID), "--state", paths.StateFile(conv), "--session-auto", conv,
 		"--detached", "1", "--setting-sources", settingSources, "--agent", sessionLabel(sess),
 		"--media", paths.MediaDir(sess.ID),
 	}

@@ -36,11 +36,30 @@ type sandbox struct {
 	// templates writes the two unit templates with the caps given; set by
 	// wireRunners once it knows the templates' names.
 	templates func(walls.Caps) error
+	// sessions and jobs are the folders every session, and every job,
+	// shares: a job sees nothing of the sessions' and a session nothing of
+	// the jobs' (each sees its own part of its own kind's, runner.Config.plan
+	// and jobs.Manager.wall). Set by wireRunners; "" for none.
+	sessions, sockets, jobs string
 }
 
 func newSandbox(mgr *manager.Manager) *sandbox {
 	home, _ := os.UserHomeDir()
 	return &sandbox{settings: mgr.Sandbox, home: home, host: &walls.Prober{Self: selfExecutable(), Home: home}}
+}
+
+// secrets is what of the daemon's own a walled unit must not reach,
+// because whoever holds it acts outside the walls: the folder with the
+// token its API wants from this machine (apitoken.go), its config folder
+// (the registry with every account's key, the secret every pane's bus
+// token is made from, the node's tailnet key), and the clipboard pipe's
+// token. Claude Code's own sockets are with them: each session listens
+// there for messages from the others.
+func secrets() []string {
+	return []string{
+		privateDir(), configDir(), filepath.Join(runtimeDir(), "clipboard-token"),
+		fmt.Sprintf("/run/user/%d/cc-socks", os.Getuid()),
+	}
 }
 
 // serve gives the Settings page its Sandbox tab, now that both templates'
@@ -96,19 +115,35 @@ func (s *sandbox) on() (walls.Settings, bool, error) {
 	return set, true, s.host.Ready()
 }
 
-// base is the start of every plan: the caches under home, Claude Code's
-// own folder, the folders a person added, what must refuse a write as the
-// proof (home itself, and the folder the units' own files live in), and
-// the sockets that are hidden.
+// base is the start of every plan: the caches under home, the folders a
+// person added, what must refuse a write as the proof (home itself, and
+// the folder the units' own files live in), what is hidden (the user's
+// bus, the daemon's secrets), and Claude Code's own folder as walls has it
+// (walls/claude.go): its conversations opened, what its sessions source
+// made the unit's own, its config sealed.
 //
-// Claude Code's folder is open to a job too, not only to a session: a
-// repo's checks may drive Claude Code. This repo's do, and 40 of its tests
-// failed behind walls without it (measured 2026-11-19).
+// A job gets the same of Claude Code's folder as a session: a repo's
+// checks may drive Claude Code (this repo's do).
 func (s *sandbox) base(set walls.Settings) *walls.Plan {
-	return &walls.Plan{
-		Caches:  append(append(walls.Caches(s.home), walls.ClaudeHome(s.home)...), set.ExtraWrite...),
+	if err := walls.MakeClaudeFolders(s.home); err != nil {
+		log.Printf("sandbox: a folder Claude Code needs behind walls could not be made, so a walled turn may not save its conversation: %v", err)
+	}
+	plan := &walls.Plan{
+		Caches:  append(walls.Caches(s.home), set.ExtraWrite...),
 		Outside: walls.Existing([]string{s.home, systemdUserDir()}),
-		Hidden:  userBus(),
+		Hidden:  append(userBus(), secrets()...),
+	}
+	plan.ClaudeHome(s.home)
+	return plan
+}
+
+// hide adds the shared folders of the other kind of unit to what a plan
+// hides.
+func hide(plan *walls.Plan, folders ...string) {
+	for _, dir := range folders {
+		if dir != "" {
+			plan.Hidden = append(plan.Hidden, dir)
+		}
 	}
 }
 
@@ -133,6 +168,7 @@ func (s *sandbox) sessionWalls(sess store.RunnerSession) (*walls.Plan, error) {
 		return nil, err
 	}
 	plan := s.base(set)
+	hide(plan, s.jobs)
 	// Claude Code's own sandbox around its shell commands too, when the
 	// person asked for it. A host that lacks what it needs starts nothing:
 	// asked for and silently left out is the one thing walls never are.
@@ -163,6 +199,7 @@ func (s *sandbox) jobWalls(n jobs.New) (*walls.Plan, error) {
 		return nil, fmt.Errorf("the sandbox is on, and a job of kind %s is not one its walls know (sandbox.go, workOf): it is not started open", n.Kind)
 	}
 	plan := s.base(set)
+	hide(plan, s.sessions, s.sockets)
 	// A tidy-up removes folders and branches and fetches nothing. A merge
 	// runs the repo's checks, which may well fetch (a module, a package).
 	plan.NoNetwork = n.Kind == taskq.TidyKind

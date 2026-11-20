@@ -178,25 +178,60 @@ shows what this host allows with the command that fixes what it lacks.
 - **`ProtectSystem=strict` leaves `/home`, `/root` and `/run/user`
   writable** (seen live on systemd 255): `ProtectHome=read-only` is what
   closes home, and both are always written together.
-- **What is open** (`walls.WorktreeWalls`, `walls.RepoWalls`, `walls.Caches`):
-  a session gets its worktree, of the repo's `.git` only `objects`, `refs`,
-  `logs` and its own `worktrees/<name>` entry, its own folder in the
-  sessions' state, the sockets' folder, and under home `~/.cache`,
-  `~/go/pkg/mod`, `~/.npm`, `~/.claude` and `~/.claude.json`. A merge or
-  tidy-up job gets each repo's own folder (a fast-forward rewrites it) with
-  `.git/hooks` and `.git/config` sealed read-only, the folder its worktrees
-  are in, and the same caches. A tidy-up has no network; a merge keeps it
-  (checks fetch). More folders: "Extra folders" in Settings.
-- **Never open more of `.git` to a session, and never `~/go` or `~/.config`.**
-  Hooks, the config (hooksPath, fsmonitor) and anything on the PATH would run
-  later, outside the walls.
+- **What is open** (`walls.WorktreeWalls`, `walls.RepoWalls`, `walls.Caches`,
+  `walls.ClaudeHome`): a session gets its worktree, of the repo's `.git` only
+  `objects`, `refs`, `logs` and its own `worktrees/<name>` entry, and under
+  home `~/.cache`, `~/go/pkg/mod`, `~/.npm` and `~/.claude/projects`. A merge
+  or tidy-up job gets each repo's own folder (a fast-forward rewrites it)
+  with `.git/hooks` and `.git/config` sealed read-only, the folder its
+  worktrees are in, and the same under home. A tidy-up has no network; a
+  merge keeps it (checks fetch). More folders: "Extra folders" in Settings.
+- **Never open more of `.git` to a session, and never `~/go`, `~/.config`,
+  `~/.claude` or `~/.claude.json`.** Hooks, the config (hooksPath,
+  fsmonitor), anything on the PATH and everything Claude Code reads (its
+  settings and their hooks, the hook scripts, plugins, skills, commands,
+  agents, `CLAUDE.md`, the MCP servers in `~/.claude.json`) would run later,
+  outside the walls.
+- **Of `~/.claude` a list is opened, the folder never** (`walls/claude.go`,
+  task #183). A folder Claude Code reads that is not there yet
+  (`~/.claude/agents`) cannot be sealed by name, so the top folder stays
+  read-only and only `projects/` (conversations, memory) is opened. What a
+  session sources before every shell command (`shell-snapshots/`,
+  `session-env/`), and `sessions/` and a few more, are each walled unit's own
+  (`Plan.Private`, a bind of a folder in the unit's own state over the shared
+  one): shared, a walled unit would write another session's and run there.
+  Traced live 2026-11-20 on Claude Code 2.1.329: a turn, a commit and the qa
+  commit review all work this way. Refused and harmless: the plugins'
+  bookkeeping and `~/.claude.json`. The login is not renewed from behind
+  walls (the refresh lock is in `~/.claude` itself, so Claude Code sends no
+  refresh token; read in its code); a walled session reads the login again
+  when a session outside has renewed it, and with an account on the proxy it
+  does not matter.
+- **A unit sees its own part of the folders every unit shares** (`walls.Own`:
+  an empty read-only folder with the unit's own files bound back in). For a
+  session that is the sessions' state (other sessions' specs carry their bus
+  tokens) and the sockets' folder: a walled session's socket is in
+  `<runtime>/s/<id>.d/sock` (`runner.Paths.Socket` says which is current),
+  because a runner takes a prompt from whoever connects. For a job it is the
+  jobs' folder. Each kind's folders are hidden whole from the other kind.
+- **Hidden from every walled unit** (`cmd/ccmuxd/sandbox.go` `secrets`): the
+  folder with the API token (below), the daemon's config folder (registry,
+  `peers-secret`, tailnet key), the clipboard token, the user's bus, and
+  Claude Code's own sockets (`/run/user/<uid>/cc-socks`). Hide a folder, not
+  a file the daemon writes again: a file replaced by a rename is a new file,
+  which a unit that was already running then sees.
 - **The self-check is the guarantee** (`walls.Check`). On a host that does
   not allow walls systemd starts the unit fully open and says nothing. So a
   walled unit's spec carries what it must find (`Spec.Walls`: another mount
   namespace than the daemon's, the paths that must refuse a write as a
   read-only file system, the folders that must take one), and `job-exec` and
   `runner-exec` check before any work. A job that fails it ends with a
-  result that says so (the task reads merge failed, for a person). A session
+  result that says so (the task reads merge failed, for a person). The check
+  also tries what is hidden (a socket takes no connection, a file does not
+  open, a folder does not list), that a shared folder shows only the unit's
+  own, and that the nearest process outside the walls cannot be walked into
+  through `/proc/<pid>/root` (closed by the user namespace systemd builds a
+  user unit's walls in; seen live). A session
   exits with status 97 (`walls.ExitRefused`), which systemd does not restart
   (`RestartPreventExitStatus`); the supervisor puts it to sleep with the
   reason, and a builder's part carries that reason. Before that, the daemon
@@ -216,16 +251,68 @@ shows what this host allows with the command that fixes what it lacks.
 - **The user's bus is hidden** (`InaccessiblePaths`, `sandbox.go` `userBus`),
   and the self-check tries a real connection to it: through it
   `systemd-run --user` ran a command outside the walls (seen live).
-- **Walls stop accidents, not a determined session.** The daemon's API is
-  open on loopback: a walled session can still switch the sandbox off there,
-  or ask for an open pane. `ssh localhost` and a docker socket are ways out
-  too, where the person has them.
+- **The two holes of the v0.1.131 review are closed (task #183): Claude
+  Code's config is sealed, and the daemon's API asks a caller on this
+  machine for a token** (next section). Seen live on a scratch daemon: a
+  walled haiku builder was refused at every one of them, did its turn,
+  committed, reported over the bus, and its merge and tidy-up landed walled.
+- **What the walls still do not stop.** A walled session can message a
+  session outside the walls over the bus (and start it with
+  `spawn_if_missing`); it reads as a peer's message, not a person's, and the
+  other Claude decides. It writes `~/.claude/projects` (its repo's memory is
+  shared with the repo's own session, by Claude Code's design, and so are
+  other sessions' conversations there). `~/.cache` and `~/go/pkg/mod` stay
+  writable, and the Go build cache feeds later builds outside the walls. It
+  keeps its network, and home is readable: what the person can push or log
+  in to with the keys in home, it can too (`git push`, `ssh localhost`, a
+  docker socket). Other harnesses' agents (opencode and the like) listen on a
+  loopback port with no token.
 - **Claude Code cannot save `~/.claude.json` from behind walls** (it writes
   through a lock folder and a temp file in home; traced live). The turn
   works; what it would have saved there is dropped.
 - A walled path cannot be under `/tmp` (the unit's `/tmp` is its own), and a
   folder its walls name must exist, or systemd fails the unit with status
   226 and no path; `Plan.Validate` refuses both first, by name.
+
+## The API asks callers on this machine for a token
+
+Since task #183 every `/v1` route wants the daemon's API token from a
+caller on this machine (`api/localgate.go`). A walled session shares the
+host's network, so without it `PUT /v1/sandbox` switched the walls off and
+`POST /v1/sessions` started a session outside them.
+
+- **The token is new at every daemon start**, in
+  `<runtime>/private/api-token` (0600, in a 0700 folder the walls hide;
+  `cmd/ccmuxd/apitoken.go`). `ccmuxd api-token` prints it, for
+  `curl -H "Authorization: Bearer $(ccmuxd api-token)" ...`. It is never in
+  an environment, a spec or the log.
+- **"This machine" is loopback and every address of the host's own
+  interfaces**, whatever listener the call came in on. This host is on the
+  tailnet as the person, so a walled session calling the daemon's tailnet
+  name would otherwise be vouched for by WhoIs. A caller from another
+  machine is not asked: nothing changes for the lenses over the tailnet.
+- **Refusing is the rule, the open routes are the list** (`localOpen`,
+  `paneOpen`, `paneOwn`). Open: `/v1/health`, `/v1/whoami`, the clipboard
+  pipe (its own token), the bus routes the shim calls (each checks the
+  caller's pane token), and under `/v1/panes/{id}/` the tools a session
+  calls for itself, for which the gate checks **that pane's own token**
+  (they took any local caller that named a pane before). A new route is
+  gated until it is put on a list. Never put a route there that starts,
+  prompts or configures anything on a pane token alone.
+- **Only a plain path is ever open**: the mux matches escaped pieces, so
+  `/v1/windows/w/agents/..%2F..%2F..%2Fhealth` is the agent route though it
+  cleans to `/v1/health`.
+- **A browser on this machine** opens the link `ccmuxd lens-url` prints
+  (`http://ccmux.localhost:<port>/?key=...`). The gate turns the key into an
+  HttpOnly cookie and redirects; the lenses' requests and websockets need no
+  change. The name `ccmux.localhost` is on purpose: a cookie belongs to a
+  host name whatever the port, so one set for `127.0.0.1` would be sent to
+  every dev server on this machine. A page opened here without the key gets
+  a page that says so. After a daemon restart the link is a new one.
+- `GET /v1/health` carries `localGate`: false means the API is open to every
+  local process. A daemon that cannot make the token does not start.
+- The LLM proxy (`/llm/pane/...`, its own port) is not gated: sessions need
+  it, and it starts and configures nothing.
 
 ## A queued task's builders are sessions (Linux)
 

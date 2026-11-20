@@ -84,6 +84,8 @@ var subcommands = map[string]func(args []string) error{
 	"llm-proxy":     llmserve.Main, // the LLM proxy's systemd unit (internal/llmserve)
 	"job-exec":      cmdJobExec,    // a job's systemd unit (internal/jobs)
 	walls.ProbeVerb: cmdWallsProbe, // the trial unit that tells whether this host walls one (internal/walls)
+	"api-token":     cmdAPIToken,   // the token a script on this machine sends the daemon (apitoken.go)
+	"lens-url":      cmdLensURL,    // the link a browser on this machine opens the lens with
 }
 
 func printUsage() {
@@ -95,6 +97,8 @@ Usage:
   ccmuxd upgrade [vX.Y.Z] self-update to the latest (or named) release and restart
   ccmuxd uninstall      stop + remove the service (-purge also wipes state)
   ccmuxd version        print the build version
+  ccmuxd lens-url       print the link a browser on this machine opens ccmux with
+  ccmuxd api-token      print the token a script on this machine sends the daemon
 `)
 }
 
@@ -216,6 +220,12 @@ func seedOwner(addr, owner string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// The daemon asks a caller on its own machine for its API token
+	// (apitoken.go). One that cannot be read is sent as nothing, and the
+	// refusal below says to set the owner in Settings.
+	if token, err := os.ReadFile(apiTokenFile()); err == nil {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	}
 	// Bounded: a hung daemon must not hang the installer on its last step.
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

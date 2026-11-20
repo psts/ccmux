@@ -149,6 +149,12 @@ type Server struct {
 	// clipToken authorizes POST /v1/clipboard (per-boot random, written 0600
 	// into the runtime dir for the tmux copy helper). "" = endpoint disabled.
 	clipToken string
+	// apiToken is what a caller on this machine must show for every /v1
+	// route that is not on the open list, and own tells which callers those
+	// are (localgate.go). "" gates nothing.
+	apiToken string
+	own      ownAddrs
+	refused  gateLog
 
 	// hub, when set by EnableHub, makes this the federation hub: it aggregates
 	// every member host's workspaces and reverse-proxies host-scoped routes to
@@ -584,7 +590,7 @@ func (s *Server) Handler() http.Handler {
 	// The web lens (served from the embedded bundle) catches everything not
 	// matched by a more specific /v1 pattern.
 	mux.Handle("GET /", web.Handler())
-	return mux
+	return s.gate(mux)
 }
 
 // clipboard receives tmux copy-mode text — piped here by the daemon-written
@@ -679,6 +685,10 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		// that booted with another one moves onto it (web/update.js).
 		// Additive: an old lens ignores the field.
 		"web": web.Build,
+		// Whether a caller on this machine is asked for the API token
+		// (localgate.go). A daemon that says false leaves its API open to
+		// every local process, a walled session among them.
+		"localGate": s.apiToken != "",
 	}
 	// Where the LLM proxy runs and whether it answers: it is its own service
 	// on Linux, and a daemon that is up says nothing about it by itself.

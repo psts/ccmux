@@ -16,13 +16,16 @@ import (
 // from an earlier start is removed.
 
 // plan is the walls a session starts behind, with the runner's own
-// folders added: its own folder in State (its state file), its images'
-// folder, and the folder its socket is made in. Nil for a session that
-// runs open.
+// folders added. Nil for a session that runs open.
 //
-// The sockets' folder is every session's: a walled session could remove
-// another's socket. That costs the other session its connection to the
-// daemon until its next start, and opens nothing.
+// The two folders every session shares are not opened: the session sees
+// its own part of each and nothing else (walls.Own). Of State that is its
+// own folder (its state file, and the folders that stand in for what
+// Claude Code shares between sessions), its images' folder, and to read,
+// its spec, its brief and its loadout. Of Runtime it is the folder its
+// socket is made in. The rest is other sessions': their specs carry the
+// token each acts on the bus with, and their sockets take a prompt from
+// whoever connects.
 func (c Config) plan(sess store.RunnerSession, paths Paths) (*walls.Plan, error) {
 	if c.Walls == nil {
 		return nil, nil
@@ -31,19 +34,27 @@ func (c Config) plan(sess store.RunnerSession, paths Paths) (*walls.Plan, error)
 	if err != nil || plan == nil {
 		return nil, err
 	}
-	plan.Write = append(plan.Write, paths.OwnDir(sess.ID), paths.MediaDir(sess.ID), paths.Runtime)
+	id := sess.ID
+	plan.Own = append(plan.Own,
+		walls.Own{Dir: paths.State, Write: []string{paths.OwnDir(id), paths.MediaDir(id)}, Read: []string{paths.SpecFile(id), paths.BriefFile(id), paths.LoadoutFile(id)}},
+		walls.Own{Dir: paths.Runtime, Write: []string{paths.SocketDir(id)}})
+	plan.PrivateRoot = paths.OwnDir(id)
 	return plan, nil
 }
 
 // walledArgs are a walled session's flags: its runner keeps its state file
-// in the session's own folder, and, when the plan asks for it, runs its
-// shell commands in Claude Code's own sandbox, opened onto the same
-// folders as the walls (claudeserve/shellbox.mjs).
+// in the session's own folder and listens in its own socket folder, and,
+// when the plan asks for it, runs its shell commands in Claude Code's own
+// sandbox, opened onto the same folders as the walls
+// (claudeserve/shellbox.mjs).
 func walledArgs(args []string, sess store.RunnerSession, paths Paths, plan walls.Plan) []string {
 	out := append([]string(nil), args...)
 	for i := 0; i+1 < len(out); i += 2 {
-		if out[i] == "--state" {
+		switch out[i] {
+		case "--state":
 			out[i+1] = paths.WalledStateFile(sess.ID)
+		case "--socket":
+			out[i+1] = paths.WalledSocket(sess.ID)
 		}
 	}
 	if !plan.ShellBox {
@@ -82,6 +93,10 @@ func (s *Supervisor) wall(sess store.RunnerSession, sp *Spec) error {
 	if err := s.moveState(sess, *sp); err != nil {
 		return err
 	}
+	if sp.Plan == nil {
+		// It starts open: its socket is beside the others' again.
+		s.dropSocketDir(sess.ID)
+	}
 	if s.paths.UnitDir == "" {
 		if sp.Plan != nil {
 			return errors.New("session runner: it is to be walled, and this daemon was given no folder for its walls")
@@ -111,10 +126,13 @@ func (s *Supervisor) wallText(sess store.RunnerSession, sp *Spec) (string, error
 	if sp.Plan == nil {
 		return "", nil
 	}
-	for _, dir := range []string{s.paths.OwnDir(sess.ID), s.paths.MediaDir(sess.ID), s.paths.Runtime} {
+	for _, dir := range []string{s.paths.OwnDir(sess.ID), s.paths.MediaDir(sess.ID), s.paths.SocketDir(sess.ID)} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", fmt.Errorf("session runner: a folder of its walls: %w", err)
 		}
+	}
+	if err := sp.Plan.MakePrivate(); err != nil {
+		return "", fmt.Errorf("session runner: %w", err)
 	}
 	if err := sp.Plan.Validate(); err != nil {
 		return "", fmt.Errorf("session runner: it cannot be walled: %w", err)
@@ -164,8 +182,17 @@ func (s *Supervisor) moveState(sess store.RunnerSession, sp Spec) error {
 	return nil
 }
 
-// unwall removes an ended session's drop-in file.
+// dropSocketDir removes a session's own socket folder, so that its socket
+// reads as the open one again (Paths.Socket).
+func (s *Supervisor) dropSocketDir(sessionID string) {
+	if err := os.RemoveAll(s.paths.SocketDir(sessionID)); err != nil {
+		s.note(sessionID, "its own socket folder was not removed: "+err.Error())
+	}
+}
+
+// unwall removes an ended session's drop-in file and its socket folder.
 func (s *Supervisor) unwall(sessionID string) {
+	s.dropSocketDir(sessionID)
 	if s.paths.UnitDir == "" {
 		return
 	}

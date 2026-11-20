@@ -40,11 +40,27 @@ type Plan struct {
 	// tries: the proof that the walls are up. They are named in no unit
 	// file line.
 	Outside []string
-	// Hidden are sockets the unit must not reach at all, when they are
-	// there: the user's bus and systemd's own socket. Through them a unit
+	// Hidden are paths the unit must not reach at all, when they are there.
+	// Sockets: the user's bus and systemd's own socket, through which a unit
 	// asks the user's systemd to run a command, which then runs outside
-	// every wall (seen live: `systemd-run --user` from inside one).
+	// every wall (seen live: `systemd-run --user` from inside one). Files
+	// and folders: what opens a door outside the walls to whoever reads it
+	// (the daemon's API token, the bus's secret, the registry).
+	//
+	// Hide a folder rather than a file the daemon writes again: a file that
+	// is replaced by a rename is a new file, which a unit that was already
+	// running then sees.
 	Hidden []string
+	// Own are folders of the daemon's of which the unit sees only what is
+	// its own (the sessions' specs, their sockets, the jobs' folders).
+	Own []Own
+	// Private are folders the unit gets an empty one of its own in place
+	// of, kept under PrivateRoot: what Claude Code writes that another
+	// session then runs (claude.go). Each must exist.
+	Private []string
+	// PrivateRoot is a folder of the unit's own, outside the walls' reach
+	// of any other unit, that holds its private folders.
+	PrivateRoot string
 	// NoNetwork gives the unit a network of its own with nothing in it but
 	// loopback.
 	NoNetwork bool
@@ -54,10 +70,61 @@ type Plan struct {
 	ShellBox bool
 }
 
+// Own is a folder shared by many units, as one of them sees it: empty and
+// read-only, but for what is its own.
+type Own struct {
+	// Dir is the shared folder. It must exist.
+	Dir string
+	// Write are the folders in Dir the unit keeps and may write. Each must
+	// exist.
+	Write []string
+	// Read are the files and folders in Dir the unit keeps and may read. One
+	// that is missing is left out.
+	Read []string
+}
+
+// kept is the names in Dir the unit may see.
+func (o Own) kept() []string {
+	var names []string
+	for _, path := range append(clean(o.Write), clean(o.Read)...) {
+		if rel, err := filepath.Rel(filepath.Clean(o.Dir), path); err == nil {
+			names = append(names, strings.Split(rel, string(filepath.Separator))[0])
+		}
+	}
+	return names
+}
+
 // Open is every folder the plan opens that is there now: what a second
 // wall inside the first (Claude Code's own sandbox) is told to open too.
 func (p Plan) Open() []string {
-	return append(clean(p.Write), existing(clean(p.Caches)...)...)
+	return append(p.writable(), existing(clean(p.Caches)...)...)
+}
+
+// writable is every folder the unit must be able to write: what the plan
+// opens, what it keeps of the shared folders, and its private ones.
+func (p Plan) writable() []string {
+	out := append([]string(nil), p.Write...)
+	for _, o := range p.Own {
+		out = append(out, o.Write...)
+	}
+	return clean(append(out, p.Private...))
+}
+
+// privateDir is the folder of the unit's own that stands in for target.
+func (p Plan) privateDir(target string) string {
+	flat := strings.ReplaceAll(strings.Trim(filepath.Clean(target), string(filepath.Separator)), string(filepath.Separator), "_")
+	return filepath.Join(p.PrivateRoot, "private", flat)
+}
+
+// MakePrivate makes the unit's own folders that stand in for its private
+// ones: systemd wants each to be there before the unit starts.
+func (p Plan) MakePrivate() error {
+	for _, target := range clean(p.Private) {
+		if err := os.MkdirAll(p.privateDir(target), 0o700); err != nil {
+			return fmt.Errorf("a private folder for %s: %w", target, err)
+		}
+	}
+	return nil
 }
 
 // dropInHead opens every walls drop-in: a comment to systemd, and how a
@@ -102,9 +169,44 @@ func (p Plan) DropIn() string {
 	if len(hidden) > 0 {
 		b.WriteString("InaccessiblePaths=" + strings.Join(hidden, " ") + "\n")
 	}
+	b.WriteString(p.mounts())
 	if p.NoNetwork {
 		b.WriteString("PrivateNetwork=yes\n")
 	}
+	return b.String()
+}
+
+// mounts are the lines that give the unit its own view of a folder: a
+// shared folder emptied but for what is the unit's own, and a private
+// folder in place of one every session shares.
+func (p Plan) mounts() string {
+	var empty, rw, ro []string
+	for _, o := range p.Own {
+		empty = append(empty, Word(filepath.Clean(o.Dir)+":ro"))
+		rw = append(rw, o.Write...)
+		ro = append(ro, o.Read...)
+	}
+	sort.Strings(empty)
+	var b strings.Builder
+	line := func(key string, words []string) {
+		if len(words) > 0 {
+			b.WriteString(key + "=" + strings.Join(words, " ") + "\n")
+		}
+	}
+	line("TemporaryFileSystem", empty)
+	var binds []string
+	for _, path := range clean(rw) {
+		binds = append(binds, Word(path))
+	}
+	for _, target := range clean(p.Private) {
+		binds = append(binds, Word(p.privateDir(target)+":"+target))
+	}
+	line("BindPaths", binds)
+	var reads []string
+	for _, path := range clean(ro) {
+		reads = append(reads, Word("-"+path))
+	}
+	line("BindReadOnlyPaths", reads)
 	return b.String()
 }
 
@@ -116,21 +218,50 @@ func (p Plan) DropIn() string {
 // before any of its code runs, with a status (226) that names no path; the
 // error here does.
 func (p Plan) Validate() error {
-	for _, list := range [][]string{p.Write, p.Caches, p.Sealed, p.Hidden} {
-		for _, path := range list {
-			if err := ValidPath(path); err != nil {
-				return err
-			}
+	must, may, err := p.named()
+	if err != nil {
+		return err
+	}
+	for _, path := range append(must, may...) {
+		if err := ValidPath(path); err != nil {
+			return err
 		}
 	}
-	for _, list := range [][]string{p.Write, p.Sealed} {
-		for _, path := range list {
-			if _, err := os.Stat(path); err != nil {
-				return fmt.Errorf("%s, which its walls name, is not there: %w", path, err)
-			}
+	for _, path := range must {
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("%s, which its walls name, is not there: %w", path, err)
 		}
 	}
 	return nil
+}
+
+// named is every path the plan names in the unit file: the ones the unit
+// must find, and the ones that may be missing. A plan that does not hold
+// together (what a unit keeps of a shared folder is not in it, private
+// folders with nowhere to keep them) is an error.
+func (p Plan) named() (must, may []string, err error) {
+	must = append(append(must, p.Write...), p.Sealed...)
+	may = append(append(may, p.Caches...), p.Hidden...)
+	for _, o := range p.Own {
+		must = append(append(must, o.Dir), o.Write...)
+		may = append(may, o.Read...)
+		for _, path := range append(clean(o.Write), clean(o.Read)...) {
+			if path == filepath.Clean(o.Dir) || !under(path, filepath.Clean(o.Dir)) {
+				return nil, nil, fmt.Errorf("%s is not inside %s, of which it is the unit's own part", path, o.Dir)
+			}
+		}
+	}
+	if len(p.Private) == 0 {
+		return must, may, nil
+	}
+	if p.PrivateRoot == "" {
+		return nil, nil, errors.New("the plan has private folders and no folder of the unit's own to keep them in")
+	}
+	must = append(must, p.Private...)
+	for _, target := range clean(p.Private) {
+		must = append(must, p.privateDir(target))
+	}
+	return must, may, nil
 }
 
 // ValidPath says why a path cannot be named in a unit's walls, nil when it
@@ -202,8 +333,13 @@ type Expect struct {
 	// file system.
 	Writable []string `json:"writable,omitempty"`
 	Refused  []string `json:"refused,omitempty"`
-	// Hidden must not be reachable: a socket there takes no connection.
+	// Hidden must not be reachable: a socket there takes no connection, a
+	// file cannot be opened, a folder cannot be listed.
 	Hidden []string `json:"hidden,omitempty"`
+	// Only names, for a folder many units share, the entries this unit may
+	// see in it: anything else there is another unit's, and the walls are
+	// not up.
+	Only map[string][]string `json:"only,omitempty"`
 	// NoNetwork: nothing but loopback may be there.
 	NoNetwork bool `json:"noNetwork,omitempty"`
 }
@@ -212,5 +348,12 @@ type Expect struct {
 // mount namespace is hostNS.
 func (p Plan) Expect(hostNS string) *Expect {
 	refused := append(clean(p.Sealed), clean(p.Outside)...)
-	return &Expect{HostNS: hostNS, Writable: clean(p.Write), Refused: refused, Hidden: clean(p.Hidden), NoNetwork: p.NoNetwork}
+	e := &Expect{HostNS: hostNS, Writable: p.writable(), Refused: refused, Hidden: clean(p.Hidden), NoNetwork: p.NoNetwork}
+	for _, o := range p.Own {
+		if e.Only == nil {
+			e.Only = map[string][]string{}
+		}
+		e.Only[filepath.Clean(o.Dir)] = o.kept()
+	}
+	return e
 }
