@@ -211,9 +211,14 @@ shows what this host allows with the command that fixes what it lacks.
   `session-env/`), and `sessions/` and a few more, are each walled unit's own
   (`Plan.Private`, a bind of a folder in the unit's own state over the shared
   one): shared, a walled unit would write another session's and run there.
-  Traced live 2026-11-20 on Claude Code 2.1.329: a turn, a commit and the qa
-  commit review all work this way. Refused and harmless: the plugins'
-  bookkeeping and `~/.claude.json`. The login is not renewed from behind
+  Seen live 2026-11-20 on Claude Code 2.1.329, with a haiku builder on a
+  scratch daemon: a turn, a commit, the SessionStart gate snapshot and
+  `qa-receipt.sh sign` work this way (all four write the worktree's git
+  folder and `/tmp`). The qa commit review ran and wrote its log there too;
+  its reviewers answered only in the earlier trial, where the session
+  folders were still shared (on a scratch daemon they have no account to
+  ask with). Refused and harmless: the plugins' bookkeeping and
+  `~/.claude.json`. The login is not renewed from behind
   walls (the refresh lock is in `~/.claude` itself, so Claude Code sends no
   refresh token; read in its code); a walled session reads the login again
   when a session outside has renewed it, and with an account on the proxy it
@@ -295,9 +300,13 @@ host's network, so without it `PUT /v1/sandbox` switched the walls off and
 
 - **The token is new at every daemon start**, in
   `<runtime>/private/api-token` (0600, in a 0700 folder the walls hide;
-  `cmd/ccmuxd/apitoken.go`). `ccmuxd api-token` prints it, for
-  `curl -H "Authorization: Bearer $(ccmuxd api-token)" ...`. It is never in
-  an environment, a spec or the log.
+  `cmd/ccmuxd/apitoken.go`). It is never in an environment, a spec or the
+  log.
+- **Never print the token in a session.** Read it where it is used:
+  `curl -H "Authorization: Bearer $(ccmuxd api-token)" ...`. What a session
+  prints is saved in its transcript under `~/.claude/projects`, and a walled
+  session reads all of home. A token that was printed is good until the
+  daemon restarts.
 - **"This machine" is loopback and every address of the host's own
   interfaces**, whatever listener the call came in on. This host is on the
   tailnet as the person, so a walled session calling the daemon's tailnet
@@ -306,23 +315,31 @@ host's network, so without it `PUT /v1/sandbox` switched the walls off and
 - **Refusing is the rule, the open routes are the list** (`localOpen`,
   `paneOpen`, `paneOwn`). Open: `/v1/health`, `/v1/whoami`, the clipboard
   pipe (its own token), the bus routes the shim calls (each checks the
-  caller's pane token), and under `/v1/panes/{id}/` the tools a session
-  calls for itself, for which the gate checks **that pane's own token**
-  (they took any local caller that named a pane before). A new route is
+  caller's pane token; the bus socket only in its peer mode, since
+  `mode=listen` streams a group to whoever asks), and under
+  `/v1/panes/{id}/` the tools a session calls for itself, for which the
+  gate checks **that pane's own token** (they took any local caller that
+  named a pane before). Three pane routes take no token at all, because
+  what calls them sends none: `agent-signal` and `bus-context` (the
+  opencode plugin) and `driver` (the co-author git hook). A new route is
   gated until it is put on a list. Never put a route there that starts,
-  prompts or configures anything on a pane token alone.
+  prompts or configures anything on a pane token alone, and read a handler
+  for a mode that checks nothing before opening its path.
 - **Only a plain path is ever open**: the mux matches escaped pieces, so
   `/v1/windows/w/agents/..%2F..%2F..%2Fhealth` is the agent route though it
   cleans to `/v1/health`.
 - **A browser on this machine** opens the link `ccmuxd lens-url` prints
-  (`http://ccmux.localhost:<port>/?key=...`). The gate turns the key into an
-  HttpOnly cookie and redirects; the lenses' requests and websockets need no
+  (`http://ccmux.localhost:<port>/?key=...`). The key is not the token: the
+  command asks the daemon for it (`POST /v1/lens-key`), and it works once,
+  within two minutes, so a link a session printed is worth nothing in its
+  transcript. The gate turns it into an HttpOnly cookie that holds the
+  token and redirects; the lenses' requests and websockets need no
   change. The name `ccmux.localhost` is on purpose: a cookie belongs to a
   host name whatever the port, so one set for `127.0.0.1` would be sent to
   every dev server on this machine. That narrows it and does not close it: a
   page that sends the browser to `ccmux.localhost:<its own port>` still gets
   the cookie. A page opened here without the key gets a page that says so.
-  After a daemon restart the link is a new one.
+  After a daemon restart a new link is needed.
 - `GET /v1/health` carries `localGate`: false means the API is open to every
   local process. A daemon that cannot make the token does not start.
 - The LLM proxy (`/llm/pane/...`, its own port) is not gated: sessions need

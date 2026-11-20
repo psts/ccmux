@@ -155,6 +155,7 @@ type Server struct {
 	apiToken string
 	own      ownAddrs
 	refused  gateLog
+	links    linkKeys
 
 	// hub, when set by EnableHub, makes this the federation hub: it aggregates
 	// every member host's workspaces and reverse-proxies host-scoped routes to
@@ -392,6 +393,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandbox", s.getSandbox)
 	mux.HandleFunc("PUT /v1/sandbox", s.putSandbox)
 	mux.HandleFunc("POST /v1/sandbox/check", s.checkSandbox)
+	mux.HandleFunc("POST /v1/lens-key", s.lensKey)
 	s.sessionRoutes(mux)
 	s.threadRoutes(mux)
 	s.choiceRoutes(mux)

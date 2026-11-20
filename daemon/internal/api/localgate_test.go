@@ -316,16 +316,33 @@ func TestLocalGate_APathDressedAsAnOpenRouteIsNotOpen(t *testing.T) {
 	}
 }
 
+// linkKey asks the daemon for a one-use key, as `ccmuxd lens-url` does.
+func linkKey(t *testing.T, s *Server) string {
+	t.Helper()
+	rec := gateCall(s, "POST", "/v1/lens-key", fromHere, withBearer(gateToken))
+	var out struct{ Key string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK || len(out.Key) != 48 {
+		t.Fatalf("POST /v1/lens-key: %d %s", rec.Code, rec.Body.String())
+	}
+	return out.Key
+}
+
 func TestLocalGate_AKeyLinkBecomesACookieUnderTheLensesOwnName(t *testing.T) {
 	s := gatedServer(t)
+	// A link's key is asked for with the token; a caller without it gets none.
+	if rec := gateCall(s, "POST", "/v1/lens-key", fromHere, nil); !refusedByGate(rec) {
+		t.Fatalf("a key for a link is not handed to a caller with no token: %d", rec.Code)
+	}
+	key := linkKey(t, s)
 	// Opened under a plain loopback name: sent on to the lens's own name
-	// first, where the cookie is no dev server's to receive.
-	rec := gateCall(s, "GET", "/threads.html?key="+gateToken+"&s=abc", fromHere, nil)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "http://ccmux.localhost:7900/threads.html?key="+gateToken+"&s=abc" || len(rec.Result().Cookies()) != 0 {
+	// first, where the cookie is no dev server's to receive. The key is not
+	// used up on the way.
+	rec := gateCall(s, "GET", "/threads.html?key="+key+"&s=abc", fromHere, nil)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "http://ccmux.localhost:7900/threads.html?key="+key+"&s=abc" || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("under 127.0.0.1: %d %q %v", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
 	}
 	lens := func(r *http.Request) { r.Host = "ccmux.localhost:7900" }
-	rec = gateCall(s, "GET", "/threads.html?key="+gateToken+"&s=abc", fromHere, lens)
+	rec = gateCall(s, "GET", "/threads.html?key="+key+"&s=abc", fromHere, lens)
 	cookies := rec.Result().Cookies()
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/threads.html?s=abc" || len(cookies) != 1 {
 		t.Fatalf("under the lens's name: %d %q %v", rec.Code, rec.Header().Get("Location"), cookies)
@@ -341,27 +358,68 @@ func TestLocalGate_AKeyLinkBecomesACookieUnderTheLensesOwnName(t *testing.T) {
 	if rec := gateCall(s, "GET", "/", fromHere, withCookie); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "needs the daemon's key") {
 		t.Fatalf("and the lens loads: %d", rec.Code)
 	}
-	// A wrong key says what to do, and sets nothing.
-	rec = gateCall(s, "GET", "/?key=stale", fromHere, lens)
-	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "ccmuxd lens-url") || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("a stale link: %d %s", rec.Code, rec.Body.String())
-	}
 	// "key" is only a key link on a page's address. Anywhere else it is the
 	// route's own field: the gate neither answers for the route nor takes a
 	// right key there for a token.
-	for _, target := range []string{"/v1/health?key=stale", "/v1/health?key=" + gateToken, "/app.js?key=stale", "/llm/pane/p1/v1/models?key=an-upstream-api-key"} {
+	fresh := linkKey(t, s)
+	for _, target := range []string{"/v1/health?key=stale", "/v1/health?key=" + fresh, "/app.js?key=stale", "/llm/pane/p1/v1/models?key=an-upstream-api-key"} {
 		rec := gateCall(s, "GET", target, fromHere, lens)
-		if rec.Code == http.StatusSeeOther || strings.Contains(rec.Body.String(), "that link's key") || len(rec.Result().Cookies()) != 0 {
+		if rec.Code == http.StatusSeeOther || strings.Contains(rec.Body.String(), "that link") || len(rec.Result().Cookies()) != 0 {
 			t.Errorf("%s was taken for a key link: %d %s", target, rec.Code, rec.Body.String())
 		}
 	}
-	if rec := gateCall(s, "GET", "/v1/sandbox?key="+gateToken, fromHere, lens); !refusedByGate(rec) {
-		t.Errorf("the token in an API call's query is not a way in: %d", rec.Code)
+	if rec := gateCall(s, "GET", "/v1/sandbox?key="+fresh, fromHere, lens); !refusedByGate(rec) {
+		t.Errorf("a key in an API call's query is not a way in: %d", rec.Code)
 	}
-	// From another machine the field is nobody's business: nothing is set.
-	if rec := gateCall(s, "GET", "/?key="+gateToken, fromAway, nil); len(rec.Result().Cookies()) != 0 || rec.Code == http.StatusSeeOther {
+	// From another machine the field is nobody's business: nothing is set,
+	// and the key is not used up.
+	if rec := gateCall(s, "GET", "/?key="+fresh, fromAway, nil); len(rec.Result().Cookies()) != 0 || rec.Code == http.StatusSeeOther {
 		t.Fatalf("a caller the gate does not ask is not given a cookie: %d", rec.Code)
 	}
+	if rec := gateCall(s, "GET", "/?key="+fresh, fromHere, lens); len(rec.Result().Cookies()) != 1 {
+		t.Fatalf("none of that used the key up: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A link is worth nothing once it was opened, or two minutes after it was
+// made: whoever printed it is often a session, and a walled session reads
+// every session's transcript. The token itself is never a link's key.
+func TestLocalGate_AKeyLinkWorksOnceAndNotForLong(t *testing.T) {
+	s := gatedServer(t)
+	now := time.Unix(5000, 0)
+	s.links.now = func() time.Time { return now }
+	lens := func(r *http.Request) { r.Host = "ccmux.localhost:7900" }
+	refused := func(what, target string) {
+		t.Helper()
+		rec := gateCall(s, "GET", target, fromHere, lens)
+		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "ccmuxd lens-url") || len(rec.Result().Cookies()) != 0 {
+			t.Fatalf("%s: want a refusal that says what to do and sets nothing, got %d %s", what, rec.Code, rec.Body.String())
+		}
+	}
+	used := linkKey(t, s)
+	if rec := gateCall(s, "GET", "/?key="+used, fromHere, lens); len(rec.Result().Cookies()) != 1 {
+		t.Fatalf("the first use: %d", rec.Code)
+	}
+	refused("the same link a second time", "/?key="+used)
+	refused("the API token as a link's key", "/?key="+gateToken)
+	refused("a made-up key", "/?key=stale")
+	refused("no key at all in the field", "/?key=")
+	old := linkKey(t, s)
+	now = now.Add(linkKeyFor + time.Second)
+	refused("a link older than two minutes", "/?key="+old)
+	// Under a plain loopback name a stale link is refused too, not sent on.
+	if rec := gateCall(s, "GET", "/?key="+old, fromHere, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a stale link under 127.0.0.1: %d", rec.Code)
+	}
+	// Only so many wait at once; the ones that ran out make room again.
+	for i := 0; i < linkKeysKept; i++ {
+		linkKey(t, s)
+	}
+	if rec := gateCall(s, "POST", "/v1/lens-key", fromHere, withBearer(gateToken)); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("one more than may wait: %d", rec.Code)
+	}
+	now = now.Add(linkKeyFor + time.Second)
+	linkKey(t, s)
 }
 
 func TestLocalGate_APageOpenedHereWithoutTheKeySaysHowToGetIt(t *testing.T) {

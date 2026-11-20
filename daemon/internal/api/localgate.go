@@ -1,7 +1,10 @@
 package api
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -39,9 +42,13 @@ import (
 //   - The few routes that carry nothing (health, whoami) or have a token
 //     of their own (the clipboard pipe).
 //
-// A browser on this machine gets the token once in a link (`ccmuxd
-// lens-url`), and the gate turns it into a cookie, so the lenses' own
-// requests and websockets need no change.
+// A browser on this machine is given a link (`ccmuxd lens-url`), and the
+// gate turns it into a cookie, so the lenses' own requests and websockets
+// need no change. The link does not carry the token: it carries a key that
+// works once, for two minutes (linkKeys). Whoever prints the link is often
+// a session (the browser on this host is driven by one), a session's
+// commands and their output are saved in its transcript, and a walled
+// session reads every transcript under home.
 
 // localOpen are the routes a caller on this machine may use without the
 // API token: they carry nothing worth a wall, or they check a token of
@@ -133,7 +140,7 @@ func (s *Server) gate(next http.Handler) http.Handler {
 		}
 		s.refused.note(r.Method, clean)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error": "this caller is on the daemon's own machine and sent no API token: send the one in the daemon's api-token file as a bearer token (`ccmuxd api-token` prints it), or open the lens with the link `ccmuxd lens-url` prints",
+			"error": "this caller is on the daemon's own machine and sent no API token. Send it as a bearer token, read where it is used and never printed: curl -H \"Authorization: Bearer $(ccmuxd api-token)\" ... (a token printed in a session is saved in its transcript, which a session behind the sandbox's walls can read). A browser opens the link `ccmuxd lens-url` prints.",
 			"code":  "local-key",
 		})
 	})
@@ -167,7 +174,7 @@ func (g *gateLog) note(method, route string) {
 		g.last = map[string]time.Time{}
 	}
 	g.last[key] = now
-	log.Printf("api: refused %q from this machine: no API token (`ccmuxd api-token` prints it; a session behind the sandbox's walls cannot have it)", key)
+	log.Printf("api: refused %q from this machine: no API token (a script sends \"Authorization: Bearer $(ccmuxd api-token)\"; a session behind the sandbox's walls cannot have it)", key)
 }
 
 // holdsKey reports whether a request carries the API token: as a bearer
@@ -235,24 +242,32 @@ func (s *Server) paneRouteOpen(r *http.Request, clean string) bool {
 }
 
 // takeKeyLink handles the link a browser on this machine is given: a page
-// address with the API token in it. A right token becomes a cookie and the
-// browser is sent on to the same page without it, so the token stays out
-// of the address bar and the history. It reports whether it answered. Only
-// a page's address is ever a key link (servePage): "key" is a field other
+// address with a one-use key in it (linkKeys). A good key is used up and
+// becomes the cookie that holds the API token, and the browser is sent on
+// to the same page without it. It reports whether it answered. Only a
+// page's address is ever a key link (servePage): "key" is a field other
 // routes use for their own ends.
 func (s *Server) takeKeyLink(w http.ResponseWriter, r *http.Request) bool {
 	if !r.URL.Query().Has(keyParam) {
 		return false
 	}
-	if !s.isKey(r.URL.Query().Get(keyParam)) {
-		http.Error(w, "ccmux: that link's key is not this daemon's. It changes every time the daemon starts: run `ccmuxd lens-url` again and open the link it prints.", http.StatusUnauthorized)
+	key := r.URL.Query().Get(keyParam)
+	stale := func() bool {
+		http.Error(w, "ccmux: that link was used already, or is more than two minutes old. Run `ccmuxd lens-url` again and open the link it prints.", http.StatusUnauthorized)
 		return true
+	}
+	if !s.links.good(key) {
+		return stale()
 	}
 	if to := lensHostURL(r); to != "" {
 		// Under any other name the cookie would be one a dev server on this
-		// machine is sent too: go to the lens's own name, key and all.
+		// machine is sent too: go to the lens's own name, key and all. The
+		// key is not used up here: the next request uses it.
 		http.Redirect(w, r, to, http.StatusSeeOther)
 		return true
+	}
+	if !s.links.take(key) {
+		return stale()
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: keyCookie(r), Value: s.apiToken, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
@@ -263,6 +278,84 @@ func (s *Server) takeKeyLink(w http.ResponseWriter, r *http.Request) bool {
 	to := url.URL{Path: r.URL.Path, RawQuery: q.Encode()}
 	http.Redirect(w, r, to.String(), http.StatusSeeOther)
 	return true
+}
+
+// linkKeys are the keys a lens link carries: each made on request
+// (POST /v1/lens-key, which wants the API token like any route), good for
+// one use within linkKeyFor. A link that was printed where a walled
+// session can read it later (a transcript, a log) is by then worth
+// nothing.
+type linkKeys struct {
+	mu   sync.Mutex
+	keys map[string]time.Time // key → when it stops being good
+	now  func() time.Time     // nil is time.Now
+}
+
+const (
+	linkKeyFor   = 2 * time.Minute
+	linkKeysKept = 32
+)
+
+func (l *linkKeys) clock() time.Time {
+	if l.now != nil {
+		return l.now()
+	}
+	return time.Now()
+}
+
+// mint makes a new key. The ones that have run out are dropped first, and
+// when too many are still good the request is refused: nobody opens that
+// many lenses in two minutes.
+func (l *linkKeys) mint() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.clock()
+	for key, until := range l.keys {
+		if !now.Before(until) {
+			delete(l.keys, key)
+		}
+	}
+	if len(l.keys) >= linkKeysKept {
+		return "", errors.New("too many lens links are waiting to be opened; open one, or wait two minutes")
+	}
+	if l.keys == nil {
+		l.keys = map[string]time.Time{}
+	}
+	key := hex.EncodeToString(raw)
+	l.keys[key] = now.Add(linkKeyFor)
+	return key, nil
+}
+
+// good reports whether a key would be taken now, without using it up.
+func (l *linkKeys) good(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	until, ok := l.keys[key]
+	return ok && l.clock().Before(until)
+}
+
+// take uses a key up, and reports whether it was good.
+func (l *linkKeys) take(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	until, ok := l.keys[key]
+	delete(l.keys, key)
+	return ok && l.clock().Before(until)
+}
+
+// lensKey: POST /v1/lens-key → {"key", "seconds"}: a one-use key for a
+// lens link, which `ccmuxd lens-url` asks for with the API token.
+func (s *Server) lensKey(w http.ResponseWriter, _ *http.Request) {
+	key, err := s.links.mint()
+	if err != nil {
+		writeError(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key": key, "seconds": int(linkKeyFor.Seconds())})
 }
 
 // lensHostURL is where a key link opened under a plain loopback name is
@@ -327,7 +420,7 @@ const keyPage = `<!doctype html><meta charset="utf-8"><meta name="viewport" cont
 <p>You opened ccmux from the machine its daemon runs on. Programs on that machine must show a key, so that work running in the sandbox cannot use this page's powers.</p>
 <p>In a terminal on this machine, run:</p>
 <pre style="background:#8882;padding:.75rem;border-radius:.4rem">ccmuxd lens-url</pre>
-<p>and open the link it prints. The key changes every time the daemon starts.</p>
+<p>and open the link it prints. The link works once, within two minutes.</p>
 <p>From another device on your tailnet nothing changes: no key is needed there.</p>
 `
 
