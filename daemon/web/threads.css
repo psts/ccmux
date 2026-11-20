@@ -34,15 +34,27 @@ a:hover { color: var(--blue-d); }
 .logo { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--fg); text-decoration: none; }
 #new-thread { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line3); background: var(--card); font-size: 13px; font-weight: 500; }
 #new-thread:disabled { opacity: .5; cursor: default; }
-#tree { display: flex; flex-direction: column; gap: 18px; }
-.group { display: flex; flex-direction: column; gap: 4px; }
-.group-name { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 0 8px 4px; }
+/* A group is its name, big and at the far left, then its body indented
+   under it: the Tasks row, the repos and the agents, lighter than the name.
+   A rule parts one group from the next. */
+#tree { display: flex; flex-direction: column; }
+.group { display: flex; flex-direction: column; padding: 8px 0 10px; }
+.group + .group { border-top: 1px solid var(--line2); }
+.side-note, .side-alone { margin-bottom: 8px; }
+.group-name { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--fg); padding: 2px 8px; }
+.group-body { display: flex; flex-direction: column; gap: 1px; padding-left: 20px; margin-top: 4px; }
+.side-sub { font-size: 11px; font-weight: 600; color: var(--muted); padding: 12px 8px 2px; }
 .repo { display: flex; flex-direction: column; gap: 1px; }
 .row { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; padding: 7px 8px; border-radius: 8px; border: 0; background: transparent; }
 /* A finger needs a 44px target; a mouse does not, so on a computer the row is
    as tall as its text and the space below the name matches the space above. */
 @media (pointer: coarse) { .row { min-height: 44px; } }
 .row.thread { padding-left: 26px; }
+#tree .row { padding: 5px 8px; }
+#tree .row.thread { padding-left: 22px; }
+#tree .dot { width: 6px; height: 6px; margin-top: 7.5px; }
+#tree .row-name { font-weight: 400; }
+#tree .row.on .row-name { font-weight: 600; }
 .row:hover { background: rgba(255, 255, 255, .5); }
 .row.on, .row.open { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--asleep); }
@@ -74,12 +86,15 @@ a:hover { color: var(--blue-d); }
 .row-top.cols { display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; }
 .row-top.cols .row-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-status { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-.row-top.cols .branch { justify-self: end; max-width: 100%; }
-/* A role agent's row: its dot is green while it is up, and an "agent" tag
-   sits where a repo's branch does. */
+.row-top.cols .branch { grid-column: -2; justify-self: end; max-width: 100%; }
+/* In the sidebar the branch is plain text, not the chip it is elsewhere
+   (the Changes tab). A repo with a to-do pill keeps a column free for it,
+   left of the branch: the pill is laid over the row (threadtodo.css). */
+#tree .row-top.cols .branch { background: none; padding: 0; color: var(--muted); }
+#tree .repo.has-todo .row-top.cols { grid-template-columns: minmax(0, 1fr) auto 26px 64px; }
+/* A role agent's row: its dot is green while it is up. */
 .dot.live { background: var(--run); }
-.agent-tag { justify-self: end; font-family: var(--mono); font-size: 11px; color: var(--fg2); line-height: 17px; }
-.row.agent .row-name { font-weight: 500; }
+#tree .row.agent .row-name { font-size: 13px; }
 .row-name { font-size: 13.5px; font-weight: 600; }
 .row.thread .row-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .branch { font-family: var(--mono); font-size: 11px; color: var(--fg2); background: var(--chip); border-radius: 4px; padding: 0 5px; line-height: 17px; min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -92,18 +107,18 @@ a:hover { color: var(--blue-d); }
 /* A group's Tasks row and, under a repo, the tasks it has a part in
    (threadview.js). The queue itself is tasks.css; while it is open it takes
    the conversation's place (#page.tasks-mode). */
-.side-tasks, .side-task { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; padding: 6px 8px; border-radius: 8px; border: 0; background: transparent; }
-.side-task { padding-left: 26px; }
+.side-tasks, .side-task { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; padding: 5px 8px; border-radius: 8px; border: 0; background: transparent; }
+.side-task { gap: 8px; padding: 3px 8px 3px 22px; }
 .side-tasks:hover, .side-task:hover { background: rgba(255, 255, 255, .5); }
 .side-tasks.on, .side-task.on { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 .st-icon { width: 8px; flex: none; font-size: 12px; line-height: 20px; color: var(--muted); }
+.st-dot { width: 5px; height: 5px; border-radius: 50%; flex: none; background: var(--run); }
+.side-task.alert .st-dot { background: var(--wait); }
 .st-id { flex: none; font-family: var(--mono); font-size: 11px; line-height: 19px; color: var(--muted); }
-.st-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.st-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.side-tasks .st-name { font-weight: 600; }
-.st-sub { font-size: 11.5px; color: var(--muted); }
-.side-task.alert .st-sub { color: var(--amber); }
-.st-alert { flex: none; margin-top: 2px; background: var(--amber); color: #FFFFFF; border-radius: 8px; font-size: 10px; font-weight: 700; padding: 0 6px; line-height: 16px; }
+.st-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-task .st-name { font-size: 12.5px; font-weight: 400; color: var(--fg2); }
+.st-sub { flex: none; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.st-alert { flex: none; background: var(--amber); color: #FFFFFF; border-radius: 8px; font-size: 10px; font-weight: 700; padding: 0 6px; line-height: 16px; }
 #page.tasks-mode #stream, #page.tasks-mode #goal, #page.tasks-mode #detail { display: none !important; }
 #main > #tasks { padding: 16px 24px 32px; }
 .side-foot { margin-top: auto; padding: 10px 8px; border-top: 1px solid var(--line2); font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
@@ -312,7 +327,7 @@ a:hover { color: var(--blue-d); }
 .side-foot { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; }
 .side-foot .plain.small { margin-top: 0; }
 /* A repo's menu button sits over the bottom right of the repo's own row,
-   whatever hangs below that row (its to-do list, its threads, its tasks):
+   whatever hangs below that row (its threads, its tasks):
    the two share the first cell of the repo's grid. */
 .repo { display: grid; grid-template-columns: minmax(0, 1fr); }
 .repo > .row:first-child, .repo > .side-more { grid-area: 1 / 1; }
@@ -320,7 +335,6 @@ a:hover { color: var(--blue-d); }
 /* The "⋯" on a repo or group repeats its right-click menu, so a computer
    does without it; a phone has no right-click, so there it stays. */
 .side-more { display: none; border: 0; background: transparent; color: var(--muted); border-radius: 6px; width: 28px; height: 24px; font-size: 15px; line-height: 1; }
-.group-head .side-more { margin-top: -4px; }
 .repo > .side-more { position: relative; align-self: end; justify-self: end; margin: 0 4px 6px 0; }
 @media (hover: none) { .side-more { display: block; } }
 .side-more:hover { background: var(--card); color: var(--fg); }
@@ -390,10 +404,10 @@ span.cap-kind { font-size: 11px; font-weight: 600; color: var(--fg2); background
    a mouse drags a group by its name and a line shows where it lands. */
 .group-head .group-name { flex: 1; min-width: 0; }
 .group-head .group-name.foldable { cursor: pointer; padding-left: 2px; }
-.group-fold { border: 0; background: transparent; color: var(--muted); width: 20px; padding: 0 0 4px 6px; font-size: 11px; line-height: 1; flex: none; }
+.group-fold { border: 0; background: transparent; color: var(--muted); width: 20px; padding: 0 0 0 6px; font-size: 11px; line-height: 1; flex: none; }
 .group-fold:hover { color: var(--fg); }
 .group-head[draggable="true"] { cursor: grab; }
-.group-head.att-waiting, .group-head.att-done { border-radius: 8px; padding-top: 4px; }
+.group-head.att-waiting, .group-head.att-done { border-radius: 8px; padding: 2px 0; }
 .group-head.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
 .group-head.att-waiting .group-name { color: var(--wait); }
 .group-head.att-done { background: rgba(21, 128, 61, .10); box-shadow: inset 3px 0 0 var(--run); }
@@ -401,7 +415,7 @@ span.cap-kind { font-size: 11px; font-weight: 600; color: var(--fg2); background
   .group-head.att-waiting { animation: row-pulse-wait 1.6s ease-in-out infinite; }
   .group-head.att-done { animation: row-pulse-done 1.6s ease-in-out infinite; }
 }
-.group-count { flex: none; min-width: 18px; padding: 0 6px; margin: 0 4px 4px 0; border-radius: 9px; font-size: 11px; font-weight: 600; text-align: center; color: var(--on-accent); background: var(--muted); }
+.group-count { flex: none; min-width: 18px; padding: 0 6px; margin: 0 4px 0 0; border-radius: 9px; font-size: 11px; font-weight: 600; text-align: center; color: var(--on-accent); background: var(--muted); }
 .group-head.att-waiting .group-count { background: var(--wait); }
 .group-head.att-done .group-count { background: var(--run); }
 .group.drop-before { box-shadow: 0 -3px 0 var(--blue); }

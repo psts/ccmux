@@ -1,25 +1,29 @@
-/* A repo's to-do list on the thread page (threadtodoview.js): its row in
-   the sidebar, under the repo's own row (.side-todo, drawn by threadview.js),
+/* A repo's to-do list on the thread page (threadtodoview.js): its pill in
+   the sidebar, on the repo's own row (.side-todo, drawn by threadview.js),
    and the list itself (.rt), which takes the conversation's place while it
    is open (#page.todo-mode). Colours come from threads.css's tokens only.
    The session's own step list (the Steps tab, .todo in threads.css) is
    another thing and shares no rule with this file. */
 
-/* Urgency, the same three colours wherever it shows: the sidebar's count,
+/* Urgency, the same three colours wherever it shows: the sidebar's pill,
    an item's left edge and its picker. */
 .rt, .side-todo { --u-high: var(--red); --u-medium: var(--wait); --u-low: var(--asleep); }
 
-/* --- the sidebar row --- */
-.side-todo { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; padding: 5px 8px 5px 26px; border-radius: 8px; border: 0; background: transparent; }
-.side-todo:hover { background: rgba(255, 255, 255, .5); }
-.side-todo.on { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
-.sd-icon { width: 10px; flex: none; font-size: 12px; line-height: 19px; color: var(--muted); }
-.sd-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
-.sd-name { font-size: 13px; font-weight: 500; }
-.sd-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sd-count { flex: none; margin-top: 2px; border-radius: 8px; font-size: 10px; font-weight: 700; padding: 0 6px; line-height: 16px; color: #FFFFFF; background: var(--u-low); }
-.sd-count.u-high { background: var(--u-high); }
-.sd-count.u-medium { background: var(--u-medium); }
+/* --- the sidebar pill ---
+   It is the repo row's sibling in the repo's grid (threads.css .repo), in
+   the same cell, so it lies over the row's first line in the column the
+   row keeps free for it, left of the branch (8px row padding, 64px branch,
+   6px gap). The "⋯" a touch screen shows sits at the row's bottom right,
+   clear of it. High and medium are the urgency's colour; low, and nothing
+   open, a grey chip. */
+.repo > .side-todo { grid-area: 1 / 1; align-self: start; justify-self: end; position: relative; margin: 5px 78px 0 0; }
+.side-todo { display: flex; align-items: center; height: 20px; padding: 0; border: 0; border-radius: 9px; background: transparent; }
+.side-todo:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.sd-count { min-width: 18px; border-radius: 9px; font-size: 10.5px; font-weight: 700; text-align: center; padding: 0 6px; line-height: 17px; color: var(--fg2); background: var(--chip); font-variant-numeric: tabular-nums; }
+.sd-count.u-high { color: #FFFFFF; background: var(--u-high); }
+.sd-count.u-medium { color: #FFFFFF; background: var(--u-medium); }
+.side-todo:hover .sd-count { filter: brightness(.95); }
+.side-todo.on .sd-count { box-shadow: 0 0 0 2px var(--card), 0 0 0 3.5px var(--blue); }
 
 /* --- the list, in the main area --- */
 #page.todo-mode #stream, #page.todo-mode #goal, #page.todo-mode #detail { display: none !important; }

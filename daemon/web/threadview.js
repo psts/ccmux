@@ -250,8 +250,9 @@
     return more;
   }
 
-  // tasksRow is a group's Tasks entry: its queue's counts, the number that
-  // needs a person highlighted (ctx.tasks, threadtasks.js). Its classes are
+  // tasksRow is a group's Tasks entry, on one line: its queue's counts on
+  // the right, the number that needs a person highlighted (ctx.tasks,
+  // threadtasks.js). Its classes are
   // its own, not a repo row's, so nothing that walks the repos finds it.
   function tasksRow(g, ctx) {
     const T = ctx.tasks;
@@ -260,12 +261,14 @@
     row.type = "button";
     row.title = "The group's task queue";
     row.onclick = () => T.openGroup(g);
-    return add(row, el("span", "st-icon", "☰"), add(el("span", "st-body"), el("span", "st-name", "Tasks"), el("span", "st-sub", s.text || (s.alert ? "needs you" : "nothing queued"))),
+    return add(row, el("span", "st-icon", "☰"), el("span", "st-name", "Tasks"), el("span", "st-sub", s.text || (s.alert ? "needs you" : "nothing queued")),
       s.alert ? el("span", "st-alert", String(s.alert)) : null);
   }
 
   // repoTaskRows are the unfinished tasks a repo has a part in, under its
-  // row like its threads; one opens the group's queue at that task.
+  // row like its threads, one line each: a dot (amber when it waits on a
+  // person), its title and its number. Its status is in the row's title.
+  // One opens the group's queue at that task.
   function repoTaskRows(g, r, ctx) {
     const T = ctx.tasks;
     const list = T ? T.repoTasks(g, r) : [];
@@ -275,31 +278,33 @@
     for (const t of list) {
       const row = el("button", "side-task" + (on ? " on" : "") + (Tq.needsPerson(t) ? " alert" : ""));
       row.type = "button";
-      row.title = "Open it in the group's task queue";
+      row.title = Tq.statusWord(t.status) + ". Open it in the group's task queue";
       row.onclick = () => T.pickTask(g, r, t);
-      add(box, add(row, el("span", "st-id", "#" + t.id), add(el("span", "st-body"), el("span", "st-name", t.title), el("span", "st-sub", Tq.statusWord(t.status).toLowerCase()))));
+      add(box, add(row, el("span", "st-dot"), el("span", "st-name", t.title), el("span", "st-id", "#" + t.id)));
     }
     return box;
   }
 
-  // todoRow is a repo's to-do list in the sidebar, right under the repo's
-  // own row (ctx.todos, threadtodoview.js): how many items wait for
-  // someone, coloured by the most urgent of them, and what they are. It
-  // opens the list in the main area. A repo with nothing on its list has
-  // no row, except the repo the page is in, so a person can always add the
-  // first item. Its classes are its own, like a Tasks row's.
-  function todoRow(r, ctx) {
+  // todoBadge is a repo's to-do list in the sidebar (ctx.todos,
+  // threadtodoview.js): a pill on the repo's row, left of its branch, with
+  // how many items wait for someone, coloured by the most urgent of them;
+  // its title says what they are. It opens the list in the main area. A
+  // repo with nothing on its list has none, except the repo the page is in,
+  // so a person can always add the first item. It is the row's sibling in
+  // the repo's grid, laid over the row (threads.css), not inside it: a
+  // button in a button is not allowed, and its click would pick the repo.
+  function todoBadge(r, ctx) {
     const D = ctx.todos;
     if (!D) return null;
     const s = D.sum(r);
     const on = D.on(r);
     if (!s.open && !s.tasked && !on && !ctx.inRepo(r)) return null;
-    const row = el("button", "side-todo" + (on ? " on" : ""));
-    row.type = "button";
-    row.title = "This repo's to-do list: what its sessions noticed and left";
-    row.onclick = () => D.open(r);
-    return add(row, el("span", "sd-icon", "☑"), add(el("span", "sd-body"), el("span", "sd-name", "To-do"), el("span", "sd-sub", s.text || "nothing open")),
-      s.open ? el("span", "sd-count u-" + s.top, String(s.open)) : null);
+    const b = el("button", "side-todo" + (on ? " on" : ""));
+    b.type = "button";
+    b.title = "To-do: " + (s.text || "nothing open");
+    b.setAttribute("aria-label", `To-do list of ${r.name}: ${s.text || "nothing open"}`);
+    b.onclick = () => D.open(r);
+    return add(b, el("span", "sd-count" + (s.open ? " u-" + s.top : ""), String(s.open)));
   }
 
   // attClass makes a row pulse like the lens's session list: orange until it
@@ -315,7 +320,8 @@
     row.onclick = () => ctx.pickRepo(r);
     const top = add(el("span", "row-top cols"), el("span", "row-name", r.name), ...gitCols(r.git));
     add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
-    add(box, todoRow(r, ctx));
+    const todo = todoBadge(r, ctx);
+    if (todo) { box.classList.add("has-todo"); add(box, todo); }
     for (const t of r.threads) {
       const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : "") + attClass(t.state));
       tr.type = "button";
@@ -365,8 +371,9 @@
     headEl.ondragend = () => S.dragEnd();
   }
 
-  // groupEl is one group: its header, then (unless folded) its Tasks row
-  // and its repos. Any part of a window's group is a place to drop a
+  // groupEl is one group: its header, then (unless folded) its body,
+  // indented under the name: its Tasks row, its repos, and its agents under
+  // their own heading. Any part of a window's group is a place to drop a
   // dragged one.
   function groupEl(g, ctx) {
     const S = ctx.side;
@@ -379,11 +386,13 @@
     add(box, groupHead(g, ctx));
     if (S && S.folded(g)) { box.classList.add("folded"); return box; }
     const tasks = g.id && ctx.tasks ? tasksRow(g, ctx) : null;
-    return add(box, tasks, ...g.repos.map((r) => repoEl(r, ctx, g)), ...(g.agents || []).map((a) => agentEl(a, ctx, g)));
+    const agents = (g.agents || []).map((a) => agentEl(a, ctx, g));
+    const body = add(el("div", "group-body"), tasks, ...g.repos.map((r) => repoEl(r, ctx, g)), agents.length ? el("div", "side-sub", "Agents") : null, ...agents);
+    return add(box, body);
   }
 
-  // agentEl is a role agent's row, after its group's repos: its dot, its
-  // name and an "agent" tag in the branch column. An agent that runs as a
+  // agentEl is a role agent's row, under its group's "Agents" heading: its
+  // dot and its name. An agent that runs as a
   // session opens its conversation here, and its row pulses like a thread's;
   // one still in a terminal opens in the terminal lens, where its chat is.
   function agentEl(a, ctx, g) {
@@ -392,7 +401,7 @@
     row.type = "button";
     row.title = a.session ? `${Model.stateLabel(a.state)}. Opens its conversation.` : `${a.state === "live" ? "Running" : "Asleep"}. Opens in the terminal lens.`;
     row.onclick = () => (a.session ? ctx.pickSession(a.session) : ctx.openAgent(a, g));
-    const top = add(el("span", "row-top cols"), el("span", "row-name", a.name), el("span", "row-status"), el("span", "agent-tag", "agent"));
+    const top = add(el("span", "row-top"), el("span", "row-name", a.name));
     return add(row, el("span", "dot " + a.state), add(el("span", "row-body"), top));
   }
 

@@ -459,12 +459,18 @@ test("a repo's git details open on a click, stay open beside others, and close o
   assert.equal(p.book.pushed.length, 0, "the repo the page is in: no move");
   assert.equal(rows()[0].className, "row on open");
   assert.deepEqual(rows()[0].querySelector(".git-detail").children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
-  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more", "side-todo"], "under the card: its menu button, which only a phone shows (threads.css) and which sits over the card, and the repo's to-do row");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more", "side-todo"], "beside the card, not inside it: its menu button, which only a phone shows (threads.css), and the repo's to-do pill, both laid over the card");
+  const pill = p.$("tree").querySelectorAll(".repo")[0].querySelector(".side-todo");
+  assert.equal(pill.querySelector(".sd-count").className, "sd-count", "the repo the page is in shows its pill with nothing on its list, so a first item can be added");
+  assert.equal(pill.textContent, "0");
+  assert.equal(pill.title, "To-do: nothing open");
+  assert.ok(p.$("tree").querySelectorAll(".repo")[0].classList.contains("has-todo"), "its row keeps a column free for the pill");
+  assert.equal(p.$("tree").querySelectorAll(".repo")[1].querySelector(".side-todo"), null, "another repo with nothing on its list has none");
   rows()[1].click();
   await p.settle();
   assert.equal(p.book.pushed.pop(), "/threads.html?ws=ws2&new=lead", "another repo: the page goes there");
   assert.deepEqual(opened(), [true, true], "and both stay open");
-  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row open", "side-more"], "a repo the page is not in, with nothing on its list, has no to-do row");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row open", "side-more"], "a repo the page is not in, with nothing on its list, has no to-do pill");
   rows()[1].click();
   await p.settle();
   assert.deepEqual(opened(), [true, false], "a click on the repo the page is in closes its details");
@@ -497,7 +503,9 @@ test("a group lists its repos by name, then its agents by name, and an agent ope
   const p = await boot({ workspaces: [repo, agent("x-post", "cold"), api, agent("radar", "live")], windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "x-post", "ws2", "radar"] }] });
   const rows = p.$("tree").querySelectorAll(".row");
   assert.deepEqual(rows.map((r) => r.querySelector(".row-name").textContent), ["api", "app", "radar", "x-post"]);
-  assert.deepEqual(rows.slice(2).map((r) => [r.className, r.querySelector(".dot").className, r.querySelector(".agent-tag").textContent]), [["row agent", "dot live", "agent"], ["row agent", "dot asleep", "agent"]]);
+  assert.deepEqual(rows.slice(2).map((r) => [r.className, r.querySelector(".dot").className]), [["row agent", "dot live"], ["row agent", "dot asleep"]]);
+  const body = p.$("tree").querySelector(".group-body");
+  assert.deepEqual(body.children.map((c) => c.className + ":" + (c.classList.contains("side-sub") ? c.textContent : "")).slice(-3), ["side-sub:Agents", "row agent:", "row agent:"], "the agents come under their own heading, after the repos");
   rows[2].click();
   assert.equal(p.where(), "/?w=w1&ws=radar");
   assert.equal(p.posts().length, 0, "opening an agent starts nothing");
@@ -1121,11 +1129,11 @@ test("a repo's row shows how many to-do items wait and how urgent the worst is; 
     todoItem(1), todoItem(2, { urgency: "high", addedBy: "app-task-7" }), todoItem(3, { urgency: "medium", status: "tasked", taskId: 41 }),
     todoItem(4, { status: "done", doneBy: "Pat", doneAt: 9000 }), todoItem(5, { repo: "/p/blog", urgency: "medium" }),
   ]);
-  assert.deepEqual(p.$("tree").querySelectorAll(".row-name").map((n) => n.textContent), ["app", "blog"], "the to-do rows are not repos");
+  assert.deepEqual(p.$("tree").querySelectorAll(".row-name").map((n) => n.textContent), ["app", "blog"], "the to-do pills are not repos");
   const appRow = repoBox("app").querySelector(".side-todo");
   assert.equal(appRow.querySelector(".sd-count").textContent, "2", "what a task has, and what is done, does not wait for anyone");
   assert.equal(appRow.querySelector(".sd-count").className, "sd-count u-high");
-  assert.equal(appRow.querySelector(".sd-sub").textContent, "1 high · 1 low · 1 tasked");
+  assert.equal(appRow.title, "To-do: 1 high · 1 low · 1 tasked", "what they are is in the pill's title");
   const blogRow = repoBox("blog").querySelector(".side-todo");
   assert.equal(blogRow.querySelector(".sd-count").className, "sd-count u-medium", "a session on a worktree shows its repo's list, by the daemon's key");
 
@@ -1285,6 +1293,12 @@ test("the person's order and folds draw at once: a folded group is its name, pul
   const head = folded.querySelector(".group-head");
   assert.ok(head.classList.contains("att-waiting"), "a session inside needs someone");
   assert.equal(head.querySelector(".group-count").textContent, "1");
+  assert.equal(folded.querySelector(".group-body"), null, "a folded group has no body");
+  assert.equal(folded.children[0], head, "its header is still its first child");
+  const open = p.$("tree").querySelector('.group[data-gid="w1"]');
+  assert.equal(open.children.map((c) => c.className).join(","), "group-head,group-body", "an open group: its header, then its body");
+  assert.equal(open.querySelector(".group-body .repo .row-name").textContent, "app");
+  assert.equal(open.querySelector(".side-sub"), null, "a group with no agents has no Agents heading");
   head.querySelector(".group-fold").click();
   await p.settle();
   assert.deepEqual(puts(p), [["/v1/me/sidebar/w2?user=Pat", { collapsed: false }]]);
