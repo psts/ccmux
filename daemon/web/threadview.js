@@ -349,12 +349,21 @@
     if (S.canDrag(g)) dragHandle(headEl, g, S);
     const count = alert && alert.count ? el("span", "group-count", String(alert.count)) : null;
     if (count) count.title = alert.text;
-    return add(headEl, fold, name, count, withMenu(headEl, "group", g, ctx));
+    return add(headEl, fold, name, el("span", "group-sum", groupSum(g)), count, withMenu(headEl, "group", g, ctx));
+  }
+
+  // groupSum is what a group holds, beside its name whether it is open or
+  // folded: "8 repos · 6 agents".
+  function groupSum(g) {
+    const n = (k, word) => k + " " + word + (k === 1 ? "" : "s");
+    const agents = (g.agents || []).length;
+    return n(g.repos.length, "repo") + (agents ? " · " + n(agents, "agent") : "");
   }
 
   function foldButton(g, S) {
     const shut = S.folded(g);
-    const b = el("button", "group-fold", shut ? "▸" : "▾");
+    const b = el("button", "group-fold");
+    b.innerHTML = chevron; // a fixed icon, no data in it; threads.css turns it down while open
     b.type = "button";
     b.title = shut ? "Show this group's repos" : "Fold this group into its name (its sessions keep running)";
     b.setAttribute("aria-expanded", String(!shut));

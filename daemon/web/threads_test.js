@@ -1293,10 +1293,14 @@ test("the person's order and folds draw at once: a folded group is its name, pul
   const head = folded.querySelector(".group-head");
   assert.ok(head.classList.contains("att-waiting"), "a session inside needs someone");
   assert.equal(head.querySelector(".group-count").textContent, "1");
+  assert.equal(head.querySelector(".group-sum").textContent, "1 repo", "folded, it still says what is inside");
+  assert.equal(head.querySelector(".group-fold").textContent, "", "the arrow is a drawn icon, not a text glyph");
+  assert.equal(head.querySelector(".group-fold").attrs["aria-expanded"], "false", "threads.css turns the arrow by this");
   assert.equal(folded.querySelector(".group-body"), null, "a folded group has no body");
   assert.equal(folded.children[0], head, "its header is still its first child");
   const open = p.$("tree").querySelector('.group[data-gid="w1"]');
   assert.equal(open.children.map((c) => c.className).join(","), "group-head,group-body", "an open group: its header, then its body");
+  assert.equal(open.querySelector(".group-head .group-sum").textContent, "1 repo", "open, it says so too");
   assert.equal(open.querySelector(".group-body .repo .row-name").textContent, "app");
   assert.equal(open.querySelector(".side-sub"), null, "a group with no agents has no Agents heading");
   head.querySelector(".group-fold").click();
