@@ -263,9 +263,28 @@ func TestSystemdNotAnsweringNeverStartsASecondRun(t *testing.T) {
 	r.units.stateErr = errors.New("failed to connect to bus")
 	r.units.state[r.m.Unit(job.ID)] = UnitState{}
 	r.units.mu.Unlock()
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+	r.m.Tend()
 	r.m.Tend()
 	if r.units.starts() != 1 || len(r.h.heard) != 0 || r.row(job.ID).Attempts != 1 {
 		t.Fatalf("no answer is not a dead job: %d starts, %v", r.units.starts(), r.h.heard)
+	}
+	if n := strings.Count(logged.String(), job.ID+": its state cannot be told (unit: failed to connect to bus"); n != 1 {
+		t.Fatalf("a job watched because systemd does not answer is said, once per wait (%d times):\n%s", n, logged.String())
+	}
+}
+
+func TestARunningJobIsWatchedInSilence(t *testing.T) {
+	r := newManagerRig(t)
+	job := r.start()
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+	r.m.Tend()
+	if strings.Contains(logged.String(), job.ID) || r.units.starts() != 1 {
+		t.Fatalf("a job that is running with no result yet says nothing: %q, %d starts", logged.String(), r.units.starts())
 	}
 }
 

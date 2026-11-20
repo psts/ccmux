@@ -122,6 +122,7 @@ func (m *Manager) tend(id string) {
 	res, resultErr := ReadResult(m.Paths.ResultFile(id))
 	v := decide(*job, unit, unitErr, resultErr, m.MaxAttempts)
 	if v.act == watch {
+		m.cannotTell(id, unitErr, resultErr)
 		return
 	}
 	if v.act == rerun {
@@ -172,6 +173,21 @@ func (m *Manager) rerun(job store.Job, unit UnitState) {
 // failure that lasts is said once per RetryAfter and not on every tick.
 func (m *Manager) retryLater(id string, cause error) {
 	m.putOff(id, fmt.Sprintf("jobs: %s has ended and was not settled (%v); trying again in %s", id, cause, m.RetryAfter))
+}
+
+// cannotTell says why a job is watched when it is watched because its state
+// could not be read (systemd not answering, a result file there and not
+// readable), once per wait. A job that is simply still running, with no
+// result yet, is watched in silence. Without this a job that systemd never
+// answers for again would read "running" for good, with nothing in the log.
+func (m *Manager) cannotTell(id string, unitErr, resultErr error) {
+	if resultErr != nil && errors.Is(resultErr, os.ErrNotExist) {
+		resultErr = nil
+	}
+	if unitErr == nil && resultErr == nil {
+		return
+	}
+	m.putOff(id, fmt.Sprintf("jobs: %s: its state cannot be told (unit: %v, result: %v); watching it, and looking again in %s", id, unitErr, resultErr, m.RetryAfter))
 }
 
 // putOff says why a job is not dealt with now and puts off the next look
