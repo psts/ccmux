@@ -430,8 +430,10 @@ func (m *Manager) devPane(wsID string) *model.Pane {
 // change broadcasts so lenses refetch). urlFor maps a bare name to its https
 // URL under the active serving mode; listeningFor probes a local port. A name
 // is Listening when one of the workspace's own panes holds its route port,
-// else when the probe answers there (Docker-published ports are root-owned
-// and invisible to the pane scan; a plain answer is the best we know). A
+// else when the probe answers there (a container a pane runs with `docker
+// run -p` is the pane's since listeners/docker.go, but one started another
+// way, compose say, is root-owned and invisible to the pane scan; a plain
+// answer is the best we know). A
 // held name (RoutePort 0) is never Listening — the probe would only be
 // hearing the other workspace's server.
 func (m *Manager) StampHostnameRuntime(urlFor func(name string) string, listeningFor func(port int) bool) {

@@ -52,8 +52,10 @@ func New() *Scanner { return NewAt("/proc") }
 func NewAt(root string) *Scanner { return &Scanner{root: root, panes: map[int]paneOf{}} }
 
 // Scan returns every listening TCP port held by a pane process, one row per
-// port, sorted by port. Sockets owned by processes outside any pane (system
-// daemons, Docker's root-owned proxies) are not reported.
+// port, sorted by port. A container a pane runs counts too (docker.go):
+// its published ports are the pane's, though Docker's root-owned proxy
+// holds the socket. Sockets of processes outside any pane (system daemons)
+// are not reported.
 func (s *Scanner) Scan() ([]Listener, error) {
 	byInode, err := s.listeningInodes()
 	if err != nil {
@@ -63,6 +65,10 @@ func (s *Scanner) Scan() ([]Listener, error) {
 	if err != nil {
 		return nil, err
 	}
+	listening := map[int]bool{}
+	for _, port := range byInode {
+		listening[port] = true
+	}
 	seen := map[int]bool{}
 	var out []Listener
 	for _, pid := range pids {
@@ -70,18 +76,27 @@ func (s *Scanner) Scan() ([]Listener, error) {
 		if paneID == "" {
 			continue
 		}
-		for _, inode := range s.socketInodes(pid) {
-			port, ok := byInode[inode]
-			if !ok || seen[port] {
-				continue
+		for _, l := range append(s.socketPorts(pid, paneID, byInode), s.containerPorts(pid, paneID, listening)...) {
+			if !seen[l.Port] {
+				seen[l.Port] = true
+				out = append(out, l)
 			}
-			seen[port] = true
-			out = append(out, Listener{Port: port, PID: pid, Process: s.comm(pid), PaneID: paneID})
 		}
 	}
 	s.forget(pids)
 	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
 	return out, nil
+}
+
+// socketPorts is the listening ports a pane process holds itself.
+func (s *Scanner) socketPorts(pid int, paneID string, byInode map[int]int) []Listener {
+	var out []Listener
+	for _, inode := range s.socketInodes(pid) {
+		if port, ok := byInode[inode]; ok {
+			out = append(out, Listener{Port: port, PID: pid, Process: s.comm(pid), PaneID: paneID})
+		}
+	}
+	return out
 }
 
 // listeningInodes maps socket inode → port for every LISTEN row in net/tcp

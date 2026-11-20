@@ -7,9 +7,14 @@
   "use strict";
 
   // startRows is what the dialog opens with: the saved names, else what
-  // the repo suggests, else one empty row to type in.
+  // the repo's sessions are serving right now (named after the repo), else
+  // what its files suggest, else one empty row to type in. What runs comes
+  // before the files: a Dockerfile's EXPOSE is the port inside the
+  // container, not the one on this machine (sanlabs-web, 2026-11-20).
   function startRows(ws, suggested) {
     let rows = ((ws && ws.hostnames) || []).map((h) => ({ name: h.name, port: String(h.port) }));
+    const live = (suggested && suggested.listening) || [];
+    if (!rows.length) rows = live.map((l, i) => ({ name: suggestLabel(ws && ws.name, i), port: String(l.port) }));
     if (!rows.length && suggested) rows = (suggested.suggestions || []).map((s) => ({ name: s.name, port: String(s.port) }));
     return rows.length ? rows : [{ name: "", port: "" }];
   }

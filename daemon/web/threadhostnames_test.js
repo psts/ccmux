@@ -8,6 +8,9 @@ test("the dialog opens with the saved names, else the suggested ones, else one e
   assert.deepEqual(H.startRows(ws, { suggestions: [{ name: "x", port: 1 }] }), [{ name: "app", port: "3000" }]);
   assert.deepEqual(H.startRows({}, { suggestions: [{ name: "web", port: 5173 }] }), [{ name: "web", port: "5173" }]);
   assert.deepEqual(H.startRows({}, null), [{ name: "", port: "" }]);
+  assert.deepEqual(H.startRows({ name: "sanlabs-web" }, { listening: [{ port: 8090 }], suggestions: [{ name: "sanlabs-web", port: 80 }] }), [{ name: "sanlabs-web", port: "8090" }],
+    "what runs comes before a Dockerfile's port, which is the container's");
+  assert.deepEqual(H.startRows(ws, { listening: [{ port: 8090 }] }), [{ name: "app", port: "3000" }], "saved names still come first");
 });
 
 test("saving skips empty rows and refuses a bad port or a missing name", () => {
