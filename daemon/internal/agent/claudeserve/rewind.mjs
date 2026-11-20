@@ -10,6 +10,7 @@
 // What a function here reads from the agent: busy, sid, cwd, rewound, q,
 // ensureQuery(), and sdk.getSessionMessages / sdk.forkSession.
 import { randomUUID } from "node:crypto";
+import { isTaskNotice } from "./richtranscript.mjs";
 
 // interrupted is the line Claude Code writes as a user message when a turn
 // is stopped (seen live 2026-11-20): its own, not a prompt.
@@ -29,6 +30,7 @@ export function refusal(text) {
 export function isPrompt(m) {
   if (!m || m.type !== "user" || !m.message || m.isMeta) return false;
   const c = m.message.content;
+  if (isTaskNotice(typeof c === "string" ? c : "", m)) return false; // Claude Code's, about a background task
   if (typeof c === "string") return c.trim() !== "" && !interrupted.test(c);
   if (!Array.isArray(c) || c.some((b) => b && b.type === "tool_result")) return false;
   const words = c.filter((b) => b && b.type === "text").map((b) => b.text || "").join("\n").trim();

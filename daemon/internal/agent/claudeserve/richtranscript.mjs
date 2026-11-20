@@ -20,10 +20,32 @@ const commandArgs = /<command-args>([\s\S]*?)<\/command-args>/;
 const localOutput = /^\s*<local-command-stdout>([\s\S]*)<\/local-command-stdout>\s*$/;
 const forTheModel = /^\s*<local-command-caveat>/;
 
+// What Claude Code writes into the conversation when a background task (a
+// shell command run in the background, an agent) ends: a user message only
+// in form, with origin {kind: "task-notification"} on disk. The page shows
+// its summary as Claude Code's note, never as the person's words
+// (sanlabs-web, 2026-11-20).
+const taskSummary = /<summary>([\s\S]*?)<\/summary>/;
+
+export function isTaskNotice(text, m) {
+  return (m && m.origin && m.origin.kind === "task-notification") || /^\s*<task-notification>/.test(String(text || ""));
+}
+
+// entities are the escapes Claude Code writes inside the summary (a
+// command's "&&" arrives as "&amp;&amp;"); &amp; goes last.
+const entities = [[/&lt;/g, "<"], [/&gt;/g, ">"], [/&quot;/g, '"'], [/&#39;/g, "'"], [/&amp;/g, "&"]];
+
+function taskNotice(text) {
+  const said = taskSummary.exec(text);
+  if (!said) return { text: "A background task ended.", mark: { synthetic: true } };
+  return { text: entities.reduce((t, [re, ch]) => t.replace(re, ch), said[1].trim()), mark: { synthetic: true } };
+}
+
 // promptView reads one user text: {text} as the page shows it, with mark
 // {synthetic: true} for one the human did not type; text null hides it.
 export function promptView(text, m) {
   if (forTheModel.test(text)) return { text: null };
+  if (isTaskNotice(text, m)) return taskNotice(text);
   const out = localOutput.exec(text);
   if (out) return { text: out[1].trim(), mark: { synthetic: true } };
   const name = commandName.exec(text);

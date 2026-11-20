@@ -25,6 +25,8 @@ test("a prompt is a person's words or picture, never a tool's result", () => {
   assert.equal(isPrompt(user("s", [{ type: "text", text: "[Request interrupted by user]" }])), false, "Claude Code's line about a stopped turn");
   assert.equal(isPrompt(user("s", "[Request interrupted by user for tool use]")), false);
   assert.equal(isPrompt({ ...user("m", "caveat"), isMeta: true }), false);
+  assert.equal(isPrompt(user("n", "<task-notification>\n<summary>done</summary>\n</task-notification>")), false, "a background task's end is Claude Code's");
+  assert.equal(isPrompt({ ...user("o", "done"), origin: { kind: "task-notification" } }), false);
 });
 
 test("the cut is just before the prompt, and every prompt from it on goes", () => {

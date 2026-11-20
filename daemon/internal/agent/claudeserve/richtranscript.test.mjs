@@ -98,6 +98,13 @@ test("a slash command reads as it was typed, its output as a note, and model-onl
   assert.deepEqual(promptView("<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>"), { text: "/context" });
   assert.deepEqual(promptView("<local-command-stdout>42 tokens</local-command-stdout>"), { text: "42 tokens", mark: { synthetic: true } });
   assert.deepEqual(promptView("<local-command-caveat>Caveat: the messages below…</local-command-caveat>"), { text: null });
+  const notice = "<task-notification>\n<task-id>bmjrt2r7n</task-id>\n<status>completed</status>\n<summary>Background command \"docker run --rm -p 8090:80 site\" completed (exit code 0)</summary>\n</task-notification>";
+  assert.deepEqual(promptView(notice), { text: "Background command \"docker run --rm -p 8090:80 site\" completed (exit code 0)", mark: { synthetic: true } },
+    "a background task's end is Claude Code's note, not the person's words");
+  assert.equal(promptView("<task-notification><summary>Background command \"make &gt;/dev/null &amp;&amp; run &amp;lt;x\" completed</summary></task-notification>").text,
+    "Background command \"make >/dev/null && run &lt;x\" completed", "Claude Code's escapes are read back once");
+  assert.deepEqual(promptView("anything", { origin: { kind: "task-notification" } }), { text: "A background task ended.", mark: { synthetic: true } }, "marked on disk, whatever the text");
+  assert.deepEqual(promptView("<task-notification> typed about by a person"), { text: "A background task ended.", mark: { synthetic: true } });
   assert.deepEqual(promptView("fix the bug"), { text: "fix the bug" });
   assert.deepEqual(promptView("Stop hook feedback:\nrun the gate", { isSynthetic: true }), { text: "Stop hook feedback:\nrun the gate", mark: { synthetic: true } });
 });
