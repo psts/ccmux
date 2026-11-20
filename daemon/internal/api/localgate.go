@@ -130,7 +130,7 @@ func (s *Server) gate(next http.Handler) http.Handler {
 			return
 		}
 		clean := path.Clean("/" + r.URL.Path)
-		if !strings.HasPrefix(clean, "/v1/") {
+		if isPlainPage(r, clean) {
 			s.servePage(w, r, clean, next)
 			return
 		}
@@ -144,6 +144,26 @@ func (s *Server) gate(next http.Handler) http.Handler {
 			"code":  "local-key",
 		})
 	})
+}
+
+// isPlainPage says whether a request may skip the API's gate as one of the
+// lens's own files: its path as it came holds no escape and no dot
+// segment, and is not under /v1. Anything else is judged as the API. The
+// mux unescapes each segment before it matches and does not decode "%2F"
+// into a separator, so a path that leaves /v1 once decoded and cleaned
+// ("/v1/me/sidebar/..%2F..%2Fx", or "/%76%31/..." for "/v1/...") still
+// runs a /v1 route: read by the decoded path, such a request passed as a
+// page with no token. The lens's files never need an escape or a dot
+// segment, so refusing them costs nothing real.
+func isPlainPage(r *http.Request, clean string) bool {
+	esc := r.URL.EscapedPath()
+	if strings.Contains(esc, "%") || clean == "/v1" || strings.HasPrefix(clean, "/v1/") {
+		return false
+	}
+	if len(esc) > 1 {
+		esc = strings.TrimSuffix(esc, "/")
+	}
+	return esc == clean
 }
 
 // gateLog says in the daemon's log what the gate refused, once a minute

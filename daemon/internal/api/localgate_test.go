@@ -303,6 +303,20 @@ func TestLocalGate_APathDressedAsAnOpenRouteIsNotOpen(t *testing.T) {
 		"//v1/sandbox",
 		"/v1/health/../sandbox",
 		"/v1/panes/p1%2Fagent-signal",
+		// Decoded and cleaned these leave /v1 and read as a page, while
+		// the mux, which matches the escaped path, runs a /v1 route.
+		"/v1/me/sidebar/..%2F..%2F..%2F..%2Fx",
+		"/v1/me/sidebar/..%2F..%2F..%2F..%2Fx.html",
+		"/v1/windows/w1/agents/..%2F..%2F..%2F..%2F",
+		"/v1/me/sidebar/%2E%2E%2F%2E%2E%2F%2E%2E",
+		// The mux unescapes each segment before it matches, so an escaped
+		// "v1" is still the API.
+		"/%76%31/windows/w1/agents/..%2F..%2F..%2F..%2F",
+		"/%76%31/me/sidebar/..%2F..%2F..%2F..%2Fx",
+		"/%76%31/sandbox",
+		"/v%31/me/sidebar/..%2F..%2F..%2F..%2Fx.html",
+		"/%2E%2E/v1/sandbox",
+		"/x/../v1/sandbox",
 	} {
 		for _, method := range []string{"GET", "POST", "PUT"} {
 			req := httptest.NewRequest(method, "http://127.0.0.1:7900"+target, strings.NewReader("{}"))
