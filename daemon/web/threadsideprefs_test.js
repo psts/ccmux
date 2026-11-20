@@ -73,4 +73,8 @@ test("a folded group's alert: waiting beats done, threads and needy tasks count"
   assert.deepEqual(P.alert(g("d", "DASHA", [repo("done"), repo("running", "waiting")])), { cls: "waiting", count: 1, text: "1 needs you" });
   assert.deepEqual(P.alert(g("d", "DASHA", [repo("waiting")]), 2), { cls: "waiting", count: 3, text: "3 need you" });
   assert.deepEqual(P.alert(g("d", "DASHA", []), 1), { cls: "waiting", count: 1, text: "1 needs you" });
+  const withAgents = (agents) => ({ ...g("d", "DASHA", [repo("done")]), agents });
+  assert.deepEqual(P.alert(withAgents([{ session: { id: "a" }, state: "waiting" }])), { cls: "waiting", count: 1, text: "1 needs you" }, "an agent session that needs you beats a finished repo");
+  assert.deepEqual(P.alert(withAgents([{ session: { id: "a" }, state: "done" }])), { cls: "done", count: 2, text: "2 done, not seen" });
+  assert.deepEqual(P.alert(withAgents([{ state: "waiting" }])), { cls: "done", count: 1, text: "1 done, not seen" }, "an agent in a terminal does not pulse, so it does not count");
 });

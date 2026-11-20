@@ -99,14 +99,15 @@
   // "waiting" (orange) when anything needs someone, else "done" (green)
   // when anything finished unseen, with how many; the same states that
   // make a row pulse (threadview attClass). taskAlerts are the group's
-  // queued tasks that need a person, and count as waiting.
+  // queued tasks that need a person, and count as waiting. An agent counts
+  // when it runs as a session, the one kind of agent row that pulses.
   function alert(g, taskAlerts) {
     let waiting = taskAlerts || 0, done = 0;
-    for (const r of (g && g.repos) || []) {
-      for (const s of [r.state, ...(r.threads || []).map((t) => t.state)]) {
-        if (s === "waiting") waiting++;
-        else if (s === "done") done++;
-      }
+    const agents = ((g && g.agents) || []).filter((a) => a.session).map((a) => a.state);
+    const states = ((g && g.repos) || []).flatMap((r) => [r.state, ...(r.threads || []).map((t) => t.state)]);
+    for (const s of [...states, ...agents]) {
+      if (s === "waiting") waiting++;
+      else if (s === "done") done++;
     }
     if (waiting) return { cls: "waiting", count: waiting, text: `${waiting} need${waiting === 1 ? "s" : ""} you` };
     if (done) return { cls: "done", count: done, text: `${done} done, not seen` };

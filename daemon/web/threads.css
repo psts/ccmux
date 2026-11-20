@@ -97,7 +97,7 @@ a:hover { color: var(--blue-d); }
    done pulses green until looked at: the lens's rule (style.css .ws.att-*). */
 .row.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
 .row.att-waiting .row-name { color: var(--wait); }
-.row.att-done { background: rgba(21, 128, 61, .10); box-shadow: inset 3px 0 0 var(--run); }
+.row.att-done { background: rgba(21, 128, 61, .10); }
 @media (prefers-reduced-motion: no-preference) {
   .row.att-waiting { animation: row-pulse-wait 1.6s ease-in-out infinite; }
   .row.att-done { animation: row-pulse-done 1.6s ease-in-out infinite; }
@@ -473,7 +473,7 @@ span.cap-kind { font-size: 11px; font-weight: 600; color: var(--fg2); background
 .group-head.att-waiting, .group-head.att-done { border-radius: 8px; padding: 2px 0; }
 .group-head.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
 .group-head.att-waiting .group-name { color: var(--wait); }
-.group-head.att-done { background: rgba(21, 128, 61, .10); box-shadow: inset 3px 0 0 var(--run); }
+.group-head.att-done { background: rgba(21, 128, 61, .10); }
 @media (prefers-reduced-motion: no-preference) {
   .group-head.att-waiting { animation: row-pulse-wait 1.6s ease-in-out infinite; }
   .group-head.att-done { animation: row-pulse-done 1.6s ease-in-out infinite; }
