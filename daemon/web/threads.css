@@ -195,6 +195,10 @@ a:hover { color: var(--blue-d); }
 .b-user { align-self: flex-end; max-width: 78%; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
 .bubble { background: var(--user); color: #fff; padding: 10px 14px; border-radius: 14px 14px 4px 14px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .b-user.pending .bubble { opacity: .7; }
+.b-user .b-edit { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 2px 6px; border-radius: 5px; opacity: 0; }
+.b-user:hover .b-edit, .b-user .b-edit:focus-visible { opacity: 1; }
+.b-user .b-edit:hover { background: var(--soft); color: var(--fg); }
+@media (hover: none) { .b-user .b-edit { opacity: .8; } }
 .b-user .sending { font-size: 11.5px; color: var(--muted); }
 .b-user .sending.failed { color: var(--red); }
 .b-user .sending .link { background: none; border: 0; padding: 0 0 0 8px; font: inherit; color: var(--fg); text-decoration: underline; cursor: pointer; }

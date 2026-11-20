@@ -15,6 +15,7 @@ import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
 import { fromInit, fromInitialization, commandList, resultOf, contextOf } from "./sessionself.mjs";
 import { shellBox } from "./shellbox.mjs";
+import { rewind } from "./rewind.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
 const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
@@ -111,6 +112,7 @@ export class Agent {
     this.busy = false;
     this.turnLive = false; // a runner's turn is producing output (between its first reply and its result)
     this.interrupting = false;
+    this.rewound = false; // gone back to an earlier prompt (rewind.mjs): prompts wait for the next start
     this.abort = new AbortController();
     this.daemon = deps.env.CCMUX_DAEMON_URL;
     this.pane = deps.env.CCMUX_PANE_ID;
@@ -240,6 +242,9 @@ export class Agent {
     if (!o.socket) opts.permissionMode = "default";
     else if (o.permissionMode) opts.permissionMode = o.permissionMode;
     if (o.effort) opts.effort = o.effort;
+    // A runner keeps a checkpoint of every file Claude edits, so going
+    // back to an earlier prompt can put the files back (rewind.mjs).
+    if (this.turns) opts.enableFileCheckpointing = true;
     if (this.resume) opts.resume = this.sid;
     else opts.sessionId = this.sid;
     if (o.pluginDirs.length) opts.plugins = o.pluginDirs.map((path) => ({ type: "local", path }));
@@ -553,6 +558,7 @@ export class Agent {
   // in its media folder (by the daemon, at upload): Claude gets them as
   // image blocks before the text, the transcript as file parts.
   prompt(text, id = "", images = []) {
+    if (this.rewound) return false;
     if (id && (this.state.isDelivered(id) || this.queued.has(id))) return false;
     const uuid = id || randomUUID();
     this.queued.add(uuid);
@@ -619,6 +625,13 @@ export class Agent {
   // delivered is the subset of ids Claude has.
   delivered(ids) {
     return (ids || []).filter((id) => this.state.isDelivered(id));
+  }
+
+  // rewind looks at (dry) or goes back to the earlier prompt `to`; see
+  // rewind.mjs. Only a runner goes back: the daemon starts it again after.
+  rewind(to, dry) {
+    if (!this.turns) return Promise.reject(new Error("only a session runner goes back"));
+    return rewind(this, to, dry);
   }
 
   // interrupt stops the running turn: pending cards are answered as denied

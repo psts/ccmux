@@ -64,6 +64,15 @@
     groupItems: (g) => [...Side.menuItems(g), ...Groups.groupItems(g)], repoItems: (r) => [...hostItems(r), ...Groups.repoItems(r)],
   });
 
+  // "Edit" on a sent message (threadedit.js): back to just before it, its
+  // words in the box again.
+  const Edit = window.ccmuxThreadEdit.create({
+    call, busy: () => !!S.stream.busy, confirm: (q) => confirm(q), wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+    fill: (text) => { const input = $("input"); input.value = text; input.focus(); },
+    done: (text) => { S.said = text; S.error = ""; drawAll(); },
+    fail: (text) => { S.error = text; drawAll(); },
+  });
+
   // An agent's earlier conversations (threadpast.js): one picked takes the
   // conversation's place, read only, until Back to now or another pick.
   const Past = window.ccmuxThreadPast.create({
@@ -489,6 +498,7 @@
       answer: answerCard,
       retry: retryPending,
       drop: dropPending,
+      edit: S.sel.kind === "session" && !Past.on() ? (b) => Edit.edit(S.sel.id, b) : null,
     };
   };
 
@@ -726,7 +736,7 @@
     const images = S.images;
     S.pending.push({ key: ++S.pendingKey, sel: S.sel, where: R.threadHref(S.sel), state: "new", id: "", error: "", text, urls: images.map((img) => img.url), images });
     input.value = "";
-    Object.assign(S, { images: [], menu: false, error: "", jump: true });
+    Object.assign(S, { images: [], menu: false, error: "", said: "", jump: true });
     drawAll();
     pump();
   }

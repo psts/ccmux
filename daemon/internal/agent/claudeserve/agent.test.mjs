@@ -541,6 +541,20 @@ test("a runner loads the user's own settings, keeps their connectors and runs th
   assert.equal(o.effort, undefined, "and their settings choose the effort");
 });
 
+test("a runner keeps file checkpoints, and once it has gone back it takes no prompt until it starts again", async () => {
+  const { agent, sdk } = runnerAgent();
+  assert.equal(agent.prompt("hi", "p1"), true);
+  assert.equal(sdk.queries[0].options.enableFileCheckpointing, true);
+  agent.rewound = true;
+  assert.equal(agent.prompt("more", "p2"), false, "the daemon keeps it for the fork's start");
+  await tick();
+  assert.deepEqual(sdk.queries[0].sent.map((m) => m.message.content), ["hi"]);
+  const pane = makeAgent();
+  pane.agent.prompt("hi");
+  assert.equal(pane.sdk.queries[0].options.enableFileCheckpointing, undefined, "an agent pane keeps none");
+  await assert.rejects(pane.agent.rewind("x", true), /only a session runner/);
+});
+
 test("a task's builder runs in the mode and at the effort its row names", () => {
   const { agent, sdk } = runnerAgent({ permissionMode: "auto", effort: "medium", model: "opus" });
   agent.prompt("build it", "p1");

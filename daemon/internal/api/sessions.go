@@ -41,6 +41,7 @@ type runnerSupervisor interface {
 	Sleep(sessionID string, fresh bool) error
 	SetFresh(sessionID string, fresh bool) error
 	ReplyCard(ctx context.Context, sessionID string, r runner.CardReply) (bool, error)
+	Rewind(ctx context.Context, sessionID, to string, dry bool) (runner.Rewind, error)
 }
 
 // runnerRows is what the routes read.
@@ -123,6 +124,7 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/sessions/{id}/conversations/{conv}", s.pastConversation)
 	mux.HandleFunc("POST /v1/sessions/{id}/cards/{card}", s.answerRunnerCard)
 	mux.HandleFunc("POST /v1/sessions/{id}/abort", s.abortRunnerSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/rewind", s.rewindRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/images", s.uploadRunnerImage)
 	mux.HandleFunc("GET /v1/sessions/{id}/media/{name}", s.runnerMedia)
 }

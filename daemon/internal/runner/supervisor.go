@@ -689,22 +689,28 @@ func (s *Supervisor) restartStale(sess store.RunnerSession, h Hello) error {
 // runner reports it in the transcript, so one sent but lost in a crash is
 // sent again, and the runner drops a resend it already has.
 func (s *Supervisor) flush(ctx context.Context, c *Client, sessionID string) error {
-	open, err := s.st.UndeliveredPrompts(sessionID)
+	open, have, err := s.markHeld(ctx, c, sessionID)
 	if err != nil || len(open) == 0 {
 		return err
+	}
+	return s.sendMissing(ctx, c, open, have)
+}
+
+// markHeld marks the inbox prompts the runner already has as delivered,
+// and returns the ones that were open and which of them it had.
+func (s *Supervisor) markHeld(ctx context.Context, c *Client, sessionID string) (open []store.InboxPrompt, have []string, err error) {
+	open, err = s.st.UndeliveredPrompts(sessionID)
+	if err != nil || len(open) == 0 {
+		return open, nil, err
 	}
 	ids := make([]string, len(open))
 	for i, p := range open {
 		ids[i] = p.ID
 	}
-	have, err := c.Delivered(ctx, ids)
-	if err != nil {
-		return err
+	if have, err = c.Delivered(ctx, ids); err != nil {
+		return open, nil, err
 	}
-	if err := s.st.MarkPromptsDelivered(have, s.millis()); err != nil {
-		return err
-	}
-	return s.sendMissing(ctx, c, open, have)
+	return open, have, s.st.MarkPromptsDelivered(have, s.millis())
 }
 
 func (s *Supervisor) sendMissing(ctx context.Context, c *Client, open []store.InboxPrompt, have []string) error {

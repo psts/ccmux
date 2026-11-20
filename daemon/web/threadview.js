@@ -115,9 +115,20 @@
     (b.urls || []).forEach((u, i) => add(pics, localThumb(u, `Pasted image · ${i + 1} of ${b.urls.length}`)));
     if (pics.childElementCount) add(box, pics);
     if (b.text) add(box, el("div", "bubble", b.text));
+    // Edit goes back to this message (threadedit.js): one that has landed,
+    // in a conversation that is not an earlier one read from disk.
+    if (!b.pending && ctx.edit) add(box, editButton(b, ctx));
     if (b.pending === "failed") add(box, failedLine(b, ctx));
     else if (b.pending) add(box, el("div", "sending", pendingSays[b.pending]));
     return box;
+  }
+
+  function editButton(b, ctx) {
+    const x = el("button", "b-edit", "Edit");
+    x.type = "button";
+    x.title = "Go back to this message and edit it";
+    x.onclick = () => ctx.edit(b);
+    return x;
   }
 
   function claude(b, ctx) {

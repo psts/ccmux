@@ -198,3 +198,16 @@ test("the snapshot route, and the event stream naming its process", async () => 
     assert.match(first, /"type":"server.connected","properties":\{"gap":false,"seq":1,"boot":"boot-7"\}/);
   });
 });
+
+test("the rewind route: a look or a going back, and a refusal is a 409 in the agent's words", async () => {
+  await withServer(async (agent, call) => {
+    const asked = [];
+    agent.rewind = async (to, dry) => { asked.push([to, dry]); if (to === "busy") throw new Error("Claude is working; stop the turn first"); return { dropped: 1, conversation: dry ? undefined : "f1" }; };
+    assert.deepEqual((await call("POST", "/rewind", { to: "p2", dry: true })).body, { dropped: 1 });
+    assert.deepEqual((await call("POST", "/rewind", { to: "p2" })).body, { dropped: 1, conversation: "f1" });
+    const busy = await call("POST", "/rewind", { to: "busy" });
+    assert.deepEqual([busy.status, busy.body.error], [409, "Claude is working; stop the turn first"]);
+    assert.equal((await call("POST", "/rewind", {})).status, 400);
+    assert.deepEqual(asked, [["p2", true], ["p2", false], ["busy", false]]);
+  });
+});

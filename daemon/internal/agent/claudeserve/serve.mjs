@@ -22,7 +22,7 @@
 import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { query, listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import { query, listSessions, getSessionMessages, forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { Transcript, sessionInfo } from "./translate.mjs";
 import { createAgentServer } from "./routes.mjs";
 import { Agent } from "./agent.mjs";
@@ -84,7 +84,7 @@ function listen(server, o, ready) {
 async function cmdServe(o) {
   if (!o.port && !o.socket) throw new Error("--port or --socket is required");
   const agent = new Agent(o, {
-    query, listSessions, getSessionMessages, sdkVersion: sdkVersion(),
+    query, listSessions, getSessionMessages, forkSession, sdkVersion: sdkVersion(),
     writeFile: (p, t) => writeFileSync(p, t, { mode: 0o600 }), rename: renameSync,
     exit: (code) => process.exit(code),
     cwd: process.cwd(), env: process.env, readFile: readFileSync, fetch: globalThis.fetch, mediaFS,

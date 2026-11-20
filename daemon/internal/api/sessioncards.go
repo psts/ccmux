@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/runner"
@@ -81,4 +82,41 @@ func (s *Server) abortRunnerSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// rewindRunnerSession: POST /v1/sessions/{id}/rewind with {to, dry} goes
+// back to the earlier prompt `to` (the thread page's "Edit"): the files
+// Claude changed since are put back where they can be, the conversation is
+// cut to just before the prompt, and the session starts again there. With
+// dry it only says what that would do. 200 with the runner's answer; 409
+// in the runner's words when it said no (Claude is working, not a prompt,
+// asleep); 502 when it did not answer.
+func (s *Server) rewindRunnerSession(w http.ResponseWriter, r *http.Request) {
+	if !s.runnersReady(w) {
+		return
+	}
+	var in struct {
+		To  string `json:"to"`
+		Dry bool   `json:"dry"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.To == "" {
+		writeError(w, http.StatusBadRequest, "to: the prompt to go back to is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), runnerActionWithin)
+	defer cancel()
+	out, err := s.runners.Rewind(ctx, r.PathValue("id"), in.To, in.Dry)
+	switch {
+	case errors.Is(err, runner.ErrRewindRefused):
+		writeError(w, http.StatusConflict, strings.TrimPrefix(err.Error(), runner.ErrRewindRefused.Error()+": "))
+	case errors.Is(err, store.ErrNoSession):
+		writeError(w, http.StatusNotFound, err.Error())
+	case err != nil:
+		writeError(w, http.StatusBadGateway, "going back failed: "+err.Error())
+	default:
+		writeJSON(w, http.StatusOK, out)
+	}
 }

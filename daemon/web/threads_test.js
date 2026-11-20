@@ -1583,3 +1583,21 @@ test("Hostnames says why a save was refused and stays open", async () => {
   assert.equal(sheet.querySelector(".hn-error").textContent, "Saving failed: app is held by blog");
   assert.ok(!p.$("hosts-overlay").classList.contains("hidden"));
 });
+
+// --- Edit: going back to a sent message ---
+
+test("Edit on a sent message goes back to it, after a yes, and puts its words back in the box", async () => {
+  const asked = [];
+  const p = await boot({ sessions: [lead], search: "?s=lead1", confirm: (q) => { asked.push(q); return true; }, routes: [
+    [/^POST \/v1\/sessions\/lead1\/rewind$/, (body) => (body.dry ? { dropped: 1, files: { canRewind: true, files: ["/p/app/a.txt"] } } : { dropped: 1, files: { canRewind: true }, conversation: "f1" })],
+  ] });
+  await p.frame(snapshot());
+  const edit = p.$("blocks").querySelector(".b-user .b-edit");
+  assert.ok(edit, "a sent message has Edit");
+  edit.click();
+  await p.settle();
+  assert.deepEqual(p.book.calls.filter((c) => c.url.endsWith("/rewind")).map((c) => c.body), [{ to: "u1", dry: true }, { to: "u1" }]);
+  assert.match(asked[0], /put back \(1\): a\.txt/);
+  assert.equal(p.$("input").value, "hello there");
+  assert.match(p.$("notice-bar").textContent, /Went back/);
+});

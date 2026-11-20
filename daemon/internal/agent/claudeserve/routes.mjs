@@ -61,6 +61,17 @@ export const handlers = {
     if (!body.id) return [400, { error: "a prompt needs its inbox id" }];
     return [200, { sent: a.prompt(text, String(body.id), images) }];
   },
+  // Going back to an earlier prompt (rewind.mjs): dry says what it would
+  // do; otherwise it is done, and the answer names the conversation the
+  // session starts again on.
+  "POST rewind": async (a, id, body) => {
+    if (!body.to) return [400, { error: "rewind needs the prompt to go back to" }];
+    try {
+      return [200, await a.rewind(String(body.to), !!body.dry)];
+    } catch (err) {
+      return [409, { error: err && err.message ? err.message : String(err) }];
+    }
+  },
   "POST delivered": (a, id, body) => [200, { delivered: a.delivered(Array.isArray(body.ids) ? body.ids : []) }],
   // The daemon's PushPrompt (first message, bus messages) speaks opencode's
   // TUI pair: append text to the prompt box, then submit it.

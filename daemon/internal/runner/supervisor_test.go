@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -116,8 +117,33 @@ type fakeRunner struct {
 	transcript map[string]bool     // ids Claude has
 	cards      []map[string]string
 	questions  []map[string]any
+	rewinds    []string // "<to> <dry>" of each rewind asked
+	rewindTo   Rewind   // what a rewind answers; a 409 when rewindNo is set
+	rewindNo   string
 	replies    []string // "<path> <body>" of each card reply, in order
 	srv        *http.Server
+}
+
+// rewind records a going back and answers what the test set.
+func (r *fakeRunner) rewind(w http.ResponseWriter, req *http.Request) {
+	var in struct {
+		To  string
+		Dry bool
+	}
+	json.NewDecoder(req.Body).Decode(&in)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rewinds = append(r.rewinds, fmt.Sprintf("%s %v", in.To, in.Dry))
+	if r.rewindNo != "" {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": r.rewindNo})
+		return
+	}
+	out := r.rewindTo
+	if in.Dry {
+		out.Conversation = ""
+	}
+	json.NewEncoder(w).Encode(out)
 }
 
 // reply records a card reply and answers 200.
@@ -174,6 +200,7 @@ func (r *fakeRunner) handler() http.Handler {
 		defer r.mu.Unlock()
 		json.NewEncoder(w).Encode(append([]map[string]any{}, r.questions...))
 	})
+	mux.HandleFunc("POST /rewind", r.rewind)
 	mux.HandleFunc("POST /permission/{id}/reply", r.reply)
 	mux.HandleFunc("POST /question/{id}/reply", r.reply)
 	return mux

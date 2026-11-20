@@ -28,6 +28,7 @@ type fakeRunners struct {
 	wanted   []string
 	models   []string
 	restarts int
+	rewinds  []string // "session to dry" of each going back
 	// livenessErr, when set, is what asking where a session is fails with.
 	livenessErr error
 }
@@ -73,6 +74,20 @@ func (f *fakeRunners) Liveness(id string) (string, error) {
 		return store.SessionRunning, nil
 	}
 	return store.SessionDone, nil
+}
+
+func (f *fakeRunners) Rewind(_ context.Context, id, to string, dry bool) (runner.Rewind, error) {
+	f.rewinds = append(f.rewinds, fmt.Sprintf("%s %s %v", id, to, dry))
+	switch to {
+	case "busy":
+		return runner.Rewind{}, fmt.Errorf("%w: Claude is working; stop the turn first", runner.ErrRewindRefused)
+	case "down":
+		return runner.Rewind{}, errors.New("dial unix: no such file")
+	}
+	if id != "s1" {
+		return runner.Rewind{}, store.ErrNoSession
+	}
+	return runner.Rewind{Dropped: 1, Conversation: map[bool]string{false: "fork-1"}[dry]}, nil
 }
 
 func (f *fakeRunners) ReplyCard(_ context.Context, id string, r runner.CardReply) (bool, error) {
@@ -286,5 +301,33 @@ func TestAStateThatCouldNotBeReadIsServedAsUnknown(t *testing.T) {
 		if strings.Contains(w.Body.String(), guess) {
 			t.Fatalf("served a guess %s: %s", guess, w.Body)
 		}
+	}
+}
+
+func TestRewindRoute(t *testing.T) {
+	s, f, _ := sessionsServer(t, t.TempDir())
+	if w := callSessions(t, s, "POST", "/v1/sessions/s1/rewind", `{"to":"p2","dry":true}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"dropped":1`) || strings.Contains(w.Body.String(), "fork-1") {
+		t.Fatalf("a look: %d %s", w.Code, w.Body)
+	}
+	if w := callSessions(t, s, "POST", "/v1/sessions/s1/rewind", `{"to":"p2"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"conversation":"fork-1"`) {
+		t.Fatalf("going back: %d %s", w.Code, w.Body)
+	}
+	cases := []struct {
+		path, body string
+		code       int
+		says       string
+	}{
+		{"/v1/sessions/s1/rewind", `{"to":"busy"}`, http.StatusConflict, `"Claude is working; stop the turn first"`},
+		{"/v1/sessions/s1/rewind", `{"to":"down"}`, http.StatusBadGateway, "going back failed"},
+		{"/v1/sessions/nope/rewind", `{"to":"p1"}`, http.StatusNotFound, ""},
+		{"/v1/sessions/s1/rewind", `{}`, http.StatusBadRequest, "required"},
+	}
+	for _, c := range cases {
+		if w := callSessions(t, s, "POST", c.path, c.body); w.Code != c.code || !strings.Contains(w.Body.String(), c.says) {
+			t.Errorf("%s %s: want %d %q, got %d %s", c.path, c.body, c.code, c.says, w.Code, w.Body)
+		}
+	}
+	if len(f.rewinds) != 5 || f.rewinds[1] != "s1 p2 false" {
+		t.Fatalf("what the supervisor was asked: %v", f.rewinds)
 	}
 }
