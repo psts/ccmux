@@ -216,6 +216,7 @@ test("a repo with no lead opens as a draft, and its first message makes the lead
   assert.equal(p.book.pushed.pop(), "/threads.html?ws=ws1&new=lead");
   assert.equal(p.posts().length, 0, "looking at a repo starts nothing");
   assert.equal(p.$("title").textContent, "app");
+  assert.equal(p.$("new-thread").classList.contains("hidden"), false, "a repo's header offers New thread");
   p.$("input").value = "What landed since yesterday?";
   p.$("composer").onsubmit({ preventDefault() {} });
   await p.settle();
@@ -492,7 +493,7 @@ test("an agent that runs as a session opens its conversation here, and shows no 
   assert.match(p.$("meta").textContent, /ChartLabs · role agent · base 1\.2\.0/);
   assert.equal(p.$("model-box").classList.contains("hidden"), true, "its base names its model");
   assert.equal(p.$("rename").classList.contains("hidden"), true, "and its name");
-  assert.equal(p.$("new-thread").disabled, true, "an agent's home holds no threads");
+  assert.equal(p.$("new-thread").classList.contains("hidden"), true, "an agent's home holds no threads: no New thread in its header");
   assert.equal(p.$("composer").classList.contains("hidden"), false, "a message wakes it");
   assert.match(p.doc.querySelector("#composer label").textContent, /Message this agent/);
 });

@@ -282,7 +282,7 @@
     const sess = session();
     const ws = workspace();
     if (!Side.dragging()) drawTree(sess, ws);
-    $("new-thread").disabled = !ws || !!ws.agent; // an agent's home holds its one session, no threads
+    show("new-thread", !!ws && !ws.agent); // in the header of a repo; an agent's home holds its one session, no threads
     const info = S.stream.info || {};
     $("side-version").textContent = info.claudeCode || S.stream.sdk ? `Claude Code ${info.claudeCode || "?"} · SDK ${S.stream.sdk || "?"}` : "";
   }

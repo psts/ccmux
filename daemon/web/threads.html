@@ -6,6 +6,7 @@
   <title>ccmux threads</title>
   <meta name="theme-color" content="#EDEDE8">
   <link rel="icon" href="/icons/icon-192.png">
+  <script src="/threadtheme.js"></script>
   <link rel="stylesheet" href="/threads.css">
   <link rel="stylesheet" href="/settings.css">
   <link rel="stylesheet" href="/tasks.css">
@@ -19,11 +20,17 @@
     <nav id="side" aria-label="Threads">
       <div class="side-head">
         <a class="logo" href="/" title="Back to the terminal lens">ccmux</a>
-        <button id="new-thread" type="button" title="A new thread in the repo you are in">New thread</button>
       </div>
       <div id="tree"></div>
       <div class="side-foot">
         <button id="open-settings" class="plain small" type="button" title="Settings">Settings</button>
+        <label class="theme-pick">Theme
+          <select id="theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
         <span id="side-version"></span>
       </div>
     </nav>
@@ -40,6 +47,7 @@
         <label id="model-box" class="model hidden">Model
           <select id="model"></select>
         </label>
+        <button id="new-thread" class="plain hidden" type="button" title="A new thread in this repo: its own session, and its own copy of the repo once it changes something">New thread</button>
         <button id="restart-later" class="apply hidden" type="button"></button>
         <button id="stop" class="plain hidden" type="button" title="Stop the running turn">Stop</button>
         <details id="more" class="more hidden">
