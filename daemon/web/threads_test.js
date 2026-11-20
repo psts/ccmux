@@ -812,7 +812,7 @@ test("a right-click on a repo opens its menu, and Skills and plugins its panel; 
   p.$("tree").querySelector(".row").oncontextmenu({ preventDefault: () => { prevented = true; }, clientX: 40, clientY: 80 });
   assert.equal(prevented, true, "the browser's own menu stays shut");
   assert.equal(p.$("caps-menu").classList.contains("hidden"), false);
-  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Move to group›", "No group (Other)", "New group…"], "a repo in the only group can leave it or make a new one");
+  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Hostnames…", "Move to group›", "No group (Other)", "New group…"], "a repo in the only group can leave it or make a new one");
   p.$("caps-menu").querySelector(".ctx-item").click();
   await p.settle();
   assert.equal(p.$("caps-menu").classList.contains("hidden"), true);
@@ -1368,7 +1368,7 @@ test("a repo moves to another group from its menu, after the person says yes, an
   const p = await boot({ ...twoGroups(), confirm: (q) => { asked.push(q); return answer; },
     routes: [[/^PUT \/v1\/workspaces\/ws1\/group$/, (body) => { moved.push(body); return {}; }]] });
   const box = menuOf(p, "app");
-  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Move to group›", "dasha", "No group (Other)", "New group…"]);
+  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Hostnames…", "Move to group›", "dasha", "No group (Other)", "New group…"]);
   const sub = box.querySelector(".ctx-sub");
   assert.ok(sub.classList.contains("hidden"), "its groups wait behind the arrow");
   itemNamed(box, "Move to group›").click();
@@ -1526,4 +1526,60 @@ test("an agent's Earlier lists its conversations, shows one read only, and Back 
 test("a repo's lead has no Earlier", async () => {
   const p = await boot({ sessions: [lead], search: "?s=lead1" });
   assert.equal(p.$("past").classList.contains("hidden"), true);
+});
+
+// --- a repo's Hostnames ---
+
+test("Hostnames opens from a repo's menu with what listens, maps a port, saves the names and reads the lists again", async () => {
+  const saved = [];
+  const ws = { ...repo, hostnames: [{ name: "app", port: 3000, url: "https://app.example.invalid", listening: true }] };
+  const p = await boot({ workspaces: [ws], routes: [
+    [/^GET \/v1\/workspaces\/ws1\/port-suggestions$/, () => ({ listening: [{ port: 3000, process: "node" }, { port: 5173, process: "vite" }] })],
+    [/^PUT \/v1\/workspaces\/ws1\/hostnames$/, (body) => { saved.push(body); return {}; }],
+  ] });
+  const box = menuOf(p, "app");
+  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent).slice(0, 3), ["Skills and plugins…", "Hostnames…", "● app : 3000"], "a saved name opens from the menu");
+  itemNamed(box, "● app : 3000").click();
+  assert.deepEqual(p.book.opened.at(-1), ["https://app.example.invalid", "_blank"]);
+  menuOf(p, "app");
+  itemNamed(box, "Hostnames…").click();
+  await p.settle();
+  const sheet = p.$("hosts-sheet");
+  assert.ok(!p.$("hosts-overlay").classList.contains("hidden"));
+  assert.equal(sheet.querySelector(".sheet-title").textContent, "app · hostnames");
+  const live = () => sheet.querySelectorAll(".hn-live-row").map((li) => li.children.map((c) => c.textContent));
+  assert.deepEqual(live(), [["3000", "node", "mapped"], ["5173", "vite", "map"]]);
+  sheet.querySelectorAll(".hn-live-row")[1].querySelector(".hn-link").click();
+  assert.deepEqual(sheet.querySelectorAll(".hn-row").map((r) => [r.querySelector(".hn-name").value, r.querySelector(".hn-port").value]), [["app", "3000"], ["app-2", "5173"]]);
+  const reads = p.book.calls.filter((c) => c.url === "/v1/workspaces").length;
+  sheet.querySelector(".hn-actions .primary").click();
+  await p.settle();
+  assert.deepEqual(saved, [{ hostnames: [{ name: "app", port: 3000 }, { name: "app-2", port: 5173 }] }], "no devCommand: a save here keeps the saved one");
+  assert.ok(p.$("hosts-overlay").classList.contains("hidden"));
+  assert.ok(p.book.calls.filter((c) => c.url === "/v1/workspaces").length > reads, "the lists are read again");
+});
+
+test("Hostnames says why a save was refused and stays open", async () => {
+  const p = await boot({ routes: [
+    [/^GET \/v1\/workspaces\/ws1\/port-suggestions$/, () => ({ fail: 500, error: "down" })],
+    [/^PUT \/v1\/workspaces\/ws1\/hostnames$/, () => ({ fail: 409, error: "app is held by blog" })],
+  ] });
+  itemNamed(menuOf(p, "app"), "Hostnames…").click();
+  await p.settle();
+  const sheet = p.$("hosts-sheet");
+  assert.match(sheet.querySelector(".hn-note").textContent, /Could not read/, "a failed read is not 'nothing listens'");
+  const save = () => sheet.querySelector(".hn-actions .primary").click();
+  const row = sheet.querySelector(".hn-row");
+  row.querySelector(".hn-name").value = "app";
+  row.querySelector(".hn-name").oninput();
+  row.querySelector(".hn-port").value = "70000";
+  row.querySelector(".hn-port").oninput();
+  save();
+  assert.match(sheet.querySelector(".hn-error").textContent, /1 to 65535/);
+  row.querySelector(".hn-port").value = "80";
+  row.querySelector(".hn-port").oninput();
+  save();
+  await p.settle();
+  assert.equal(sheet.querySelector(".hn-error").textContent, "Saving failed: app is held by blog");
+  assert.ok(!p.$("hosts-overlay").classList.contains("hidden"));
 });

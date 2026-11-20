@@ -51,9 +51,17 @@
     fail: (text) => { S.error = text; drawAll(); }, addRepo: (group) => NewRepo.open(group),
     openTasks: (win, r) => Tasks.sidebar.repoTasks({ id: win.id }, r).length,
   });
+  // A repo's "Hostnames…" (threadhostnamesctl.js): its dev host names, and
+  // each saved one opens from the menu.
+  const Hosts = window.ccmuxThreadHostnamesCtl.create({
+    call, workspace: (id) => S.workspaces.find((w) => w.id === id) || null, changed: () => loadLists(),
+    overlay: () => $("hosts-overlay"), sheet: () => $("hosts-sheet"), later: (fn, ms) => setTimeout(fn, ms),
+  });
+  const hostItems = (r) => [["Hostnames…", () => Hosts.open(r)],
+    ...window.ccmuxThreadHostnames.links(S.workspaces.find((w) => w.id === r.id)).map((l) => [l.label, () => window.open(l.url, "_blank")])];
   const Caps = window.ccmuxThreadCapsCtl.create({
     call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings,
-    groupItems: (g) => [...Side.menuItems(g), ...Groups.groupItems(g)], repoItems: (r) => Groups.repoItems(r),
+    groupItems: (g) => [...Side.menuItems(g), ...Groups.groupItems(g)], repoItems: (r) => [...hostItems(r), ...Groups.repoItems(r)],
   });
 
   // An agent's earlier conversations (threadpast.js): one picked takes the
@@ -884,7 +892,7 @@
   const editable = (t) => !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
   function onKey(e) {
-    if (e.key === "Escape" && (Caps.escape() || NewRepo.escape() || Settings.escape())) return;
+    if (e.key === "Escape" && (Caps.escape() || NewRepo.escape() || Hosts.escape() || Settings.escape())) return;
     if (e.key === "Escape" && S.menu) { S.menu = false; drawCommands(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey || editable(e.target)) return; // a digit typed into the composer is a digit
     if ("1234".includes(e.key) && View.pressKey($("cards"), e.key)) e.preventDefault();

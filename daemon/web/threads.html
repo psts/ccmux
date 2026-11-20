@@ -144,6 +144,11 @@
     <div id="repo-sheet" class="sheet narrow" role="dialog" aria-modal="true" aria-label="Add a repo"></div>
   </div>
 
+  <!-- A repo's "Hostnames…" (threadhostnamesctl.js): its dev host names. -->
+  <div id="hosts-overlay" class="overlay hidden">
+    <div id="hosts-sheet" class="sheet narrow" role="dialog" aria-modal="true" aria-label="Hostnames"></div>
+  </div>
+
   <!-- The Settings window (settingsmodal.js) makes its own markup, and each
        tab is its own file; the lens loads the same block. This page's own
        tab, Skills and plugins, joins it from threadcapsctl.js. -->
@@ -189,6 +194,8 @@
   <script src="/threadgroups.js"></script>
   <script src="/threadgroupsctl.js"></script>
   <script src="/threadnewrepo.js"></script>
+  <script src="/threadhostnames.js"></script>
+  <script src="/threadhostnamesctl.js"></script>
   <script src="/threads.js"></script>
   <script src="/build.js"></script>
   <script src="/update.js"></script>
