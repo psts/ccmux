@@ -220,15 +220,18 @@ test("the rewind route: a look or a going back, a refusal is a 409 in the agent'
   });
 });
 
-test("the mode and task-stop routes: done is a 200, a no is a 409 in the agent's words", async () => {
+test("the mode and task-stop routes: done is a 200, a no is a 409 in the agent's words, a failure a logged 500", async () => {
   await withServer(async (agent, call) => {
     const did = [];
-    agent.setMode = async (mode) => { if (mode === "nope") throw new Error("not a mode to switch to: nope"); did.push(["mode", mode]); };
-    agent.stopTask = async (id) => { did.push(["stop", id]); };
+    agent.setMode = async (mode) => { if (mode === "nope") throw Object.assign(new Error("not a mode to switch to: nope"), { refused: true }); did.push(["mode", mode]); };
+    agent.stopTask = async (id) => { if (id === "gone") throw new Error("Claude Code exited"); did.push(["stop", id]); };
     assert.equal((await call("POST", "/mode", { mode: "plan" })).status, 200);
     const no = await call("POST", "/mode", { mode: "nope" });
     assert.deepEqual([no.status, no.body.error], [409, "not a mode to switch to: nope"]);
     assert.equal((await call("POST", "/task/b1/stop", {})).status, 200);
+    const broke = await call("POST", "/task/gone/stop", {});
+    assert.equal(broke.status, 500, "a failure is not a refusal");
+    assert.ok(agent.logged.some((l) => l.includes("Claude Code exited")), "and it is logged");
     assert.deepEqual(did, [["mode", "plan"], ["stop", "b1"]]);
   });
 });

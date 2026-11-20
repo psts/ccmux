@@ -18,3 +18,15 @@ test("a pick puts the path in place of what was typed, with one space after", ()
   const end = M.mentionAt("@he", 3);
   assert.deepEqual(M.pick("@he", 3, end, "src/head.go"), { text: "@src/head.go ", caret: 13 });
 });
+
+test("a list still being asked for when the box is sent never shows", async () => {
+  const timers = [];
+  const box = { classList: { hidden: true, add() { this.hidden = true; }, toggle(_, on) { this.hidden = !!on; }, contains() { return this.hidden; } }, textContent: "", appendChild() {} };
+  const input = { value: "@READ", selectionStart: 5, focus() {} };
+  const m = M.create({ input, box, later: (fn) => timers.push(fn), files: async () => ["README.md"] });
+  m.changed();
+  m.close(); // the box was sent before the list came
+  await timers[0]();
+  assert.equal(box.classList.hidden, true, "nothing pops up over the emptied box");
+  assert.equal(m.isOpen(), false);
+});

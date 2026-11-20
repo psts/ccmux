@@ -21,6 +21,8 @@ test("a background task's row names its kind and what it runs", () => {
   assert.equal(L.taskLabel({ id: "x9", type: "something_new", description: "" }), "Task: x9");
 });
 
-test("the modes offered are the four the runner switches to", () => {
-  assert.deepEqual(L.MODES.map((m) => m.value), ["default", "acceptEdits", "plan", "auto"]);
+test("the modes offered are the ones the runner switches to (claudeserve/sessionself.mjs)", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "../internal/agent/claudeserve/sessionself.mjs"), "utf8");
+  const runner = JSON.parse(/export const MODES = (\[[^\]]*\]);/.exec(src)[1]);
+  assert.deepEqual(L.MODES.map((m) => m.value), runner, "the two lists must not drift apart");
 });

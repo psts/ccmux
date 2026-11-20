@@ -602,7 +602,7 @@ test("a runner switches its mode and stops a background task when its page asks"
   await agent.setMode("plan");
   assert.deepEqual(sdk.queries[0].modes, ["plan"]);
   assert.equal(events.filter((e) => e.type === "session.info").pop().properties.info.permissionMode, "plan");
-  await assert.rejects(agent.setMode("bypassPermissions"), /not a mode to switch to/);
+  await assert.rejects(agent.setMode("bypassPermissions"), (e) => e.refused && /not a mode to switch to/.test(e.message));
   await agent.stopTask("b1");
   assert.deepEqual(sdk.queries[0].stopped, ["b1"]);
   await assert.rejects(makeAgent().agent.setMode("plan"), /only a session runner/);

@@ -506,8 +506,8 @@ export class Agent {
   // does in Claude Code: until it ends or starts again, which brings back
   // the mode it starts with.
   async setMode(mode) {
-    if (!this.turns) throw new Error("only a session runner switches its mode");
-    if (!MODES.includes(mode)) throw new Error(`not a mode to switch to: ${mode}`);
+    if (!this.turns) throw refusal("only a session runner switches its mode");
+    if (!MODES.includes(mode)) throw refusal(`not a mode to switch to: ${mode}`);
     this.ensureQuery();
     await this.q.setPermissionMode(mode);
     this.learn({ permissionMode: mode });
@@ -516,7 +516,7 @@ export class Agent {
   // stopTask stops one of the session's background tasks; Claude Code then
   // says it stopped (a task notice) and drops it from the list.
   async stopTask(id) {
-    if (!this.turns || !this.q) throw new Error("no running session to stop a task in");
+    if (!this.turns || !this.q) throw refusal("no running session to stop a task in");
     await this.q.stopTask(String(id));
   }
 

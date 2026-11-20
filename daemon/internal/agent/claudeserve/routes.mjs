@@ -26,13 +26,16 @@ export function promptText(body) {
 }
 
 // answered runs one action for the page: 200 when it took, 409 with the
-// reason when it did not.
+// reason when the agent said no (a refusal, rewind.mjs), and anything else
+// (the SDK failed, Claude Code is gone) thrown on, for the server to log
+// and answer as a 500.
 async function answered(work) {
   try {
     await work();
     return [200, {}];
   } catch (err) {
-    return [409, { error: err && err.message ? err.message : String(err) }];
+    if (err && err.refused) return [409, { error: err.message }];
+    throw err;
   }
 }
 

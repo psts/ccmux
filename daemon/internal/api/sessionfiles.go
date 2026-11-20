@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
+	"log"
 	"net/http"
 	"os/exec"
 	"path"
@@ -32,22 +34,46 @@ func (s *Server) sessionFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess, err := s.runnerRows.RunnerSession(r.PathValue("id"))
-	if err != nil || sess == nil {
+	if err != nil {
+		log.Printf("sessions: files of %s: row not read: %v", r.PathValue("id"), err)
+		writeError(w, http.StatusInternalServerError, "the session could not be read: "+err.Error())
+		return
+	}
+	if sess == nil {
 		writeRunnerError(w, store.ErrNoSession)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), filesWait)
 	defer cancel()
 	all, err := gitFiles(ctx, sess.Cwd)
+	if errors.Is(err, errNotRepo) {
+		writeJSON(w, http.StatusOK, map[string]any{"files": []string{}, "note": "not a git repo: no files to mention"})
+		return
+	}
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"files": []string{}, "note": "no files listed: " + err.Error()})
+		log.Printf("sessions: files of %s in %s: %v", sess.ID, sess.Cwd, err)
+		writeError(w, http.StatusBadGateway, "the files could not be listed: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": matchFiles(all, r.URL.Query().Get("q"), filesShown)})
 }
 
+// errNotRepo is a folder git does not know: it has nothing to mention,
+// and that is no failure.
+var errNotRepo = errors.New("not a git repository")
+
 // gitFiles is every file git tracks or would track (not ignored) under dir.
 func gitFiles(ctx context.Context, dir string) ([]string, error) {
+	// Asked first, not read from ls-files' error: git words that in the
+	// daemon's language.
+	inside, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree").Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) || (err == nil && strings.TrimSpace(string(inside)) != "true") {
+		return nil, errNotRepo
+	}
+	if err != nil {
+		return nil, err
+	}
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "ls-files", "-co", "--exclude-standard", "-z").Output()
 	if err != nil {
 		return nil, err

@@ -120,10 +120,29 @@ type fakeRunner struct {
 	rewinds    []string // "<to> <dry>" of each rewind asked
 	rewindTo   Rewind   // what a rewind answers; a 409 when rewindNo is set
 	rewindNo   string
-	rewindFail string        // a 500 in the runner's words, when set
+	rewindFail string   // a 500 in the runner's words, when set
+	actions    []string // "<path> <body>" of each mode switch or task stop
+	actionCode int      // what those answer (0: 200), with actionSaid as its error
+	actionSaid string
 	rewindWait time.Duration // how long a rewind takes to answer
 	replies    []string      // "<path> <body>" of each card reply, in order
 	srv        *http.Server
+}
+
+// action records a mode switch or a task stop and answers what the test set.
+func (r *fakeRunner) action(w http.ResponseWriter, req *http.Request) {
+	body, _ := io.ReadAll(req.Body)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.actions = append(r.actions, req.URL.Path+" "+string(body))
+	if r.actionCode != 0 {
+		w.WriteHeader(r.actionCode)
+		if r.actionSaid != "" {
+			json.NewEncoder(w).Encode(map[string]string{"error": r.actionSaid})
+		}
+		return
+	}
+	w.Write([]byte("{}"))
 }
 
 // rewind records a going back and answers what the test set.
@@ -212,6 +231,8 @@ func (r *fakeRunner) handler() http.Handler {
 		json.NewEncoder(w).Encode(append([]map[string]any{}, r.questions...))
 	})
 	mux.HandleFunc("POST /rewind", r.rewind)
+	mux.HandleFunc("POST /mode", r.action)
+	mux.HandleFunc("POST /task/{id}/stop", r.action)
 	mux.HandleFunc("POST /permission/{id}/reply", r.reply)
 	mux.HandleFunc("POST /question/{id}/reply", r.reply)
 	return mux

@@ -31,7 +31,9 @@
     const st = { at: null, files: [], on: 0, gen: 0 };
 
     const open = () => st.files.length > 0 && !d.box.classList.contains("hidden");
-    function close() { st.files = []; st.at = null; d.box.classList.add("hidden"); }
+    // close also drops a list still being asked for: a send that beat it
+    // must not have it pop up over the emptied box.
+    function close() { st.gen++; st.files = []; st.at = null; d.box.classList.add("hidden"); }
 
     // changed reads the box again after a keystroke.
     function changed() {
@@ -41,7 +43,7 @@
       st.at = at;
       d.later(async () => {
         if (gen !== st.gen) return;
-        const files = await d.files(at.query).catch(() => []);
+        const files = await d.files(at.query).catch((e) => { console.warn("@ files not listed:", e.message); return []; });
         if (gen !== st.gen) return;
         Object.assign(st, { files, on: 0 });
         draw();
