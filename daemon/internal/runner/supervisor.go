@@ -59,6 +59,11 @@ type Supervisor struct {
 	// prompt was queued for it (tendSoon); a test swaps it for nothing and
 	// reconciles by hand.
 	soon func(sessionID string)
+	// due holds the sessions to restart once their turn ends
+	// (RestartBetweenTurns), until a restart at a reconcile that finds them
+	// idle succeeds, or one finds them asleep or ended. In memory: after a
+	// daemon restart a session waits for its own next start.
+	due sync.Map // session id → struct{}
 
 	// Changed hears a session's row each time what it wants changes (made,
 	// woken, put to sleep, ended), with the row as it now is. The daemon
@@ -374,6 +379,28 @@ func (s *Supervisor) Restart(sessionID string) error {
 	return s.restart(*sess)
 }
 
+// RestartBetweenTurns restarts a running session the next time a reconcile
+// finds it between turns, so a reply it is giving is not cut: a repo moved
+// to another window, whose Claude reads its window's lists only at start.
+// An asleep session is left as it is (it reads them when it wakes), and an
+// ended one is refused.
+func (s *Supervisor) RestartBetweenTurns(sessionID string) error {
+	defer s.lock(sessionID)()
+	sess, err := s.row(sessionID)
+	if err != nil {
+		return err
+	}
+	switch sess.Wanted {
+	case store.SessionDone:
+		return ErrSessionDone
+	case store.SessionAsleep:
+		return nil
+	}
+	s.due.Store(sessionID, struct{}{})
+	s.Kick()
+	return nil
+}
+
 // Place records where a session works from now on: its folder, its worktree
 // and branch, and whether it only reads there. The row changes and whoever
 // follows it is told; a running process stays where it is until Relocate
@@ -505,6 +532,7 @@ func (s *Supervisor) reconcileOne(ctx context.Context, sess store.RunnerSession)
 		return err
 	}
 	if sess.Wanted != store.SessionRunning {
+		s.due.Delete(sess.ID) // its next start reads everything anew
 		if active {
 			return s.units.Stop(s.paths.Unit(sess.ID))
 		}
@@ -632,6 +660,14 @@ func (s *Supervisor) tend(ctx context.Context, sess store.RunnerSession) error {
 	s.cameUp(sess)
 	if h.Protocol != Protocol {
 		return s.restartStale(sess, h)
+	}
+	if _, due := s.due.Load(sess.ID); due && !h.Busy {
+		// The mark goes only once the restart took: one that failed (a
+		// spec that would not write, systemd busy) is tried at the next pass.
+		if err := s.restart(sess); err != nil {
+			return fmt.Errorf("restart between turns, tried again next pass: %w", err)
+		}
+		s.due.Delete(sess.ID)
 	}
 	if err := s.syncCards(ctx, c, sess.ID, h.Boot); err != nil {
 		return err

@@ -61,16 +61,50 @@ func (m *Manager) RestartMoved(paneID string) error {
 		return errors.New("its input box is not empty")
 	}
 	if err := m.typeExit(plan.ctrl, paneID); err != nil {
-		return fmt.Errorf("typing /exit failed: %w", err)
+		return m.moveFailed(paneID, fmt.Errorf("typing /exit failed: %w", err))
 	}
 	if !m.waitUntil(restartExitWait, func() bool { return m.PaneAtShell(paneID) }) {
-		return errors.New("/exit was typed but Claude did not exit")
+		return m.moveFailed(paneID, errors.New("/exit was typed but Claude did not exit"))
 	}
 	m.deliverStartup(plan.ctrl, paneID, plan.cmd, plan.confirm)
 	if !m.waitUntil(restartBackWait, func() bool { return m.paneRunsClaude(paneID) }) {
-		return errors.New("Claude exited but did not come back: " + plan.cmd)
+		return m.moveFailed(paneID, errors.New("Claude exited but did not come back: "+plan.cmd))
 	}
 	return nil
+}
+
+// moveFailed is a restart that went wrong after /exit was typed: the pane
+// is marked the way a failed update restart is, so its tab says "manual"
+// (restartMark) while it has no Claude, and the person sees it in the lens,
+// not only in this log. The mark keys on the installed version; with the
+// launcher link unreadable there is none to key on, and the log says so.
+func (m *Manager) moveFailed(paneID string, err error) error {
+	installed, lerr := claudever.Installed(m.restart.link)
+	if lerr != nil {
+		return fmt.Errorf("%w (and its tab is not marked: %v)", err, lerr)
+	}
+	m.restart.fail(paneID, installed)
+	m.markPane(paneID, installed)
+	return err
+}
+
+// markPane sets one pane's tab mark now, rather than at the next minute's
+// tick, and tells the lenses when it changed.
+func (m *Manager) markPane(paneID, installed string) {
+	running, _ := claudever.Scan(m.restart.procRoot)
+	m.mu.Lock()
+	e, p := m.findPaneLocked(paneID)
+	changed := false
+	if p != nil {
+		v, _ := m.restartViewFor(p, installed, running[paneID])
+		if mark := restartMark(v); mark != p.ClaudeUpdate {
+			p.ClaudeUpdate, changed = mark, true
+		}
+	}
+	m.mu.Unlock()
+	if changed && e != nil {
+		m.events.publish(Event{Kind: "workspace-status", WorkspaceID: e.ws.ID})
+	}
 }
 
 // moveRestartable reads the pane, its process and its hooks, and says

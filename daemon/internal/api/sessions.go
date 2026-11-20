@@ -36,6 +36,7 @@ type runnerSupervisor interface {
 	SetWanted(sessionID, wanted string) error
 	SetModel(sessionID, model string) error
 	Restart(sessionID string) error
+	RestartBetweenTurns(sessionID string) error
 	Liveness(sessionID string) (string, error)
 	Sleep(sessionID string, fresh bool) error
 	SetFresh(sessionID string, fresh bool) error

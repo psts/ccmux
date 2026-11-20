@@ -16,8 +16,9 @@ import (
 // at start. So the move settles here, in this order: the old window's
 // shared folder is taken back, the new one's is granted, and the repo's
 // running sessions start again to read the new window. A runner session
-// restarts and resumes; a tmux Claude restarts only when it sits idle at an
-// empty prompt (manager.RestartMoved), and is told otherwise.
+// restarts and resumes once its turn ends (runner.RestartBetweenTurns); a
+// tmux Claude restarts only when it sits idle at an empty prompt
+// (manager.RestartMoved), and is told otherwise.
 //
 // Only this route settles a move. The membership hook (windownotices.go)
 // also fires for a create, a delete, an agent's start and the import of a
@@ -72,7 +73,16 @@ func (s *Server) settleMove(mv *movedRepo) {
 	if mv == nil {
 		return
 	}
-	mv.to = s.mgr.SharedGroupResolver()(mv.id, "")
+	// The strict read: the cached snapshot goes empty on a failed store
+	// read, which would settle a move into a window as a move into none.
+	to, found, err := s.windowOfWorkspace(mv.id)
+	if err != nil {
+		log.Printf("repo move %s: windows unreadable after the move, its sessions and shared folders are not settled: %v", mv.name, err)
+		return
+	}
+	if found {
+		mv.to = to.Name
+	}
 	if mv.to == mv.from.Name {
 		return
 	}
@@ -111,6 +121,7 @@ func (s *Server) moveAccess(mv *movedRepo) {
 func (s *Server) repoStillIn(windowID, repoPath string) bool {
 	windows, err := s.mgr.WindowsListStrict()
 	if err != nil {
+		log.Printf("repo move %s: windows unreadable, the old shared folder's grant is kept: %v", repoPath, err)
 		return true
 	}
 	for _, w := range windows {
@@ -126,16 +137,16 @@ func (s *Server) repoStillIn(windowID, repoPath string) bool {
 	return false
 }
 
-// restartMovedRepo starts the repo's running sessions again. A task's
-// builder is left alone: its task stays in the old window's queue, and a
-// restart would cut its work for nothing. An asleep session reads the new
-// window when it next wakes.
+// restartMovedRepo starts the repo's running sessions again, each between
+// two turns so no reply is cut. A task's builder is left alone: its task
+// stays in the old window's queue, and a restart would cut its work for
+// nothing. An asleep session reads the new window when it next wakes.
 func (s *Server) restartMovedRepo(mv *movedRepo) {
 	for _, id := range s.movedRunners(mv.id) {
-		if err := s.runners.Restart(id); err != nil {
+		if err := s.runners.RestartBetweenTurns(id); err != nil {
 			log.Printf("repo move %s: session %s not restarted: %v", mv.name, id, err)
 		} else {
-			log.Printf("repo move %s: session %s restarted to read %s", mv.name, id, windowWord(mv.to))
+			log.Printf("repo move %s: session %s restarts once its turn ends, to read %s", mv.name, id, windowWord(mv.to))
 		}
 	}
 	for _, pane := range s.mgr.ClaudePanes(mv.id) {

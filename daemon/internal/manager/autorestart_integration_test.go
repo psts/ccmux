@@ -344,3 +344,23 @@ func TestRestartMovedLeavesADraftOrABusyPaneAlone(t *testing.T) {
 		t.Fatal("a refused restart stayed in flight")
 	}
 }
+
+// A move's relaunch that never comes up marks the pane's tab "manual", as a
+// failed update restart does, so the lens shows a Claude the move closed.
+func TestRestartMovedMarksAFailedRelaunch(t *testing.T) {
+	saved := restartBackWait
+	restartBackWait = 3 * time.Second
+	t.Cleanup(func() { restartBackWait = saved })
+	r := newRestartRig(t, fakeClaudeScript)
+	r.idleAnHour()
+	if err := os.Remove(filepath.Join(r.root, "versions", "1.0.0")); err != nil { // the relaunch's exec fails
+		t.Fatal(err)
+	}
+	err := r.mgr.RestartMoved(r.paneID)
+	if err == nil || !strings.Contains(err.Error(), "did not come back") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := paneMark(r.mgr, r.paneID); got != "manual" {
+		t.Fatalf("mark = %q, want manual", got)
+	}
+}

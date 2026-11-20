@@ -134,6 +134,8 @@ func (f *fakeRunners) SetWanted(id, wanted string) error {
 	return nil
 }
 
+func (f *fakeRunners) RestartBetweenTurns(id string) error { return f.Restart(id) }
+
 func (f *fakeRunners) Restart(id string) error {
 	if id == "ended" {
 		return runner.ErrSessionDone

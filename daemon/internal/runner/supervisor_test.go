@@ -21,16 +21,17 @@ import (
 
 // fakeUnits is systemd as the supervisor sees it.
 type fakeUnits struct {
-	mu        sync.Mutex
-	active    map[string]bool
-	result    map[string]string // systemd's Result, by unit
-	onActive  func(unit string) // runs at each Active call, before it answers
-	stopErr   error
-	calls     []string
-	onStart   func(unit string)
-	onRestart func(unit string) // runs at each Restart call
-	activeErr error             // what Active fails with, when set
-	reloaded  int
+	mu         sync.Mutex
+	active     map[string]bool
+	result     map[string]string // systemd's Result, by unit
+	onActive   func(unit string) // runs at each Active call, before it answers
+	stopErr    error
+	calls      []string
+	onStart    func(unit string)
+	onRestart  func(unit string) // runs at each Restart call
+	restartErr error             // what Restart fails with, when set
+	activeErr  error             // what Active fails with, when set
+	reloaded   int
 }
 
 func (f *fakeUnits) log(verb, unit string) {
@@ -62,7 +63,9 @@ func (f *fakeUnits) Restart(u string) error {
 	if f.onRestart != nil {
 		f.onRestart(u)
 	}
-	return nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.restartErr
 }
 func (f *fakeUnits) Reload() error { f.reloaded++; return nil }
 func (f *fakeUnits) ResetFailed(u string) error {
@@ -372,6 +375,91 @@ func TestAnOldRunnerIsRestartedBetweenTurns(t *testing.T) {
 	r.reconcile()
 	if r.units.count("restart") != 1 {
 		t.Fatalf("an idle runner on another protocol is restarted: %v", r.units.calls)
+	}
+}
+
+// A restart asked for between turns waits for a busy runner's turn to end,
+// happens once, and leaves an asleep session asleep.
+func TestRestartBetweenTurnsWaitsForTheTurn(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	other, _ := r.sup.Create(NewSession{Cwd: "/r/web"})
+	r.reconcile()
+	fr := r.run[sess.ID]
+	fr.busy = true
+	if err := r.sup.RestartBetweenTurns(sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile()
+	if n := r.units.count("restart"); n != 0 {
+		t.Fatalf("a busy runner was restarted mid-turn: %v", r.units.calls)
+	}
+	fr.busy = false
+	r.reconcile()
+	r.reconcile()
+	if n := r.units.count("restart"); n != 1 {
+		t.Fatalf("restarts = %d, want one once its turn ended: %v", n, r.units.calls)
+	}
+	if err := r.sup.SetWanted(other.ID, store.SessionAsleep); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.sup.RestartBetweenTurns(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile()
+	if want, _ := r.sup.Liveness(other.ID); want != store.SessionAsleep {
+		t.Fatalf("an asleep session was woken: %s", want)
+	}
+}
+
+// A restart between turns that fails is tried again at the next pass, and
+// stops once one took.
+func TestRestartBetweenTurnsTriesAFailedRestartAgain(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.units.restartErr = errors.New("systemd busy")
+	if err := r.sup.RestartBetweenTurns(sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile()
+	if n := r.units.count("restart"); n != 1 {
+		t.Fatalf("restarts tried = %d, want 1", n)
+	}
+	r.units.mu.Lock()
+	r.units.restartErr = nil
+	r.units.mu.Unlock()
+	r.reconcile()
+	r.reconcile()
+	if n := r.units.count("restart"); n != 2 {
+		t.Fatalf("restarts tried = %d, want the failed one and one more that took: %v", n, r.units.calls)
+	}
+}
+
+// A mark left on a session that went to sleep is dropped: woken, it is
+// not restarted again on its first idle pass.
+func TestRestartBetweenTurnsIsDroppedBySleep(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.run[sess.ID].busy = true
+	if err := r.sup.RestartBetweenTurns(sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile()
+	if err := r.sup.SetWanted(sess.ID, store.SessionAsleep); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile()
+	if err := r.sup.SetWanted(sess.ID, store.SessionRunning); err != nil {
+		t.Fatal(err)
+	}
+	r.run[sess.ID].busy = false
+	r.reconcile()
+	r.reconcile()
+	r.reconcile()
+	if n := r.units.count("restart"); n != 0 {
+		t.Fatalf("a woken session was restarted for a move made before its sleep: %v", r.units.calls)
 	}
 }
 
