@@ -78,6 +78,17 @@ export class RichTranscript extends Transcript {
     this.todosMoved = false;
   }
 
+  // apply leaves out what a helper agent (the Agent tool) says and is
+  // told: the stream passes its messages on, marked with the tool call
+  // they belong to, but Claude Code keeps them out of the conversation's
+  // own file. Drawn, its prompt read as the person's words, and it was gone
+  // after a reload anyway (seen live 2026-11-20). The call and its result
+  // stay: they are the conversation's.
+  apply(m) {
+    if (m && m.parent_tool_use_id) return [];
+    return super.apply(m);
+  }
+
   // A file-writing call shows what it is about to change as soon as its
   // input is whole: a permission card for it is up before any result.
   toolFilled(part) {

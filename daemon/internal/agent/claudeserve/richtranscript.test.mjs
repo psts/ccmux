@@ -174,3 +174,19 @@ test("a reply goes on streaming after a note arrived in the middle of it", () =>
   ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "still here" } });
   assert.equal(t.messages().find((m) => m.info.id === "m1").parts[0].text, "still here");
 });
+
+test("what a helper agent says and is told stays out; the call and its result stay in", () => {
+  const t = new RichTranscript("s", now);
+  t.apply(toolUse("a1", "Agent", { description: "Fetch the CVE", prompt: "Fetch https://example.invalid and report" }));
+  const helper = [
+    { type: "user", parent_tool_use_id: "a1", message: { role: "user", content: [{ type: "text", text: "Fetch https://example.invalid and report" }] } },
+    { type: "stream_event", parent_tool_use_id: "a1", event: { type: "message_start", message: { id: "h1" } } },
+    { type: "assistant", parent_tool_use_id: "a1", message: { id: "h1", content: [{ type: "text", text: "The record is reserved." }] } },
+  ];
+  for (const m of helper) assert.deepEqual(t.apply(m), [], "nothing from the helper");
+  t.apply(toolResult("a1", "The record is reserved."));
+  const turns = t.messages();
+  assert.deepEqual(turns.map((x) => x.info.role), ["assistant"], "no user turn, no turn of the helper's own");
+  const call = turns[0].parts.find((p) => p.callID === "a1");
+  assert.equal(call.state.status, "completed", "the call and its result are the conversation's");
+});
