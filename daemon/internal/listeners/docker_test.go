@@ -23,9 +23,11 @@ func TestPublishedReadsHostPortsOfARun(t *testing.T) {
 		{"docker build -p 8090:80 .", nil},                                    // not a run
 		{"docker ps", nil},
 		{"docker run -p", nil},
+		{"", nil},       // no command line at all
+		{"docker", nil}, // the client's name and nothing else
 	}
 	for _, c := range cases {
-		if got := published(strings.Fields(c.cmd)); !slices.Equal(got, c.want) {
+		if got := published(strings.Fields(c.cmd)); !slices.Equal(got, c.want) { // Fields("") is nil
 			t.Errorf("%s: got %v, want %v", c.cmd, got, c.want)
 		}
 	}
@@ -62,5 +64,17 @@ func TestScan_APortThePaneHoldsItselfIsListedOnce(t *testing.T) {
 	got, _ := f.scanner().Scan()
 	if len(got) != 1 || got[0].Port != 3000 {
 		t.Fatalf("one row per port: %+v", got)
+	}
+}
+
+// A pane's docker client that exited between two reads (or a zombie) has
+// no command line: the scan goes on, and nothing is claimed for it.
+func TestScan_ADockerClientWithNoCommandLineIsSkipped(t *testing.T) {
+	f := newFakeProc(t)
+	f.listen(false, "00000000", 8090, 900)
+	f.process(60, "docker", []string{EnvKey + "=pane-c"}) // no cmdline file
+	got, err := f.scanner().Scan()
+	if err != nil || len(got) != 0 {
+		t.Fatalf("nothing claimed, no error: %+v %v", got, err)
 	}
 }

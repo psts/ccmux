@@ -62,7 +62,9 @@ func (c *Client) Rewind(ctx context.Context, to string, dry bool) (Rewind, error
 	}
 	req.Header.Set("content-type", "application/json")
 	hc := *c.http
-	hc.Timeout = rewindWithin
+	if !dry {
+		hc.Timeout = rewindWithin // a look reads only; it keeps the usual bound
+	}
 	res, err := hc.Do(req)
 	if err != nil {
 		return out, err

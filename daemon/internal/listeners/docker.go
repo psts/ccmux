@@ -44,6 +44,9 @@ func published(args []string) []int {
 // isRun reports whether a client command line runs a container: its first
 // word that is not a flag is "run" (docker run, docker container run).
 func isRun(args []string) bool {
+	if len(args) < 2 {
+		return false // unreadable or empty: a client that just exited, a zombie
+	}
 	for _, a := range args[1:] {
 		if strings.HasPrefix(a, "-") || a == "container" {
 			continue

@@ -183,3 +183,29 @@ func TestRewindLandsEvenWhenTheCallerLeaves(t *testing.T) {
 		t.Fatalf("started again once: %v", r.units.calls)
 	}
 }
+
+// A real going back outlasts the client's usual bound and still lands; a
+// look keeps that bound.
+func TestRewindOutlastsTheUsualClientBoundButALookDoesNot(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	orig := r.sup.dial
+	r.sup.dial = func(socket string) *Client {
+		c := orig(socket)
+		c.http.Timeout = 100 * time.Millisecond // stands in for the usual 15 s
+		return c
+	}
+	fr := r.run[sess.ID]
+	fr.rewindTo = Rewind{Dropped: 1, Conversation: "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"}
+	fr.rewindWait = 300 * time.Millisecond
+	if _, err := r.sup.Rewind(context.Background(), sess.ID, "p1", true); err == nil {
+		t.Fatal("a look past the usual bound times out")
+	}
+	if _, err := r.sup.Rewind(context.Background(), sess.ID, "p1", false); err != nil {
+		t.Fatalf("a real going back gets its own, longer bound: %v", err)
+	}
+	if row, _ := r.st.RunnerSession(sess.ID); row.ConversationID() != "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d" {
+		t.Fatalf("on the fork: %s", row.ConversationID())
+	}
+}
