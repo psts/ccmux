@@ -1,5 +1,6 @@
 // threadtheme.js: light or dark for the thread page. The person picks
-// System, Light or Dark in the sidebar's foot; the choice is kept in this
+// System, Light or Dark with the lightbulb at the sidebar's top (a click
+// moves to the next); the choice is kept in this
 // browser only (localStorage), and System follows the device's setting,
 // live. The page's colours are tokens in threads.css; this file only sets
 // <html data-theme="light|dark">, which picks the set. It runs in <head>,
@@ -39,7 +40,13 @@
     }
   }
 
-  const api = { KEY, read, resolve, save };
+  // next is the choice one click on the lightbulb moves to, round the
+  // three; LABELS say each one on the button.
+  const next = (choice) => CHOICES[(CHOICES.indexOf(choice) + 1) % CHOICES.length];
+  const LABELS = { system: "System", light: "Light", dark: "Dark" };
+  const label = (choice) => `Theme: ${LABELS[choice] || LABELS.system} (click for ${LABELS[next(choice)] || LABELS.light})`;
+
+  const api = { KEY, read, resolve, save, next, label };
   if (typeof module === "object" && module.exports) {
     module.exports = api;
     return;
@@ -62,10 +69,11 @@
   apply();
   if (media && media.addEventListener) media.addEventListener("change", apply);
   if (doc.addEventListener) doc.addEventListener("DOMContentLoaded", () => {
-    const pick = doc.getElementById("theme");
-    if (!pick) return;
-    pick.value = choice;
-    pick.onchange = () => { choice = pick.value; save(storage, choice); apply(); };
+    const bulb = doc.getElementById("theme");
+    if (!bulb) return;
+    const say = () => { bulb.title = label(choice); bulb.setAttribute("aria-label", label(choice)); bulb.dataset.choice = choice; };
+    say();
+    bulb.onclick = () => { choice = next(choice); save(storage, choice); apply(); say(); };
   });
   root.ThreadTheme = api;
 })(typeof window !== "undefined" ? window : globalThis);

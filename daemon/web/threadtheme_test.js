@@ -33,3 +33,12 @@ test("a choice is saved, and saving where storage throws does not throw", () => 
   assert.equal(s.m[T.KEY], "system", "only the three choices are saved");
   assert.doesNotThrow(() => T.save(broken, "light"));
 });
+
+test("the lightbulb moves System, Light, Dark and round, and says which is on", () => {
+  assert.equal(T.next("system"), "light");
+  assert.equal(T.next("light"), "dark");
+  assert.equal(T.next("dark"), "system");
+  assert.equal(T.next("purple"), "system", "an unknown choice starts the round again");
+  assert.equal(T.label("dark"), "Theme: Dark (click for System)");
+  assert.equal(T.label("system"), "Theme: System (click for Light)");
+});

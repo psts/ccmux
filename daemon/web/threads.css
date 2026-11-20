@@ -53,8 +53,6 @@ a:hover { color: var(--blue-d); }
 #side { flex: 0 0 300px; max-width: 310px; min-width: 260px; background: var(--side); border-right: 1px solid var(--line2); padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
 .side-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px; }
 .logo { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--fg); text-decoration: none; }
-.theme-pick { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-.theme-pick select { height: 26px; border-radius: 6px; border: 1px solid var(--line3); background: var(--card); color: var(--fg); font-size: 12px; padding: 0 4px; }
 /* A group is its name, big and at the far left, then its body indented
    under it: the Tasks row, the repos and the agents, lighter than the name.
    A rule parts one group from the next. */
@@ -357,7 +355,6 @@ a:hover { color: var(--blue-d); }
    the agent editor in that window has a .cap-add and a .cap-kind of its
    own. --- */
 .side-foot { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; }
-.side-foot .plain.small { margin-top: 0; }
 /* A repo's menu button sits over the bottom right of the repo's own row,
    whatever hangs below that row (its threads, its tasks):
    the two share the first cell of the repo's grid. */
@@ -389,6 +386,10 @@ a:hover { color: var(--blue-d); }
 /* The sidebar's "+" and the dialog it opens (threadnewrepo.js). */
 .side-add { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); color: var(--fg2); font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0; }
 .side-add:hover { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); }
+.side-actions { display: flex; align-items: center; gap: 6px; }
+.side-icon { color: var(--muted); }
+.side-icon svg { display: block; }
+#theme[data-choice="light"], #theme[data-choice="dark"] { color: var(--fg); }
 .nr-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .nr-label { font-size: 12px; color: var(--muted); font-weight: 600; }
 .nr-select, .nr-input { height: 32px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); color: var(--fg); font-size: 13px; padding: 0 8px; min-width: 0; }

@@ -20,18 +20,18 @@
     <nav id="side" aria-label="Threads">
       <div class="side-head">
         <a class="logo" href="/" title="Back to the terminal lens">ccmux</a>
-        <button id="add-repo" class="side-add" type="button" title="Add a repo" aria-label="Add a repo">+</button>
+        <div class="side-actions">
+          <button id="theme" class="side-add side-icon" type="button" title="Theme: System" aria-label="Theme: System">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1.1 1.3 1.1 2.2h5c0-.9.5-1.7 1.1-2.2A6 6 0 0 0 12 3z"/></svg>
+          </button>
+          <button id="open-settings" class="side-add side-icon" type="button" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          </button>
+          <button id="add-repo" class="side-add" type="button" title="Add a repo" aria-label="Add a repo">+</button>
+        </div>
       </div>
       <div id="tree"></div>
       <div class="side-foot">
-        <button id="open-settings" class="plain small" type="button" title="Settings">Settings</button>
-        <label class="theme-pick">Theme
-          <select id="theme">
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
         <span id="side-version"></span>
       </div>
     </nav>
