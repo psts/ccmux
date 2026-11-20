@@ -136,3 +136,30 @@ func Caches(home string) []string {
 		filepath.Join(home, ".npm"),
 	}
 }
+
+// ApartCaches gives the plan's unit the caches under home, but not the
+// person's own: in the place of each one that is there it sees a folder
+// under root, which every walled unit shares and nothing outside the walls
+// reads. The folders are made here.
+//
+// The person's caches hold what their other sessions run and build from:
+// the Python environment an MCP server starts in (~/.cache/uv, seen on
+// this host), browsers a test drives, compiled Go packages a later build
+// links. A walled unit that could write them would run code outside its
+// walls, as surely as through a git hook. The price is one cold cache: the
+// first walled build compiles and downloads everything, the ones after it
+// do not.
+func (p *Plan) ApartCaches(home, root string) error {
+	for _, cache := range existing(Caches(home)...) {
+		rel, err := filepath.Rel(home, cache)
+		if err != nil {
+			return err
+		}
+		from := filepath.Join(root, strings.ReplaceAll(rel, string(filepath.Separator), "_"))
+		if err := os.MkdirAll(from, 0o700); err != nil {
+			return fmt.Errorf("a cache of the walled units' own for %s: %w", cache, err)
+		}
+		p.Apart = append(p.Apart, Apart{From: from, To: cache})
+	}
+	return nil
+}

@@ -181,11 +181,22 @@ shows what this host allows with the command that fixes what it lacks.
 - **What is open** (`walls.WorktreeWalls`, `walls.RepoWalls`, `walls.Caches`,
   `walls.ClaudeHome`): a session gets its worktree, of the repo's `.git` only
   `objects`, `refs`, `logs` and its own `worktrees/<name>` entry, and under
-  home `~/.cache`, `~/go/pkg/mod`, `~/.npm` and `~/.claude/projects`. A merge
-  or tidy-up job gets each repo's own folder (a fast-forward rewrites it)
-  with `.git/hooks` and `.git/config` sealed read-only, the folder its
-  worktrees are in, and the same under home. A tidy-up has no network; a
-  merge keeps it (checks fetch). More folders: "Extra folders" in Settings.
+  home `~/.claude/projects` and caches of the walled units' own (next
+  point). A merge or tidy-up job gets each repo's own folder (a fast-forward
+  rewrites it) with `.git/hooks` and `.git/config` sealed read-only, the
+  folder its worktrees are in, and the same under home. A tidy-up has no
+  network; a merge keeps it (checks fetch). More folders: "Extra folders" in
+  Settings.
+- **The caches behind walls are not the person's** (`walls.ApartCaches`,
+  task #183): in the place of `~/.cache`, `~/go/pkg/mod` and `~/.npm` a
+  walled unit sees folders under `~/.local/state/ccmux/walled-caches`,
+  which walled units share with each other and nothing outside the walls
+  reads. The person's own hold what their other sessions run: the Python
+  environment of an MCP server (`~/.cache/uv`, seen on this host), browsers,
+  compiled Go packages. The price is one cold cache: the first walled build
+  compiles and downloads everything. What a repo's checks need from a cache
+  (Playwright's browsers, say) has to be installed once from behind the
+  walls.
 - **Never open more of `.git` to a session, and never `~/go`, `~/.config`,
   `~/.claude` or `~/.claude.json`.** Hooks, the config (hooksPath,
   fsmonitor), anything on the PATH and everything Claude Code reads (its
@@ -261,12 +272,13 @@ shows what this host allows with the command that fixes what it lacks.
   `spawn_if_missing`); it reads as a peer's message, not a person's, and the
   other Claude decides. It writes `~/.claude/projects` (its repo's memory is
   shared with the repo's own session, by Claude Code's design, and so are
-  other sessions' conversations there). `~/.cache` and `~/go/pkg/mod` stay
-  writable, and the Go build cache feeds later builds outside the walls. It
-  keeps its network, and home is readable: what the person can push or log
-  in to with the keys in home, it can too (`git push`, `ssh localhost`, a
-  docker socket). Other harnesses' agents (opencode and the like) listen on a
-  loopback port with no token.
+  other sessions' conversations there). It keeps its network, and home is
+  readable: what the person can push or log in to with the keys in home, it
+  can too (`git push`, `ssh localhost`, a docker socket), and from another
+  tailnet machine it reaches with them the daemon does not ask for the
+  token. It reaches every loopback port: dev servers, databases, and the
+  chat port of an agent on another harness (opencode and the like), which
+  takes a prompt with no token and is not walled.
 - **Claude Code cannot save `~/.claude.json` from behind walls** (it writes
   through a lock folder and a temp file in home; traced live). The turn
   works; what it would have saved there is dropped.
@@ -307,8 +319,10 @@ host's network, so without it `PUT /v1/sandbox` switched the walls off and
   HttpOnly cookie and redirects; the lenses' requests and websockets need no
   change. The name `ccmux.localhost` is on purpose: a cookie belongs to a
   host name whatever the port, so one set for `127.0.0.1` would be sent to
-  every dev server on this machine. A page opened here without the key gets
-  a page that says so. After a daemon restart the link is a new one.
+  every dev server on this machine. That narrows it and does not close it: a
+  page that sends the browser to `ccmux.localhost:<its own port>` still gets
+  the cookie. A page opened here without the key gets a page that says so.
+  After a daemon restart the link is a new one.
 - `GET /v1/health` carries `localGate`: false means the API is open to every
   local process. A daemon that cannot make the token does not start.
 - The LLM proxy (`/llm/pane/...`, its own port) is not gated: sessions need
@@ -441,6 +455,8 @@ would put verkstan back on v0.1.88.
 
 Since 2026-11-04 verkstan is the only daemon: the two Mac daemons
 (`patric-ccmux`, `dasha-ccmux`) were uninstalled and their tailnet nodes
-deleted. Check `GET /v1/hosts` before relying on that. A host added later
+deleted. Check `GET /v1/hosts` before relying on that (from this machine
+with the API token, as every `/v1` call but `/v1/health`: `curl -H
+"Authorization: Bearer $(ccmuxd api-token)" ...`). A host added later
 that is not verkstan is not updated by `/ship`; it needs a GitHub release run
 by hand and `POST /v1/hosts/{id}/upgrade`, or `./build-daemon.sh` on it.

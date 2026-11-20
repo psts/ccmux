@@ -41,11 +41,21 @@ type sandbox struct {
 	// the jobs' (each sees its own part of its own kind's, runner.Config.plan
 	// and jobs.Manager.wall). Set by wireRunners; "" for none.
 	sessions, sockets, jobs string
+	// caches holds the caches walled units have in place of the person's
+	// own (walls.ApartCaches).
+	caches string
 }
 
 func newSandbox(mgr *manager.Manager) *sandbox {
 	home, _ := os.UserHomeDir()
-	return &sandbox{settings: mgr.Sandbox, home: home, host: &walls.Prober{Self: selfExecutable(), Home: home}}
+	return &sandbox{settings: mgr.Sandbox, home: home, caches: walledCachesDir(), host: &walls.Prober{Self: selfExecutable(), Home: home}}
+}
+
+// walledCachesDir is where the walled units' own caches are kept, beside
+// the sessions' state: it outlives a reboot, and a cold cache costs a
+// whole build.
+func walledCachesDir() string {
+	return filepath.Join(filepath.Dir(runnerStateDir()), "walled-caches")
 }
 
 // secrets is what of the daemon's own a walled unit must not reach,
@@ -115,26 +125,30 @@ func (s *sandbox) on() (walls.Settings, bool, error) {
 	return set, true, s.host.Ready()
 }
 
-// base is the start of every plan: the caches under home, the folders a
-// person added, what must refuse a write as the proof (home itself, and
-// the folder the units' own files live in), what is hidden (the user's
-// bus, the daemon's secrets), and Claude Code's own folder as walls has it
-// (walls/claude.go): its conversations opened, what its sessions source
-// made the unit's own, its config sealed.
+// base is the start of every plan: caches under home that are the walled
+// units' own (walls.ApartCaches), the folders a person added, what must
+// refuse a write as the proof (home itself, and the folder the units' own
+// files live in), what is hidden (the user's bus, the daemon's secrets),
+// and Claude Code's own folder as walls has it (walls/claude.go): its
+// conversations opened, what its sessions source made the unit's own, its
+// config sealed.
 //
 // A job gets the same of Claude Code's folder as a session: a repo's
 // checks may drive Claude Code (this repo's do).
-func (s *sandbox) base(set walls.Settings) *walls.Plan {
+func (s *sandbox) base(set walls.Settings) (*walls.Plan, error) {
 	if err := walls.MakeClaudeFolders(s.home); err != nil {
 		log.Printf("sandbox: a folder Claude Code needs behind walls could not be made, so a walled turn may not save its conversation: %v", err)
 	}
 	plan := &walls.Plan{
-		Caches:  append(walls.Caches(s.home), set.ExtraWrite...),
+		Caches:  append([]string(nil), set.ExtraWrite...),
 		Outside: walls.Existing([]string{s.home, systemdUserDir()}),
 		Hidden:  append(userBus(), secrets()...),
 	}
+	if err := plan.ApartCaches(s.home, s.caches); err != nil {
+		return nil, err
+	}
 	plan.ClaudeHome(s.home)
-	return plan
+	return plan, nil
 }
 
 // hide adds the shared folders of the other kind of unit to what a plan
@@ -167,7 +181,10 @@ func (s *sandbox) sessionWalls(sess store.RunnerSession) (*walls.Plan, error) {
 	if err != nil || !on {
 		return nil, err
 	}
-	plan := s.base(set)
+	plan, err := s.base(set)
+	if err != nil {
+		return nil, err
+	}
 	hide(plan, s.jobs)
 	// Claude Code's own sandbox around its shell commands too, when the
 	// person asked for it. A host that lacks what it needs starts nothing:
@@ -198,7 +215,10 @@ func (s *sandbox) jobWalls(n jobs.New) (*walls.Plan, error) {
 	if !known {
 		return nil, fmt.Errorf("the sandbox is on, and a job of kind %s is not one its walls know (sandbox.go, workOf): it is not started open", n.Kind)
 	}
-	plan := s.base(set)
+	plan, err := s.base(set)
+	if err != nil {
+		return nil, err
+	}
 	hide(plan, s.sessions, s.sockets)
 	// A tidy-up removes folders and branches and fetches nothing. A merge
 	// runs the repo's checks, which may well fetch (a module, a package).

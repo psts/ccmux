@@ -113,3 +113,36 @@ func TestAJobsRepoIsOpenWithItsHooksAndConfigSealed(t *testing.T) {
 		t.Errorf("a missing hooks folder is made, so it can be sealed and not made by the job: %v", err)
 	}
 }
+
+func TestTheCachesBehindWallsAreNotThePersonsOwn(t *testing.T) {
+	home, root := t.TempDir(), filepath.Join(t.TempDir(), "walled-caches")
+	for _, dir := range []string{filepath.Join(home, ".cache"), filepath.Join(home, "go", "pkg", "mod")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var p Plan
+	if err := p.ApartCaches(home, root); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Apart) != 2 {
+		t.Fatalf("one for each cache this host has (it has no ~/.npm): %+v", p.Apart)
+	}
+	want := map[string]string{filepath.Join(home, ".cache"): filepath.Join(root, ".cache"), filepath.Join(home, "go", "pkg", "mod"): filepath.Join(root, "go_pkg_mod")}
+	for _, a := range p.Apart {
+		if want[a.To] != a.From {
+			t.Errorf("%s stands apart in %s, want %s", a.To, a.From, want[a.To])
+		}
+		if fi, err := os.Stat(a.From); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Errorf("%s is made, and this user's alone: %v %v", a.From, fi, err)
+		}
+	}
+	if len(p.Caches) != 0 || len(p.Write) != 0 {
+		t.Fatalf("the person's caches are not opened: %+v", p)
+	}
+	// The same folders the second time: every walled unit shares them.
+	var again Plan
+	if err := again.ApartCaches(home, root); err != nil || len(again.Apart) != 2 || again.Apart[0] != p.Apart[0] {
+		t.Fatalf("a second unit gets the same folders: %+v %v", again.Apart, err)
+	}
+}

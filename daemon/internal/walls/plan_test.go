@@ -192,3 +192,21 @@ func TestHiddenFilesAndFoldersAreInaccessibleToo(t *testing.T) {
 		t.Fatalf("hidden:\n%s", text)
 	}
 }
+
+func TestAFolderThatStandsApartIsMountedInTheSharedOnesPlace(t *testing.T) {
+	p := Plan{Write: []string{"/wt"}, Apart: []Apart{{From: "/state/walled/go_pkg_mod", To: "/home/u/go/pkg/mod"}, {From: "/state/walled/.cache", To: "/home/u/.cache"}}}
+	text := p.DropIn()
+	if !strings.Contains(text, "BindPaths=/state/walled/.cache:/home/u/.cache /state/walled/go_pkg_mod:/home/u/go/pkg/mod\n") {
+		t.Fatalf("each is mounted over the folder it stands in for:\n%s", text)
+	}
+	if strings.Contains(text, "ReadWritePaths=/wt -/home/u/.cache") || strings.Contains(text, " -/home/u/.cache") {
+		t.Fatalf("the person's own cache is never opened:\n%s", text)
+	}
+	e := p.Expect("mnt:[1]")
+	if got := strings.Join(e.Writable, " "); got != "/home/u/.cache /home/u/go/pkg/mod /wt" {
+		t.Fatalf("the unit checks it can write there, which only the mount allows: %q", got)
+	}
+	if err := (Plan{Apart: []Apart{{From: "/not/there", To: "/usr"}}}).Validate(); err == nil {
+		t.Fatal("a folder to mount that is not there fails the unit; the plan must say so first")
+	}
+}

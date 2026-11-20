@@ -31,6 +31,7 @@ func testSandbox(t *testing.T, set *walls.Settings, hostWalls *bool) *sandbox {
 	return &sandbox{
 		settings: func() (walls.Settings, error) { return *set, nil },
 		home:     home,
+		caches:   filepath.Join(t.TempDir(), "walled-caches"),
 		host:     &walls.Prober{Self: "/bin/ccmuxd", Home: home, Run: run},
 	}
 }
@@ -41,6 +42,12 @@ func claudeHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".claude", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "go", "pkg", "mod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".cache"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, file := range []string{filepath.Join(home, ".claude", "settings.json"), filepath.Join(home, ".claude.json")} {
@@ -115,14 +122,33 @@ func TestAWalledSessionsPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude := filepath.Join(sb.home, ".claude")
-	for _, want := range []string{filepath.Join(claude, "projects"), filepath.Join(sb.home, ".cache"), filepath.Join(sb.home, "go", "pkg", "mod"), "/opt/cache"} {
+	for _, want := range []string{filepath.Join(claude, "projects"), "/opt/cache"} {
 		if !slices.Contains(plan.Caches, want) {
 			t.Errorf("not opened: %s (%v)", want, plan.Caches)
 		}
 	}
+	// The caches are the walled units' own, in the place of the person's:
+	// those hold what the person's other sessions run and build from. One
+	// that is not on this host (~/.npm here) is not made up.
+	apart := map[string]string{}
+	for _, a := range plan.Apart {
+		apart[a.To] = a.From
+	}
+	for _, cache := range []string{filepath.Join(sb.home, ".cache"), filepath.Join(sb.home, "go", "pkg", "mod")} {
+		from := apart[cache]
+		if from == "" || !strings.HasPrefix(from, sb.caches+string(filepath.Separator)) {
+			t.Errorf("%s must be a folder of the walled units' own: %q", cache, from)
+		}
+		if _, err := os.Stat(from); err != nil {
+			t.Errorf("and it is made before the start: %v", err)
+		}
+	}
+	if len(plan.Apart) != 2 {
+		t.Errorf("only the caches that are there: %+v", plan.Apart)
+	}
 	// Claude Code's own folder and its state file with the rest: what is
 	// written there runs in the person's next session, outside the walls.
-	for _, never := range []string{sb.home, filepath.Join(sb.home, "go"), filepath.Join(sb.home, "go", "bin"), filepath.Join(sb.home, ".config"), claude, filepath.Join(sb.home, ".claude.json"), filepath.Join(claude, "hooks"), filepath.Join(claude, "settings.json")} {
+	for _, never := range []string{sb.home, filepath.Join(sb.home, ".cache"), filepath.Join(sb.home, "go", "pkg", "mod"), filepath.Join(sb.home, "go"), filepath.Join(sb.home, "go", "bin"), filepath.Join(sb.home, ".config"), claude, filepath.Join(sb.home, ".claude.json"), filepath.Join(claude, "hooks"), filepath.Join(claude, "settings.json")} {
 		if slices.Contains(plan.Caches, never) || slices.Contains(plan.Write, never) {
 			t.Errorf("%s must stay closed", never)
 		}

@@ -61,6 +61,10 @@ type Plan struct {
 	// PrivateRoot is a folder of the unit's own, outside the walls' reach
 	// of any other unit, that holds its private folders.
 	PrivateRoot string
+	// Apart are folders the unit sees another folder in place of, and may
+	// write there: the caches, which walled units share with each other and
+	// with nothing outside the walls (git.go, ApartCaches).
+	Apart []Apart
 	// NoNetwork gives the unit a network of its own with nothing in it but
 	// loopback.
 	NoNetwork bool
@@ -82,6 +86,10 @@ type Own struct {
 	// that is missing is left out.
 	Read []string
 }
+
+// Apart is a folder the unit sees in another's place: From is mounted over
+// To. Both must exist.
+type Apart struct{ From, To string }
 
 // kept is the names in Dir the unit may see.
 func (o Own) kept() []string {
@@ -106,6 +114,9 @@ func (p Plan) writable() []string {
 	out := append([]string(nil), p.Write...)
 	for _, o := range p.Own {
 		out = append(out, o.Write...)
+	}
+	for _, a := range p.Apart {
+		out = append(out, a.To)
 	}
 	return clean(append(out, p.Private...))
 }
@@ -201,6 +212,7 @@ func (p Plan) mounts() string {
 	for _, target := range clean(p.Private) {
 		binds = append(binds, Word(p.privateDir(target)+":"+target))
 	}
+	binds = append(binds, p.apartBinds()...)
 	line("BindPaths", binds)
 	var reads []string
 	for _, path := range clean(ro) {
@@ -208,6 +220,17 @@ func (p Plan) mounts() string {
 	}
 	line("BindReadOnlyPaths", reads)
 	return b.String()
+}
+
+// apartBinds are the words that mount each folder that stands apart, in a
+// fixed order.
+func (p Plan) apartBinds() []string {
+	var out []string
+	for _, a := range p.Apart {
+		out = append(out, Word(filepath.Clean(a.From)+":"+filepath.Clean(a.To)))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Validate refuses a plan systemd would fail on, or would read as something
@@ -250,6 +273,9 @@ func (p Plan) named() (must, may []string, err error) {
 				return nil, nil, fmt.Errorf("%s is not inside %s, of which it is the unit's own part", path, o.Dir)
 			}
 		}
+	}
+	for _, a := range p.Apart {
+		must = append(must, a.From, a.To)
 	}
 	if len(p.Private) == 0 {
 		return must, may, nil
