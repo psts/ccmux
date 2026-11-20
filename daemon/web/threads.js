@@ -56,6 +56,18 @@
     groupItems: (g) => [...Side.menuItems(g), ...Groups.groupItems(g)], repoItems: (r) => Groups.repoItems(r),
   });
 
+  // An agent's earlier conversations (threadpast.js): one picked takes the
+  // conversation's place, read only, until Back to now or another pick.
+  const Past = window.ccmuxThreadPast.create({
+    call, sessionId: () => (S.sel.kind === "session" ? S.sel.id : ""), changed: () => { S.pinned = true; drawAll(); },
+    fail: (text) => { S.error = text; drawAll(); }, snapshot: (frame) => Stream.fromSnapshot(frame, Date.now()),
+    menu: (items, ev) => {
+      const box = $("caps-menu");
+      window.ccmuxThreadCapsView.menu(box, items, window.ccmuxThreadCapsCtl.pointOf(ev), () => box.classList.add("hidden"));
+      box.classList.remove("hidden");
+    },
+  });
+
   // A group's task queue (threadtasks.js) shows in the main area in place
   // of a conversation: opening it leaves the one on screen, and picking
   // anything (select) closes it. A part's builder is a session, so its
@@ -179,6 +191,7 @@
   // pick puts sel on screen: select, minus closing the task queue and the
   // to-do list.
   function pick(sel, push = true) {
+    Past.reset();
     S.sel = sel;
     if (push) history.pushState(null, "", Side.keepAlone(R.threadHref(sel)));
     S.stream = Stream.fresh();
@@ -375,6 +388,7 @@
     const live = !!sess && sess.state !== "done";
     const agent = !!sess && sess.kind === "agent"; // its base names its model, and its name
     show("model-box", (live && !agent) || (S.sel.kind === "draft" && !!ws));
+    show("past", agent);
     show("stop", live && (S.stream.busy || S.stream.cards.length > 0));
     show("more", live);
     show("rename", !!sess && sess.kind !== "lead" && !agent);
@@ -441,6 +455,8 @@
     show("notice-bar", !!note);
     $("notice-bar").textContent = note;
     drawMerge();
+    show("past-bar", Past.on());
+    $("past-text").textContent = Past.bar();
     const error = S.error || S.stream.error || S.listError;
     show("error-bar", !!error);
     $("error-bar").textContent = error;
@@ -484,12 +500,14 @@
     const ctx = viewCtx();
     const follow = S.pinned || S.jump;
     S.jump = false;
-    const blocks = Work.blocks(S.stream.turns, roots(), ws ? Model.repoName(ws) : "").concat(Pending.blocks(settlePending(), R.threadHref(S.sel)));
+    const past = Past.turns(); // an earlier conversation read from disk, in place of this one
+    const blocks = past ? Work.blocks(past, roots(), ws ? Model.repoName(ws) : "")
+      : Work.blocks(S.stream.turns, roots(), ws ? Model.repoName(ws) : "").concat(Pending.blocks(settlePending(), R.threadHref(S.sel)));
     const box = $("blocks");
-    // What every block is drawn with (whose words, which session's images)
-    // changed, as when the lists arrive after the conversation: draw anew.
-    if (S.drawnFor !== ctx.who + "|" + ctx.sessionId) {
-      S.drawnFor = ctx.who + "|" + ctx.sessionId;
+    // What every block is drawn with (whose words, which session's images,
+    // which of its conversations) changed: draw anew.
+    if (S.drawnFor !== ctx.who + "|" + ctx.sessionId + "|" + Past.key()) {
+      S.drawnFor = ctx.who + "|" + ctx.sessionId + "|" + Past.key();
       S.drawn.clear();
       box.textContent = "";
     }
@@ -511,7 +529,7 @@
       at = rec.el.nextSibling;
     }
     for (const [key, rec] of S.drawn) if (!seen.has(key)) { rec.el.remove(); S.drawn.delete(key); }
-    drawCards(ctx);
+    drawCards(ctx, past ? [] : S.stream.cards);
     const picked = S.sel.kind !== "none";
     show("empty", !blocks.length && !S.stream.cards.length);
     $("empty").textContent = !picked ? "Pick a repo on the left to talk to its lead, or start a thread."
@@ -547,13 +565,13 @@
 
   // drawCards rebuilds the cards only when the set of them changed, so a
   // half-typed answer is not wiped by a word streaming in above it.
-  function drawCards(ctx) {
-    const sig = S.stream.cards.map((c) => c.id).join(",");
+  function drawCards(ctx, cards) {
+    const sig = cards.map((c) => c.id).join(",");
     if (sig === S.cardsSig) return;
     S.cardsSig = sig;
     const box = $("cards");
     box.textContent = "";
-    for (const c of S.stream.cards) box.appendChild(View.card(c, ctx));
+    for (const c of cards) box.appendChild(View.card(c, ctx));
   }
 
   async function answerCard(card, body) {
@@ -595,7 +613,7 @@
   function drawComposer() {
     const sess = session();
     const usable = (sess && sess.state !== "done") || (S.sel.kind === "draft" && !!workspace());
-    show("composer", usable);
+    show("composer", usable && !Past.on()); // an earlier conversation is read only
     const lead = sess ? sess.kind === "lead" : S.sel.as === "lead";
     const whom = sess && sess.kind === "agent" ? "this agent" : lead ? "the lead" : "this thread";
     document.querySelector("#composer label").textContent = `Message ${whom}, or type / for commands`;
@@ -901,6 +919,8 @@
     $("merge-thread").onclick = () => threadAct("merge");
     $("end-thread").onclick = () => threadAct("end", undefined, "Close this thread? Its helpers are stood down. Work that is not merged stays on its branch.");
     $("stop-merge").onclick = () => threadAct("stop-merge", undefined, "Stop this merge? Its checks are ended. A repo that already landed stays landed.");
+    $("past").onclick = (e) => Past.open(e);
+    $("past-back").onclick = () => Past.back();
     $("new-thread").onclick = () => { const ws = workspace(); if (ws) select({ kind: "draft", ws: ws.id, as: "thread" }); };
     $("side-toggle").onclick = () => $("page").classList.toggle("side-open");
     $("add-repo").onclick = () => { // in the group of the repo on screen, if any

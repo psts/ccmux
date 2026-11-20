@@ -48,6 +48,7 @@
         <label id="model-box" class="model hidden">Model
           <select id="model"></select>
         </label>
+        <button id="past" class="plain hidden" type="button" title="This agent's earlier conversations, read only">Earlier</button>
         <button id="new-thread" class="plain hidden" type="button" title="A new thread in this repo: its own session, and its own copy of the repo once it changes something">New thread</button>
         <button id="restart-later" class="apply hidden" type="button"></button>
         <button id="stop" class="plain hidden" type="button" title="Stop the running turn">Stop</button>
@@ -78,6 +79,7 @@
       </div>
       <div id="restarted-bar" class="bar green hidden" role="status"></div>
       <div id="notice-bar" class="bar amber hidden" role="status"></div>
+      <div id="past-bar" class="bar blue hidden" role="status"><span id="past-text"></span> <button id="past-back" class="link" type="button">Back to now</button></div>
       <div id="error-bar" class="bar red hidden" role="alert"></div>
 
       <div id="goal" class="goal hidden">
@@ -183,6 +185,7 @@
   <script src="/threadcapsview.js"></script>
   <script src="/threadcapsctl.js"></script>
   <script src="/threadsidectl.js"></script>
+  <script src="/threadpast.js"></script>
   <script src="/threadgroups.js"></script>
   <script src="/threadgroupsctl.js"></script>
   <script src="/threadnewrepo.js"></script>

@@ -1481,3 +1481,49 @@ test("the + dialog goes into a folder, makes one there with git init, and Escape
   p.doc.dispatchEvent({ type: "keydown", key: "Escape" });
   assert.ok(p.$("repo-overlay").classList.contains("hidden"));
 });
+
+// --- an agent's earlier conversations ---
+
+test("an agent's Earlier lists its conversations, shows one read only, and Back to now returns", async () => {
+  const home = { id: "radar", name: "radar", agent: "radar", status: "cold", panes: null };
+  const sess = { id: "a1", workspaceId: "radar", kind: "agent", name: "radar", state: "running", agentVersion: "1.2.0" };
+  const old = { t: "snapshot", state: "past", data: { messages: [{ info: { id: "o1", role: "user" }, parts: [{ id: "o1.0", messageID: "o1", type: "text", text: "last week's brief" }] }] } };
+  const reads = [];
+  const p = await boot({
+    workspaces: [repo, home], sessions: [sess], search: "?s=a1", windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "radar"] }],
+    routes: [
+      [/^GET \/v1\/sessions\/a1\/conversations$/, () => ({ current: "c3", conversations: [{ id: "c3", title: "today", updated: Date.UTC(2026, 10, 20, 8), current: true }, { id: "c2", title: "the weekly brief", updated: Date.UTC(2026, 10, 13, 8) }] })],
+      [/^GET \/v1\/sessions\/a1\/conversations\/c2$/, () => { reads.push("c2"); return old; }],
+    ],
+  });
+  await p.frame(snapshot());
+  const bubbles = () => p.$("blocks").querySelectorAll(".bubble").map((b) => b.textContent);
+  assert.deepEqual(bubbles(), ["hello there"]);
+  assert.equal(p.$("past").classList.contains("hidden"), false, "an agent's header has Earlier");
+  p.$("past").click();
+  await p.settle();
+  const items = p.$("caps-menu").querySelectorAll(".ctx-item");
+  assert.equal(items.length, 2);
+  assert.match(items[0].textContent, /today \(now\)$/);
+  assert.match(items[1].textContent, /^2026-11-13 \d\d:\d\d · the weekly brief$/);
+  items[1].click();
+  await p.settle();
+  assert.deepEqual(reads, ["c2"]);
+  assert.deepEqual(bubbles(), ["last week's brief"], "the earlier conversation takes the current one's place");
+  assert.equal(p.$("past-bar").classList.contains("hidden"), false);
+  assert.match(p.$("past-text").textContent, /^An earlier conversation, from 2026-11-13/);
+  assert.equal(p.$("composer").classList.contains("hidden"), true, "it is read only");
+  await p.frame({ t: "event", seq: 6, data: { type: "message.updated", properties: { info: { id: "p1", role: "user" } } } });
+  await p.frame({ t: "event", seq: 7, data: { type: "message.part.updated", properties: { part: { id: "p1.0", messageID: "p1", type: "text", text: "live words" } } } });
+  assert.deepEqual(bubbles(), ["last week's brief"], "what the agent says now does not land in the old conversation");
+  p.$("past-back").click();
+  await p.settle();
+  assert.equal(p.$("past-bar").classList.contains("hidden"), true);
+  assert.equal(p.$("composer").classList.contains("hidden"), false);
+  assert.deepEqual(bubbles(), ["hello there", "live words"], "back to the current conversation, with what came meanwhile");
+});
+
+test("a repo's lead has no Earlier", async () => {
+  const p = await boot({ sessions: [lead], search: "?s=lead1" });
+  assert.equal(p.$("past").classList.contains("hidden"), true);
+});

@@ -114,6 +114,12 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 		History: func(ctx context.Context, sess store.RunnerSession) (json.RawMessage, error) {
 			return agent.ClaudeOfflineMessages(ctx, w.agents.Root, sess.Cwd, sess.ConversationID(), "--media", sup.MediaDir(sess.ID))
 		},
+		Conversations: func(ctx context.Context, sess store.RunnerSession) ([]agent.OpencodeSession, error) {
+			return agent.ClaudeOfflineSessions(ctx, w.agents.Root, sess.Cwd)
+		},
+		Past: func(ctx context.Context, sess store.RunnerSession, conv string) (json.RawMessage, error) {
+			return agent.ClaudeOfflineMessages(ctx, w.agents.Root, sess.Cwd, conv, "--media", sup.MediaDir(sess.ID))
+		},
 	})
 	go sup.Run(ctx)
 	return jobWiring{mgr: jobMgr, off: jobsOff, team: team}

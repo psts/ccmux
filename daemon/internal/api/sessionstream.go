@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -49,6 +50,12 @@ type RunnerDoors struct {
 	// History is a session's conversation from Claude Code's own store, as
 	// the JSON list of messages a snapshot holds.
 	History func(ctx context.Context, sess store.RunnerSession) (json.RawMessage, error)
+	// Conversations are the conversations Claude Code keeps for a
+	// session's folder, newest first, and Past one of them by its id as
+	// History gives it: an agent's earlier conversations (pastconv.go).
+	// nil turns those routes off.
+	Conversations func(ctx context.Context, sess store.RunnerSession) ([]agent.OpencodeSession, error)
+	Past          func(ctx context.Context, sess store.RunnerSession, conv string) (json.RawMessage, error)
 }
 
 // SetRunnerDoors turns the thread page's routes on. SetRunners comes first.
@@ -298,6 +305,11 @@ func (s *Server) diskSnapshot(ctx context.Context, sess store.RunnerSession) (js
 	if err != nil {
 		return nil, err
 	}
+	return jsonMessages(msgs)
+}
+
+// jsonMessages is a snapshot's data for a conversation read from disk.
+func jsonMessages(msgs json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(map[string]json.RawMessage{"messages": msgs})
 }
 

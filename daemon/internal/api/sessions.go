@@ -119,6 +119,8 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	// The thread page (sessionstream.go, sessioncards.go).
 	mux.HandleFunc("GET /v1/sessions/{id}/ws", s.streamRunnerSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/messages", s.runnerSessionMessages)
+	mux.HandleFunc("GET /v1/sessions/{id}/conversations", s.listPastConversations)
+	mux.HandleFunc("GET /v1/sessions/{id}/conversations/{conv}", s.pastConversation)
 	mux.HandleFunc("POST /v1/sessions/{id}/cards/{card}", s.answerRunnerCard)
 	mux.HandleFunc("POST /v1/sessions/{id}/abort", s.abortRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/images", s.uploadRunnerImage)
