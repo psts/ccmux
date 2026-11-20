@@ -13,7 +13,7 @@ import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.m
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
-import { fromInit, fromInitialization, commandList, resultOf, contextOf } from "./sessionself.mjs";
+import { fromInit, fromInitialization, commandList, resultOf, contextOf, backgroundTasks, usageLimit, MODES } from "./sessionself.mjs";
 import { shellBox } from "./shellbox.mjs";
 import { rewind, refusal } from "./rewind.mjs";
 
@@ -50,7 +50,7 @@ function readIfPresent(readFile, path) {
 
 // ownMessages are the SDK messages the agent handles itself, by the method
 // that does; every other one goes through the transcript.
-const ownMessages = { command_lifecycle: "onLifecycle", system: "onSystem", result: "onResult", prompt_suggestion: "onSuggestion" };
+const ownMessages = { command_lifecycle: "onLifecycle", system: "onSystem", result: "onResult", prompt_suggestion: "onSuggestion", rate_limit_event: "onRateLimit" };
 
 export class Agent {
   // o is the parsed command line; deps carries the SDK (query, listSessions,
@@ -461,6 +461,7 @@ export class Agent {
     if (!this.turns) return;
     if (m.subtype === "init") this.learn(fromInit(m, this.info));
     else if (m.subtype === "commands_changed") this.learn({ commands: commandList(m.commands) });
+    else if (m.subtype === "background_tasks_changed") this.learn({ tasks: backgroundTasks(m.tasks) });
     else this.emit(this.transcript.note(noteFor(m), m.level));
   }
 
@@ -493,6 +494,30 @@ export class Agent {
     if (m.type === "user" && !m.parent_tool_use_id) ids.push(m.uuid);
     if (this.turns && m.type === "assistant") this.turns.stamped(ids);
     if (this.state.markDelivered(ids.filter(Boolean))) this.persist();
+  }
+
+  // onRateLimit tells a runner's page how close the plan's usage limit is
+  // (null: far), as Claude Code's own footer warns.
+  onRateLimit(m) {
+    if (this.turns) this.learn({ limit: usageLimit(m.rate_limit_info) });
+  }
+
+  // setMode switches the running session's permission mode, as Shift+Tab
+  // does in Claude Code: until it ends or starts again, which brings back
+  // the mode it starts with.
+  async setMode(mode) {
+    if (!this.turns) throw new Error("only a session runner switches its mode");
+    if (!MODES.includes(mode)) throw new Error(`not a mode to switch to: ${mode}`);
+    this.ensureQuery();
+    await this.q.setPermissionMode(mode);
+    this.learn({ permissionMode: mode });
+  }
+
+  // stopTask stops one of the session's background tasks; Claude Code then
+  // says it stopped (a task notice) and drops it from the list.
+  async stopTask(id) {
+    if (!this.turns || !this.q) throw new Error("no running session to stop a task in");
+    await this.q.stopTask(String(id));
   }
 
   // onSuggestion keeps the next prompt Claude Code predicts (a runner asks

@@ -125,6 +125,9 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/cards/{card}", s.answerRunnerCard)
 	mux.HandleFunc("POST /v1/sessions/{id}/abort", s.abortRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/rewind", s.rewindRunnerSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/mode", s.setRunnerMode)
+	mux.HandleFunc("POST /v1/sessions/{id}/tasks/{task}/stop", s.stopRunnerTask)
+	mux.HandleFunc("GET /v1/sessions/{id}/files", s.sessionFiles)
 	mux.HandleFunc("POST /v1/sessions/{id}/images", s.uploadRunnerImage)
 	mux.HandleFunc("GET /v1/sessions/{id}/media/{name}", s.runnerMedia)
 }

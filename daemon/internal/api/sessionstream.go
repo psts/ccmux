@@ -40,6 +40,8 @@ type SessionRunner interface {
 	Events(ctx context.Context, boot string, after int64, fn func(runner.Event) error) error
 	Abort(ctx context.Context, sessionID string) error
 	AnswerCard(ctx context.Context, a runner.Answer) (bool, error)
+	SetMode(ctx context.Context, mode string) error
+	StopTask(ctx context.Context, taskID string) error
 }
 
 // RunnerDoors is how the thread page's routes reach a session beyond its

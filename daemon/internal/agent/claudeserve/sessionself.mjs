@@ -88,3 +88,29 @@ function cacheTtlOf(m) {
 export function contextOf(r) {
   return { percent: Math.round(Number(r.percentage) || 0), used: Number(r.totalTokens) || 0, max: Number(r.maxTokens) || 0 };
 }
+
+// backgroundTasks is the session's running background work as its page
+// lists it (background_tasks_changed replaces the whole set each time):
+// shells such as a dev server, monitors, helpers sent off. Watchers Claude
+// Code marks ambient are not activity, and are left out.
+export function backgroundTasks(list) {
+  return (list || []).filter((t) => t && !t.ambient).map((t) => ({
+    id: String(t.task_id || ""), type: String(t.task_type || ""), description: String(t.description || ""), agent: String(t.subagent_type || ""),
+  }));
+}
+
+// usageLimit is what the page warns of from a rate_limit_event: null while
+// the plan's limit is far, else how close it is and when it resets.
+export function usageLimit(info) {
+  if (!info || !info.status || info.status === "allowed") return null;
+  return {
+    status: String(info.status), type: String(info.rateLimitType || ""),
+    utilization: typeof info.utilization === "number" ? info.utilization : null,
+    resetsAt: typeof info.resetsAt === "number" ? info.resetsAt : null,
+  };
+}
+
+// MODES are the permission modes a person may switch a running session to
+// from its page; bypassPermissions and dontAsk are not offered.
+export const MODES = ["default", "acceptEdits", "plan", "auto"];
+

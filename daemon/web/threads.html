@@ -48,6 +48,9 @@
         <label id="model-box" class="model hidden">Model
           <select id="model"></select>
         </label>
+        <label id="mode-box" class="model hidden" title="How freely Claude may act, like Shift+Tab in Claude Code. Until the session restarts.">Mode
+          <select id="mode"></select>
+        </label>
         <button id="past" class="plain hidden" type="button" title="This agent's earlier conversations, read only">Earlier</button>
         <button id="new-thread" class="plain hidden" type="button" title="A new thread in this repo: its own session, and its own copy of the repo once it changes something">New thread</button>
         <button id="restart-later" class="apply hidden" type="button"></button>
@@ -81,6 +84,7 @@
       <div id="notice-bar" class="bar amber hidden" role="status"></div>
       <div id="past-bar" class="bar blue hidden" role="status"><span id="past-text"></span> <button id="past-back" class="link" type="button">Back to now</button></div>
       <div id="error-bar" class="bar red hidden" role="alert"></div>
+      <div id="limit-bar" class="bar amber hidden" role="status"></div>
 
       <div id="goal" class="goal hidden">
         <span class="goal-label">Goal</span>
@@ -102,11 +106,15 @@
            left. Not a session's own steps, which are the Steps tab. -->
       <div id="repo-todo" class="rt hidden"></div>
 
+      <!-- The session's background tasks (threadlive.js), each with Stop. -->
+      <div id="bgtasks-bar" class="bgtasks hidden" role="status"></div>
+
       <form id="composer" class="composer ac-compose hidden">
         <label for="input">Message the lead, or type / for commands</label>
         <div id="attached" class="attached"></div>
         <textarea id="input" rows="2" autocomplete="off" spellcheck="true"></textarea>
         <div id="commands" class="commands hidden"></div>
+        <div id="mentions" class="commands hidden" role="listbox" aria-label="Files to mention"></div>
         <div class="composer-row">
           <button id="attach" class="icon" type="button" aria-label="Attach image" title="Attach an image (or paste one)">
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
@@ -197,6 +205,8 @@
   <script src="/threadnewrepo.js"></script>
   <script src="/threadhostnames.js"></script>
   <script src="/threadedit.js"></script>
+  <script src="/threadlive.js"></script>
+  <script src="/threadmention.js"></script>
   <script src="/threadhostnamesctl.js"></script>
   <script src="/threads.js"></script>
   <script src="/build.js"></script>

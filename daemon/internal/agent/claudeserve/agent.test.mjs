@@ -18,6 +18,10 @@ function stubSDK(script = []) {
       const q = { prompt, options, sent: [], interrupts: 0, interruptFails: false, ended: null };
       (async () => { for await (const m of prompt) q.sent.push(m); })();
       q.interrupt = async () => { q.interrupts++; if (q.interruptFails) throw new Error("no turn to interrupt"); };
+      q.modes = [];
+      q.stopped = [];
+      q.setPermissionMode = async (mode) => { q.modes.push(mode); };
+      q.stopTask = async (id) => { q.stopped.push(id); };
       q[Symbol.asyncIterator] = async function* () {
         for (const m of script) {
           if (m instanceof Error) throw m;
@@ -574,6 +578,34 @@ test("a runner asks for a predicted next prompt, passes it on and in its snapsho
   assert.equal(pane.sdk.queries[0].options.promptSuggestions, undefined, "an agent pane asks for none");
   pane.agent.onMessage({ type: "prompt_suggestion", suggestion: "x" });
   assert.equal(pane.events.filter((e) => e.type === "session.suggestion").length, 0);
+});
+
+test("a runner tells its page of its background tasks and how close the usage limit is", () => {
+  const { agent, events } = runnerAgent();
+  agent.prompt("hi", "p1");
+  agent.onMessage({ type: "system", subtype: "background_tasks_changed", tasks: [
+    { task_id: "b1", task_type: "local_bash", description: "npm run dev" },
+    { task_id: "w1", task_type: "monitor", description: "watcher", ambient: true },
+  ] });
+  const info = () => events.filter((e) => e.type === "session.info").pop().properties.info;
+  assert.deepEqual(info().tasks, [{ id: "b1", type: "local_bash", description: "npm run dev", agent: "" }], "ambient watchers are not activity");
+  agent.onMessage({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.86, resetsAt: 1795200000 } });
+  assert.deepEqual(info().limit, { status: "allowed_warning", type: "five_hour", utilization: 0.86, resetsAt: 1795200000 });
+  agent.onMessage({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
+  assert.equal(info().limit, null, "far from the limit again: no warning");
+  assert.equal(agent.snapshot().info.tasks.length, 1, "a page that opens now sees them too");
+});
+
+test("a runner switches its mode and stops a background task when its page asks", async () => {
+  const { agent, sdk, events } = runnerAgent();
+  agent.prompt("hi", "p1");
+  await agent.setMode("plan");
+  assert.deepEqual(sdk.queries[0].modes, ["plan"]);
+  assert.equal(events.filter((e) => e.type === "session.info").pop().properties.info.permissionMode, "plan");
+  await assert.rejects(agent.setMode("bypassPermissions"), /not a mode to switch to/);
+  await agent.stopTask("b1");
+  assert.deepEqual(sdk.queries[0].stopped, ["b1"]);
+  await assert.rejects(makeAgent().agent.setMode("plan"), /only a session runner/);
 });
 
 test("a task's builder runs in the mode and at the effort its row names", () => {

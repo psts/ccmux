@@ -281,6 +281,15 @@ a:hover { color: var(--blue-d); }
 /* --- composer --- */
 .composer { margin: 0 auto 20px; width: calc(100% - 48px); max-width: 812px; border: 1px solid var(--composer-line); border-radius: 14px; background: var(--card); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; position: relative; }
 .composer label { font-size: 12px; color: var(--muted); }
+.commands .cmd.on { background: var(--soft); }
+#mentions { bottom: calc(100% + 6px); } /* above the box: the line being typed stays in sight */
+/* A running session's background tasks (threadlive.js), above its box. */
+.bgtasks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 8px 24px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--fg2); background: var(--card); }
+.bgtasks .bg-head { color: var(--muted); }
+.bgtasks .bg-task { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.bgtasks .bg-name { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46ch; }
+.bgtasks .bg-stop { margin-top: 0; height: 22px; padding: 0 8px; }
+@media (max-width: 640px) { .bgtasks { padding: 8px 16px; } .bgtasks .bg-name { max-width: 28ch; } }
 .composer .suggest { border: 1px solid var(--line3); background: var(--card); color: var(--fg2); font-size: 12px; height: 26px; padding: 0 9px; border-radius: 6px; }
 .composer .suggest:hover { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); }
 @media (hover: hover) and (pointer: fine) { .composer .suggest { display: none; } } /* Tab does it; the grey text says what */

@@ -73,6 +73,23 @@
     fail: (text) => { S.error = text; drawAll(); },
   });
 
+  // What a running session does besides talking (threadlive.js): its mode,
+  // its background tasks, the usage limit; and "@" file mentions in its box
+  // (threadmention.js).
+  const Live = window.ccmuxThreadLive.create({
+    call, session: () => session(), info: () => S.stream.info, running: () => { const s = session(); return !!s && s.state === "running"; },
+    fail: (text) => { S.error = text; drawAll(); },
+    clock: (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  });
+  const Mention = window.ccmuxThreadMention.create({
+    input: $("input"), box: $("mentions"), later: (fn, ms) => setTimeout(fn, ms),
+    files: async (q) => {
+      const sess = session();
+      if (!sess) return [];
+      return (await call("GET", `/v1/sessions/${encodeURIComponent(sess.id)}/files?q=${encodeURIComponent(q)}`)).files || [];
+    },
+  });
+
   // An agent's earlier conversations (threadpast.js): one picked takes the
   // conversation's place, read only, until Back to now or another pick.
   const Past = window.ccmuxThreadPast.create({
@@ -317,6 +334,7 @@
     drawStream();
     drawDetail();
     drawComposer();
+    Live.draw();
   }
 
   // drawSide leaves the sidebar alone while a group is being dragged: a
@@ -737,6 +755,7 @@
     const images = S.images;
     S.pending.push({ key: ++S.pendingKey, sel: S.sel, where: R.threadHref(S.sel), state: "new", id: "", error: "", text, urls: images.map((img) => img.url), images });
     input.value = "";
+    Mention.close();
     Object.assign(S, { images: [], menu: false, error: "", said: "", jump: true });
     drawAll();
     pump();
@@ -933,6 +952,7 @@
   }
 
   function onComposerKey(e) {
+    if (Mention.key(e)) return; // the open "@" list takes its keys first
     if (e.key === "Tab" && !e.shiftKey && useSuggestion()) { e.preventDefault(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   }
@@ -941,7 +961,7 @@
     const input = $("input");
     $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
     input.onkeydown = onComposerKey;
-    input.oninput = () => { S.menu = false; drawCommands(); drawSuggestion(); };
+    input.oninput = () => { S.menu = false; drawCommands(); drawSuggestion(); Mention.changed(); };
     $("suggest").onclick = useSuggestion;
     input.onpaste = (e) => {
       const files = Img.pasted(e.clipboardData);

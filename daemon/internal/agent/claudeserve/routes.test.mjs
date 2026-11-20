@@ -219,3 +219,16 @@ test("the rewind route: a look or a going back, a refusal is a 409 in the agent'
     assert.deepEqual(asked, [["p2", true], ["p2", false], ["busy", false], ["disk", false]]);
   });
 });
+
+test("the mode and task-stop routes: done is a 200, a no is a 409 in the agent's words", async () => {
+  await withServer(async (agent, call) => {
+    const did = [];
+    agent.setMode = async (mode) => { if (mode === "nope") throw new Error("not a mode to switch to: nope"); did.push(["mode", mode]); };
+    agent.stopTask = async (id) => { did.push(["stop", id]); };
+    assert.equal((await call("POST", "/mode", { mode: "plan" })).status, 200);
+    const no = await call("POST", "/mode", { mode: "nope" });
+    assert.deepEqual([no.status, no.body.error], [409, "not a mode to switch to: nope"]);
+    assert.equal((await call("POST", "/task/b1/stop", {})).status, 200);
+    assert.deepEqual(did, [["mode", "plan"], ["stop", "b1"]]);
+  });
+});

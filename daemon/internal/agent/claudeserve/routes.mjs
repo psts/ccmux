@@ -15,7 +15,7 @@ import { createServer } from "node:http";
 // other path is matched literally.
 export function routeKey(method, pathname) {
   const seg = pathname.split("/").filter(Boolean);
-  const byID = ["session", "permission", "question"].includes(seg[0]) && seg.length > 1;
+  const byID = ["session", "permission", "question", "task"].includes(seg[0]) && seg.length > 1;
   const key = method + " " + (byID ? [seg[0], ":id", ...seg.slice(2)] : seg).join("/");
   return { key, id: byID ? seg[1] : "" };
 }
@@ -23,6 +23,17 @@ export function routeKey(method, pathname) {
 // promptText is the text of a prompt_async body: its text parts joined.
 export function promptText(body) {
   return (body.parts || []).filter((p) => p && p.type === "text").map((p) => p.text).join("\n");
+}
+
+// answered runs one action for the page: 200 when it took, 409 with the
+// reason when it did not.
+async function answered(work) {
+  try {
+    await work();
+    return [200, {}];
+  } catch (err) {
+    return [409, { error: err && err.message ? err.message : String(err) }];
+  }
 }
 
 // Each handler returns [status, body]; the body is sent as JSON.
@@ -76,6 +87,10 @@ export const handlers = {
       return [500, { error: text }];
     }
   },
+  // A running session's permission mode, switched from its page, and one
+  // of its background tasks stopped. A "no" is a 409 in the agent's words.
+  "POST mode": (a, id, body) => answered(() => a.setMode(String(body.mode || ""))),
+  "POST task/:id/stop": (a, id) => answered(() => a.stopTask(id)),
   "POST delivered": (a, id, body) => [200, { delivered: a.delivered(Array.isArray(body.ids) ? body.ids : []) }],
   // The daemon's PushPrompt (first message, bus messages) speaks opencode's
   // TUI pair: append text to the prompt box, then submit it.

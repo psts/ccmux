@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,6 +36,7 @@ type fakeProc struct {
 	grew      chan struct{}
 	answers   []runner.Answer
 	aborts    int
+	did       []string        // the page actions it took, in order
 	gone      map[string]bool // cards no longer pending
 }
 
@@ -142,6 +144,23 @@ func (p *fakeProc) Abort(context.Context, string) error {
 		return errors.New("connection refused")
 	}
 	p.aborts++
+	return nil
+}
+
+func (p *fakeProc) SetMode(_ context.Context, mode string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if mode == "nope" {
+		return fmt.Errorf("%w: not a mode to switch to: nope", runner.ErrRunnerSaidNo)
+	}
+	p.did = append(p.did, "mode "+mode)
+	return nil
+}
+
+func (p *fakeProc) StopTask(_ context.Context, id string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.did = append(p.did, "stop "+id)
 	return nil
 }
 
@@ -521,5 +540,25 @@ func TestTheThreadRoutesAreOffWithoutDoors(t *testing.T) {
 		if w := callSessions(t, s, method, p, "{}"); w.Code != http.StatusServiceUnavailable {
 			t.Errorf("%s: %d", path, w.Code)
 		}
+	}
+}
+
+func TestModeAndTaskStopReachARunningSessionsRunner(t *testing.T) {
+	r := newStreamRig(t)
+	if w := callSessions(t, r.srv, "POST", "/v1/sessions/s1/mode", `{"mode":"plan"}`); w.Code != http.StatusNoContent {
+		t.Fatalf("mode: %d %s", w.Code, w.Body)
+	}
+	if w := callSessions(t, r.srv, "POST", "/v1/sessions/s1/mode", `{"mode":"nope"}`); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"not a mode to switch to: nope"`) {
+		t.Fatalf("a no, in the runner's words: %d %s", w.Code, w.Body)
+	}
+	if w := callSessions(t, r.srv, "POST", "/v1/sessions/s1/tasks/b1/stop", ""); w.Code != http.StatusNoContent {
+		t.Fatalf("stop task: %d %s", w.Code, w.Body)
+	}
+	if !slices.Equal(r.proc.did, []string{"mode plan", "stop b1"}) {
+		t.Fatalf("what the runner was asked: %v", r.proc.did)
+	}
+	r.sup.set(store.SessionAsleep)
+	if w := callSessions(t, r.srv, "POST", "/v1/sessions/s1/mode", `{"mode":"plan"}`); w.Code != http.StatusConflict || len(r.proc.did) != 2 {
+		t.Fatalf("asleep, there is no session to switch: %d %v", w.Code, r.proc.did)
 	}
 }

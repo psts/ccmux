@@ -1628,3 +1628,50 @@ test("Claude's predicted next message shows in the empty box, Tab or the button 
   assert.equal(prevented, false, "with nothing offered, Tab moves the focus as always");
   assert.equal(input.placeholder, "");
 });
+
+// --- what a running session does besides talking ---
+
+test("a running session's mode switches from the header, its background tasks stop from the bar, and a near limit warns", async () => {
+  const asked = [];
+  const p = await boot({ sessions: [{ ...lead, state: "running" }], search: "?s=lead1", routes: [
+    [/^POST \/v1\/sessions\/lead1\/(mode|tasks\/b1\/stop)$/, (body) => { asked.push(body || "stop"); return {}; }],
+  ] });
+  await p.frame(snapshot({ info: { permissionMode: "default", tasks: [{ id: "b1", type: "local_bash", description: "npm run dev" }],
+    limit: { status: "allowed_warning", type: "five_hour", utilization: 0.9 } } }));
+  assert.ok(!p.$("mode-box").classList.contains("hidden"));
+  assert.equal(p.$("mode").value, "default");
+  p.$("mode").value = "plan";
+  p.$("mode").onchange({ target: p.$("mode") });
+  await p.settle();
+  assert.deepEqual(asked, [{ mode: "plan" }]);
+  assert.match(p.$("bgtasks-bar").textContent, /Shell: npm run dev/);
+  p.$("bgtasks-bar").querySelector(".bg-stop").click();
+  await p.settle();
+  assert.deepEqual(asked, [{ mode: "plan" }, "stop"]);
+  assert.match(p.$("limit-bar").textContent, /near your 5-hour usage limit \(90% used\)/);
+  await p.frame({ t: "event", seq: 6, data: { type: "session.info", properties: { info: { permissionMode: "plan", tasks: [], limit: null } } } });
+  assert.equal(p.$("mode").value, "plan");
+  assert.ok(p.$("bgtasks-bar").classList.contains("hidden"), "no tasks, no bar");
+  assert.ok(p.$("limit-bar").classList.contains("hidden"));
+});
+
+test("typing @ lists the session's matching files, and a pick puts the path in the box", async () => {
+  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [
+    [/^GET \/v1\/sessions\/lead1\/files\?q=he$/, () => ({ files: ["src/head.go", "README.md"] })],
+  ] });
+  await p.frame(snapshot());
+  const input = p.$("input");
+  input.value = "look at @he";
+  input.selectionStart = input.value.length;
+  input.oninput();
+  p.book.timers.pop().fn(); // the pause after typing
+  await p.settle();
+  const rows = p.$("mentions").querySelectorAll(".cmd");
+  assert.deepEqual(rows.map((r) => r.textContent), ["@src/head.go", "@README.md"]);
+  let prevented = false;
+  input.onkeydown({ key: "Enter", preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true, "Enter picks; it does not send");
+  assert.equal(input.value, "look at @src/head.go ");
+  assert.ok(p.$("mentions").classList.contains("hidden"));
+  assert.equal(p.book.calls.filter((c) => c.url.endsWith("/prompt")).length, 0);
+});
