@@ -350,11 +350,12 @@
     if (S.canDrag(g)) dragHandle(headEl, g, S);
     const count = alert && alert.count ? el("span", "group-count", String(alert.count)) : null;
     if (count) count.title = alert.text;
-    return add(headEl, fold, name, el("span", "group-sum", groupSum(g)), count, withMenu(headEl, "group", g, ctx));
+    const sum = S.folded(g) ? el("span", "group-sum", groupSum(g)) : null;
+    return add(headEl, fold, name, sum, count, withMenu(headEl, "group", g, ctx));
   }
 
-  // groupSum is what a group holds, beside its name whether it is open or
-  // folded: "8 repos · 6 agents".
+  // groupSum is what a folded group holds, beside its name: "8 repos ·
+  // 6 agents". An open group shows them itself.
   function groupSum(g) {
     const n = (k, word) => k + " " + word + (k === 1 ? "" : "s");
     const agents = (g.agents || []).length;

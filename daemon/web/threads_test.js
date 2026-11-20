@@ -1304,7 +1304,7 @@ test("the person's order and folds draw at once: a folded group is its name, pul
   assert.equal(folded.children[0], head, "its header is still its first child");
   const open = p.$("tree").querySelector('.group[data-gid="w1"]');
   assert.equal(open.children.map((c) => c.className).join(","), "group-head,group-body", "an open group: its header, then its body");
-  assert.equal(open.querySelector(".group-head .group-sum").textContent, "1 repo", "open, it says so too");
+  assert.equal(open.querySelector(".group-head .group-sum"), null, "open, its repos show themselves: no count");
   assert.equal(open.querySelector(".group-body .repo .row-name").textContent, "app");
   assert.equal(open.querySelector(".side-sub"), null, "a group with no agents has no Agents heading");
   head.querySelector(".group-fold").click();
