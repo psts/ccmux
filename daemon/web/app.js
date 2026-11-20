@@ -703,7 +703,7 @@ function openWsMenu(ws, x, y) {
   // Windows are SHARED (v2): placing, moving, and removing change the one
   // arrangement everyone sees.
   add(ws.group ? "Move to Window…" : "Add to Window…", () => moveToWindow(ws));
-  if (ws.group) add("Remove from Window (for everyone)", () => putGroup(ws.id, ""));
+  if (ws.group) add("Remove from Window (for everyone)", () => { if (isAgentWs(ws) || confirm(MOVE_RESTARTS)) putGroup(ws.id, ""); });
   // An agent's session owns no repo; its description says what it does.
   if (!isAgentWs(ws)) add("What It Owns…", () => window.ccmuxOwns.open(ws));
   sep();
@@ -1113,10 +1113,16 @@ async function putGroup(id, group) {
   fetchWorkspaces();
 }
 
+// MOVE_RESTARTS is what moving a repo session does beyond the sidebar: the
+// daemon restarts its running Claudes so they read the new window
+// (repomove.go). An agent's move restarts nothing.
+const MOVE_RESTARTS = "Its running Claude sessions restart to pick up the new window's sessions and shared folder (a busy terminal one gets a note instead). Go on?";
+
 function moveToWindow(ws) {
   const names = state.windows.map((w) => w.name).sort();
   const hint = names.length ? `\n\nWindows: ${names.join(", ")}` : "";
-  const g = prompt("Window name (shared — moves it for everyone):" + hint, ws.group || "");
+  const restarts = isAgentWs(ws) ? "" : "\n\nIts running Claude sessions restart to pick up the new window (a busy terminal one gets a note instead).";
+  const g = prompt("Window name (shared — moves it for everyone):" + hint + restarts, ws.group || "");
   if (g === null) return;
   putGroup(ws.id, g.trim());
 }

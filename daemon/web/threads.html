@@ -20,6 +20,7 @@
     <nav id="side" aria-label="Threads">
       <div class="side-head">
         <a class="logo" href="/" title="Back to the terminal lens">ccmux</a>
+        <button id="add-repo" class="side-add" type="button" title="Add a repo" aria-label="Add a repo">+</button>
       </div>
       <div id="tree"></div>
       <div class="side-foot">
@@ -136,6 +137,11 @@
   </div>
   <div id="caps-menu" class="menu-layer hidden"></div>
 
+  <!-- The sidebar's "+" (threadnewrepo.js): add a repo, in a group. -->
+  <div id="repo-overlay" class="overlay hidden">
+    <div id="repo-sheet" class="sheet narrow" role="dialog" aria-modal="true" aria-label="Add a repo"></div>
+  </div>
+
   <!-- The Settings window (settingsmodal.js) makes its own markup, and each
        tab is its own file; the lens loads the same block. This page's own
        tab, Skills and plugins, joins it from threadcapsctl.js. -->
@@ -177,6 +183,9 @@
   <script src="/threadcapsview.js"></script>
   <script src="/threadcapsctl.js"></script>
   <script src="/threadsidectl.js"></script>
+  <script src="/threadgroups.js"></script>
+  <script src="/threadgroupsctl.js"></script>
+  <script src="/threadnewrepo.js"></script>
   <script src="/threads.js"></script>
   <script src="/build.js"></script>
   <script src="/update.js"></script>

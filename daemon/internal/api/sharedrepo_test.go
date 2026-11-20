@@ -83,6 +83,7 @@ func TestSendNotice_GrantsARepoJoinOnly(t *testing.T) {
 	settings := filepath.Join(repo, ".claude", "settings.local.json")
 	win, _, _ := f.srv.windowByName("Chart Labs")
 	shared := f.srv.agents.SharedDir(win.ID, win.Name)
+	os.Remove(settings) // the move into the window granted it (repomove.go); the notices are what is read here
 
 	f.srv.sendNotice(manager.MembershipChange{WorkspaceID: wsID, Name: "app", RepoPath: repo, Agent: "x-poster", To: "Chart Labs"})
 	f.srv.sendNotice(manager.MembershipChange{WorkspaceID: wsID, Name: "app", RepoPath: repo, From: "Chart Labs"})

@@ -106,10 +106,12 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown workspace "+id)
 		return
 	}
+	mv := s.repoMove(id)
 	if err := s.mgr.SeedWindowMembership(id, req.Group); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.settleMove(mv) // a repo's sessions read the new window (repomove.go)
 	w.WriteHeader(http.StatusNoContent)
 }
 

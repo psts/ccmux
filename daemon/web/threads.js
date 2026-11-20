@@ -39,8 +39,21 @@
     call, user: () => S.user, changed: () => { if (S.listed) schedule(); }, tree: () => $("tree"),
     taskAlerts: (g) => (g.id ? Tasks.sidebar.taskSum(g).alert || 0 : 0), threadsPath: R.THREADS,
   });
+  // The sidebar's "+" (threadnewrepo.js) adds a repo, in a group it picks
+  // or makes; a repo's "Move to group ›" and a group's "Add a repo here…"
+  // are threadgroupsctl.js's. Both end in the lists being read again.
+  const NewRepo = window.ccmuxThreadNewRepo.create({
+    call, windows: () => S.windows, changed: () => loadLists(), overlay: () => $("repo-overlay"), sheet: () => $("repo-sheet"),
+    opened: (wsId) => select({ kind: "draft", ws: wsId, as: "lead" }),
+  });
+  const Groups = window.ccmuxThreadGroupsCtl.create({
+    call, windows: () => S.windows, changed: () => loadLists(), confirm: (q) => confirm(q), prompt: (q) => prompt(q),
+    fail: (text) => { S.error = text; drawAll(); }, addRepo: (group) => NewRepo.open(group),
+    openTasks: (win, r) => Tasks.sidebar.repoTasks({ id: win.id }, r).length,
+  });
   const Caps = window.ccmuxThreadCapsCtl.create({
-    call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings, groupItems: (g) => Side.menuItems(g),
+    call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings,
+    groupItems: (g) => [...Side.menuItems(g), ...Groups.groupItems(g)], repoItems: (r) => Groups.repoItems(r),
   });
 
   // A group's task queue (threadtasks.js) shows in the main area in place
@@ -853,7 +866,7 @@
   const editable = (t) => !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
   function onKey(e) {
-    if (e.key === "Escape" && (Caps.escape() || Settings.escape())) return;
+    if (e.key === "Escape" && (Caps.escape() || NewRepo.escape() || Settings.escape())) return;
     if (e.key === "Escape" && S.menu) { S.menu = false; drawCommands(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey || editable(e.target)) return; // a digit typed into the composer is a digit
     if ("1234".includes(e.key) && View.pressKey($("cards"), e.key)) e.preventDefault();
@@ -890,6 +903,10 @@
     $("stop-merge").onclick = () => threadAct("stop-merge", undefined, "Stop this merge? Its checks are ended. A repo that already landed stays landed.");
     $("new-thread").onclick = () => { const ws = workspace(); if (ws) select({ kind: "draft", ws: ws.id, as: "thread" }); };
     $("side-toggle").onclick = () => $("page").classList.toggle("side-open");
+    $("add-repo").onclick = () => { // in the group of the repo on screen, if any
+      const ws = workspace(), win = ws ? window.ccmuxThreadGroups.windowOf(S.windows, ws.id) : null;
+      NewRepo.open(win ? win.name : "");
+    };
     for (const tab of document.querySelectorAll(".tab")) {
       tab.onclick = () => {
         for (const t of document.querySelectorAll(".tab")) t.classList.toggle("on", t === tab);

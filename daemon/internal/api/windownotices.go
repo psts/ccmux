@@ -57,8 +57,9 @@ func (s *Server) sendNotice(c manager.MembershipChange) {
 		return
 	}
 	name := noticeName(c)
+	own := func(paneID string) bool { return s.mgr.WorkspaceForPane(paneID) == c.WorkspaceID } // never told about itself
 	if c.From != "" {
-		s.peersSvc.NotifyGroup(c.From, name, leaveNotice(c, name))
+		s.peersSvc.NotifyGroupSkip(c.From, name, own, leaveNotice(c, name))
 	}
 	if c.To == "" {
 		return
@@ -68,7 +69,7 @@ func (s *Server) sendNotice(c manager.MembershipChange) {
 		log.Printf("window notice: %s left %q before its join was told; not announced", name, c.To)
 		return
 	}
-	s.peersSvc.NotifyGroup(c.To, name, text)
+	s.peersSvc.NotifyGroupSkip(c.To, name, own, text)
 }
 
 // noticeName is the name the bus knows the session by: an agent's own

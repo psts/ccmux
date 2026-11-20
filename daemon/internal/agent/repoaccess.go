@@ -51,6 +51,40 @@ func GrantRepoDir(repo, dir string) (bool, error) {
 	return true, writeSettings(path, settings)
 }
 
+// RevokeRepoDir takes dir back out of repo's local Claude settings: the
+// other side of GrantRepoDir, for a repo moved out of a window. It reports
+// whether it wrote; a file without the entry, or with none at all, is left
+// as it is, and so is one git does not ignore (the grant's own rule). Only the exact entry goes, and the list key with it when it was
+// the last one; everything else in the file stays.
+func RevokeRepoDir(repo, dir string) (bool, error) {
+	repoAccessMu.Lock()
+	defer repoAccessMu.Unlock()
+	path := filepath.Join(repo, repoLocalSettings)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err := gitIgnores(repo, repoLocalSettings); err != nil {
+		return false, err
+	}
+	settings, err := readSettings(path)
+	if err != nil {
+		return false, err
+	}
+	perms, _ := settings["permissions"].(map[string]any)
+	dirs, _ := perms["additionalDirectories"].([]any)
+	i := slices.Index(dirs, any(dir))
+	if i < 0 {
+		return false, nil
+	}
+	dirs = slices.Delete(dirs, i, i+1)
+	if len(dirs) == 0 {
+		delete(perms, "additionalDirectories")
+	} else {
+		perms["additionalDirectories"] = dirs
+	}
+	return true, writeSettings(path, settings)
+}
+
 // gitIgnores is nil when git ignores rel in repo. Not ignored (exit 1) and
 // git failing (not a repo, no git, a fatal error) are told apart, with
 // git's own words for the second.

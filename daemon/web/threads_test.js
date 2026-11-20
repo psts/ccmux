@@ -158,7 +158,7 @@ async function boot(opts = {}) {
     WebSocket: function (url) { const s = { url: String(url), readyState: 1, sent: [], send: (x) => s.sent.push(JSON.parse(x)), close() { s.closed = true; } }; book.sockets.push(s); return s; },
     requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval() {},
     open: (url, target) => book.opened.push([url, target]),
-    addEventListener() {}, confirm: opts.confirm || (() => true), prompt: () => "Renamed", createImageBitmap: async () => ({ width: 10, height: 10 }),
+    addEventListener() {}, confirm: opts.confirm || (() => true), prompt: opts.prompt || (() => "Renamed"), createImageBitmap: async () => ({ width: 10, height: 10 }),
     // The Settings window's tabs: identity.js bounds its whoami read, and the
     // Agents tab says on document when it read the bases.
     AbortController, Event: function (type) { this.type = type; },
@@ -812,7 +812,7 @@ test("a right-click on a repo opens its menu, and Skills and plugins its panel; 
   p.$("tree").querySelector(".row").oncontextmenu({ preventDefault: () => { prevented = true; }, clientX: 40, clientY: 80 });
   assert.equal(prevented, true, "the browser's own menu stays shut");
   assert.equal(p.$("caps-menu").classList.contains("hidden"), false);
-  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…"]);
+  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Move to group›", "No group (Other)", "New group…"], "a repo in the only group can leave it or make a new one");
   p.$("caps-menu").querySelector(".ctx-item").click();
   await p.settle();
   assert.equal(p.$("caps-menu").classList.contains("hidden"), true);
@@ -1326,13 +1326,13 @@ test("a group's menu moves it and opens it alone; Other has none of that", async
   const p = await boot({ ...twoGroups(), workspaces: [...twoGroups().workspaces, { id: "ws3", name: "loose", repoPath: "/p/loose" }] });
   p.$("tree").querySelectorAll(".group-head .side-more")[0].click();
   const items = () => p.$("caps-menu").querySelectorAll(".ctx-item");
-  assert.deepEqual(items().map((b) => b.textContent), ["Skills and plugins…", "Move down", "Open alone in a new window"]);
+  assert.deepEqual(items().map((b) => b.textContent), ["Skills and plugins…", "Move down", "Open alone in a new window", "Add a repo here…"]);
   items()[1].click();
   await p.settle();
   assert.deepEqual(puts(p), [["/v1/me/sidebar/order?user=Pat", { windowIds: ["w2", "w1"] }]]);
   assert.deepEqual(groupNames(p), ["dasha", "ChartLabs", "Other"], "moved at once");
   p.$("tree").querySelectorAll(".group-head .side-more")[1].click();
-  assert.deepEqual(items().map((b) => b.textContent), ["Skills and plugins…", "Move up", "Open alone in a new window"]);
+  assert.deepEqual(items().map((b) => b.textContent), ["Skills and plugins…", "Move up", "Open alone in a new window", "Add a repo here…"]);
   items()[2].click();
   assert.deepEqual(p.book.opened, [["/threads.html?g=w1", "_blank"]]);
   assert.deepEqual(groupNames(p), ["dasha", "ChartLabs", "Other"], "Other stays last");
@@ -1347,8 +1347,137 @@ test("a page opened for one group shows it alone, unfolded, and keeps to it", as
   assert.equal(p.$("tree").querySelectorAll(".row").length, 1, "its repos show though the person folded it");
   assert.equal(p.$("tree").querySelector(".side-alone").href, "/threads.html");
   p.$("tree").querySelector(".group-head .side-more").click();
-  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…"]);
+  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Add a repo here…"]);
   p.$("tree").querySelector(".row").click();
   await p.settle();
   assert.equal(p.book.pushed.pop(), "/threads.html?s=d1&g=w2");
+});
+
+// --- groups: move a repo, add one ---
+
+const menuOf = (p, name) => {
+  const row = p.$("tree").querySelectorAll(".repo .row").find((r) => r.querySelector(".row-name").textContent === name);
+  row.oncontextmenu({ preventDefault() {}, clientX: 10, clientY: 10 });
+  return p.$("caps-menu");
+};
+const itemNamed = (box, text) => box.querySelectorAll(".ctx-item").find((b) => b.textContent === text);
+
+test("a repo moves to another group from its menu, after the person says yes, and the lists are read again", async () => {
+  const moved = [], asked = [];
+  let answer = false;
+  const p = await boot({ ...twoGroups(), confirm: (q) => { asked.push(q); return answer; },
+    routes: [[/^PUT \/v1\/workspaces\/ws1\/group$/, (body) => { moved.push(body); return {}; }]] });
+  const box = menuOf(p, "app");
+  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Move to group›", "dasha", "No group (Other)", "New group…"]);
+  const sub = box.querySelector(".ctx-sub");
+  assert.ok(sub.classList.contains("hidden"), "its groups wait behind the arrow");
+  itemNamed(box, "Move to group›").click();
+  assert.ok(!sub.classList.contains("hidden"), "a click opens them");
+  assert.ok(!box.classList.contains("hidden"), "and leaves the menu open");
+  itemNamed(box, "dasha").click();
+  await p.settle();
+  assert.match(asked[0], /^Move app from ChartLabs to dasha\?/);
+  assert.match(asked[0], /running sessions restart/);
+  assert.deepEqual(moved, [], "no: nothing moves");
+  answer = true;
+  const reads = p.book.calls.filter((c) => c.url === "/v1/windows").length;
+  itemNamed(menuOf(p, "app"), "dasha").click();
+  await p.settle();
+  assert.deepEqual(moved, [{ group: "dasha" }]);
+  assert.equal(p.book.calls.filter((c) => c.url === "/v1/windows").length, reads + 1, "the groups are read again");
+  itemNamed(menuOf(p, "app"), "No group (Other)").click();
+  await p.settle();
+  assert.deepEqual(moved.pop(), { group: "" }, "out of any group");
+});
+
+test("a repo moves to a new group by name; an empty name or Other moves nothing and says why", async () => {
+  const moved = [];
+  let typed = "  Ops ";
+  const p = await boot({ ...twoGroups(), prompt: () => typed, routes: [[/^PUT \/v1\/workspaces\/ws1\/group$/, (body) => { moved.push(body); return {}; }]] });
+  itemNamed(menuOf(p, "app"), "New group…").click();
+  await p.settle();
+  assert.deepEqual(moved, [{ group: "Ops" }]);
+  for (const bad of ["   ", "other"]) {
+    typed = bad;
+    itemNamed(menuOf(p, "app"), "New group…").click();
+    await p.settle();
+  }
+  assert.equal(moved.length, 1, "neither moved it (an empty name would have taken it out of its group)");
+  assert.match(p.$("error-bar").textContent, /no group are listed/);
+  typed = "DASHA";
+  itemNamed(menuOf(p, "app"), "New group…").click();
+  await p.settle();
+  assert.deepEqual(moved.pop(), { group: "dasha" }, "a name the daemon would match goes to that group");
+  typed = null;
+  itemNamed(menuOf(p, "app"), "New group…").click();
+  await p.settle();
+  assert.equal(moved.length, 1, "cancel moves nothing");
+});
+
+const projects = [[/^GET \/v1\/projects/, () => ({ path: "", projects: [{ name: "svc", path: "/p/svc", git: true }, { name: "lib", path: "/p/lib" }] })]];
+
+test("the sidebar's + adds a folder as a repo in the group on screen, and opens it", async () => {
+  const made = [];
+  const p = await boot({ ...twoGroups(), search: "?s=lead1",
+    routes: [...projects, [/^POST \/v1\/workspaces$/, (body) => { made.push(body); return { id: "ws9" }; }]] });
+  assert.ok(p.$("repo-overlay").classList.contains("hidden"));
+  p.$("add-repo").click();
+  await p.settle();
+  assert.ok(!p.$("repo-overlay").classList.contains("hidden"));
+  const sheet = p.$("repo-sheet");
+  assert.equal(sheet.querySelector(".nr-select").value, "ChartLabs", "the group of the repo on screen");
+  assert.deepEqual(sheet.querySelector(".nr-select").children.map((o) => o.textContent), ["No group", "ChartLabs", "dasha", "New group…"]);
+  assert.deepEqual(sheet.querySelectorAll(".nr-item").map((r) => r.textContent), ["svcgit+", "lib+"]);
+  sheet.querySelector(".nr-add").click();
+  await p.settle();
+  assert.deepEqual(made, [{ name: "svc", repoPath: "/p/svc", createdBy: "web", startupCommand: "", group: "ChartLabs" }]);
+  assert.ok(p.$("repo-overlay").classList.contains("hidden"), "the dialog closes");
+  assert.equal(p.book.pushed.pop(), "/threads.html?ws=ws9&new=lead", "and the new repo opens");
+});
+
+test("the + dialog makes a new group by name, refuses an empty one, and a group's menu opens it for that group", async () => {
+  const made = [];
+  const p = await boot({ ...twoGroups(), routes: [...projects, [/^POST \/v1\/workspaces$/, (body) => { made.push(body); return { id: "ws9" }; }]] });
+  p.$("tree").querySelectorAll(".group-head .side-more")[1].click();
+  itemNamed(p.$("caps-menu"), "Add a repo here…").click();
+  await p.settle();
+  const sheet = p.$("repo-sheet");
+  assert.equal(sheet.querySelector(".nr-select").value, "dasha");
+  const sel = sheet.querySelector(".nr-select");
+  sel.value = "\n";
+  sel.onchange();
+  sheet.querySelector(".nr-add").click();
+  await p.settle();
+  assert.deepEqual(made, [], "no name: nothing made");
+  assert.match(sheet.querySelector(".nr-note").textContent, /needs a name/);
+  const name = sheet.querySelector(".nr-group .nr-input");
+  name.value = "Ops";
+  name.oninput();
+  sheet.querySelector(".nr-add").click();
+  await p.settle();
+  assert.equal(made[0].group, "Ops");
+});
+
+test("the + dialog goes into a folder, makes one there with git init, and Escape closes it", async () => {
+  const made = [], listed = [];
+  const p = await boot({ ...twoGroups(), routes: [
+    [/^GET \/v1\/projects/, () => { listed.push(p.book.calls[p.book.calls.length - 1].url); return { path: listed.length > 1 ? "code" : "", parent: "", projects: [{ name: "code", path: "/p/code" }] }; }],
+    [/^POST \/v1\/projects$/, (body) => { made.push(body); return {}; }],
+  ] });
+  p.$("add-repo").click();
+  await p.settle();
+  const sheet = p.$("repo-sheet");
+  sheet.querySelector(".nr-name").click();
+  await p.settle();
+  assert.equal(listed[1], "/v1/projects?path=code");
+  assert.equal(sheet.querySelector(".nr-path").textContent, "/code");
+  const folder = sheet.querySelector(".nr-folder .nr-input");
+  folder.value = "new-svc";
+  folder.oninput();
+  sheet.querySelector(".nr-folder .primary").click();
+  await p.settle();
+  assert.deepEqual(made, [{ path: "code/new-svc", git: true }]);
+  assert.equal(listed[2], "/v1/projects?path=code", "the folder is listed again");
+  p.doc.dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.ok(p.$("repo-overlay").classList.contains("hidden"));
 });

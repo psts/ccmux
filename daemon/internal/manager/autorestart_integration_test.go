@@ -291,3 +291,56 @@ func TestAutoRestartMarksAFailedRelaunch(t *testing.T) {
 		t.Fatal("a failed version was tried again")
 	}
 }
+
+// A repo moved to another window restarts its idle tmux Claude at once, on
+// the version it runs, resuming its session.
+func TestRestartMovedRelaunchesAnIdlePaneWithResume(t *testing.T) {
+	r := newRestartRig(t, fakeClaudeScript)
+	r.idleAnHour()
+	if got := r.mgr.ClaudePanes(r.wsID); len(got) != 1 || got[0] != r.paneID {
+		t.Fatalf("ClaudePanes = %v, want the rig's pane", got)
+	}
+	r.mgr.mu.Lock()
+	_, p := r.mgr.findPaneLocked(r.paneID)
+	p.CreatedBy = taskRunner
+	r.mgr.mu.Unlock()
+	if got := r.mgr.ClaudePanes(r.wsID); len(got) != 0 {
+		t.Fatalf("a task's tmux worker is restarted by a move: %v", got)
+	}
+	r.mgr.mu.Lock()
+	p.CreatedBy = "tester"
+	r.mgr.mu.Unlock()
+	if cmd := paneCmdline(t, r.paneID); strings.Contains(cmd, "--resume") {
+		t.Fatalf("the rig started with --resume already: %q", cmd)
+	}
+	if err := r.mgr.RestartMoved(r.paneID); err != nil {
+		t.Fatalf("an idle pane was not restarted: %v", err)
+	}
+	if cmd := paneCmdline(t, r.paneID); !strings.Contains(cmd, "--resume "+r.sessionID) {
+		t.Fatalf("relaunch command line %q lacks --resume %s", cmd, r.sessionID)
+	}
+	if _, inflight := r.mgr.restart.state(r.paneID, ""); inflight {
+		t.Fatal("the restart is still marked in flight")
+	}
+}
+
+// A draft in the input box, or a turn running, keeps the pane as it is:
+// nothing is typed and the move's caller is told why.
+func TestRestartMovedLeavesADraftOrABusyPaneAlone(t *testing.T) {
+	r := newRestartRig(t, draftClaudeScript)
+	r.idleAnHour()
+	err := r.mgr.RestartMoved(r.paneID)
+	if err == nil || !strings.Contains(err.Error(), "input box is not empty") {
+		t.Fatalf("a draft: err = %v", err)
+	}
+	r.mgr.restart.clocks.attention(r.paneID, model.AttentionRunning, "", time.Now()) // a turn starts
+	if err := r.mgr.RestartMoved(r.paneID); err == nil || !strings.Contains(err.Error(), "working") {
+		t.Fatalf("a busy pane: err = %v", err)
+	}
+	if r.mgr.PaneAtShell(r.paneID) || strings.Contains(paneCmdline(t, r.paneID), "--resume") {
+		t.Fatal("the pane was exited or relaunched")
+	}
+	if _, inflight := r.mgr.restart.state(r.paneID, ""); inflight {
+		t.Fatal("a refused restart stayed in flight")
+	}
+}

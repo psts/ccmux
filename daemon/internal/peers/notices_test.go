@@ -30,6 +30,27 @@ func TestNotifyGroup_ReachesTheWindowButNotItsSubject(t *testing.T) {
 	}
 }
 
+// A session of the subject's own repo that the bus knows by another name
+// (a runner session registers as <repo>-s-<id>) is left out by its pane.
+func TestNotifyGroupSkip_LeavesOutTheSubjectsOwnPanes(t *testing.T) {
+	svc, hook := newTestService(t)
+	for _, pane := range []string{"p-fe", "p-admin-lead"} {
+		hook.setGroup(pane, "CL")
+	}
+	fe := registerPane(svc, "p-fe", "/r/frontend")
+	lead := registerPane(svc, "p-admin-lead", "/r/admin-s-1234")
+	own := func(paneID string) bool { return paneID == "p-admin-lead" }
+	if n := svc.NotifyGroupSkip("CL", "admin", own, "admin joined this window"); n != 1 {
+		t.Fatalf("reached %d sessions, want frontend only", n)
+	}
+	if evs, _ := svc.Poll(lead.PeerID); len(evs) != 0 {
+		t.Fatalf("the subject's own session heard about itself: %v", evs)
+	}
+	if evs, _ := svc.Poll(fe.PeerID); len(evs) != 1 {
+		t.Fatalf("frontend got %v", evs)
+	}
+}
+
 // A pane notice reaches only the session on that pane, from the bus itself;
 // a pane with no session on the bus is an error, not a silent drop.
 func TestNotifyPane_ReachesOnlyThatPane(t *testing.T) {

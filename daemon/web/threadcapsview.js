@@ -110,7 +110,8 @@
   }
 
   // menu is the right-click menu at a point on the page, over a backdrop
-  // that closes it.
+  // that closes it. An item is [label, fn], or [label, null, items] for one
+  // that opens its own list beside it (subItem).
   function menu(box, items, at, close) {
     box.textContent = "";
     box.onclick = (e) => { if (e.target === box) close(); };
@@ -119,12 +120,38 @@
     list.setAttribute("role", "menu");
     list.style.left = Math.max(4, at.x) + "px";
     list.style.top = Math.max(4, at.y) + "px";
-    for (const [label, fn] of items) {
-      const b = button(label, "ctx-item", () => { close(); fn(); });
-      b.setAttribute("role", "menuitem");
-      add(list, b);
-    }
+    for (const it of items) add(list, it[2] ? subItem(it, close) : menuItem(it, close));
     return add(box, list);
+  }
+
+  function menuItem([label, fn], close) {
+    const b = button(label, "ctx-item", () => { close(); fn(); });
+    b.setAttribute("role", "menuitem");
+    return b;
+  }
+
+  // subItem is an entry with its own list ("Move to group ›"). A mouse
+  // opens it by pointing at it; a click or a tap opens it too, and never
+  // shuts it (a tap is also a pointer entering). It opens to the right, or
+  // to the left where the right has no room; on a phone it opens in place
+  // (threads.css).
+  function subItem([label, , items], close) {
+    const wrap = el("div", "ctx-wrap");
+    const sub = el("div", "ctx-menu ctx-sub hidden");
+    sub.setAttribute("role", "menu");
+    for (const it of items) add(sub, menuItem(it, close));
+    const b = add(button("", "ctx-item ctx-parent", () => show(true)), el("span", "", label), el("span", "ctx-arrow", "›"));
+    b.setAttribute("role", "menuitem");
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
+    function show(on) {
+      sub.classList.toggle("hidden", !on);
+      b.setAttribute("aria-expanded", String(on));
+      if (on && wrap.getBoundingClientRect && typeof innerWidth === "number") sub.classList.toggle("flip", wrap.getBoundingClientRect().right + 220 > innerWidth);
+    }
+    wrap.onpointerenter = (e) => { if (e.pointerType === "mouse") show(true); };
+    wrap.onpointerleave = (e) => { if (e.pointerType === "mouse") show(false); };
+    return add(wrap, b, sub);
   }
 
   window.ccmuxThreadCapsView = { tab, panel, menu };

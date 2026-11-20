@@ -480,6 +480,10 @@ func TestPeersSessions_AndPaneBusContext(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&reg); err != nil || reg.PeerID == "" {
 		t.Fatalf("register: %d %v", resp.StatusCode, err)
 	}
+	// The repo's join made the window's shared folder (its grant,
+	// repomove.go); a window without one is what this reads first.
+	win, _, _ := f.srv.windowByName("Chart Labs")
+	os.RemoveAll(f.srv.agents.SharedDir(win.ID, win.Name))
 	resp = postJSON(t, f.base+"/v1/peers/sessions", tok, map[string]any{"peer_id": reg.PeerID})
 	var got struct {
 		Sessions []map[string]any `json:"sessions"`

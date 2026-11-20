@@ -99,3 +99,65 @@ func TestGrantRepoDir_CreatesTheFileWhenIgnored(t *testing.T) {
 		t.Fatalf("new file = %s %v", raw, err)
 	}
 }
+
+func TestRevokeRepoDir_TakesOnlyThatEntry(t *testing.T) {
+	repo := gitRepo(t, true)
+	path := filepath.Join(repo, ".claude", "settings.local.json")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(`{"permissions":{"allow":["Bash(npm test)"],"additionalDirectories":["/w/a/shared/app","/other"]},"model":"opus"}`), 0o600)
+	wrote, err := RevokeRepoDir(repo, "/w/a/shared/app")
+	if err != nil || !wrote {
+		t.Fatalf("revoke: wrote=%v err=%v", wrote, err)
+	}
+	var got map[string]any
+	raw, _ := os.ReadFile(path)
+	json.Unmarshal(raw, &got)
+	perms := got["permissions"].(map[string]any)
+	if dirs := perms["additionalDirectories"].([]any); len(dirs) != 1 || dirs[0] != "/other" {
+		t.Fatalf("dirs = %v, want only /other", dirs)
+	}
+	if got["model"] != "opus" || len(perms["allow"].([]any)) != 1 {
+		t.Fatalf("the rest of the file changed: %s", raw)
+	}
+	if wrote, _ := RevokeRepoDir(repo, "/w/a/shared/app"); wrote {
+		t.Fatal("a second revoke wrote again")
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want the file's own 0600", fi.Mode().Perm())
+	}
+}
+
+func TestRevokeRepoDir_LastEntryDropsTheKeyAndNoFileIsNoWrite(t *testing.T) {
+	repo := gitRepo(t, true)
+	if wrote, err := RevokeRepoDir(repo, "/x"); wrote || err != nil {
+		t.Fatalf("no file: wrote=%v err=%v", wrote, err)
+	}
+	path := filepath.Join(repo, ".claude", "settings.local.json")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(`{"permissions":{"additionalDirectories":["/x"]}}`), 0o644)
+	if wrote, err := RevokeRepoDir(repo, "/x"); !wrote || err != nil {
+		t.Fatalf("revoke: wrote=%v err=%v", wrote, err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "additionalDirectories") {
+		t.Fatalf("the empty list stayed: %s", raw)
+	}
+	os.WriteFile(path, []byte(`not json`), 0o644)
+	if _, err := RevokeRepoDir(repo, "/x"); err == nil {
+		t.Fatal("a file that does not parse was not refused")
+	}
+}
+
+func TestRevokeRepoDir_LeavesAFileGitTracks(t *testing.T) {
+	repo := gitRepo(t, false)
+	path := filepath.Join(repo, ".claude", "settings.local.json")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	body := `{"permissions":{"additionalDirectories":["/x"]}}`
+	os.WriteFile(path, []byte(body), 0o644)
+	if wrote, err := RevokeRepoDir(repo, "/x"); wrote || err == nil {
+		t.Fatalf("a file git does not ignore: wrote=%v err=%v", wrote, err)
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != body {
+		t.Fatalf("the file changed: %s", raw)
+	}
+}

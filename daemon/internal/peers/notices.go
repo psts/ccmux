@@ -14,11 +14,20 @@ import (
 // is not a message to it: like an asleep agent, it is left asleep and reads
 // the window's members when it next starts.
 func (s *Service) NotifyGroup(group, except, text string) int {
+	return s.NotifyGroupSkip(group, except, nil, text)
+}
+
+// NotifyGroupSkip is NotifyGroup that also leaves out every session whose
+// pane skip names: a repo's own sessions go by more names than its own (a
+// runner session registers as <repo>-s-<id>), so a name alone does not keep
+// a joining repo from hearing about itself. skip runs under the bus lock:
+// it may read the manager's memory, never the store.
+func (s *Service) NotifyGroupSkip(group, except string, skip func(paneID string) bool, text string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for _, p := range s.peers {
-		if p.Name == except || !s.noticeableLocked(p) || s.groupOfLocked(p) != group {
+		if p.Name == except || (skip != nil && skip(p.PaneID)) || !s.noticeableLocked(p) || s.groupOfLocked(p) != group {
 			continue
 		}
 		if err := s.deliverLocked(systemEvent(p, group, text)); err != nil {

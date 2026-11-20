@@ -370,6 +370,39 @@ a:hover { color: var(--blue-d); }
 .ctx-menu { position: absolute; min-width: 190px; background: var(--card); border: 1px solid var(--line3); border-radius: 8px; box-shadow: 0 6px 20px var(--shadow); padding: 4px; display: flex; flex-direction: column; }
 .ctx-item { text-align: left; border: 0; background: transparent; padding: 8px 10px; border-radius: 5px; font-size: 13px; }
 .ctx-item:hover, .ctx-item:focus-visible { background: var(--blue-bg); color: var(--blue); }
+/* An entry with its own list ("Move to group ›"): the list opens beside
+   it, to the left where the right has no room, and in place on a phone. */
+.ctx-wrap { position: relative; display: flex; flex-direction: column; }
+.ctx-parent { display: flex; justify-content: space-between; gap: 12px; }
+.ctx-arrow { color: var(--muted); }
+.ctx-sub { left: 100%; top: -5px; max-height: 60vh; overflow-y: auto; }
+.ctx-sub.flip { left: auto; right: 100%; }
+@media (max-width: 640px) {
+  .ctx-sub, .ctx-sub.flip { position: static; box-shadow: none; border: 0; padding: 0 0 0 12px; max-height: none; }
+}
+
+/* The sidebar's "+" and the dialog it opens (threadnewrepo.js). */
+.side-add { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); color: var(--fg2); font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0; }
+.side-add:hover { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); }
+.nr-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.nr-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+.nr-select, .nr-input { height: 32px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); color: var(--fg); font-size: 13px; padding: 0 8px; min-width: 0; }
+.nr-select { flex: 0 1 220px; }
+.nr-group .nr-input { flex: 1 1 160px; }
+.nr-path { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.nr-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; max-height: 50vh; overflow-y: auto; }
+.nr-list li { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 4px; }
+.nr-list li + li { border-top: 1px solid var(--line); }
+.nr-name { flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; padding: 7px 8px; border-radius: 6px; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nr-name:hover { background: var(--soft); }
+.nr-git { flex: none; font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--chip); border-radius: 4px; padding: 0 5px; line-height: 17px; }
+.nr-add { flex: none; width: 30px; height: 30px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); font-size: 16px; line-height: 1; padding: 0; }
+.nr-add:hover { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); }
+.nr-note { font-size: 12.5px; color: var(--muted); }
+.nr-folder { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.nr-folder .nr-input { flex: 1 1 180px; }
+.nr-check { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--fg2); }
+.nr-folder .primary { height: 32px; }
 
 .overlay { position: fixed; inset: 0; z-index: 20; background: var(--scrim); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; overflow-y: auto; }
 .sheet { background: var(--card); color: var(--fg); border-radius: 12px; box-shadow: 0 8px 30px var(--shadow); width: 100%; max-width: 760px; display: flex; flex-direction: column; }
