@@ -61,7 +61,11 @@ func (s *Service) mergeView(th store.Thread) *MergeView {
 		return nil
 	}
 	job, err := s.Jobs.LastJob(mergeSubject(th.ID))
-	if err != nil || job == nil {
+	if err != nil {
+		log.Printf("threads: #%d: its merge job was not read, so its page shows none: %v", th.ID, err)
+		return nil
+	}
+	if job == nil {
 		return nil
 	}
 	v := &MergeView{Job: job.ID, Unit: s.Jobs.Unit(job.ID), StartedAt: job.StartedAt, Attempts: job.Attempts}
@@ -89,9 +93,13 @@ func (s *Service) endedMerge(job store.Job) (state, checkLog string) {
 	}
 	res, err := s.Jobs.Result(job.ID)
 	if err != nil {
+		log.Printf("threads: job %s: its result was not read, so its page names no failed check: %v", job.ID, err)
 		return "failed", ""
 	}
-	out, _ := taskq.ReadLandOutput(res)
+	out, err := taskq.ReadLandOutput(res)
+	if err != nil {
+		log.Printf("threads: job %s: its result was not understood, so its page names no failed check: %v", job.ID, err)
+	}
 	return "failed", out.CheckLog
 }
 

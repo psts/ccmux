@@ -550,3 +550,60 @@ func TestAMergingThreadIsNotResetWhenItsJobCannotBeRead(t *testing.T) {
 		t.Fatal("and a second start says nothing more")
 	}
 }
+
+// A helper that joins while the merge job runs (after the team was kept on
+// the job's row, before its end is acted on) is stood down with the rest:
+// it is on no list the merge made.
+func TestAHelperThatJoinsDuringTheMergeIsStoodDownWithTheRest(t *testing.T) {
+	r := newRig(t)
+	th, lead := r.thread("Trade CSV export")
+	lead, backend := r.edits(lead.ID), r.edits(r.helper(th, "backend").ID)
+	job, res := r.asksMerge(th, ByLead)
+	ask, err := readAsk(job)
+	if err != nil || len(ask.Members) != 2 {
+		t.Fatalf("the rig: the merge found the lead and one helper: %+v %v", ask, err)
+	}
+	late := r.edits(r.helper(th, "admin").ID)
+	if err := r.svc.MergeHandler().Apply(job, res); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []store.RunnerSession{backend, late} {
+		if got := r.row(h.ID); got.Wanted != store.SessionDone {
+			t.Fatalf("every helper is stood down, the one that joined during the merge too: %+v", got)
+		}
+	}
+	if removed := r.removed(); !strings.Contains(removed, "backend") || !strings.Contains(removed, "admin") {
+		t.Fatalf("the late helper's worktree is tidied like the others: %s", removed)
+	}
+	if got := r.row(lead.ID); got.Wanted != store.SessionRunning {
+		t.Fatalf("the lead stays: %+v", got)
+	}
+}
+
+// membersFail is a registry whose members cannot be read.
+type membersFail struct {
+	Store
+	err error
+}
+
+func (m membersFail) ThreadMembers(int64) ([]store.RunnerSession, error) { return nil, m.err }
+
+// When the members cannot be read at the merge's end, the helpers the merge
+// found are still stood down, from its own copy, and what is left says that
+// one who joined since may still be there.
+func TestHelpersThatCannotBeReadAtTheMergesEndAreSaidAsLeft(t *testing.T) {
+	r, th, _, backend, admin := team(t)
+	job, _ := r.asksMerge(th, ByLead)
+	ask, err := readAsk(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.svc.St = membersFail{Store: r.st, err: errors.New("database is locked")}
+	helpers, left := r.svc.helpersToEnd(ask)
+	if len(helpers) != 2 || helpers[0].ID != backend.ID || helpers[1].ID != admin.ID || helpers[0].Worktree != backend.Worktree {
+		t.Fatalf("the merge's own copy of its helpers stands, with their worktrees: %+v", helpers)
+	}
+	if len(left) != 1 || !strings.Contains(left[0], "joined during the merge") || !strings.Contains(left[0], "database is locked") {
+		t.Fatalf("what is left names the helpers that could not be read, and why: %v", left)
+	}
+}

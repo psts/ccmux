@@ -149,7 +149,12 @@ func (s runSteps) Finished(key string, data any)  { s.r.Finished(key, data) }
 // mark at its start undoes the rebase that left it. Only a rebase a
 // landing job itself was cut off in is undone this way: a worktree its own
 // worker left mid-rebase has no mark, and fails as it always did.
-type markedGit struct{ ExecGit }
+type markedGit struct {
+	ExecGit
+	// abort undoes the rebase a worktree is in; nil is git's own. A test
+	// gives one that fails.
+	abort func(worktree string) error
+}
 
 // RebaseMark is the file a landing job leaves beside a worktree while it
 // rebases there.
@@ -176,8 +181,44 @@ func (g markedGit) undoCutRebases(tag string, work []Work) {
 		if _, err := os.Stat(mark); err != nil {
 			continue
 		}
-		_, err := runGit(w.Worktree, "rebase", "--abort")
-		log.Printf("%s: %s: an earlier merge was cut off while rebasing %s; that rebase is undone (%v)", tag, w.Label, w.Worktree, err)
+		err := g.abortRebase(w.Worktree)
+		switch {
+		case err == nil:
+			log.Printf("%s: %s: an earlier merge was cut off while rebasing %s; that rebase is undone", tag, w.Label, w.Worktree)
+		case !midRebase(w.Worktree):
+			// Cut off before the rebase began or after it ended: the mark
+			// outlived it, and there is nothing to undo.
+			log.Printf("%s: %s: an earlier merge left its rebase mark beside %s, which is not mid-rebase; the mark is removed (%v)", tag, w.Label, w.Worktree, err)
+		default:
+			// The mark stays: the worktree is still mid-rebase, and the next
+			// landing job tries again.
+			log.Printf("%s: %s: an earlier merge was cut off while rebasing %s; that rebase is NOT undone, and its mark stays: %v", tag, w.Label, w.Worktree, err)
+			continue
+		}
 		os.Remove(mark)
 	}
+}
+
+func (g markedGit) abortRebase(worktree string) error {
+	if g.abort != nil {
+		return g.abort(worktree)
+	}
+	_, err := runGit(worktree, "rebase", "--abort")
+	return err
+}
+
+// midRebase reports whether a worktree is in the middle of a rebase, from
+// the two folders git keeps one in. An answer that cannot be had counts as
+// yes: the mark of a cut rebase is only removed when it is known to be over.
+func midRebase(worktree string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		dir, err := runGit(worktree, "rev-parse", "--path-format=absolute", "--git-path", name)
+		if err != nil {
+			return true
+		}
+		if _, err := os.Stat(dir); err == nil {
+			return true
+		}
+	}
+	return false
 }

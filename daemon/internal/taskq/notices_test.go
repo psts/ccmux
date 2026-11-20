@@ -2,6 +2,8 @@ package taskq
 
 import (
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -180,4 +182,32 @@ func sentBackAgain(t *testing.T, g *rig, app store.Part) store.TaskNotice {
 		t.Fatal(err)
 	}
 	return g.st.notices[len(g.st.notices)-1]
+}
+
+// A notice found waiting (the daemon started with one in the outbox) and
+// not taken is tried again for NoticeLimit. Its first miss is logged, with
+// the reason, and the passes after it are not: ten minutes of silence must
+// not read as nothing wrong, nor fill the log. A send-back that fails at
+// once is logged where it happens (sendback.go), and not a second time here.
+func TestNotice_TheFirstMissedDeliveryIsLoggedOnce(t *testing.T) {
+	g := newRig(t)
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	app := sentBackUnheard(t, g)
+	g.tick()
+	if n := strings.Count(logged.String(), "did not take a notice"); n != 0 {
+		t.Fatalf("a miss the send-back already logged is not logged again: %s", logged.String())
+	}
+	g.r.missed = nil // a new daemon, with the notice waiting
+	for i := 0; i < 3; i++ {
+		g.now = g.now.Add(time.Minute)
+		g.tick()
+	}
+	if n := strings.Count(logged.String(), "did not take a notice"); n != 1 {
+		t.Fatalf("the first miss is logged, once, got %d: %s", n, logged.String())
+	}
+	if !strings.Contains(logged.String(), "pane "+app.PaneID) || !strings.Contains(logged.String(), "no Claude is on the bus") {
+		t.Fatalf("the line names the worker's pane and the reason: %s", logged.String())
+	}
 }

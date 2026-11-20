@@ -134,7 +134,12 @@ func (s *Service) builderEnded(sess store.RunnerSession) {
 		log.Printf("threads: #%d: a builder ended and its teammates were not read: %v", th.ID, err)
 		return
 	}
-	if th, err = s.St.Thread(th.ID); err != nil || th == nil || len(left) > 0 || th.State == store.ThreadEnded {
+	id := th.ID
+	if th, err = s.St.Thread(id); err != nil {
+		log.Printf("threads: #%d: a builder ended and its thread was not read again, so it is not closed: %v", id, err)
+		return
+	}
+	if th == nil || len(left) > 0 || th.State == store.ThreadEnded {
 		return
 	}
 	th.State, th.UpdatedAt = store.ThreadEnded, s.millis()

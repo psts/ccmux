@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,5 +226,55 @@ func TestALandingCutOffByItsTimeLimitIsNotAFailedCheck(t *testing.T) {
 	res, ok := out.(LandOutput)
 	if err != nil || !ok || res.OK || res.Fixable != 0 || !strings.Contains(res.Error, "checks failed") {
 		t.Fatalf("a check that fails by itself is the worker's to fix, as ever: %+v %v", out, err)
+	}
+}
+
+// A cut rebase that cannot be undone keeps its mark, so the next landing
+// job tries again, and the log does not call it undone. A mark beside a
+// worktree that is not mid-rebase (the job was cut before the rebase began)
+// has nothing to undo and goes.
+func TestARebaseThatCannotBeUndoneKeepsItsMark(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	wt := filepath.Join(t.TempDir(), "thread-4")
+	if err := g.AddWorktree(repo, wt, "thread/4-x", "main"); err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, wt, "shared.txt", "theirs")
+	commitFile(t, repo, "shared.txt", "ours")
+	runGit(wt, "rebase", "main") // clashes: the worktree is left mid-rebase
+	os.WriteFile(RebaseMark(wt), []byte("then\n"), 0o644)
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	work := []Work{{RepoPath: repo, Worktree: wt, Branch: "thread/4-x", Label: "#4"}}
+
+	failing := markedGit{abort: func(string) error { return errors.New("index.lock exists") }}
+	failing.undoCutRebases("test", work)
+	if _, err := os.Stat(RebaseMark(wt)); err != nil {
+		t.Fatalf("the mark of a rebase that was not undone stays: %v", err)
+	}
+	if got := logged.String(); !strings.Contains(got, "NOT undone") || !strings.Contains(got, "index.lock exists") || strings.Contains(got, "rebase is undone") {
+		t.Fatalf("the log says it was not undone, and why: %s", got)
+	}
+
+	logged.Reset()
+	markedGit{}.undoCutRebases("test", work)
+	if _, err := os.Stat(RebaseMark(wt)); !os.IsNotExist(err) {
+		t.Fatal("undone for real, the mark goes")
+	}
+	if got := logged.String(); !strings.Contains(got, "that rebase is undone") {
+		t.Fatalf("and the log says so: %s", got)
+	}
+
+	// A mark with no rebase behind it.
+	os.WriteFile(RebaseMark(wt), []byte("then\n"), 0o644)
+	logged.Reset()
+	markedGit{}.undoCutRebases("test", work)
+	if _, err := os.Stat(RebaseMark(wt)); !os.IsNotExist(err) {
+		t.Fatal("a mark beside a worktree that is not mid-rebase is removed")
+	}
+	if got := logged.String(); !strings.Contains(got, "not mid-rebase") || strings.Contains(got, "NOT undone") {
+		t.Fatalf("and the log says there was nothing to undo: %s", got)
 	}
 }

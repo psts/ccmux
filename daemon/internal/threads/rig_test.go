@@ -256,6 +256,7 @@ type fakeJobs struct {
 	n        int
 	startErr error
 	openErr  error // what OpenJob fails with, when set
+	lastErr  error // what LastJob fails with, when set
 	manual   bool
 	started  []jobs.New
 	stopped  []string
@@ -335,8 +336,16 @@ func (f *fakeJobs) OpenJob(subject string) (*store.Job, error) {
 	return f.r.st.OpenJob(subject)
 }
 
-func (f *fakeJobs) LastJob(subject string) (*store.Job, error) { return f.r.st.LastJob(subject) }
-func (f *fakeJobs) Unit(id string) string                      { return "ccmux-job-test@" + id + ".service" }
+func (f *fakeJobs) LastJob(subject string) (*store.Job, error) {
+	f.mu.Lock()
+	err := f.lastErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return f.r.st.LastJob(subject)
+}
+func (f *fakeJobs) Unit(id string) string { return "ccmux-job-test@" + id + ".service" }
 
 func (f *fakeJobs) Steps(id string) ([]jobs.Entry, error) {
 	return jobs.ReadJournal(filepath.Join(f.dir, id, "journal.jsonl"))

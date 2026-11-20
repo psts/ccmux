@@ -77,7 +77,11 @@ func (r *Runner) deliverNotices(parts []store.Part) (untold map[int64]bool, chan
 			r.endNotice(n, "its part is no longer waiting to hear it")
 			continue
 		}
+		_, missedBefore := r.missed[n.ID]
 		err := r.tell(n)
+		if err != nil && !missedBefore {
+			log.Printf("tasks: #%d: its worker (pane %s) did not take a notice; it is tried again on every pass for %s: %v", n.TaskID, n.PaneID, NoticeLimit, err)
+		}
 		switch {
 		case err == nil:
 		case r.Now().Sub(r.missedSince(n.ID)) <= NoticeLimit:
