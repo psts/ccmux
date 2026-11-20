@@ -64,7 +64,10 @@ a:hover { color: var(--blue-d); }
 .side-note, .side-alone { margin-bottom: 8px; }
 .group-name { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--fg); padding: 2px 8px; }
 .group-body { display: flex; flex-direction: column; gap: 1px; padding-left: 20px; margin-top: 4px; }
-.side-sub { font-size: 11px; font-weight: 600; color: var(--muted); padding: 12px 8px 2px; }
+/* The Agents heading looks like the Tasks row; the agents under it are
+   indented like a repo's threads. */
+.side-sub { display: flex; gap: 10px; align-items: center; padding: 5px 8px; margin-top: 6px; color: var(--fg); }
+#tree .row.agent { padding-left: 22px; }
 .repo { display: flex; flex-direction: column; gap: 1px; }
 .row { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; padding: 7px 8px; border-radius: 8px; border: 0; background: transparent; }
 /* A finger needs a 44px target; a mouse does not, so on a computer the row is
@@ -74,8 +77,11 @@ a:hover { color: var(--blue-d); }
 #tree .row { padding: 5px 8px; }
 #tree .row.thread { padding-left: 22px; }
 #tree .dot { width: 6px; height: 6px; margin-top: 7.5px; }
-#tree .row-name { font-weight: 400; }
-#tree .row.on .row-name { font-weight: 600; }
+/* Repo and agent names are always bold, so they stand apart from the git
+   lines under them; a thread's title is plain until it is the one open. */
+#tree .row-name { font-weight: 600; }
+#tree .row.thread .row-name { font-weight: 400; }
+#tree .row.thread.on .row-name { font-weight: 600; }
 .row:hover { background: var(--hover); }
 .row.on { background: var(--card); box-shadow: 0 1px 2px var(--lift); }
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--asleep); }

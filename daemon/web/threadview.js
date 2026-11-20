@@ -230,12 +230,13 @@
   }
 
   // gitDetail is the repo's git state written out, inside its row's card,
-  // for each repo whose details the person opened: where it is, how its branch stands, and
-  // whether anything is changed.
+  // for each repo whose details the person opened: how its branch stands and
+  // whether anything is changed. Its folder is left out: the row's title
+  // carries it.
   function gitDetail(r) {
     const g = r.git;
     const state = g.dirty ? el("span", "git-dirty", "● " + g.clean) : el("span", "git-clean", "✓ Clean, no changes");
-    return add(el("span", "git-detail"), r.path ? el("span", "git-path", r.path) : null, el("span", "", g.track), g.vs ? el("span", "", g.vs) : null, state);
+    return add(el("span", "git-detail"), el("span", "", g.track), g.vs ? el("span", "", g.vs) : null, state);
   }
 
   // withMenu gives a sidebar item its right-click menu (ctx.menu), and a
@@ -316,7 +317,7 @@
     const open = !!r.git && ctx.detailOpen(r);
     const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + (open ? " open" : "") + attClass(r.state));
     row.type = "button";
-    row.title = r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet";
+    row.title = (r.path ? r.path + "\n" : "") + (r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet");
     row.onclick = () => ctx.pickRepo(r);
     const top = add(el("span", "row-top cols"), el("span", "row-name", r.name), ...gitCols(r.git));
     add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
@@ -396,8 +397,15 @@
     if (S && S.folded(g)) { box.classList.add("folded"); return box; }
     const tasks = g.id && ctx.tasks ? tasksRow(g, ctx) : null;
     const agents = (g.agents || []).map((a) => agentEl(a, ctx, g));
-    const body = add(el("div", "group-body"), tasks, ...g.repos.map((r) => repoEl(r, ctx, g)), agents.length ? el("div", "side-sub", "Agents") : null, ...agents);
+    const body = add(el("div", "group-body"), tasks, ...g.repos.map((r) => repoEl(r, ctx, g)), agents.length ? agentsHead() : null, ...agents);
     return add(box, body);
+  }
+
+  // agentsHead is the "Agents" heading, drawn like the Tasks row (an icon
+  // and the word) so the two read as the same kind of thing. It is not a
+  // button: nothing opens from it.
+  function agentsHead() {
+    return add(el("div", "side-sub"), el("span", "st-icon", "⚙"), el("span", "st-name", "Agents"));
   }
 
   // agentEl is a role agent's row, under its group's "Agents" heading: its

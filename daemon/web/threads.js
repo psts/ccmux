@@ -304,16 +304,17 @@
     });
   }
 
-  // pickRepo goes to a repo's lead and opens its git details; clicking the
-  // lead the page already shows opens or closes them instead. Open details
-  // stay open, several at once, and are kept for the next load.
+  // pickRepo goes to a repo's lead; a click on the repo the page is already
+  // in opens or closes its git details instead, so they never open on the
+  // way in. Open details stay open, several at once, and are kept for the
+  // next load.
   function pickRepo(r) {
     const here = S.sel.kind === "session" ? !!r.lead && r.lead.id === S.sel.id : S.sel.kind === "draft" && S.sel.as === "lead" && S.sel.ws === r.id;
-    if (here && S.details.has(r.id)) S.details.delete(r.id);
+    if (!here) return select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" });
+    if (S.details.has(r.id)) S.details.delete(r.id);
     else S.details.add(r.id);
     try { storage().setItem(DETAILS, JSON.stringify([...S.details])); } catch (_) { /* blocked: kept for this load */ }
-    if (here) drawAll();
-    else select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" });
+    drawAll();
   }
 
   // liveState is where the picked session is right now: its row's word,

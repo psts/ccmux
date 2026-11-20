@@ -444,7 +444,7 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
   assert.equal(p.$("restarted-bar").textContent, "Restarted on Haiku. The session picked up where it was.");
 });
 
-test("a repo's git details open on a click, stay open beside others, and close on a click on the repo the page is in", async () => {
+test("a repo's git details open on a click on the repo the page is in, never on the way to another, stay open beside others, and close on the next click", async () => {
   const other = { id: "ws2", name: "web", repoPath: "/p/web", git: { isGitRepo: true, branch: "main" } };
   const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, modifiedFiles: ["a.ts"] } };
   const kept = {};
@@ -459,7 +459,7 @@ test("a repo's git details open on a click, stay open beside others, and close o
   await p.settle();
   assert.equal(p.book.pushed.length, 0, "the repo the page is in: no move");
   assert.equal(rows()[0].className, "row on open");
-  assert.deepEqual(rows()[0].querySelector(".git-detail").children.map((c) => c.textContent), ["/p/app", "dev → origin/dev ↑2", "● 1 changed file"]);
+  assert.deepEqual(rows()[0].querySelector(".git-detail").children.map((c) => c.textContent), ["dev → origin/dev ↑2", "● 1 changed file"], "no folder: it is in the row's hover tip");
   assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more", "side-todo"], "beside the card, not inside it: its menu button, which only a phone shows (threads.css), and the repo's to-do pill, both laid over the card");
   const pill = p.$("tree").querySelectorAll(".repo")[0].querySelector(".side-todo");
   assert.equal(pill.querySelector(".sd-count").className, "sd-count", "the repo the page is in shows its pill with nothing on its list, so a first item can be added");
@@ -470,8 +470,11 @@ test("a repo's git details open on a click, stay open beside others, and close o
   rows()[1].click();
   await p.settle();
   assert.equal(p.book.pushed.pop(), "/threads.html?ws=ws2&new=lead", "another repo: the page goes there");
-  assert.deepEqual(opened(), [true, true], "and both stay open");
+  assert.deepEqual(opened(), [true, false], "and its details stay shut on the way in");
   assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row open", "side-more"], "a repo the page is not in, with nothing on its list, has no to-do pill");
+  rows()[1].click();
+  await p.settle();
+  assert.deepEqual(opened(), [true, true], "a second click opens them, and both stay open");
   rows()[1].click();
   await p.settle();
   assert.deepEqual(opened(), [true, false], "a click on the repo the page is in closes its details");
@@ -506,7 +509,7 @@ test("a group lists its repos by name, then its agents by name, and an agent ope
   assert.deepEqual(rows.map((r) => r.querySelector(".row-name").textContent), ["api", "app", "radar", "x-post"]);
   assert.deepEqual(rows.slice(2).map((r) => [r.className, r.querySelector(".dot").className]), [["row agent", "dot live"], ["row agent", "dot asleep"]]);
   const body = p.$("tree").querySelector(".group-body");
-  assert.deepEqual(body.children.map((c) => c.className + ":" + (c.classList.contains("side-sub") ? c.textContent : "")).slice(-3), ["side-sub:Agents", "row agent:", "row agent:"], "the agents come under their own heading, after the repos");
+  assert.deepEqual(body.children.map((c) => c.className + ":" + (c.classList.contains("side-sub") ? c.textContent : "")).slice(-3), ["side-sub:⚙Agents", "row agent:", "row agent:"], "the agents come under their own heading, after the repos");
   rows[2].click();
   assert.equal(p.where(), "/?w=w1&ws=radar");
   assert.equal(p.posts().length, 0, "opening an agent starts nothing");
@@ -649,9 +652,9 @@ test("a thread is filed under its lead's repo with who it works with, and its he
   const att = (r) => (r.className.match(/att-\w+/) || [""])[0];
   const rows = p.$("tree").querySelectorAll(".row").map((r) => [r.querySelector(".row-name").textContent, r.title, att(r)]);
   assert.deepEqual(rows, [
-    ["app", "lead idle", ""],
+    ["app", "/p/app\nlead idle", ""],
     ["Trade CSV export", "with backend · needs you", "att-waiting"],
-    ["backend", "no lead yet", ""],
+    ["backend", "/p/backend\nno lead yet", ""],
   ], "no second line: the state is a hover tip, and a row that needs you pulses like the lens");
   assert.equal(p.$("tree").querySelectorAll(".row-sub").length, 0);
   assert.equal(p.$("tree").querySelectorAll(".row.thread")[0].querySelector(".dot").className, "dot waiting", "the helper's question shows on the thread");
