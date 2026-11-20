@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -150,6 +153,9 @@ func (p *fakeProc) Abort(context.Context, string) error {
 func (p *fakeProc) SetMode(_ context.Context, mode string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.down {
+		return errors.New("connection refused")
+	}
 	if mode == "nope" {
 		return fmt.Errorf("%w: not a mode to switch to: nope", runner.ErrRunnerSaidNo)
 	}
@@ -560,5 +566,26 @@ func TestModeAndTaskStopReachARunningSessionsRunner(t *testing.T) {
 	r.sup.set(store.SessionAsleep)
 	if w := callSessions(t, r.srv, "POST", "/v1/sessions/s1/mode", `{"mode":"plan"}`); w.Code != http.StatusConflict || len(r.proc.did) != 2 {
 		t.Fatalf("asleep, there is no session to switch: %d %v", w.Code, r.proc.did)
+	}
+}
+
+func TestModeSaysWhenItCouldNotTell(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	r := newStreamRig(t)
+	r.sup.set(stateUnknown)
+	if w := callSessions(t, r.srv, "POST", "/v1/sessions/s1/mode", `{"mode":"plan"}`); w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), "not running") || len(r.proc.did) != 0 {
+		t.Fatalf("an unread state is not \"not running\": %d %s %v", w.Code, w.Body, r.proc.did)
+	}
+	r.sup.set(store.SessionRunning)
+	r.proc.mu.Lock()
+	r.proc.down = true
+	r.proc.mu.Unlock()
+	if w := callSessions(t, r.srv, "POST", "/v1/sessions/s1/mode", `{"mode":"plan"}`); w.Code != http.StatusBadGateway {
+		t.Fatalf("a runner that is not there: %d %s", w.Code, w.Body)
+	}
+	if !strings.Contains(logged.String(), "switch modes on s1: the runner did not take it: connection refused") {
+		t.Fatalf("the 502 is not in the daemon's log: %q", logged.String())
 	}
 }
