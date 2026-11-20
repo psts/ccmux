@@ -1675,3 +1675,18 @@ test("typing @ lists the session's matching files, and a pick puts the path in t
   assert.ok(p.$("mentions").classList.contains("hidden"));
   assert.equal(p.book.calls.filter((c) => c.url.endsWith("/prompt")).length, 0);
 });
+
+test("an @ list that cannot be read says why on the page", async () => {
+  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [
+    [/^GET \/v1\/sessions\/lead1\/files/, () => ({ fail: 502, error: "the files could not be listed: git ls-files: exit status 128: fatal: detected dubious ownership" })],
+  ] });
+  await p.frame(snapshot());
+  const input = p.$("input");
+  input.value = "@he";
+  input.selectionStart = 3;
+  input.oninput();
+  p.book.timers.pop().fn();
+  await p.settle();
+  assert.match(p.$("error-bar").textContent, /Files to mention could not be listed: .*dubious ownership/);
+  assert.ok(p.$("mentions").classList.contains("hidden"));
+});

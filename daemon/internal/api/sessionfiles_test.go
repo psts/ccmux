@@ -3,11 +3,15 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 func TestMatchFilesRanksFileNamesBeforePaths(t *testing.T) {
@@ -68,5 +72,57 @@ func TestGitFilesListsTrackedAndNewButNotIgnored(t *testing.T) {
 	}
 	if _, err := gitFiles(context.Background(), t.TempDir()); !errors.Is(err, errNotRepo) {
 		t.Fatalf("a folder that is no repo: %v", err)
+	}
+}
+
+// Only git's own "not a repository" is a quiet empty list: a folder that
+// is gone and a git that ran out of time are failures, with a reason.
+func TestGitFilesTellsNotARepoFromAFailure(t *testing.T) {
+	if _, err := gitFiles(context.Background(), filepath.Join(t.TempDir(), "gone")); err == nil || errors.Is(err, errNotRepo) || !strings.Contains(err.Error(), "cannot change to") {
+		t.Fatalf("a folder that is gone is a failure, with git's reason: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := gitFiles(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("out of time is said as such, not as not-a-repo: %v", err)
+	}
+}
+
+// rowsFor stands in for the session rows: one session in dir, or a read
+// that fails.
+type rowsFor struct {
+	runnerRows
+	sess *store.RunnerSession
+	err  error
+}
+
+func (r rowsFor) RunnerSession(string) (*store.RunnerSession, error) { return r.sess, r.err }
+
+func TestSessionFilesRouteAnswers(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "head.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		rows rowsFor
+		code int
+		says string
+	}{
+		{"a repo", rowsFor{sess: &store.RunnerSession{ID: "s1", Cwd: repo}}, http.StatusOK, `"head.go"`},
+		{"no repo", rowsFor{sess: &store.RunnerSession{ID: "s1", Cwd: t.TempDir()}}, http.StatusOK, "not a git repo"},
+		{"folder gone", rowsFor{sess: &store.RunnerSession{ID: "s1", Cwd: filepath.Join(repo, "gone")}}, http.StatusBadGateway, "could not be listed"},
+		{"no session", rowsFor{}, http.StatusNotFound, ""},
+		{"rows unread", rowsFor{err: errors.New("database is locked")}, http.StatusInternalServerError, "database is locked"},
+	}
+	for _, c := range cases {
+		s := &Server{runners: &fakeRunners{}, runnerRows: c.rows}
+		w := callSessions(t, s, "GET", "/v1/sessions/s1/files?q=he", "")
+		if w.Code != c.code || !strings.Contains(w.Body.String(), c.says) {
+			t.Errorf("%s: want %d %q, got %d %s", c.name, c.code, c.says, w.Code, w.Body)
+		}
 	}
 }

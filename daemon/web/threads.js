@@ -83,6 +83,7 @@
   });
   const Mention = window.ccmuxThreadMention.create({
     input: $("input"), box: $("mentions"), later: (fn, ms) => setTimeout(fn, ms),
+    failed: (text) => { S.error = text; drawAll(); },
     files: async (q) => {
       const sess = session();
       if (!sess) return [];

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"path"
 	"sort"
@@ -59,22 +61,22 @@ func (s *Server) sessionFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 // errNotRepo is a folder git does not know: it has nothing to mention,
-// and that is no failure.
+// and that is no failure. Only git's own words say so (read in the C
+// locale, so in English whatever the daemon's language): a folder that is
+// gone, a repo git will not trust, a git that ran out of time are
+// failures, to be logged and said.
 var errNotRepo = errors.New("not a git repository")
 
 // gitFiles is every file git tracks or would track (not ignored) under dir.
 func gitFiles(ctx context.Context, dir string) ([]string, error) {
-	// Asked first, not read from ls-files' error: git words that in the
-	// daemon's language.
-	inside, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree").Output()
-	var exit *exec.ExitError
-	if errors.As(err, &exit) || (err == nil && strings.TrimSpace(string(inside)) != "true") {
-		return nil, errNotRepo
-	}
+	inside, err := git(ctx, dir, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
 		return nil, err
 	}
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "ls-files", "-co", "--exclude-standard", "-z").Output()
+	if strings.TrimSpace(string(inside)) != "true" {
+		return nil, errNotRepo // inside a .git folder: no work tree to list
+	}
+	out, err := git(ctx, dir, "ls-files", "-co", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +87,29 @@ func gitFiles(ctx context.Context, dir string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// git runs one git command in dir and returns its output. A failure says
+// git's reason; one that ran out of time says so, not "signal: killed".
+func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
+	if err == nil {
+		return out, nil
+	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("git %s: %w", args[0], ctx.Err())
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return nil, fmt.Errorf("git %s: %w", args[0], err)
+	}
+	said := strings.TrimSpace(string(exit.Stderr))
+	if strings.Contains(said, "not a git repository") {
+		return nil, errNotRepo
+	}
+	return nil, fmt.Errorf("git %s: %v: %s", args[0], err, said)
 }
 
 // matchFiles ranks paths for typed text q, case aside: a file name that

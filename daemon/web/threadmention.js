@@ -26,7 +26,8 @@
   }
 
   // create wires it to the box: d.input and d.box are the elements, d.files(q)
-  // the matching paths (a promise), d.later(fn, ms) the page's timer.
+  // the matching paths (a promise), d.later(fn, ms) the page's timer, and
+  // d.failed(text) says a list that could not be read.
   function create(d) {
     const st = { at: null, files: [], on: 0, gen: 0 };
 
@@ -43,7 +44,7 @@
       st.at = at;
       d.later(async () => {
         if (gen !== st.gen) return;
-        const files = await d.files(at.query).catch((e) => { console.warn("@ files not listed:", e.message); return []; });
+        const files = await d.files(at.query).catch((e) => { d.failed("Files to mention could not be listed: " + e.message); return []; });
         if (gen !== st.gen) return;
         Object.assign(st, { files, on: 0 });
         draw();

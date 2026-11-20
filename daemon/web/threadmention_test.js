@@ -23,7 +23,7 @@ test("a list still being asked for when the box is sent never shows", async () =
   const timers = [];
   const box = { classList: { hidden: true, add() { this.hidden = true; }, toggle(_, on) { this.hidden = !!on; }, contains() { return this.hidden; } }, textContent: "", appendChild() {} };
   const input = { value: "@READ", selectionStart: 5, focus() {} };
-  const m = M.create({ input, box, later: (fn) => timers.push(fn), files: async () => ["README.md"] });
+  const m = M.create({ input, box, later: (fn) => timers.push(fn), files: async () => ["README.md"], failed: () => {} });
   m.changed();
   m.close(); // the box was sent before the list came
   await timers[0]();
