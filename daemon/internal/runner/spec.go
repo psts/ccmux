@@ -252,8 +252,9 @@ func (c Config) attach(sp *Spec, sess store.RunnerSession, paths Paths) ([]strin
 }
 
 // runArgs are what a session's Claude runs with besides its model: its
-// effort and its permission mode, each only when its row names one. A
-// person's own session names neither and keeps what their settings choose.
+// effort, its permission mode and its advisor, each only when its row names
+// one. A person's own session names none of them unless they picked an
+// advisor, and keeps what their settings choose.
 func runArgs(sess store.RunnerSession) []string {
 	var args []string
 	if sess.Effort != "" {
@@ -261,6 +262,9 @@ func runArgs(sess store.RunnerSession) []string {
 	}
 	if sess.PermissionMode != "" {
 		args = append(args, "--permission-mode", sess.PermissionMode)
+	}
+	if sess.Advisor != "" {
+		args = append(args, "--advisor", sess.Advisor)
 	}
 	return args
 }

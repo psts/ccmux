@@ -621,6 +621,25 @@ test("a task's builder runs in the mode and at the effort its row names", () => 
   assert.equal(pane.sdk.queries[0].options.permissionMode, "default");
 });
 
+test("a runner starts with the advisor its row names, and tells its page which it runs with", () => {
+  const settings = { "/home/u/.claude/settings.json": JSON.stringify({ advisorModel: "fable" }) };
+  const readFile = (p) => { if (p in settings) return settings[p]; const e = new Error("no"); e.code = "ENOENT"; throw e; };
+  const plain = runnerAgent({ env: { HOME: "/home/u" }, readFile });
+  plain.agent.prompt("hi", "p1");
+  assert.equal(plain.sdk.queries[0].options.settings, undefined, "no pick: the person's settings choose");
+  assert.deepEqual(plain.agent.info.advisor, { model: "fable", from: "settings", settings: "fable" });
+  const picked = runnerAgent({ env: { HOME: "/home/u" }, readFile, advisor: "opus" });
+  picked.agent.prompt("hi", "p1");
+  assert.equal(picked.sdk.queries[0].options.settings.advisorModel, "opus");
+  assert.deepEqual(picked.agent.info.advisor, { model: "opus", from: "session", settings: "fable" });
+  // A settings file that does not parse is said in the log.
+  const broken = runnerAgent({ env: { HOME: "/home/u" }, readFile: (p) => (p === "/home/u/.claude/settings.json" ? "{oops" : readFile(p)) });
+  assert.equal(broken.agent.info.advisor.model, "");
+  assert.ok(broken.out.some((l) => /settings\.json is not JSON, so it names no advisor/.test(l)), broken.out.join("\n"));
+  // An agent pane is not a runner: its page has no advisor picker.
+  assert.equal(makeAgent({ readFile }).agent.info.advisor, undefined);
+});
+
 // A role agent that runs as a session (the daemon's runner/agent.go): the
 // runner's own flags with its base's after them, parsed from one line as the
 // daemon writes it.
@@ -683,6 +702,14 @@ test("a runner with a loadout loads what its group and repo chose, on top of the
   assert.equal(o.strictMcpConfig, undefined, "never: it would drop the bus");
   assert.equal(o.mcpServers["claude-peers"].command, "/bin/ccmux-peers", "the bus is the fixed base");
   assert.ok(out.join("").includes("loadout: 2 plugin(s) on, 2 off"), "the start says what it was given");
+});
+
+test("an advisor picked keeps its place beside what a loadout puts in the session's settings", () => {
+  const { agent, sdk } = loadoutAgent({ enabledPlugins: { "qa@personal": true }, deniedServers: ["claude_design"] }, { advisor: "opus" });
+  agent.prompt("hi", "p1");
+  assert.deepEqual(sdk.queries[0].options.settings, {
+    advisorModel: "opus", enabledPlugins: { "qa@personal": true }, deniedMcpServers: [{ serverName: "claude_design" }],
+  });
 });
 
 test("a runner whose group and repo chose nothing offers no skill and switches connectors off, and keeps the bus", () => {

@@ -444,6 +444,23 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
   assert.equal(p.$("restarted-bar").textContent, "Restarted on Haiku. The session picked up where it was.");
 });
 
+test("an advisor picked is saved and applies on the next restart, on the same bar as a model", async () => {
+  const p = await boot({ sessions: [{ ...lead, model: "opus" }], search: "?s=lead1" });
+  await p.frame(snapshot({ info: { model: "claude-opus-5-5" } }));
+  assert.equal(p.$("advisor-box").classList.contains("hidden"), true, "a runner that does not say its advisor shows no picker");
+  await p.frame(snapshot({ info: { model: "claude-opus-5-5", advisor: { model: "fable", from: "settings", settings: "fable" } } }));
+  assert.equal(p.$("advisor-box").classList.contains("hidden"), false);
+  assert.deepEqual([...p.$("advisor").children].map((o) => o.value), ["", "fable", "opus"]);
+  p.$("advisor").onchange({ target: { value: "opus" } });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [["/v1/sessions/lead1/advisor", { advisor: "opus" }]]);
+  assert.equal(p.$("model-bar").classList.contains("hidden"), false);
+  assert.equal(p.$("model-bar-text").textContent, "Advisor Opus applies on the next restart. This session keeps Fable as its advisor until then.");
+  p.$("restart-now").click();
+  await p.settle();
+  assert.equal(p.posts().pop().url, "/v1/sessions/lead1/restart");
+});
+
 test("a repo's git details open on a click on the repo the page is in, never on the way to another, stay open beside others, and close on the next click", async () => {
   const other = { id: "ws2", name: "web", repoPath: "/p/web", git: { isGitRepo: true, branch: "main" } };
   const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, modifiedFiles: ["a.ts"] } };

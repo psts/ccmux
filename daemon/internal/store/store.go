@@ -393,7 +393,7 @@ func erroringMigrations(db *sql.DB) error {
 		migrateTaskWindow, migrateTaskAutoFixes, migrateTaskFixPart, migrateTaskAfterIDs,
 		migrateTaskLook, migratePartRun, migrateForYou, migrateWindowOpenDevices, migrateSessionPanes,
 		migrateInboxAttachments, migrateSessionThreads, migrateSessionMembers, migrateSessionLoadout,
-		migratePeerMsgID, migrateBuilders, migrateAgentSessions,
+		migratePeerMsgID, migrateBuilders, migrateAgentSessions, migrateAdvisor,
 	} {
 		if err := migrate(db); err != nil {
 			return err

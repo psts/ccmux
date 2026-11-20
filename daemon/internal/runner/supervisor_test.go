@@ -883,6 +883,32 @@ func TestAModelIsSavedForTheNextStartAndNeverSentLive(t *testing.T) {
 	}
 }
 
+func TestAnAdvisorIsSavedForTheNextStart(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	sp, _ := ReadSpec(r.paths.SpecFile(sess.ID))
+	if strings.Contains(strings.Join(sp.Args, " "), "--advisor") {
+		t.Fatalf("a session nobody picked an advisor for keeps the settings': %v", sp.Args)
+	}
+	if err := r.sup.SetAdvisor(sess.ID, "opus"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.st.RunnerSession(sess.ID); got.Advisor != "opus" {
+		t.Fatalf("the row has it: %+v", got)
+	}
+	r.units.set(r.paths.Unit(sess.ID), false) // its next start
+	r.reconcile()
+	sp, _ = ReadSpec(r.paths.SpecFile(sess.ID))
+	if !strings.Contains(strings.Join(sp.Args, " "), "--advisor opus") {
+		t.Fatalf("the next start runs with it: %v", sp.Args)
+	}
+	r.sup.SetWanted(sess.ID, store.SessionDone)
+	if err := r.sup.SetAdvisor(sess.ID, "fable"); !errors.Is(err, ErrSessionDone) {
+		t.Fatalf("an ended session takes no advisor: %v", err)
+	}
+}
+
 func TestAPromptsImagesGoWithItEveryTimeItIsSent(t *testing.T) {
 	r := newRig(t)
 	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})

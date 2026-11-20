@@ -212,6 +212,10 @@ func TestAnAgentSessionSleepsAndWakesByItsBasesRule(t *testing.T) {
 	if rec := do(t, f.srv, "POST", "/v1/sessions/sess-1/model", `{"model":"opus"}`); rec.Code != 409 {
 		t.Fatalf("a model set on an agent's session = %d", rec.Code)
 	}
+	// ... and so is its advisor.
+	if rec := do(t, f.srv, "POST", "/v1/sessions/sess-1/advisor", `{"advisor":"opus"}`); rec.Code != 409 {
+		t.Fatalf("an advisor set on an agent's session = %d", rec.Code)
+	}
 }
 
 func TestTheCapCountsAgentSessions(t *testing.T) {
@@ -518,6 +522,9 @@ func TestAnUnreadableRowNeverSendsAnAgentPastItsRules(t *testing.T) {
 	}
 	if len(f.sup.plainSets) != sets || len(f.sup.slept) != 0 {
 		t.Fatalf("nothing was changed: sets %q slept %q", f.sup.plainSets[sets:], f.sup.slept)
+	}
+	if rec := do(t, f.srv, "POST", "/v1/sessions/sess-1/advisor", `{"advisor":"opus"}`); rec.Code != 500 || len(f.sup.advisors) != 0 {
+		t.Fatalf("an advisor on a row that cannot be read = %d %s, set %q", rec.Code, rec.Body, f.sup.advisors)
 	}
 	if err := f.srv.runnerInbox(pane.ID, "p1", "hello", "hq"); err == nil || len(f.sup.said) != 0 {
 		t.Fatalf("a message waits while its session cannot be read: %v %q", err, f.sup.said)

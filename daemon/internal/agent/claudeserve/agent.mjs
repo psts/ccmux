@@ -13,7 +13,7 @@ import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.m
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
-import { fromInit, fromInitialization, commandList, resultOf, contextOf, backgroundTasks, usageLimit, MODES } from "./sessionself.mjs";
+import { fromInit, fromInitialization, commandList, resultOf, contextOf, backgroundTasks, usageLimit, MODES, advisorOf } from "./sessionself.mjs";
 import { shellBox } from "./shellbox.mjs";
 import { rewind, refusal } from "./rewind.mjs";
 
@@ -105,6 +105,7 @@ export class Agent {
     this.media = o.socket && o.media ? new MediaStore(o.media, deps.mediaFS, (w) => this.log("! " + w)) : null;
     this.transcript = this.newTranscript(this.sid);
     this.info = {}; // what the session says of itself (sessionself.mjs), for a runner's page
+    if (o.socket) this.info.advisor = this.advisorInUse(deps);
     this.result = null; // the last finished turn's bill
     this.suggestion = ""; // the next prompt Claude Code predicts, a runner's page offers it
     this.clients = new Set();
@@ -248,6 +249,11 @@ export class Agent {
     if (!o.socket) opts.permissionMode = "default";
     else if (o.permissionMode) opts.permissionMode = o.permissionMode;
     if (o.effort) opts.effort = o.effort;
+    // An advisor its row names (the page's Advisor picker) rides in the
+    // session's own settings, above the person's files. It is read at the
+    // start only: switched live (applyFlagSettings), a session kept the
+    // advisor it started with (tried 2026-11-20, SDK 0.3.311).
+    if (o.advisor) opts.settings = { ...(opts.settings || {}), advisorModel: o.advisor };
     // A runner keeps a checkpoint of every file Claude edits, so going
     // back to an earlier prompt can put the files back (rewind.mjs).
     if (this.turns) opts.enableFileCheckpointing = true;
@@ -287,6 +293,30 @@ export class Agent {
     // user's own settings would load (loadout.mjs).
     if (this.loadout) applyLoadout(opts, this.loadout, this.sdk.env);
     return opts;
+  }
+
+  // advisorInUse is the advisor this runner's page shows (advisorOf), read
+  // from the settings files it loads, in Claude Code's order (user,
+  // project, local). One that cannot be read or does not parse names none,
+  // and says so in the log.
+  advisorInUse(deps) {
+    const env = deps.env || {};
+    const home = env.CLAUDE_CONFIG_DIR || (env.HOME ? env.HOME + "/.claude" : "");
+    const paths = [home && home + "/settings.json", this.cwd + "/.claude/settings.json", this.cwd + "/.claude/settings.local.json"].filter(Boolean);
+    const warn = (i, err) => this.log(`! ${paths[i]} is not JSON, so it names no advisor: ${err && err.message ? err.message : err}`);
+    return advisorOf(this.o.advisor, this.settingsTexts(deps, paths), warn);
+  }
+
+  // settingsTexts reads those files; one that cannot be read names none.
+  settingsTexts(deps, paths) {
+    return paths.map((path) => {
+      try {
+        return readIfPresent(deps.readFile, path);
+      } catch (err) {
+        this.log(`! ${path} not read for its advisor: ${err && err.message ? err.message : err}`);
+        return "";
+      }
+    });
   }
 
   // preToolHooks are the hard stops that run before any tool: the walls of

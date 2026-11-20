@@ -114,3 +114,25 @@ export function usageLimit(info) {
 // from its page; bypassPermissions and dontAsk are not offered.
 export const MODES = ["default", "acceptEdits", "plan", "auto"];
 
+
+// advisorOf is the advisor a session runs with, as its page shows it: the
+// one its row started it with (flag, --advisor), else what the settings
+// files say, the last that names one winning (they come in Claude Code's
+// order: user, project, local). from says which: "session", "settings",
+// or "" when none names one and the session has no advisor; settings is
+// what the files say either way, for the page's "Settings" option. A file
+// that does not parse names none, and is told to warn by its place in the
+// list; its read is the caller's to report.
+export function advisorOf(flag, settingsTexts, warn = () => {}) {
+  let settings = "";
+  (settingsTexts || []).forEach((text, i) => {
+    try {
+      const s = JSON.parse(text || "{}");
+      if (s && typeof s.advisorModel === "string" && s.advisorModel) settings = s.advisorModel;
+    } catch (err) {
+      warn(i, err);
+    }
+  });
+  if (flag) return { model: String(flag), from: "session", settings };
+  return { model: settings, from: settings ? "settings" : "", settings };
+}

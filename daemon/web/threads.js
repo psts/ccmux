@@ -8,7 +8,7 @@
   "use strict";
   const R = window.ccmuxRoute, Model = window.ccmuxThreadModel, Stream = window.ccmuxThreadStream, Gauge = window.ccmuxThreadGauge;
   const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage, Team = window.ccmuxThreadTeam;
-  const Pending = window.ccmuxThreadPending, Cmds = window.ccmuxThreadCmds;
+  const Pending = window.ccmuxThreadPending, Cmds = window.ccmuxThreadCmds, Advisor = window.ccmuxThreadAdvisor;
   const storage = () => { try { return window.localStorage; } catch (_) { return null; } }; // blocked: nothing kept
   const DETAILS = "ccmux-thread-details";
   const loadDetails = () => { try { const v = JSON.parse(storage().getItem(DETAILS) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch (_) { return new Set(); } };
@@ -450,27 +450,51 @@
     box.title = g.title;
   }
 
-  function drawModel(sess) {
-    const mv = Model.modelView(sess || { model: S.draftModel }, S.stream.info);
-    const select = $("model");
-    const sig = JSON.stringify(mv.options);
+  // fillSelect sets a header picker's options (only when they changed, so
+  // an open list is not rebuilt under the person) and its value.
+  function fillSelect(select, options, value) {
+    const sig = JSON.stringify(options);
     if (select.dataset.sig !== sig) {
       select.dataset.sig = sig;
       select.textContent = "";
-      for (const o of mv.options) { const opt = View.el("option", "", o.label); opt.value = o.value; select.appendChild(opt); }
+      for (const o of options) { const opt = View.el("option", "", o.label); opt.value = o.value; select.appendChild(opt); }
     }
-    select.value = mv.wanted;
-    const pending = !!sess && sess.state !== "done" && (mv.pending || S.picked === sess.id);
-    const later = pending && S.later.has(sess.id);
-    show("model-bar", pending && !later);
+    select.value = value;
+  }
+
+  // drawModel is the header's Model and Advisor pickers and the bar that
+  // says a pick applies on the next restart. Both apply then; one bar and
+  // one Restart now serve both.
+  function drawModel(sess) {
+    const mv = Model.modelView(sess || { model: S.draftModel }, S.stream.info);
+    fillSelect($("model"), mv.options, mv.wanted);
+    const live = !!sess && sess.state !== "done";
+    const av = drawAdvisor(sess, live, mv);
+    drawRestartBar(sess, Advisor.restartBar(mv, av, live && (mv.pending || S.picked === sess.id), live && av.pending), mv);
+  }
+
+  // drawAdvisor is the Advisor picker, for a live session that is not a
+  // role agent's, once its runner has said which advisor it runs with.
+  function drawAdvisor(sess, live, mv) {
+    const av = Advisor.advisorView(sess, S.stream.info, mv.wanted || (S.stream.info && S.stream.info.model));
+    show("advisor-box", live && sess.kind !== "agent" && av.known);
+    fillSelect($("advisor"), av.options, av.wanted);
+    return av;
+  }
+
+  // drawRestartBar is "applies on the next restart" with Restart now, or
+  // its small button once the person said later, or "Restarted on".
+  function drawRestartBar(sess, bar, mv) {
+    const later = bar.pending && S.later.has(sess.id);
+    show("model-bar", bar.pending && !later);
     show("restart-later", later);
-    $("restart-later").textContent = `Restart to apply ${mv.wantedName}`;
-    $("restart-later").title = `${mv.wantedName} applies on the next restart`;
+    $("restart-later").textContent = `Restart to apply ${bar.what}`;
+    $("restart-later").title = `${bar.what} applies on the next restart`;
     const text = $("model-bar-text");
     text.textContent = "";
-    text.appendChild(View.el("strong", "", `${mv.wantedName} applies on the next restart.`));
-    text.appendChild(document.createTextNode(` This session keeps running on ${mv.runningName || "its current model"} until then.`));
-    show("restarted-bar", S.restarted && !pending);
+    text.appendChild(View.el("strong", "", `${bar.what} applies on the next restart.`));
+    text.appendChild(document.createTextNode(` This session ${bar.keeps} until then.`));
+    show("restarted-bar", S.restarted && !bar.pending);
     $("restarted-bar").textContent = `Restarted on ${mv.runningName || mv.wantedName}. The session picked up where it was.`;
   }
 
@@ -835,6 +859,13 @@
     });
   }
 
+  const pickAdvisor = (value) => act(async (sess) => {
+    await call("POST", `/v1/sessions/${sess.id}/advisor`, { advisor: value });
+    sess.advisor = value;
+    S.later.delete(sess.id);
+    S.restarted = false;
+  });
+
   const restartNow = () => act(async (sess) => {
     await call("POST", `/v1/sessions/${sess.id}/restart`);
     S.awaitBoot = S.stream.boot;
@@ -977,6 +1008,7 @@
 
   function wireHead() {
     $("model").onchange = (e) => pickModel(e.target.value);
+    $("advisor").onchange = (e) => pickAdvisor(e.target.value);
     $("restart-now").onclick = restartNow;
     $("restart-later").onclick = restartNow;
     $("loadout-restart").onclick = restartNow;

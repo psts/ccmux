@@ -93,6 +93,7 @@ test("a task builder's line: the file fence, its effort and its permission mode"
   const b = parseArgs(["--socket", "/s.sock", "--model", "opus", "--effort", "medium", "--permission-mode", "auto", "--keep-out-files", "/r/api"]);
   assert.equal(b.effort, "medium");
   assert.equal(b.permissionMode, "auto");
+  assert.equal(parseArgs(["--socket", "/s.sock", "--advisor", "opus"]).advisor, "opus");
   assert.equal(b.keepOutFiles, "/r/api");
   assert.equal(b.keepOut, undefined, "not the full fence");
   const plain = parseArgs(["--socket", "/s.sock"]);

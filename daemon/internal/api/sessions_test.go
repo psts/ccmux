@@ -27,6 +27,7 @@ type fakeRunners struct {
 	replies  []runner.CardReply
 	wanted   []string
 	models   []string
+	advisors []string
 	restarts int
 	rewinds  []string // "session to dry" of each going back
 	// livenessErr, when set, is what asking where a session is fails with.
@@ -158,6 +159,14 @@ func (f *fakeRunners) Restart(id string) error {
 		return runner.ErrSessionDone
 	}
 	f.restarts++
+	return nil
+}
+
+func (f *fakeRunners) SetAdvisor(id, advisor string) error {
+	if id == "ended" {
+		return runner.ErrSessionDone
+	}
+	f.advisors = append(f.advisors, advisor)
 	return nil
 }
 

@@ -14,6 +14,7 @@
 //           --session-auto ID [--claude PATH] [--detached 1] [--media DIR]
 //           [--read-only 1 | --keep-out DIR] (a thread member, readonly.mjs)
 //           [--keep-out-files DIR] [--effort LEVEL] [--permission-mode MODE]
+//           [--advisor MODEL]
 //           (a queued task's builder: the fence for file tools only, and
 //           what its Claude runs with; without the last two a runner keeps
 //           what the person's settings choose)
@@ -59,6 +60,7 @@ const flags = {
   "--keep-out-files": (o, v) => { o.keepOutFiles = v; },
   "--effort": (o, v) => { o.effort = v; },
   "--permission-mode": (o, v) => { o.permissionMode = v; },
+  "--advisor": (o, v) => { o.advisor = v; },
   "--loadout": (o, v) => { o.loadout = v; },
   "--shell-box-write": (o, v) => { o.shellBoxWrite.push(v); },
 };

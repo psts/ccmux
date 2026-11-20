@@ -1,7 +1,7 @@
 // node --test sessionself.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { commandList, contextOf, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
+import { advisorOf, commandList, contextOf, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
 
 test("commands are listed once, the first row of a name standing", () => {
   const list = commandList([
@@ -74,4 +74,15 @@ test("a result says how long its prompt cache lives, from what the turn wrote", 
 test("context usage is the percent of the window in use", () => {
   assert.deepEqual(contextOf({ totalTokens: 84000, maxTokens: 200000, percentage: 42 }), { percent: 42, used: 84000, max: 200000 });
   assert.deepEqual(contextOf({}), { percent: 0, used: 0, max: 0 });
+});
+
+test("the advisor is the session's own, else the last settings file that names one", () => {
+  const user = JSON.stringify({ advisorModel: "fable" }), project = JSON.stringify({ model: "opus" }), local = JSON.stringify({ advisorModel: "opus" });
+  assert.deepEqual(advisorOf("", [user, project, ""]), { model: "fable", from: "settings", settings: "fable" });
+  assert.deepEqual(advisorOf("", [user, project, local]), { model: "opus", from: "settings", settings: "opus" });
+  assert.deepEqual(advisorOf("sonnet", [user]), { model: "sonnet", from: "session", settings: "fable" });
+  const warned = [];
+  assert.deepEqual(advisorOf("", ["{not json", project], (i) => warned.push(i)), { model: "", from: "", settings: "" }, "a file that does not parse names none");
+  assert.deepEqual(warned, [0], "and is told, by its place");
+  assert.deepEqual(advisorOf("", undefined), { model: "", from: "", settings: "" });
 });

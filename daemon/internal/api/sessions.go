@@ -35,6 +35,7 @@ type runnerSupervisor interface {
 	MediaDir(sessionID string) string
 	SetWanted(sessionID, wanted string) error
 	SetModel(sessionID, model string) error
+	SetAdvisor(sessionID, advisor string) error
 	Restart(sessionID string) error
 	RestartBetweenTurns(sessionID string) error
 	Liveness(sessionID string) (string, error)
@@ -114,6 +115,7 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/prompt", s.promptRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/wanted", s.setRunnerWanted)
 	mux.HandleFunc("POST /v1/sessions/{id}/model", s.setRunnerModel)
+	mux.HandleFunc("POST /v1/sessions/{id}/advisor", s.setRunnerAdvisor)
 	mux.HandleFunc("POST /v1/sessions/{id}/restart", s.restartRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/acted", s.actedRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/title", s.setRunnerTitle)

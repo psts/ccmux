@@ -20,6 +20,7 @@ type Store interface {
 	RunnerSessions() ([]store.RunnerSession, error)
 	SetRunnerSessionWanted(id, wanted string, now int64) error
 	SetRunnerSessionModel(id, model string, now int64) error
+	SetRunnerSessionAdvisor(id, advisor string, now int64) error
 	SetRunnerSessionNote(id, note string, now int64) error
 	SetRunnerSessionPlace(id string, p store.SessionPlace, now int64) error
 	SetRunnerSessionLoadout(id, loadout string) error
@@ -351,6 +352,21 @@ func (s *Supervisor) SetModel(sessionID, model string) error {
 		return ErrSessionDone
 	}
 	return s.st.SetRunnerSessionModel(sessionID, model, s.millis())
+}
+
+// SetAdvisor sets the advisor model a session starts with ("" for the
+// person's settings). Like its model, it applies at the next start: a
+// running Claude Code keeps the advisor it started with.
+func (s *Supervisor) SetAdvisor(sessionID, advisor string) error {
+	defer s.lock(sessionID)()
+	sess, err := s.row(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess.Wanted == store.SessionDone {
+		return ErrSessionDone
+	}
+	return s.st.SetRunnerSessionAdvisor(sessionID, advisor, s.millis())
 }
 
 // Restart starts a session again now, from its row as it is (its model,
