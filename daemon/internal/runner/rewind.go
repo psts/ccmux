@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	"ccmux.dev/ccmuxd/internal/store"
+	"github.com/google/uuid"
 )
 
 // Going back to an earlier prompt (the thread page's "Edit"). The runner
@@ -89,18 +90,48 @@ func (s *Supervisor) Rewind(ctx context.Context, sessionID, to string, dry bool)
 	if _, _, err := s.markHeld(ctx, c, sessionID); err != nil {
 		return Rewind{}, err
 	}
-	out, err := c.Rewind(ctx, to, false)
+	// Not cut short by the caller leaving: once asked, the runner goes
+	// back whether or not anyone waits for the answer.
+	out, err := c.Rewind(context.WithoutCancel(ctx), to, false)
 	if err != nil {
-		return out, err
+		if errors.Is(err, ErrRewindRefused) {
+			return out, err
+		}
+		s.restartSoon(sessionID, err)
+		return out, fmt.Errorf("the runner may have put files back before its answer was lost (%w); it starts again in a moment on the conversation it left", err)
 	}
-	if err := s.st.RotateRunnerConversation(sessionID, out.Conversation, s.millis()); err != nil {
-		return out, fmt.Errorf("the runner went back, but its new conversation was not saved: %w", err)
-	}
-	sess.Conversation, sess.FreshNext = out.Conversation, false
-	log.Printf("runner: session %s: went back to an earlier prompt; starts again on %s", short(sessionID), short(out.Conversation))
-	if err := s.restart(*sess); err != nil {
-		return out, fmt.Errorf("the runner went back, but did not start again: %w", err)
+	if err := s.land(sess, out.Conversation); err != nil {
+		s.restartSoon(sessionID, err)
+		return out, fmt.Errorf("the runner went back (files put back where it could), but %w; it starts again in a moment", err)
 	}
 	s.announce(sessionID)
 	return out, nil
+}
+
+// restartSoon has a reconcile restart the session between turns. A runner
+// that went back takes no prompt until it starts again, so after any
+// failure past the ask it is restarted: on the fork when the row moved,
+// else on the conversation it left.
+func (s *Supervisor) restartSoon(sessionID string, why error) {
+	s.due.Store(sessionID, struct{}{})
+	s.Kick()
+	log.Printf("runner: session %s: going back failed (%v); restarting it at the next pass", short(sessionID), why)
+}
+
+// land makes the runner's fork the session's conversation and starts the
+// session again on it. A conversation that is not a uuid is never saved:
+// it ends up in a file path (Paths.StateFile).
+func (s *Supervisor) land(sess *store.RunnerSession, conv string) error {
+	if _, err := uuid.Parse(conv); err != nil {
+		return fmt.Errorf("its new conversation %q is not an id", conv)
+	}
+	if err := s.st.RotateRunnerConversation(sess.ID, conv, s.millis()); err != nil {
+		return fmt.Errorf("its new conversation was not saved: %w", err)
+	}
+	sess.Conversation, sess.FreshNext = conv, false
+	log.Printf("runner: session %s: went back to an earlier prompt; starts again on %s", short(sess.ID), short(conv))
+	if err := s.restart(*sess); err != nil {
+		return fmt.Errorf("it did not start again: %w", err)
+	}
+	return nil
 }

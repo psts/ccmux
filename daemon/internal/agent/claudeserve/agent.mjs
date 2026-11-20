@@ -15,7 +15,7 @@ import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
 import { fromInit, fromInitialization, commandList, resultOf, contextOf } from "./sessionself.mjs";
 import { shellBox } from "./shellbox.mjs";
-import { rewind } from "./rewind.mjs";
+import { rewind, refusal } from "./rewind.mjs";
 
 // WRITE_MATCHER is the PreToolUse matcher for the file-writing tools.
 const WRITE_MATCHER = Object.keys(WRITE_TOOLS).join("|");
@@ -630,7 +630,7 @@ export class Agent {
   // rewind looks at (dry) or goes back to the earlier prompt `to`; see
   // rewind.mjs. Only a runner goes back: the daemon starts it again after.
   rewind(to, dry) {
-    if (!this.turns) return Promise.reject(new Error("only a session runner goes back"));
+    if (!this.turns) return Promise.reject(refusal("only a session runner goes back"));
     return rewind(this, to, dry);
   }
 

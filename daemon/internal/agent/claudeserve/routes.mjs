@@ -63,13 +63,17 @@ export const handlers = {
   },
   // Going back to an earlier prompt (rewind.mjs): dry says what it would
   // do; otherwise it is done, and the answer names the conversation the
-  // session starts again on.
+  // session starts again on. A refusal is a 409; a failure is logged and a
+  // 500.
   "POST rewind": async (a, id, body) => {
     if (!body.to) return [400, { error: "rewind needs the prompt to go back to" }];
     try {
       return [200, await a.rewind(String(body.to), !!body.dry)];
     } catch (err) {
-      return [409, { error: err && err.message ? err.message : String(err) }];
+      const text = err && err.message ? err.message : String(err);
+      if (err && err.refused) return [409, { error: text }];
+      a.log("! going back failed: " + text);
+      return [500, { error: text }];
     }
   },
   "POST delivered": (a, id, body) => [200, { delivered: a.delivered(Array.isArray(body.ids) ? body.ids : []) }],

@@ -92,9 +92,13 @@ test("files that cannot be put back are said, and the conversation still goes ba
 });
 
 test("a busy session or a failed fork goes back nowhere", async () => {
-  await assert.rejects(rewind(stubAgent({ busy: true }).a, "p2", true), /stop the turn first/);
+  await assert.rejects(rewind(stubAgent({ busy: true }).a, "p2", true), (e) => e.refused && /stop the turn first/.test(e.message));
+  await assert.rejects(rewind(stubAgent().a, "t1", true), (e) => e.refused && /not a prompt/.test(e.message));
+  const real = stubAgent();
+  await assert.rejects(rewind(real.a, "t1", false), (e) => e.refused && /not a prompt/.test(e.message), "a refusal on a real going back stays a refusal");
+  assert.equal(real.a.rewound, false, "and it takes prompts again");
   const { a } = stubAgent();
   a.sdk.forkSession = async () => { throw new Error("disk full"); };
-  await assert.rejects(rewind(a, "p2", false), /files were put back, but the conversation could not be cut: disk full/);
+  await assert.rejects(rewind(a, "p2", false), (e) => !e.refused && /files were put back, but the conversation could not be cut: disk full/.test(e.message));
   assert.equal(a.rewound, false, "it takes prompts again");
 });

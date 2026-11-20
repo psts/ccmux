@@ -36,19 +36,19 @@ func TestRewindStartsTheSessionAgainOnTheFork(t *testing.T) {
 	r.reconcile()
 	fr := r.run[sess.ID]
 	fr.transcript[old] = true // Claude has it, but the inbox has not marked it yet
-	fr.rewindTo = Rewind{Dropped: 1, Conversation: "fork-1"}
+	fr.rewindTo = Rewind{Dropped: 1, Conversation: "3f2c1b0a-9e8d-4c7b-a6f5-e4d3c2b1a090"}
 	if _, err := r.sup.Rewind(context.Background(), sess.ID, old, false); err != nil {
 		t.Fatal(err)
 	}
 	row, _ := r.st.RunnerSession(sess.ID)
-	if row.ConversationID() != "fork-1" {
+	if row.ConversationID() != "3f2c1b0a-9e8d-4c7b-a6f5-e4d3c2b1a090" {
 		t.Fatalf("the fork is the session's conversation now: %s", row.ConversationID())
 	}
 	if r.units.count("restart "+r.paths.Unit(sess.ID)) != 1 {
 		t.Fatalf("started again once: %v", r.units.calls)
 	}
 	sp, _ := ReadSpec(r.paths.SpecFile(sess.ID))
-	if !strings.Contains(strings.Join(sp.Args, " "), "--session-auto fork-1") {
+	if !strings.Contains(strings.Join(sp.Args, " "), "--session-auto 3f2c1b0a-9e8d-4c7b-a6f5-e4d3c2b1a090") {
 		t.Fatalf("on the fork: %v", sp.Args)
 	}
 	if open, _ := r.st.UndeliveredPrompts(sess.ID); len(open) != 0 {
@@ -73,5 +73,73 @@ func TestRewindRefusalsSayWhy(t *testing.T) {
 	}
 	if _, err := r.sup.Rewind(context.Background(), sess.ID, "p1", true); !errors.Is(err, ErrRewindRefused) {
 		t.Fatalf("an asleep session has no runner to ask: %v", err)
+	}
+}
+
+// A runner that went back takes no prompt until it starts again, so a
+// restart that fails after it is tried again at the next pass, on the fork.
+func TestRewindThatCouldNotRestartIsRestartedAtTheNextPass(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.run[sess.ID].rewindTo = Rewind{Dropped: 1, Conversation: "0b9c6a1e-5d6f-4a6c-9b3e-2f1d8c7a6b5e"}
+	r.units.restartErr = errors.New("systemd busy")
+	_, err := r.sup.Rewind(context.Background(), sess.ID, "p1", false)
+	if err == nil || !strings.Contains(err.Error(), "starts again in a moment") {
+		t.Fatalf("the failure is said: %v", err)
+	}
+	r.units.restartErr = nil
+	before := r.units.count("restart")
+	r.reconcile()
+	if r.units.count("restart") != before+1 {
+		t.Fatalf("restarted at the next pass: %v", r.units.calls)
+	}
+	sp, _ := ReadSpec(r.paths.SpecFile(sess.ID))
+	if !strings.Contains(strings.Join(sp.Args, " "), "--session-auto 0b9c6a1e-5d6f-4a6c-9b3e-2f1d8c7a6b5e") {
+		t.Fatalf("on the fork: %v", sp.Args)
+	}
+}
+
+// A conversation that is not an id is never saved (it goes into a path);
+// the runner is still restarted, on the conversation it left.
+func TestRewindRefusesAConversationThatIsNotAnID(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.run[sess.ID].rewindTo = Rewind{Dropped: 1, Conversation: "../../x"}
+	if _, err := r.sup.Rewind(context.Background(), sess.ID, "p1", false); err == nil || !strings.Contains(err.Error(), "is not an id") {
+		t.Fatalf("refused: %v", err)
+	}
+	if row, _ := r.st.RunnerSession(sess.ID); row.ConversationID() != sess.ID {
+		t.Fatalf("not saved: %s", row.ConversationID())
+	}
+	before := r.units.count("restart")
+	r.reconcile()
+	if r.units.count("restart") != before+1 {
+		t.Fatalf("restarted on the conversation it left, so it takes prompts again: %v", r.units.calls)
+	}
+}
+
+// A failure that is not a refusal may come after the runner went back
+// (its answer lost), so the session is restarted; a refusal restarts nothing.
+func TestRewindFailureRestartsTheSessionButARefusalDoesNot(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	fr := r.run[sess.ID]
+	fr.rewindNo = "Claude is working; stop the turn first"
+	r.sup.Rewind(context.Background(), sess.ID, "p1", false)
+	r.reconcile()
+	if r.units.count("restart") != 0 {
+		t.Fatalf("a refusal restarts nothing: %v", r.units.calls)
+	}
+	fr.srv.Close() // the runner's answer is lost
+	if _, err := r.sup.Rewind(context.Background(), sess.ID, "p1", false); err == nil || !strings.Contains(err.Error(), "may have put files back") {
+		t.Fatalf("a lost answer is a failure that warns about the files: %v", err)
+	}
+	r.bootRunner(r.paths.Unit(sess.ID)) // it is still up, between turns
+	r.reconcile()
+	if r.units.count("restart") != 1 {
+		t.Fatalf("restarted at the next pass: %v", r.units.calls)
 	}
 }

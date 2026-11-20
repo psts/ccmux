@@ -15,6 +15,14 @@ import { randomUUID } from "node:crypto";
 // is stopped (seen live 2026-11-20): its own, not a prompt.
 const interrupted = /^\[Request interrupted by user/;
 
+// refusal is a "no" the person can act on (Claude is working, not a
+// prompt): the route answers it as a 409. Anything else is a failure.
+export function refusal(text) {
+  const err = new Error(text);
+  err.refused = true;
+  return err;
+}
+
 // isPrompt is a stored message a person (or the bus) sent: a user message
 // with words or a picture, not a tool's result handed back to Claude, nor
 // Claude Code's own line about a stopped turn.
@@ -55,8 +63,8 @@ async function fileCheck(q, to) {
 // start runs, so the daemon keeps them until then. The answer says which
 // conversation to start on.
 export async function rewind(a, to, dry) {
-  if (a.rewound) throw new Error("this session is already going back; it starts again in a moment");
-  if (a.busy) throw new Error("Claude is working; stop the turn first");
+  if (a.rewound) throw refusal("this session is already going back; it starts again in a moment");
+  if (a.busy) throw refusal("Claude is working; stop the turn first");
   if (dry) {
     const { point, files } = await look(a, to);
     return { dropped: point.dropped, files };
@@ -76,6 +84,7 @@ export async function rewind(a, to, dry) {
     return { dropped: point.dropped, files, conversation };
   } catch (err) {
     a.rewound = false;
+    if (err && err.refused) throw err; // a "no" stays a "no": nothing was changed
     const said = err && err.message ? err.message : String(err);
     throw new Error(restored ? `the files were put back, but the conversation could not be cut: ${said}` : said);
   }
@@ -84,7 +93,7 @@ export async function rewind(a, to, dry) {
 // look is where the cut falls and what undoing the files would do.
 async function look(a, to) {
   const point = forkPoint(await a.sdk.getSessionMessages(a.sid, { dir: a.cwd }), to);
-  if (point.error) throw new Error(point.error);
+  if (point.error) throw refusal(point.error);
   a.ensureQuery();
   const files = await fileCheck(a.q, to);
   return { point, files };

@@ -199,15 +199,23 @@ test("the snapshot route, and the event stream naming its process", async () => 
   });
 });
 
-test("the rewind route: a look or a going back, and a refusal is a 409 in the agent's words", async () => {
+test("the rewind route: a look or a going back, a refusal is a 409 in the agent's words, a failure a logged 500", async () => {
   await withServer(async (agent, call) => {
     const asked = [];
-    agent.rewind = async (to, dry) => { asked.push([to, dry]); if (to === "busy") throw new Error("Claude is working; stop the turn first"); return { dropped: 1, conversation: dry ? undefined : "f1" }; };
+    agent.rewind = async (to, dry) => {
+      asked.push([to, dry]);
+      if (to === "busy") throw Object.assign(new Error("Claude is working; stop the turn first"), { refused: true });
+      if (to === "disk") throw new Error("the files were put back, but the conversation could not be cut: disk full");
+      return { dropped: 1, conversation: dry ? undefined : "f1" };
+    };
     assert.deepEqual((await call("POST", "/rewind", { to: "p2", dry: true })).body, { dropped: 1 });
     assert.deepEqual((await call("POST", "/rewind", { to: "p2" })).body, { dropped: 1, conversation: "f1" });
     const busy = await call("POST", "/rewind", { to: "busy" });
     assert.deepEqual([busy.status, busy.body.error], [409, "Claude is working; stop the turn first"]);
+    const disk = await call("POST", "/rewind", { to: "disk" });
+    assert.equal(disk.status, 500, "a failure is not a refusal");
+    assert.ok(agent.logged.some((l) => l.includes("going back failed: the files were put back")), "and it is logged");
     assert.equal((await call("POST", "/rewind", {})).status, 400);
-    assert.deepEqual(asked, [["p2", true], ["p2", false], ["busy", false]]);
+    assert.deepEqual(asked, [["p2", true], ["p2", false], ["busy", false], ["disk", false]]);
   });
 });
