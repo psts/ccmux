@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -174,11 +175,11 @@ func (s *Server) createRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if !s.runnersReady(w) {
 		return
 	}
-	var in struct{ Cwd, Name, Model, WorkspaceID, Kind, Title string }
+	var in struct{ Cwd, Name, Model, WorkspaceID, Kind, Title, Advisor string }
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if msg := newSessionProblem(in.Cwd, in.Kind); msg != "" {
+	if msg := newSessionProblem(in.Cwd, in.Kind, in.Advisor); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -191,7 +192,7 @@ func (s *Server) createRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if in.Kind == store.SessionLead && s.answerLead(w, wsID) {
 		return
 	}
-	sess, err := s.runners.Create(runner.NewSession{Cwd: cwd, Name: in.Name, Model: in.Model, WorkspaceID: wsID, Kind: in.Kind, Title: sessionTitle(in.Title)})
+	sess, err := s.runners.Create(runner.NewSession{Cwd: cwd, Name: in.Name, Model: in.Model, WorkspaceID: wsID, Kind: in.Kind, Title: sessionTitle(in.Title), Advisor: in.Advisor})
 	if errors.Is(err, store.ErrLeadExists) && s.answerLead(w, wsID) {
 		return // another window made the lead between the look and the insert
 	}
@@ -203,9 +204,12 @@ func (s *Server) createRunnerSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // newSessionProblem says why a session cannot be made as asked, or "".
-func newSessionProblem(cwd, kind string) string {
+func newSessionProblem(cwd, kind, advisor string) string {
 	if kind != "" && kind != store.SessionLead {
 		return `kind is "lead" (the repo's own session) or left out (a thread)`
+	}
+	if !slices.Contains(advisors, advisor) {
+		return "not an advisor to pick: " + advisor
 	}
 	return sessionFolderProblem(cwd)
 }

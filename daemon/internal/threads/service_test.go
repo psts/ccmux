@@ -50,6 +50,17 @@ func TestAThreadNeedsARepoSessionInAGitRepo(t *testing.T) {
 	}
 }
 
+func TestAThreadsLeadStartsWithTheAdvisorPicked(t *testing.T) {
+	r := newRig(t)
+	_, lead, err := r.svc.Create(New{WorkspaceID: "ws-app", Title: "x", Advisor: "fable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.row(lead.ID); got.Advisor != "fable" {
+		t.Fatalf("the lead starts with it: %+v", got)
+	}
+}
+
 func TestAThreadWhoseLeadCannotStartIsEnded(t *testing.T) {
 	r := newRig(t)
 	r.sess.createErr = errors.New("no systemd")

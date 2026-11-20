@@ -43,7 +43,7 @@ func (f *fakeSessions) Create(n runner.NewSession) (store.RunnerSession, error) 
 	sess := store.RunnerSession{
 		ID: fmt.Sprintf("s%d", f.n), PaneID: fmt.Sprintf("p%d", f.n), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning,
 		WorkspaceID: n.WorkspaceID, Kind: n.Kind, Title: n.Title, ThreadID: n.ThreadID, Role: n.Role, Repo: n.Repo, ReadOnly: n.ReadOnly,
-		Worktree: n.Worktree, Branch: n.Branch, Effort: n.Effort, PermissionMode: n.PermissionMode,
+		Worktree: n.Worktree, Branch: n.Branch, Effort: n.Effort, PermissionMode: n.PermissionMode, Advisor: n.Advisor,
 		CreatedAt: int64(f.n), UpdatedAt: int64(f.n),
 	}
 	if n.WorkspaceID == "" {

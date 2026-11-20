@@ -221,7 +221,7 @@ test("a repo with no lead opens as a draft, and its first message makes the lead
   p.$("composer").onsubmit({ preventDefault() {} });
   await p.settle();
   assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [
-    ["/v1/sessions", { cwd: "/p/app", workspaceId: "ws1", model: "", kind: "lead" }],
+    ["/v1/sessions", { cwd: "/p/app", workspaceId: "ws1", model: "", advisor: "", kind: "lead" }],
     ["/v1/sessions/lead1/prompt", { text: "What landed since yesterday?", sender: "Pat", images: [] }],
   ]);
   assert.equal(p.book.pushed.pop(), "/threads.html?s=lead1");
@@ -447,7 +447,8 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
 test("an advisor picked is saved and applies on the next restart, on the same bar as a model", async () => {
   const p = await boot({ sessions: [{ ...lead, model: "opus" }], search: "?s=lead1" });
   await p.frame(snapshot({ info: { model: "claude-opus-5-5" } }));
-  assert.equal(p.$("advisor-box").classList.contains("hidden"), true, "a runner that does not say its advisor shows no picker");
+  assert.equal(p.$("advisor-box").classList.contains("hidden"), false, "a runner from before the picker shows it too");
+  assert.equal(p.$("advisor").children[0].textContent, "Settings", "it cannot say what the settings name");
   await p.frame(snapshot({ info: { model: "claude-opus-5-5", advisor: { model: "fable", from: "settings", settings: "fable" } } }));
   assert.equal(p.$("advisor-box").classList.contains("hidden"), false);
   assert.deepEqual([...p.$("advisor").children].map((o) => o.value), ["", "fable", "opus"]);
@@ -658,10 +659,23 @@ test("a new thread is made as a thread, with its lead, by its first message", as
   p.$("composer").onsubmit({ preventDefault() {} });
   await p.settle();
   assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [
-    ["/v1/threads", { workspaceId: "ws1", model: "" }],
+    ["/v1/threads", { workspaceId: "ws1", model: "", advisor: "" }],
     ["/v1/sessions/t1/prompt", { text: "Add CSV export in the app and in backend", sender: "Pat", images: [] }],
   ]);
   assert.equal(p.book.pushed.pop(), "/threads.html?s=t1");
+});
+
+test("a new thread's advisor is picked before its first message and made with it", async () => {
+  const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread", routes: [[/^POST \/v1\/threads$/, (body) => ({ thread: { id: 3 }, session: { ...threadLead, model: body.model, advisor: body.advisor } })]] });
+  assert.equal(p.$("advisor-box").classList.contains("hidden"), false, "beside the model, before it starts");
+  p.$("advisor").onchange({ target: { value: "fable" } });
+  await p.settle();
+  assert.deepEqual(p.posts(), [], "nothing is saved until the thread is made");
+  p.$("input").value = "Add CSV export";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts()[0].body, { workspaceId: "ws1", model: "", advisor: "fable" });
+  assert.equal(p.$("model-bar").classList.contains("hidden"), true, "it starts with it: nothing to restart for");
 });
 
 test("a thread is filed under its lead's repo with who it works with, and its helper is no thread of the helper's repo", async () => {
@@ -797,9 +811,9 @@ test("a new thread in a folder that is no git repo is a plain session, as it alw
     await p.settle();
     return p.posts().map((c) => [c.url, c.body])[0];
   };
-  assert.deepEqual(await madeIn(notes), ["/v1/sessions", { cwd: "/p/notes", workspaceId: "ws9", model: "" }], "nothing there lands through git, so no thread is asked for");
-  assert.deepEqual(await madeIn(unread), ["/v1/threads", { workspaceId: "ws8", model: "" }]);
-  assert.deepEqual(await madeIn(repo), ["/v1/threads", { workspaceId: "ws1", model: "" }]);
+  assert.deepEqual(await madeIn(notes), ["/v1/sessions", { cwd: "/p/notes", workspaceId: "ws9", model: "", advisor: "" }], "nothing there lands through git, so no thread is asked for");
+  assert.deepEqual(await madeIn(unread), ["/v1/threads", { workspaceId: "ws8", model: "", advisor: "" }]);
+  assert.deepEqual(await madeIn(repo), ["/v1/threads", { workspaceId: "ws1", model: "", advisor: "" }]);
 });
 
 // --- skills and plugins ---

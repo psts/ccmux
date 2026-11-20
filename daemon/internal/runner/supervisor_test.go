@@ -883,6 +883,22 @@ func TestAModelIsSavedForTheNextStartAndNeverSentLive(t *testing.T) {
 	}
 }
 
+func TestANewSessionStartsWithItsAdvisor(t *testing.T) {
+	r := newRig(t)
+	sess, err := r.sup.Create(NewSession{Cwd: "/r/app", Advisor: "fable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.st.RunnerSession(sess.ID); got.Advisor != "fable" {
+		t.Fatalf("the row has it: %+v", got)
+	}
+	r.reconcile()
+	sp, _ := ReadSpec(r.paths.SpecFile(sess.ID))
+	if !strings.Contains(strings.Join(sp.Args, " "), "--advisor fable") {
+		t.Fatalf("its first start runs with it: %v", sp.Args)
+	}
+}
+
 func TestAnAdvisorIsSavedForTheNextStart(t *testing.T) {
 	r := newRig(t)
 	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})

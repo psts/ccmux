@@ -6,9 +6,16 @@ const A = require("./threadadvisor.js");
 const info = (advisor, model = "claude-opus-5-5") => ({ model, advisor });
 const values = (v) => v.options.map((o) => o.value);
 
-test("no picker until the runner says which advisor it runs with", () => {
-  assert.equal(A.advisorView({ advisor: "" }, { model: "claude-opus-5-5" }, "opus").known, false);
-  assert.equal(A.advisorView({ advisor: "" }, null, "opus").known, false);
+test("a runner that has not said (a new session, one from before the picker) offers the settings unnamed", () => {
+  const v = A.advisorView({ advisor: "" }, { model: "claude-opus-5-5" }, "opus");
+  assert.deepEqual(v.options, [{ value: "", label: "Settings" }, { value: "fable", label: "Fable" }, { value: "opus", label: "Opus" }]);
+  assert.equal(v.pending, false);
+  assert.equal(A.advisorView({ advisor: "opus" }, null, "opus").pending, false, "a runner that has said nothing yet is not known to run anything");
+  assert.equal(A.advisorView({ advisor: "opus" }, {}, "opus").pending, false, "a new session made with it, before its runner's first word");
+  const picked = A.advisorView({ advisor: "opus" }, { model: "claude-opus-5-5" }, "opus");
+  assert.equal(picked.pending, true, "a runner from before the picker started with no advisor of its own");
+  assert.equal(picked.runningName, "the settings' advisor");
+  assert.equal(A.advisorView({ advisor: "" }, null, "opus").wantedName, "the settings' advisor");
 });
 
 test("the settings' advisor is the first option, then the ones that rank at or above the model", () => {

@@ -156,9 +156,10 @@ func (s *Service) member(sessionID string) (store.RunnerSession, store.Thread, e
 }
 
 // New is what a thread is started from: the repo session (workspace) that
-// leads it, what it is called, and the model its members start on.
+// leads it, what it is called, the model its members start on, and the
+// advisor its lead starts with ("" for the person's settings).
 type New struct {
-	WorkspaceID, Title, Model string
+	WorkspaceID, Title, Model, Advisor string
 }
 
 // Create starts a thread: its row, and its lead session in the repo's own
@@ -180,7 +181,9 @@ func (s *Service) Create(n New) (store.Thread, store.RunnerSession, error) {
 	if err != nil {
 		return th, store.RunnerSession{}, err
 	}
-	lead, err := s.Sessions.Create(memberSession(th, ws, store.RoleLead))
+	first := memberSession(th, ws, store.RoleLead)
+	first.Advisor = n.Advisor
+	lead, err := s.Sessions.Create(first)
 	if err != nil {
 		return th, lead, s.dropUnled(th, err)
 	}

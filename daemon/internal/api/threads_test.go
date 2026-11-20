@@ -128,6 +128,16 @@ func TestAThreadIsStartedFromARepoSession(t *testing.T) {
 	}
 }
 
+func TestAThreadIsStartedWithTheAdvisorPicked(t *testing.T) {
+	s, f := threadsAPI(t)
+	if w := callSessions(t, s, "POST", "/v1/threads", `{"workspaceId":"ws-app","advisor":"--x"}`); w.Code != http.StatusBadRequest || len(f.made) != 0 {
+		t.Fatalf("only a listed advisor is taken, before anything is made: %d %s %+v", w.Code, w.Body, f.made)
+	}
+	if w := callSessions(t, s, "POST", "/v1/threads", `{"workspaceId":"ws-app","advisor":"fable"}`); w.Code != http.StatusCreated || len(f.made) != 1 || f.made[0].Advisor != "fable" {
+		t.Fatalf("the thread is asked for with it: %d %s %+v", w.Code, w.Body, f.made)
+	}
+}
+
 func TestThreadRoutesAreOffWithoutThreads(t *testing.T) {
 	s, _, _ := sessionsServer(t, t.TempDir())
 	if w := callSessions(t, s, "POST", "/v1/threads", `{"workspaceId":"ws-app"}`); w.Code != http.StatusServiceUnavailable {

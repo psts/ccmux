@@ -26,3 +26,14 @@ func TestAnAdvisorIsSavedForTheNextStart(t *testing.T) {
 		t.Fatalf("what reached the supervisor: %q", f.advisors)
 	}
 }
+
+func TestANewSessionStartsWithTheAdvisorPicked(t *testing.T) {
+	repo := t.TempDir()
+	s, f, _ := sessionsServer(t, repo)
+	if w := callSessions(t, s, "POST", "/v1/sessions", `{"cwd":"`+repo+`","advisor":"--x"}`); w.Code != http.StatusBadRequest || len(f.created) != 0 {
+		t.Fatalf("only a listed advisor is taken: %d %s", w.Code, w.Body)
+	}
+	if w := callSessions(t, s, "POST", "/v1/sessions", `{"cwd":"`+repo+`","advisor":"fable"}`); w.Code != http.StatusCreated || len(f.created) != 1 || f.created[0].Advisor != "fable" {
+		t.Fatalf("it is made with it: %d %s %+v", w.Code, w.Body, f.created)
+	}
+}

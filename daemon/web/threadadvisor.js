@@ -28,26 +28,39 @@
   // after its next start): the options, the one its row asks for (wanted),
   // the names to show, and whether the row asks for another advisor than
   // the runner started with (pending, which is when "applies on the next
-  // restart" shows). known is false while the runner has not said (an older
-  // runner, or none up): the page then shows no picker.
+  // restart" shows). A runner from before the picker started with none of
+  // its own, and runs what the settings say, which only it can read; one
+  // that has said nothing yet (a new session) is not known to run anything,
+  // so nothing is pending (said, below).
   function advisorView(session, info, model) {
-    const now = info && info.advisor;
-    if (!now) return { known: false, options: [], wanted: "", wantedName: "", runningName: "", pending: false };
-    const settings = now.settings || "";
+    const now = said(info);
     const wanted = (session && session.advisor) || "";
-    const startedWith = now.from === "session" ? now.model : "";
     return {
-      known: true, options: optionsFor(settings, model, wanted), wanted,
-      wantedName: nameOf(wanted || settings) || "no advisor",
-      runningName: nameOf(now.model) || "no advisor",
-      pending: startedWith !== wanted,
+      options: optionsFor(now.settings, model, wanted), wanted,
+      wantedName: nameOf(wanted || now.settings) || now.none,
+      runningName: nameOf(now.model) || now.none,
+      pending: now.started !== null && now.started !== wanted,
     };
+  }
+
+  // said is what the runner says of its advisor (session.info advisor): the
+  // one it runs, the one it was started with ("" for none of its own), what
+  // the settings name (null when it has not said), and the word for none.
+  // A runner that says other things but no advisor is from before the
+  // picker, and was started with none of its own. One that has said nothing
+  // yet (its stream not up, a new session) is not known to run anything:
+  // started is null, and nothing is pending, as with a model.
+  function said(info) {
+    const now = info && info.advisor;
+    const spoke = !!info && !!(info.model || info.claudeCode);
+    if (!now) return { model: "", started: spoke ? "" : null, settings: null, none: "the settings' advisor" };
+    return { model: now.model || "", started: now.from === "session" ? now.model : "", settings: now.settings || "", none: "no advisor" };
   }
 
   // optionsFor lists the settings' advisor first, then the ones that rank at
   // or above model, and the row's own pick when it is not among them.
   function optionsFor(settings, model, wanted) {
-    const first = { value: "", label: settings ? `Settings (${nameOf(settings)})` : "Settings (none)" };
+    const first = { value: "", label: settings === null ? "Settings" : settings ? `Settings (${nameOf(settings)})` : "Settings (none)" };
     const floor = rank[family(model)] || 0;
     const options = [first].concat(ADVISORS.filter((a) => rank[a.value] >= floor).map((a) => ({ value: a.value, label: a.name })));
     if (!options.some((o) => o.value === wanted)) options.push({ value: wanted, label: nameOf(wanted) });

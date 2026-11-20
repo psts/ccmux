@@ -21,7 +21,7 @@
     stream: Stream.fresh(), sock: null, retry: window.ccmuxRetry.backoff(), feedRetry: window.ccmuxRetry.backoff(),
     drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), file: "", dirty: false, jump: false,
     user: "anon", feed: null, acted: "", images: [], pending: [], pendingKey: 0, pumping: false, error: "", listError: "", menu: false,
-    draftModel: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
+    draftModel: "", draftAdvisor: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
     details: loadDetails(), // the repos whose git details are open in the sidebar
     cmds: Cmds.load(storage()), cmdsFrom: null, // each repo's last command list, for its drafts (threadcmds.js)
   };
@@ -473,11 +473,12 @@
     drawRestartBar(sess, Advisor.restartBar(mv, av, live && (mv.pending || S.picked === sess.id), live && av.pending), mv);
   }
 
-  // drawAdvisor is the Advisor picker, for a live session that is not a
-  // role agent's, once its runner has said which advisor it runs with.
+  // drawAdvisor is the Advisor picker, beside the Model one: for a live
+  // session that is not a role agent's, and for a new one before it starts.
   function drawAdvisor(sess, live, mv) {
-    const av = Advisor.advisorView(sess, S.stream.info, mv.wanted || (S.stream.info && S.stream.info.model));
-    show("advisor-box", live && sess.kind !== "agent" && av.known);
+    const draft = !sess && S.sel.kind === "draft" && !!workspace();
+    const av = Advisor.advisorView(sess || { advisor: S.draftAdvisor }, sess ? S.stream.info : null, mv.wanted || (S.stream.info && S.stream.info.model));
+    show("advisor-box", (live && sess.kind !== "agent") || draft);
     fillSelect($("advisor"), av.options, av.wanted);
     return av;
   }
@@ -739,10 +740,10 @@
   // git. In a folder known not to be a git repo there is nothing to land,
   // so a thread there is a plain session, as it always was.
   async function makeSession(ws, lead) {
-    const plain = { cwd: ws.repoPath, workspaceId: ws.id, model: S.draftModel };
+    const plain = { cwd: ws.repoPath, workspaceId: ws.id, model: S.draftModel, advisor: S.draftAdvisor };
     if (lead) return call("POST", "/v1/sessions", { ...plain, kind: "lead" });
     if (ws.git && ws.git.isGitRepo === false) return call("POST", "/v1/sessions", plain);
-    return (await call("POST", "/v1/threads", { workspaceId: ws.id, model: S.draftModel })).session;
+    return (await call("POST", "/v1/threads", { workspaceId: ws.id, model: S.draftModel, advisor: S.draftAdvisor })).session;
   }
 
   // ensureSession makes the lead or thread a draft stands for (a lead that
@@ -859,7 +860,12 @@
     });
   }
 
-  const pickAdvisor = (value) => act(async (sess) => {
+  function pickAdvisor(value) {
+    if (!session()) { S.draftAdvisor = value; drawAll(); return; }
+    saveAdvisor(value);
+  }
+
+  const saveAdvisor = (value) => act(async (sess) => {
     await call("POST", `/v1/sessions/${sess.id}/advisor`, { advisor: value });
     sess.advisor = value;
     S.later.delete(sess.id);

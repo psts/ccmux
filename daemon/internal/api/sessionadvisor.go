@@ -16,6 +16,16 @@ import (
 // above the model (threadadvisor.js).
 var advisors = []string{"", "fable", "opus", "sonnet"}
 
+// advisorTaken says whether advisor is one a session may start with, and
+// answers 400 when it is not. A new session or thread may name one too.
+func advisorTaken(w http.ResponseWriter, advisor string) bool {
+	if slices.Contains(advisors, advisor) {
+		return true
+	}
+	writeError(w, http.StatusBadRequest, "not an advisor to pick: "+advisor)
+	return false
+}
+
 // setRunnerAdvisor: POST /v1/sessions/{id}/advisor with {advisor}. Like a
 // model, an advisor applies when the session next starts; the answer says
 // so and names the restart route.
@@ -27,8 +37,7 @@ func (s *Server) setRunnerAdvisor(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if !slices.Contains(advisors, in.Advisor) {
-		writeError(w, http.StatusBadRequest, "not an advisor to pick: "+in.Advisor)
+	if !advisorTaken(w, in.Advisor) {
 		return
 	}
 	id := r.PathValue("id")

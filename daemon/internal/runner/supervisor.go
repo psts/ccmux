@@ -168,6 +168,9 @@ type NewSession struct {
 	Worktree, Branch              string
 	Effort, PermissionMode        string
 	PaneID, Conversation          string
+	// Advisor is the advisor model it starts with; "" for the person's
+	// settings (store.RunnerSession.Advisor).
+	Advisor string
 }
 
 // Create records a new session and starts it. Once the row exists the
@@ -179,7 +182,7 @@ func (s *Supervisor) Create(n NewSession) (store.RunnerSession, error) {
 	sess := store.RunnerSession{ID: uuid.NewString(), Name: n.Name, Cwd: n.Cwd, Model: n.Model, Wanted: store.SessionRunning, CreatedAt: now, UpdatedAt: now, WorkspaceID: n.WorkspaceID, Kind: n.Kind, Title: n.Title,
 		ThreadID: n.ThreadID, Role: n.Role, Repo: n.Repo, ReadOnly: n.ReadOnly,
 		Worktree: n.Worktree, Branch: n.Branch, Effort: n.Effort, PermissionMode: n.PermissionMode,
-		PaneID: n.PaneID, Conversation: n.Conversation}
+		PaneID: n.PaneID, Conversation: n.Conversation, Advisor: n.Advisor}
 	if n.WorkspaceID != "" && sess.PaneID == "" {
 		sess.PaneID = uuid.NewString()
 	}

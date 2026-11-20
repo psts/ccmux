@@ -85,15 +85,15 @@ func (s *Server) createThread(w http.ResponseWriter, r *http.Request) {
 	if !s.threadsReady(w) {
 		return
 	}
-	var in struct{ WorkspaceID, Title, Model string }
-	if !decodeJSON(w, r, &in) {
+	var in struct{ WorkspaceID, Title, Model, Advisor string }
+	if !decodeJSON(w, r, &in) || !advisorTaken(w, in.Advisor) {
 		return
 	}
 	if in.WorkspaceID == "" {
 		writeError(w, http.StatusBadRequest, "name the repo session that leads the thread (workspaceId)")
 		return
 	}
-	th, lead, err := s.threads.Create(threads.New{WorkspaceID: in.WorkspaceID, Title: sessionTitle(in.Title), Model: in.Model})
+	th, lead, err := s.threads.Create(threads.New{WorkspaceID: in.WorkspaceID, Title: sessionTitle(in.Title), Model: in.Model, Advisor: in.Advisor})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
