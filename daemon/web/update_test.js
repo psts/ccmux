@@ -51,6 +51,16 @@ test("the thread page's message box counts as busy, and its bar has a look", () 
   assert.match(src("threads.css"), /#update-bar \{/);
 });
 
+// The thread page's own pop-up windows (skills, repo, hosts) are .overlay,
+// not .modal: one that is open counts as busy too.
+test("the thread page's pop-up windows count as busy", () => {
+  const src = (f) => fs.readFileSync(path.join(__dirname, f), "utf8");
+  assert.match(src("update.js"), /"\.overlay:not\(\.hidden\)"/);
+  const pops = src("threads.html").match(/<div id="[^"]*-overlay" class="[^"]*"/g) || [];
+  assert.ok(pops.length >= 3, "threads.html has its pop-up windows");
+  for (const m of pops) assert.match(m, /class="overlay[ "]/, m);
+});
+
 test("the logo names the daemon's version", () => {
   assert.strictEqual(U.versionLine({ version: "0.1.96", web: "aaa" }, "aaa"), "ccmux v0.1.96");
   assert.strictEqual(U.versionLine({ version: "dev", web: "aaa" }, "aaa"), "ccmux dev"); // a local build

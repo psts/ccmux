@@ -44,7 +44,8 @@
   let dismissed = ""; // the build whose bar the person closed
 
   function busy() {
-    if (doc.querySelector(".modal:not(.hidden)")) return true;
+    // A dialog open: the old lens's and Settings' (.modal), the thread page's own (.overlay).
+    if (doc.querySelector(".modal:not(.hidden)") || doc.querySelector(".overlay:not(.hidden)")) return true;
     // The old lens's chat boxes, and the thread page's message box.
     return [...doc.querySelectorAll(".ac-compose textarea"), ...doc.querySelectorAll("#input")].some((t) => t.value.trim() !== "");
   }
