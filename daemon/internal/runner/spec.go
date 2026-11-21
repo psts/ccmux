@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/walls"
@@ -161,6 +162,9 @@ type Config struct {
 	// that must not start at all (the sandbox is on and this host cannot
 	// wall it). The runner's own folders are added to the answer here.
 	Walls func(store.RunnerSession) (*walls.Plan, error)
+	// RefreshAfter is how long a session runs before it is started again,
+	// once idle, onto what is installed now (refresh.go); 0 never.
+	RefreshAfter time.Duration
 }
 
 // settingSources loads the user's own settings, as in a terminal session:

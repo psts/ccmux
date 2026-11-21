@@ -33,6 +33,8 @@ type fakeUnits struct {
 	restartErr error             // what Restart fails with, when set
 	activeErr  error             // what Active fails with, when set
 	reloaded   int
+	since      map[string]time.Time // when each unit began, as Since says
+	sinceAsked int                  // how many times Since was asked
 }
 
 func (f *fakeUnits) log(verb, unit string) {
@@ -69,6 +71,14 @@ func (f *fakeUnits) Restart(u string) error {
 	return f.restartErr
 }
 func (f *fakeUnits) Reload() error { f.reloaded++; return nil }
+
+// Since is when a test said the unit began (since), else the zero time.
+func (f *fakeUnits) Since(u string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sinceAsked++
+	return f.since[u], nil
+}
 func (f *fakeUnits) ResetFailed(u string) error {
 	f.log("reset-failed", u)
 	f.mu.Lock()
@@ -124,8 +134,9 @@ type fakeRunner struct {
 	actions    []string // "<path> <body>" of each mode switch or task stop
 	actionCode int      // what those answer (0: 200), with actionSaid as its error
 	actionSaid string
-	rewindWait time.Duration // how long a rewind takes to answer
-	replies    []string      // "<path> <body>" of each card reply, in order
+	rewindWait time.Duration  // how long a rewind takes to answer
+	snap       map[string]any // what GET /snapshot says beside its boot
+	replies    []string       // "<path> <body>" of each card reply, in order
 	srv        *http.Server
 }
 
@@ -191,6 +202,15 @@ func (r *fakeRunner) handler() http.Handler {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		json.NewEncoder(w).Encode(Hello{Protocol: r.protocol, Boot: r.boot, Busy: r.busy})
+	})
+	mux.HandleFunc("GET /snapshot", func(w http.ResponseWriter, _ *http.Request) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		out := map[string]any{"boot": r.boot, "seq": 0}
+		for k, v := range r.snap {
+			out[k] = v
+		}
+		json.NewEncoder(w).Encode(out)
 	})
 	mux.HandleFunc("POST /prompt", func(w http.ResponseWriter, req *http.Request) {
 		var in struct {

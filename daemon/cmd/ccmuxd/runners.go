@@ -44,6 +44,9 @@ type runnerWiring struct {
 	// (-job-unit-prefix); "" is the installed daemon's, and a scratch
 	// daemon that names none runs no jobs (jobs.go).
 	jobPrefix string
+	// refreshAfter is how long a session runs before an idle restart picks
+	// up what was installed since (-session-refresh-after; runner/refresh.go).
+	refreshAfter time.Duration
 }
 
 // wireRunners starts the session-runner supervisor (internal/runner): Claude
@@ -128,7 +131,7 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 // runnerConfig is what every session's spec is built from.
 func runnerConfig(w runnerWiring, claude string) runner.Config {
 	return runner.Config{
-		Sidecar: w.agents.EnsureClaudeServe, Claude: claude, Env: runnerEnv, Peers: peersShim(w.shim),
+		Sidecar: w.agents.EnsureClaudeServe, Claude: claude, Env: runnerEnv, Peers: peersShim(w.shim), RefreshAfter: w.refreshAfter,
 		// A session's own identity: what a tmux pane's shell is given that
 		// applies to Claude (its pane id and bus token, the daemon, its
 		// hooks socket and its route through the LLM proxy).

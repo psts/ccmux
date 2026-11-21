@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/walls"
 )
@@ -77,6 +78,9 @@ type Units interface {
 	// Result is systemd's word for how the unit last ended ("success",
 	// "exit-code", "start-limit-hit", ...), or wallsRefused.
 	Result(unit string) (string, error)
+	// Since is when the unit's current run began (systemd's
+	// ActiveEnterTimestamp); zero for a unit that is not running.
+	Since(unit string) (time.Time, error)
 	ResetFailed(unit string) error
 	Reload() error
 }
@@ -116,6 +120,28 @@ func (s Systemctl) Restart(unit string) error { return s.run("restart", unit) }
 func (s Systemctl) Reload() error             { return s.run("daemon-reload") }
 func (s Systemctl) ResetFailed(unit string) error {
 	return s.run("reset-failed", unit)
+}
+
+func (Systemctl) Since(unit string) (time.Time, error) {
+	out, err := exec.Command("systemctl", "--user", "show", "--timestamp=unix", "-p", "ActiveEnterTimestamp", unit).Output()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("systemctl show %s: %w", unit, err)
+	}
+	return unitSince(string(out)), nil
+}
+
+// unitSince reads "ActiveEnterTimestamp=@<seconds>" off systemctl's
+// answer; an empty value (a unit never started) is the zero time.
+func unitSince(out string) time.Time {
+	v, ok := strings.CutPrefix(strings.TrimSpace(out), "ActiveEnterTimestamp=@")
+	if !ok {
+		return time.Time{}
+	}
+	secs, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || secs <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(secs, 0)
 }
 
 func (Systemctl) Result(unit string) (string, error) {

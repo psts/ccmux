@@ -66,6 +66,9 @@ type Supervisor struct {
 	// idle succeeds, or one finds them asleep or ended. In memory: after a
 	// daemon restart a session waits for its own next start.
 	due sync.Map // session id → struct{}
+	// refresh is the restarts that bring a long-running session onto what
+	// is installed now (refresh.go).
+	refresh refresher
 
 	// Changed hears a session's row each time what it wants changes (made,
 	// woken, put to sleep, ended), with the row as it now is. The daemon
@@ -534,6 +537,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) {
 			log.Printf("runner: session %s: %v", short(listed.ID), err)
 		}
 	}
+	s.refreshPass(ctx, list)
 }
 
 func (s *Supervisor) reconcileID(ctx context.Context, id string) error {
