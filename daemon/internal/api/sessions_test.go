@@ -343,3 +343,19 @@ func TestRewindRoute(t *testing.T) {
 		t.Fatalf("what the supervisor was asked: %v", f.rewinds)
 	}
 }
+
+// A message that asks for a clean start carries its key to the runner,
+// text only or not; one without stays on the plain path.
+func TestAPromptCarriesItsCleanStart(t *testing.T) {
+	s, f, _ := sessionsServer(t, t.TempDir())
+	if w := callSessions(t, s, "POST", "/v1/sessions/s1/prompt", `{"text":"start over","sender":"you","clean":"k1"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("clean prompt: %d %s", w.Code, w.Body)
+	}
+	if len(f.prompts) != 1 || f.prompts[0].Clean != "k1" || f.prompts[0].Text != "start over" {
+		t.Fatalf("the runner was given %+v", f.prompts)
+	}
+	callSessions(t, s, "POST", "/v1/sessions/s1/prompt", `{"text":"go on"}`)
+	if len(f.prompts) != 1 {
+		t.Fatalf("a plain message took the clean path: %+v", f.prompts)
+	}
+}

@@ -19,9 +19,11 @@ import (
 //	GET /v1/sessions/{id}/conversations         the list, newest first
 //	GET /v1/sessions/{id}/conversations/{conv}  one, as a snapshot frame
 //
-// Only an agent's session has them here: a repo's folder holds every
+// Only an agent's session lists them here: a repo's folder holds every
 // session that ever ran in it (its threads, its tmux panes), which is not
-// one session's history.
+// one session's history. Any other session reads only the conversations
+// its own clean starts left (store/cleanstart.go), which the page shows
+// above the one it runs now.
 
 // pastLimit bounds the list: a daily agent has a conversation a day.
 const pastLimit = 200
@@ -40,6 +42,17 @@ type pastConversation struct {
 
 // agentSession is the agent session id names, or writes why not.
 func (s *Server) agentSession(w http.ResponseWriter, id string) *store.RunnerSession {
+	sess := s.pastSession(w, id)
+	if sess != nil && sess.Kind != store.SessionAgent {
+		writeError(w, http.StatusNotFound, "only an agent's session keeps its earlier conversations here")
+		return nil
+	}
+	return sess
+}
+
+// pastSession is the session id names, when earlier conversations can be
+// read on this daemon, or writes why not.
+func (s *Server) pastSession(w http.ResponseWriter, id string) *store.RunnerSession {
 	if !s.doorsReady(w) {
 		return nil
 	}
@@ -54,9 +67,6 @@ func (s *Server) agentSession(w http.ResponseWriter, id string) *store.RunnerSes
 		return nil
 	case sess == nil:
 		writeRunnerError(w, store.ErrNoSession)
-		return nil
-	case sess.Kind != store.SessionAgent:
-		writeError(w, http.StatusNotFound, "only an agent's session keeps its earlier conversations here")
 		return nil
 	}
 	return sess
@@ -91,8 +101,12 @@ func (s *Server) pastConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "not a conversation id: "+conv)
 		return
 	}
-	sess := s.agentSession(w, r.PathValue("id"))
+	sess := s.pastSession(w, r.PathValue("id"))
 	if sess == nil {
+		return
+	}
+	if sess.Kind != store.SessionAgent && !sess.HasLeft(conv) {
+		writeError(w, http.StatusNotFound, "not a conversation this session left")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

@@ -2,6 +2,7 @@ package threads
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -55,7 +56,7 @@ func TestAHelperStartsLeanInItsReposFolderOnTheThreadsModel(t *testing.T) {
 		ThreadID: th.ID, Role: store.RoleHelper, Repo: r.repo("backend"), ReadOnly: true}
 	got := h
 	got.ID, got.PaneID, got.Wanted, got.CreatedAt, got.UpdatedAt = "", "", "", 0, 0
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("a helper is a fresh session in the repo's own folder, read only:\n got %+v\nwant %+v", got, want)
 	}
 	// Two messages to the same repo at once: one helper.

@@ -31,3 +31,19 @@ test("while a turn runs the cache is in use, so it shows live, not a countdown o
   assert.deepEqual([g.text, g.cache], ["42% · cache live", ""]);
   assert.match(g.title, /in use by the running turn/);
 });
+
+test("a message on a cold cache is asked about, by the gauge's own rule, unless the conversation is small", () => {
+  const min = 60000, at = 1000000;
+  const r = { endedAt: at, cacheTtlMs: 60 * min, context: { percent: 42, used: 84000, max: 200000 } };
+  assert.equal(m.coldAsk(r, at + 59 * min), null, "warm: no question");
+  const a = m.coldAsk(r, at + 72 * min);
+  assert.deepEqual(a, { used: 84000, max: 200000, percent: 42, coldFor: "12 min" });
+  assert.match(m.coldText(a), /went cold 12 min ago\. Continuing re-reads 84k tokens \(42% of the context window\) at full price/);
+  assert.equal(m.coldAsk(r, at + 72 * min, true), null, "a running turn keeps it warm");
+  assert.equal(m.coldAsk({ ...r, context: { percent: 5, used: 10000, max: 200000 } }, at + 72 * min), null, "a small conversation costs little: no question");
+  const unknown = m.coldAsk({ endedAt: at, cacheTtlMs: 60 * min }, at + 72 * min);
+  assert.equal(unknown.max, 0, "cold with no size known still asks");
+  assert.match(m.coldText(unknown), /re-reads the whole conversation/);
+  assert.equal(m.coldAsk(null, at), null);
+  assert.equal(m.coldAsk({ endedAt: 0, cacheTtlMs: 0 }, at), null, "nothing known, nothing asked");
+});

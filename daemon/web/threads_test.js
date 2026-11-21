@@ -1723,3 +1723,46 @@ test("an @ list that cannot be read says why on the page", async () => {
   assert.match(p.$("error-bar").textContent, /Files to mention could not be listed: .*dubious ownership/);
   assert.ok(p.$("mentions").classList.contains("hidden"));
 });
+
+test("a message on a cold cache asks first: Start clean sends its key, Cancel sends nothing", async () => {
+  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [[/^POST \/v1\/sessions\/lead1\/prompt/, () => ({ id: "p1" })]] });
+  const result = { endedAt: Date.now() - 2 * 3600000, cacheTtlMs: 3600000, context: { used: 84000, max: 200000, percent: 42 } };
+  await p.frame(snapshot({ result }));
+  const box = p.$("clean-ask");
+  let pick = "", asked = 0;
+  box.showModal = () => { asked++; box.returnValue = pick; box.onclose(); };
+  pick = "";
+  p.$("input").value = "not yet";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.equal(asked, 1);
+  assert.match(p.$("clean-text").textContent, /re-reads 84k tokens \(42% of the context window\)/);
+  assert.deepEqual(p.posts(), [], "Cancel sends nothing");
+  assert.equal(p.$("input").value, "not yet", "and keeps the words");
+  pick = "clean";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.equal(p.posts().length, 1);
+  assert.match(p.posts()[0].body.clean, /^c[0-9a-z]+$/, "the message carries its clean-start key");
+  assert.equal(p.posts()[0].body.text, "not yet");
+  pick = "continue";
+  p.$("input").value = "go on";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.equal(p.posts()[1].body.clean, undefined, "Continue sends it plainly");
+});
+
+test("the conversations a clean start left show above the one it runs now, read only, each ending in a divider", async () => {
+  const at = Date.now() - 60000;
+  const moved = { ...lead, conversation: "c2", leftConversations: [{ id: "c1", at }] };
+  const old = snapshot({ messages: [{ info: { id: "o1", role: "user" }, parts: [{ id: "o1.0", messageID: "o1", type: "text", text: "earlier words" }] }] });
+  const p = await boot({ sessions: [moved], search: "?s=lead1", routes: [[/^GET \/v1\/sessions\/lead1\/conversations\/c1$/, () => ({ ...old, state: "past" })]] });
+  await p.frame(snapshot());
+  await p.settle();
+  const blocks = p.$("blocks");
+  assert.deepEqual(blocks.children.map((b) => b.className), ["b-user", "b-divider", "b-user"]);
+  assert.deepEqual(blocks.querySelectorAll(".bubble").map((b) => b.textContent), ["earlier words", "hello there"]);
+  assert.match(blocks.querySelector(".b-divider").textContent, /^New clean conversation, started \d\d:\d\d\./);
+  assert.equal(blocks.children[0].querySelector(".b-edit"), null, "an earlier conversation's message has no Edit");
+  assert.notEqual(blocks.children[2].querySelector(".b-edit"), null, "the current one's does");
+});

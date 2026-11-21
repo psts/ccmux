@@ -52,7 +52,30 @@
     };
   }
 
-  const api = { gauge };
+  // ASK_FROM is the smallest conversation worth asking about: below it a
+  // cold cache costs little, and the question would only be in the way.
+  const ASK_FROM = 20000;
+
+  // coldAsk is what the composer asks before a message on a cold cache:
+  // null when the cache is warm, unknown or in use, or the conversation is
+  // small; else its size ({used, max, percent} when known) and how long ago
+  // the cache went cold. Cold is cachePart's own rule, so the gauge and the
+  // question never disagree.
+  function coldAsk(r, now, busy) {
+    const m = r ? cachePart(r, now, busy) : null;
+    if (!m || m.cls !== "cold") return null;
+    const c = r.context && r.context.max ? r.context : null;
+    if (c && c.used < ASK_FROM) return null;
+    return { used: c ? c.used : 0, max: c ? c.max : 0, percent: c ? c.percent : 0, coldFor: since(now - r.endedAt - r.cacheTtlMs) };
+  }
+
+  // coldText is the question's words for what coldAsk found.
+  function coldText(a) {
+    const size = a.max ? `${k(a.used)} tokens (${a.percent}% of the context window)` : "the whole conversation";
+    return `The prompt cache went cold ${a.coldFor} ago. Continuing re-reads ${size} at full price. A clean start opens a new conversation; the old one stays on screen above it.`;
+  }
+
+  const api = { gauge, coldAsk, coldText };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadGauge = api;
 })(typeof window !== "undefined" ? window : this);

@@ -9,6 +9,7 @@
   const R = window.ccmuxRoute, Model = window.ccmuxThreadModel, Stream = window.ccmuxThreadStream, Gauge = window.ccmuxThreadGauge;
   const Work = window.ccmuxThreadWork, View = window.ccmuxThreadView, Img = window.ccmuxThreadImage, Team = window.ccmuxThreadTeam;
   const Pending = window.ccmuxThreadPending, Cmds = window.ccmuxThreadCmds, Advisor = window.ccmuxThreadAdvisor;
+  const EarlierView = window.ccmuxThreadEarlier;
   const storage = () => { try { return window.localStorage; } catch (_) { return null; } }; // blocked: nothing kept
   const DETAILS = "ccmux-thread-details";
   const loadDetails = () => { try { const v = JSON.parse(storage().getItem(DETAILS) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch (_) { return new Set(); } };
@@ -102,6 +103,12 @@
       box.classList.remove("hidden");
     },
   });
+
+  // The conversations a session's clean starts left (threadearlier.js),
+  // shown above the one it runs now; and the question that offers a clean
+  // start when the prompt cache is cold (threadclean.js).
+  const Earlier = EarlierView.create({ call, snapshot: (frame) => Stream.fromSnapshot(frame, Date.now()), changed: () => schedule() });
+  const Clean = window.ccmuxThreadClean.create({ dialog: () => $("clean-ask"), say: (text) => { $("clean-text").textContent = text; } });
 
   // A group's task queue (threadtasks.js) shows in the main area in place
   // of a conversation: opening it leaves the one on screen, and picking
@@ -563,8 +570,9 @@
     const follow = S.pinned || S.jump;
     S.jump = false;
     const past = Past.turns(); // an earlier conversation read from disk, in place of this one
-    const blocks = past ? Work.blocks(past, roots(), ws ? Model.repoName(ws) : "")
-      : Work.blocks(S.stream.turns, roots(), ws ? Model.repoName(ws) : "").concat(Pending.blocks(settlePending(), R.threadHref(S.sel)));
+    const toBlocks = (turns) => Work.blocks(turns, roots(), ws ? Model.repoName(ws) : "");
+    const blocks = past ? toBlocks(past)
+      : earlierBlocks(toBlocks).concat(toBlocks(S.stream.turns), Pending.blocks(settlePending(), R.threadHref(S.sel)));
     const box = $("blocks");
     // What every block is drawn with (whose words, which session's images,
     // which of its conversations) changed: draw anew.
@@ -772,14 +780,49 @@
     return names;
   }
 
-  // send shows the message in the conversation at once, empties the
-  // composer and leaves the sending to pump.
+  // earlierBlocks is what goes above the session's conversation: the ones
+  // its clean starts left, each read once.
+  function earlierBlocks(toBlocks) {
+    const sess = S.sel.kind === "session" ? session() : null;
+    if (!sess || !(sess.leftConversations || []).length) return [];
+    Earlier.load(sess);
+    return EarlierView.blocks(sess.leftConversations, Earlier.turnsFor(sess.id), toBlocks, Date.now());
+  }
+
+  // coldNow is what to ask before a message to the session on screen, when
+  // its prompt cache has gone cold (threadgauge.js coldAsk); null when
+  // nothing. An agent starts fresh by its own base's rule: never asked.
+  function coldNow() {
+    const sess = S.sel.kind === "session" ? session() : null;
+    return sess && sess.kind !== "agent" ? Gauge.coldAsk(S.stream.result, Date.now(), S.stream.busy) : null;
+  }
+
+  // send sends the composer's message; on a cold cache it asks first
+  // whether the message starts a clean conversation (threadclean.js), and
+  // Cancel sends nothing.
   function send() {
+    const input = $("input");
+    if (!input.value.trim() && !S.images.length) return;
+    const cold = coldNow();
+    if (!cold) { sendNow(""); return; }
+    Clean.ask(Gauge.coldText(cold)).then((pick) => {
+      if (pick === null) { input.focus(); return; }
+      sendNow(pick === "clean" ? "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) : "");
+    });
+  }
+
+  // sendNow shows the message in the conversation at once, empties the
+  // composer and leaves the sending to pump. clean is its clean-start key
+  // ("" for none); a clean start keeps what is on screen of the
+  // conversation it leaves (leaving), which stays above.
+  function sendNow(clean) {
     const input = $("input");
     const text = input.value.trim();
     if (!text && !S.images.length) return;
+    const sess = session();
+    const leaving = clean && sess ? { conv: sess.conversation || sess.id, turns: S.stream.turns } : null;
     const images = S.images;
-    S.pending.push({ key: ++S.pendingKey, sel: S.sel, where: R.threadHref(S.sel), state: "new", id: "", error: "", text, urls: images.map((img) => img.url), images });
+    S.pending.push({ key: ++S.pendingKey, sel: S.sel, where: R.threadHref(S.sel), state: "new", id: "", error: "", text, urls: images.map((img) => img.url), images, clean, leaving });
     input.value = "";
     Mention.close();
     Object.assign(S, { images: [], menu: false, error: "", said: "", jump: true });
@@ -809,7 +852,8 @@
     try {
       const id = await ensureSession(item);
       const names = await uploadImages(id, item.images);
-      const out = await call("POST", `/v1/sessions/${id}/prompt`, { text: item.text, sender: S.user, images: names });
+      const out = await call("POST", `/v1/sessions/${id}/prompt`, { text: item.text, sender: S.user, images: names, clean: item.clean || undefined });
+      if (item.leaving) Earlier.seed(id, item.leaving.conv, item.leaving.turns);
       Object.assign(item, { state: "queued", id: out.id || "" });
     } catch (e) {
       Object.assign(item, { state: "failed", error: e.message });

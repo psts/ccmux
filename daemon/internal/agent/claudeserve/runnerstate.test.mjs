@@ -44,3 +44,14 @@ test("the event log replays after n and reports a gap", () => {
   assert.equal(log.after(0).gap, false);
   assert.deepEqual(log.after(0).events.map((x) => x.seq), [3, 4, 5]);
 });
+
+test("the last bill is kept for its own conversation only, and round-trips", () => {
+  const s = new RunnerState();
+  s.keepResult("c1", { endedAt: 5, cacheTtlMs: 3600000, context: { used: 10, max: 100, percent: 10 } });
+  assert.deepEqual(s.resultFor("c1"), { endedAt: 5, cacheTtlMs: 3600000, context: { used: 10, max: 100, percent: 10 } });
+  assert.equal(s.resultFor("c2"), null, "a clean start's new conversation has no bill yet");
+  const back = new RunnerState(JSON.parse(JSON.stringify(s)));
+  assert.equal(back.resultFor("c1").endedAt, 5);
+  assert.equal(new RunnerState({ lastResult: { endedAt: 1 } }).resultFor(undefined), null, "one with no conversation is dropped");
+  assert.equal("lastResult" in new RunnerState().toJSON(), false);
+});

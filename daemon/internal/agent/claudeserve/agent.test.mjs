@@ -1174,3 +1174,18 @@ test("a failed turn that touched no cache leaves the previous turn's cache count
   const second = events.filter((e) => e.type === "session.idle").pop().properties.result;
   assert.deepEqual([second.endedAt, second.cacheTtlMs], [first.endedAt, 3600000], "the runner hands the turn before's result on, so nothing restarts the countdown");
 });
+
+test("a runner started again shows its conversation's last bill, so the cache countdown survives a restart", async () => {
+  const one = runnerAgent();
+  one.agent.ensureQuery();
+  one.agent.onMessage(initMsg());
+  one.agent.onMessage({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: "One." }] } });
+  one.agent.onMessage({ ...resultMsg, usage: { input_tokens: 3, output_tokens: 7, cache_read_input_tokens: 900, cache_creation: { ephemeral_1h_input_tokens: 40 } } });
+  await tick();
+  const kept = one.agent.result;
+  const read = (p) => { if (p in one.files) return one.files[p]; const e = new Error("no"); e.code = "ENOENT"; throw e; };
+  const two = runnerAgent({ readFile: read });
+  assert.deepEqual([two.agent.result.endedAt, two.agent.result.cacheTtlMs], [kept.endedAt, 3600000]);
+  const other = runnerAgent({ readFile: read, sessionAuto: "sess-2" });
+  assert.equal(other.agent.result, null, "a new conversation in the same state file starts with no bill");
+});

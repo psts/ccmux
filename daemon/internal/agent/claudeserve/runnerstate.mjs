@@ -18,10 +18,14 @@ const deliveredCap = 500;
 // answered (open, oldest first, each with its text for the notice), the
 // ids Claude has in its transcript (delivered), and what to tell Claude at
 // the next start when this process is being restarted on purpose (note: a
-// thread member moved into its worktree, readonly.mjs).
+// thread member moved into its worktree, readonly.mjs), and the last
+// finished turn's bill with the conversation it belongs to (lastResult), so
+// a runner started again still shows the page how long the prompt cache
+// has left.
 export class RunnerState {
   constructor(data = {}) {
     this.note = typeof data.note === "string" ? data.note : "";
+    this.lastResult = data.lastResult && typeof data.lastResult === "object" && data.lastResult.conv ? data.lastResult : null;
     this.open = Array.isArray(data.open) ? data.open.filter((p) => p && p.id).map((p) => ({ id: String(p.id), text: String(p.text || "") })) : [];
     this.delivered = Array.isArray(data.delivered) ? data.delivered.slice(-deliveredCap) : [];
   }
@@ -43,8 +47,24 @@ export class RunnerState {
     return this.delivered.includes(id);
   }
 
+  // keepResult records conv's last bill; resultFor gives it back for the
+  // same conversation only. A walled session keeps one state file across
+  // its conversations (runner.Paths.WalledStateFile), and a clean start's
+  // new conversation has no bill yet.
+  keepResult(conv, result) {
+    this.lastResult = result ? { ...result, conv } : null;
+  }
+
+  resultFor(conv) {
+    if (!this.lastResult || this.lastResult.conv !== conv) return null;
+    const { conv: _, ...result } = this.lastResult;
+    return result;
+  }
+
   toJSON() {
-    return { open: this.open, delivered: this.delivered, note: this.note };
+    const out = { open: this.open, delivered: this.delivered, note: this.note };
+    if (this.lastResult) out.lastResult = this.lastResult;
+    return out;
   }
 }
 

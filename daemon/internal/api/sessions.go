@@ -373,7 +373,7 @@ func orNoRunner(err error) error {
 
 func writeRunnerError(w http.ResponseWriter, err error) {
 	var capped errAgentCap
-	if errors.Is(err, runner.ErrSessionDone) || errors.Is(err, runner.ErrPromptWaiting) || errors.As(err, &capped) {
+	if errors.Is(err, runner.ErrSessionDone) || errors.Is(err, runner.ErrPromptWaiting) || errors.Is(err, runner.ErrCleanRefused) || errors.As(err, &capped) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -393,6 +393,9 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 		// Images are names POST .../images gave: pictures that go to Claude
 		// with the text. A picture with no words is still a prompt.
 		Images []string
+		// Clean asks for a new conversation first (runner/cleanstart.go):
+		// the message's own key, the same when the page sends it again.
+		Clean string
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -405,7 +408,7 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if s.agentWakeRefused(w, sessionID) {
 		return
 	}
-	if len(in.Images) == 0 {
+	if len(in.Images) == 0 && in.Clean == "" {
 		id, err := s.runners.Send(sessionID, in.Text, in.Sender)
 		s.answerPrompt(w, sessionID, in.Text, id, err)
 		return
@@ -414,7 +417,7 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	id, err := s.runners.SendPrompt(sessionID, runner.Prompt{Text: in.Text, Sender: in.Sender, Images: in.Images})
+	id, err := s.runners.SendPrompt(sessionID, runner.Prompt{Text: in.Text, Sender: in.Sender, Images: in.Images, Clean: in.Clean})
 	s.answerPrompt(w, sessionID, in.Text, id, err)
 }
 

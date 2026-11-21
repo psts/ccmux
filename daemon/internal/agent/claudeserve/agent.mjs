@@ -106,7 +106,7 @@ export class Agent {
     this.transcript = this.newTranscript(this.sid);
     this.info = {}; // what the session says of itself (sessionself.mjs), for a runner's page
     if (o.socket) this.info.advisor = this.advisorInUse(deps);
-    this.result = null; // the last finished turn's bill
+    this.result = o.socket ? this.state.resultFor(this.sid) : null; // the last finished turn's bill, kept across a runner's restarts
     this.suggestion = ""; // the next prompt Claude Code predicts, a runner's page offers it
     this.clients = new Set();
     this.permissions = new Map(); // id → {request, resolve}
@@ -557,6 +557,12 @@ export class Agent {
     this.setSuggestion(String(m.suggestion || ""));
   }
 
+  // keepResult saves the bill in the state file (runnerstate.mjs).
+  keepResult() {
+    this.state.keepResult(this.sid, this.result);
+    this.persist();
+  }
+
   setSuggestion(text) {
     if (!this.turns || this.suggestion === text) return;
     this.suggestion = text;
@@ -576,6 +582,7 @@ export class Agent {
     }
     const idle = { sessionID: this.sid };
     if (this.turns) idle.result = this.result = resultOf(m, this.result); // what the turn cost, for the session's page
+    if (this.turns) this.keepResult();
     this.broadcast({ type: "session.idle", properties: idle });
     this.setBusy(this.turns ? this.turns.busy() : false);
     if (this.turns) this.readContext(this.result);
@@ -592,6 +599,7 @@ export class Agent {
     q.getContextUsage({ detail: "summary" }).then((r) => {
       if (this.result !== result) return; // a newer turn has its own
       result.context = contextOf(r);
+      this.keepResult();
       this.broadcast({ type: "session.context", properties: { sessionID: this.sid, context: result.context } });
     }).catch((e) => this.log("! context usage unreadable: " + (e && e.message ? e.message : e)));
   }

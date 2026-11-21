@@ -150,6 +150,20 @@
   </div>
   <div id="caps-menu" class="menu-layer hidden"></div>
 
+  <!-- A message on a cold prompt cache (threadclean.js): start clean, or
+       go on in the same conversation. -->
+  <dialog id="clean-ask" class="clean-ask" aria-labelledby="clean-head">
+    <form method="dialog">
+      <h2 id="clean-head">The prompt cache is cold</h2>
+      <p id="clean-text"></p>
+      <div class="clean-row">
+        <button class="plain" value="" type="submit">Cancel</button>
+        <button class="plain" value="continue" type="submit">Continue</button>
+        <button class="primary" value="clean" type="submit" autofocus>Start clean</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- The sidebar's "+" (threadnewrepo.js): add a repo, in a group. -->
   <div id="repo-overlay" class="overlay hidden">
     <div id="repo-sheet" class="sheet narrow" role="dialog" aria-modal="true" aria-label="Add a repo"></div>
@@ -203,6 +217,8 @@
   <script src="/threadcapsctl.js"></script>
   <script src="/threadsidectl.js"></script>
   <script src="/threadpast.js"></script>
+  <script src="/threadearlier.js"></script>
+  <script src="/threadclean.js"></script>
   <script src="/threadgroups.js"></script>
   <script src="/threadgroupsctl.js"></script>
   <script src="/threadnewrepo.js"></script>

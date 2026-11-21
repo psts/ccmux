@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func TestAThreadStartsWithItsLeadReadingInTheReposFolder(t *testing.T) {
 		ThreadID: th.ID, Role: store.RoleLead, Repo: r.repo("app"), ReadOnly: true}
 	got := r.row(lead.ID)
 	got.ID, got.PaneID, got.Wanted, got.CreatedAt, got.UpdatedAt = "", "", "", 0, 0
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("the lead starts in its repo's own folder, read only, under its thread's name:\n got %+v\nwant %+v", got, want)
 	}
 }

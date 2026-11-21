@@ -14,7 +14,7 @@ import (
 )
 
 // pastRows has an agent's session "a1", now in conversation "c3", and a
-// repo's lead "l1".
+// repo's lead "l1", which a clean start moved off conversation "c1".
 type pastRows struct{ fakeRunnerRows }
 
 func (pastRows) RunnerSession(id string) (*store.RunnerSession, error) {
@@ -22,7 +22,7 @@ func (pastRows) RunnerSession(id string) (*store.RunnerSession, error) {
 	case "a1":
 		return &store.RunnerSession{ID: "a1", Kind: store.SessionAgent, Cwd: "/agents/seo", Conversation: "c3cccccc"}, nil
 	case "l1":
-		return &store.RunnerSession{ID: "l1", Kind: "lead", Cwd: "/r/app"}, nil
+		return &store.RunnerSession{ID: "l1", Kind: "lead", Cwd: "/r/app", Conversation: "c4dddddd", Left: []store.LeftConversation{{ID: "c1aaaaaa", At: 1}}}, nil
 	}
 	return nil, nil
 }
@@ -108,5 +108,21 @@ func TestPastConversations_Refusals(t *testing.T) {
 	}
 	if got := strings.Join(*asked, "|"); got != "past /agents/seo deadbeef" {
 		t.Fatalf("doors asked %q: a refused request reached the sidecar", got)
+	}
+}
+
+// Any other session reads the conversations its clean starts left, and no
+// other conversation of its folder.
+func TestPastConversations_ALeftConversationReads(t *testing.T) {
+	hs, asked := newPastServer(t)
+	var frame streamFrame
+	if code := getPast(t, hs.URL+"/v1/sessions/l1/conversations/c1aaaaaa", &frame); code != 200 || frame.State != "past" {
+		t.Fatalf("a left conversation = %d %+v", code, frame)
+	}
+	if code := getPast(t, hs.URL+"/v1/sessions/l1/conversations/c2bbbbbb", nil); code != 404 {
+		t.Fatalf("another conversation of the folder = %d, want 404", code)
+	}
+	if got := strings.Join(*asked, "|"); got != "past /r/app c1aaaaaa" {
+		t.Fatalf("doors asked %q", got)
 	}
 }

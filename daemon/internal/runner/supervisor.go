@@ -28,6 +28,7 @@ type Store interface {
 	SleepRunnerSession(id string, fresh bool, now int64) error
 	SetRunnerSessionFresh(id string, fresh bool, now int64) error
 	RotateRunnerConversation(id, conversation string, now int64) error
+	StartCleanConversation(id string, left store.LeftConversation, conversation string, now int64) error
 	AddInboxPromptAndWake(p store.InboxPrompt, wake bool, now int64) error
 	HasInboxPrompt(id string) (bool, error)
 	UndeliveredPrompts(sessionID string) ([]store.InboxPrompt, error)
@@ -220,10 +221,13 @@ func (s *Supervisor) SendAs(sessionID, promptID, text, sender string) (string, e
 
 // Prompt is one prompt for a session: its text, who sent it, and the images
 // that go with it, named as they are stored in the session's media folder
-// (MediaDir). ID names the prompt (SendAs's rule); "" makes one.
+// (MediaDir). ID names the prompt (SendAs's rule); "" makes one. Clean,
+// when set, has the prompt open a new conversation first (cleanstart.go);
+// it is the message's own key, so the same message sent again opens none.
 type Prompt struct {
 	ID, Text, Sender string
 	Images           []string
+	Clean            string
 }
 
 // SendPrompt is SendAs for a prompt that may carry images. The names are
@@ -244,6 +248,9 @@ func (s *Supervisor) SendPrompt(sessionID string, in Prompt) (string, error) {
 	}
 	if had, err := s.st.HasInboxPrompt(promptID); err != nil || had {
 		return promptID, err
+	}
+	if err := s.cleanStart(sess, in.Clean); err != nil {
+		return "", err
 	}
 	asleep := sess.Wanted == store.SessionAsleep
 	p := store.InboxPrompt{ID: promptID, SessionID: sessionID, Text: in.Text, Sender: in.Sender, Attachments: in.Images, CreatedAt: s.millis()}

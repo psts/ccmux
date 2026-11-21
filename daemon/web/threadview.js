@@ -117,7 +117,7 @@
     if (b.text) add(box, el("div", "bubble", b.text));
     // Edit goes back to this message (threadedit.js): one that has landed,
     // in a conversation that is not an earlier one read from disk.
-    if (!b.pending && ctx.edit) add(box, editButton(b, ctx));
+    if (!b.pending && !b.old && ctx.edit) add(box, editButton(b, ctx)); // an old conversation's message: Claude is no longer in it
     if (b.pending === "failed") add(box, failedLine(b, ctx));
     else if (b.pending) add(box, el("div", "sending", pendingSays[b.pending]));
     return box;
@@ -148,7 +148,15 @@
 
   const bus = (b) => add(el("div", "b-bus"), el("span", "dot"), add(el("span"), el("strong", "", b.from + " "), document.createTextNode(b.text)));
 
-  const draw = { user, claude, work, note, bus, error: (b) => el("div", "b-error", b.text) };
+  // divider is the line where a clean start began a new conversation
+  // (threadearlier.js).
+  function divider(b) {
+    const line = el("div", "b-divider", b.text);
+    line.setAttribute("role", "separator");
+    return line;
+  }
+
+  const draw = { user, claude, work, note, bus, divider, error: (b) => el("div", "b-error", b.text) };
 
   // block draws one block; sig is all of it that the drawing depends on, so
   // the page redraws a block only when its sig changed.
