@@ -109,7 +109,7 @@ func TestFull_RealRepo(t *testing.T) {
 	if !st.IsGitRepo || st.Branch != "feature" {
 		t.Errorf("repo/branch = %v/%q", st.IsGitRepo, st.Branch)
 	}
-	if st.DefaultBranch != "main" || st.AheadOfDefault != 1 || st.BehindDefault != 0 {
+	if st.DefaultBranch != "main" || st.DefaultRef != "main" || st.AheadOfDefault != 1 || st.BehindDefault != 0 {
 		t.Errorf("vs default = %q ↑%d ↓%d, want main ↑1 ↓0", st.DefaultBranch, st.AheadOfDefault, st.BehindDefault)
 	}
 	if !equal(paths(st.ModifiedFiles), []string{"a.txt"}) || !equal(paths(st.UntrackedFiles), []string{"new.txt"}) {
@@ -170,6 +170,61 @@ func TestDetectDefaultBranch_FreshClone(t *testing.T) {
 	}
 	if st.AheadOfDefault != 1 || st.BehindDefault != 0 {
 		t.Errorf("vs default = ↑%d ↓%d, want ↑1 ↓0", st.AheadOfDefault, st.BehindDefault)
+	}
+}
+
+// TestDetectDefaultBranch_PrefersOrigin pins what "vs main" means: what is
+// not on origin/main yet (what a ship would send), not local main, which can
+// sit anywhere. Local main is the base only for a repo with no remote.
+func TestDetectDefaultBranch_PrefersOrigin(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	ctx := context.Background()
+	src := t.TempDir()
+	gitIn := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitIn(src, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(src, "add", "a.txt")
+	gitIn(src, "commit", "-m", "base")
+
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitIn(t.TempDir(), "clone", "--quiet", src, clone)
+	gitIn(clone, "checkout", "-b", "dev")
+	for i, s := range []string{"two", "three"} {
+		if err := os.WriteFile(filepath.Join(clone, "a.txt"), []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(clone, "commit", "-am", "dev-"+string(rune('a'+i)))
+	}
+	// Local main moves ahead to dev (a merge not pushed yet): vs local main
+	// it reads even, vs origin/main it is still two to ship.
+	gitIn(clone, "branch", "-f", "main", "dev")
+
+	db := DetectDefaultBranch(ctx, clone)
+	if db != "origin/main" {
+		t.Fatalf("default branch = %q, want origin/main", db)
+	}
+	st, err := Full(ctx, clone, db)
+	if err != nil {
+		t.Fatalf("Full: %v", err)
+	}
+	if st.DefaultBranch != "main" || st.DefaultRef != "origin/main" {
+		t.Errorf("default = %q ref %q, want main / origin/main", st.DefaultBranch, st.DefaultRef)
+	}
+	if st.AheadOfDefault != 2 || st.BehindDefault != 0 {
+		t.Errorf("vs origin/main = ↑%d ↓%d, want ↑2 ↓0", st.AheadOfDefault, st.BehindDefault)
 	}
 }
 

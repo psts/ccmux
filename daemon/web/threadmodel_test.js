@@ -22,7 +22,14 @@ test("where a session is, as one word", () => {
 
 test("git state reads like the lens: branch, dirty count, origin, and the default branch when off it", () => {
   const g = m.gitView({ isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 1, behind: 0, defaultBranch: "main", aheadOfDefault: 4, modifiedFiles: [{ path: "a" }], untrackedFiles: [{ path: "b" }] });
-  assert.deepEqual(g, { branch: "dev", dirty: 2, origin: "↑1", vs: "vs main ↑4", track: "dev → origin/dev ↑1", clean: "2 changed files" });
+  assert.deepEqual(g, { branch: "dev", dirty: 2, origin: "↑1", ship: 4, shipBehind: 0, shipRef: "main", vs: "vs main ↑4", track: "dev → origin/dev ↑1", clean: "2 changed files" });
+  const vsOrigin = m.gitView({ isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", defaultBranch: "main", defaultRef: "origin/main", aheadOfDefault: 74, behindDefault: 2 });
+  assert.equal(vsOrigin.shipBehind, 2, "behind origin/main shows folded too");
+  assert.deepEqual([vsOrigin.ship, vsOrigin.shipRef, vsOrigin.vs, vsOrigin.origin], [74, "origin/main", "vs origin/main ↑74 ↓2", ""], "the daemon's ref names what is counted against");
+  const mainAhead = m.gitView({ isGitRepo: true, branch: "main", trackingBranch: "origin/main", ahead: 3, behind: 1, defaultBranch: "main", defaultRef: "origin/main" });
+  assert.deepEqual([mainAhead.ship, mainAhead.origin, mainAhead.track], [3, "↓1", "main → origin/main ↑3 ↓1"], "on main, what is not on origin/main is the number to ship, not a second arrow");
+  const mainOther = m.gitView({ isGitRepo: true, branch: "main", trackingBranch: "fork/main", ahead: 3, defaultBranch: "main", defaultRef: "origin/main" });
+  assert.deepEqual([mainOther.ship, mainOther.origin], [0, "↑3"], "tracking something else is no ship");
   const onMain = m.gitView({ isGitRepo: true, branch: "main", trackingBranch: "origin/main", defaultBranch: "main" });
   assert.deepEqual([onMain.vs, onMain.origin, onMain.track, onMain.clean], ["", "", "main → origin/main up to date", "Clean"]);
   assert.equal(m.gitView({ isGitRepo: true, branch: "dev", defaultBranch: "main" }).vs, "vs main even");

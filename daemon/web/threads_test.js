@@ -464,20 +464,22 @@ test("an advisor picked is saved and applies on the next restart, on the same ba
 
 test("a repo's git details open on a click on the repo the page is in, never on the way to another, stay open beside others, and close on the next click", async () => {
   const other = { id: "ws2", name: "web", repoPath: "/p/web", git: { isGitRepo: true, branch: "main" } };
-  const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, modifiedFiles: ["a.ts"] } };
+  const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, defaultBranch: "main", defaultRef: "origin/main", aheadOfDefault: 74, modifiedFiles: ["a.ts"] } };
   const kept = {};
   const storage = { getItem: (k) => kept[k] || null, setItem: (k, v) => { kept[k] = v; } };
   const p = await boot({ workspaces: [app, other], sessions: [lead], search: "?s=lead1", storage });
   const rows = () => p.$("tree").querySelectorAll(".row");
   const opened = () => rows().map((r) => !!r.querySelector(".git-detail"));
   assert.deepEqual(opened(), [false, false], "nothing opened yet");
-  assert.deepEqual(rows()[0].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:app", "row-status:●1↑2", "branch:dev"], "name, then changes and ahead, then the branch last");
+  assert.deepEqual(rows()[0].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:app", "row-status:●1↑2↑74", "branch:dev"], "name, then changes, ahead and what is not shipped, then the branch last");
+  const ship = rows()[0].querySelector(".ship");
+  assert.equal(ship.title, "74 commits not on origin/main yet: ready to ship");
   assert.deepEqual(rows()[1].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:web", "row-status:", "branch:main"], "a clean repo keeps its empty column, so the branches line up");
   rows()[0].click();
   await p.settle();
   assert.equal(p.book.pushed.length, 0, "the repo the page is in: no move");
   assert.equal(rows()[0].className, "row on open");
-  assert.deepEqual(rows()[0].querySelector(".git-detail").children.map((c) => c.textContent), ["dev → origin/dev ↑2", "● 1 changed file"], "no folder: it is in the row's hover tip");
+  assert.deepEqual(rows()[0].querySelector(".git-detail").children.map((c) => c.textContent), ["dev → origin/dev ↑2", "vs origin/main ↑74", "● 1 changed file"], "no folder: it is in the row's hover tip");
   assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more", "side-todo"], "beside the card, not inside it: its menu button, which only a phone shows (threads.css), and the repo's to-do pill, both laid over the card");
   const pill = p.$("tree").querySelectorAll(".repo")[0].querySelector(".side-todo");
   assert.equal(pill.querySelector(".sd-count").className, "sd-count", "the repo the page is in shows its pill with nothing on its list, so a first item can be added");

@@ -1225,7 +1225,7 @@ function gitDetail(ws) {
       ab(g.ahead, g.behind) + `</div>`;
   }
   if (g.defaultBranch && g.branch !== g.defaultBranch) {
-    out += `<div class="gd-vsdef">vs ${esc(g.defaultBranch)}` +
+    out += `<div class="gd-vsdef">vs ${esc(g.defaultRef || g.defaultBranch)}` +
       ab(g.aheadOfDefault, g.behindDefault) + `</div>`;
   }
   const files = changedFiles(g);

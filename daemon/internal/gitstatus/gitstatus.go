@@ -37,6 +37,7 @@ type Status struct {
 	Ahead          int    `json:"ahead,omitempty"`
 	Behind         int    `json:"behind,omitempty"`
 	DefaultBranch  string `json:"defaultBranch,omitempty"`
+	DefaultRef     string `json:"defaultRef,omitempty"` // what the counts are against: "origin/main", or "main" with no remote
 	AheadOfDefault int    `json:"aheadOfDefault,omitempty"`
 	BehindDefault  int    `json:"behindDefault,omitempty"`
 	StagedFiles    []File `json:"stagedFiles,omitempty"`
@@ -68,6 +69,7 @@ func Full(ctx context.Context, repoPath, defaultBranch string) (*Status, error) 
 	// name, so the sidebar reads "vs main" either way.
 	shortDefault := strings.TrimPrefix(defaultBranch, "origin/")
 	st.DefaultBranch = shortDefault
+	st.DefaultRef = defaultBranch
 	if defaultBranch != "" && st.Branch != shortDefault {
 		if out, code, _ := run(ctx, repoPath, "rev-list", "--count", "--left-right", defaultBranch+"...HEAD"); code == 0 {
 			fields := strings.Fields(out)
@@ -80,24 +82,26 @@ func Full(ctx context.Context, repoPath, defaultBranch string) (*Status, error) 
 	return st, nil
 }
 
-// DetectDefaultBranch resolves the ref to compare against — preferring local
-// `main`/`master`, then remote-tracking `origin/main`/`origin/master`, then
-// the remote default (origin/HEAD). The trunk names come first on purpose: a
-// repo can point origin/HEAD at an integration branch like `dev` that is
-// worked on directly; the comparison the dashboard wants is still "vs the
-// release trunk". The remote-tracking step exists for fresh clones checked
-// out on that integration branch — they have no local main, and falling
-// straight to origin/HEAD would compare dev vs dev and hide the row. Call
-// once per repo and cache ("" = no trunk). The result is a REF (possibly
-// "origin/main"); Full derives the display name from it.
+// DetectDefaultBranch resolves the ref to compare against — preferring
+// remote-tracking `origin/main`/`origin/master`, then local `main`/`master`
+// (a repo with no remote), then the remote default (origin/HEAD). The remote
+// trunk comes first because the question the number answers is "is there
+// work not shipped yet": what is on origin/main is what was released, and a
+// local main can sit ahead of or behind it. The trunk names come before
+// origin/HEAD on purpose: a repo can point origin/HEAD at an integration
+// branch like `dev` that is worked on directly; the comparison the dashboard
+// wants is still "vs the release trunk". The count is only as fresh as the
+// last fetch (this status read never fetches). Call once per repo and cache
+// ("" = no trunk). The result is a REF (possibly "origin/main"); Full derives
+// the display name from it.
 func DetectDefaultBranch(ctx context.Context, repoPath string) string {
-	for _, name := range []string{"main", "master"} {
-		if out, code, _ := run(ctx, repoPath, "rev-parse", "--verify", "refs/heads/"+name); code == 0 && strings.TrimSpace(out) != "" {
+	for _, name := range []string{"origin/main", "origin/master"} {
+		if out, code, _ := run(ctx, repoPath, "rev-parse", "--verify", "refs/remotes/"+name); code == 0 && strings.TrimSpace(out) != "" {
 			return name
 		}
 	}
-	for _, name := range []string{"origin/main", "origin/master"} {
-		if out, code, _ := run(ctx, repoPath, "rev-parse", "--verify", "refs/remotes/"+name); code == 0 && strings.TrimSpace(out) != "" {
+	for _, name := range []string{"main", "master"} {
+		if out, code, _ := run(ctx, repoPath, "rev-parse", "--verify", "refs/heads/"+name); code == 0 && strings.TrimSpace(out) != "" {
 			return name
 		}
 	}

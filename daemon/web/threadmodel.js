@@ -27,17 +27,32 @@
     return [ahead ? "↑" + ahead : "", behind ? "↓" + behind : ""].filter(Boolean).join(" ");
   }
 
+  // shipOf is how many commits the branch has that its trunk ref (the
+  // daemon's defaultRef: origin/main, or local main with no remote) has not,
+  // which is what a ship would send. On the trunk itself that is its own
+  // ahead count, when it tracks that ref.
+  function shipOf(git, offDefault, ref) {
+    if (offDefault) return git.aheadOfDefault || 0;
+    return git.trackingBranch && git.trackingBranch === ref ? git.ahead || 0 : 0;
+  }
+
   // gitView is a repo's git state as the sidebar writes it, or null when it
   // is not known (never read, or not a git repo).
   function gitView(git) {
     if (!git || !git.isGitRepo) return null;
     const dirty = ["stagedFiles", "modifiedFiles", "deletedFiles", "untrackedFiles"].reduce((n, k) => n + (git[k] || []).length, 0);
     const offDefault = !!git.defaultBranch && git.branch !== git.defaultBranch;
-    const vs = offDefault ? "vs " + git.defaultBranch + " " + (ab(git.aheadOfDefault, git.behindDefault) || "even") : "";
+    const ref = git.defaultRef || git.defaultBranch || "";
+    const ship = shipOf(git, offDefault, ref);
+    const vs = offDefault ? "vs " + ref + " " + (ab(git.aheadOfDefault, git.behindDefault) || "even") : "";
     return {
       branch: git.branch || "",
       dirty,
-      origin: ab(git.ahead, git.behind),
+      // On the trunk the ship number is its ahead count: not shown twice.
+      origin: !offDefault && ship ? ab(0, git.behind) : ab(git.ahead, git.behind),
+      ship,
+      shipBehind: offDefault ? git.behindDefault || 0 : 0,
+      shipRef: ref,
       vs,
       track: git.trackingBranch ? `${git.branch} → ${git.trackingBranch} ${ab(git.ahead, git.behind) || "up to date"}` : `${git.branch} (no upstream)`,
       clean: dirty ? `${dirty} changed file${dirty === 1 ? "" : "s"}` : "Clean",

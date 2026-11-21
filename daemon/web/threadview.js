@@ -234,10 +234,22 @@
   // last, so every row's branch and changes line up whatever is shown.
   function gitCols(git) {
     if (!git) return [];
-    const status = add(el("span", "row-status"), git.dirty ? el("span", "dirty", "●" + git.dirty) : null, git.origin ? el("span", "ab", git.origin) : null);
+    const status = add(el("span", "row-status"), git.dirty ? el("span", "dirty", "●" + git.dirty) : null, git.origin ? el("span", "ab", git.origin) : null, shipTag(git));
     const branch = el("span", "branch", git.branch);
     branch.title = git.branch;
     return [status, branch];
+  }
+
+  // shipTag is how the branch stands against the trunk (origin/main), as a
+  // small pill: ↑ the commits a ship would send, ↓ what the trunk has that the
+  // branch has not. Short, so the repo's name keeps its room; the words are
+  // in its tip. None when both are zero.
+  function shipTag(git) {
+    if (!git.ship && !git.shipBehind) return null;
+    const t = el("span", "ship", Model.ab(git.ship, git.shipBehind));
+    const n = (k) => `${k} commit${k === 1 ? "" : "s"}`;
+    t.title = [git.ship ? `${n(git.ship)} not on ${git.shipRef} yet: ready to ship` : "", git.shipBehind ? `${n(git.shipBehind)} on ${git.shipRef} not in this branch` : ""].filter(Boolean).join(". ");
+    return t;
   }
 
   // gitDetail is the repo's git state written out, inside its row's card,

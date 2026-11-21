@@ -126,6 +126,8 @@ a:hover { color: var(--blue-d); }
 .branch { font-family: var(--mono); font-size: 11px; color: var(--fg2); background: var(--chip); border-radius: 4px; padding: 0 5px; line-height: 17px; min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dirty { font-family: var(--mono); font-size: 11px; color: var(--amber); }
 .ab { font-family: var(--mono); font-size: 11px; color: var(--amber); }
+/* Commits not on origin/main yet: what a ship would send (threadview.js shipTag). */
+.ship { font-family: var(--mono); font-size: 10.5px; color: var(--blue-d); background: var(--blue-bg); border: 1px solid var(--blue-line); border-radius: 8px; padding: 0 5px; line-height: 15px; white-space: nowrap; }
 .git-detail { margin-top: 4px; display: flex; flex-direction: column; gap: 3px; font-family: var(--mono); font-size: 11.5px; color: var(--fg2); overflow-wrap: anywhere; }
 .git-path { color: var(--muted); }
 .git-clean { color: var(--green); }
