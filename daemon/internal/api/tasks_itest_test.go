@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/store"
@@ -173,5 +174,39 @@ func TestTasks_LeadFilesEveryPart(t *testing.T) {
 	}
 	if taskq.RunOf(parts[0]) != taskq.NormalRun || taskq.RunOf(parts[1]) != taskq.HardRun {
 		t.Fatalf("runs = %+v / %+v, want only the part filed as hard on the stronger model", parts[0], parts[1])
+	}
+}
+
+// A main session that files a task is done planning: its side helpers are
+// stood down. A tmux session that files one has none, and nothing is asked.
+func TestTasks_AMainSessionFilingStandsItsHelpersDown(t *testing.T) {
+	s, mgr, st := itestServer(t, "ccmux-api-tasks-main-itest")
+	f := &fakeThreads{}
+	s.SetThreads(f)
+	dir := filepath.Join(t.TempDir(), "app")
+	os.MkdirAll(filepath.Join(dir, ".git"), 0o755)
+	ws, err := mgr.CreateWorkspace("app", dir, dir, "", "tester", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SeedWindowMembership(ws.ID, "ChartLabs"); err != nil {
+		t.Fatal(err)
+	}
+	main := store.RunnerSession{ID: "m1", Cwd: dir, Wanted: store.SessionRunning, Kind: store.SessionLead, PaneID: "run-m1", WorkspaceID: ws.ID}
+	if err := st.AddRunnerSession(main); err != nil {
+		t.Fatal(err)
+	}
+	mgr.SyncRunnerPane(main)
+	plan := "a plan long enough to say what to build"
+	if rec := do(t, s, "POST", "/v1/panes/"+ws.Panes[0].ID+"/tasks", `{"action":"file","title":"From tmux","plan":"`+plan+`"}`); rec.Code != 200 {
+		t.Fatalf("filing from the tmux pane = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, s, "POST", "/v1/panes/run-m1/tasks", `{"action":"file","title":"From the main session","plan":"`+plan+`"}`); rec.Code != 200 {
+		t.Fatalf("filing from the main session = %d %s", rec.Code, rec.Body)
+	}
+	for end := time.Now().Add(5 * time.Second); len(f.movedOnNow()) == 0 && time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+	}
+	if got := f.movedOnNow(); len(got) != 1 || got[0] != "m1 filed task #2" {
+		t.Fatalf("moved on = %v, want only the main session, for its task", got)
 	}
 }

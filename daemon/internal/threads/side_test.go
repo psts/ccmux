@@ -21,6 +21,17 @@ func (r *rig) main() store.RunnerSession {
 	return sess
 }
 
+// main2 makes the main session of the repo called name.
+func (r *rig) main2(name string) store.RunnerSession {
+	r.t.Helper()
+	sess, err := r.sess.Create(runner.NewSession{Cwd: r.repo(name), WorkspaceID: "ws-" + name, Kind: store.SessionLead, Model: "sonnet"})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	r.svc.NoteMain(sess)
+	return sess
+}
+
 // sideHelper has main ask for its helper in the repo called name, as the
 // bus does, and returns that helper's row.
 func (r *rig) sideHelper(main store.RunnerSession, name string) store.RunnerSession {
@@ -256,5 +267,33 @@ func TestAPersonStandingASideHelperDownTellsTheMainSessionWhichThread(t *testing
 	want := fmt.Sprintf("Thread #%d:", h.ThreadID)
 	if len(got) != 1 || !strings.Contains(got[0], want) || strings.Contains(got[0], "Thread #0") {
 		t.Fatalf("the main session is told of its side thread by number %q: %v", want, got)
+	}
+}
+
+func TestAMainSessionMovingOnStandsItsHelpersDownAndTheNextQuestionStartsFresh(t *testing.T) {
+	r := newRig(t)
+	main := r.main()
+	backend := r.sideHelper(main, "backend")
+	admin := r.sideHelper(main, "admin")
+	th := r.state(backend.ThreadID)
+	other := r.main2("backend") // another repo's main session, with a helper of its own
+	theirs := r.sideHelper(other, "admin")
+
+	r.svc.MainMovedOn(main.ID, "cleared its conversation (/clear)")
+	if r.row(backend.ID).Wanted != store.SessionDone || r.row(admin.ID).Wanted != store.SessionDone {
+		t.Fatal("both of its helpers are stood down")
+	}
+	if r.row(theirs.ID).Wanted == store.SessionDone {
+		t.Fatal("another main session's helper is left alone")
+	}
+	if got := r.state(th.ID); got.State != store.ThreadEnded {
+		t.Fatalf("its side thread is closed: %+v", got)
+	}
+	r.svc.MainMovedOn(main.ID, "filed task #4") // closed already: nothing to do, nothing to break
+	r.svc.MainMovedOn("no-such-session", "filed task #5")
+
+	fresh := r.sideHelper(main, "backend")
+	if fresh.ID == backend.ID || fresh.ThreadID != th.ID || r.state(th.ID).State != store.ThreadOpen {
+		t.Fatalf("the next question starts a fresh helper in the same side thread, open again: %+v %+v", fresh, r.state(th.ID))
 	}
 }

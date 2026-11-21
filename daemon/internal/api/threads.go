@@ -28,6 +28,9 @@ type threadService interface {
 	StandDown(threadID int64, repo, by string) (string, error)
 	Tool(sessionID, action, repo string) (string, error)
 	LeadChanged(sessionID string)
+	// MainMovedOn stands a main session's side helpers down: it started a
+	// new conversation or filed a task (threads/side.go).
+	MainMovedOn(sessionID, why string)
 	// StartBuilder starts one part of a queued task as a member of the
 	// task's thread; the task queue calls it (tasks_runner.go).
 	StartBuilder(taskq.Builder) (string, error)

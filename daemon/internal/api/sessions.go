@@ -408,6 +408,7 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if s.agentWakeRefused(w, sessionID) {
 		return
 	}
+	s.newConversationStandsHelpersDown(sessionID, in.Text, in.Clean)
 	if len(in.Images) == 0 && in.Clean == "" {
 		id, err := s.runners.Send(sessionID, in.Text, in.Sender)
 		s.answerPrompt(w, sessionID, in.Text, id, err)
@@ -419,6 +420,30 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.runners.SendPrompt(sessionID, runner.Prompt{Text: in.Text, Sender: in.Sender, Images: in.Images, Clean: in.Clean})
 	s.answerPrompt(w, sessionID, in.Text, id, err)
+}
+
+// newConversationStandsHelpersDown stands a main session's side helpers
+// down before a message that starts a new conversation: /clear, or a clean
+// start (clean is its key). It runs before the message is sent, so a
+// helper the new conversation asks for is a fresh one, never one stood
+// down under it. Any other session has no side helpers, and the threads
+// service finds none.
+func (s *Server) newConversationStandsHelpersDown(sessionID, text, clean string) {
+	if s.threads == nil {
+		return
+	}
+	switch {
+	case clean != "":
+		s.threads.MainMovedOn(sessionID, "started a clean conversation")
+	case isClear(text):
+		s.threads.MainMovedOn(sessionID, "cleared its conversation (/clear)")
+	}
+}
+
+// isClear says a prompt is Claude Code's /clear.
+func isClear(text string) bool {
+	t := strings.TrimSpace(text)
+	return t == "/clear" || strings.HasPrefix(t, "/clear ")
 }
 
 func (s *Server) answerPrompt(w http.ResponseWriter, sessionID, text, id string, err error) {

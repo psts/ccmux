@@ -496,13 +496,22 @@
     return add(box, diff(shown.diff, shown.path));
   }
 
+  // What the Helpers tab says of its team: a thread's lead stands its
+  // helpers down; a main session's helpers end by themselves.
+  const helpersSay = {
+    thread: ["No helpers. A thread stands one up when it needs another repo.", "Helpers this thread stood up. The lead stands them down when it is done."],
+    side: ["No helpers. This session gets one when it asks another repo something.",
+      "Helpers this session asked. Each ends by itself an hour after its last answer, or sooner when this session starts a new conversation or files a task."],
+  };
+
   // helpersTab lists a thread's team: each member with what it is doing and
   // where it works. A row opens that member's conversation; a helper's has
-  // the button that stands it down.
+  // the button that stands it down. ctx.side is a main session's helpers.
   function helpersTab(box, rows, ctx) {
     box.textContent = "";
-    if (!rows.length) return add(box, el("div", "quiet", "No helpers. A thread stands one up when it needs another repo."));
-    add(box, el("div", "quiet", "Helpers this thread stood up. The lead stands them down when it is done."));
+    const say = helpersSay[ctx.side ? "side" : "thread"];
+    if (!rows.length) return add(box, el("div", "quiet", say[0]));
+    add(box, el("div", "quiet", say[1]));
     for (const r of rows) {
       const row = el("div", "member" + (ctx.isPicked(r) ? " on" : ""));
       const open = el("button", "member-open");

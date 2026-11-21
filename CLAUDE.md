@@ -420,6 +420,12 @@ that repo's own main session (`internal/threads/side.go`).
   lead the way `Threads()` does). A
   message that reaches a session just after it ended is handed back to its
   sender (`peers bounce`).
+- **It also ends when its main session moves on** (`Service.MainMovedOn`):
+  a prompt that starts a new conversation (`/clear` as typed, or a clean
+  start) stands the helpers down before it is sent
+  (`api.newConversationStandsHelpersDown`), and so does filing a task
+  (`api.filedStandsHelpersDown`). The daemon cannot see what `/clear` does
+  inside Claude Code; it reads the prompt's text.
 - A helper naming its main session's repo reaches the main session itself
   (`HelperRoute.Pane`). A main session ending stands its helpers down.
 - **Not covered:** role agents, task builders and old terminal sessions that

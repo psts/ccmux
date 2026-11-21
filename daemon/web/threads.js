@@ -661,18 +661,23 @@
     View.helpersTab($("tab-team"), Team.helperRows(sess, S.sessions, S.workspaces, S.threads), {
       isPicked: (r) => !!sess && r.id === sess.id,
       pick: (r) => select({ kind: "session", id: r.id }),
+      side: isSideTeam(team) || (!!sess && sess.kind === "lead" && !sess.threadId),
       canStandDown: !!team && !!sess && (sess.role === "lead" || !sess.threadId),
       standDown: (r) => threadAct("stand-down", { repo: r.name }, standDownAsk(r.name, team)),
     });
     View.stepsTab($("tab-steps"), S.stream.todos, S.stream.result);
   }
 
+  // isSideTeam says team (a thread id) is a main session's side thread.
+  function isSideTeam(team) {
+    return (S.threads || []).some((t) => t.id === team && t.kind === "side");
+  }
+
   // standDownAsk is the question before a helper is stood down: a main
   // session's helper works in a scratch copy, which is deleted with it; a
   // thread's helper keeps what it has not committed.
   function standDownAsk(name, team) {
-    const side = (S.threads || []).some((t) => t.id === team && t.kind === "side");
-    return side
+    return isSideTeam(team)
       ? `Stand the ${name} helper down? Its scratch copy is deleted; nothing in it is kept.`
       : `Stand the ${name} helper down? Work it has not committed stays in its worktree.`;
   }

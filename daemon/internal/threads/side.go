@@ -203,6 +203,25 @@ func (s *Service) mainEnded(sess store.RunnerSession) {
 	s.closeSide(*th)
 }
 
+// MainMovedOn stands down main session leadID's helpers because it moved on
+// to other work: it started a new conversation (/clear, or a clean start)
+// or filed a task. What its helpers know is about the work before, and the
+// next question to a repo starts a fresh helper. why says what it did, for
+// the log. A session with no side thread, or one already closed, has
+// nothing to stand down.
+func (s *Service) MainMovedOn(leadID, why string) {
+	th, err := s.St.SideThread(leadID)
+	if err != nil {
+		log.Printf("threads: main session %s %s; its side thread was not read, its helpers end when their cache is cold: %v", leadID, why, err)
+		return
+	}
+	if th == nil || th.State == store.ThreadEnded {
+		return
+	}
+	log.Printf("threads: #%d: main session %s %s; its helpers are stood down", th.ID, leadID, why)
+	s.closeSide(*th)
+}
+
 // closeSide stands every helper of a side thread down and marks it closed.
 // A stand-down that fails leaves it open, for the next expiry pass.
 func (s *Service) closeSide(th store.Thread) {

@@ -216,7 +216,19 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 		return "", http.StatusInternalServerError, err
 	}
 	s.mgr.TasksChanged()
+	s.filedStandsHelpersDown(who.pane, id)
 	return fileMessage(id, parts, after, deref(req.Look)) + s.todoFiled(req.Todo, id), 0, nil
+}
+
+// filedStandsHelpersDown stands down the side helpers of the main session
+// that just filed task id: the planning they helped with is done. Off the
+// answer's path: standing a helper down stops its unit.
+func (s *Server) filedStandsHelpersDown(paneID string, id int64) {
+	info, ok := s.mgr.RunnerPane(paneID)
+	if s.threads == nil || !ok {
+		return
+	}
+	go s.threads.MainMovedOn(info.SessionID, fmt.Sprintf("filed task #%d", id))
 }
 
 // partsToFile is a feature's parts: this repo's, always (the filing session

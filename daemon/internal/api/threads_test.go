@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/store"
@@ -21,6 +22,8 @@ type fakeThreads struct {
 	acts      []string // merge, end, stand-down and tool calls, in order
 	refuse    error    // what the next action is refused with
 	changed   []string // session ids LeadChanged heard of
+	mu        sync.Mutex
+	movedOn   []string // "session why" per MainMovedOn
 	built     []taskq.Builder
 }
 
@@ -79,6 +82,19 @@ func (f *fakeThreads) Tool(sessionID, action, repo string) (string, error) {
 }
 
 func (f *fakeThreads) LeadChanged(sessionID string) { f.changed = append(f.changed, sessionID) }
+func (f *fakeThreads) MainMovedOn(sessionID, why string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.movedOn = append(f.movedOn, sessionID+" "+why)
+}
+
+// movedOnNow is what MainMovedOn heard so far (it may be called off the
+// request's goroutine).
+func (f *fakeThreads) movedOnNow() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.movedOn...)
+}
 
 func (f *fakeThreads) FirstEdit(sessionID string) (threads.Moved, error) {
 	if f.editErr != nil {

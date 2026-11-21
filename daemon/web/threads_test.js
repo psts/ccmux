@@ -723,7 +723,7 @@ test("changes are shown by repo, each with its branch and what it holds", async 
   ]);
   const plain = await boot({ sessions: [lead], search: "?s=lead1" });
   assert.equal(plain.$("tab-changes").querySelectorAll(".chg").length, 0, "a session in no thread has no team to show");
-  assert.equal(plain.$("tab-team").textContent, "No helpers. A thread stands one up when it needs another repo.");
+  assert.equal(plain.$("tab-team").textContent, "No helpers. This session gets one when it asks another repo something.", "a main session gets helpers by asking, not by starting a thread");
   assert.equal(plain.book.calls.some((c) => /\/v1\/threads\/\d/.test(c.url)), false, "and no thread is asked for");
 });
 
@@ -1765,4 +1765,36 @@ test("the conversations a clean start left show above the one it runs now, read 
   assert.match(blocks.querySelector(".b-divider").textContent, /^New clean conversation, started \d\d:\d\d\./);
   assert.equal(blocks.children[0].querySelector(".b-edit"), null, "an earlier conversation's message has no Edit");
   assert.notEqual(blocks.children[2].querySelector(".b-edit"), null, "the current one's does");
+});
+
+// --- a main session's side helpers ---
+
+test("a main session's Helpers tab says its helpers end by themselves, and standing one down warns that its scratch copy goes", async () => {
+  const asked = [];
+  const sideHelper = { id: "sh1", workspaceId: "ws2", kind: "", title: "Helping app", cwd: "/wt/backend/thread-9", model: "", state: "running", attention: "done", paneId: "pane-sh1", createdAt: 4,
+    threadId: 9, role: "helper", repo: "/p/backend", worktree: "/wt/backend/thread-9", branch: "thread/9-x", name: "backend-for-app" };
+  const side = { id: 9, kind: "side", leadSession: "lead1", state: "open" };
+  const p = await boot({ workspaces: [repo, backendRepo], sessions: [{ ...lead }, sideHelper], search: "?s=lead1", confirm: (q) => { asked.push(q); return true; }, routes: [
+    [/^GET \/v1\/threads$/, () => ({ threads: [side] })],
+    [/^GET \/v1\/threads\/9$/, () => ({ thread: side, members: [{ session: sideHelper, repo: "backend", status: "No changes yet" }] })],
+    [/^POST \/v1\/threads\/9\/stand-down$/, () => ({ message: "Stood down backend-for-app." })],
+  ] });
+  await p.settle();
+  const tab = p.$("tab-team");
+  assert.match(tab.querySelector(".quiet").textContent, /ends by itself an hour after its last answer/);
+  const members = tab.querySelectorAll(".member");
+  assert.equal(members.length, 2, "the main session and its helper");
+  members[1].querySelector(".small").click();
+  await p.settle();
+  assert.deepEqual(asked, ["Stand the backend helper down? Its scratch copy is deleted; nothing in it is kept."]);
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [["/v1/threads/9/stand-down", { repo: "backend" }]]);
+});
+
+test("a thread's Helpers tab keeps the lead's wording, and standing a helper down says its uncommitted work stays", async () => {
+  const asked = [];
+  const p = await team({ confirm: (q) => { asked.push(q); return true; }, routes: [[/^POST \/v1\/threads\/3\/stand-down$/, () => ({ message: "ok" })]] });
+  assert.equal(p.$("tab-team").querySelector(".quiet").textContent, "Helpers this thread stood up. The lead stands them down when it is done.");
+  p.$("tab-team").querySelectorAll(".member")[1].querySelector(".small").click();
+  await p.settle();
+  assert.deepEqual(asked, ["Stand the backend helper down? Work it has not committed stays in its worktree."]);
 });
