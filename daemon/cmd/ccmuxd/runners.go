@@ -102,6 +102,7 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	team = newThreads(w, sup, jobMgr, jobsOff)
 	w.api.SetThreads(team)
 	sup.Changed = sessionChanged(w.mgr, w.peers, team)
+	sup.CleanStarted = cleanStartStandsHelpersDown(team)
 	// Only now: what Recover does reaches the sessions through the
 	// supervisor, which has to tell the panes and the bus of it (Changed).
 	team.Recover()
@@ -236,6 +237,15 @@ func sessionChanged(mgr *manager.Manager, bus *peers.Service, team *threads.Serv
 			bus.EnsureRunnerPeer(sess.PaneID, sess.Cwd)
 		}
 	}
+}
+
+// cleanStartStandsHelpersDown is the runner's CleanStarted: a main session
+// that was given a new conversation has its side helpers stood down. It
+// runs off the session's lock, alongside the new conversation's first
+// message; a question that reaches a helper as it ends is handed back to
+// its sender (peers bounce).
+func cleanStartStandsHelpersDown(team *threads.Service) func(store.RunnerSession) {
+	return func(sess store.RunnerSession) { team.MainMovedOn(sess.ID, "started a new conversation") }
 }
 
 // teamHears tells the threads of a session's row: one that ended (a lead

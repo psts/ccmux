@@ -421,17 +421,31 @@ that repo's own main session (`internal/threads/side.go`).
   message that reaches a session just after it ended is handed back to its
   sender (`peers bounce`).
 - **It also ends when its main session moves on** (`Service.MainMovedOn`):
-  a prompt that starts a new conversation (`/clear` as typed, or a clean
-  start) stands the helpers down before it is sent
-  (`api.newConversationStandsHelpersDown`), and so does filing a task
-  (`api.filedStandsHelpersDown`). The daemon cannot see what `/clear` does
-  inside Claude Code; it reads the prompt's text.
+  a new conversation that was really made (a clean start or Start over,
+  heard from the runner's `CleanStarted`; a refused one or a resend is not
+  heard) and filing a task each stand the helpers down. `CleanStarted` runs
+  on its own goroutine, off the session's lock: a person's stand-down holds
+  the side thread's lock while it tells the main session, so calling it
+  under the session's lock deadlocked (caught in review, test
+  `TestCleanStartedRunsOffTheSessionsLock`).
 - A helper naming its main session's repo reaches the main session itself
   (`HelperRoute.Pane`). A main session ending stands its helpers down.
 - **Not covered:** role agents, task builders and old terminal sessions that
   name a repo keep the old routing (they can still start a terminal Claude).
   The tasks tool still wants a part in the filing repo.
 - Main sessions read their own rule on the bus (`buscontext.Reader.Main`).
+
+## Start over, not Claude Code's /clear (Linux)
+
+A Threads session's "Start over" (`POST /v1/sessions/{id}/start-over`,
+`runner.Supervisor.StartOver`) is a clean start with no message: a new
+conversation in the same row, the old one kept above a divider. The thread
+page turns a typed `/clear` into it, and never sends `/clear` to Claude
+Code in a runner session: it switches conversation inside the runner, the
+daemon never hears, and the next restart resumes the old one (seen live
+2026-11-21: the cleared word came back after a restart). An agent has no
+Start over (its base says when it starts fresh: Sleep marks the next start
+fresh); its typed `/clear` is refused with that.
 
 ## Claude role agents are sessions (Linux)
 

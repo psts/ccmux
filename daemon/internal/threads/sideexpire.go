@@ -26,7 +26,7 @@ func (s *Service) ExpireSide() {
 	}
 	for _, th := range threads {
 		if s.leadEnded(th) {
-			s.closeSide(th) // its main session ended and its helpers were not stood down then
+			s.closeSide(th, "ended", true) // its main session ended and its helpers were not stood down then
 			continue
 		}
 		s.expireIn(th.ID)

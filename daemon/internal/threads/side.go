@@ -200,12 +200,12 @@ func (s *Service) mainEnded(sess store.RunnerSession) {
 		}
 		return
 	}
-	s.closeSide(*th)
+	s.closeSide(*th, "ended", true)
 }
 
 // MainMovedOn stands down main session leadID's helpers because it moved on
-// to other work: it started a new conversation (/clear, or a clean start)
-// or filed a task. What its helpers know is about the work before, and the
+// to other work: it started a new conversation (a clean start or Start
+// over, heard from the runner) or filed a task. What its helpers know is about the work before, and the
 // next question to a repo starts a fresh helper. why says what it did, for
 // the log. A session with no side thread, or one already closed, has
 // nothing to stand down.
@@ -219,22 +219,29 @@ func (s *Service) MainMovedOn(leadID, why string) {
 		return
 	}
 	log.Printf("threads: #%d: main session %s %s; its helpers are stood down", th.ID, leadID, why)
-	s.closeSide(*th)
+	s.closeSide(*th, why, false)
 }
 
-// closeSide stands every helper of a side thread down and marks it closed.
-// A stand-down that fails leaves it open, for the next expiry pass.
-func (s *Service) closeSide(th store.Thread) {
+// closeSide stands every helper of a side thread down and marks it closed,
+// because its main session did what why says. retried says whether a
+// stand-down that fails is done again: the expiry pass walks a side thread
+// whose main session ended, never one whose main session runs on, whose
+// helpers then end when their cache is cold.
+func (s *Service) closeSide(th store.Thread, why string, retried bool) {
 	defer s.reindex()
 	defer s.lock(threadKey(th.ID))()
 	left, err := s.standAllDown(th.ID)
 	if err != nil {
-		log.Printf("threads: #%d lost its main session and its helpers were not stood down, tried again on the next pass: %v", th.ID, err)
+		next := "they end when their cache is cold"
+		if retried {
+			next = "tried again on the next pass"
+		}
+		log.Printf("threads: #%d: its main session %s, and its helpers were not stood down (%s): %v", th.ID, why, next, err)
 		return
 	}
 	th.State, th.Note, th.UpdatedAt = store.ThreadEnded, stayedNote(left), s.millis()
 	if err := s.St.SaveThread(th); err != nil {
-		log.Printf("threads: #%d ended with its main session but is not marked so: %v", th.ID, err)
+		log.Printf("threads: #%d: its main session %s; its helpers are stood down but the thread is not marked closed: %v", th.ID, why, err)
 	}
 }
 

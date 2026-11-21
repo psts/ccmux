@@ -3,7 +3,9 @@ package runner
 import (
 	"errors"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
 )
@@ -140,4 +142,148 @@ func TestACleanStartWhoseRestartFailedRestartsBeforeDelivering(t *testing.T) {
 	if len(old.sent) != 0 || len(now.sent) == 0 {
 		t.Fatalf("the message went to the old runner (%v) instead of the new one (%v)", old.sent, now.sent)
 	}
+}
+
+// Start over moves a session onto a new conversation with no message: the
+// old one is listed, the runner starts again on the new one, and nothing
+// is queued. Asked twice, it starts over twice. A turn in progress, an
+// agent or an ended session is refused, and nothing moves.
+func TestStartOverMovesTheSessionWithNoMessage(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	if err := r.sup.StartOver(sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := r.st.RunnerSession(sess.ID)
+	first := row.ConversationID()
+	if first == sess.ID || len(row.Left) != 1 || row.Left[0].ID != sess.ID || specConv(t, r, sess.ID) != first || r.units.count("restart") != 1 {
+		t.Fatalf("after start over: conv %q, left %+v, spec %q, %v", first, row.Left, specConv(t, r, sess.ID), r.units.calls)
+	}
+	if open, _ := r.st.UndeliveredPrompts(sess.ID); len(open) != 0 {
+		t.Fatalf("no message is queued: %+v", open)
+	}
+	if err := r.sup.StartOver(sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ = r.st.RunnerSession(sess.ID); row.ConversationID() == first || len(row.Left) != 2 {
+		t.Fatalf("a second start over is a second new conversation: conv %q, left %+v", row.ConversationID(), row.Left)
+	}
+
+	r.run[sess.ID].busy = true
+	before := row.ConversationID()
+	if err := r.sup.StartOver(sess.ID); !errors.Is(err, ErrCleanRefused) {
+		t.Fatalf("in a turn: %v", err)
+	}
+	if row, _ = r.st.RunnerSession(sess.ID); row.ConversationID() != before {
+		t.Fatal("a refused start over moved the session")
+	}
+	agent, _ := r.sup.Create(NewSession{Cwd: "/w/agents/radar", Kind: store.SessionAgent, WorkspaceID: "home"})
+	if err := r.sup.StartOver(agent.ID); !errors.Is(err, ErrCleanRefused) {
+		t.Fatalf("an agent: %v", err)
+	}
+	if err := r.sup.SetWanted(sess.ID, store.SessionDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.sup.StartOver(sess.ID); !errors.Is(err, ErrSessionDone) {
+		t.Fatalf("an ended session: %v", err)
+	}
+}
+
+// CleanStarted hears each new conversation that was made, once: a clean
+// start and a Start over, never one refused or a message sent again under
+// its key.
+func TestCleanStartedHearsOnlyAStartThatHappened(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	var mu sync.Mutex
+	var heard []string
+	r.sup.CleanStarted = func(s store.RunnerSession) {
+		mu.Lock()
+		defer mu.Unlock()
+		heard = append(heard, s.ConversationID())
+	}
+	got := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), heard...)
+	}
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "start over", Clean: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "start over", Clean: "k1", ID: "again"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "no clean start"}); err != nil {
+		t.Fatal(err)
+	}
+	r.run[sess.ID].busy = true
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "x", Clean: "k2"}); !errors.Is(err, ErrCleanRefused) {
+		t.Fatalf("busy: %v", err)
+	}
+	if err := r.sup.StartOver(sess.ID); !errors.Is(err, ErrCleanRefused) {
+		t.Fatalf("busy start over: %v", err)
+	}
+	r.run[sess.ID].busy = false
+	if err := r.sup.StartOver(sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "both starts heard", func() bool { return len(got()) >= 2 })
+	time.Sleep(50 * time.Millisecond) // nothing else is heard late
+	row, _ := r.st.RunnerSession(sess.ID)
+	h := got()
+	if len(h) != 2 || h[0] == h[1] || (h[0] != row.ConversationID() && h[1] != row.ConversationID()) {
+		t.Fatalf("heard %v, want the clean start's and the start over's conversations", h)
+	}
+}
+
+// What CleanStarted does may take a lock that someone else holds while it
+// messages the same session (a person's stand-down holds its side thread's
+// lock and tells the main session). With the runner's real locks, that
+// must not deadlock: the start returns, and so does the message.
+func TestCleanStartedRunsOffTheSessionsLock(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	var thread sync.Mutex // stands in for the side thread's lock
+	entered := make(chan struct{})
+	var once sync.Once
+	r.sup.CleanStarted = func(store.RunnerSession) {
+		once.Do(func() { close(entered) })
+		thread.Lock()
+		thread.Unlock()
+	}
+	thread.Lock() // the person's stand-down holds the thread
+	started := make(chan error, 1)
+	go func() { started <- r.sup.StartOver(sess.ID) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start never reached its hook")
+	}
+	sent := make(chan error, 1)
+	go func() { _, err := r.sup.Send(sess.ID, "[ccmux] a person stood a helper down", "ccmux"); sent <- err }()
+	for name, ch := range map[string]chan error{"the message to the session": sent, "the start over": started} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never returned: the session's lock is held across its hook", name)
+		}
+	}
+	thread.Unlock()
+}
+
+// waitFor waits for something a goroutine does.
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Millisecond) {
+		if ok() {
+			return
+		}
+	}
+	t.Fatalf("never happened: %s", what)
 }

@@ -80,7 +80,7 @@ func refusedByGate(rec *httptest.ResponseRecorder) bool {
 var gatedRoutes = []string{
 	"PUT /v1/sandbox", "GET /v1/sandbox", "POST /v1/sandbox/check",
 	"POST /v1/sessions", "GET /v1/sessions", "POST /v1/sessions/s1/prompt", "POST /v1/sessions/s1/wanted",
-	"POST /v1/sessions/s1/restart", "POST /v1/sessions/s1/model", "POST /v1/sessions/s1/cards/c1", "GET /v1/sessions/s1/ws",
+	"POST /v1/sessions/s1/restart", "POST /v1/sessions/s1/start-over", "POST /v1/sessions/s1/model", "POST /v1/sessions/s1/cards/c1", "GET /v1/sessions/s1/ws",
 	"POST /v1/threads", "POST /v1/threads/1/merge", "POST /v1/threads/1/end",
 	"PATCH /v1/tasks/1", "POST /v1/tasks/1/move", "DELETE /v1/tasks/1", "POST /v1/todos/1/task",
 	"PUT /v1/agents/radar", "DELETE /v1/agents/radar", "POST /v1/agents/radar/mcp", "POST /v1/agents/radar/instances/restart",

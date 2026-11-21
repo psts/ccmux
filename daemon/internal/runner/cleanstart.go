@@ -47,11 +47,36 @@ func (s *Supervisor) cleanStart(sess *store.RunnerSession, key string) error {
 	}
 	sess.Conversation, sess.FreshNext, sess.Left = conv, false, append(sess.Left, left)
 	log.Printf("runner: session %s: a clean start, from %s to %s", short(sess.ID), short(left.ID), short(conv))
+	if s.CleanStarted != nil {
+		// Off this session's lock: what it hears takes other locks (a side
+		// thread's), and a person's stand-down holds that thread's lock while
+		// it sends this session a notice, which waits for this one.
+		go s.CleanStarted(*sess)
+	}
 	s.announce(sess.ID)
 	if running {
 		s.restartClean(*sess)
 	}
 	return nil // asleep: the message wakes it, and its start reads the new conversation
+}
+
+// StartOver gives a session a new conversation with no message: its
+// person's "Start over" (and /clear typed on the thread page). The old
+// conversation is kept above a divider, as a clean start's is, and a restart
+// later comes back on the new one, which Claude Code's own /clear does not
+// (it switches conversation inside the runner, and the daemon resumes the
+// old one at the next start). Refused like a clean start: an agent, or a
+// session in the middle of a turn.
+func (s *Supervisor) StartOver(sessionID string) error {
+	defer s.lock(sessionID)()
+	sess, err := s.row(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess.Wanted == store.SessionDone {
+		return ErrSessionDone
+	}
+	return s.cleanStart(sess, "over-"+uuid.NewString())
 }
 
 // busyNow says whether a session's runner is in the middle of a turn. One

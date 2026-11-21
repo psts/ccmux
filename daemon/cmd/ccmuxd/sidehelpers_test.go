@@ -100,3 +100,28 @@ func TestTheBusStartsAMainSessionsSideHelper(t *testing.T) {
 		t.Fatalf("the main session ending ends its helper: %+v", row)
 	}
 }
+
+// The runner's CleanStarted, as wired: a main session given a new
+// conversation has its side helpers stood down.
+func TestACleanStartStandsAMainSessionsHelpersDown(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	team := &threads.Service{St: st, Sessions: &rowSessions{st: st}, Now: time.Now,
+		Host: oneWindow{list: []*model.Workspace{{ID: "ws-hq", Name: "hq", RepoPath: "/r/hq"}, {ID: "ws-be", Name: "backend", RepoPath: "/r/backend"}}}}
+	main := store.RunnerSession{ID: "m1", PaneID: "mp", Cwd: "/r/hq", Wanted: store.SessionRunning, WorkspaceID: "ws-hq", Kind: store.SessionLead}
+	if err := st.AddRunnerSession(main); err != nil {
+		t.Fatal(err)
+	}
+	teamHears(team, main)
+	if err := team.StartSideHelper("m1", "/r/backend"); err != nil {
+		t.Fatal(err)
+	}
+	cleanStartStandsHelpersDown(team)(main)
+	th, _ := st.SideThread("m1")
+	if members, _ := st.ThreadMembers(th.ID); len(members) != 0 || th.State != store.ThreadEnded {
+		t.Fatalf("its helpers are stood down and its side thread closed: %+v %+v", members, th)
+	}
+}

@@ -3,35 +3,28 @@ package api
 import (
 	"net/http"
 	"testing"
-
-	"ccmux.dev/ccmuxd/internal/store"
 )
 
-// A message that starts a new conversation, /clear or a clean start, stands
-// the session's side helpers down before it is sent; any other message does
-// not.
-func TestANewConversationStandsSideHelpersDown(t *testing.T) {
-	s, _, st := sessionsServer(t, t.TempDir())
-	if err := st.AddRunnerSession(store.RunnerSession{ID: "s1", Cwd: "/r/app", Wanted: store.SessionRunning, Kind: store.SessionLead}); err != nil {
-		t.Fatal(err)
-	}
+// Start over is the runner's: the route answers 202 when it started over
+// and 409 when it was refused (Claude in a turn, an ended session). Standing
+// a main session's helpers down follows from the runner (CleanStarted),
+// never from the route, so a refused one keeps them.
+func TestStartOverAsksTheRunner(t *testing.T) {
+	s, runners, _ := sessionsServer(t, t.TempDir())
 	f := &fakeThreads{}
 	s.SetThreads(f)
-	for _, body := range []string{`{"text":"what does backend return for GET /trades?"}`, `{"text":"please /clear the cache in redis"}`, `{"text":"/clearly not"}`} {
-		if w := callSessions(t, s, "POST", "/v1/sessions/s1/prompt", body); w.Code != http.StatusAccepted {
-			t.Fatalf("%s = %d %s", body, w.Code, w.Body)
+	if w := callSessions(t, s, "POST", "/v1/sessions/s1/start-over", ""); w.Code != http.StatusAccepted {
+		t.Fatalf("start over = %d %s", w.Code, w.Body)
+	}
+	for id, want := range map[string]int{"busy": http.StatusConflict, "ended": http.StatusConflict} {
+		if w := callSessions(t, s, "POST", "/v1/sessions/"+id+"/start-over", ""); w.Code != want {
+			t.Fatalf("%s = %d %s, want %d", id, w.Code, w.Body, want)
 		}
 	}
-	if len(f.movedOnNow()) != 0 {
-		t.Fatalf("an ordinary message moves nothing on: %v", f.movedOn)
+	if len(runners.startedOver) != 1 || runners.startedOver[0] != "s1" {
+		t.Fatalf("started over = %v", runners.startedOver)
 	}
-	for _, body := range []string{`{"text":"/clear"}`, `{"text":"  /clear  "}`, `{"text":"start over","clean":"c1"}`} {
-		if w := callSessions(t, s, "POST", "/v1/sessions/s1/prompt", body); w.Code != http.StatusAccepted {
-			t.Fatalf("%s = %d %s", body, w.Code, w.Body)
-		}
-	}
-	want := []string{"s1 cleared its conversation (/clear)", "s1 cleared its conversation (/clear)", "s1 started a clean conversation"}
-	if len(f.movedOn) != 3 || f.movedOn[0] != want[0] || f.movedOn[1] != want[1] || f.movedOn[2] != want[2] {
-		t.Fatalf("moved on = %v, want %v", f.movedOn, want)
+	if got := f.movedOnNow(); len(got) != 0 {
+		t.Fatalf("the route itself stands no helper down: %v", got)
 	}
 }

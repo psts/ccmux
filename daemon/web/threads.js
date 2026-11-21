@@ -433,6 +433,7 @@
     show("past", agent);
     show("stop", live && (S.stream.busy || S.stream.cards.length > 0));
     show("more", live);
+    show("start-over", live && !agent);
     show("rename", !!sess && sess.kind !== "lead" && !agent);
     const leads = live && !!sess.threadId && sess.role === "lead";
     show("merge-thread", leads);
@@ -819,6 +820,7 @@
   function send() {
     const input = $("input");
     if (!input.value.trim() && !S.images.length) return;
+    if (clearTyped(input.value)) { input.value = ""; clearInstead(); return; }
     const cold = coldNow();
     if (!cold) { sendNow(""); return; }
     Clean.ask(Gauge.coldText(cold)).then((pick) => {
@@ -938,6 +940,40 @@
     S.picked = "";
     S.later.delete(sess.id);
   });
+
+  // startOver gives the session on screen a new conversation (POST
+  // .../start-over): the one it leaves stays above a divider, and a main
+  // session's helpers are stood down. The daemon keeps the new one across
+  // restarts, which Claude Code's own /clear does not.
+  // It is not a restart on the same conversation, so it says so itself
+  // rather than through the restart bar ("picked up where it was").
+  const startOver = () => act(async (sess) => {
+    $("more").open = false;
+    await call("POST", `/v1/sessions/${sess.id}/start-over`);
+    await loadLists();
+    S.said = "Started a new conversation. The last one is kept above.";
+  });
+
+  // clearTyped says the composer holds /clear for a session on screen: it
+  // never goes to Claude Code, whose /clear the next restart undoes. A
+  // session starts over instead; an agent is told how it starts fresh. A
+  // draft has no conversation yet, and sends it as typed.
+  function clearTyped(text) {
+    const sess = S.sel.kind === "session" ? session() : null;
+    return text.trim() === "/clear" && !!sess && sess.state !== "done";
+  }
+
+  // clearInstead is what a typed /clear does: Start over, or for an agent
+  // the word on how it starts fresh.
+  function clearInstead() {
+    const sess = session();
+    if (sess && sess.kind === "agent") {
+      S.error = "An agent starts a new conversation when it is put to sleep (unless its base says to continue). /clear was not sent: the agent's next start would bring the old conversation back.";
+      drawAll();
+      return;
+    }
+    startOver();
+  }
 
   const setWanted = (wanted) => act(async (sess) => {
     await call("POST", `/v1/sessions/${sess.id}/wanted`, { wanted });
@@ -1083,6 +1119,7 @@
     $("sleep").onclick = () => setWanted("asleep");
     $("end").onclick = () => { if (confirm("End this session? Its conversation stays on disk, but it will not run again.")) setWanted("done"); };
     $("rename").onclick = rename;
+    $("start-over").onclick = startOver;
     $("merge-thread").onclick = () => threadAct("merge");
     $("end-thread").onclick = () => threadAct("end", undefined, "Close this thread? Its helpers are stood down. Work that is not merged stays on its branch.");
     $("stop-merge").onclick = () => threadAct("stop-merge", undefined, "Stop this merge? Its checks are ended. A repo that already landed stays landed.");

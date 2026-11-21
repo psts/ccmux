@@ -38,6 +38,7 @@ type runnerSupervisor interface {
 	SetModel(sessionID, model string) error
 	SetAdvisor(sessionID, advisor string) error
 	Restart(sessionID string) error
+	StartOver(sessionID string) error
 	RestartBetweenTurns(sessionID string) error
 	Liveness(sessionID string) (string, error)
 	Sleep(sessionID string, fresh bool) error
@@ -118,6 +119,7 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/model", s.setRunnerModel)
 	mux.HandleFunc("POST /v1/sessions/{id}/advisor", s.setRunnerAdvisor)
 	mux.HandleFunc("POST /v1/sessions/{id}/restart", s.restartRunnerSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/start-over", s.startOverRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/acted", s.actedRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/title", s.setRunnerTitle)
 	// The thread page (sessionstream.go, sessioncards.go).
@@ -408,7 +410,6 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 	if s.agentWakeRefused(w, sessionID) {
 		return
 	}
-	s.newConversationStandsHelpersDown(sessionID, in.Text, in.Clean)
 	if len(in.Images) == 0 && in.Clean == "" {
 		id, err := s.runners.Send(sessionID, in.Text, in.Sender)
 		s.answerPrompt(w, sessionID, in.Text, id, err)
@@ -422,28 +423,20 @@ func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {
 	s.answerPrompt(w, sessionID, in.Text, id, err)
 }
 
-// newConversationStandsHelpersDown stands a main session's side helpers
-// down before a message that starts a new conversation: /clear, or a clean
-// start (clean is its key). It runs before the message is sent, so a
-// helper the new conversation asks for is a fresh one, never one stood
-// down under it. Any other session has no side helpers, and the threads
-// service finds none.
-func (s *Server) newConversationStandsHelpersDown(sessionID, text, clean string) {
-	if s.threads == nil {
+// startOverRunnerSession: POST /v1/sessions/{id}/start-over gives the
+// session a new conversation with no message (runner.StartOver); a main
+// session's side helpers are stood down by the runner's CleanStarted. 409
+// while Claude is in a turn, and for an agent.
+func (s *Server) startOverRunnerSession(w http.ResponseWriter, r *http.Request) {
+	if !s.runnersReady(w) {
 		return
 	}
-	switch {
-	case clean != "":
-		s.threads.MainMovedOn(sessionID, "started a clean conversation")
-	case isClear(text):
-		s.threads.MainMovedOn(sessionID, "cleared its conversation (/clear)")
+	id := r.PathValue("id")
+	if err := s.runners.StartOver(id); err != nil {
+		writeRunnerError(w, err)
+		return
 	}
-}
-
-// isClear says a prompt is Claude Code's /clear.
-func isClear(text string) bool {
-	t := strings.TrimSpace(text)
-	return t == "/clear" || strings.HasPrefix(t, "/clear ")
+	writeJSON(w, http.StatusAccepted, map[string]string{"startedOver": id})
 }
 
 func (s *Server) answerPrompt(w http.ResponseWriter, sessionID, text, id string, err error) {

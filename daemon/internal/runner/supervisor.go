@@ -76,6 +76,14 @@ type Supervisor struct {
 	// Called with the session's lock held: it must not call back in. Set
 	// before Run; nil hears nothing.
 	Changed func(store.RunnerSession)
+	// CleanStarted hears that a session was given a new conversation (a
+	// clean start or Start over, cleanstart.go): a main session's side
+	// helpers are stood down by it (cmd/ccmuxd). It is called on its own
+	// goroutine, off the session's lock, so it may take any lock and call
+	// back in; it may still be running when the new conversation's first
+	// message arrives. Only a start that happened is heard: a refused one,
+	// or a message sent again under its key, is not.
+	CleanStarted func(store.RunnerSession)
 }
 
 // New makes a supervisor. Run starts its loop.

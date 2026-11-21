@@ -1798,3 +1798,37 @@ test("a thread's Helpers tab keeps the lead's wording, and standing a helper dow
   await p.settle();
   assert.deepEqual(asked, ["Stand the backend helper down? Work it has not committed stays in its worktree."]);
 });
+
+// --- Start over ---
+
+test("Start over asks the daemon for a new conversation, and a typed /clear does the same instead of going to Claude Code", async () => {
+  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [[/^POST \/v1\/sessions\/lead1\/start-over$/, () => ({ startedOver: "lead1" })]] });
+  await p.frame(snapshot());
+  assert.equal(p.$("start-over").classList.contains("hidden"), false, "a running session can start over");
+  p.$("start-over").click();
+  await p.settle();
+  p.$("input").value = "  /clear ";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.url), ["/v1/sessions/lead1/start-over", "/v1/sessions/lead1/start-over"], "no prompt is sent");
+  assert.equal(p.$("input").value, "", "the composer is emptied");
+  assert.equal(p.$("notice-bar").textContent, "Started a new conversation. The last one is kept above.");
+  await p.frame({ t: "snapshot", boot: "b2", seq: 0, data: { messages: [], info: {} } }); // the runner comes back on the new conversation
+  assert.equal(p.$("restarted-bar").classList.contains("hidden"), true, "no restart bar: it did not pick up where it was");
+  p.$("input").value = "/clear the redis cache, please";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.url).slice(2), ["/v1/sessions/lead1/prompt"], "words after /clear are a message");
+});
+
+test("an agent's /clear is not sent: it is told how an agent starts fresh, and it has no Start over", async () => {
+  const agentSess = { ...lead, id: "ag1", kind: "agent", paneId: "pane-ag1" };
+  const p = await boot({ sessions: [agentSess], search: "?s=ag1" });
+  await p.frame(snapshot());
+  assert.equal(p.$("start-over").classList.contains("hidden"), true);
+  p.$("input").value = "/clear";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts(), [], "nothing reaches the agent");
+  assert.match(p.$("error-bar").textContent, /put to sleep/);
+});

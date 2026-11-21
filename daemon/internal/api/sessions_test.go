@@ -19,17 +19,18 @@ import (
 )
 
 type fakeRunners struct {
-	mediaDir string          // where MediaDir points every session
-	prompts  []runner.Prompt // what SendPrompt was given
-	created  []runner.NewSession
-	sent     []string
-	sentAs   []string // "session|prompt id|sender|text"
-	replies  []runner.CardReply
-	wanted   []string
-	models   []string
-	advisors []string
-	restarts int
-	rewinds  []string // "session to dry" of each going back
+	mediaDir    string          // where MediaDir points every session
+	prompts     []runner.Prompt // what SendPrompt was given
+	created     []runner.NewSession
+	sent        []string
+	sentAs      []string // "session|prompt id|sender|text"
+	replies     []runner.CardReply
+	wanted      []string
+	models      []string
+	advisors    []string
+	restarts    int
+	startedOver []string // session ids StartOver was asked for
+	rewinds     []string // "session to dry" of each going back
 	// livenessErr, when set, is what asking where a session is fails with.
 	livenessErr error
 }
@@ -153,6 +154,17 @@ func (f *fakeRunners) SetWanted(id, wanted string) error {
 }
 
 func (f *fakeRunners) RestartBetweenTurns(id string) error { return f.Restart(id) }
+
+func (f *fakeRunners) StartOver(id string) error {
+	switch id {
+	case "ended":
+		return runner.ErrSessionDone
+	case "busy":
+		return runner.ErrCleanRefused
+	}
+	f.startedOver = append(f.startedOver, id)
+	return nil
+}
 
 func (f *fakeRunners) Restart(id string) error {
 	if id == "ended" {
