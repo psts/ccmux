@@ -175,10 +175,9 @@
     const rows = await call("GET", "/v1/threads").then((d) => d.threads || [], () => null);
     if (rows) S.threads = rows;
     const sess = session();
-    const id = sess ? sess.threadId : 0;
+    const id = Team.teamId(sess, S.threads);
     const detail = id ? await call("GET", `/v1/threads/${id}`).then((d) => d, () => null) : null;
-    const now = session();
-    if ((now ? now.threadId : 0) !== id) return; // another session was picked meanwhile
+    if (Team.teamId(session(), S.threads) !== id) return; // another session was picked meanwhile
     S.detail = detail && detail.thread ? detail : null;
     schedule();
     watchMerge();
@@ -188,7 +187,7 @@
   // null when it has none to show.
   function mergeNow() {
     const sess = session();
-    return sess && S.detail && S.detail.thread.id === sess.threadId ? S.detail.merge || null : null;
+    return sess && S.detail && S.detail.thread.id === Team.teamId(sess, S.threads) ? S.detail.merge || null : null;
   }
 
   // watchMerge reads the thread again in a moment while its merge runs: the
@@ -401,7 +400,7 @@
     if (Todo.isOpen()) return Todo.title();
     const repo = ws ? Model.repoName(ws) : "";
     const group = groupOf(ws);
-    if (sess && sess.threadId) return { title: Model.titleOf(sess, ws), meta: Team.metaLine(sess, S.sessions, S.workspaces, group) };
+    if (sess && sess.threadId) return { title: Model.titleOf(sess, ws), meta: Team.metaLine(sess, S.sessions, S.workspaces, group, S.threads) };
     if (sess && sess.kind === "agent") return { title: Model.titleOf(sess, ws), meta: `${group} · role agent${sess.agentVersion ? " · base " + sess.agentVersion : ""} · a message starts it` };
     if (sess) {
       const lead = sess.kind === "lead";
@@ -656,15 +655,26 @@
   function drawDetail() {
     const files = Work.changes(S.stream.turns, roots());
     const sess = session();
-    const mine = !!sess && !!S.detail && S.detail.thread.id === sess.threadId;
+    const team = Team.teamId(sess, S.threads);
+    const mine = !!sess && !!S.detail && S.detail.thread.id === team;
     View.changesTab($("tab-changes"), files, S.file, (path) => { S.file = path; schedule(); }, mine ? Team.changeGroups(S.detail) : []);
-    View.helpersTab($("tab-team"), Team.helperRows(sess, S.sessions, S.workspaces), {
+    View.helpersTab($("tab-team"), Team.helperRows(sess, S.sessions, S.workspaces, S.threads), {
       isPicked: (r) => !!sess && r.id === sess.id,
       pick: (r) => select({ kind: "session", id: r.id }),
-      canStandDown: !!sess && sess.role === "lead",
-      standDown: (r) => threadAct("stand-down", { repo: r.name }, `Stand the ${r.name} helper down? Work it has not committed stays in its worktree.`),
+      canStandDown: !!team && !!sess && (sess.role === "lead" || !sess.threadId),
+      standDown: (r) => threadAct("stand-down", { repo: r.name }, standDownAsk(r.name, team)),
     });
     View.stepsTab($("tab-steps"), S.stream.todos, S.stream.result);
+  }
+
+  // standDownAsk is the question before a helper is stood down: a main
+  // session's helper works in a scratch copy, which is deleted with it; a
+  // thread's helper keeps what it has not committed.
+  function standDownAsk(name, team) {
+    const side = (S.threads || []).some((t) => t.id === team && t.kind === "side");
+    return side
+      ? `Stand the ${name} helper down? Its scratch copy is deleted; nothing in it is kept.`
+      : `Stand the ${name} helper down? Work it has not committed stays in its worktree.`;
   }
 
   // threadAct runs one action on the picked session's thread (merge, end,
@@ -672,9 +682,10 @@
   // or why it would not.
   async function threadAct(action, body, ask) {
     const sess = session();
-    if (!sess || !sess.threadId || (ask && !confirm(ask))) return;
+    const team = Team.teamId(sess, S.threads);
+    if (!team || (ask && !confirm(ask))) return;
     $("more").open = false;
-    await act(async () => { S.said = (await call("POST", `/v1/threads/${sess.threadId}/${action}`, body)).message || ""; });
+    await act(async () => { S.said = (await call("POST", `/v1/threads/${team}/${action}`, body)).message || ""; });
     loadLists();
   }
 

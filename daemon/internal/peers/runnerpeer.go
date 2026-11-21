@@ -215,10 +215,29 @@ func (s *Service) handToInbox(paneID, peerID string, ev *model.PeerEvent) bool {
 		return true
 	case errors.Is(err, ErrInboxClosed):
 		log.Printf("peers: runner peer %s: message %d from %s dropped, its session has ended", peerID, ev.Seq, ev.FromName)
+		s.bounce(ev)
 		return true
 	}
 	log.Printf("peers: runner peer %s: message %d from %s not handed to its session yet: %v", peerID, ev.Seq, ev.FromName, err)
 	return false
+}
+
+// bounce tells the sender of a message that its session ended before the
+// message reached it: a helper that ended while the message was on its way
+// (its cache had gone cold) would otherwise leave the sender waiting on an
+// answer that never comes. Sent again by name, it reaches a fresh one.
+func (s *Service) bounce(ev *model.PeerEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sender := s.peers[ev.FromID]
+	if sender == nil {
+		return // a notice of the bus's own, or a sender that has left
+	}
+	text := fmt.Sprintf("Your message to %s was not delivered: that session ended before it read it. "+
+		"Send it again by the repo's name; a session that ended is not woken.", ev.ToName)
+	if err := s.deliverLocked(systemEvent(sender, s.groupOfLocked(sender), text)); err != nil {
+		log.Printf("peers: %s was not told that its message %d to %s was dropped: %v", sender.Name, ev.Seq, ev.ToName, err)
+	}
 }
 
 // inboxSpace is the namespace prompt ids are derived in.

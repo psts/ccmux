@@ -66,6 +66,8 @@ const (
 		"when your task needs work in one, delegate it to that session (delegate with to_name=<session>, spawn_if_missing=true) " +
 		"saying what you need and why, then carry on with your own part. " +
 		"When one delegates work to you and something is unclear, ask it with send_message.\n"
+	mainRuleShort = "You are this repo's main session. Never read or change another repo yourself: message it by its plain name (to_name=<repo>), " +
+		"which reaches a helper of your own there that reads, checks and answers but never lands a change. Real work in another repo is a task part.\n"
 	agentLead          = "The project's repos, one session each. "
 	agentRuleNoFolders = "list_peers shows each one's folder: read there if your harness reaches it, " +
 		"otherwise message the session by name, with spawn_if_missing=true if it is not running.\n"
@@ -73,6 +75,8 @@ const (
 
 func shortRule(r Reader, owns int) string {
 	switch {
+	case r.Main:
+		return mainRuleShort
 	case !r.Agent:
 		return ownerRuleShort
 	case owns == ownsNone || owns == namesGone:

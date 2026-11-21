@@ -43,7 +43,7 @@ func (s *Service) FirstEdit(sessionID string) (Moved, error) {
 	}
 	if !sess.ReadOnly {
 		s.relocateSoon(sessionID)
-		return movedText(sess, ""), nil
+		return movedFor(th, sess, ""), nil
 	}
 	worktree, branch := taskq.ThreadPlace(s.Root, sess.Repo, th.ID, s.titleNow(th))
 	trunk, err := taskq.MakeWorktree(s.Lander.Git, sess.Repo, worktree, branch)
@@ -58,7 +58,16 @@ func (s *Service) FirstEdit(sessionID string) (Moved, error) {
 	sess.Cwd, sess.Worktree, sess.Branch, sess.ReadOnly = worktree, worktree, branch, false
 	log.Printf("threads: #%d %s moves into %s on %s", th.ID, filepath.Base(sess.Repo), worktree, branch)
 	s.relocateSoon(sessionID)
-	return movedText(sess, trunk), nil
+	return movedFor(th, sess, trunk), nil
+}
+
+// movedFor is what a member reads about its worktree: a side helper's is a
+// scratch copy (side.go), every other member's is its thread's branch.
+func movedFor(th store.Thread, sess store.RunnerSession, trunk string) Moved {
+	if th.Kind == store.ThreadSide {
+		return sideMoved(sess)
+	}
+	return movedText(sess, trunk)
 }
 
 // relocateSoon restarts a member where its row now says it works, a moment

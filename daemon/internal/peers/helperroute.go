@@ -7,6 +7,12 @@
 //
 // Helpers carry unique bus names (<repo>-thread-<id>), so the repo's own
 // session never shares a name with one and never gets the thread's mail.
+// A repo's main session (its session on the thread page, in no thread) is
+// routed the same way, to helpers of its own side thread: so a quick
+// question from hq to backend never starts backend's old terminal session.
+// A side helper naming the main session's repo reaches the main session
+// itself (Pane).
+//
 // Senders outside a thread, names that are no repo of the window, and a
 // message into another group all keep the routing they always had. A member
 // still reaches the repo's own session, or anyone else, by id.
@@ -19,11 +25,16 @@ import (
 
 // HelperRoute is where a thread member's message to a repo goes: Name is
 // the bus name of the thread's member for that repo, Repo its folder, and
-// ThreadID the thread, for standing the helper up.
+// ThreadID the thread, for standing the helper up. Lead is the main session
+// a side helper is for (its side thread may not have a row yet, ThreadID
+// 0). Pane, when set, is the one session the message is for, by its pane:
+// a side helper's message to its main session.
 type HelperRoute struct {
 	ThreadID int64
 	Repo     string
 	Name     string
+	Lead     string
+	Pane     string
 }
 
 // threadTargetLocked routes a by-name message from a thread member to its
@@ -41,10 +52,23 @@ func (s *Service) threadTargetLocked(req SendReq, sender *Peer, group string) (t
 	if !ok {
 		return nil, SendResp{}, false
 	}
+	if route.Pane != "" {
+		return s.paneTargetLocked(route.Pane, req.ToName)
+	}
 	if there := s.namedLocked(route.Name, group, sender.ID); len(there) == 1 {
 		return there[0], SendResp{}, true
 	}
 	return nil, s.startHelperLocked(sender, group, route, req.Text), true
+}
+
+// paneTargetLocked is the peer of one session's pane, which a route named.
+// A runner session's peer is there for as long as its session has not
+// ended; one that is not there is said to be gone, never guessed at.
+func (s *Service) paneTargetLocked(paneID, name string) (*Peer, SendResp, bool) {
+	if p := s.peers[derivedID(paneID)]; p != nil && p.PaneID == paneID && s.presentLocked(p) {
+		return p, SendResp{}, true
+	}
+	return nil, SendResp{Error: fmt.Sprintf("%q is the session you help, and it is not on the bus now (it has ended)", name)}, true
 }
 
 // startHelperLocked stands a thread's helper up, or joins a start already
@@ -65,7 +89,7 @@ func (s *Service) startHelperLocked(sender *Peer, group string, route HelperRout
 	pending.timer = time.AfterFunc(s.SpawnTimeout, func() { s.spawnTimedOut(key) })
 	s.spawns[key] = pending
 	go func() {
-		if err := s.StartHelper(route.ThreadID, route.Repo); err != nil {
+		if err := s.StartHelper(route); err != nil {
 			s.abortSpawn(key, fmt.Sprintf("Helper %q could not be started: %v", route.Name, err))
 		}
 	}()

@@ -483,3 +483,43 @@ func TestExecGit_RemoveWorktreeCanBeAskedAgain(t *testing.T) {
 		t.Fatalf("unmerged work is kept, asked again or not: %v", err)
 	}
 }
+
+// DropScratch removes a scratch copy and its branch whatever is in them (an
+// uncommitted file, a commit the trunk lacks), is done when asked again,
+// clears git's record of a folder already gone, and leaves every other
+// worktree and branch alone.
+func TestDropScratchForcesItsOwnCopyOnly(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	dir := t.TempDir()
+	wt, other, gone := filepath.Join(dir, "thread-1"), filepath.Join(dir, "task-2"), filepath.Join(dir, "thread-3")
+	for _, w := range []struct{ path, branch string }{{wt, "thread/1-x"}, {other, "task/2-y"}, {gone, "thread/3-z"}} {
+		if err := g.AddWorktree(repo, w.path, w.branch, "main"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitFile(t, wt, "unmerged.txt", "a commit main lacks")
+	os.WriteFile(filepath.Join(wt, "count.txt"), []byte("10"), 0o644)
+	if err := DropScratch(repo, wt, "thread/1-x"); err != nil {
+		t.Fatalf("drop = %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) || hasBranch(t, repo, "thread/1-x") {
+		t.Fatal("the scratch copy or its branch stayed")
+	}
+	if err := DropScratch(repo, wt, "thread/1-x"); err != nil {
+		t.Fatalf("asked again = %v", err)
+	}
+	if _, err := os.Stat(other); err != nil || !hasBranch(t, repo, "task/2-y") {
+		t.Fatal("another worktree or branch was touched")
+	}
+	os.RemoveAll(gone)
+	if err := DropScratch(repo, gone, "thread/3-z"); err != nil {
+		t.Fatalf("a folder already gone = %v", err)
+	}
+	if list, _ := runGit(repo, "worktree", "list"); strings.Contains(list, gone) || hasBranch(t, repo, "thread/3-z") {
+		t.Fatalf("git still lists the gone folder or its branch:\n%s", list)
+	}
+	if err := DropScratch(repo, "", ""); err != nil {
+		t.Fatalf("nothing to drop = %v", err)
+	}
+}

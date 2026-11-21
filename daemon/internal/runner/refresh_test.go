@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -272,5 +273,30 @@ func TestARefreshWaitsForWhatTheRegistryHolds(t *testing.T) {
 				t.Fatalf("restarts %d, want %d: %v", r.restarts(sess.ID), c.want, r.units.calls)
 			}
 		})
+	}
+}
+
+func TestSnapshotCold(t *testing.T) {
+	now := time.UnixMilli(10_000_000)
+	ended := func(ago time.Duration, ttl int64) string {
+		return fmt.Sprintf(`{"result":{"endedAt":%d,"cacheTtlMs":%d}}`, now.Add(-ago).UnixMilli(), ttl)
+	}
+	cases := []struct {
+		name, body string
+		want       bool
+	}{
+		{"no turn finished yet: it has not answered what started it", `{}`, false},
+		{"a turn that never ended", `{"result":{"endedAt":0}}`, false},
+		{"warm: an hour's cache, ten minutes ago", ended(10*time.Minute, 3_600_000), false},
+		{"cold: an hour's cache, an hour and a minute ago", ended(61*time.Minute, 3_600_000), true},
+		{"cold on the default lifetime", ended(6*time.Minute, 0), true},
+		{"a background task holds it", `{"info":{"tasks":[{}]},"result":{"endedAt":1}}`, false},
+		{"an open question holds it", `{"questions":[{}],"result":{"endedAt":1}}`, false},
+		{"unreadable", `{`, false},
+	}
+	for _, c := range cases {
+		if got := snapshotCold(json.RawMessage(c.body), now); got != c.want {
+			t.Errorf("%s: got %v", c.name, got)
+		}
 	}
 }

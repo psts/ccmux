@@ -34,7 +34,7 @@ func (s *Service) StandDown(threadID int64, repoName, by string) (string, error)
 			left := s.standDown(h)
 			s.reindex()
 			said := "Stood down " + h.Name + stayed(left) + "."
-			s.tellOfPerson(lead, by, said)
+			s.tellOfPerson(lead, threadID, by, said)
 			return said, nil
 		}
 	}
@@ -79,6 +79,9 @@ func stayed(left []string) string {
 // forcing nothing: a worktree with uncommitted files stays, and so does a
 // branch with a commit its trunk lacks. It returns what stayed. A session
 // that would not stop keeps its worktree: its Claude may still be in it.
+//
+// A side helper's worktree is a scratch copy, which goes whatever is in it
+// (side.go).
 func (s *Service) standDown(m store.RunnerSession) []string {
 	if err := s.Sessions.SetWanted(m.ID, store.SessionDone); err != nil && !gone(err) {
 		log.Printf("threads: #%d helper %s did not stop: %v", m.ThreadID, m.Name, err)
@@ -86,6 +89,9 @@ func (s *Service) standDown(m store.RunnerSession) []string {
 	}
 	if m.Worktree == "" {
 		return nil
+	}
+	if s.isSide(m.ThreadID) {
+		return s.dropScratch(m)
 	}
 	if why := s.Lander.Remove(workOf(m), taskq.RebaseMark(m.Worktree)); why != "" {
 		log.Printf("threads: #%d helper %s stood down; %s", m.ThreadID, m.Name, why)
@@ -96,11 +102,17 @@ func (s *Service) standDown(m store.RunnerSession) []string {
 
 // tellOfPerson tells a thread's lead what a person did to its team on the
 // thread's page. What the lead did itself, it knows.
-func (s *Service) tellOfPerson(lead store.RunnerSession, by, said string) {
+//
+// threadID is named, not read off the lead: a main session leads its side
+// thread from outside it (its own thread id is 0).
+func (s *Service) tellOfPerson(lead store.RunnerSession, threadID int64, by, said string) {
 	if by == ByPerson {
-		s.tell(lead, fmt.Sprintf("[ccmux] Thread #%d: a person did this on the thread's page. %s", lead.ThreadID, said))
+		s.tell(lead, fmt.Sprintf("[ccmux] Thread #%d: a person did this on the thread's page. %s", threadID, said))
 	}
 }
+
+// stayedNote is what stayed, as a thread's note.
+func stayedNote(left []string) string { return strings.TrimPrefix(stayed(left), "; ") }
 
 // End closes a thread: every helper is stood down, and the thread reads as
 // ended. The lead's own session and work stay as they are: the lead says
@@ -125,7 +137,7 @@ func (s *Service) End(threadID int64, by string) (string, error) {
 	}
 	s.reindex()
 	said := fmt.Sprintf("Thread #%d is closed and its helpers are stood down%s.", threadID, stayed(left))
-	s.tellOfPerson(lead, by, said)
+	s.tellOfPerson(lead, threadID, by, said)
 	return said, nil
 }
 
@@ -150,6 +162,7 @@ func (s *Service) standAllDown(threadID int64) ([]string, error) {
 // (builders.go).
 func (s *Service) SessionEnded(sess store.RunnerSession) {
 	if sess.ThreadID == 0 {
+		s.mainEnded(sess) // a main session takes its side helpers with it (side.go)
 		return
 	}
 	if sess.Role == store.RoleBuilder {
@@ -175,7 +188,7 @@ func (s *Service) SessionEnded(sess store.RunnerSession) {
 	if err != nil || th == nil {
 		return
 	}
-	th.State, th.Note, th.UpdatedAt = store.ThreadEnded, strings.TrimPrefix(stayed(left), "; "), s.millis()
+	th.State, th.Note, th.UpdatedAt = store.ThreadEnded, stayedNote(left), s.millis()
 	if err := s.St.SaveThread(*th); err != nil {
 		log.Printf("threads: #%d ended with its lead but is not marked so: %v", th.ID, err)
 	}

@@ -27,6 +27,9 @@ func (s *Service) Brief(sess store.RunnerSession) string {
 	if sess.Role == store.RoleLead {
 		return leadBrief(*th, sess)
 	}
+	if th.Kind == store.ThreadSide {
+		return sideBrief(sess, s.leadName(*th), s.leadRepo(*th))
+	}
 	return helperBrief(*th, sess, s.leadName(*th))
 }
 
@@ -36,7 +39,22 @@ func (s *Service) leadName(th store.Thread) string {
 	if err != nil || lead == nil {
 		return "the thread's lead"
 	}
+	if lead.Name == "" && s.BusName != nil {
+		return s.BusName(lead.PaneID) // a main session is named by the daemon (manager runnerNameLocked)
+	}
 	return lead.Name
+}
+
+// leadRepo is the folder of the repo a thread's lead works in.
+func (s *Service) leadRepo(th store.Thread) string {
+	lead, err := s.St.RunnerSession(th.LeadSession)
+	if err != nil || lead == nil {
+		return ""
+	}
+	if ws := s.Host.Workspace(lead.WorkspaceID); ws != nil {
+		return ws.RepoPath
+	}
+	return lead.Cwd
 }
 
 func titleOf(th store.Thread) string {
@@ -96,5 +114,24 @@ func helperBrief(th store.Thread, sess store.RunnerSession, lead string) string 
 		"- " + workRules,
 		"- When your part is done, tell the lead: what you built, on which commit, and how you checked it. The lead merges the whole thread and stands you down; you do not end yourself.",
 		"- Need a decision? Ask the lead first. When only the person can decide, raise a question card (AskUserQuestion): they see it in the thread.",
+	}, "\n")
+}
+
+// sideBrief is a main session's helper's: it answers and checks, and never
+// lands a change (side.go).
+func sideBrief(sess store.RunnerSession, lead, leadRepo string) string {
+	repo := filepath.Base(sess.Repo)
+	return strings.Join([]string{
+		fmt.Sprintf("# You are %s's helper in %s", lead, repo),
+		fmt.Sprintf("%s is the main session of another repo in this window, where a person plans and checks work. It asked about %s, and you answer for this repo: what is in it, what it does, what is live.", lead, repo),
+		fmt.Sprintf("- Your name on the peers bus is %s. Answer %s with send_message (or update_task when the message is a delegation). Say what you found and where (file:line, commit, command output). Never make it ask twice.", sess.Name, lead),
+		fmt.Sprintf("- A message to another repo's plain name (to_name=\"<repo>\") reaches %s's helper there, started when it is not there yet; to_name=\"%s\" reaches %s itself.", lead, filepath.Base(leadRepo), lead),
+		fmt.Sprintf("- You start in %s, the repo's own folder, where you only read: a person or the repo's own session may be working there. "+
+			"Your first command that does more than read (a test, a build, a query of a live system) moves you into a scratch copy of the repo: that one call is refused, the session restarts there, and you run it again.", sess.Repo),
+		"- You never land a change. Nothing in the scratch copy is merged, and it is deleted when you end. When the answer is \"this needs a change\", " +
+			"do not make it: say exactly what it is (files, what to change, how to check it), and the main session files it as a task or has it done.",
+		"- Never push, merge, deploy or change anything live. Read live systems only when asked to.",
+		"- You end by yourself about an hour after your last answer, once your cache has gone cold; the next question starts a fresh helper. Put whatever matters in your answers.",
+		"- When only the person can decide, raise a question card (AskUserQuestion): they see it on your page under the main session's helpers.",
 	}, "\n")
 }

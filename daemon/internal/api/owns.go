@@ -53,10 +53,22 @@ func (s *Server) readerOfPane(paneID, fallback string) buscontext.Reader {
 			if ws.Agent != "" {
 				return buscontext.Reader{Agent: true}
 			}
-			return buscontext.Reader{Self: repoBusName(ws.Name, ws.RepoPath)}
+			return buscontext.Reader{Self: repoBusName(ws.Name, ws.RepoPath), Main: s.mainSessionPane(paneID)}
 		}
 	}
 	return buscontext.Reader{Self: fallback}
+}
+
+// mainSessionPane says paneID is a repo's main session: a runner session of
+// kind lead in no thread, which asks other repos through helpers of its own
+// (internal/threads side.go).
+func (s *Server) mainSessionPane(paneID string) bool {
+	info, ok := s.mgr.RunnerPane(paneID)
+	if !ok || s.runnerRows == nil {
+		return false
+	}
+	sess, err := s.runnerRows.RunnerSession(info.SessionID)
+	return err == nil && sess != nil && sess.Kind == store.SessionLead && sess.ThreadID == 0
 }
 
 // workspaceOwns: GET /v1/workspaces/{id}/owns → {"auto","manual","line"}

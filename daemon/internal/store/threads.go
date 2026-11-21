@@ -34,6 +34,14 @@ const (
 	ThreadEnded   = "ended"
 )
 
+// ThreadSide is the kind of a main session's side thread: the helpers a
+// repo's main session (a session of kind lead in no thread) asks for when
+// it names another repo. It is never merged: its helpers read, run checks
+// in a scratch copy and hand real changes back, which the main session
+// files as a task. Its row is made with its first helper, and it lives as
+// long as the main session does. A thread a person started has kind "".
+const ThreadSide = "side"
+
 // The roles of a thread's members. A builder is a member of a queued
 // task's thread (store/builders.go): it has no lead, the task queue leads.
 const (
@@ -54,12 +62,14 @@ type Thread struct {
 	Note        string `json:"note,omitempty"`
 	// TaskID is the queued task this thread builds (store/builders.go), 0
 	// for a thread a person started. Such a thread has no lead session.
-	TaskID    int64 `json:"taskId,omitempty"`
-	CreatedAt int64 `json:"createdAt"`
-	UpdatedAt int64 `json:"updatedAt"`
+	TaskID int64 `json:"taskId,omitempty"`
+	// Kind is ThreadSide for a main session's side thread, "" otherwise.
+	Kind      string `json:"kind,omitempty"`
+	CreatedAt int64  `json:"createdAt"`
+	UpdatedAt int64  `json:"updatedAt"`
 }
 
-const threadCols = "id,ws_group,lead_session,title,goal,state,model,note,created_at,updated_at,task_id"
+const threadCols = "id,ws_group,lead_session,title,goal,state,model,note,created_at,updated_at,task_id,kind"
 
 // ErrMemberExists is a second member of a thread for a repo that already
 // has one that has not ended.
@@ -93,8 +103,8 @@ WHERE thread_id<>0 AND wanted<>'done'`); err != nil {
 
 // AddThread inserts a thread and returns it with its id.
 func (s *SQLite) AddThread(t Thread) (Thread, error) {
-	res, err := s.db.Exec(`INSERT INTO threads (ws_group,lead_session,title,goal,state,model,note,created_at,updated_at,task_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		t.Group, t.LeadSession, t.Title, t.Goal, t.State, t.Model, t.Note, t.CreatedAt, t.UpdatedAt, t.TaskID)
+	res, err := s.db.Exec(`INSERT INTO threads (ws_group,lead_session,title,goal,state,model,note,created_at,updated_at,task_id,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		t.Group, t.LeadSession, t.Title, t.Goal, t.State, t.Model, t.Note, t.CreatedAt, t.UpdatedAt, t.TaskID, t.Kind)
 	if err != nil {
 		return t, err
 	}
@@ -136,6 +146,41 @@ func (s *SQLite) Threads() ([]Thread, error) {
 WHERE EXISTS (SELECT 1 FROM sessions WHERE sessions.id=threads.lead_session AND sessions.wanted<>'done') ORDER BY id`)
 }
 
+// SideThread is the side thread of main session leadSession, the newest
+// when there were more, or nil when it has none yet.
+func (s *SQLite) SideThread(leadSession string) (*Thread, error) {
+	list, err := s.queryThreads(`SELECT `+threadCols+` FROM threads WHERE kind=? AND lead_session=? ORDER BY id DESC LIMIT 1`, ThreadSide, leadSession)
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	return &list[0], nil
+}
+
+// OpenSideThreads lists the side threads not closed yet, whether or not
+// their main session has ended: the expiry walks them, so a side thread
+// whose main session ended without its helpers being stood down (a failed
+// stand-down, a daemon that stopped first) is still found.
+func (s *SQLite) OpenSideThreads() ([]Thread, error) {
+	return s.queryThreads(`SELECT `+threadCols+` FROM threads WHERE kind=? AND state<>? ORDER BY id`, ThreadSide, ThreadEnded)
+}
+
+// MainSessions lists the repos' main sessions that have not ended: the
+// sessions of kind lead that are in no thread, oldest first.
+func (s *SQLite) MainSessions() ([]RunnerSession, error) {
+	return s.querySessions(`SELECT `+sessionCols+` FROM sessions WHERE kind=? AND thread_id=0 AND wanted<>'done' ORDER BY created_at, id`, SessionLead)
+}
+
+// migrateThreadKind gives a thread row its kind. Strict, as
+// migrateSessionPanes is: threadCols names the column. Rows from before are
+// threads a person started, or a task's.
+func migrateThreadKind(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE threads ADD COLUMN kind TEXT DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate threads.kind: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLite) queryThreads(q string, args ...any) ([]Thread, error) {
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -145,7 +190,7 @@ func (s *SQLite) queryThreads(q string, args ...any) ([]Thread, error) {
 	var out []Thread
 	for rows.Next() {
 		var t Thread
-		if err := rows.Scan(&t.ID, &t.Group, &t.LeadSession, &t.Title, &t.Goal, &t.State, &t.Model, &t.Note, &t.CreatedAt, &t.UpdatedAt, &t.TaskID); err != nil {
+		if err := rows.Scan(&t.ID, &t.Group, &t.LeadSession, &t.Title, &t.Goal, &t.State, &t.Model, &t.Note, &t.CreatedAt, &t.UpdatedAt, &t.TaskID, &t.Kind); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

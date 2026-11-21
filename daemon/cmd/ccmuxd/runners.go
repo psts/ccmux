@@ -105,6 +105,7 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	// Only now: what Recover does reaches the sessions through the
 	// supervisor, which has to tell the panes and the bus of it (Changed).
 	team.Recover()
+	go expireSideHelpers(ctx, team)
 	w.mgr.RunnerLiveness = sup.Liveness
 	w.mgr.EndRunnerSession = func(id string) error { return sup.SetWanted(id, store.SessionDone) }
 	w.api.SetRunners(sup, w.st)
@@ -167,14 +168,49 @@ func newThreads(w runnerWiring, sup *runner.Supervisor, jobMgr *jobs.Manager, jo
 	if jobMgr != nil { // a nil manager must stay a nil Jobs, not a Jobs that holds nil
 		team.Jobs = jobMgr
 	}
+	// A main session's side helper ends once its cache is cold, unless it
+	// still owes a delegator its result (threads/sideexpire.go).
+	team.Cold = sup.Cold
+	team.BusName = func(paneID string) string { info, _ := w.mgr.RunnerPane(paneID); return info.Name }
 	if w.peers != nil {
-		w.peers.ThreadRoute = func(senderPane, toName string) (peers.HelperRoute, bool) {
-			r, ok := team.Route(senderPane, toName)
-			return peers.HelperRoute{ThreadID: r.ThreadID, Repo: r.Repo, Name: r.Name}, ok
-		}
-		w.peers.StartHelper = team.StartHelper
+		wireHelpers(team, w.peers)
 	}
 	return team
+}
+
+// wireHelpers lets the bus route a thread member's or a main session's
+// message to a repo to its own helper there, and stand that helper up: a
+// main session's (Lead set) in its side thread, a thread's in its thread.
+func wireHelpers(team *threads.Service, bus *peers.Service) {
+	bus.ThreadRoute = func(senderPane, toName string) (peers.HelperRoute, bool) {
+		r, ok := team.Route(senderPane, toName)
+		return peers.HelperRoute{ThreadID: r.ThreadID, Repo: r.Repo, Name: r.Name, Lead: r.Lead, Pane: r.Pane}, ok
+	}
+	bus.StartHelper = func(r peers.HelperRoute) error {
+		if r.Lead != "" {
+			return team.StartSideHelper(r.Lead, r.Repo)
+		}
+		return team.StartHelper(r.ThreadID, r.Repo)
+	}
+	team.Owes = func(paneID string) bool { return bus.OpenTaskCountForPane(paneID) > 0 }
+}
+
+// sideExpiryEvery is how often side helpers are checked for a cold cache.
+const sideExpiryEvery = time.Minute
+
+// expireSideHelpers ends cold side helpers on a timer, for the daemon's
+// life.
+func expireSideHelpers(ctx context.Context, team *threads.Service) {
+	t := time.NewTicker(sideExpiryEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			team.ExpireSide()
+		}
+	}
 }
 
 // sessionChanged is what the supervisor calls when a session's row changes:
@@ -189,8 +225,8 @@ func sessionChanged(mgr *manager.Manager, bus *peers.Service, team *threads.Serv
 	return func(sess store.RunnerSession) {
 		mgr.SyncRunnerPane(sess)
 		mgr.SessionsChanged(sess.WorkspaceID)
-		if team != nil && sess.Wanted == store.SessionDone {
-			go team.SessionEnded(sess)
+		if team != nil {
+			go teamHears(team, sess)
 		}
 		switch {
 		case bus == nil || sess.PaneID == "":
@@ -199,6 +235,18 @@ func sessionChanged(mgr *manager.Manager, bus *peers.Service, team *threads.Serv
 		default:
 			bus.EnsureRunnerPeer(sess.PaneID, sess.Cwd)
 		}
+	}
+}
+
+// teamHears tells the threads of a session's row: one that ended (a lead
+// takes its helpers with it), and a main session, which its first message
+// to another repo needs in the member index.
+func teamHears(team *threads.Service, sess store.RunnerSession) {
+	switch {
+	case sess.Wanted == store.SessionDone:
+		team.SessionEnded(sess)
+	case sess.Kind == store.SessionLead && sess.ThreadID == 0:
+		team.NoteMain(sess)
 	}
 }
 

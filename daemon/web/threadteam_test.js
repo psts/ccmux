@@ -118,3 +118,30 @@ test("the merge bar says which step a running merge is in and for how long, and 
   assert.equal(t.mergeLine({ ...running, state: "stopped" }, 5000), null, "a merge someone stopped needs no bar");
   assert.deepEqual([0, 59000, 60000, 3599000, 3600000].map(t.elapsed), ["0s", "59s", "1m 00s", "59m 59s", "1h 00m"]);
 });
+
+// A main session (kind lead, in no thread) and the helpers of its side thread #9.
+const mainApp = { id: "M", workspaceId: "app", kind: "lead", state: "running", attention: "idle", createdAt: 1, name: "app-s-12345678" };
+const sideBackend = { id: "SB", workspaceId: "api", threadId: 9, role: "helper", state: "running", attention: "needs_input", createdAt: 4, name: "backend-for-app", worktree: "/wt/backend/thread-9" };
+const sideAdmin = { id: "SA", workspaceId: "adm", threadId: 9, role: "helper", state: "running", attention: "done", createdAt: 3, name: "admin-for-app", readOnly: true };
+const sides = [{ id: 9, kind: "side", leadSession: "M", state: "open" }, { id: 3, state: "open", leadSession: "L" }];
+const withSide = [...all, mainApp, sideBackend, sideAdmin];
+
+test("a main session's side helpers are its team", () => {
+  assert.equal(t.teamId(mainApp, sides), 9);
+  assert.equal(t.teamId(plain, sides), 0, "a session that is no main session has no side thread");
+  assert.equal(t.teamId(mainApp, []), 0, "a main session that never asked has no team yet");
+  assert.deepEqual(t.membersOf(mainApp, withSide, sides).map((s) => s.id), ["M", "SA", "SB"]);
+  assert.deepEqual(t.membersOf(sideBackend, withSide, sides).map((s) => s.id), ["M", "SA", "SB"], "asked from a helper it is the same team");
+  assert.deepEqual(t.membersOf(mainApp, withSide, []).map((s) => s.id), ["M"]);
+});
+
+test("the Helpers tab of a main session shows its helpers and where each works", () => {
+  assert.deepEqual(t.helperRows(mainApp, withSide, workspaces, sides), [
+    { id: "M", name: "app", bus: "app-s-12345678", role: "lead", state: "idle", doing: "Idle.", where: "repo folder · main session" },
+    { id: "SA", name: "admin", bus: "admin-for-app", role: "helper", state: "done", doing: "Finished its turn.", where: "repo folder · read only" },
+    { id: "SB", name: "backend", bus: "backend-for-app", role: "helper", state: "waiting", doing: "Waiting for your answer.", where: "scratch copy · never merged" },
+  ]);
+  assert.equal(t.metaLine(sideBackend, withSide, workspaces, "ChartLabs", sides), "ChartLabs · helper in backend · lead: app");
+  assert.equal(t.teamState(mainApp, withSide, sides), "waiting", "a helper's card needs you, so the main session does");
+  assert.equal(t.subLine(mainApp, withSide, workspaces, undefined, sides), "with admin, backend · needs you");
+});

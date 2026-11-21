@@ -393,6 +393,40 @@ watchdog, reports, the merge and tidy-up jobs, send-back.
 - "Open session" on a part opens the builder's conversation
   (`/threads.html?s=<session>`); the part's view carries `sessionId`.
 
+## A main session asks other repos through side helpers (Linux)
+
+A repo's main session (kind `lead`, in no thread: the repo's own session on
+the thread page) that names another repo of its window by its plain name
+(`send_message` or `delegate`) reaches a helper of its own for that repo,
+`<repo>-for-<its repo>`, never that repo's old terminal session and never
+that repo's own main session (`internal/threads/side.go`).
+
+- **The helpers are a side thread** (`threads.kind = 'side'`, led by the
+  main session, which itself keeps `thread_id` 0). Its row is made with its
+  first helper; the member index adds every main session's pane
+  (`indexSides`), so `Route` works before the row exists (`Lead` set,
+  `ThreadID` 0).
+- **A helper reads, checks and answers, and never lands a change.** Its
+  first non-read command moves it into a scratch worktree (the thread move,
+  with its own notice), where it runs anything; the side thread is never
+  merged, and its scratch copy and branch are force-removed when it ends
+  (`taskq.DropScratch`). Real work in another repo is a task part.
+- **It ends when its cache is cold** (`threads.ExpireSide`, every minute,
+  over `runner.Supervisor.Cold`): idle past the last turn's cache lifetime
+  (1 hour on this host), no card, no message waiting, a finished turn, and
+  no delegation it still owes. The next question starts a fresh one. The
+  same pass closes a side thread whose main session ended without its
+  helpers being stood down (`OpenSideThreads`, which does not filter on the
+  lead the way `Threads()` does). A
+  message that reaches a session just after it ended is handed back to its
+  sender (`peers bounce`).
+- A helper naming its main session's repo reaches the main session itself
+  (`HelperRoute.Pane`). A main session ending stands its helpers down.
+- **Not covered:** role agents, task builders and old terminal sessions that
+  name a repo keep the old routing (they can still start a terminal Claude).
+  The tasks tool still wants a part in the filing repo.
+- Main sessions read their own rule on the bus (`buscontext.Reader.Main`).
+
 ## Claude role agents are sessions (Linux)
 
 Since task #177 a role agent on the claude harness (radar, x-post and the

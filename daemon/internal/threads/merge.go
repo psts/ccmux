@@ -28,6 +28,9 @@ func (s *Service) Merge(threadID int64, by string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if th.Kind == store.ThreadSide {
+		return "", fmt.Errorf("thread #%d is a main session's helpers, which never land a change: file the work as a task", threadID)
+	}
 	if s.Jobs == nil {
 		return "", fmt.Errorf("thread #%d cannot be merged here: this daemon runs no jobs (%s)", threadID, s.JobsOff)
 	}

@@ -224,6 +224,34 @@ func (ExecGit) RemoveWorktree(repo, path, branch, trunk string) error {
 	return dropMergedBranch(repo, branch, trunk)
 }
 
+// DropScratch removes a scratch worktree and its branch, forcing both: a
+// side helper's copy (internal/threads side.go), whose files and commits
+// are never merged and which its helper was told goes when it ends. A
+// worktree that is gone already, or a branch that is, is done. An empty
+// path is nothing to remove.
+func DropScratch(repo, path, branch string) error {
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		if _, err := runGitFor(removeTimeout, repo, "worktree", "remove", "--force", "--force", path); err != nil {
+			return fmt.Errorf("scratch copy not removed: %w", err)
+		}
+	} else if _, err := runGit(repo, "worktree", "prune"); err != nil {
+		return fmt.Errorf("scratch copy gone, git's record of it not cleared: %w", err)
+	}
+	if branch == "" {
+		return nil
+	}
+	if has, err := branchExists(repo, branch); err != nil || !has {
+		return err
+	}
+	if _, err := runGit(repo, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("scratch copy removed, branch %s not deleted: %w", branch, err)
+	}
+	return nil
+}
+
 // dropMergedBranch deletes a removed worktree's branch when the trunk holds
 // every commit on it. A branch that is gone already is done.
 func dropMergedBranch(repo, branch, trunk string) error {

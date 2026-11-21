@@ -81,3 +81,29 @@ func TestParagraphForARepoSession(t *testing.T) {
 		}
 	}
 }
+
+func TestAMainSessionIsToldItsHelpersAndTasks(t *testing.T) {
+	r := Reader{Main: true, Self: "hq"}
+	sessions := []Session{{Name: "hq", RepoPath: "/r/hq", Status: "live"}, {Name: "backend", RepoPath: "/r/backend", Status: "cold"}}
+	got := Paragraph(r, sessions, "", nil)
+	for _, want := range []string{"you are this repo's main session", "helper of your own", "never lands a change", "file it with the tasks tool", "hq (you)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "delegate it to that session") {
+		t.Fatalf("a main session is not told to hand work to the repo's own session:\n%s", got)
+	}
+	if got := Section(r, sessions, "", nil); !strings.Contains(got, "a helper of yours answers for it") {
+		t.Fatalf("list_peers says the same:\n%s", got)
+	}
+	plain := Paragraph(Reader{Self: "hq"}, sessions, "", nil)
+	if !strings.Contains(plain, "delegate it to that session") || strings.Contains(plain, "main session") {
+		t.Fatalf("every other repo session keeps the owner rule:\n%s", plain)
+	}
+	for room := len(got) - 1; room > 0; room -= 7 {
+		if short := Fit(r, sessions, "", nil, room); !strings.Contains(short, "main session") || strings.Contains(short, "delegate it to that session") {
+			t.Fatalf("room %d: every shortened form keeps the main session's rule:\n%s", room, short)
+		}
+	}
+}

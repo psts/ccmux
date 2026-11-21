@@ -37,6 +37,9 @@ type Store interface {
 	Thread(id int64) (*store.Thread, error)
 	TaskThread(taskID int64) (*store.Thread, error)
 	Threads() ([]store.Thread, error)
+	SideThread(leadSession string) (*store.Thread, error)
+	OpenSideThreads() ([]store.Thread, error)
+	MainSessions() ([]store.RunnerSession, error)
 	ThreadMembers(threadID int64) ([]store.RunnerSession, error)
 	RunnerSession(id string) (*store.RunnerSession, error)
 }
@@ -94,6 +97,20 @@ type Service struct {
 	// reach the runner before the runner is stopped.
 	MoveAfter time.Duration
 
+	// Cold says a session's prompt cache has gone cold and nothing waits on
+	// it (runner.Supervisor.Cold): a side helper that is cold ends
+	// (ExpireSide). Owes says a session's peer still owes a delegator its
+	// result, which keeps it. Nil Cold ends no helper.
+	Cold func(sessionID string) bool
+	Owes func(paneID string) bool
+	// BusName is a runner session's name on the bus, by its pane (the
+	// manager names a main session that has no name of its own). Nil reads
+	// the session row's name.
+	BusName func(paneID string) string
+	// DropScratch removes a side helper's scratch copy; nil is
+	// taskq.DropScratch.
+	DropScratch func(repo, worktree, branch string) error
+
 	locks sync.Map // session id → *sync.Mutex: one move of a member at a time
 	// moving is the members whose restart into a new folder is on its way
 	// (session id → true), so asking twice restarts once.
@@ -106,10 +123,13 @@ type Service struct {
 	members map[string]memberRef
 }
 
-// memberRef is a member's thread and the repo it works for.
+// memberRef is a member's thread and the repo it works for. side is set
+// for a main session and its side helpers (side.go); a main session's
+// thread is 0 until its first helper is asked for.
 type memberRef struct {
 	thread int64
 	repo   string
+	side   *sideRef
 }
 
 // sender is who a thread's own notices are from.

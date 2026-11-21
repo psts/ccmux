@@ -45,7 +45,8 @@ func newThreadBus(t *testing.T) *threadBus {
 		}
 		return HelperRoute{ThreadID: 1, Repo: "/r/backend", Name: "backend-thread-1"}, true
 	}
-	svc.StartHelper = func(threadID int64, repo string) error {
+	svc.StartHelper = func(r HelperRoute) error {
+		repo := r.Repo
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		if b.startErr != nil {
@@ -129,7 +130,7 @@ func TestTwoMessagesToAHelperThatIsStartingWaitForTheOneStart(t *testing.T) {
 	b := newThreadBus(t)
 	hold := make(chan struct{})
 	start := b.svc.StartHelper
-	b.svc.StartHelper = func(id int64, repo string) error { <-hold; return start(id, repo) }
+	b.svc.StartHelper = func(r HelperRoute) error { <-hold; return start(r) }
 	first := b.svc.Send(SendReq{FromID: b.lead, ToName: "backend", Text: "one"})
 	second := b.svc.Delegate(DelegateReq{FromID: b.lead, ToName: "backend", Text: "two"})
 	if !first.Spawning || !second.Spawning || second.TaskID == "" {
@@ -200,5 +201,77 @@ func TestAHelperThatCannotStartIsSaidToWhoeverAskedForIt(t *testing.T) {
 	b.svc.StartHelper = nil
 	if resp := b.svc.Send(SendReq{FromID: b.lead, ToName: "backend", Text: "hi"}); resp.OK || !strings.Contains(resp.Error, "cannot start one") {
 		t.Fatalf("refused with the reason: %+v", resp)
+	}
+}
+
+func TestASideHelperNamingItsMainSessionsRepoReachesThatSession(t *testing.T) {
+	b := newThreadBus(t)
+	b.mu.Lock()
+	b.runners["help"] = "backend-for-app"
+	b.mu.Unlock()
+	b.svc.EnsureRunnerPeer("help", "/r/backend")
+	b.svc.ThreadRoute = func(senderPane, toName string) (HelperRoute, bool) {
+		if senderPane == "help" && toName == "app" {
+			return HelperRoute{Repo: "/r/app", Pane: "lead"}, true
+		}
+		return HelperRoute{}, false
+	}
+	if resp := b.svc.Send(SendReq{FromID: derivedID("help"), ToName: "app", Text: "the endpoint is live"}); !resp.OK || resp.Spawning {
+		t.Fatalf("the main session is there, so the message goes straight to it: %+v", resp)
+	}
+	eventually(t, "the main session to get it", func() bool {
+		for _, q := range b.box.got() {
+			if strings.HasPrefix(q, "lead|") && strings.Contains(q, "the endpoint is live") {
+				return true
+			}
+		}
+		return false
+	})
+	if got := b.mail(t, b.plain); len(got) != 0 {
+		t.Fatalf("app's old terminal session gets none of it: %v", got)
+	}
+	if b.starts() != 0 {
+		t.Fatalf("no helper is started for the main session's own repo: %d", b.starts())
+	}
+}
+
+func TestAMessageToASessionThatEndedOnItsWayIsHandedBackToItsSender(t *testing.T) {
+	b := newThreadBus(t)
+	b.mu.Lock()
+	b.runners["help"] = "backend-for-app"
+	b.mu.Unlock()
+	b.svc.EnsureRunnerPeer("help", "/r/backend")
+	b.box.setRefuse(ErrInboxClosed)
+	if resp := b.svc.Send(SendReq{FromID: b.plain, ToID: derivedID("help"), Text: "is the migration live?"}); !resp.OK {
+		t.Fatalf("the send itself is taken: %+v", resp)
+	}
+	eventually(t, "the sender to hear", func() bool {
+		for _, m := range b.mail(t, b.plain) {
+			if strings.Contains(m, "backend-for-app was not delivered") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestASideHelperWhoseMainSessionIsGoneIsToldSo(t *testing.T) {
+	b := newThreadBus(t)
+	b.mu.Lock()
+	b.runners["help"] = "backend-for-app"
+	b.mu.Unlock()
+	b.svc.EnsureRunnerPeer("help", "/r/backend")
+	b.svc.ThreadRoute = func(senderPane, toName string) (HelperRoute, bool) {
+		return HelperRoute{Repo: "/r/app", Pane: "ended-main"}, true
+	}
+	resp := b.svc.Send(SendReq{FromID: derivedID("help"), ToName: "app", Text: "done"})
+	if resp.OK || !strings.Contains(resp.Error, "has ended") {
+		t.Fatalf("refused with the reason: %+v", resp)
+	}
+	if b.starts() != 0 {
+		t.Fatalf("no helper is started in its place: %d", b.starts())
+	}
+	if got := b.mail(t, b.plain); len(got) != 0 {
+		t.Fatalf("app's old terminal session gets nothing: %v", got)
 	}
 }

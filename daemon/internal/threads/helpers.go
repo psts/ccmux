@@ -12,11 +12,16 @@ import (
 )
 
 // Route is where a member's message to a repo goes: the bus name of its
-// thread's member for that repo, the repo's folder, and the thread.
+// thread's member for that repo, the repo's folder, and the thread. Lead is
+// the main session a side helper is for (side.go), whose side thread may
+// have no row yet (ThreadID 0). Pane, when set, is the one session the
+// message is for: a side helper's message to its main session.
 type Route struct {
 	ThreadID int64
 	Repo     string
 	Name     string
+	Lead     string
+	Pane     string
 }
 
 // Route answers the bus (peers/helperroute.go): the session in senderPane
@@ -35,7 +40,13 @@ func (s *Service) Route(senderPane, toName string) (Route, bool) {
 		return Route{}, false
 	}
 	ws := repoNamed(s.Host.WindowPeers(senderPane), toName)
-	if ws == nil || ws.RepoPath == me.repo {
+	if ws == nil {
+		return Route{}, false
+	}
+	if me.side != nil {
+		return sideRoute(me, senderPane, ws)
+	}
+	if ws.RepoPath == me.repo {
 		return Route{}, false
 	}
 	return Route{ThreadID: me.thread, Repo: ws.RepoPath, Name: taskq.ThreadBusName(ws.RepoPath, me.thread)}, true
@@ -62,7 +73,11 @@ func (s *Service) reindex() {
 		return
 	}
 	next := map[string]memberRef{}
+	sides := map[string]int64{} // a main session's id → its side thread
 	for _, th := range threads {
+		if th.Kind == store.ThreadSide {
+			sides[th.LeadSession] = th.ID
+		}
 		members, err := s.St.ThreadMembers(th.ID)
 		if err != nil {
 			log.Printf("threads: the member index was not rebuilt, the last one stands: #%d: %v", th.ID, err)
@@ -73,6 +88,10 @@ func (s *Service) reindex() {
 				next[m.PaneID] = memberRef{thread: th.ID, repo: m.Repo}
 			}
 		}
+	}
+	if err := s.indexSides(next, sides); err != nil {
+		log.Printf("threads: the member index was not rebuilt, the last one stands: main sessions: %v", err)
+		return
 	}
 	s.mu.Lock()
 	s.members = next

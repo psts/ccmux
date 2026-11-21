@@ -15,12 +15,38 @@
 
   const isHelper = (s) => !!s && s.role === "helper";
 
-  // membersOf is the sessions of session's thread that have not ended, the
-  // lead first; just the session itself when it is in no thread.
-  function membersOf(session, sessions) {
-    if (!session || !session.threadId) return session ? [session] : [];
-    const mine = (sessions || []).filter((s) => s.threadId === session.threadId && s.state !== "done");
-    return mine.sort((a, b) => (a.role === "lead" ? 0 : 1) - (b.role === "lead" ? 0 : 1) || a.createdAt - b.createdAt);
+  // sideOf is a main session's side thread: the helpers it asked for when
+  // it named another repo (the daemon's threads/side.go, a thread row of
+  // kind "side" led by the main session, which is itself in no thread).
+  // null for any other session.
+  function sideOf(session, threads) {
+    if (!session || session.threadId || session.kind !== "lead") return null;
+    return (threads || []).find((t) => t.kind === "side" && t.leadSession === session.id) || null;
+  }
+
+  // teamId is the thread whose team session is in: its own, or a main
+  // session's side thread; 0 for none.
+  function teamId(session, threads) {
+    if (!session) return 0;
+    if (session.threadId) return session.threadId;
+    const side = sideOf(session, threads);
+    return side ? side.id : 0;
+  }
+
+  // leads says session leads its team: a thread's lead, or a main session.
+  const leads = (s) => s.role === "lead" || (s.kind === "lead" && !s.threadId);
+
+  // membersOf is the sessions of session's team that have not ended, the
+  // lead first; just the session itself when it has none. A side thread's
+  // lead is the main session, which carries no thread id of its own.
+  function membersOf(session, sessions, threads) {
+    const id = teamId(session, threads);
+    if (!id) return session ? [session] : [];
+    const row = (threads || []).find((t) => t.id === id);
+    const main = row && row.kind === "side" ? row.leadSession : "";
+    const mine = (sessions || []).filter((s) => (s.threadId === id || (main && s.id === main)) && s.state !== "done");
+    const rank = (s) => (leads(s) ? 0 : 1);
+    return mine.sort((a, b) => rank(a) - rank(b) || a.createdAt - b.createdAt);
   }
 
   // repoOf is the name of the repo a member works for: its repo session's
@@ -34,8 +60,8 @@
   // teamState is where a thread is, as one word: it needs you when any
   // member does, it runs while any member runs, and otherwise it is where
   // its lead is.
-  function teamState(lead, sessions) {
-    const states = membersOf(lead, sessions).map(Model.stateOf);
+  function teamState(lead, sessions, threads) {
+    const states = membersOf(lead, sessions, threads).map(Model.stateOf);
     if (states.includes("waiting")) return "waiting";
     const own = Model.stateOf(lead);
     if (own !== "ended" && own !== "unknown" && states.includes("running")) return "running";
@@ -47,9 +73,9 @@
   // subLine is the line under a thread in the sidebar: who it works with,
   // then where it stands ("with backend, admin · needs you"). thread is its
   // row from the daemon, when the page has it: a merge shows there.
-  function subLine(lead, sessions, workspaces, thread) {
-    const helpers = membersOf(lead, sessions).filter(isHelper).map((s) => repoOf(s, workspaces));
-    const state = teamState(lead, sessions);
+  function subLine(lead, sessions, workspaces, thread, threads) {
+    const helpers = membersOf(lead, sessions, threads).filter(isHelper).map((s) => repoOf(s, workspaces));
+    const state = teamState(lead, sessions, threads);
     let stands = words[state] || state;
     if (thread && thread.state === "merging") stands = "merging";
     else if (thread && thread.state === "merged" && state !== "waiting" && state !== "running") stands = "merged";
@@ -61,8 +87,8 @@
   function decorate(tree, sessions, workspaces, threads) {
     const rows = new Map((threads || []).map((t) => [t.id, t]));
     for (const group of tree) for (const repo of group.repos) for (const t of repo.threads) {
-      t.state = teamState(t.session, sessions);
-      t.sub = subLine(t.session, sessions, workspaces, rows.get(t.session.threadId));
+      t.state = teamState(t.session, sessions, threads);
+      t.sub = subLine(t.session, sessions, workspaces, rows.get(t.session.threadId), threads);
     }
     return tree;
   }
@@ -70,19 +96,30 @@
   const doing = { waiting: "Waiting for your answer.", running: "Working.", done: "Finished its turn.", idle: "Idle.", asleep: "Asleep. A message wakes it.", ended: "Ended.", unknown: "State unknown." };
 
   // helperRows is the Helpers tab: every member of the picked session's
-  // thread with its role, what it is doing (the goal it noted, else where
-  // it is) and where it works: its repo's own folder, reading, or its
-  // worktree on the thread's branch.
-  function helperRows(session, sessions, workspaces) {
-    if (!session || !session.threadId) return [];
-    return membersOf(session, sessions).map((s) => {
+  // team with its role, what it is doing (the goal it noted, else where it
+  // is) and where it works: its repo's own folder, reading, or its worktree
+  // on the thread's branch, or for a main session's helper its scratch
+  // copy, which is never merged.
+  function helperRows(session, sessions, workspaces, threads) {
+    const id = teamId(session, threads);
+    if (!id) return [];
+    const row = (threads || []).find((t) => t.id === id);
+    const side = !!row && row.kind === "side";
+    return membersOf(session, sessions, threads).map((s) => {
       const state = Model.stateOf(s);
       return {
-        id: s.id, name: repoOf(s, workspaces), bus: s.name || "", role: s.role || "helper", state,
+        id: s.id, name: repoOf(s, workspaces), bus: s.name || "", role: leads(s) ? "lead" : s.role || "helper", state,
         doing: s.goal || doing[state] || "",
-        where: s.worktree ? "worktree · " + (s.branch || "") : "repo folder · read only",
+        where: whereOf(s, side),
       };
     });
+  }
+
+  // whereOf is where one member of a team works, in a few words.
+  function whereOf(s, side) {
+    if (!s.threadId) return "repo folder · main session";
+    if (!s.worktree) return "repo folder · read only";
+    return side ? "scratch copy · never merged" : "worktree · " + (s.branch || "");
   }
 
   const isBuilder = (s) => !!s && s.role === "builder";
@@ -97,10 +134,10 @@
 
   // metaLine is the header's line for a thread member: its window, who
   // leads, and who helps.
-  function metaLine(session, sessions, workspaces, group) {
-    const members = membersOf(session, sessions);
+  function metaLine(session, sessions, workspaces, group, threads) {
+    const members = membersOf(session, sessions, threads);
     if (isBuilder(session)) return builderLine(session, members, workspaces, group);
-    const lead = members.find((s) => s.role === "lead");
+    const lead = members.find(leads);
     const helpers = members.filter(isHelper).map((s) => repoOf(s, workspaces));
     const leadRepo = lead ? repoOf(lead, workspaces) : "?";
     if (isHelper(session)) return `${group} · helper in ${repoOf(session, workspaces)} · lead: ${leadRepo}`;
@@ -150,7 +187,7 @@
     return say ? { running: false, stopping: false, text: say(merge) } : null;
   }
 
-  const api = { isHelper, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, changeGroups, elapsed, mergeLine };
+  const api = { isHelper, sideOf, teamId, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, changeGroups, elapsed, mergeLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadTeam = api;
 })(typeof window !== "undefined" ? window : this);
