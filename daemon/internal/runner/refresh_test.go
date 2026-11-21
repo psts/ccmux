@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -89,11 +90,13 @@ func TestRefreshesGoOneAtATime(t *testing.T) {
 func TestARefreshWaitsForWhatTheSessionIsDoing(t *testing.T) {
 	warm := map[string]any{"result": map[string]any{"endedAt": time.Now().UnixMilli(), "cacheTtlMs": 3600000}}
 	for name, c := range map[string]struct {
-		n    NewSession
-		busy bool
-		snap map[string]any
+		n        NewSession
+		busy     bool
+		turnOpen bool
+		snap     map[string]any
 	}{
 		"in a turn":       {n: NewSession{Cwd: "/r/app"}, busy: true},
+		"a turn open":     {n: NewSession{Cwd: "/r/app"}, turnOpen: true},
 		"background task": {n: NewSession{Cwd: "/r/app"}, snap: map[string]any{"info": map[string]any{"tasks": []any{map[string]any{"id": "t1"}}}}},
 		"a card":          {n: NewSession{Cwd: "/r/app"}, snap: map[string]any{"questions": []any{map[string]any{"id": "q1"}}}},
 		"warm cache":      {n: NewSession{Cwd: "/r/app"}, snap: warm},
@@ -108,7 +111,7 @@ func TestARefreshWaitsForWhatTheSessionIsDoing(t *testing.T) {
 			r.reconcile()
 			r.age(sess.ID, 2*time.Hour)
 			if fr := r.run[sess.ID]; fr != nil { // an agent does not start on this rig
-				fr.busy, fr.snap = c.busy, c.snap
+				fr.busy, fr.turnOpen, fr.snap = c.busy, c.turnOpen, c.snap
 			}
 			r.reconcile()
 			if n := r.restarts(sess.ID); n != 0 {
@@ -241,5 +244,33 @@ func TestAYoungSessionIsNotAskedAgainUntilDue(t *testing.T) {
 	r.reconcile()
 	if r.units.sinceAsked != asked+1 || r.restarts(sess.ID) != 1 {
 		t.Fatalf("once due it is asked and restarted: asked %d, restarts %d", r.units.sinceAsked-asked, r.restarts(sess.ID))
+	}
+}
+
+// What the registry says waits on a session holds its refresh too: an open
+// card (a restart expires it) or a message not yet delivered. The same
+// session with neither is restarted.
+func TestARefreshWaitsForWhatTheRegistryHolds(t *testing.T) {
+	for name, c := range map[string]struct {
+		hold func(r *rig, id string)
+		want int
+	}{
+		"nothing waits": {hold: func(*rig, string) {}, want: 1},
+		"an open card": {hold: func(r *rig, id string) {
+			r.st.UpsertSessionCard(store.SessionCard{ID: "c1", SessionID: id, Kind: "question", Body: "{}", State: store.CardOpen, CreatedAt: 1, UpdatedAt: 1})
+		}},
+		"a message waits": {hold: func(r *rig, id string) {
+			r.st.AddInboxPromptAndWake(store.InboxPrompt{ID: "p1", SessionID: id, Text: "hi", CreatedAt: 1}, false, 1)
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := refreshRig(t)
+			sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+			r.reconcile()
+			c.hold(r, sess.ID)
+			if r.sup.refreshIfIdle(context.Background(), sess.ID) != (c.want == 1) || r.restarts(sess.ID) != c.want {
+				t.Fatalf("restarts %d, want %d: %v", r.restarts(sess.ID), c.want, r.units.calls)
+			}
+		})
 	}
 }

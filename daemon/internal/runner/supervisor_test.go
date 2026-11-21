@@ -122,6 +122,7 @@ type fakeRunner struct {
 	boot       string
 	protocol   int
 	busy       bool
+	turnOpen   bool                // a turn not yet ended, as hello says
 	sent       []string            // prompt ids, in order
 	images     map[string][]string // prompt id → the image names sent with it
 	transcript map[string]bool     // ids Claude has
@@ -201,7 +202,7 @@ func (r *fakeRunner) handler() http.Handler {
 	mux.HandleFunc("GET /hello", func(w http.ResponseWriter, _ *http.Request) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		json.NewEncoder(w).Encode(Hello{Protocol: r.protocol, Boot: r.boot, Busy: r.busy})
+		json.NewEncoder(w).Encode(Hello{Protocol: r.protocol, Boot: r.boot, Busy: r.busy, TurnOpen: r.turnOpen})
 	})
 	mux.HandleFunc("GET /snapshot", func(w http.ResponseWriter, _ *http.Request) {
 		r.mu.Lock()
