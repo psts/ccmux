@@ -282,7 +282,6 @@ a:hover { color: var(--blue-d); }
 
 /* --- composer --- */
 .composer { margin: 0 auto 20px; width: calc(100% - 48px); max-width: 812px; border: 1px solid var(--composer-line); border-radius: 14px; background: var(--card); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; position: relative; }
-.composer label { font-size: 12px; color: var(--muted); }
 .commands .cmd.on { background: var(--soft); }
 #mentions { bottom: calc(100% + 6px); } /* above the box: the line being typed stays in sight */
 /* A running session's background tasks (threadlive.js), above its box. */

@@ -678,7 +678,7 @@
     show("composer", usable && !Past.on()); // an earlier conversation is read only
     const lead = sess ? sess.kind === "lead" : S.sel.as === "lead";
     const whom = sess && sess.kind === "agent" ? "this agent" : lead ? "the lead" : "this thread";
-    document.querySelector("#composer label").textContent = `Message ${whom}, or type / for commands`;
+    $("input").setAttribute("aria-label", `Message ${whom}`);
     drawSuggestion();
     const here = R.threadHref(S.sel);
     $("hint").textContent = S.pending.some((p) => p.where === here && p.state === "new") ? "Sending…" : sess && sess.state === "asleep" ? "Asleep. A message wakes it." : "Lands as the next turn if Claude is busy";

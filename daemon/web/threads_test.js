@@ -518,7 +518,7 @@ test("an agent that runs as a session opens its conversation here, and shows no 
   assert.equal(p.$("rename").classList.contains("hidden"), true, "and its name");
   assert.equal(p.$("new-thread").classList.contains("hidden"), true, "an agent's home holds no threads: no New thread in its header");
   assert.equal(p.$("composer").classList.contains("hidden"), false, "a message wakes it");
-  assert.match(p.doc.querySelector("#composer label").textContent, /Message this agent/);
+  assert.equal(p.$("input").attrs["aria-label"], "Message this agent");
 });
 
 test("a group lists its repos by name, then its agents by name, and an agent opens in the terminal lens", async () => {
