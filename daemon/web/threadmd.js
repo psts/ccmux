@@ -4,9 +4,10 @@
 // files and web pages, so the page builds its elements itself and the text
 // goes in as text.
 //
-// Read: fenced code, headings, list items, tables (kept as they are, in
-// fixed-width type), paragraphs; and inside a line `code`, **bold** and
-// [links](https://…). Anything else stays as written.
+// Read: fenced code, headings, list items, tables (a header row when the
+// second line is |---|, a column's alignment from its colons), paragraphs;
+// and inside a line or a table cell `code`, **bold** and [links](https://…).
+// Anything else stays as written.
 (function (root) {
   "use strict";
 
@@ -46,13 +47,43 @@
   const starters = {
     h: (line) => { const m = headRE.exec(line); return { type: "h", level: m[1].length, spans: spans(m[2]) }; },
     li: (line) => { const m = itemRE.exec(line); return { type: "li", depth: Math.floor(m[1].length / 2), marker: /\d/.test(m[2]) ? m[2] : "•", spans: spans(m[3]) }; },
-    table: (line, prev) => (prev && prev.type === "pre" ? (prev.text += "\n" + line, null) : { type: "pre", text: line }),
+    table: (line, prev) => (prev && prev.type === "table" ? (prev.lines.push(line), null) : { type: "table", lines: [line] }),
     p: (line, prev) => (prev && prev.type === "p" && !prev.closed ? (prev.lines.push(spans(line)), null) : { type: "p", lines: [spans(line)] }),
   };
 
+  // cells splits one table row on its pipes (a \\| is a pipe in the text),
+  // without the ones at its two ends.
+  function cells(line) {
+    const inner = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
+    return inner.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, "|").trim());
+  }
+
+  const sepRE = /^:?-+:?$/;
+
+  // alignOf is a column's alignment from its separator cell.
+  function alignOf(sep) {
+    const l = sep.startsWith(":"), r = sep.endsWith(":");
+    return l && r ? "center" : r ? "right" : l ? "left" : "";
+  }
+
+  // tableOf turns a table's lines into its rows of spans: a header when the
+  // second line is the |---| row as wide as the first (a narrower one is
+  // still being typed), every row as wide as the widest.
+  function tableOf(lines) {
+    let rows = lines.map(cells);
+    const sep = rows.length > 1 && rows[1].length === rows[0].length && rows[1].every((c) => sepRE.test(c)) ? rows[1] : null;
+    const head = sep ? rows[0] : null;
+    rows = sep ? rows.slice(2) : rows;
+    const width = Math.max(head ? head.length : 0, ...rows.map((r) => r.length));
+    const fill = (r) => Array.from({ length: width }, (_, i) => spans(r[i] || ""));
+    const align = Array.from({ length: width }, (_, i) => (sep && sep[i] ? alignOf(sep[i]) : ""));
+    return { type: "table", align, head: head ? fill(head) : null, rows: rows.map(fill) };
+  }
+
   // parse reads a reply into blocks:
   //   {type: "p", lines: [spans…]}   {type: "h", level, spans}
-  //   {type: "li", depth, marker, spans}   {type: "code", lang, text}   {type: "pre", text}
+  //   {type: "li", depth, marker, spans}   {type: "code", lang, text}
+  //   {type: "table", align: [""|"left"|"center"|"right"…], head: [spans…] or null, rows: [[spans…]…]}
   // A fence still open at the end (the reply is streaming) is a code block
   // so far.
   function parse(text) {
@@ -72,7 +103,7 @@
       }
     }
     if (code) out.push(code);
-    return out.map(({ closed, ...b }) => b);
+    return out.map(({ closed, ...b }) => (b.type === "table" ? tableOf(b.lines) : b));
   }
 
   // render draws the blocks into parent with doc's createElement.
@@ -92,7 +123,16 @@
       h: (b) => inline(el("div", "md-h md-h" + Math.min(b.level, 3)), b.spans),
       li: (b) => { const li = el("div", "md-li"); li.style.marginLeft = b.depth * 16 + "px"; li.appendChild(el("span", "md-mark", b.marker)); li.appendChild(inline(el("span", "md-item"), b.spans)); return li; },
       code: (b) => { const pre = el("pre", "md-code"); if (b.lang) pre.dataset.lang = b.lang; pre.appendChild(el("code", "", b.text)); return pre; },
-      pre: (b) => el("pre", "md-pre", b.text),
+      table: (b) => {
+        const row = (tag, list) => { const tr = el("tr"); list.forEach((c, i) => { const td = inline(el(tag), c); if (b.align[i]) td.style.textAlign = b.align[i]; tr.appendChild(td); }); return tr; };
+        const table = el("table", "md-table");
+        if (b.head) table.appendChild(el("thead")).appendChild(row("th", b.head));
+        const body = table.appendChild(el("tbody"));
+        b.rows.forEach((r) => body.appendChild(row("td", r)));
+        const wrap = el("div", "md-table-wrap"); // a wide table scrolls, the page does not
+        wrap.appendChild(table);
+        return wrap;
+      },
     };
     for (const b of parse(text)) parent.appendChild(draw[b.type](b));
     return parent;

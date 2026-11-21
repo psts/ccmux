@@ -163,3 +163,11 @@ test("reportHtml draws headings, lists and code, and escapes every text", () => 
   assert.ok(html.includes('<pre class="md-code"><code>x := 1 &lt; 2</code></pre>'), html);
   assert.ok(!html.includes("<b>") && !html.includes('"a)'), html);
 });
+
+test("reportHtml draws a table, escaping every cell", () => {
+  const md = require("./threadmd.js");
+  const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const html = L.reportHtml(md.parse("| a | b |\n|---|--:|\n| <i>x</i> | **2** |"), esc);
+  assert.equal(html, '<div class="md-table-wrap"><table class="md-table"><thead><tr><th>a</th><th style="text-align:right">b</th></tr></thead>' +
+    '<tbody><tr><td>&lt;i&gt;x&lt;/i&gt;</td><td style="text-align:right"><strong>2</strong></td></tr></tbody></table></div>');
+});

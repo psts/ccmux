@@ -219,9 +219,13 @@ a:hover { color: var(--blue-d); }
 .md-h2 { font-size: 15.5px; }
 .md-li { display: flex; gap: 8px; margin: 2px 0; }
 .md-mark { color: var(--muted); flex: none; min-width: 12px; }
-.md code, .md-pre { font-family: var(--mono); font-size: 12.5px; }
+.md code { font-family: var(--mono); font-size: 12.5px; }
 .md :not(pre) > code { background: var(--soft); border-radius: 4px; padding: 1px 4px; }
-.md-code, .md-pre { margin: 6px 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--code-bg); border: 1px solid var(--soft); overflow-x: auto; white-space: pre; line-height: 1.55; }
+.md-code { margin: 6px 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--code-bg); border: 1px solid var(--soft); overflow-x: auto; white-space: pre; line-height: 1.55; }
+.md-table-wrap { margin: 6px 0 10px; overflow-x: auto; }
+.md-table { border-collapse: collapse; font-size: 13.5px; line-height: 1.45; }
+.md-table th, .md-table td { border: 1px solid var(--line2); padding: 6px 10px; text-align: left; vertical-align: top; }
+.md-table th { background: var(--soft); font-weight: 600; }
 
 .b-work { margin-left: 34px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
 .work-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: transparent; border: 0; text-align: left; min-height: 44px; }

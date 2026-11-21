@@ -175,7 +175,7 @@
   }
 
   // reportHtml draws a builder's report as markup, from threadmd.js's
-  // blocks (parse): headings, lists, code. Every text and link goes
+  // blocks (parse): headings, lists, code, tables. Every text and link goes
   // through esc, so a report can never become markup of its own.
   function reportHtml(blocks, esc) {
     const inline = (list) => list.map((sp) => {
@@ -190,7 +190,12 @@
       li: (b) => `<div class="md-li" style="margin-left:${b.depth * 16}px"><span class="md-mark">${esc(b.marker)}</span>` +
         `<span class="md-item">${inline(b.spans)}</span></div>`,
       code: (b) => `<pre class="md-code"><code>${esc(b.text)}</code></pre>`,
-      pre: (b) => `<pre class="md-pre">${esc(b.text)}</pre>`,
+      table: (b) => {
+        const cell = (tag, c, i) => `<${tag}${b.align[i] ? ` style="text-align:${b.align[i]}"` : ""}>${inline(c)}</${tag}>`;
+        const head = b.head ? `<thead><tr>${b.head.map((c, i) => cell("th", c, i)).join("")}</tr></thead>` : "";
+        const rows = b.rows.map((r) => `<tr>${r.map((c, i) => cell("td", c, i)).join("")}</tr>`).join("");
+        return `<div class="md-table-wrap"><table class="md-table">${head}<tbody>${rows}</tbody></table></div>`;
+      },
     };
     return blocks.map((b) => draw[b.type](b)).join("");
   }

@@ -43,8 +43,12 @@
 .tasks .tq-report .md-h { font-weight: 600; margin: 8px 0 4px; }
 .tasks .tq-report .md-li { display: flex; gap: 8px; margin: 2px 0; }
 .tasks .tq-report .md-mark { color: var(--muted); flex: none; min-width: 12px; }
-.tasks .tq-report code, .tasks .tq-report .md-pre { font: 12px/1.45 ui-monospace, Menlo, monospace; }
-.tasks .tq-report .md-code, .tasks .tq-report .md-pre { margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; overflow-x: auto; white-space: pre; }
+.tasks .tq-report code { font: 12px/1.45 ui-monospace, Menlo, monospace; }
+.tasks .tq-report .md-code { margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; overflow-x: auto; white-space: pre; }
+.tasks .tq-report .md-table-wrap { margin: 4px 0 8px; overflow-x: auto; }
+.tasks .tq-report .md-table { border-collapse: collapse; }
+.tasks .tq-report .md-table th, .tasks .tq-report .md-table td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
+.tasks .tq-report .md-table th { font-weight: 600; }
 .tasks .tq-detail { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .tasks .tq-edit-title, .tasks .tq-edit-plan {
   background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px;
