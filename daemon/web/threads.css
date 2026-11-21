@@ -524,3 +524,9 @@ span.cap-kind { font-size: 11px; font-weight: 600; color: var(--fg2); background
 .group.drop-after { box-shadow: 0 3px 0 var(--blue); }
 .side-note { font-size: 12px; color: var(--red); background: var(--red-bg); border: 1px solid var(--red-line); border-radius: 8px; padding: 6px 8px; }
 .side-alone { font-size: 12px; padding: 0 8px; }
+/* A new ccmux build is out (update.js): a bar at the top with Reload, clear
+   of the message box at the bottom.
+   The old lens draws its own in style.css, which this page does not load. */
+#update-bar { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 60; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: calc(100vw - 32px); background: var(--card); color: var(--fg); border: 1px solid var(--line3); border-radius: 10px; padding: 8px 12px; font-size: 13px; box-shadow: 0 4px 14px var(--lift); }
+#update-bar .update-reload { height: 28px; padding: 0 12px; border-radius: 7px; border: 0; background: var(--blue); color: var(--on-accent); font-weight: 600; cursor: pointer; }
+#update-bar .update-dismiss { border: 0; background: none; color: var(--muted); font-size: 16px; cursor: pointer; }

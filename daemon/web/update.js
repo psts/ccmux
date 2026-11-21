@@ -45,7 +45,8 @@
 
   function busy() {
     if (doc.querySelector(".modal:not(.hidden)")) return true;
-    return [...doc.querySelectorAll(".ac-compose textarea")].some((t) => t.value.trim() !== "");
+    // The old lens's chat boxes, and the thread page's message box.
+    return [...doc.querySelectorAll(".ac-compose textarea"), ...doc.querySelectorAll("#input")].some((t) => t.value.trim() !== "");
   }
 
   async function health() {

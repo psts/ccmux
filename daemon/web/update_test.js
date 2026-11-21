@@ -40,6 +40,17 @@ test("the chat box and the dialogs still carry the names busy() looks for", () =
   for (const m of modals) assert.match(m, /class="modal[ "]/, m);
 });
 
+// The thread page's message box is not saved anywhere: a reload over it
+// loses what was typed. Its bar must be drawn by the page's own stylesheet,
+// which is not style.css.
+test("the thread page's message box counts as busy, and its bar has a look", () => {
+  const src = (f) => fs.readFileSync(path.join(__dirname, f), "utf8");
+  assert.match(src("update.js"), /"#input"/);
+  assert.match(src("threads.html"), /<textarea id="input"/);
+  assert.match(src("threads.html"), /<script src="\/update\.js">/);
+  assert.match(src("threads.css"), /#update-bar \{/);
+});
+
 test("the logo names the daemon's version", () => {
   assert.strictEqual(U.versionLine({ version: "0.1.96", web: "aaa" }, "aaa"), "ccmux v0.1.96");
   assert.strictEqual(U.versionLine({ version: "dev", web: "aaa" }, "aaa"), "ccmux dev"); // a local build
