@@ -57,13 +57,19 @@
     load();
   }
 
-  // sdkLine is the "agents on X, latest Y" line, the same words as the Mac
-  // app's: what claude agents run, and the newest on npm when it differs.
+  // sdkLine is the "agents on X, latest Y" line: what sessions and claude
+  // agents start on (a newer version the daily update tested, else the
+  // pin), how the last update went when it failed, and the newest on npm
+  // when it differs.
   function sdkLine(v) {
     if (!v || !v.pinned) return "";
-    let line = `Claude agents run Agent SDK ${v.pinned}`;
-    if (v.installed && v.installed !== v.pinned) line += ` (installed ${v.installed}; ${v.pinned} lands at the next claude start)`;
-    if (v.latest && v.latest !== v.pinned) line += ` · newest is ${v.latest}`;
+    const runs = v.current || v.pinned;
+    let line = `Sessions and Claude agents start on Agent SDK ${runs}`;
+    if (v.current) line += ` (taken by the daily update; this daemon pins ${v.pinned})`;
+    else if (v.installed && v.installed !== v.pinned) line += ` (installed ${v.installed}; ${v.pinned} lands at the next claude start)`;
+    const u = v.update || {};
+    if (u.version && !u.ok) line += ` · the update to ${u.version} failed (${u.kind === "test" ? "a test session on it did not work" : "it could not be installed"}): ${u.error || "no reason given"}`;
+    if (v.latest && v.latest !== runs) line += ` · newest is ${v.latest}`;
     return line + ".";
   }
 

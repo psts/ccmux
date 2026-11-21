@@ -451,6 +451,25 @@ mailbox stay the same. tmux is no longer what keeps an agent alive.
   `-runner-unit-prefix`, and load the `-peers-shim` it names. Never start
   the real role agents in a test: make a base on Haiku.
 
+## Sessions stay current by themselves (Linux)
+
+- **A person's session restarts itself once it has run 20 hours**
+  (`-session-refresh-after`, `runner/refresh.go`), on the same conversation,
+  the first time nothing would be lost: no turn, no card, no message
+  waiting, no background task, and its prompt cache already cold. That is
+  how a lead picks up Claude Code (specs name the `~/.local/bin/claude`
+  link, which Claude Code's updater moves), plugins, skills and the SDK.
+  One session at a time; one that does not come back stops the rest and
+  says so in its note. Role agents and task builders are left out.
+- **The SDK moves daily without a release** (`internal/sdkupdate`,
+  `agent/sdkchannel.go`): the newest on npm goes into
+  `<agents>/.ccmux/claude-sdk/<version>/`, a real Haiku session runs on it
+  (host claude and the SDK's own), and only then does `current.json` send
+  new starts there. A failure is kept in `status.json` and shown in
+  Settings > Agents. The pinned install in `.ccmux/claude-serve` stays and
+  serves when nothing newer passed; a newer pin wins over `current`.
+- A scratch daemon tries no update unless given `-sdk-update-every`.
+
 ## Shipping
 
 `/ship` runs direct-trunk here: `main` is both the working branch and the

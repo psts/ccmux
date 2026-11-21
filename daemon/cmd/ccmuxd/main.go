@@ -86,6 +86,7 @@ func runDaemon() {
 	agentsMax := flag.Int("agents-max", 6, "how many agent instances may run at once on this daemon (0 = no cap); asleep instances do not count")
 	agentsModel := flag.String("agents-model", agent.DefaultModel, "model an agent instance runs on when its base pins none (opencode provider/model form; the anthropic provider rides the pane proxy)")
 	runnerPrefix := flag.String("runner-unit-prefix", runner.DefaultPrefix, "name of the systemd user unit template session runners start under (<prefix>@.service); a scratch daemon passes its own so the live daemon's template is never rewritten")
+	sdkUpdateEvery := flag.Duration("sdk-update-every", 24*time.Hour, "how often the daemon tries the newest Claude Agent SDK on npm: installed into a folder of its own, tried with a real Haiku session, and only then used for new session starts (0 never; a scratch daemon tries only when this is given)")
 	refreshAfter := flag.Duration("session-refresh-after", 20*time.Hour, "how long a person's session runs before it is started again, on the same conversation, the first time it is idle with a cold cache, so it picks up Claude Code, plugins and skills installed since (0 never)")
 	jobPrefix := flag.String("job-unit-prefix", "", "name of the systemd user unit template jobs (a thread's merge, a queued task's merge and tidy-up) run under (<prefix>@.service; default "+jobs.DefaultPrefix+"); a second daemon on this host passes its own name, and a scratch daemon (CCMUXD_ROOT) that passes none runs no jobs")
 	peersShimPath := flag.String("peers-shim", "", "ccmux-peers binary session runners load as their bus shim (default: the one beside this binary, else on the PATH)")
@@ -241,6 +242,7 @@ func runDaemon() {
 	// A repo or agent joining or leaving a window is told to the others there.
 	mgr.OnMembershipChange = apiSrv.WindowNotice
 	apiSrv.StartScheduler(ctx, 30*time.Second)
+	startSDKUpdate(ctx, agentStore, *sdkUpdateEvery)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	// The token a caller on this machine must show (apitoken.go). Fatal when
 	// it cannot be made: without it the API is open to every local process,

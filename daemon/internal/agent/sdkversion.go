@@ -12,13 +12,17 @@ import (
 // SDKVersions is the Claude Agent SDK the claude agents run on: pinned in
 // this daemon's sidecar (claudeserve/package.json), installed under the
 // agents root (it lands at the next claude start after a pin moves), and
-// the newest on npm ("" until known, or when npm cannot be reached). The
+// the newest on npm ("" until known, or when npm cannot be reached).
+// Current is a newer one the daily update tested and moved sessions onto
+// (sdkchannel.go), and Update how its last try went. The
 // lenses say "agents on X, latest Y" from it, the way a pane tab says its
 // Claude Code is behind.
 type SDKVersions struct {
-	Pinned    string `json:"pinned"`
-	Installed string `json:"installed"`
-	Latest    string `json:"latest"`
+	Pinned    string    `json:"pinned"`
+	Installed string    `json:"installed"`
+	Latest    string    `json:"latest"`
+	Current   string    `json:"current,omitempty"`
+	Update    SDKUpdate `json:"update"`
 }
 
 // SDKVersions reads the pinned and installed versions and the cached
@@ -30,6 +34,8 @@ func (s *Store) SDKVersions() SDKVersions {
 		Pinned:    pinned,
 		Installed: installedSDKVersion(filepath.Join(s.Root, ClaudeServeDir)),
 		Latest:    s.latest.get(time.Now()),
+		Current:   current(s.SDKCurrent(), pinned),
+		Update:    s.LastSDKUpdate(),
 	}
 }
 
@@ -92,3 +98,16 @@ func fetchLatestSDK() (string, error) {
 	err = json.NewDecoder(resp.Body).Decode(&body)
 	return body.Version, err
 }
+
+// current is the promoted version when sessions really start on it: newer
+// than the pin. A daemon release that pins past it leaves current.json
+// behind, and it no longer counts (channelSidecar).
+func current(promoted, pinned string) string {
+	if NewerVersion(promoted, pinned) {
+		return promoted
+	}
+	return ""
+}
+
+// LatestSDKOnNPM asks npm for the newest SDK now (the daily update).
+func LatestSDKOnNPM() (string, error) { return fetchLatestSDK() }

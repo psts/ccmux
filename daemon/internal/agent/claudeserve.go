@@ -78,6 +78,12 @@ func (s *Store) EnsureClaudeServe() (script, node string, err error) {
 	if err := installClaudeServeDeps(dir, node); err != nil {
 		return "", "", err
 	}
+	// A newer SDK the daily update tested (sdkchannel.go) wins over the pin.
+	if script, ok, err := s.channelSidecar(); err != nil {
+		return "", "", err
+	} else if ok {
+		return script, node, nil
+	}
 	return ClaudeServeScript(s.Root), node, nil
 }
 
