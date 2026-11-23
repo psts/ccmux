@@ -118,10 +118,10 @@
            left. Not a session's own steps, which are the Steps tab. -->
       <div id="repo-todo" class="rt hidden"></div>
 
-      <!-- The session's background tasks (threadlive.js), each with Stop. -->
-      <div id="bgtasks-bar" class="bgtasks hidden" role="status"></div>
-
       <form id="composer" class="composer ac-compose hidden">
+        <!-- The session's background tasks (threadlive.js), each with Stop:
+             the top strip of the box, so it moves with it (sticky on a phone). -->
+        <div id="bgtasks-bar" class="bgtasks hidden"></div>
         <div id="attached" class="attached"></div>
         <textarea id="input" rows="2" autocomplete="off" spellcheck="true" aria-label="Message"></textarea>
         <div id="commands" class="commands hidden"></div>

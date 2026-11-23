@@ -18,10 +18,26 @@
 
   const kinds = { local_bash: "Shell", local_agent: "Agent", monitor: "Monitor", workflow: "Workflow" };
 
-  // taskLabel is one background task as its row says it.
-  function taskLabel(t) {
-    const kind = kinds[t.type] || "Task";
-    return `${t.agent ? `${kind} (${t.agent})` : kind}: ${t.description || t.id}`;
+  // taskParts is one background task as the tray says it: what kind, its
+  // own words, and the agent that runs it, apart.
+  const taskParts = (t) => ({ kind: kinds[t.type] || "Task", name: t.description || t.id, agent: t.agent || "" });
+
+  // ranFor is how long a task has run, from when its runner first saw it
+  // (since, claudeserve/sessionself.mjs), in whole minutes; "" when the
+  // runner kept no time (one from before it did).
+  function ranFor(since, now) {
+    if (!since) return "";
+    const m = Math.floor(Math.max(0, now - since) / 60000);
+    if (m < 1) return "<1m";
+    if (m < 60) return m + "m";
+    return Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "");
+  }
+
+  // trayLine is the folded tray's words for several tasks: the first two,
+  // then how many more.
+  function trayLine(tasks) {
+    const names = tasks.slice(0, 2).map((t) => taskParts(t).name).join(", ");
+    return tasks.length > 2 ? `${names}, +${tasks.length - 2}` : names;
   }
 
   const limitNames = { five_hour: "5-hour", seven_day: "weekly", seven_day_opus: "weekly Opus", seven_day_sonnet: "weekly Sonnet", overage: "extra usage" };
@@ -68,31 +84,61 @@
       if (window.ccmuxThreadPill) window.ccmuxThreadPill.sync($);
     }
 
+    // drawTasks is the tray on the chat box (threads.css .bgtasks): one
+    // task on its one line with its Stop; several folded into one line that
+    // opens to a row each. Open or folded holds while the page is open.
+    let trayOpen = false;
     function drawTasks(tasks) {
       const bar = $("bgtasks-bar");
       show("bgtasks-bar", tasks.length > 0);
       bar.textContent = "";
       if (!tasks.length) return;
-      const head = document.createElement("span");
-      head.className = "bg-head";
-      head.textContent = tasks.length === 1 ? "Running in the background:" : `${tasks.length} running in the background:`;
+      const now = Date.now();
+      if (tasks.length === 1) {
+        bar.className = "bgtasks one";
+        bar.appendChild(taskRow(tasks[0], now, "bg-head"));
+        return;
+      }
+      bar.className = "bgtasks" + (trayOpen ? " open" : "");
+      const head = el("button", "bg-head");
+      head.type = "button";
+      head.setAttribute("aria-expanded", String(trayOpen));
+      head.onclick = () => { trayOpen = !trayOpen; draw(); $("bgtasks-bar").querySelector(".bg-head").focus(); }; // the line was drawn anew: keep the keyboard on it
+      head.append(el("span", "bg-dot"), el("b", "", `${tasks.length} running`), el("span", "bg-sep", " · "), el("span", "bg-what", trayLine(tasks)), el("span", "bg-chev", "⌃"));
       bar.appendChild(head);
-      for (const t of tasks) bar.appendChild(taskRow(t));
+      if (!trayOpen) return;
+      const list = el("div", "bg-list");
+      for (const t of tasks) list.appendChild(taskRow(t, now, "bg-row"));
+      bar.appendChild(list);
     }
 
-    function taskRow(t) {
-      const row = document.createElement("span");
-      row.className = "bg-task";
-      const name = document.createElement("span");
-      name.className = "bg-name";
-      name.textContent = taskLabel(t);
-      const stop = document.createElement("button");
+    // taskRow is one task: its kind, its words and agent, how long it has
+    // run, and Stop.
+    function taskRow(t, now, cls) {
+      const p = taskParts(t);
+      const row = el("div", cls);
+      if (cls === "bg-head") row.appendChild(el("span", "bg-dot"));
+      const stop = el("button", "plain small bg-stop", "Stop");
       stop.type = "button";
-      stop.className = "plain small bg-stop";
-      stop.textContent = "Stop";
       stop.onclick = () => act(`/tasks/${enc(t.id)}/stop`, undefined, stop);
-      row.append(name, stop);
+      const time = el("span", "bg-time", ranFor(t.since, now));
+      time.dataset.since = String(t.since || "");
+      row.append(el("span", "bg-kind", p.kind), el("span", "bg-name", p.agent ? `${p.name} · ${p.agent}` : p.name), time, stop);
       return row;
+    }
+
+    // tick moves the tray's minutes on in place: a rebuild would drop the
+    // keyboard's place and enable again a Stop whose request is on its way.
+    function tick() {
+      const now = Date.now();
+      for (const t of $("bgtasks-bar").querySelectorAll(".bg-time")) t.textContent = ranFor(Number(t.dataset.since) || 0, now);
+    }
+
+    function el(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
     }
 
     // act asks the session's runner for one thing; the next session.info
@@ -112,10 +158,10 @@
     }
 
     $("mode").onchange = (e) => act("/mode", { mode: e.target.value });
-    return { draw };
+    return { draw, tick };
   }
 
-  const api = { create, MODES, taskLabel, limitLine };
+  const api = { create, MODES, taskParts, ranFor, trayLine, limitLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof window !== "undefined") window.ccmuxThreadLive = api;
 })();

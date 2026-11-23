@@ -130,7 +130,7 @@ const lead = { id: "lead1", workspaceId: "ws1", kind: "lead", cwd: "/p/app", mod
 
 async function boot(opts = {}) {
   const doc = page();
-  const book = { calls: [], sockets: [], timers: [], frames: [], pushed: [], opened: [] };
+  const book = { calls: [], sockets: [], timers: [], intervals: [], frames: [], pushed: [], opened: [] };
   const workspaces = opts.workspaces || [repo];
   const lists = { windows: opts.windows || [{ id: "w1", name: "ChartLabs", workspaceIds: workspaces.map((w) => w.id) }], workspaces, sessions: opts.sessions || [] };
   const routes = [
@@ -156,7 +156,7 @@ async function boot(opts = {}) {
     history: { pushState: (_s, _t, url) => book.pushed.push(url) },
     localStorage: opts.storage || { getItem: () => "stored-name" }, navigator: opts.push ? pushBrowser(book).navigator : {},
     WebSocket: function (url) { const s = { url: String(url), readyState: 1, sent: [], send: (x) => s.sent.push(JSON.parse(x)), close() { s.closed = true; } }; book.sockets.push(s); return s; },
-    requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval() {},
+    requestAnimationFrame: (fn) => book.frames.push(fn), setTimeout: (fn, ms) => { book.timers.push({ fn, ms }); return book.timers.length; }, clearTimeout() {}, setInterval: (fn, ms) => { book.intervals.push({ fn, ms }); },
     open: (url, target) => book.opened.push([url, target]),
     addEventListener() {}, confirm: opts.confirm || (() => true), prompt: opts.prompt || (() => "Renamed"), createImageBitmap: async () => ({ width: 10, height: 10 }),
     // The Settings window's tabs: identity.js bounds its whoami read, and the
@@ -1794,7 +1794,8 @@ test("a running session's mode switches from the header, its background tasks st
   p.$("mode").onchange({ target: p.$("mode") });
   await p.settle();
   assert.deepEqual(asked, [{ mode: "plan" }]);
-  assert.match(p.$("bgtasks-bar").textContent, /Shell: npm run dev/);
+  const one = p.$("bgtasks-bar").querySelector(".bg-head");
+  assert.deepEqual([one.querySelector(".bg-kind").textContent, one.querySelector(".bg-name").textContent], ["Shell", "npm run dev"], "one task: its kind and words on the one line, with its Stop");
   p.$("bgtasks-bar").querySelector(".bg-stop").click();
   await p.settle();
   assert.deepEqual(asked, [{ mode: "plan" }, "stop"]);
@@ -1803,6 +1804,33 @@ test("a running session's mode switches from the header, its background tasks st
   assert.equal(p.$("mode").value, "plan");
   assert.ok(p.$("bgtasks-bar").classList.contains("hidden"), "no tasks, no bar");
   assert.ok(p.$("limit-bar").classList.contains("hidden"));
+});
+
+test("several background tasks fold into one line that opens to a row each, every row with its Stop", async () => {
+  const p = await boot({ sessions: [{ ...lead, state: "running" }], search: "?s=lead1" });
+  const agent = (id, description) => ({ id, type: "local_agent", agent: "qa:" + id, description, since: Date.now() - 12 * 60000 });
+  await p.frame(snapshot({ info: { tasks: [agent("a1", "Code review"), agent("a2", "Silent-failure review"), agent("a3", "Test coverage")] } }));
+  const bar = p.$("bgtasks-bar");
+  assert.equal(bar.querySelector(".bg-head").textContent, "3 running · Code review, Silent-failure review, +1⌃", "folded: one line");
+  assert.equal(bar.querySelectorAll(".bg-row").length, 0);
+  bar.querySelector(".bg-head").click();
+  const rows = p.$("bgtasks-bar").querySelectorAll(".bg-row");
+  assert.deepEqual(rows.map((r) => [r.querySelector(".bg-name").textContent, r.querySelector(".bg-time").textContent]), [
+    ["Code review · qa:a1", "12m"], ["Silent-failure review · qa:a2", "12m"], ["Test coverage · qa:a3", "12m"],
+  ]);
+  rows[1].querySelector(".bg-stop").click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.url), ["/v1/sessions/lead1/tasks/a2/stop"], "Stop on a row stops that task");
+  p.$("bgtasks-bar").querySelector(".bg-head").click();
+  assert.equal(p.$("bgtasks-bar").querySelectorAll(".bg-row").length, 0, "and the line folds again");
+  assert.equal(p.doc.activeElement, p.$("bgtasks-bar").querySelector(".bg-head"), "the keyboard stays on the line it pressed");
+  p.$("bgtasks-bar").querySelector(".bg-head").click();
+  const stop = p.$("bgtasks-bar").querySelectorAll(".bg-row")[0].querySelector(".bg-stop");
+  const time = p.$("bgtasks-bar").querySelectorAll(".bg-row")[0].querySelector(".bg-time");
+  time.textContent = "stale";
+  p.book.intervals.find((i) => i.ms === 30000).fn(); // the page's minute hand
+  assert.equal(time.textContent, "12m", "the minutes move on");
+  assert.equal(p.$("bgtasks-bar").querySelectorAll(".bg-row")[0].querySelector(".bg-stop"), stop, "and nothing is rebuilt: focus and a Stop on its way stay put");
 });
 
 test("typing @ lists the session's matching files, and a pick puts the path in the box", async () => {

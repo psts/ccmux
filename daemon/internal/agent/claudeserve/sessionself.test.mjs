@@ -1,7 +1,7 @@
 // node --test sessionself.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { advisorOf, commandList, contextOf, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
+import { advisorOf, backgroundTasks, commandList, contextOf, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
 
 test("commands are listed once, the first row of a name standing", () => {
   const list = commandList([
@@ -85,4 +85,16 @@ test("the advisor is the session's own, else the last settings file that names o
   assert.deepEqual(advisorOf("", ["{not json", project], (i) => warned.push(i)), { model: "", from: "", settings: "" }, "a file that does not parse names none");
   assert.deepEqual(warned, [0], "and is told, by its place");
   assert.deepEqual(advisorOf("", undefined), { model: "", from: "", settings: "" });
+});
+
+test("a background task keeps the time it was first seen, a new run starts its own, and a gone one is forgotten", () => {
+  const seen = new Map();
+  const dev = { task_id: "b1", run_id: "r1", task_type: "local_bash", description: "npm run dev" };
+  const watch = { task_id: "w1", task_type: "monitor", description: "tail logs", ambient: true };
+  assert.deepEqual(backgroundTasks([dev, watch], seen, 1000), [{ id: "b1", type: "local_bash", description: "npm run dev", agent: "", since: 1000 }], "an ambient watcher is not activity");
+  const review = { task_id: "a1", task_type: "local_agent", subagent_type: "qa:code-reviewer", description: "review" };
+  assert.deepEqual(backgroundTasks([dev, review], seen, 5000).map((t) => [t.id, t.since]), [["b1", 1000], ["a1", 5000]], "the dev server keeps its start");
+  assert.deepEqual(backgroundTasks([{ ...dev, run_id: "r2" }], seen, 9000).map((t) => [t.id, t.since]), [["b1", 9000]], "a resumed task is a new run");
+  assert.deepEqual([...seen.keys()], ["r2"], "what left the set is forgotten");
+  assert.deepEqual(backgroundTasks(undefined, seen, 1), []);
 });

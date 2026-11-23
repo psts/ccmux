@@ -92,11 +92,22 @@ export function contextOf(r) {
 // backgroundTasks is the session's running background work as its page
 // lists it (background_tasks_changed replaces the whole set each time):
 // shells such as a dev server, monitors, helpers sent off. Watchers Claude
-// Code marks ambient are not activity, and are left out.
-export function backgroundTasks(list) {
-  return (list || []).filter((t) => t && !t.ambient).map((t) => ({
-    id: String(t.task_id || ""), type: String(t.task_type || ""), description: String(t.description || ""), agent: String(t.subagent_type || ""),
-  }));
+// Code marks ambient are not activity, and are left out. since is when
+// this runner first saw the task's run (Claude Code sends no start time),
+// kept in seen by run id (task id before CLIs that have one); a run no
+// longer in the set is forgotten. A runner that restarts starts counting
+// again, which is when Claude Code's own set starts again too.
+export function backgroundTasks(list, seen = new Map(), now = Date.now()) {
+  const live = (list || []).filter((t) => t && !t.ambient);
+  const keys = new Set();
+  const out = live.map((t) => {
+    const key = String(t.run_id || t.task_id || "");
+    keys.add(key);
+    if (!seen.has(key)) seen.set(key, now);
+    return { id: String(t.task_id || ""), type: String(t.task_type || ""), description: String(t.description || ""), agent: String(t.subagent_type || ""), since: seen.get(key) };
+  });
+  for (const key of [...seen.keys()]) if (!keys.has(key)) seen.delete(key);
+  return out;
 }
 
 // usageLimit is what the page warns of from a rate_limit_event: null while

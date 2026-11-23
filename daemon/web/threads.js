@@ -1201,6 +1201,7 @@
     setInterval(loadLists, 20000);
     setInterval(() => drawGauge(session()), 15000);
     setInterval(drawMerge, 1000); // a running merge counts its seconds
+    setInterval(Live.tick, 30000); // background tasks count their minutes
   }
 
   boot();

@@ -105,6 +105,7 @@ export class Agent {
     this.media = o.socket && o.media ? new MediaStore(o.media, deps.mediaFS, (w) => this.log("! " + w)) : null;
     this.transcript = this.newTranscript(this.sid);
     this.info = {}; // what the session says of itself (sessionself.mjs), for a runner's page
+    this.taskSeen = new Map(); // when each background task's run was first seen (backgroundTasks)
     if (o.socket) this.info.advisor = this.advisorInUse(deps);
     this.result = o.socket ? this.state.resultFor(this.sid) : null; // the last finished turn's bill, kept across a runner's restarts
     this.suggestion = ""; // the next prompt Claude Code predicts, a runner's page offers it
@@ -491,7 +492,7 @@ export class Agent {
     if (!this.turns) return;
     if (m.subtype === "init") this.learn(fromInit(m, this.info));
     else if (m.subtype === "commands_changed") this.learn({ commands: commandList(m.commands) });
-    else if (m.subtype === "background_tasks_changed") this.learn({ tasks: backgroundTasks(m.tasks) });
+    else if (m.subtype === "background_tasks_changed") this.learn({ tasks: backgroundTasks(m.tasks, this.taskSeen) });
     else this.emit(this.transcript.note(noteFor(m), m.level));
   }
 

@@ -336,12 +336,21 @@ a:hover { color: var(--blue-d); }
 .commands .cmd.on { background: var(--soft); }
 #mentions { bottom: calc(100% + 6px); } /* above the box: the line being typed stays in sight */
 /* A running session's background tasks (threadlive.js), above its box. */
-.bgtasks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 8px 24px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--fg2); background: var(--card); }
-.bgtasks .bg-head { color: var(--muted); }
-.bgtasks .bg-task { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.bgtasks .bg-name { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46ch; }
-.bgtasks .bg-stop { margin-top: 0; height: 22px; padding: 0 8px; }
-@media (max-width: 640px) { .bgtasks { padding: 8px 16px; } .bgtasks .bg-name { max-width: 28ch; } }
+.bgtasks { margin: -10px -12px 0; border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; background: var(--side); font-size: 12.5px; color: var(--fg2); }
+.bgtasks .bg-head, .bgtasks .bg-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 12px; }
+.bgtasks button.bg-head { width: 100%; grid-template-columns: auto auto auto minmax(0, 1fr) auto; gap: 0 6px; border: 0; background: transparent; text-align: left; color: var(--fg2); font-size: 12.5px; cursor: pointer; border-radius: 14px 14px 0 0; }
+.bgtasks button.bg-head b { color: var(--fg); font-weight: 600; }
+.bgtasks .bg-row { grid-template-columns: auto minmax(0, 1fr) auto auto; padding: 4px 12px; }
+.bgtasks .bg-list { border-top: 1px solid var(--line); padding: 4px 0; }
+.bgtasks .bg-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--run); box-shadow: 0 0 0 3px color-mix(in srgb, var(--run) 25%, transparent); }
+.bgtasks .bg-kind { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--chip); border-radius: 5px; padding: 1px 6px; }
+.bgtasks .bg-name, .bgtasks .bg-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.bgtasks .bg-what { color: var(--fg2); }
+.bgtasks .bg-sep { color: var(--muted); }
+.bgtasks .bg-time { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bgtasks .bg-chev { color: var(--muted); transform: rotate(180deg); }
+.bgtasks.open .bg-chev { transform: none; }
+.bgtasks .bg-stop { margin-top: 0; height: 22px; padding: 0 8px; font-size: 11.5px; }
 .composer .suggest { border: 1px solid var(--line3); background: var(--card); color: var(--fg2); font-size: 12px; height: 26px; padding: 0 9px; border-radius: 6px; }
 .composer .suggest:hover { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); }
 @media (hover: hover) and (pointer: fine) { .composer .suggest { display: none; } } /* Tab does it; the grey text says what */
