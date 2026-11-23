@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -140,6 +141,48 @@ func TestEveryThreadPageFileIsServed(t *testing.T) {
 	// above and 404 only in a browser.
 	if rel := matches(`(?:src|href)="([^/"#][^"]*)"`, html); len(rel) != 0 {
 		t.Errorf("threads.html loads by relative path, which nothing checks: %v", rel)
+	}
+}
+
+// The thread page installs as its own app: its manifest opens on it, has an
+// id the lens's manifest does not (a browser takes two manifests with one id,
+// or none and one start_url, for the same app), and names icons that are
+// served.
+func TestThreadPageIsItsOwnApp(t *testing.T) {
+	var lens, threads struct {
+		ID       string `json:"id"`
+		StartURL string `json:"start_url"`
+		Icons    []struct {
+			Src string `json:"src"`
+		} `json:"icons"`
+	}
+	for name, into := range map[string]any{"manifest.webmanifest": &lens, "threads.webmanifest": &threads} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, into); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	lensID := lens.ID
+	if lensID == "" {
+		lensID = lens.StartURL
+	}
+	if threads.StartURL != "/threads.html" || threads.ID == "" || threads.ID == lensID {
+		t.Errorf("threads manifest start_url %q id %q, lens id %q: not an app of its own", threads.StartURL, threads.ID, lensID)
+	}
+	resp := get(t, "/threads.webmanifest", "")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/manifest+json" {
+		t.Errorf("GET /threads.webmanifest = %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if len(threads.Icons) < 2 {
+		t.Fatalf("threads manifest names %d icons", len(threads.Icons))
+	}
+	for _, ic := range threads.Icons {
+		if code := get(t, ic.Src, "").StatusCode; code != http.StatusOK {
+			t.Errorf("GET %s = %d", ic.Src, code)
+		}
 	}
 }
 
