@@ -239,10 +239,26 @@ func (s *Service) closeSide(th store.Thread, why string, retried bool) {
 		log.Printf("threads: #%d: its main session %s, and its helpers were not stood down (%s): %v", th.ID, why, next, err)
 		return
 	}
+	if retried && s.helperStillRuns(th.ID) {
+		log.Printf("threads: #%d: its main session %s, and a helper did not stop (tried again on the next pass)%s", th.ID, why, stayed(left))
+		return // left open, so the expiry pass walks it again
+	}
 	th.State, th.Note, th.UpdatedAt = store.ThreadEnded, stayedNote(left), s.millis()
 	if err := s.St.SaveThread(th); err != nil {
 		log.Printf("threads: #%d: its main session %s; its helpers are stood down but the thread is not marked closed: %v", th.ID, why, err)
 	}
+}
+
+// helperStillRuns says a side thread still has a helper that has not ended,
+// after a stand-down: one whose stop failed. A list that cannot be read
+// counts as yes, so the thread stays open for the next pass.
+func (s *Service) helperStillRuns(threadID int64) bool {
+	helpers, err := s.helpers(threadID)
+	if err != nil {
+		log.Printf("threads: #%d: its helpers were not read after their stand-down: %v", threadID, err)
+		return true
+	}
+	return len(helpers) > 0
 }
 
 // sideMoved is what a side helper reads about its scratch copy.

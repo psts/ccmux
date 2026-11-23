@@ -256,6 +256,31 @@ func TestExpiryClosesASideThreadWhoseMainSessionEndedUnheard(t *testing.T) {
 	r.svc.ExpireSide() // a closed side thread is not walked again
 }
 
+func TestASideHelperThatDidNotStopIsTriedAgainOnTheNextPass(t *testing.T) {
+	r := newRig(t)
+	main := r.main()
+	h := r.sideHelper(main, "backend")
+	if err := r.st.SetRunnerSessionWanted(main.ID, store.SessionDone, 5); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.Cold = func(string) bool { return false }
+	r.sess.wantFails = 1
+	r.svc.ExpireSide()
+	if r.row(h.ID).Wanted == store.SessionDone {
+		t.Fatal("the helper's stop failed, so it still runs")
+	}
+	if th := r.state(h.ThreadID); th.State == store.ThreadEnded {
+		t.Fatalf("its side thread stays open while a helper runs: %+v", th)
+	}
+	r.svc.ExpireSide()
+	if r.row(h.ID).Wanted != store.SessionDone {
+		t.Fatal("the next pass stands it down")
+	}
+	if th := r.state(h.ThreadID); th.State != store.ThreadEnded {
+		t.Fatalf("and closes the side thread: %+v", th)
+	}
+}
+
 func TestAPersonStandingASideHelperDownTellsTheMainSessionWhichThread(t *testing.T) {
 	r := newRig(t)
 	main := r.main()

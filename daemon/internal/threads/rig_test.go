@@ -2,6 +2,7 @@ package threads
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ type fakeSessions struct {
 	sendErr   error               // what SendAs fails with, when set
 	createErr error
 	moveErr   error // what Relocate fails with, when set
+	wantFails int   // how many SetWanted calls fail before one works
 }
 
 func (f *fakeSessions) Create(n runner.NewSession) (store.RunnerSession, error) {
@@ -73,6 +75,15 @@ func (f *fakeSessions) failMoves(err error) {
 }
 
 func (f *fakeSessions) SetWanted(id, wanted string) error {
+	f.mu.Lock()
+	failing := f.wantFails > 0
+	if failing {
+		f.wantFails--
+	}
+	f.mu.Unlock()
+	if failing {
+		return errors.New("systemd did not answer")
+	}
 	return f.st.SetRunnerSessionWanted(id, wanted, 9)
 }
 
