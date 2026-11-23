@@ -25,7 +25,11 @@
   --bg: #1A1A18; --side: #1F1F1D; --main: #161615; --card: #282826;
   --line: #2E2E2B; --line2: #34342F; --line3: #48483F; --soft: #2A2A27;
   --fg: #EDEDE8; --fg2: #CFCFC8; --muted: #A3A39B; --chip: #34342F;
-  --blue: #7AA2F7; --blue-d: #A9C1FA; --blue-bg: #1D2638; --blue-line: #2F3F63;
+  /* No blue in dark (2026-11-23, user's call): the light blue read badly on
+     the dark grey, so the accent is neutral. A primary button is light grey
+     with dark text (--on-accent); what was blue text is soft white. */
+  --blue: #E4E4DE; --blue-d: #EDEDE8; --blue-bg: #3A3A35; --blue-line: #6B6B64; /* bg and line stand clear of --card and --line3: hovers, a chosen option and a tasked to-do show on a card */
+  --menu: #C4C4BD; /* the sidebar's repo, agent and thread names: dimmer than the page's text */
   --green: #4ADE80; --green-d: #86EFAC; --green-bg: #16261C; --green-line: #234A31; --add-bg: #15301F;
   --red: #F87171; --red-bg: #2E1A18; --red-line: #5A2A25; --del-bg: #3A1D1B;
   --amber: #E0A643; --amber-bg: #24200F; --amber-line: #6B5320; --ask-bg: #2A2414; --ask-line: #5A4A28;
@@ -34,7 +38,7 @@
   --run: #3FB868; --wait: #E8973A; --asleep: #77776F; --done: #7AA2F7;
   --on-accent: #161615;
   --hover: rgba(255, 255, 255, .06); --lift: rgba(0, 0, 0, .4); --pop: rgba(0, 0, 0, .5);
-  --code-bg: #1E1E1C; --img-bg: #1E2230; --bus-line: #2F3F63; --composer-line: #48483F; --box-line: #6B6B64;
+  --code-bg: #1E1E1C; --img-bg: #1E2230; --bus-line: #48483F; --composer-line: #48483F; --box-line: #6B6B64;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -81,6 +85,14 @@ a:hover { color: var(--blue-d); }
 #tree .row-name { font-weight: 600; }
 #tree .row.thread .row-name { font-weight: 400; }
 #tree .row.thread.on .row-name { font-weight: 600; }
+/* Dark: bold white names made the menu louder than the conversation, so a
+   name is soft white at medium weight, and the open row is white and bold
+   again (the old lens's sidebar was this quiet). */
+:root[data-theme="dark"] #tree .row-name, :root[data-theme="dark"] .side-sub { color: var(--menu); }
+:root[data-theme="dark"] #tree .row-name { font-weight: 500; }
+:root[data-theme="dark"] #tree .row.thread .row-name { font-weight: 400; }
+:root[data-theme="dark"] #tree .row.on .row-name { color: var(--fg); font-weight: 600; }
+:root[data-theme="dark"] #tree .row.att-waiting .row-name { color: var(--wait); }
 .row:hover { background: var(--hover); }
 .row.on { background: var(--card); box-shadow: 0 1px 2px var(--lift); }
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--asleep); }
@@ -221,6 +233,8 @@ a:hover { color: var(--blue-d); }
 .md-mark { color: var(--muted); flex: none; min-width: 12px; }
 .md code { font-family: var(--mono); font-size: 12.5px; }
 .md :not(pre) > code { background: var(--soft); border-radius: 4px; padding: 1px 4px; }
+/* Dark links are soft white like the text, so an underline says "link". */
+:root[data-theme="dark"] .md a { text-decoration: underline; text-underline-offset: 2px; }
 .md-code { margin: 6px 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--code-bg); border: 1px solid var(--soft); overflow-x: auto; white-space: pre; line-height: 1.55; }
 .md-table-wrap { margin: 6px 0 10px; overflow-x: auto; }
 .md-table { border-collapse: collapse; font-size: 13.5px; line-height: 1.45; }
