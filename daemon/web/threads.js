@@ -21,6 +21,7 @@
     sel: R.parseThread(location.search), // what is on screen: a session, a draft, or nothing
     stream: Stream.fresh(), sock: null, retry: window.ccmuxRetry.backoff(), feedRetry: window.ccmuxRetry.backoff(),
     drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), file: "", dirty: false, jump: false,
+    drafts: new Map(), // unsent text and images by what is on screen (keepDraft)
     user: "anon", feed: null, acted: "", images: [], pending: [], pendingKey: 0, pumping: false, error: "", listError: "", menu: false,
     draftModel: "", draftAdvisor: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
     details: loadDetails(), // the repos whose git details are open in the sidebar
@@ -233,11 +234,13 @@
   // to-do list.
   function pick(sel, push = true) {
     Past.reset();
+    keepDraft(S.sel, sel);
     S.sel = sel;
     if (push) history.pushState(null, "", Side.keepAlone(R.threadHref(sel)));
     S.stream = Stream.fresh();
     S.drawn.clear();
     $("blocks").textContent = "";
+    $("cards").textContent = ""; // drawCards draws nothing for a new conversation's no cards
     S.cardsSig = "";
     S.open.clear();
     Object.assign(S, { file: "", error: "", restarted: false, awaitBoot: null, picked: "", menu: false, detail: null, said: "" });
@@ -247,6 +250,21 @@
     drawAll();
     maybeActed();
     loadTeam();
+  }
+
+  // keepDraft puts what is typed and attached for from aside and brings back
+  // what was left for to: a composer belongs to one conversation, in memory
+  // only (a reload starts empty).
+  function keepDraft(from, to) {
+    const input = $("input"), at = R.threadHref(from), next = R.threadHref(to);
+    if (at === next) return;
+    if (input.value || S.images.length) S.drafts.set(at, { text: input.value, images: S.images });
+    else S.drafts.delete(at);
+    const back = S.drafts.get(next) || { text: "", images: [] };
+    S.drafts.delete(next);
+    input.value = back.text;
+    S.images = back.images;
+    Mention.close(); // an open "@" list was for the text that left
   }
 
   function closeSock() {
@@ -792,10 +810,25 @@
     const sess = await makeSession(ws, item.sel.as === "lead");
     S.sessions = S.sessions.filter((s) => s.id !== sess.id).concat(sess);
     const to = { kind: "session", id: sess.id };
-    const shown = R.threadHref(S.sel) === item.where;
-    Pending.rehome(S.pending, item.where, R.threadHref(to), to);
+    const from = item.where; // rehome moves item.where to the session's address
+    const shown = R.threadHref(S.sel) === from;
+    Pending.rehome(S.pending, from, R.threadHref(to), to);
     if (shown) select(to);
+    moveDraft(from, R.threadHref(to), shown);
     return sess.id;
+  }
+
+  // moveDraft hands what was typed for a draft while it was being made to
+  // the session it became: into the box when the page moved there with it,
+  // else kept for that session (pick filed it under the draft's address).
+  function moveDraft(from, to, shown) {
+    const kept = S.drafts.get(from);
+    if (!kept) return;
+    S.drafts.delete(from);
+    if (!shown) { S.drafts.set(to, kept); return; }
+    $("input").value = kept.text;
+    S.images = kept.images;
+    drawAll();
   }
 
   async function uploadImages(id, images) {

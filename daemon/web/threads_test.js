@@ -388,6 +388,46 @@ test("the wait over, the page asks for the events after the last one it has", as
   assert.match(p.stream().url, /ws\?boot=b1&after=6$/);
 });
 
+test("each conversation keeps its own unsent text: it leaves with the conversation and comes back with it", async () => {
+  const other = { ...lead, id: "t2", kind: "", title: "Other", createdAt: 2 };
+  const p = await boot({ sessions: [lead, other], search: "?s=lead1" });
+  const go = async (name) => { p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes(name)).click(); await p.settle(); };
+  p.$("input").value = "half a thought for app";
+  await go("Other");
+  assert.equal(p.$("input").value, "", "another conversation starts with its own empty box");
+  p.$("input").value = "for Other";
+  await go("app");
+  assert.equal(p.$("input").value, "half a thought for app", "the text comes back with its conversation");
+  await go("Other");
+  assert.equal(p.$("input").value, "for Other");
+});
+
+test("a picture attached in one conversation stays there and is not sent from another", async () => {
+  const other = { ...lead, id: "t2", kind: "", title: "Other", createdAt: 2 };
+  const p = await boot({ sessions: [lead, other], search: "?s=lead1", routes: [[/^POST \/v1\/sessions\/t2\/prompt/, () => ({ id: "p1" })]] });
+  const go = async (name) => { p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes(name)).click(); await p.settle(); };
+  p.$("file").onchange({ target: { files: [{ type: "image/png", size: 100, name: "shot.png" }], value: "x" } });
+  assert.equal(p.$("attached").children.length, 1);
+  await go("Other");
+  assert.equal(p.$("attached").children.length, 0, "Other opens with nothing attached");
+  p.$("input").value = "words only";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body.images]), [["/v1/sessions/t2/prompt", []]], "lead1's picture is not sent to Other");
+  await go("app");
+  assert.equal(p.$("attached").children.length, 1, "the picture waited in its own conversation");
+});
+
+test("a question card stays with its conversation: another one opens without it", async () => {
+  const other = { ...lead, id: "t2", kind: "", title: "Other", createdAt: 2 };
+  const p = await boot({ sessions: [lead, other], search: "?s=lead1" });
+  await p.frame(snapshot({ questions: [question] }));
+  assert.equal(p.$("cards").children.length, 1);
+  p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes("Other")).click();
+  await p.settle();
+  assert.equal(p.$("cards").children.length, 0, "lead1's question is not on Other's screen");
+});
+
 test("a question is answered by a tap or by its key, through the session's card route", async () => {
   const p = await boot({ sessions: [lead], search: "?s=lead1" });
   await p.frame(snapshot({ questions: [question] }));
@@ -639,6 +679,45 @@ test("a new thread whose first message fails is not made twice by Retry, and a p
   await p.settle();
   assert.deepEqual(p.posts().map((c) => c.url), ["/v1/threads", "/v1/sessions/t1/prompt", "/v1/sessions/t1/prompt"], "one thread, the prompt sent to it twice");
   assert.equal(p.$("blocks").querySelector(".sending").textContent, "Sent, waiting for Claude");
+});
+
+test("text typed while a new thread is being made moves with it into the thread", async () => {
+  let release;
+  const made = new Promise((r) => { release = r; });
+  const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread", routes: [
+    [/^POST \/v1\/threads$/, async () => { await made; return { thread: { id: 3 }, session: { ...threadLead } }; }],
+    [/^POST \/v1\/sessions\/t1\/prompt/, () => ({ id: "p1" })],
+  ] });
+  p.$("input").value = "Add CSV export";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  p.$("input").value = "and a header row";
+  release();
+  await p.settle();
+  assert.equal(p.$("title").textContent.includes("New thread"), false, "the page moved to the thread");
+  assert.equal(p.$("input").value, "and a header row", "what was typed meanwhile is still in the box");
+});
+
+test("text typed for a new thread the page left before it was made waits in the thread, not in the repo it went to", async () => {
+  let release;
+  const made = new Promise((r) => { release = r; });
+  const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread", routes: [
+    [/^POST \/v1\/threads$/, async () => { await made; return { thread: { id: 3 }, session: { ...threadLead } }; }],
+    [/^POST \/v1\/sessions\/t1\/prompt/, () => ({ id: "p1" })],
+  ] });
+  p.$("input").value = "Add CSV export";
+  p.$("composer").onsubmit({ preventDefault() {} });
+  await p.settle();
+  p.$("input").value = "and a header row";
+  p.$("tree").querySelectorAll(".row")[0].click(); // away to the lead before the thread exists
+  await p.settle();
+  p.$("input").value = "for the lead";
+  release();
+  await p.settle();
+  assert.equal(p.$("input").value, "for the lead", "the lead's own box is untouched");
+  p.$("tree").querySelectorAll(".row").find((r) => r.textContent.includes("Trade CSV export")).click();
+  await p.settle();
+  assert.equal(p.$("input").value, "and a header row", "the thread's text waited for it");
 });
 
 test("a message with a picture uploads it, sends its name with the words, and shows the picture until its turn lands", async () => {
