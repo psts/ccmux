@@ -65,7 +65,7 @@ a:hover { color: var(--blue-d); }
 .group + .group { border-top: 1px solid var(--line2); }
 .side-note, .side-alone { margin-bottom: 8px; }
 /* A group's name is shown in capitals, however it was typed. */
-.group-name { font-size: 15px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: var(--fg); padding: 2px 8px; }
+.group-name { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--fg); padding: 2px 8px; }
 .group-body { display: flex; flex-direction: column; gap: 1px; padding-left: 20px; margin-top: 4px; }
 /* The Agents heading looks like the Tasks row; the agents under it are
    indented like a repo's threads. */
