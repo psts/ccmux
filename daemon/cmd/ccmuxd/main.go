@@ -262,6 +262,7 @@ func runDaemon() {
 	// After EnablePeers: it takes the bus when it starts, to tell a worker
 	// its merge failed (taskHost.TellWorker).
 	apiSrv.StartTaskRunner(ctx, 15*time.Second, *taskSlots, *worktreesDir, jobWires.forQueue(), jobWires.off)
+	startPluginPrune(ctx, *worktreesDir) // Claude Code's records of worktrees the tidy-ups removed
 	// The job loop, last: its first look settles what ended while the daemon
 	// was down. That stands helpers down and restarts a lead through the
 	// supervisor, sends a failed task back to its worker over the bus, and
