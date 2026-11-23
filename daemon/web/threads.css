@@ -102,8 +102,11 @@ a:hover { color: var(--blue-d); }
 /* The header's context and cache gauge (threadgauge.js): orange when the
    window is near full or the cache is about to go, struck when it went. */
 .gauge { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gauge { display: inline-flex; align-items: center; gap: 6px; }
 .gauge .warn { color: var(--wait); font-weight: 600; }
-.gauge .cold { text-decoration: line-through; }
+.gauge .cold { color: var(--done); font-size: 13px; }
+/* the context ring: drawGauge paints its share as a conic gradient */
+.gauge .ring { width: 16px; height: 16px; border-radius: 50%; flex: none; -webkit-mask: radial-gradient(circle, transparent 4.5px, #000 5px); mask: radial-gradient(circle, transparent 4.5px, #000 5px); }
 /* A sidebar row that needs you pulses orange until answered, one that is
    done pulses green until looked at: the lens's rule (style.css .ws.att-*). */
 .row.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
@@ -168,14 +171,37 @@ a:hover { color: var(--blue-d); }
 #head { padding: 14px 24px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 12px; background: var(--card); }
 #side-toggle { display: none; height: 32px; width: 36px; border-radius: 8px; border: 1px solid var(--line3); background: var(--card); }
 .head-title { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 200px; }
+.title-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
 #title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; overflow-wrap: anywhere; }
 .meta { font-size: 12.5px; color: var(--muted); }
-.badge { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; color: var(--asleep); border: 1px solid currentColor; white-space: nowrap; }
-.badge.running { color: var(--run); }
-.badge.waiting { color: var(--wait); }
-.badge.done { color: var(--done); }
-.model { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
-.model select { height: 30px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); font-size: 12.5px; padding: 0 6px; color: var(--fg); }
+/* a session's state: a dot and a word beside its title */
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--asleep); white-space: nowrap; }
+.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.status.idle { color: var(--muted); }
+.status.idle::before { background: var(--asleep); }
+.status.running { color: var(--run); }
+.status.running::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--run) 25%, transparent); }
+.status.waiting { color: var(--wait); }
+.status.done { color: var(--done); }
+/* Model, Advisor and Mode as one pill: each a native select laid clear over
+   its short label (threadpill.js), so the open list keeps the full words */
+.pill { display: inline-flex; align-items: stretch; height: 30px; border: 1px solid var(--line3); border-radius: 8px; background: var(--card); overflow: hidden; }
+.pill:not(:has(> .pick:not(.hidden))) { display: none; }
+.pick { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 24px 0 10px; font-size: 12.5px; color: var(--fg); white-space: nowrap; cursor: pointer; }
+.pick:not(.hidden) ~ .pick:not(.hidden) { border-left: 1px solid var(--line3); }
+.pick::after { content: ""; position: absolute; right: 10px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); pointer-events: none; }
+.pick:hover { background: var(--side); }
+.pick:focus-within { box-shadow: inset 0 0 0 2px var(--blue-line); }
+.pick-ic { font-size: 11px; color: var(--muted); }
+.pick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 12.5px; border: 0; }
+/* a header too narrow for one row (the side panels squeeze it on a wide
+   screen too) gives the pill a row of its own, under the title */
+#head { container-type: inline-size; }
+@container (max-width: 920px) {
+  #head .pill { order: 10; flex-basis: 100%; }
+  #head .pick { flex: 1; min-width: 0; }
+}
+.primary-sm { height: 30px; padding: 0 12px; border-radius: 7px; border: 0; background: var(--blue); color: var(--on-accent); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
 .plain { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); font-size: 12.5px; }
 .apply { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--blue); background: var(--blue-bg); color: var(--blue-d); font-size: 12.5px; font-weight: 600; }
 .primary { height: 36px; padding: 0 16px; border-radius: 8px; border: 0; background: var(--blue); color: var(--on-accent); font-size: 13.5px; font-weight: 600; }

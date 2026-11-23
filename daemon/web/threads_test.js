@@ -1124,6 +1124,23 @@ test("the header shows how full the context is and how long the cache has left, 
   assert.match(p.$("gauge").title, /last reply 14 min ago/);
 });
 
+test("a cold cache is a snowflake beside the context share, not crossed-out words", async () => {
+  const p = await boot({ sessions: [{ ...lead, attention: "idle" }], search: "?s=lead1" });
+  const result = { endedAt: Date.now() - 70 * 60000, cacheTtlMs: 3600000, context: { percent: 42, used: 84000, max: 200000 } };
+  await p.frame({ t: "snapshot", boot: "b1", seq: 0, data: { messages: [], info: {}, result } });
+  assert.equal(p.$("gauge").textContent, "42% \u2744");
+  assert.match(p.$("gauge").title, /expired 10 min ago/);
+});
+
+test("the header's status is a dot and a word, and the main session's line is short", async () => {
+  const p = await boot({ sessions: [{ ...lead, attention: "idle" }], search: "?s=lead1" });
+  assert.equal(p.$("state").className, "status idle");
+  assert.equal(p.$("state").textContent, "Idle");
+  assert.match(p.$("meta").textContent, / · main session · 0 threads$/);
+  assert.match(p.$("model-shown").textContent, /^\S/, "the closed picker names a model");
+  assert.equal(p.$("model-shown").textContent.includes("(default)"), false, "and drops (default)");
+});
+
 test("while a turn runs the header says the cache is live, not counting down", async () => {
   const p = await boot({ sessions: [{ ...lead, attention: "running" }], search: "?s=lead1" });
   const result = { endedAt: Date.now() - 70 * 60000, cacheTtlMs: 3600000, context: { percent: 42, used: 84000, max: 200000 } };

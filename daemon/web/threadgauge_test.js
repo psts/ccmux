@@ -8,6 +8,8 @@ test("the gauge: how full the context is and how long the prompt cache has left"
   const r = { endedAt: at, cacheTtlMs: 60 * min, context: { percent: 42, used: 84000, max: 200000 } };
   const g = m.gauge(r, at + 14 * min);
   assert.equal(g.text, "42% · cache 46 min");
+  assert.equal(g.percent, 42, "the ring's share");
+  assert.equal(m.gauge({ endedAt: at, cacheTtlMs: 60 * min }, at).percent, null, "no context number, no ring");
   assert.deepEqual([g.ctx, g.cache], ["", ""]);
   assert.match(g.title, /84k of 200k tokens/);
   assert.match(g.title, /last reply 14 min ago/);

@@ -405,7 +405,7 @@
     if (sess) {
       const lead = sess.kind === "lead";
       const filed = S.sessions.filter((s) => s.workspaceId === sess.workspaceId && s.kind !== "lead" && s.state !== "done").length;
-      return { title: Model.titleOf(sess, ws), meta: lead ? `${group} · main session for ${repo} · ${filed} thread${filed === 1 ? "" : "s"} filed under it` : `${group} · lead: ${repo}` };
+      return { title: Model.titleOf(sess, ws), meta: lead ? `${group} · main session · ${filed} thread${filed === 1 ? "" : "s"}` : `${group} · lead: ${repo}` };
     }
     if (S.sel.kind === "draft" && ws) {
       const lead = S.sel.as === "lead";
@@ -424,9 +424,9 @@
     $("meta").textContent = text.meta;
     document.title = text.title + " · ccmux";
     const state = sess ? liveState(sess) : "";
-    const badge = $("state");
-    badge.className = "badge " + state + (sess ? "" : " hidden");
-    badge.textContent = { starting: "Starting", updating: "Updating" }[state] || Model.stateLabel(state);
+    const status = $("state");
+    status.className = "status " + state + (sess ? "" : " hidden");
+    status.textContent = { starting: "Starting", updating: "Updating" }[state] || Model.stateLabel(state);
     const live = !!sess && sess.state !== "done";
     const agent = !!sess && sess.kind === "agent"; // its base names its model, and its name
     show("model-box", (live && !agent) || (S.sel.kind === "draft" && !!ws));
@@ -450,11 +450,20 @@
     show("gauge", !!g);
     if (!g) return;
     box.textContent = "";
+    if (g.percent !== null) box.appendChild(ring(g.percent, g.ctx));
     g.parts.forEach((p, i) => {
-      if (i) box.appendChild(document.createTextNode(" · "));
-      box.appendChild(View.el("span", p.cls, p.text));
+      if (i) box.appendChild(document.createTextNode(p.cls === "cold" ? " " : " · "));
+      box.appendChild(View.el("span", p.cls, p.cls === "cold" ? "\u2744" : p.text));
     });
     box.title = g.title;
+  }
+
+  // ring is the gauge's context share as a small ring, orange near full.
+  function ring(percent, cls) {
+    const r = View.el("span", "ring", "");
+    const fill = cls === "warn" ? "var(--wait)" : "var(--muted)";
+    r.style.background = `conic-gradient(${fill} ${Math.min(100, Math.max(0, percent))}%, var(--line3) 0)`;
+    return r;
   }
 
   // fillSelect sets a header picker's options (only when they changed, so
@@ -478,6 +487,7 @@
     const live = !!sess && sess.state !== "done";
     const av = drawAdvisor(sess, live, mv);
     drawRestartBar(sess, Advisor.restartBar(mv, av, live && (mv.pending || S.picked === sess.id), live && av.pending), mv);
+    window.ccmuxThreadPill.sync($);
   }
 
   // drawAdvisor is the Advisor picker, beside the Model one: for a live

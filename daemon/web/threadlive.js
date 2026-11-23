@@ -65,6 +65,7 @@
       const known = MODES.some((m) => m.value === mode);
       show("mode-box", live && known);
       if (known) select.value = mode;
+      if (window.ccmuxThreadPill) window.ccmuxThreadPill.sync($);
     }
 
     function drawTasks(tasks) {

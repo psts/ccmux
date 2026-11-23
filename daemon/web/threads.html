@@ -41,22 +41,29 @@
       <header id="head">
         <button id="side-toggle" type="button" aria-label="Threads">&#9776;</button>
         <div class="head-title">
-          <h1 id="title">Threads</h1>
+          <div class="title-row">
+            <h1 id="title">Threads</h1>
+            <span id="state" class="status hidden"></span>
+          </div>
           <div id="meta" class="meta"></div>
         </div>
+        <div id="settings-pill" class="pill">
+          <label id="model-box" class="pick hidden" title="Model. A change applies when the session restarts.">
+            <span class="pick-ic" aria-hidden="true">&#9670;</span><span id="model-shown" class="pick-shown"></span>
+            <select id="model" aria-label="Model"></select>
+          </label>
+          <label id="advisor-box" class="pick hidden" title="Advisor: the stronger model Claude may ask for advice. Applies when the session restarts.">
+            <span class="pick-ic" aria-hidden="true">&#10022;</span><span id="advisor-shown" class="pick-shown"></span>
+            <select id="advisor" aria-label="Advisor"></select>
+          </label>
+          <label id="mode-box" class="pick hidden" title="Mode: how freely Claude may act, like Shift+Tab in Claude Code. Until the session restarts.">
+            <span class="pick-ic" aria-hidden="true">&#9873;</span><span id="mode-shown" class="pick-shown"></span>
+            <select id="mode" aria-label="Mode"></select>
+          </label>
+        </div>
         <span id="gauge" class="gauge hidden"></span>
-        <span id="state" class="badge hidden"></span>
-        <label id="model-box" class="model hidden">Model
-          <select id="model"></select>
-        </label>
-        <label id="advisor-box" class="model hidden" title="The stronger model Claude may ask for advice. Applies when the session restarts.">Advisor
-          <select id="advisor"></select>
-        </label>
-        <label id="mode-box" class="model hidden" title="How freely Claude may act, like Shift+Tab in Claude Code. Until the session restarts.">Mode
-          <select id="mode"></select>
-        </label>
         <button id="past" class="plain hidden" type="button" title="This agent's earlier conversations, read only">Earlier</button>
-        <button id="new-thread" class="plain hidden" type="button" title="A new thread in this repo: its own session, and its own copy of the repo once it changes something">New thread</button>
+        <button id="new-thread" class="primary-sm hidden" type="button" title="A new thread in this repo: its own session, and its own copy of the repo once it changes something">+ New thread</button>
         <button id="restart-later" class="apply hidden" type="button"></button>
         <button id="stop" class="plain hidden" type="button" title="Stop the running turn">Stop</button>
         <details id="more" class="more hidden">
@@ -200,6 +207,7 @@
   <script src="/threadmodel.js"></script>
   <script src="/threadadvisor.js"></script>
   <script src="/threadgauge.js"></script>
+  <script src="/threadpill.js"></script>
   <script src="/threadteam.js"></script>
   <script src="/threadstream.js"></script>
   <script src="/threadwork.js"></script>

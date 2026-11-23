@@ -47,7 +47,7 @@
     return {
       text: parts.map((p) => p.text).join(" · "),
       title: parts.map((p) => p.title).join("\n"),
-      ctx: c ? c.cls : "", cache: m ? m.cls : "",
+      ctx: c ? c.cls : "", cache: m ? m.cls : "", percent: c ? r.context.percent : null,
       parts: parts.map((p) => ({ text: p.text, cls: p.cls })),
     };
   }
