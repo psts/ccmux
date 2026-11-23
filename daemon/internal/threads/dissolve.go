@@ -7,7 +7,6 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/jobs"
 	"ccmux.dev/ccmuxd/internal/store"
-	"ccmux.dev/ccmuxd/internal/taskq"
 )
 
 // dissolve takes a landed thread's team apart: the helpers are stood down,
@@ -27,15 +26,22 @@ import (
 //     left, and skipped the second time. That matters for the lead's
 //     restart, which would otherwise cut off a turn it had started since.
 func (s *Service) dissolve(ask mergeAsk, steps *jobs.Journal) []string {
-	helpers, left := s.helpersToEnd(ask)
-	for _, h := range helpers {
-		left = append(left, once(steps, "stood-down:"+h.ID, func() []string { return s.standDown(h) })...)
-	}
+	left := s.endHelpers(ask, steps)
 	lead := ask.lead()
 	if lead.Worktree == "" {
 		return left
 	}
 	return append(left, s.leadHome(lead, steps)...)
+}
+
+// endHelpers stands down every helper a merge's end takes apart, each once,
+// and returns what stayed.
+func (s *Service) endHelpers(ask mergeAsk, steps *jobs.Journal) []string {
+	helpers, left := s.helpersToEnd(ask)
+	for _, h := range helpers {
+		left = append(left, once(steps, "stood-down:"+h.ID, func() []string { return s.standDown(h) })...)
+	}
+	return left
 }
 
 // once does a step unless steps says it is done, and returns what it left
@@ -100,12 +106,7 @@ func (s *Service) leadHome(lead store.RunnerSession, steps *jobs.Journal) []stri
 	if len(stuck) > 0 {
 		return stuck
 	}
-	left := once(steps, "lead-worktree", func() []string {
-		if why := s.Lander.Remove(workOf(lead), taskq.RebaseMark(lead.Worktree)); why != "" {
-			return []string{why}
-		}
-		return nil
-	})
+	left := once(steps, "lead-worktree", func() []string { return s.removeWorktree(lead) })
 	return append(left, once(steps, "lead-row", func() []string {
 		if err := s.Sessions.Place(lead.ID, store.SessionPlace{Cwd: lead.Repo, ReadOnly: true}); err != nil {
 			return []string{fmt.Sprintf("the lead's record still names %s (%v)", lead.Worktree, err)}

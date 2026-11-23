@@ -54,7 +54,11 @@ func (f *fakeSessions) Create(n runner.NewSession) (store.RunnerSession, error) 
 	return sess, f.st.AddRunnerSession(sess)
 }
 
+// Place refuses a session that has ended, as the supervisor does.
 func (f *fakeSessions) Place(id string, p store.SessionPlace) error {
+	if sess, err := f.st.RunnerSession(id); err == nil && sess != nil && sess.Wanted == store.SessionDone {
+		return runner.ErrSessionDone
+	}
 	return f.st.SetRunnerSessionPlace(id, p, 9)
 }
 
@@ -269,10 +273,13 @@ type fakeJobs struct {
 	openErr  error // what OpenJob fails with, when set
 	lastErr  error // what LastJob fails with, when set
 	manual   bool
-	started  []jobs.New
-	stopped  []string
-	results  map[string]jobs.Result
-	wg       sync.WaitGroup
+	// beforeStop runs as Stop is asked, before it reads the job: a test
+	// that ends the job in between plays a stop that comes too late.
+	beforeStop func()
+	started    []jobs.New
+	stopped    []string
+	results    map[string]jobs.Result
+	wg         sync.WaitGroup
 }
 
 func (f *fakeJobs) Start(n jobs.New) (store.Job, error) {
@@ -326,11 +333,14 @@ func (f *fakeJobs) done(job store.Job, outcome string) {
 }
 
 func (f *fakeJobs) Stop(id, note string) error {
+	if f.beforeStop != nil {
+		f.beforeStop()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	job, err := f.r.st.Job(id)
-	if err != nil || job == nil {
-		return store.ErrNoJob
+	if err != nil || job == nil || job.State == store.JobDone {
+		return store.ErrNoJob // as the manager: a job that has ended is not stopped
 	}
 	job.State, job.Note = store.JobStopping, note
 	f.stopped = append(f.stopped, id)

@@ -211,18 +211,34 @@ func (h mergeHandler) Apply(job store.Job, res jobs.Result) error {
 	defer end.unlock()
 	if failure := out.Err(); failure != nil {
 		log.Printf("threads: #%d merge failed: %v", ask.ThreadID, failure)
-		if err := end.settle(store.ThreadOpen, "merge failed: "+firstLine(failure.Error())); err != nil {
-			return err
-		}
-		return end.tell(asked(ask.By) + failedText(end.th, worked(ask.sessions()), failure, out.Landed))
+		return end.failed(failure, out.Landed)
 	}
 	log.Printf("threads: #%d %s", ask.ThreadID, out.Note)
 	return end.landed(out.Note)
 }
 
+// failed settles a merge that failed: the thread is open again, nothing of
+// the team is touched, and the lead is told why.
+func (e *ending) failed(failure error, landed []string) error {
+	note := "merge failed: " + firstLine(failure.Error())
+	if e.gone {
+		if len(landed) > 0 {
+			note += " (already merged: " + strings.Join(landed, ", ") + ")"
+		}
+		return e.leadless(note)
+	}
+	if err := e.settle(store.ThreadOpen, note); err != nil {
+		return err
+	}
+	return e.tell(asked(e.ask.By) + failedText(e.th, worked(e.ask.sessions()), failure, landed))
+}
+
 // landed settles a merge that landed: the team is taken apart, the thread
 // reads as merged, and the lead is told.
 func (e *ending) landed(note string) error {
+	if e.gone {
+		return e.leadless(note)
+	}
 	// Once, as a whole: a second settling of the same job must not take
 	// apart what the thread has become since (a helper stood up for the
 	// lead's next piece of work is not this merge's to end).
@@ -287,6 +303,9 @@ func (h mergeHandler) cutShort(job store.Job, note string, text func(th store.Th
 		landed = "Already merged, and staying so: " + strings.Join(got, ", ") + "."
 		note += " (already merged: " + strings.Join(got, ", ") + ")"
 	}
+	if end.gone {
+		return end.leadless(note)
+	}
 	if err := end.settle(store.ThreadOpen, note); err != nil {
 		return err
 	}
@@ -296,11 +315,14 @@ func (h mergeHandler) cutShort(job store.Job, note string, text func(th store.Th
 // ending is a merge job's end being settled: the thread's lock, its row,
 // and the journal of what the daemon already did about this job.
 type ending struct {
-	s      *Service
-	job    store.Job
-	ask    mergeAsk
-	th     store.Thread
-	steps  *jobs.Journal
+	s     *Service
+	job   store.Job
+	ask   mergeAsk
+	th    store.Thread
+	steps *jobs.Journal
+	// gone is that the thread's lead has ended: the merge's end takes the
+	// thread apart, and tells nobody (leadended.go).
+	gone   bool
 	unlock func()
 }
 
@@ -318,7 +340,12 @@ func (s *Service) ending(job store.Job, ask mergeAsk) (*ending, error) {
 		unlock()
 		return nil, fmt.Errorf("thread #%d: the record of what was done with its merge: %w", ask.ThreadID, err)
 	}
-	return &ending{s: s, job: job, ask: ask, th: *th, steps: steps, unlock: unlock}, nil
+	gone, err := s.leadGone(th.LeadSession)
+	if err != nil {
+		unlock()
+		return nil, fmt.Errorf("thread #%d: %w", ask.ThreadID, err)
+	}
+	return &ending{s: s, job: job, ask: ask, th: *th, steps: steps, gone: gone, unlock: unlock}, nil
 }
 
 // settle records how the merge ended on the thread's row, once: a second
@@ -404,8 +431,12 @@ func (s *Service) orphaned(job store.Job, cause error) error {
 	if err != nil || th == nil {
 		return err
 	}
+	note := "its merge ended and its outcome could not be read: " + firstLine(cause.Error())
 	if th.State == store.ThreadMerging {
-		if err := s.settle(*th, store.ThreadOpen, "its merge ended and its outcome could not be read: "+firstLine(cause.Error())); err != nil {
+		if gone, err := s.leadGone(th.LeadSession); err != nil || gone {
+			return s.orphanedEnd(*th, note, err)
+		}
+		if err := s.settle(*th, store.ThreadOpen, note); err != nil {
 			return err
 		}
 	}

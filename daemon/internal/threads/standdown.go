@@ -157,9 +157,10 @@ func (s *Service) standAllDown(threadID int64) ([]string, error) {
 // SessionEnded hears that a session has ended (the supervisor's Changed,
 // off its lock). A lead that ended takes its thread with it: its helpers
 // are stood down, since nothing would ever merge or end them, and its own
-// worktree goes when nothing in it would be lost. A helper that ended only
-// leaves the team. A task's builder that ended takes nobody with it
-// (builders.go).
+// worktree goes when nothing in it would be lost. A thread being merged is
+// taken apart once its merge has ended, and the merge is stopped now. A
+// helper that ended only leaves the team. A task's builder that ended takes
+// nobody with it (builders.go).
 func (s *Service) SessionEnded(sess store.RunnerSession) {
 	if sess.ThreadID == 0 {
 		s.mainEnded(sess) // a main session takes its side helpers with it (side.go)
@@ -173,23 +174,5 @@ func (s *Service) SessionEnded(sess store.RunnerSession) {
 	if sess.Role != store.RoleLead {
 		return
 	}
-	defer s.lock(threadKey(sess.ThreadID))()
-	left, err := s.standAllDown(sess.ThreadID)
-	if err != nil {
-		log.Printf("threads: #%d lost its lead and its helpers were not stood down: %v", sess.ThreadID, err)
-		return
-	}
-	if sess.Worktree != "" {
-		if why := s.Lander.Remove(workOf(sess), taskq.RebaseMark(sess.Worktree)); why != "" {
-			left = append(left, why)
-		}
-	}
-	th, err := s.St.Thread(sess.ThreadID)
-	if err != nil || th == nil {
-		return
-	}
-	th.State, th.Note, th.UpdatedAt = store.ThreadEnded, stayedNote(left), s.millis()
-	if err := s.St.SaveThread(*th); err != nil {
-		log.Printf("threads: #%d ended with its lead but is not marked so: %v", th.ID, err)
-	}
+	s.leadEndedThread(sess) // a merge that runs is stopped first (leadended.go)
 }
