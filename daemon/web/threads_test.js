@@ -1034,14 +1034,35 @@ test("Settings lists the sources and every entry, and Update says what it pulled
   assert.equal(sheet.querySelector(".cap-where").textContent, "git · me/claude-personal · 4f2a91c · checked today");
   assert.equal(sheet.querySelector(".cap-src .cap-tag").textContent, "1 update", "the pinned qa is behind");
   assert.deepEqual(capRows(p, sheet).map((r) => r[1]), [
-    "personal · ~1.4k tokens · pinned at 1.9.0 · on in ChartLabs",
-    "personal · ~0.9k tokens · 2.0.0 · follows newest · on nowhere",
+    "~1.4k tokens · pinned at 1.9.0 · on in ChartLabs",
+    "~0.9k tokens · 2.0.0 · follows newest · on nowhere",
   ]);
+  const head = sheet.querySelector(".cap-group-head");
+  assert.equal(head.textContent, "›personal2", "the entries sit under their source, with how many");
   assert.equal(sheet.querySelector('.cap-item[data-cap="qa"] .cap-tag').textContent, "update 1.9.0 → 1.9.2");
+  head.click();
+  assert.equal(capsTab(p).querySelectorAll(".cap-item").length, 0, "a click on the heading folds its section");
+  capsTab(p).querySelector(".cap-group-head").click();
+  assert.equal(capsTab(p).querySelectorAll(".cap-item").length, 2, "and another unfolds it");
   sheet.querySelector(".cap-src button").click();
   await p.settle();
   assert.equal(p.posts().pop().url, "/v1/capabilities/sources/personal/update");
   assert.equal(capsTab(p).querySelector(".cap-note").textContent, "personal: 1 changed.");
+});
+
+test("a folded source stays folded on the next visit, and a stored value that is not a list leaves every source open", async () => {
+  const kept = new Map([["ccmux-user", "Pat"]]);
+  const storage = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, String(v)) };
+  const openTab = async (p) => { p.$("open-settings").click(); await p.settle(); return capsTab(p); };
+  const first = await boot({ sessions: [lead], storage, routes: capRoutes({}) });
+  (await openTab(first)).querySelector(".cap-group-head").click();
+  assert.equal(kept.get("ccmux-caps-folded"), '["personal"]');
+  const again = await boot({ sessions: [lead], storage, routes: capRoutes({}) });
+  const tab = await openTab(again);
+  assert.equal(tab.querySelector(".cap-group").className, "cap-group folded", "it opens the way it was left");
+  kept.set("ccmux-caps-folded", "5"); // a hand edit, or another page's key
+  const odd = await boot({ sessions: [lead], storage, routes: capRoutes({}) });
+  assert.equal((await openTab(odd)).querySelectorAll(".cap-item").length, 2, "the list still draws, every source open");
 });
 
 test("Notifications on this page: Enable files the device under the page's own name, and a tap stays the page's to follow", async () => {

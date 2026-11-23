@@ -73,14 +73,30 @@
     add(box, el("div", "cap-label", "Sources"));
     for (const s of v.sources) add(box, sourceEl(s, ctx));
     add(box, addForm(v, ctx), lines(v), el("div", "cap-label", `Everything you can turn on (${v.entries.length})`));
+    for (const g of v.groups) add(box, groupEl(g, ctx));
+    if (!v.entries.length) add(box, add(el("div", "cap-list"), el("div", "quiet", v.loading ? "Reading the list…" : "Nothing in the list yet. Add a source, or update one.")));
+    return box;
+  }
+
+  // groupEl is one source's section of the list: a heading that folds and
+  // unfolds it, with how many entries it holds, and its entries.
+  function groupEl(g, ctx) {
+    const wrap = el("section", "cap-group" + (g.folded ? " folded" : ""));
+    wrap.dataset.source = g.id;
+    const headBtn = add(button("", "cap-group-head", () => ctx.fold(g.id), g.folded ? "Show these" : "Hide these"),
+      el("span", "chev", "›"), el("span", "cap-group-name", g.name), el("span", "cap-group-count", String(g.rows.length)));
+    headBtn.setAttribute("aria-expanded", String(!g.folded));
+    add(wrap, headBtn);
+    if (g.folded) return wrap;
     const list = el("div", "cap-list");
-    for (const r of v.entries) {
-      const pin = r.pin ? button(r.pin, "plain small", () => ctx.pin(r.id, r.pin === "Pin"), r.pin === "Pin" ? "Stay at this version" : "Follow the newest version") : null;
-      if (pin) pin.disabled = !!ctx.busy;
-      add(list, item(r, pin, [r.update ? el("span", "cap-tag warn", r.update) : null]));
-    }
-    if (!v.entries.length) add(list, el("div", "quiet", v.loading ? "Reading the list…" : "Nothing in the list yet. Add a source, or update one."));
-    return add(box, list);
+    for (const r of g.rows) add(list, entryEl(r, ctx));
+    return add(wrap, list);
+  }
+
+  function entryEl(r, ctx) {
+    const pin = r.pin ? button(r.pin, "plain small", () => ctx.pin(r.id, r.pin === "Pin"), r.pin === "Pin" ? "Stay at this version" : "Follow the newest version") : null;
+    if (pin) pin.disabled = !!ctx.busy;
+    return item(r, pin, [r.update ? el("span", "cap-tag warn", r.update) : null]);
   }
 
   // tab draws the Skills and plugins tab into box, the page the Settings

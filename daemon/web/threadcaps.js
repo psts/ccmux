@@ -89,14 +89,37 @@
     return (c.version ? c.version + " · " : "") + "follows newest";
   }
 
-  // entryRow is one entry in the Settings tab's list.
+  // entryRow is one entry in the Settings tab's list. Its source is apart:
+  // the list is grouped by it (entryGroups), so the line under it leaves it
+  // out.
   function entryRow(c, choices, windowNames) {
-    const meta = [c.source, brief(c.description), tokens(c.cost), versionNote(c), placesOn(c.id, choices, windowNames)].filter(Boolean).join(" · ");
+    const meta = [brief(c.description), tokens(c.cost), versionNote(c), placesOn(c.id, choices, windowNames)].filter(Boolean).join(" · ");
     return {
-      id: c.id, name: name(c), kind: kindLabel(c.kind), meta,
+      id: c.id, name: name(c), kind: kindLabel(c.kind), source: c.source || "", meta,
       update: c.updateAvailable ? `update ${c.version || "?"} → ${c.updateAvailable}` : "",
       pin: pinnable(c) ? (c.pinned ? "Unpin" : "Pin") : "",
     };
+  }
+
+  // ORIGINS are the sources that are not git sources, in the order they
+  // come after those (agent.SourceClaudeAI, agent.SourceThisMachine).
+  const ORIGINS = ["claude.ai", "this machine"];
+
+  // entryGroups puts the Settings tab's rows under their sources: the git
+  // sources in the order the tab lists them, then claude.ai and this
+  // machine, then any other (a marketplace with no git source here) by
+  // name, and last the rows with no source, as "Other". A source with no
+  // rows gets no section; rows keep their order inside one.
+  function entryGroups(rows, sources) {
+    const by = new Map();
+    for (const r of rows) {
+      if (!by.has(r.source)) by.set(r.source, []);
+      by.get(r.source).push(r);
+    }
+    const known = sources.map((s) => s.id).concat(ORIGINS);
+    const rest = [...by.keys()].filter((id) => id && !known.includes(id)).sort();
+    return known.concat(rest, [""]).filter((id, i, all) => by.has(id) && all.indexOf(id) === i)
+      .map((id) => ({ id, name: id || "Other", rows: by.get(id) }));
   }
 
   // repoNote is what a repo's row says of its group, beside its choice.
@@ -172,7 +195,7 @@
     return `${id}: ${parts.length ? parts.join(", ") : "nothing changed"}.`;
   }
 
-  const api = { kindLabel, name, tokens, brief, shortURL, sourceId, checked, sourceRow, placesOn, pinnable, entryRow, repoNote, repoRows, groupRows, cost, stale, footLine, staleLine, updateNote };
+  const api = { kindLabel, name, tokens, brief, shortURL, sourceId, checked, sourceRow, placesOn, pinnable, entryRow, entryGroups, repoNote, repoRows, groupRows, cost, stale, footLine, staleLine, updateNote };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadCaps = api;
 })(typeof window !== "undefined" ? window : this);

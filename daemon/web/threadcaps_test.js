@@ -45,20 +45,35 @@ test("a source says what is known: pinned entries behind, else up to date only w
   assert.equal(m.sourceRow({ id: "n", url: "/x" }, [], now).where, "git · /x · never checked");
 });
 
-test("an entry row: source, words, cost, version, pin, and where it is on", () => {
+test("an entry row: its source apart, words, cost, version, pin, and where it is on", () => {
   const choices = { windows: { w1: ["qa", "chrome-pool"], w2: ["qa"] }, workspaces: { ws1: { glitchtip: "on" }, ws2: { qa: "off" } } };
   const names = { w1: "ChartLabs", w2: "Home" };
   assert.deepEqual(m.entryRow(caps[0], choices, names), {
-    id: "qa", name: "qa", kind: "plugin", meta: "personal · commit gates · ~1.4k tokens · pinned at 1.9.0 · on in 2 groups",
+    id: "qa", name: "qa", kind: "plugin", source: "personal", meta: "commit gates · ~1.4k tokens · pinned at 1.9.0 · on in 2 groups",
     update: "update 1.9.0 → 1.9.2", pin: "Unpin",
   });
   const cp = m.entryRow(caps[1], choices, names);
-  assert.equal(cp.meta, "personal · ~0.9k tokens · 2.0.0 · follows newest · on in ChartLabs");
+  assert.equal(cp.meta, "~0.9k tokens · 2.0.0 · follows newest · on in ChartLabs");
   assert.deepEqual([cp.update, cp.pin], ["", "Pin"]);
   const gl = m.entryRow(caps[2], choices, names);
-  assert.equal(gl.meta, "this machine · ~0.2k tokens · on in 1 repo");
+  assert.deepEqual([gl.source, gl.meta], ["this machine", "~0.2k tokens · on in 1 repo"]);
   assert.equal(gl.pin, "", "not from a checkout: nothing to pin");
-  assert.equal(m.entryRow(caps[3], choices, names).meta, "claude.ai · on nowhere");
+  assert.equal(m.entryRow(caps[3], choices, names).meta, "on nowhere");
+});
+
+test("entries are grouped by source: git sources in their own order, then the other origins, then the rest", () => {
+  const row = (id, source) => ({ id, name: id, source });
+  const rows = [row("a", "this machine"), row("b", "official"), row("c", ""), row("d", "personal"), row("e", "official"), row("f", "zeta-market"), row("g", "claude.ai")];
+  const groups = m.entryGroups(rows, [{ id: "personal" }, { id: "official" }, { id: "empty-source" }]);
+  assert.deepEqual(groups.map((g) => [g.id, g.name, g.rows.map((r) => r.id)]), [
+    ["personal", "personal", ["d"]],
+    ["official", "official", ["b", "e"]],
+    ["claude.ai", "claude.ai", ["g"]],
+    ["this machine", "this machine", ["a"]],
+    ["zeta-market", "zeta-market", ["f"]],
+    ["", "Other", ["c"]],
+  ], "a source with no entries gets no section; entries keep their order inside one");
+  assert.deepEqual(m.entryGroups([], [{ id: "personal" }]), []);
 });
 
 test("a repo's rows: its own choice and what the group gives", () => {

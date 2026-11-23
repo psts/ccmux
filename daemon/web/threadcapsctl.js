@@ -17,6 +17,23 @@
   let tabBox = null; // this page's page in the Settings window
   const C = { mode: "", target: null, caps: [], sources: [], choices: {}, data: null, busy: "", note: "", error: "", adding: false, url: "", loading: false, staleSig: "" };
 
+  // folded are the sources whose section of the Settings tab is shut, kept
+  // in the browser so the tab opens the way it was left.
+  const FOLDED_KEY = "ccmux-caps-folded";
+  const folded = new Set(readFolded());
+
+  function readFolded() {
+    let v = [];
+    try { v = JSON.parse(window.localStorage.getItem(FOLDED_KEY) || "[]"); } catch (_) { /* blocked or broken: all open */ }
+    return Array.isArray(v) ? v : []; // a value that is not a list (a hand edit) opens all too
+  }
+
+  function fold(id) {
+    if (!folded.delete(id)) folded.add(id);
+    try { window.localStorage.setItem(FOLDED_KEY, JSON.stringify([...folded])); } catch (_) { /* storage blocked: kept until reload */ }
+    draw();
+  }
+
   const windowName = (id) => { const w = deps.lists().windows.find((x) => x.id === id); return w ? w.name : ""; };
 
   // members are the repos whose sessions the open panel is about.
@@ -63,9 +80,10 @@
 
   function settingsView() {
     const names = Object.fromEntries(deps.lists().windows.map((w) => [w.id, w.name]));
+    const entries = C.caps.map((c) => Caps.entryRow(c, C.choices, names));
     return {
       sources: C.sources.map((s) => Caps.sourceRow(s, C.caps, Date.now())),
-      entries: C.caps.map((c) => Caps.entryRow(c, C.choices, names)),
+      entries, groups: Caps.entryGroups(entries, C.sources).map((g) => ({ ...g, folded: folded.has(g.id) })),
       adding: C.adding, url: C.url, note: C.note, error: C.error, loading: C.loading,
     };
   }
@@ -85,7 +103,7 @@
 
   const handlers = {
     close, update, startAdd: () => { C.adding = true; draw(); }, cancelAdd: () => { Object.assign(C, { adding: false, url: "" }); draw(); },
-    typed: (v) => { C.url = v; }, addSource, pin, set, restart,
+    typed: (v) => { C.url = v; }, addSource, pin, set, restart, fold,
   };
 
   function draw() {

@@ -521,6 +521,13 @@ a:hover { color: var(--blue-d); }
 form.cap-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .cap-url { flex: 1; min-width: 200px; height: 30px; border: 1px solid var(--line3); border-radius: 7px; padding: 0 10px; background: var(--main); font-size: 13px; }
 .cap-list { border: 1px solid var(--line); border-radius: 8px; }
+/* the Settings tab's list, one section per source (threadcapsview.js groupEl) */
+.cap-group { display: flex; flex-direction: column; gap: 6px; }
+.cap-group + .cap-group { margin-top: 6px; }
+.cap-group-head { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 4px 2px; font-size: 13px; font-weight: 600; color: var(--fg); text-align: left; cursor: pointer; }
+.cap-group-head .chev { color: var(--muted); display: inline-block; transition: transform .12s; transform: rotate(90deg); }
+.cap-group.folded .cap-group-head .chev { transform: none; }
+.cap-group-count { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--chip); border-radius: 9px; padding: 0 7px; line-height: 18px; }
 .cap-list > .quiet { padding: 12px; }
 .cap-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .cap-item:last-child { border-bottom: 0; }
