@@ -92,6 +92,10 @@ type windowAgentFixture struct {
 
 func newWindowAgentFixture(t *testing.T, harnessCmd string) *windowAgentFixture {
 	t.Helper()
+	// An agent's start makes its memory folder under Claude Code's projects:
+	// never the real ~/.claude (218 empty test folders were there by
+	// 2026-11-23).
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	srv, _, base, st := harnessStackServer(t)
 	agent.EnvExecPath = envExecBinary(t) // the launch line calls ccmuxd back; use THIS tree's, not the installed one
 	f := &windowAgentFixture{srv: srv, st: st, base: base, ws: createWS(t, base)}
