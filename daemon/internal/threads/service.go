@@ -39,6 +39,7 @@ type Store interface {
 	Threads() ([]store.Thread, error)
 	SideThread(leadSession string) (*store.Thread, error)
 	OpenSideThreads() ([]store.Thread, error)
+	LeadlessThreads() ([]store.Thread, error)
 	MainSessions() ([]store.RunnerSession, error)
 	ThreadMembers(threadID int64) ([]store.RunnerSession, error)
 	RunnerSession(id string) (*store.RunnerSession, error)

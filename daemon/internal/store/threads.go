@@ -164,6 +164,14 @@ func (s *SQLite) OpenSideThreads() ([]Thread, error) {
 	return s.queryThreads(`SELECT `+threadCols+` FROM threads WHERE kind=? AND state<>? ORDER BY id`, ThreadSide, ThreadEnded)
 }
 
+// LeadlessThreads lists the open threads a person's lead led, whose lead
+// has ended: side threads and a task's are left out (each has its own
+// end), and a merging one too (its merge's end takes it apart).
+func (s *SQLite) LeadlessThreads() ([]Thread, error) {
+	return s.queryThreads(`SELECT `+threadCols+` FROM threads WHERE kind<>? AND task_id=0 AND state=?
+AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id=threads.lead_session AND sessions.wanted='done') ORDER BY id`, ThreadSide, ThreadOpen)
+}
+
 // MainSessions lists the repos' main sessions that have not ended: the
 // sessions of kind lead that are in no thread, oldest first.
 func (s *SQLite) MainSessions() ([]RunnerSession, error) {

@@ -110,12 +110,16 @@ func (r *remoteSidecars) Status() map[string]meridian.Status {
 // distinct error, not at every poll.
 func (r *remoteSidecars) unknown(err error) map[string]meridian.Status {
 	why := "state unknown: the llm proxy service did not answer: " + err.Error()
-	if why != r.logged {
-		log.Printf("meridian: sidecar %s", why)
-		r.logged = why
+	accs, aerr := r.accs()
+	said := why
+	if aerr != nil {
+		said += "; the accounts were not read either, so none is named: " + aerr.Error()
+	}
+	if said != r.logged {
+		log.Printf("meridian: sidecar %s", said)
+		r.logged = said
 	}
 	out := map[string]meridian.Status{}
-	accs, aerr := r.accs()
 	if aerr != nil {
 		return out
 	}

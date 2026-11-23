@@ -270,18 +270,18 @@ func TestAnUnreadMergeOfALeadlessThreadNotSavedIsSettledAgain(t *testing.T) {
 	}
 }
 
-// The thread's row cannot be read as its lead ends: a merge may run, so
-// nothing is stopped or removed. When the merge ends, its end takes the
-// thread apart.
-func TestALeadEndingOnAThreadWhoseRowIsNotReadTouchesNothing(t *testing.T) {
+// The thread's row cannot be read as its lead ends: its jobs say a merge
+// runs, so the merge is stopped and nothing is removed under it. When the
+// merge ends, its end takes the thread apart.
+func TestALeadEndingOnAThreadWhoseRowIsNotReadAsksItsJobs(t *testing.T) {
 	r, th, lead, backend, admin := team(t)
 	job, res := r.asksMerge(th, ByLead)
 	r.svc.St = &threadFailsAfter{Store: r.st, left: 0, err: errors.New("database is locked")}
 	r.endLead(lead)
 	r.svc.St = r.st
 	r.untouched(th, backend, admin)
-	if len(r.jobs.stopped) != 0 {
-		t.Fatalf("nothing is stopped on a guess: %v", r.jobs.stopped)
+	if len(r.jobs.stopped) != 1 || r.jobs.stopped[0] != job.ID {
+		t.Fatalf("the merge the jobs name is stopped: %v", r.jobs.stopped)
 	}
 	if err := r.svc.MergeHandler().Apply(job, res); err != nil {
 		t.Fatal(err)
@@ -289,21 +289,67 @@ func TestALeadEndingOnAThreadWhoseRowIsNotReadTouchesNothing(t *testing.T) {
 	r.takenApart(th, lead, "merged app into main, backend into main", backend, admin)
 }
 
-// The row was read once (no merge) and not the second time: the team still
-// goes, and the row is left as it says.
+// The row is never read and no merge job is open: the helpers go at once,
+// and the sweep removes the lead's worktree and marks the thread ended.
+func TestALeadEndingWithNoRowAndNoMergeStandsItsTeamDown(t *testing.T) {
+	r, th, lead, backend, admin := team(t)
+	r.svc.St = &threadFailsAfter{Store: r.st, left: 0, err: errors.New("database is locked")}
+	r.endLead(lead)
+	r.svc.St = r.st
+	r.dropped(th, backend, admin)
+	r.svc.SweepLeadless()
+	if got := r.state(th.ID); got.State != store.ThreadEnded {
+		t.Fatalf("the sweep ends the thread: %+v", got)
+	}
+	if r.removed() != "backend|app" {
+		t.Fatalf("each worktree is removed once: %s", r.removed())
+	}
+}
+
+// The row was read once (no merge) and not the second time: the same.
+// (The sweep's half is the test above.)
 func TestALeadEndingWhoseRowIsNotReadAgainStillStandsItsTeamDown(t *testing.T) {
 	r, th, lead, backend, admin := team(t)
 	r.svc.St = &threadFailsAfter{Store: r.st, left: 1, err: errors.New("database is locked")}
 	r.endLead(lead)
 	r.svc.St = r.st
-	if r.row(backend.ID).Wanted != store.SessionDone || r.row(admin.ID).Wanted != store.SessionDone {
-		t.Fatalf("the helpers are stood down")
+	r.dropped(th, backend, admin)
+}
+
+// Neither the row nor the jobs are read: nothing is touched on a guess,
+// and the sweep takes the thread apart once they read again.
+func TestALeadEndingWithNothingReadIsTakenApartByTheSweep(t *testing.T) {
+	r, th, lead, backend, admin := team(t)
+	r.svc.St = &threadFailsAfter{Store: r.st, left: 0, err: errors.New("database is locked")}
+	r.jobs.openErr = errors.New("database is locked")
+	r.endLead(lead)
+	r.svc.St, r.jobs.openErr = r.st, nil
+	if r.row(backend.ID).Wanted != store.SessionRunning || r.removed() != "" || r.state(th.ID).State != store.ThreadOpen {
+		t.Fatalf("nothing is touched: %+v %s", r.state(th.ID), r.removed())
+	}
+	r.svc.SweepLeadless()
+	if got := r.state(th.ID); got.State != store.ThreadEnded || r.row(backend.ID).Wanted != store.SessionDone || r.row(admin.ID).Wanted != store.SessionDone {
+		t.Fatalf("the sweep takes it apart: %+v", got)
 	}
 	if r.removed() != "backend|app" {
 		t.Fatalf("both worktrees go: %s", r.removed())
 	}
-	if got := r.state(th.ID); got.State == store.ThreadEnded {
-		t.Fatalf("a row that was not read is not written: %+v", got)
+}
+
+// dropped fails unless the helpers are stood down and their worktrees gone,
+// while the lead's worktree stays and the thread's row still reads open.
+func (r *rig) dropped(th store.Thread, helpers ...store.RunnerSession) {
+	r.t.Helper()
+	for _, h := range helpers {
+		if r.row(h.ID).Wanted != store.SessionDone {
+			r.t.Fatalf("helper %s is stood down", h.Name)
+		}
+	}
+	if r.removed() != "backend" {
+		r.t.Fatalf("only the helper's worktree goes: %s", r.removed())
+	}
+	if got := r.state(th.ID); got.State != store.ThreadOpen {
+		r.t.Fatalf("a row that was not read is not written: %+v", got)
 	}
 }
 

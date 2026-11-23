@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -107,11 +110,21 @@ func TestRemoteSidecarsWithNoAnswerSayWhy(t *testing.T) {
 	}
 }
 
-// Unreadable accounts as well: an empty set, never nil.
+// Unreadable accounts as well: an empty set, never nil, and the log says
+// why, once.
 func TestRemoteSidecarsWithNothingToGoOnShowNone(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	accs := func() ([]llmproxy.Account, error) { return nil, errors.New("db locked") }
 	r := newRemoteSidecars(&fakeSidecarClient{err: errors.New("404")}, accs)
-	if st := r.Status(); st == nil || len(st) != 0 {
-		t.Fatalf("Status = %#v, want an empty map", st)
+	for range 2 {
+		r.at = time.Time{}
+		if st := r.Status(); st == nil || len(st) != 0 {
+			t.Fatalf("Status = %#v, want an empty map", st)
+		}
+	}
+	if got := logged.String(); strings.Count(got, "the accounts were not read either") != 1 || !strings.Contains(got, "db locked") {
+		t.Fatalf("the accounts' error is logged once: %q", got)
 	}
 }

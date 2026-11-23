@@ -200,7 +200,7 @@ func wireHelpers(team *threads.Service, bus *peers.Service) {
 const sideExpiryEvery = time.Minute
 
 // expireSideHelpers ends cold side helpers on a timer, for the daemon's
-// life.
+// life, and takes apart threads whose lead's end could not finish.
 func expireSideHelpers(ctx context.Context, team *threads.Service) {
 	t := time.NewTicker(sideExpiryEvery)
 	defer t.Stop()
@@ -210,6 +210,7 @@ func expireSideHelpers(ctx context.Context, team *threads.Service) {
 			return
 		case <-t.C:
 			team.ExpireSide()
+			team.SweepLeadless()
 		}
 	}
 }
