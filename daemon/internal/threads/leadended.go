@@ -39,7 +39,14 @@ func (s *Service) leadEndedThread(sess store.RunnerSession) {
 	}
 	defer s.lock(threadKey(sess.ThreadID))()
 	th, err := s.St.Thread(sess.ThreadID)
-	if err != nil || th == nil {
+	if err != nil {
+		// No merge runs (openMerge read the row), and a lead that ended
+		// starts none: the team goes, and the row keeps what it says.
+		log.Printf("threads: #%d lost its lead and its row was not read (%v); standing its team down, the thread is not marked ended", sess.ThreadID, err)
+		_, _ = s.dropTeam(sess)
+		return
+	}
+	if th == nil {
 		return
 	}
 	if merge == mergeEnded && th.State == store.ThreadEnded {
@@ -79,12 +86,17 @@ func (s *Service) leadEndedMerge(threadID int64) mergeStop {
 
 // openMerge is a merging thread's open job. With no job the second return
 // says what to do: noMerge (the thread is not merging, or it is with no
-// job to stop) or mergeRunning (the jobs could not be read, which never
-// counts as "no job": nothing is removed under a merge that may run).
+// job to stop) or mergeRunning (the thread's row or its jobs could not be
+// read, which never counts as "no merge": nothing is removed under a merge
+// that may run).
 func (s *Service) openMerge(threadID int64) (*store.Job, mergeStop) {
 	defer s.lock(threadKey(threadID))()
 	th, err := s.St.Thread(threadID)
-	if err != nil || th == nil || th.State != store.ThreadMerging {
+	if err != nil {
+		log.Printf("threads: #%d LOST ITS LEAD and its row was not read (%v); a merge may run, so its team and worktrees are left as they are", threadID, err)
+		return nil, mergeRunning
+	}
+	if th == nil || th.State != store.ThreadMerging {
 		return nil, noMerge
 	}
 	if s.Jobs == nil {
@@ -108,15 +120,9 @@ func (s *Service) openMerge(threadID int64) (*store.Job, mergeStop) {
 // added: the merge's end may have written what landed there. What failed
 // is logged and returned.
 func (s *Service) takeApart(sess store.RunnerSession, th store.Thread) error {
-	left, err := s.standAllDown(sess.ThreadID)
+	left, err := s.dropTeam(sess)
 	if err != nil {
-		log.Printf("threads: #%d lost its lead and its helpers were not stood down: %v", sess.ThreadID, err)
 		return err
-	}
-	if sess.Worktree != "" {
-		if why := s.Lander.Remove(workOf(sess), taskq.RebaseMark(sess.Worktree)); why != "" {
-			left = append(left, why)
-		}
 	}
 	note := stayedNote(left)
 	if th.State == store.ThreadEnded && th.Note != "" {
@@ -128,6 +134,23 @@ func (s *Service) takeApart(sess store.RunnerSession, th store.Thread) error {
 		return err
 	}
 	return nil
+}
+
+// dropTeam stands a lead-less thread's helpers down and removes the lead's
+// worktree when nothing in it would be lost. It says what stayed; what
+// failed is logged and returned.
+func (s *Service) dropTeam(sess store.RunnerSession) ([]string, error) {
+	left, err := s.standAllDown(sess.ThreadID)
+	if err != nil {
+		log.Printf("threads: #%d lost its lead and its helpers were not stood down: %v", sess.ThreadID, err)
+		return nil, err
+	}
+	if sess.Worktree != "" {
+		if why := s.Lander.Remove(workOf(sess), taskq.RebaseMark(sess.Worktree)); why != "" {
+			left = append(left, why)
+		}
+	}
+	return left, nil
 }
 
 // leadGone reports whether a thread's lead has ended: its row says done,

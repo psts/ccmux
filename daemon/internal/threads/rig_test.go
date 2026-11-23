@@ -272,6 +272,7 @@ type fakeJobs struct {
 	startErr error
 	openErr  error // what OpenJob fails with, when set
 	lastErr  error // what LastJob fails with, when set
+	stopErr  error // what Stop fails with, when set (the job runs on)
 	manual   bool
 	// beforeStop runs as Stop is asked, before it reads the job: a test
 	// that ends the job in between plays a stop that comes too late.
@@ -338,6 +339,9 @@ func (f *fakeJobs) Stop(id, note string) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.stopErr != nil {
+		return f.stopErr
+	}
 	job, err := f.r.st.Job(id)
 	if err != nil || job == nil || job.State == store.JobDone {
 		return store.ErrNoJob // as the manager: a job that has ended is not stopped

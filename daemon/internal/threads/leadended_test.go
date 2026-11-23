@@ -269,3 +269,55 @@ func TestAnUnreadMergeOfALeadlessThreadNotSavedIsSettledAgain(t *testing.T) {
 		t.Fatalf("the next try ends it: %+v", got)
 	}
 }
+
+// The thread's row cannot be read as its lead ends: a merge may run, so
+// nothing is stopped or removed. When the merge ends, its end takes the
+// thread apart.
+func TestALeadEndingOnAThreadWhoseRowIsNotReadTouchesNothing(t *testing.T) {
+	r, th, lead, backend, admin := team(t)
+	job, res := r.asksMerge(th, ByLead)
+	r.svc.St = &threadFailsAfter{Store: r.st, left: 0, err: errors.New("database is locked")}
+	r.endLead(lead)
+	r.svc.St = r.st
+	r.untouched(th, backend, admin)
+	if len(r.jobs.stopped) != 0 {
+		t.Fatalf("nothing is stopped on a guess: %v", r.jobs.stopped)
+	}
+	if err := r.svc.MergeHandler().Apply(job, res); err != nil {
+		t.Fatal(err)
+	}
+	r.takenApart(th, lead, "merged app into main, backend into main", backend, admin)
+}
+
+// The row was read once (no merge) and not the second time: the team still
+// goes, and the row is left as it says.
+func TestALeadEndingWhoseRowIsNotReadAgainStillStandsItsTeamDown(t *testing.T) {
+	r, th, lead, backend, admin := team(t)
+	r.svc.St = &threadFailsAfter{Store: r.st, left: 1, err: errors.New("database is locked")}
+	r.endLead(lead)
+	r.svc.St = r.st
+	if r.row(backend.ID).Wanted != store.SessionDone || r.row(admin.ID).Wanted != store.SessionDone {
+		t.Fatalf("the helpers are stood down")
+	}
+	if r.removed() != "backend|app" {
+		t.Fatalf("both worktrees go: %s", r.removed())
+	}
+	if got := r.state(th.ID); got.State == store.ThreadEnded {
+		t.Fatalf("a row that was not read is not written: %+v", got)
+	}
+}
+
+// The stop is asked and not heard: the job runs on, nothing is removed
+// under it, and its end takes the thread apart.
+func TestAStopThatFailsLeavesTheMergeToItsEnd(t *testing.T) {
+	r, th, lead, backend, admin := team(t)
+	job, res := r.asksMerge(th, ByLead)
+	r.jobs.stopErr = errors.New("unit not reached")
+	r.endLead(lead)
+	r.untouched(th, backend, admin)
+	r.jobs.stopErr = nil
+	if err := r.svc.MergeHandler().Apply(job, res); err != nil {
+		t.Fatal(err)
+	}
+	r.takenApart(th, lead, "merged app into main, backend into main", backend, admin)
+}
