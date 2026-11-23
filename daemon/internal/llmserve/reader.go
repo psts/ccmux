@@ -2,6 +2,7 @@
 // process: `ccmuxd llm-proxy`, under the systemd user unit ccmux-llm-proxy.
 // The daemon restarts on every deploy, and a reply being streamed through it
 // was cut each time. This service restarts only when its own code changed.
+// It also runs the Meridian sidecars (sidecars.go), for the same reason.
 //
 // It reads what it needs straight from the daemon's database, read only: the
 // accounts and routes (settings), and which harness a pane runs (panes and

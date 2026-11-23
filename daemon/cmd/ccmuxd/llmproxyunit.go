@@ -93,7 +93,7 @@ type llmProxy struct {
 	client *llmserve.Client
 	// wait is how long a start of the daemon waits for the service to
 	// answer after starting or restarting it: past the old one's stop
-	// timeout (15s, unitText) and the new one's start.
+	// timeout (20s, unitText) and the new one's start.
 	wait time.Duration
 
 	mu     sync.Mutex
@@ -220,9 +220,12 @@ func unitServesOther(path, db string) string {
 // Restart=always, with no start limit: every pane on the host needs this
 // service to reach its model, so it comes back however it went (a crash, a
 // stray kill, a port that was busy for a minute), every two seconds for as
-// long as it takes. `systemctl stop` still stops it. KillMode is the default
-// control-group: the service has no children to outlive it. TimeoutStopSec
-// leaves room for the drain (llmserve's, 10s).
+// long as it takes. `systemctl stop` still stops it. KillMode=mixed: the
+// stop signal goes to the service alone, which drains (llmserve's, 10s) and
+// then stops its Meridian sidecars itself (up to 5s for their children);
+// control-group would signal the sidecars at once and cut the replies the
+// drain waits for. Whatever is left when the service has exited, or at
+// TimeoutStopSec, is killed with the whole group, so none outlives it.
 func (p *llmProxy) unitText() string { return p.unitTextWith(p.unitMark()) }
 
 // unitMark names the unit file this daemon would write: a short hash of its
@@ -253,8 +256,8 @@ ExecStart=%s llm-proxy -db %s -addr %s -unit %s
 Environment=%s
 Restart=always
 RestartSec=2
-KillMode=control-group
-TimeoutStopSec=15
+KillMode=mixed
+TimeoutStopSec=20
 StandardInput=null
 
 [Install]

@@ -131,7 +131,7 @@ func TestProxyUnitText(t *testing.T) {
 		"Environment=PATH=/home/u/100%%/bin:/usr/bin\n", // the daemon's own PATH, % escaped
 		"Restart=always\n",
 		"StartLimitIntervalSec=0\n", // it keeps coming back: every pane needs it
-		"KillMode=control-group\n",
+		"KillMode=mixed\n",          // the sidecars stop after the drain, not with the signal
 		"WantedBy=default.target\n",
 	} {
 		if !strings.Contains(text, want) {

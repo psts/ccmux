@@ -87,3 +87,31 @@ func TestKindAllowed_MeridianOnlyWhereDeclared(t *testing.T) {
 		t.Error("the claude harness must never ride meridian")
 	}
 }
+
+// GET /v1/health asks no token, so it carries only whether each sidecar
+// runs; the pids and errors stay in the gated settings. No supervisor, no key.
+func TestHealth_SidecarsAreRunningFlagsOnly(t *testing.T) {
+	s := llmServer(t)
+	rec := httptest.NewRecorder()
+	s.health(rec, httptest.NewRequest("GET", "/v1/health", nil))
+	if strings.Contains(rec.Body.String(), "llmSidecarsRunning") {
+		t.Fatal("a daemon without a supervisor must not advertise llmSidecars")
+	}
+	s.SetSidecars(&fakeSidecars{status: map[string]meridian.Status{
+		"m": {Running: true, PID: 42}, "n": {LastError: "exit status 1"},
+	}})
+	rec = httptest.NewRecorder()
+	s.health(rec, httptest.NewRequest("GET", "/v1/health", nil))
+	var got struct {
+		Sidecars map[string]bool `json:"llmSidecarsRunning"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sidecars) != 2 || !got.Sidecars["m"] || got.Sidecars["n"] {
+		t.Fatalf("llmSidecarsRunning = %+v, want m running and n not", got.Sidecars)
+	}
+	if b := rec.Body.String(); strings.Contains(b, `"pid"`) || strings.Contains(b, "exit status") {
+		t.Fatalf("health leaked a pid or an error: %s", b)
+	}
+}

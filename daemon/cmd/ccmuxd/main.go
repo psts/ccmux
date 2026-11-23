@@ -220,8 +220,8 @@ func runDaemon() {
 	apiSrv.SetLLMProxy(llmSvc)
 	proxy.wire(ctx, llmSvc, apiSrv)
 	mgr.PaneLLMRoute = llmSvc.SetPaneRoute
-	sidecars := wireSidecars(ctx, llmSvc, apiSrv, mgr)
-	defer sidecars.Stop() // waits for the children: the unit's KillMode=process would not reap them
+	stopSidecars := wireSidecars(ctx, proxy, llmSvc, apiSrv, mgr)
+	defer stopSidecars() // waits for the children: the unit's KillMode=process would not reap them
 	agent.DefaultModel = *agentsModel
 	agentStore := agent.NewStore(*agentsDir)
 	agentStore.AskNPMForLatestSDK() // the lenses' "agents on X, latest Y"

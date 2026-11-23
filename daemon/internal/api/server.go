@@ -365,6 +365,15 @@ type sidecarSupervisor interface {
 // reports their state as llmSidecars (account name → status).
 func (s *Server) SetSidecars(sv sidecarSupervisor) { s.sidecars = sv }
 
+// sidecarsRunning is GET /v1/health's view of the sidecars.
+func sidecarsRunning(st map[string]meridian.Status) map[string]bool {
+	out := make(map[string]bool, len(st))
+	for name, one := range st {
+		out[name] = one.Running
+	}
+	return out
+}
+
 // reconcileSidecars re-derives the sidecar set from the stored accounts. A
 // read failure is logged, not returned: the accounts themselves were just
 // persisted, and refusing the settings write now would leave the UI showing
@@ -697,6 +706,13 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	// Additive: an old lens or hub ignores the field.
 	if s.llmProxyHealth != nil {
 		resp["llmProxy"] = s.llmProxyHealth()
+	}
+	// Whether each Meridian sidecar runs, by account name, wherever they run
+	// (in the LLM proxy's service on Linux). Only that: this route asks no
+	// token, and the rest (pids, errors) is in GET /v1/settings. Additive,
+	// like llmProxy.
+	if s.sidecars != nil {
+		resp["llmSidecarsRunning"] = sidecarsRunning(s.sidecars.Status())
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

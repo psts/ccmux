@@ -5,7 +5,8 @@
 // Claude subscription — Anthropic refuses subscription tokens from
 // third-party callers server-side, so the daemon's own proxy cannot do it.
 //
-// The daemon owns the process the way it owns dev servers: start it when the
+// The LLM proxy owns the process, wherever the proxy runs (its own service
+// on Linux, internal/llmserve; the daemon otherwise): start it when the
 // account exists, restart it with backoff when it dies, stop it when the
 // account goes away. The account's stored key is the Claude setup token; it
 // reaches Meridian only as CLAUDE_CODE_OAUTH_TOKEN in the child's environment
@@ -99,7 +100,7 @@ func Command(ctx context.Context, bin string, s Spec) (*exec.Cmd, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 5 * time.Second
-	// Output to the daemon log with a prefix, so a bad token or a bound port
+	// Output to the supervising process's log with a prefix, so a bad token or a bound port
 	// says what it is instead of collapsing into "exit status 1".
 	cmd.Stdout = logWriter{prefix: "meridian[" + s.Name + "] "}
 	cmd.Stderr = cmd.Stdout
@@ -113,7 +114,7 @@ func Command(ctx context.Context, bin string, s Spec) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// logWriter forwards a child's output lines to the daemon log.
+// logWriter forwards a child's output lines to the supervising process's log.
 type logWriter struct{ prefix string }
 
 func (w logWriter) Write(b []byte) (int, error) {

@@ -37,7 +37,7 @@ func newRig(t *testing.T) *rig {
 	t.Helper()
 	st, r, path := daemonDB(t)
 	g := &rig{st: st, daemon: llmproxy.New(st), svc: NewService(r)}
-	g.http = httptest.NewServer(Handler(g.svc, Config{DB: path, Unit: "unit-mark"}))
+	g.http = httptest.NewServer(Handler(g.svc, Config{DB: path, Unit: "unit-mark"}, nil))
 	t.Cleanup(g.http.Close)
 	g.client = NewClient(g.http.URL)
 	return g
@@ -391,7 +391,7 @@ func TestForwardSaysWhenTheServiceIsDown(t *testing.T) {
 // use them, on the service's own port as on the daemon's.
 func TestServiceIsLoopbackOnly(t *testing.T) {
 	g := newRig(t)
-	h := Handler(g.svc, Config{DB: "db"})
+	h := Handler(g.svc, Config{DB: "db"}, nil)
 	for _, path := range []string{"/llm/pane/p1/v1/messages", "/health", "/ctl/statuses"} {
 		req := httptest.NewRequest("GET", path, nil)
 		req.RemoteAddr = "100.64.1.2:9999" // a tailnet caller

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/llmproxy"
+	"ccmux.dev/ccmuxd/internal/meridian"
 )
 
 // Client is the daemon's end of the service: the control reads
@@ -75,6 +76,20 @@ func (c *Client) PaneStatus(ctx context.Context, paneID string) (string, []strin
 func (c *Client) CheckAccount(ctx context.Context, name string) (llmproxy.AccountStatus, error) {
 	var st llmproxy.AccountStatus
 	return st, c.call(ctx, c.slow, "POST", "/ctl/accounts/"+url.PathEscape(name)+"/check", nil, &st)
+}
+
+// Sidecars is the state of the Meridian sidecars the service runs, by
+// account name.
+func (c *Client) Sidecars(ctx context.Context) (map[string]meridian.Status, error) {
+	var out map[string]meridian.Status
+	return out, c.call(ctx, c.quick, "GET", "/ctl/sidecars", nil, &out)
+}
+
+// ReconcileSidecars asks the service to read the accounts for its sidecars
+// now rather than at its next look.
+func (c *Client) ReconcileSidecars(ctx context.Context) error {
+	var out struct{}
+	return c.call(ctx, c.quick, "POST", "/ctl/sidecars/reconcile", nil, &out)
 }
 
 // call is one control request. A refusal comes back as the service's own

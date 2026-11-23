@@ -11,6 +11,7 @@ import (
 
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/llmproxy"
+	"ccmux.dev/ccmuxd/internal/meridian"
 )
 
 // Config is what the service is started with.
@@ -42,10 +43,11 @@ func NewService(r *Reader) *llmproxy.Service {
 
 // Handler is everything the service answers: the pane routes panes point
 // their ANTHROPIC_BASE_URL at, its health, and the reads the daemon asks it
-// for (control.go). All of it loopback only, for the reason the daemon's own
-// mount gives (api/server.go): a keyed account injects a stored credential,
-// and panes are local.
-func Handler(svc *llmproxy.Service, cfg Config) http.Handler {
+// for (control.go), and the Meridian sidecars' state (sidecars.go; sc nil
+// leaves those routes out). All of it loopback only, for the reason the
+// daemon's own mount gives (api/server.go): a keyed account injects a stored
+// credential, and panes are local.
+func Handler(svc *llmproxy.Service, cfg Config, sc *sidecars) http.Handler {
 	mux := http.NewServeMux()
 	llm := svc.Handler()
 	// Per-METHOD patterns, as on the daemon; GET also covers HEAD (claude
@@ -57,6 +59,9 @@ func Handler(svc *llmproxy.Service, cfg Config) http.Handler {
 		writeJSON(w, http.StatusOK, Health{OK: true, CodeHash: CodeHash(), DB: cfg.DB, Unit: cfg.Unit})
 	})
 	control{svc}.mount(mux)
+	if sc != nil {
+		sc.mount(mux)
+	}
 	return loopbackOnly(mux)
 }
 
@@ -108,7 +113,35 @@ func Serve(ctx context.Context, cfg Config) error {
 		return err
 	}
 	log.Printf("llm proxy listening on http://%s (db %s, code %s)", cfg.Addr, cfg.DB, CodeHash())
-	return serveOn(ctx, ln, Handler(NewService(r), cfg), drain)
+	svc := NewService(r)
+	sc, stopSidecars := startSidecars(ctx, meridian.New(context.Background(), harness.LookPath), svc)
+	defer stopSidecars()
+	return serveOn(ctx, ln, Handler(svc, cfg, sc), drain)
+}
+
+// startSidecars keeps sv's sidecars matching the accounts svc reads, until
+// the returned stop. sv is not on ctx (Serve makes it on a context of its
+// own): ctx ends when the stop signal comes, and a sidecar killed then would
+// cut the replies the drain is waiting for. So they stop after it (the
+// unit's KillMode=mixed signals this process alone), and the unit's stop
+// timeout leaves the room (drain, then meridian's own wait for its
+// children).
+func startSidecars(ctx context.Context, sv *meridian.Supervisor, svc accountSource) (*sidecars, func()) {
+	sc := newSidecars(sv, svc)
+	// The loop ends with ctx, or with stop itself: Serve also returns on a
+	// listener's error with ctx still live, and must then exit (systemd
+	// restarts the unit) rather than wait here for a signal.
+	kctx, kcancel := context.WithCancel(ctx)
+	kept := make(chan struct{})
+	go func() {
+		defer close(kept)
+		sc.keep(kctx, sidecarEvery)
+	}()
+	return sc, func() {
+		kcancel()
+		<-kept // no reconcile after this one
+		sv.Stop()
+	}
 }
 
 // serveOn answers on ln until ctx ends, then gives requests in flight wait

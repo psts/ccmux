@@ -48,20 +48,23 @@ it, so restarting ccmuxd no longer cuts a reply a session is streaming.
   `build-daemon.sh` from `daemon/scripts/llm-proxy-hash.sh`) and the mark of the
   unit file it was started from (`-unit`).
 - **Keep `internal/llmserve`'s imports small.** The hash covers that package
-  and every package of this module it imports (today: `llmproxy`, `harness`).
+  and every package of this module it imports (today: `llmproxy`, `harness`, `meridian`).
   Import `store`, `manager` or `api` there and nearly every deploy restarts the
   proxy again. It reads the daemon's database itself, read only
   (`reader.go`); the daemon stays the only writer.
-- **A change under `internal/llmproxy`, `internal/harness` or
-  `internal/llmserve` restarts the proxy on the next deploy**, after a 10s
-  drain, and cuts whatever is still streaming then. Claude Code retries a cut
+- **A change under `internal/llmproxy`, `internal/harness`,
+  `internal/meridian` or `internal/llmserve` restarts the proxy on the next
+  deploy**, after a 10s drain, and cuts whatever is still streaming then;
+  the meridian sidecars restart with it. Claude Code retries a cut
   reply by itself (seen live 2026-11-19), so it costs tokens, not work.
 - A pane keeps the address it started with. Panes from before the move still
   call `http://127.0.0.1:7900/llm/pane/<id>`; the daemon passes those on to the
   service, and they get the benefit at their next start.
 - Its log is its own: `journalctl --user -u ccmux-llm-proxy` (the `llm: pane …`
-  lines used to be in ccmuxd's). `GET /v1/health` on the daemon carries
-  `llmProxy` (mode, url, serving, what the last daemon start did to it).
+  lines and the `meridian[<account>]` ones used to be in ccmuxd's). `GET
+  /v1/health` on the daemon carries `llmProxy` (mode, url, serving, what the
+  last daemon start did to it) and `llmSidecarsRunning` (account →
+  running; `GET /v1/settings` has the rest as `llmSidecars`).
 - **A scratch daemon never touches the live unit.** With `CCMUXD_ROOT` set it
   keeps the proxy in its own process unless it is given `-llm-proxy-unit
   <its own name>`; and any daemon that finds a unit file serving another
@@ -69,8 +72,17 @@ it, so restarting ccmuxd no longer cuts a reply a session is streaming.
   that unit file afterwards.
 - macOS, and any host without systemd, keep the proxy inside the daemon
   (`-llm-proxy-unit none` forces that on Linux too).
-- Not moved: the meridian sidecars still run under the daemon and restart with
-  it.
+- **The meridian sidecars run where the proxy runs** (task #187,
+  `llmserve/sidecars.go`; `cmd/ccmuxd/sidecars.go` decides): in the service,
+  so a deploy no longer restarts them and the pool no longer fails over
+  (maybe to a metered key) while they come back. The service reads the
+  meridian accounts itself every 5s; a settings apply on the daemon only asks
+  it to look at once (`POST /ctl/sidecars/reconcile`). An unreadable database
+  leaves the running ones alone. They stop after the drain, not with it
+  (`KillMode=mixed`: the stop signal reaches the service alone).
+  Where the proxy is in the daemon, so are they, as before. A daemon switched
+  to `-llm-proxy-unit none` while the old unit still runs fights it for the
+  sidecars' ports: stop that unit first.
 
 ## Long work runs as jobs (Linux)
 
