@@ -1,7 +1,11 @@
 package runner
 
 import (
+	"context"
 	"errors"
+	"net"
+	"net/http"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -75,6 +79,55 @@ func TestACleanStartWaitsForNoTurn(t *testing.T) {
 		t.Fatalf("the refused message is not queued: %+v", open)
 	}
 }
+
+// A runner that does not answer in time may be mid-turn: refused. One with
+// no socket is down, and has no turn to cut: the clean start goes ahead.
+func TestACleanStartRefusesARunnerThatDoesNotAnswer(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.sup.dial = func(string) *Client {
+		return &Client{http: &http.Client{Transport: failingTransport{context.DeadlineExceeded}}}
+	}
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "x", Clean: "k1"}); !errors.Is(err, ErrCleanRefused) {
+		t.Fatalf("a runner that did not answer: %v", err)
+	}
+	if row, _ := r.st.RunnerSession(sess.ID); row.ConversationID() != sess.ID {
+		t.Fatalf("nothing moves: %q", row.ConversationID())
+	}
+	r.sup.dial = func(string) *Client { return Dial(filepath.Join(t.TempDir(), "none.sock")) }
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "x", Clean: "k2"}); err != nil {
+		t.Fatalf("a runner with no socket is down, not busy: %v", err)
+	}
+	if row, _ := r.st.RunnerSession(sess.ID); row.ConversationID() == sess.ID {
+		t.Fatal("the clean start was made")
+	}
+	moved, _ := r.st.RunnerSession(sess.ID)
+	stale := staleSocket(t) // a crashed runner leaves its socket file behind
+	r.sup.dial = func(string) *Client { return Dial(stale) }
+	if _, err := r.sup.SendPrompt(sess.ID, Prompt{Text: "x", Clean: "k3"}); err != nil {
+		t.Fatalf("a socket nobody listens on is down, not busy: %v", err)
+	}
+	if row, _ := r.st.RunnerSession(sess.ID); row.ConversationID() == moved.ConversationID() {
+		t.Fatal("the clean start past a stale socket was made")
+	}
+}
+
+// staleSocket is a unix socket file with no listener behind it.
+func staleSocket(t *testing.T) string {
+	path := filepath.Join(t.TempDir(), "stale.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	l.Close()
+	return path
+}
+
+type failingTransport struct{ err error }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
 
 // An asleep session is not started just to be moved: the row moves, and
 // the message wakes it onto the new conversation.

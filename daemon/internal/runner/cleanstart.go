@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"syscall"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/store"
@@ -37,8 +38,10 @@ func (s *Supervisor) cleanStart(sess *store.RunnerSession, key string) error {
 		return fmt.Errorf("%w: an agent starts fresh by its own base's rule", ErrCleanRefused)
 	}
 	running := sess.Wanted != store.SessionAsleep
-	if running && s.busyNow(sess.ID) {
-		return fmt.Errorf("%w: Claude is working right now; send it again when the turn has ended", ErrCleanRefused)
+	if running {
+		if err := s.betweenTurns(sess.ID); err != nil {
+			return err
+		}
 	}
 	conv, now := uuid.NewString(), s.millis()
 	left := store.LeftConversation{ID: sess.ConversationID(), At: now, Key: key}
@@ -79,13 +82,32 @@ func (s *Supervisor) StartOver(sessionID string) error {
 	return s.cleanStart(sess, "over-"+uuid.NewString())
 }
 
-// busyNow says whether a session's runner is in the middle of a turn. One
-// that does not answer is starting or down, and has no turn to cut.
-func (s *Supervisor) busyNow(sessionID string) bool {
+// betweenTurns refuses a clean start while a session's runner may be in
+// the middle of a turn, which a restart would cut off. A runner with no
+// socket, or none listening on it, is starting or down and has no turn to
+// cut. One that does not answer in time (slow under load) may be mid-turn,
+// so it is refused too.
+func (s *Supervisor) betweenTurns(sessionID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanAsk)
 	defer cancel()
 	h, err := s.dial(s.paths.Socket(sessionID)).Hello(ctx)
-	return err == nil && h.Busy
+	switch {
+	case err == nil && h.Busy:
+		return fmt.Errorf("%w: Claude is working right now; send it again when the turn has ended", ErrCleanRefused)
+	case err == nil, runnerDown(err):
+		if err != nil {
+			log.Printf("runner: session %s: clean start finds its runner down: %v", short(sessionID), err)
+		}
+		return nil
+	default:
+		log.Printf("runner: session %s: clean start refused, its runner did not answer: %v", short(sessionID), err)
+		return fmt.Errorf("%w: Claude did not answer in time; send it again in a moment", ErrCleanRefused)
+	}
+}
+
+// runnerDown says a call failed because no runner listens on the socket.
+func runnerDown(err error) bool {
+	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // restartClean starts the runner again on the row's new conversation. One
