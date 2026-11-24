@@ -25,17 +25,21 @@
     { value: "high", label: "High" }, { value: "xhigh", label: "Extra high" }, { value: "max", label: "Max" },
   ];
 
+  const effortLabel = (value) => (EFFORTS.find((e) => e.value === value) || { label: value }).label;
+
   // effortOptions are the levels to offer: the ones the session's model
   // takes when its runner said (info.models efforts), else all; the one
-  // picked now is always there.
+  // picked now is always there. Default names the level the session's
+  // settings give its model, when its runner said (info.settingsEffort,
+  // claudeserve/sessionself.mjs settingsEffort).
   function effortOptions(info, picked) {
     const models = (info && info.models) || [];
     const m = models.find((x) => x.model === info.model || x.value === info.model);
     const takes = m && Array.isArray(m.efforts) ? m.efforts : null;
-    return EFFORTS.filter((e) => !e.value || e.value === picked || !takes || takes.includes(e.value));
+    const given = info && info.settingsEffort ? ` (${effortLabel(info.settingsEffort)})` : "";
+    return EFFORTS.filter((e) => !e.value || e.value === picked || !takes || takes.includes(e.value))
+      .map((e) => (e.value ? e : { ...e, label: e.label + given }));
   }
-
-  const effortLabel = (value) => (EFFORTS.find((e) => e.value === value) || { label: value }).label;
 
   const kinds = { local_bash: "Shell", local_agent: "Agent", monitor: "Monitor", workflow: "Workflow" };
 
@@ -119,7 +123,7 @@
       if (!live) return;
       const picked = sess.effort || "";
       const opts = effortOptions(info, picked);
-      const key = opts.map((o) => o.value).join(",");
+      const key = opts.map((o) => o.value + ":" + o.label).join(",");
       if (select.dataset.key !== key) {
         select.dataset.key = key;
         select.textContent = "";
@@ -136,7 +140,8 @@
       try {
         const out = await d.call("POST", `/v1/sessions/${enc(sess.id)}/effort`, { effort: value });
         sess.effort = value;
-        if (out && out.applies && out.applies !== "now") d.said(`Effort ${effortLabel(value)} is saved and applies when the session restarts.`);
+        const label = (effortOptions(d.info() || {}, value).find((o) => o.value === value) || { label: value }).label;
+        if (out && out.applies && out.applies !== "now") d.said(`Effort ${label} is saved and applies when the session restarts.`);
         else draw();
       } catch (e) {
         d.fail(e.message);

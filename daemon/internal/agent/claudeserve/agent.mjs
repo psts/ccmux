@@ -13,7 +13,7 @@ import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.m
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
-import { fromInit, fromInitialization, commandList, resultOf, contextOf, backgroundTasks, usageLimit, MODES, EFFORTS, advisorOf } from "./sessionself.mjs";
+import { fromInit, fromInitialization, commandList, resultOf, contextOf, backgroundTasks, usageLimit, MODES, EFFORTS, advisorOf, settingsEffort } from "./sessionself.mjs";
 import { shellBox } from "./shellbox.mjs";
 import { rewind, refusal } from "./rewind.mjs";
 
@@ -107,6 +107,9 @@ export class Agent {
     this.info = {}; // what the session says of itself (sessionself.mjs), for a runner's page
     this.taskSeen = new Map(); // when each background task's run was first seen (backgroundTasks)
     if (o.socket) this.info.advisor = this.advisorInUse(deps);
+    // The settings files as they were at start, for the effort they give
+    // the model each turn runs on (settingsEffort, at init).
+    this.settingsRead = o.socket ? { texts: this.settingsTexts(deps, this.settingsPaths(deps)), env: deps.env || {} } : null;
     this.result = o.socket ? this.state.resultFor(this.sid) : null; // the last finished turn's bill, kept across a runner's restarts
     this.suggestion = ""; // the next prompt Claude Code predicts, a runner's page offers it
     this.clients = new Set();
@@ -301,11 +304,17 @@ export class Agent {
   // project, local). One that cannot be read or does not parse names none,
   // and says so in the log.
   advisorInUse(deps) {
-    const env = deps.env || {};
-    const home = env.CLAUDE_CONFIG_DIR || (env.HOME ? env.HOME + "/.claude" : "");
-    const paths = [home && home + "/settings.json", this.cwd + "/.claude/settings.json", this.cwd + "/.claude/settings.local.json"].filter(Boolean);
+    const paths = this.settingsPaths(deps);
     const warn = (i, err) => this.log(`! ${paths[i]} is not JSON, so it names no advisor: ${err && err.message ? err.message : err}`);
     return advisorOf(this.o.advisor, this.settingsTexts(deps, paths), warn);
+  }
+
+  // settingsPaths are the settings files a session loads, in Claude Code's
+  // order (user, project, local).
+  settingsPaths(deps) {
+    const env = deps.env || {};
+    const home = env.CLAUDE_CONFIG_DIR || (env.HOME ? env.HOME + "/.claude" : "");
+    return [home && home + "/settings.json", this.cwd + "/.claude/settings.json", this.cwd + "/.claude/settings.local.json"].filter(Boolean);
   }
 
   // settingsTexts reads those files; one that cannot be read names none.
@@ -490,7 +499,7 @@ export class Agent {
       this.log(`⚙ ${this.o.agent} on ${m.model} (session ${this.sid.slice(0, 8)})${mcp ? " · mcp: " + mcp : ""}`);
     }
     if (!this.turns) return;
-    if (m.subtype === "init") this.learn(fromInit(m, this.info));
+    if (m.subtype === "init") this.learn({ ...fromInit(m, this.info), settingsEffort: this.effortFor(m.model) });
     else if (m.subtype === "commands_changed") this.learn({ commands: commandList(m.commands) });
     else if (m.subtype === "background_tasks_changed") this.learn({ tasks: backgroundTasks(m.tasks, this.taskSeen) });
     else this.emit(this.transcript.note(noteFor(m), m.level));
@@ -551,8 +560,16 @@ export class Agent {
     if (!this.turns) throw refusal("only a session runner changes its effort");
     if (!EFFORTS.includes(level)) throw refusal(`not an effort to switch to: ${level}`);
     this.ensureQuery();
-    await this.q.applyFlagSettings({ effortLevel: level || null });
+    // Default is what the settings give its model, as at its next start;
+    // a cleared effortLevel would go to the model's own instead.
+    await this.q.applyFlagSettings({ effortLevel: level || this.info.settingsEffort || null });
     this.learn({ effort: level });
+  }
+
+  // effortFor is the effort the settings give model (settingsEffort), ""
+  // for none or an agent pane.
+  effortFor(model) {
+    return this.settingsRead ? settingsEffort(model, this.settingsRead.texts, this.settingsRead.env) : "";
   }
 
   // stopTask stops one of the session's background tasks; Claude Code then

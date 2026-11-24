@@ -1,7 +1,7 @@
 // node --test sessionself.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { advisorOf, backgroundTasks, commandList, contextOf, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
+import { advisorOf, settingsEffort, backgroundTasks, commandList, contextOf, fromInit, fromInitialization, resultOf } from "./sessionself.mjs";
 
 test("commands are listed once, the first row of a name standing", () => {
   const list = commandList([
@@ -97,4 +97,16 @@ test("a background task keeps the time it was first seen, a new run starts its o
   assert.deepEqual(backgroundTasks([{ ...dev, run_id: "r2" }], seen, 9000).map((t) => [t.id, t.since]), [["b1", 9000]], "a resumed task is a new run");
   assert.deepEqual([...seen.keys()], ["r2"], "what left the set is forgotten");
   assert.deepEqual(backgroundTasks(undefined, seen, 1), []);
+});
+
+test("the effort the settings give a model: the environment, then the files in order, a model's own line before the general one", () => {
+  const user = JSON.stringify({ effortLevel: "high", modelSettings: { "claude-opus-5-5": { effortLevel: "medium" } } });
+  assert.equal(settingsEffort("claude-opus-5-5", [user, "", ""]), "medium");
+  assert.equal(settingsEffort("claude-opus-5-5[1m]", [user]), "medium", "the context suffix is not part of the model");
+  assert.equal(settingsEffort("claude-fable-5-2", [user]), "high", "no line of its own: the general one");
+  assert.equal(settingsEffort("claude-opus-5-5", [user, JSON.stringify({ effortLevel: "low" })]), "medium", "a model's own line wins over a later general one");
+  assert.equal(settingsEffort("claude-opus-5-5", [user, "", JSON.stringify({ modelSettings: { "claude-opus-5-5": { effortLevel: "xhigh" } } })]), "xhigh", "a later file wins");
+  assert.equal(settingsEffort("claude-opus-5-5", [user], { CLAUDE_CODE_EFFORT_LEVEL: "max" }), "max", "the environment wins");
+  assert.equal(settingsEffort("claude-opus-5-5", ["{oops", ""]), "", "nothing readable: unknown");
+  assert.equal(settingsEffort("", [user]), "high");
 });

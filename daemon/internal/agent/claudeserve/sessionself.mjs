@@ -138,6 +138,29 @@ function modelOf(x) {
 }
 
 
+// settingsEffort is the effort a session's settings give model, "" when
+// none says: what "Default" means on its page, and what a Default picked
+// while it runs goes back to (a cleared effortLevel would go to the
+// model's own instead). Our reading of Claude Code's rules, which it does
+// not publish whole: CLAUDE_CODE_EFFORT_LEVEL first, then the files in its
+// order (user, project, local), the last that names one winning, and in
+// them a model's own modelSettings line before the general effortLevel.
+// A file that does not parse names none (advisorOf says so in the log).
+export function settingsEffort(model, settingsTexts, env = {}) {
+  const fromEnv = String(env.CLAUDE_CODE_EFFORT_LEVEL || "");
+  if (EFFORTS.includes(fromEnv) && fromEnv) return fromEnv;
+  const key = String(model || "").replace(/\[[^\]]*\]$/, "");
+  let own = "", general = "";
+  for (const text of settingsTexts || []) {
+    let s;
+    try { s = JSON.parse(text || "{}"); } catch { continue; }
+    const line = s && s.modelSettings && s.modelSettings[key];
+    if (line && EFFORTS.includes(line.effortLevel) && line.effortLevel) own = line.effortLevel;
+    if (s && EFFORTS.includes(s.effortLevel) && s.effortLevel) general = s.effortLevel;
+  }
+  return own || general;
+}
+
 // advisorOf is the advisor a session runs with, as its page shows it: the
 // one its row started it with (flag, --advisor), else what the settings
 // files say, the last that names one winning (they come in Claude Code's

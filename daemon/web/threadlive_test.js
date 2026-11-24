@@ -48,6 +48,8 @@ test("the efforts offered are the ones the session's model takes, the picked one
   assert.deepEqual(L.effortOptions(info, "").map((e) => e.value), ["", "low", "high"]);
   assert.deepEqual(L.effortOptions(info, "max").map((e) => e.value), ["", "low", "high", "max"], "what the row names stays");
   assert.deepEqual(L.effortOptions({}, "").map((e) => e.value), L.EFFORTS.map((e) => e.value), "a runner that did not say: all");
+  assert.equal(L.effortOptions({ settingsEffort: "medium" }, "")[0].label, "Default (Medium)", "Default names what the settings give");
+  assert.equal(L.effortOptions({}, "")[0].label, "Default", "and says nothing it does not know");
 });
 
 test("the page's efforts are the runner's and the daemon's (sessionself.mjs, api/sessioneffort.go)", () => {

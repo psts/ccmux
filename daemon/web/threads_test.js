@@ -1838,7 +1838,7 @@ test("a running session's effort is picked from the header, from the levels its 
   const p = await boot({ sessions: [{ ...lead, state: "running", effort: "high" }], search: "?s=lead1", routes: [
     [/^POST \/v1\/sessions\/lead1\/effort$/, (body) => ({ effort: body.effort, applies })],
   ] });
-  await p.frame(snapshot({ info: { model: "claude-opus-5-5", models: [{ value: "default", name: "Opus", model: "claude-opus-5-5", efforts: ["low", "medium", "high", "max"] }] } }));
+  await p.frame(snapshot({ info: { model: "claude-opus-5-5", settingsEffort: "medium", models: [{ value: "default", name: "Opus", model: "claude-opus-5-5", efforts: ["low", "medium", "high", "max"] }] } }));
   assert.ok(!p.$("effort-box").classList.contains("hidden"));
   assert.equal(p.$("effort").value, "high");
   assert.equal(p.$("effort-shown").textContent, "High");
@@ -1853,8 +1853,8 @@ test("a running session's effort is picked from the header, from the levels its 
   p.$("effort").value = "";
   p.$("effort").onchange({ target: p.$("effort") });
   await p.settle();
-  assert.equal(p.$("effort-shown").textContent, "Default");
-  assert.match(p.$("notice-bar").textContent, /Effort Default is saved and applies when the session restarts/);
+  assert.equal(p.$("effort-shown").textContent, "Default (Medium)");
+  assert.match(p.$("notice-bar").textContent, /Effort Default \(Medium\) is saved and applies when the session restarts/);
 });
 
 test("an agent's effort is its base's: no Effort picker", async () => {

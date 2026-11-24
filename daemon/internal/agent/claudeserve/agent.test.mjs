@@ -626,6 +626,18 @@ test("a runner changes its effort when its page asks, and back to the model's ow
   await assert.rejects(makeAgent().agent.setEffort("high"), /only a session runner/);
 });
 
+test("a runner says the effort its settings give its model, and Default goes back to that, not the model's own", async () => {
+  const settings = { "/home/u/.claude/settings.json": JSON.stringify({ effortLevel: "high", modelSettings: { "claude-opus-5-5": { effortLevel: "medium" } } }) };
+  const readFile = (p) => { if (p in settings) return settings[p]; const e = new Error("no"); e.code = "ENOENT"; throw e; };
+  const { agent, sdk } = runnerAgent({ env: { HOME: "/home/u" }, readFile });
+  agent.prompt("hi", "p1");
+  agent.onMessage({ type: "system", subtype: "init", model: "claude-opus-5-5", permissionMode: "default" });
+  assert.equal(agent.info.settingsEffort, "medium");
+  await agent.setEffort("xhigh");
+  await agent.setEffort("");
+  assert.deepEqual(sdk.queries[0].flags, [{ effortLevel: "xhigh" }, { effortLevel: "medium" }]);
+});
+
 test("a task's builder runs in the mode and at the effort its row names", () => {
   const { agent, sdk } = runnerAgent({ permissionMode: "auto", effort: "medium", model: "opus" });
   agent.prompt("build it", "p1");
