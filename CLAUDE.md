@@ -525,6 +525,9 @@ mailbox stay the same. tmux is no longer what keeps an agent alive.
   waiting, no background task, and its prompt cache already cold. That is
   how a lead picks up Claude Code (specs name the `~/.local/bin/claude`
   link, which Claude Code's updater moves), plugins, skills and the SDK.
+  It goes sooner, on the same quiet, when its skills or plugins changed
+  (the page's "Skills changed" bar, `Config.StaleLoadouts`), once per
+  change. A new Claude Code or SDK alone still waits for the 20 hours.
   One session at a time; one that does not come back stops the rest and
   says so in its note. Role agents and task builders are left out.
 - **The SDK moves daily without a release** (`internal/sdkupdate`,

@@ -132,6 +132,7 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 
 // runnerConfig is what every session's spec is built from.
 func runnerConfig(w runnerWiring, claude string) runner.Config {
+	loadouts := wireLoadouts(w)
 	return runner.Config{
 		Sidecar: w.agents.EnsureClaudeServe, Claude: claude, Env: runnerEnv, Peers: peersShim(w.shim), RefreshAfter: w.refreshAfter,
 		// A session's own identity: what a tmux pane's shell is given that
@@ -141,7 +142,10 @@ func runnerConfig(w runnerWiring, claude string) runner.Config {
 		// What its group and repo chose from the catalog, and nothing else of
 		// the user's Claude setup (loadouts.go). The day-one choices are
 		// written here, before the supervisor starts a session.
-		Loadout: sessionLoadout(wireLoadouts(w).ForSession),
+		Loadout: sessionLoadout(loadouts.ForSession),
+		// A session whose list moved on (the page's "Skills changed" bar)
+		// is refreshed at its next quiet moment (runner/refresh.go).
+		StaleLoadouts: staleLoadouts(loadouts),
 		// A role agent's session starts on what its base says, read at
 		// every start (api/agentsessions.go).
 		Agent: w.api.AgentStart,

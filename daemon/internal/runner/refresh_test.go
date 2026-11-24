@@ -173,11 +173,11 @@ func TestOnlyAPersonsSessionIsDue(t *testing.T) {
 		{ID: "x", Wanted: store.SessionRunning, Role: store.RoleBuilder},
 		{ID: "x", Wanted: store.SessionAsleep},
 	} {
-		if r.sup.refreshDue(sess) {
+		if r.sup.refreshDue(sess, nil) != "" {
 			t.Errorf("due: %+v", sess)
 		}
 	}
-	if !r.sup.refreshDue(store.RunnerSession{ID: "x", Wanted: store.SessionRunning, Kind: store.SessionLead}) {
+	if r.sup.refreshDue(store.RunnerSession{ID: "x", Wanted: store.SessionRunning, Kind: store.SessionLead}, nil) == "" {
 		t.Fatal("an old lead is due")
 	}
 }
@@ -269,7 +269,7 @@ func TestARefreshWaitsForWhatTheRegistryHolds(t *testing.T) {
 			sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 			r.reconcile()
 			c.hold(r, sess.ID)
-			if r.sup.refreshIfIdle(context.Background(), sess.ID) != (c.want == 1) || r.restarts(sess.ID) != c.want {
+			if r.sup.refreshIfIdle(context.Background(), sess.ID, "test") != (c.want == 1) || r.restarts(sess.ID) != c.want {
 				t.Fatalf("restarts %d, want %d: %v", r.restarts(sess.ID), c.want, r.units.calls)
 			}
 		})
@@ -298,5 +298,68 @@ func TestSnapshotCold(t *testing.T) {
 		if got := snapshotCold(json.RawMessage(c.body), now); got != c.want {
 			t.Errorf("%s: got %v", c.name, got)
 		}
+	}
+}
+
+// staleRig is a refresh rig whose loadout check says the sessions in stale
+// are out of date.
+func staleRig(t *testing.T) (*rig, map[string]bool) {
+	r := refreshRig(t)
+	stale := map[string]bool{}
+	r.sup.cfg.StaleLoadouts = func() func(store.RunnerSession) bool {
+		return func(sess store.RunnerSession) bool { return stale[sess.ID] }
+	}
+	return r, stale
+}
+
+// A session whose skills or plugins changed is started again at its next
+// idle, cold moment, long before its age; once per change, so one that is
+// still out of date after its restart waits for its age.
+func TestASessionWithChangedSkillsIsStartedAgainEarly(t *testing.T) {
+	r, stale := staleRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.age(sess.ID, 10*time.Minute)
+	r.reconcile()
+	if r.restarts(sess.ID) != 0 {
+		t.Fatalf("restarted with nothing changed: %v", r.units.calls)
+	}
+	stale[sess.ID] = true
+	r.reconcile()
+	if r.restarts(sess.ID) != 1 {
+		t.Fatalf("not restarted for changed skills: %v", r.units.calls)
+	}
+	row, _ := r.st.RunnerSession(sess.ID)
+	if !strings.Contains(row.Note, "skills") || strings.Contains(row.Note, "after 1h") {
+		t.Fatalf("its note says why: %q", row.Note)
+	}
+	r.age(sess.ID, time.Minute)
+	r.reconcile()
+	r.reconcile()
+	if r.restarts(sess.ID) != 1 {
+		t.Fatalf("still out of date after its restart, restarted again: %v", r.units.calls)
+	}
+	stale[sess.ID] = false
+	r.reconcile()
+	stale[sess.ID] = true // a later change
+	r.reconcile()
+	if r.restarts(sess.ID) != 2 {
+		t.Fatalf("a later change did not restart it: %v", r.units.calls)
+	}
+}
+
+// Changed skills wait for the same quiet as an old session: a warm cache
+// holds the restart.
+func TestChangedSkillsWaitForAColdCache(t *testing.T) {
+	r, stale := staleRig(t)
+	r.clock.at = time.Now()
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.age(sess.ID, 10*time.Minute)
+	r.run[sess.ID].snap = map[string]any{"result": map[string]any{"endedAt": time.Now().UnixMilli(), "cacheTtlMs": 3600000}}
+	stale[sess.ID] = true
+	r.reconcile()
+	if r.restarts(sess.ID) != 0 {
+		t.Fatalf("restarted on a warm cache: %v", r.units.calls)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/agent"
 	"ccmux.dev/ccmuxd/internal/loadout"
 	"ccmux.dev/ccmuxd/internal/manager"
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // wireLoadouts makes the loadout service (internal/loadout): what a thread
@@ -39,4 +40,23 @@ func repoSessions(mgr *manager.Manager) []loadout.Repo {
 		}
 	}
 	return out
+}
+
+// staleLoadouts is the refresh's check for a session whose skills and
+// plugins changed since it started: the same one the page's bar shows
+// (api loadoutOf). Choices that cannot be read check nothing this pass,
+// said at most once an hour (a pass runs every few seconds).
+func staleLoadouts(svc *loadout.Service) func() func(store.RunnerSession) bool {
+	var said time.Time
+	return func() func(store.RunnerSession) bool {
+		snap, err := svc.Snapshot()
+		if err != nil {
+			if time.Since(said) >= time.Hour {
+				said = time.Now()
+				log.Printf("runner: refresh: skills and plugins not read, no session refreshed for them: %v", err)
+			}
+			return nil
+		}
+		return snap.Stale
+	}
 }

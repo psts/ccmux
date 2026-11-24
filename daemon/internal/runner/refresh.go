@@ -16,7 +16,9 @@ import (
 // the person's plugins, skills and CLAUDE.md, and its MCP servers when it
 // starts, and a repo's lead can run for days without one. So a session
 // that has run longer than Config.RefreshAfter is started again, on the
-// same conversation, the first time it is truly idle: no turn, no card, no
+// same conversation, the first time it is truly idle; so is one whose
+// skills or plugins changed since it started (Config.StaleLoadouts), once
+// per change, however young: no turn, no card, no
 // message waiting, no background task, and its prompt cache already cold,
 // so the restart costs nothing a next message would not have paid anyway.
 //
@@ -53,8 +55,51 @@ type refresher struct {
 	mu        sync.Mutex
 	waiting   string
 	waitUntil time.Time
-	told      bool // the waiting session's note says the refreshes stopped on it
-	next      map[string]time.Time
+	told      bool                 // the waiting session's note says the refreshes stopped on it
+	next      map[string]time.Time // held: not asked again before this
+	aged      map[string]time.Time // young: not due by its age before this
+	// staleDone are the sessions restarted for changed skills that have not
+	// been seen up to date since: still out of date after that restart,
+	// another would not help, so they wait for their age.
+	staleDone map[string]bool
+}
+
+// ageLater leaves id's age alone until at.
+func (r *refresher) ageLater(id string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.aged == nil {
+		r.aged = map[string]time.Time{}
+	}
+	r.aged[id] = at
+}
+
+func (r *refresher) agedNotBefore(id string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return now.Before(r.aged[id])
+}
+
+// staleTried says whether id was restarted for changed skills and not
+// seen up to date since; markStale records such a restart (on true) or
+// that it is up to date again (false).
+func (r *refresher) staleTried(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.staleDone[id]
+}
+
+func (r *refresher) markStale(id string, tried bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !tried {
+		delete(r.staleDone, id)
+		return
+	}
+	if r.staleDone == nil {
+		r.staleDone = map[string]bool{}
+	}
+	r.staleDone[id] = true
 }
 
 // later leaves id alone until at.
@@ -78,11 +123,16 @@ func (s *Supervisor) refreshPass(ctx context.Context, list []store.RunnerSession
 	if s.cfg.RefreshAfter <= 0 || s.refreshWaiting(ctx) {
 		return
 	}
+	var stale func(store.RunnerSession) bool
+	if s.cfg.StaleLoadouts != nil {
+		stale = s.cfg.StaleLoadouts()
+	}
 	for _, sess := range list {
-		if !s.refreshDue(sess) {
+		why := s.refreshDue(sess, stale)
+		if why == "" {
 			continue
 		}
-		if s.refreshIfIdle(ctx, sess.ID) {
+		if s.refreshIfIdle(ctx, sess.ID, why) {
 			return
 		}
 	}
@@ -127,37 +177,59 @@ func (s *Supervisor) refreshAnswered(ctx context.Context, id string) bool {
 	return err == nil
 }
 
-// refreshDue is the cheap part: a running person's session whose unit has
-// run longer than RefreshAfter, not asked about lately. One that is not
-// due yet is not asked again until it will be.
-func (s *Supervisor) refreshDue(sess store.RunnerSession) bool {
+// refreshDue is the cheap part: why a running person's session, not
+// asked about lately, should be started again ("" when it should not):
+// its skills or plugins changed (refreshStale), or its unit has run
+// longer than RefreshAfter. One that is not old yet is not asked about
+// its age again until it will be.
+func (s *Supervisor) refreshDue(sess store.RunnerSession, stale func(store.RunnerSession) bool) string {
 	if sess.Wanted != store.SessionRunning || sess.Kind == store.SessionAgent || sess.Role == store.RoleBuilder {
-		return false
+		return ""
 	}
 	now := s.now()
 	if s.refresh.notBefore(sess.ID, now) {
-		return false
+		return ""
+	}
+	if s.refreshStale(sess, stale) {
+		return "its skills or plugins changed"
+	}
+	if s.refresh.agedNotBefore(sess.ID, now) {
+		return ""
 	}
 	since, err := s.units.Since(s.paths.Unit(sess.ID))
 	if err != nil || since.IsZero() {
-		return false // not running now: reconcile starts it, which starts its clock
+		return "" // not running now: reconcile starts it, which starts its clock
 	}
 	if due := since.Add(s.cfg.RefreshAfter); now.Before(due) {
-		s.refresh.later(sess.ID, due)
+		s.refresh.ageLater(sess.ID, due)
+		return ""
+	}
+	return fmt.Sprintf("it had run %s", s.cfg.RefreshAfter)
+}
+
+// refreshStale says whether the session's skills or plugins changed and a
+// restart has not been tried on that yet. One still out of date after its
+// restart is logged once and left to its age.
+func (s *Supervisor) refreshStale(sess store.RunnerSession, stale func(store.RunnerSession) bool) bool {
+	if stale == nil {
 		return false
 	}
-	return true
+	if !stale(sess) {
+		s.refresh.markStale(sess.ID, false)
+		return false
+	}
+	return !s.refresh.staleTried(sess.ID)
 }
 
 // refreshIfIdle restarts the session when nothing it does would be lost,
-// and says whether it did.
-func (s *Supervisor) refreshIfIdle(ctx context.Context, id string) bool {
+// and says whether it did. why is what made it due (refreshDue).
+func (s *Supervisor) refreshIfIdle(ctx context.Context, id, why string) bool {
 	defer s.lock(id)()
 	sess, err := s.row(id)
 	if err != nil || sess.Wanted != store.SessionRunning {
 		return false
 	}
-	if why := s.refreshHold(ctx, id); why != "" {
+	if hold := s.refreshHold(ctx, id); hold != "" {
 		s.refresh.later(id, s.now().Add(refreshRecheck))
 		return false
 	}
@@ -166,7 +238,8 @@ func (s *Supervisor) refreshIfIdle(ctx context.Context, id string) bool {
 		s.refresh.later(id, s.now().Add(refreshRecheck))
 		return false
 	}
-	s.note(id, fmt.Sprintf("started again after %s to pick up updates (Claude Code, plugins, skills); its conversation goes on", s.cfg.RefreshAfter))
+	s.refresh.markStale(id, true) // what it loads now is current, whatever made it due
+	s.note(id, fmt.Sprintf("started again to pick up updates (Claude Code, plugins, skills) because %s; its conversation goes on", why))
 	s.announce(id)
 	s.refresh.mu.Lock()
 	s.refresh.waiting, s.refresh.waitUntil = id, s.now().Add(refreshWait)

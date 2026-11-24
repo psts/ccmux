@@ -165,6 +165,12 @@ type Config struct {
 	// RefreshAfter is how long a session runs before it is started again,
 	// once idle, onto what is installed now (refresh.go); 0 never.
 	RefreshAfter time.Duration
+	// StaleLoadouts is asked once per refresh pass for a check that says
+	// whether a session's skills and plugins changed since it started
+	// (loadout.Snapshot.Stale): such a session is refreshed at its next
+	// quiet moment, without waiting for RefreshAfter. Nil, or a nil answer
+	// (the choices could not be read), checks nothing.
+	StaleLoadouts func() func(store.RunnerSession) bool
 }
 
 // settingSources loads the user's own settings, as in a terminal session:
