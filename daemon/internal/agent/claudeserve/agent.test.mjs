@@ -219,6 +219,15 @@ test("a resumed session that dies at boot leaves the earlier conversation's repl
   assert.equal(sdk.queries[1].options.resume, "ses-old", "a conversation that exists on disk is still continued");
 });
 
+// A session with no brief (a repo's main session, a person's plain one)
+// still runs on Claude Code's own prompt: without the preset the SDK sends
+// its bare one, which leaves out how to save memory (seen 2026-11-24).
+test("a session with no prompt file runs on Claude Code's preset, with nothing appended", () => {
+  const { agent, sdk } = makeAgent({});
+  agent.prompt("hello");
+  assert.deepEqual(sdk.queries[0].options.systemPrompt, { type: "preset", preset: "claude_code" });
+});
+
 test("a prompt starts the query, feeds it, and signals busy; the result signals idle", async () => {
   const { agent, sdk, signals, events, out } = makeAgent({ systemPromptFile: "/base/AGENTS.md", model: "opus", allowed: ["Read"] });
   agent.prompt("hello");

@@ -165,6 +165,10 @@ const briefDone = `## When you are done
   A clean review sends you nothing, so never end your turn to wait for
   one. End your turn to wait only for what will surely wake you (a
   background command you started does, when it exits).
+- If you learned something the next builder in this repo should know (a
+  trap, a setup step, how to test a part), save it to the repo's memory
+  the way your memory rules say, before you report. Not what the commit
+  already says, and never a secret.
 - Then report, as the last thing you do: call the tasks tool with action
   "report", status "done", and a note. Your decisions first, if you made
   any, then a few lines on what you built and how you checked it.

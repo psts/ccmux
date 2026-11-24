@@ -1574,6 +1574,7 @@ func TestBrief_DecideReportLastRunNothingAfter(t *testing.T) {
 		"not yours to waive",
 		"sign it before you report",
 		"A clean review sends you nothing",
+		"save it to the repo's memory",
 		"After the report, run nothing in this folder",
 		`status "stuck"`,
 	} {

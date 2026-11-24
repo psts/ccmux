@@ -280,7 +280,10 @@ export class Agent {
     }
     if (o.claude) opts.pathToClaudeCodeExecutable = o.claude;
     if (o.skills) opts.skills = o.skills;
-    if (this.systemPrompt) opts.systemPrompt = { type: "preset", preset: "claude_code", append: this.systemPrompt };
+    // Always Claude Code's own prompt: left out, the SDK sends its bare one,
+    // which has no memory rules (a session with no brief ran on it).
+    opts.systemPrompt = { type: "preset", preset: "claude_code" };
+    if (this.systemPrompt) opts.systemPrompt.append = this.systemPrompt;
     if (o.model) opts.model = o.model;
     if (Object.keys(this.mcp.servers).length) opts.mcpServers = this.mcp.servers;
     // The base's gates, then every MCP server's tools and the peers shim's:
