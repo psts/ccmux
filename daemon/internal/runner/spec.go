@@ -179,16 +179,24 @@ type Config struct {
 	// per refresh pass: a running session whose spec marks another is
 	// refreshed at its next quiet moment too. Nil, or "", checks nothing.
 	RunsNow func() string
+	// RunnerCode names the session runner's own code in this build
+	// (agent.ClaudeServeCodeHash), for RunsMark; "" leaves it out.
+	RunnerCode string
 }
 
-// RunsMark names the Claude Code and the SDK a start runs: the file the
-// claude link points at (Claude Code's updater moves the link) and the
-// sidecar script, whose folder is its SDK version (agent.SidecarScriptNow).
-func RunsMark(claude, script string) string {
+// RunsMark names what a start runs: the file the claude link points at
+// (Claude Code's updater moves the link), the sidecar script, whose folder
+// is its SDK version (agent.SidecarScriptNow), and the runner's own code
+// (Config.RunnerCode), which a deploy rewrites in place.
+func RunsMark(claude, script, code string) string {
 	if real, err := filepath.EvalSymlinks(claude); err == nil {
 		claude = real
 	}
-	return "claude=" + claude + " sdk=" + script
+	mark := "claude=" + claude + " sdk=" + script
+	if code != "" {
+		mark += " code=" + code
+	}
+	return mark
 }
 
 // settingSources loads the user's own settings, as in a terminal session:
@@ -204,7 +212,7 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if err != nil {
 		return Spec{}, fmt.Errorf("session runner: %w", err)
 	}
-	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess), Runs: RunsMark(c.Claude, script)}
+	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess), Runs: RunsMark(c.Claude, script, c.RunnerCode)}
 	if sess.Kind == store.SessionAgent {
 		return c.agentSpec(sp, sess, paths)
 	}

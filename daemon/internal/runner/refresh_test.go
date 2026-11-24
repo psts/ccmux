@@ -371,7 +371,7 @@ func TestChangedSkillsWaitForAColdCache(t *testing.T) {
 // for its age.
 func TestAnUpdatedClaudeOrSDKStartsASessionAgainEarly(t *testing.T) {
 	r := refreshRig(t)
-	now := RunsMark("/bin/claude", "/sc/serve.mjs") // what the rig's sessions start on
+	now := RunsMark("/bin/claude", "/sc/serve.mjs", "") // what the rig's sessions start on
 	r.sup.cfg.RunsNow = func() string { return now }
 	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
 	r.reconcile()
@@ -380,7 +380,7 @@ func TestAnUpdatedClaudeOrSDKStartsASessionAgainEarly(t *testing.T) {
 	if r.restarts(sess.ID) != 0 {
 		t.Fatalf("restarted on what it already runs: %v", r.units.calls)
 	}
-	now = RunsMark("/bin/claude", "/sdk/0.3.331/serve.mjs")
+	now = RunsMark("/bin/claude", "/sdk/0.3.331/serve.mjs", "")
 	r.reconcile()
 	if r.restarts(sess.ID) != 1 {
 		t.Fatalf("not restarted for a new SDK: %v", r.units.calls)
@@ -418,10 +418,30 @@ func TestRunsMarkFollowsTheClaudeLink(t *testing.T) {
 	}
 	os.WriteFile(dir+"/v1", nil, 0o755)
 	os.WriteFile(dir+"/v2", nil, 0o755)
-	before := RunsMark(link, "/s.mjs")
+	before := RunsMark(link, "/s.mjs", "")
 	os.Remove(link)
 	os.Symlink(dir+"/v2", link)
-	if after := RunsMark(link, "/s.mjs"); after == before || !strings.Contains(after, "v2") {
+	if after := RunsMark(link, "/s.mjs", ""); after == before || !strings.Contains(after, "v2") {
 		t.Fatalf("before %q after %q", before, after)
+	}
+}
+
+// A deploy that changes the runner's own code (its files are rewritten in
+// place, so the script's path stays) starts a session again early too.
+func TestNewRunnerCodeStartsASessionAgainEarly(t *testing.T) {
+	r := refreshRig(t)
+	r.sup.cfg.RunnerCode = "code1"
+	r.sup.cfg.RunsNow = func() string { return RunsMark("/bin/claude", "/sc/serve.mjs", "code1") }
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.age(sess.ID, 10*time.Minute)
+	r.reconcile()
+	if r.restarts(sess.ID) != 0 {
+		t.Fatalf("restarted on the code it runs: %v", r.units.calls)
+	}
+	r.sup.cfg.RunsNow = func() string { return RunsMark("/bin/claude", "/sc/serve.mjs", "code2") }
+	r.reconcile()
+	if r.restarts(sess.ID) != 1 {
+		t.Fatalf("not restarted for new runner code: %v", r.units.calls)
 	}
 }

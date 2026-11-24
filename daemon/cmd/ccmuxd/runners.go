@@ -148,7 +148,10 @@ func runnerConfig(w runnerWiring, claude string) runner.Config {
 		StaleLoadouts: staleLoadouts(loadouts),
 		// So is one that started on another Claude Code or SDK than a start
 		// now would run (the claude link moved, the daily SDK update).
-		RunsNow: func() string { return runner.RunsMark(claude, w.agents.SidecarScriptNow()) },
+		RunsNow: func() string {
+			return runner.RunsMark(claude, w.agents.SidecarScriptNow(), agent.ClaudeServeCodeHash())
+		},
+		RunnerCode: agent.ClaudeServeCodeHash(),
 		// A role agent's session starts on what its base says, read at
 		// every start (api/agentsessions.go).
 		Agent: w.api.AgentStart,
