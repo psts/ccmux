@@ -146,8 +146,9 @@ func runnerConfig(w runnerWiring, claude string) runner.Config {
 		// A session whose list moved on (the page's "Skills changed" bar)
 		// is refreshed at its next quiet moment (runner/refresh.go).
 		StaleLoadouts: staleLoadouts(loadouts),
-		// So is one that started on another Claude Code or SDK than a start
-		// now would run (the claude link moved, the daily SDK update).
+		// So is one that started on another Claude Code, SDK or runner code
+		// than a start now would run (the claude link moved, the daily SDK
+		// update, a deploy that changed the runner's files).
 		RunsNow: func() string {
 			return runner.RunsMark(claude, w.agents.SidecarScriptNow(), agent.ClaudeServeCodeHash())
 		},

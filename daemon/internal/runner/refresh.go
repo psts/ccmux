@@ -17,10 +17,9 @@ import (
 // starts, and a repo's lead can run for days without one. So a session
 // that has run longer than Config.RefreshAfter is started again, on the
 // same conversation, the first time it is truly idle; so is one whose
-// skills or plugins (Config.StaleLoadouts), or Claude Code or the SDK
-// (Config.RunsNow), changed since it started, once per change, however
-// young: no turn, no card, no
-// message waiting, no background task, and its prompt cache already cold,
+// skills or plugins (Config.StaleLoadouts), or Claude Code, the SDK or
+// the runner's own code (Config.RunsNow), changed since it started, once
+// per change, however young: no turn, no card, no message waiting, no background task, and its prompt cache already cold,
 // so the restart costs nothing a next message would not have paid anyway.
 //
 // What decides is outside the daemon's memory, since every deploy restarts
@@ -138,7 +137,8 @@ func (s *Supervisor) refreshPass(ctx context.Context, list []store.RunnerSession
 }
 
 // changeCheck is this pass's check of what changed under a session since
-// it started (its skills and plugins, Claude Code or the SDK): why, or "".
+// it started (its skills and plugins, Claude Code, the SDK or the runner's
+// own code): why, or "".
 // Nil when there is nothing to check against.
 func (s *Supervisor) changeCheck() func(store.RunnerSession) string {
 	var stale func(store.RunnerSession) bool
@@ -157,14 +157,14 @@ func (s *Supervisor) changeCheck() func(store.RunnerSession) string {
 			return "its skills or plugins changed"
 		}
 		if runs != "" && s.startedOnOther(sess.ID, runs) {
-			return "Claude Code or the SDK was updated"
+			return "Claude Code, the SDK or ccmux's session runner was updated"
 		}
 		return ""
 	}
 }
 
 // startedOnOther says whether the session's spec marks another Claude
-// Code or SDK than runs. A spec that cannot be read, or marks nothing (an
+// Code, SDK or runner code than runs. A spec that cannot be read, or marks nothing (an
 // older daemon wrote it), says no: its age refreshes it.
 func (s *Supervisor) startedOnOther(id, runs string) bool {
 	sp, err := ReadSpec(s.paths.SpecFile(id))

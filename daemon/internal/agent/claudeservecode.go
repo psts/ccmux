@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io/fs"
 	"sync"
 )
 
@@ -18,17 +19,29 @@ var (
 // runs older code again at its next quiet moment.
 func ClaudeServeCodeHash() string {
 	codeHashOnce.Do(func() {
-		h := sha256.New()
-		for _, name := range claudeServeShipped {
-			body, err := claudeServeFiles.ReadFile("claudeserve/" + name)
-			if err != nil {
-				body = []byte("missing")
-			}
-			h.Write([]byte(name + "\x00"))
-			h.Write(body)
-			h.Write([]byte{0})
+		sub, err := fs.Sub(claudeServeFiles, "claudeserve")
+		if err != nil {
+			panic("claudeserve: embedded files: " + err.Error()) // the embed itself is broken
 		}
-		codeHash = hex.EncodeToString(h.Sum(nil))[:16]
+		codeHash = codeHashOf(sub, claudeServeShipped)
 	})
 	return codeHash
+}
+
+// codeHashOf hashes the named files of fsys, names and contents both. A
+// file that cannot be read hashes as missing: it fails every start anyway
+// (EnsureClaudeServe), and TestClaudeServeShipsEveryImportedModule holds
+// the shipped list to the embed.
+func codeHashOf(fsys fs.FS, names []string) string {
+	h := sha256.New()
+	for _, name := range names {
+		body, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			body = []byte("\x00missing")
+		}
+		h.Write([]byte(name + "\x00"))
+		h.Write(body)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }

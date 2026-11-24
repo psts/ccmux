@@ -386,7 +386,7 @@ func TestAnUpdatedClaudeOrSDKStartsASessionAgainEarly(t *testing.T) {
 		t.Fatalf("not restarted for a new SDK: %v", r.units.calls)
 	}
 	row, _ := r.st.RunnerSession(sess.ID)
-	if !strings.Contains(row.Note, "Claude Code or the SDK") {
+	if !strings.Contains(row.Note, "Claude Code, the SDK or ccmux's session runner") {
 		t.Fatalf("its note says why: %q", row.Note)
 	}
 	r.age(sess.ID, time.Minute)
