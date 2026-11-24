@@ -454,6 +454,7 @@
     show("stop", live && (S.stream.busy || S.stream.cards.length > 0));
     show("more", live);
     show("start-over", live && !agent);
+    show("restart", live && !agent); // an agent restarts from its editor
     show("rename", !!sess && sess.kind !== "lead" && !agent);
     const leads = live && !!sess.threadId && sess.role === "lead";
     show("merge-thread", leads);
@@ -986,6 +987,14 @@
     S.later.delete(sess.id);
   });
 
+  // restartFromMenu is More > Restart: a restart that cuts a running turn
+  // asks first.
+  function restartFromMenu() {
+    $("more").open = false;
+    if (S.stream.busy && !confirm("Claude is still answering. Restarting cuts that answer off. Restart anyway?")) return;
+    restartNow();
+  }
+
   // startOver gives the session on screen a new conversation (POST
   // .../start-over): the one it leaves stays above a divider, and a main
   // session's helpers are stood down. The daemon keeps the new one across
@@ -1165,6 +1174,7 @@
     $("end").onclick = () => { if (confirm("End this session? Its conversation stays on disk, but it will not run again.")) setWanted("done"); };
     $("rename").onclick = rename;
     $("start-over").onclick = startOver;
+    $("restart").onclick = restartFromMenu;
     $("merge-thread").onclick = () => threadAct("merge");
     $("end-thread").onclick = () => threadAct("end", undefined, "Close this thread? Its helpers are stood down. Work that is not merged stays on its branch.");
     $("stop-merge").onclick = () => threadAct("stop-merge", undefined, "Stop this merge? Its checks are ended. A repo that already landed stays landed.");

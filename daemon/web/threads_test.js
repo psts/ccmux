@@ -2043,3 +2043,25 @@ test("a session the daemon could not start shows red on its repo's row and its a
   assert.ok(dots.length >= 2 && dots.every((d) => d.className.includes("stuck")), dots.map((d) => d.className).join(" | "));
   assert.equal(p.$("state").textContent, "Could not start");
 });
+
+test("More has Restart: it starts the session again on its conversation, asking first only while a turn runs", async () => {
+  let asked = 0;
+  const p = await boot({ sessions: [lead], search: "?s=lead1", confirm: () => { asked++; return false; }, routes: [[/^POST \/v1\/sessions\/lead1\/restart$/, () => ({})]] });
+  await p.frame(snapshot());
+  assert.equal(p.$("restart").classList.contains("hidden"), false, "a running session can restart");
+  p.$("restart").click();
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => c.url), ["/v1/sessions/lead1/restart"]);
+  assert.equal(asked, 0, "nothing running: no question");
+  await p.frame(snapshot({ busy: true }));
+  p.$("restart").click();
+  await p.settle();
+  assert.equal(asked, 1, "a turn running: it asks first");
+  assert.equal(p.posts().length, 1, "and a no sends nothing");
+});
+
+test("an agent has no Restart in More: its editor restarts it", async () => {
+  const p = await boot({ sessions: [{ ...lead, id: "ag1", kind: "agent", paneId: "pane-ag1" }], search: "?s=ag1" });
+  await p.frame(snapshot());
+  assert.equal(p.$("restart").classList.contains("hidden"), true);
+});
