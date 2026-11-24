@@ -517,6 +517,57 @@ mailbox stay the same. tmux is no longer what keeps an agent alive.
   `-runner-unit-prefix`, and load the `-peers-shim` it names. Never start
   the real role agents in a test: make a base on Haiku.
 
+## Memory is tidied every night
+
+Every session runs on Claude Code's own prompt (the `claude_code` preset,
+`claudeserve/agent.mjs`), with a brief appended when there is one. Before
+2026-11-24 a session with no brief (every repo's main session) ran on the
+SDK's bare prompt and was never told how to save memory.
+
+- **A worktree shares its repo's memory** (Claude Code files it under the
+  repo; tested 2026-11-24), so builders and helpers read and write the
+  repo's own `MEMORY.md`. The builder brief asks for lessons to be saved.
+- **The nightly tidy-up** (`internal/memtidy`, `cmd/ccmuxd/memtidy.go`,
+  from `-memory-tidy-hour`, 3 by default, on `-memory-tidy-model`, sonnet):
+  per repo with new conversations since its bookmark (the session rows
+  give the folders, worktrees included), a headless `claude -p` with file
+  tools only and none of the person's settings edits a copy of the memory
+  in `~/.local/state/ccmux/memory-tidy/work/`. The daemon then refuses a
+  copy with no index, an index past Claude Code's load limit (200 lines,
+  25,000 bytes, read in its code), half the notes removed, or a new
+  secret; skips it if a session wrote the memory meanwhile; and otherwise
+  backs the old one up (`backups/`, seven kept) and puts the new one in
+  place file by file. Each night is a line in `log.jsonl` there and in
+  ccmuxd's log (`memory tidy:`).
+- **Its Claude reads and writes only its work folder because no tool is
+  on its allow list** (`memtidy/headless.go`). Listed there, a tool is
+  taken on any path: a Write landed in home (tested 2026-11-24), and a
+  Read could copy a hidden secret into memory walled sessions read.
+  Unlisted, `acceptEdits` takes reads and edits inside the folder, and
+  anything outside asks, which `-p` refuses (tested: Read, Grep, Glob of
+  home and a sibling folder). It has no walls; never list a tool there.
+  It cannot delete, so a note it empties is removed.
+- **It runs in the daemon, not as a job**: a deploy cuts it, nothing is
+  applied, and the next quarter hour runs it again. On a host that never
+  ran one, the first pass waits for the next night.
+- **It never writes through a link** (`memtidy/liveroot.go`): a walled
+  session can write `~/.claude/projects`, so it could plant one. The live
+  memory is written through an `os.Root` (a link out of it is refused),
+  the memory folder and its project folder must be real folders, and
+  temp files are new ones of their own. A night that meets a link fails
+  and says so in the log.
+- A busy night reads the oldest conversations up to its budget and
+  leaves the rest for the next (`deferred` in the log).
+- **Claude Code's own auto-dream** does the same and stays off while
+  Anthropic's switch for it is off on this account (`tengu_onyx_plover`
+  in `~/.claude.json`); when it comes on, ours stands down
+  (`memtidy.DreamLive`), so the two never tidy one memory.
+- A scratch daemon tidies nothing unless given `-memory-tidy-hour`.
+  `MEMTIDY_LIVE=<repo> go test -run TestLiveTidyOnACopy ./internal/memtidy`
+  runs a real one on a copy (about 2 minutes on sonnet).
+- Role agents are left out: their memory is in their own home, in two
+  folders that have drifted apart (on the to-do list).
+
 ## Sessions stay current by themselves (Linux)
 
 - **A person's session restarts itself once it has run 20 hours**
