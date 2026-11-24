@@ -84,7 +84,8 @@
 
   // create wires it to the page: d.call is its fetch, d.session() the
   // session on screen (or null), d.info() what it says of itself,
-  // d.running() whether it runs now, d.fail(text) shows what went wrong,
+  // d.running() whether it runs now, d.draft() whether a new thread is
+  // being written (its header holds the pickers' places), d.fail(text) shows what went wrong,
   // d.clock(ms) says a time of day.
   function create(d) {
     const $ = (id) => document.getElementById(id);
@@ -94,33 +95,57 @@
       const sess = d.session();
       const live = !!sess && d.running();
       const info = d.info() || {};
-      drawEffort(sess, live, info); // before drawMode, whose pill sync shows its label
-      drawMode(live, info.permissionMode || "");
+      // slot: the header keeps the picker's place from the first moment
+      // (a new thread, an asleep session), so nothing beside it moves when
+      // the session starts and says its effort and mode.
+      const slot = (!!sess && sess.state !== "done") || (!!d.draft && d.draft());
+      drawEffort(sess, live, slot, info); // before drawMode, whose pill sync shows its label
+      drawMode(live, slot, info.permissionMode || "");
       drawTasks(live ? info.tasks || [] : []);
       const warn = sess ? limitLine(info.limit, d.clock) : "";
       show("limit-bar", !!warn);
       $("limit-bar").textContent = warn;
     }
 
-    function drawMode(live, mode) {
+    // waiting holds a picker's place until its session runs and says its
+    // value: one option, "…", and not pickable.
+    function waiting(select) {
+      select.disabled = true;
+      if (select.dataset.filled === "waiting") return;
+      select.dataset.filled = "waiting";
+      select.dataset.key = "";
+      select.textContent = "";
+      const o = document.createElement("option");
+      o.value = ""; o.textContent = "\u2026";
+      select.appendChild(o);
+    }
+
+    function drawMode(live, slot, mode) {
       const select = $("mode");
-      if (!select.dataset.filled) {
-        select.dataset.filled = "1";
-        for (const m of MODES) { const o = document.createElement("option"); o.value = m.value; o.textContent = m.label; select.appendChild(o); }
-      }
       const known = MODES.some((m) => m.value === mode);
-      show("mode-box", live && known);
-      if (known) select.value = mode;
+      show("mode-box", slot);
+      if (!live || !known) waiting(select);
+      else {
+        if (select.dataset.filled !== "modes") {
+          select.dataset.filled = "modes";
+          select.textContent = "";
+          for (const m of MODES) { const o = document.createElement("option"); o.value = m.value; o.textContent = m.label; select.appendChild(o); }
+        }
+        select.disabled = false;
+        select.value = mode;
+      }
       if (window.ccmuxThreadPill) window.ccmuxThreadPill.sync($);
     }
 
     // drawEffort is the Effort picker: for a running session that is not a
     // role agent's (its base names its effort). Its options are filled
     // again only when they change, so an open list is not pulled away.
-    function drawEffort(sess, live, info) {
+    function drawEffort(sess, live, slot, info) {
       const select = $("effort");
-      show("effort-box", live && sess.kind !== "agent");
-      if (!live) return;
+      show("effort-box", slot && !(sess && sess.kind === "agent"));
+      if (!live) { waiting(select); return; }
+      select.disabled = false;
+      select.dataset.filled = "efforts";
       const picked = sess.effort || "";
       const opts = effortOptions(info, picked);
       const key = opts.map((o) => o.value + ":" + o.label).join(",");

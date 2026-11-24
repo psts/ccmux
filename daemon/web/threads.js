@@ -81,6 +81,7 @@
   // (threadmention.js).
   const Live = window.ccmuxThreadLive.create({
     call, session: () => session(), info: () => S.stream.info, running: () => { const s = session(); return !!s && s.state === "running"; },
+    draft: () => S.sel.kind === "draft" && !!workspace(),
     fail: (text) => { S.error = text; drawAll(); },
     said: (text) => { S.said = text; S.error = ""; drawAll(); },
     clock: (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -452,7 +453,13 @@
     show("model-box", (live && !agent) || (S.sel.kind === "draft" && !!ws));
     show("past", agent);
     show("stop", live && (S.stream.busy || S.stream.cards.length > 0));
-    show("more", live);
+    // The bar's places are kept from the first moment (a new thread, a
+    // session before its first reply): an item that fills in later never
+    // moves the ones beside it. A kept place is blank until it has
+    // something to show.
+    const bar = live || (S.sel.kind === "draft" && !!ws);
+    show("more", bar);
+    $("more").classList.toggle("blank", !live);
     show("start-over", live && !agent);
     show("restart", live && !agent); // an agent restarts from its editor
     show("rename", !!sess && sess.kind !== "lead" && !agent);
@@ -460,17 +467,20 @@
     show("merge-thread", leads);
     show("end-thread", leads);
     drawModel(sess);
-    drawGauge(sess);
+    drawGauge(sess, bar);
   }
 
   // drawGauge is the header's context and cache gauge for the open session;
   // a tick redraws it so the cache counts down between messages.
-  function drawGauge(sess) {
+  // Its place is kept whenever the bar is (bar), blank until a reply says
+  // how full the context is.
+  function drawGauge(sess, bar) {
     const box = $("gauge");
     const g = sess && sess.state !== "done" ? Gauge.gauge(S.stream.result, Date.now(), S.stream.busy) : null;
-    show("gauge", !!g);
-    if (!g) return;
+    show("gauge", bar || !!g);
+    box.classList.toggle("blank", !g);
     box.textContent = "";
+    if (!g) return;
     if (g.percent !== null) box.appendChild(ring(g.percent, g.ctx));
     g.parts.forEach((p, i) => {
       if (i) box.appendChild(document.createTextNode(p.cls === "cold" ? " " : " · "));
@@ -527,8 +537,9 @@
     const later = bar.pending && S.later.has(sess.id);
     show("model-bar", bar.pending && !later);
     show("restart-later", later);
-    $("restart-later").textContent = `Restart to apply ${bar.what}`;
-    $("restart-later").title = `${bar.what} applies on the next restart`;
+    // Short, beside the state in the title row; the tip says what it applies.
+    $("restart-later").textContent = "Restart";
+    $("restart-later").title = `Restart to apply ${bar.what}: it applies on the next restart`;
     const text = $("model-bar-text");
     text.textContent = "";
     text.appendChild(View.el("strong", "", `${bar.what} applies on the next restart.`));

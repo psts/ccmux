@@ -171,9 +171,11 @@ a:hover { color: var(--blue-d); }
 #main { flex: 1 1 560px; min-width: 0; display: flex; flex-direction: column; background: var(--main); }
 #head { padding: 14px 24px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 12px; background: var(--card); }
 #side-toggle { display: none; height: 32px; width: 36px; border-radius: 8px; border: 1px solid var(--line3); background: var(--card); }
-.head-title { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 200px; }
-.title-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-#title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.head-title { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.title-row { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 24px; }
+/* Stop and Restart sit in the title row: smaller, so the row keeps its height */
+.title-row .plain, .title-row .apply { height: 24px; padding: 0 10px; font-size: 12px; white-space: nowrap; }
+#title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 12.5px; color: var(--muted); }
 /* a session's state: a dot and a word beside its title */
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--asleep); white-space: nowrap; }
@@ -196,12 +198,26 @@ a:hover { color: var(--blue-d); }
 .pick:focus-within { box-shadow: inset 0 0 0 2px var(--blue-line); }
 .pick-ic { font-size: 11px; color: var(--muted); }
 .pick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 12.5px; border: 0; }
+/* Every place in the bar keeps its width from the first moment, so an item
+   that fills in later (the gauge, a picker's value) never moves the others:
+   a blank place holds its room, each label has a floor, the gauge a width. */
+.blank { visibility: hidden; }
+.pick-shown { display: inline-block; }
+#model-shown { min-width: 8ch; }
+#advisor-shown { min-width: 5ch; }
+#effort-shown { min-width: 7.5ch; }
+#mode-shown { min-width: 9ch; }
+.pick:has(select:disabled) { cursor: default; color: var(--muted); }
+.pick:has(select:disabled):hover { background: var(--card); }
+.pick select:disabled { cursor: default; }
+#gauge { width: 150px; height: 30px; }
 /* a header too narrow for one row (the side panels squeeze it on a wide
    screen too) gives the pill a row of its own, under the title */
 #head { container-type: inline-size; }
 @container (max-width: 920px) {
   #head .pill { order: 10; flex-basis: 100%; }
   #head .pick { flex: 1; min-width: 0; }
+  #head .pick-shown { min-width: 0; }
 }
 .primary-sm { height: 30px; padding: 0 12px; border-radius: 7px; border: 0; background: var(--blue); color: var(--on-accent); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
 .plain { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); font-size: 12.5px; }

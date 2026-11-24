@@ -473,7 +473,8 @@ test("a model picked is saved, said to apply on the next restart, and Restart no
   p.$("later").click();
   await p.settle();
   assert.equal(p.$("model-bar").classList.contains("hidden"), true);
-  assert.equal(p.$("restart-later").textContent, "Restart to apply Haiku");
+  assert.equal(p.$("restart-later").textContent, "Restart");
+  assert.match(p.$("restart-later").title, /Restart to apply Haiku/);
   assert.equal(p.$("restart-later").classList.contains("hidden"), false);
   p.$("restart-later").click();
   await p.settle();
@@ -1214,12 +1215,15 @@ test("a task part's builder opens as a conversation on this page, a tmux worker 
   assert.equal(p.book.opened.length, 1, "and no tab was opened for it");
 });
 
-test("the header shows how full the context is and how long the cache has left, and hides with nothing known", async () => {
+test("the header shows how full the context is and how long the cache has left, and keeps its place blank with nothing known", async () => {
   const p = await boot({ sessions: [{ ...lead, attention: "idle" }], search: "?s=lead1" });
-  assert.equal(p.$("gauge").classList.contains("hidden"), true);
+  assert.equal(p.$("gauge").classList.contains("hidden"), false, "its place is kept, so the pickers beside it do not move when it fills in");
+  assert.equal(p.$("gauge").classList.contains("blank"), true);
+  assert.equal(p.$("gauge").textContent, "");
   const result = { costUSD: 0.5, endedAt: Date.now() - 14 * 60000, cacheTtlMs: 3600000, context: { percent: 42, used: 84000, max: 200000 } };
   await p.frame({ t: "snapshot", boot: "b1", seq: 0, data: { messages: [], info: {}, result } });
   assert.equal(p.$("gauge").classList.contains("hidden"), false);
+  assert.equal(p.$("gauge").classList.contains("blank"), false);
   assert.equal(p.$("gauge").textContent, "42% · cache 46 min");
   assert.match(p.$("gauge").title, /last reply 14 min ago/);
 });
@@ -1855,6 +1859,30 @@ test("a running session's effort is picked from the header, from the levels its 
   await p.settle();
   assert.equal(p.$("effort-shown").textContent, "Medium");
   assert.match(p.$("notice-bar").textContent, /Effort Default \(Medium\) is saved and applies when the session restarts/);
+});
+
+// The header's places are kept from the first moment, so a picker that
+// fills in when its session runs never moves the ones beside it.
+test("an asleep session keeps the Effort and Mode places, waiting and not pickable", async () => {
+  const p = await boot({ sessions: [{ ...lead, state: "asleep" }], search: "?s=lead1" });
+  for (const id of ["effort", "mode"]) {
+    assert.ok(!p.$(id + "-box").classList.contains("hidden"), id + " keeps its place");
+    assert.equal(p.$(id).disabled, true, id + " cannot be picked yet");
+    assert.equal(p.$(id + "-shown").textContent, "\u2026");
+  }
+  assert.ok(!p.$("gauge").classList.contains("hidden") && p.$("gauge").classList.contains("blank"), "the gauge's place too");
+});
+
+test("a new thread's header already holds every place the session will fill", async () => {
+  const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread" });
+  for (const id of ["model-box", "advisor-box", "effort-box", "mode-box", "gauge", "more"]) assert.ok(!p.$(id).classList.contains("hidden"), id + " keeps its place");
+  assert.ok(p.$("more").classList.contains("blank"), "the menu has nothing for a thread not started: a blank place");
+  assert.equal(p.$("mode").disabled, true);
+});
+
+test("a done session gives up the places: nothing to pick", async () => {
+  const p = await boot({ sessions: [{ ...lead, state: "done" }], search: "?s=lead1" });
+  for (const id of ["effort-box", "mode-box", "gauge", "more"]) assert.ok(p.$(id).classList.contains("hidden"), id);
 });
 
 test("an agent's effort is its base's: no Effort picker", async () => {

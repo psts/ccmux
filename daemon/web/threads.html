@@ -44,6 +44,10 @@
           <div class="title-row">
             <h1 id="title">Threads</h1>
             <span id="state" class="status hidden"></span>
+            <!-- Stop and Restart come and go: beside the state, in the title's
+                 room, so they never move the controls on the right -->
+            <button id="stop" class="plain hidden" type="button" title="Stop the running turn">Stop</button>
+            <button id="restart-later" class="apply hidden" type="button"></button>
           </div>
           <div id="meta" class="meta"></div>
         </div>
@@ -68,8 +72,6 @@
         <span id="gauge" class="gauge hidden"></span>
         <button id="past" class="plain hidden" type="button" title="This agent's earlier conversations, read only">Earlier</button>
         <button id="new-thread" class="primary-sm hidden" type="button" title="A new thread in this repo: its own session, and its own copy of the repo once it changes something">+ New thread</button>
-        <button id="restart-later" class="apply hidden" type="button"></button>
-        <button id="stop" class="plain hidden" type="button" title="Stop the running turn">Stop</button>
         <details id="more" class="more hidden">
           <summary title="More">&#8943;</summary>
           <div class="more-menu">
