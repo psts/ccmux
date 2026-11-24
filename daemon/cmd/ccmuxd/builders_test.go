@@ -136,6 +136,41 @@ func TestARoleAgentHasNoLoadoutAndTheLoginPath(t *testing.T) {
 	}
 }
 
+// Claude Code turns its Artifact tool off under the Agent SDK unless
+// CLAUDE_CODE_ARTIFACT says on. A person's sessions (a repo's main session,
+// its helpers, a thread's lead and helpers) get it; a builder and a role
+// agent, which run with nobody watching, do not.
+func TestOnlyAPersonsSessionsGetArtifacts(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mgr := manager.New(context.Background(), &tmux.Server{Socket: "unused"}, st)
+	was := loginPaths
+	loginPaths = &pathCache{now: time.Now, read: func() string { return "/usr/bin" }}
+	defer func() { loginPaths = was }()
+	on := []store.RunnerSession{
+		{PaneID: "l1", Kind: store.SessionLead},
+		{PaneID: "h1", Kind: store.SessionLead, ThreadID: 3, Role: store.RoleHelper},
+		{PaneID: "p1"},
+	}
+	for _, s := range on {
+		if got := sessionEnv(mgr, s)[artifactEnv]; got != "1" {
+			t.Fatalf("%+v: %s = %q, want 1", s, artifactEnv, got)
+		}
+	}
+	off := []store.RunnerSession{
+		{PaneID: "b1", ThreadID: 4, Role: store.RoleBuilder},
+		{PaneID: "a1", Kind: store.SessionAgent},
+	}
+	for _, s := range off {
+		if got, has := sessionEnv(mgr, s)[artifactEnv]; has {
+			t.Fatalf("%+v: %s = %q, want unset", s, artifactEnv, got)
+		}
+	}
+}
+
 // A read that failed must not stand for the daemon's whole life: one slow
 // shell at boot would leave every builder on the bare PATH until a restart.
 func TestAFailedLoginPathIsAskedAgainAndAnAnswerIsKept(t *testing.T) {

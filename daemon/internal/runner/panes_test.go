@@ -156,7 +156,7 @@ func TestASessionsOwnEnvironmentReplacesWhatTheDaemonCarries(t *testing.T) {
 		"HOME=/h", "PATH=/bin", "CLAUDECODE=1", "TMUX=x", "CCMUX_PANE_ID=daemons-own", "CCMUX_PANE_TOKEN=t0",
 		"CCMUX_DAEMON_URL=http://127.0.0.1:7900", "CCMUX_HOOKS_SOCK=/live/hooks.sock", "CCMUX_PEERS_URL=http://hub",
 		"CCMUX_BUS_OWNER=1", "CLAUDE_PEERS_NAME=ccmux", "ANTHROPIC_BASE_URL=http://127.0.0.1:7900/llm/pane/daemons-own",
-		"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1", "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=9", "ZDOTDIR=/z", "KEEP=yes",
+		"_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1", "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=9", "CLAUDE_CODE_ARTIFACT=1", "ZDOTDIR=/z", "KEEP=yes",
 	}
 	cfg := Config{
 		Sidecar: func() (string, string, error) { return "/sc/serve.mjs", "/bin/node", nil },

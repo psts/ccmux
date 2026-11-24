@@ -336,16 +336,18 @@ func sessionLabel(sess store.RunnerSession) string {
 // dropEnv are variables of the daemon's own process that must not reach a
 // session: a tmux pane's identity and the addresses that go with it (the
 // daemon, its hooks socket, its LLM proxy route), the bus shim's switches,
-// and Claude Code's markers of running inside another Claude. A daemon
-// started from a ccmux pane (a test, a scratch daemon) carries all of them,
-// and a session that kept them would report to, and bill, that pane. The
-// session's own values are set after (Config.SessionEnv).
+// Claude Code's markers of running inside another Claude, and its Artifacts
+// switch (a person's session gets it, a builder or an agent must not
+// inherit it from a daemon started in one). A daemon started from a ccmux
+// pane (a test, a scratch daemon) carries all of them, and a session that
+// kept them would report to, and bill, that pane. The session's own values
+// are set after (Config.SessionEnv).
 var dropEnv = []string{
 	"CLAUDECODE=", "CLAUDE_CODE_ENTRYPOINT=", "TMUX=", "TMUX_PANE=",
 	"CCMUX_PANE_ID=", "CCMUX_PANE_TOKEN=", "CCMUX_CMD_FILE=", "CCMUX_DAEMON_URL=", "CCMUX_HOOKS_SOCK=",
 	"CCMUX_PEERS_URL=", "CCMUX_PEERS_CHANNEL=", "CCMUX_BUS_OWNER=", "CLAUDE_PEERS_NAME=",
 	"ANTHROPIC_BASE_URL=", "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=", "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=",
-	"OPENCODE_CONFIG_CONTENT=", "ZDOTDIR=",
+	"CLAUDE_CODE_ARTIFACT=", "OPENCODE_CONFIG_CONTENT=", "ZDOTDIR=",
 }
 
 // env is a session's whole environment: the daemon's, without what must

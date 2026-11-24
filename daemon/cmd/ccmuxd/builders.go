@@ -44,12 +44,20 @@ func ownSetup(sess store.RunnerSession) bool {
 	return sess.Role == store.RoleBuilder || sess.Kind == store.SessionAgent
 }
 
+// artifactEnv turns Claude Code's Artifact tool on. Under the Agent SDK it
+// is off unless this says on (Claude Code 2.1.330: "sdk_default_off" when
+// the entry point is sdk-ts and the variable is unset). A person's
+// enableArtifact: false setting still turns it off.
+const artifactEnv = "CLAUDE_CODE_ARTIFACT"
+
 // sessionEnv is a session's own variables (runner.Config.SessionEnv): its
-// pane's, and for a builder or an agent the login shell's PATH when that
-// can be read.
+// pane's; for a person's session (not a builder, not a role agent, which
+// run with nobody watching) Artifacts on; and for a builder or an agent the
+// login shell's PATH when that can be read.
 func sessionEnv(mgr *manager.Manager, sess store.RunnerSession) map[string]string {
 	env := mgr.RunnerEnv(sess.PaneID)
 	if !ownSetup(sess) {
+		env[artifactEnv] = "1"
 		return env
 	}
 	if path := loginPath(); path != "" {
