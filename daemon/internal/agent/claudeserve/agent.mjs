@@ -13,7 +13,7 @@ import { RUNNER_PROTOCOL, EventLog, loadState, saveState } from "./runnerstate.m
 import { RunnerTurns } from "./runnerturns.mjs";
 import { RichTranscript, noteFor } from "./richtranscript.mjs";
 import { MediaStore, mimeFor } from "./media.mjs";
-import { fromInit, fromInitialization, commandList, resultOf, contextOf, backgroundTasks, usageLimit, MODES, advisorOf } from "./sessionself.mjs";
+import { fromInit, fromInitialization, commandList, resultOf, contextOf, backgroundTasks, usageLimit, MODES, EFFORTS, advisorOf } from "./sessionself.mjs";
 import { shellBox } from "./shellbox.mjs";
 import { rewind, refusal } from "./rewind.mjs";
 
@@ -542,6 +542,17 @@ export class Agent {
     this.ensureQuery();
     await this.q.setPermissionMode(mode);
     this.learn({ permissionMode: mode });
+  }
+
+  // setEffort changes the running session's effort, as /effort does in
+  // Claude Code ("" back to the model's own), until it ends or starts
+  // again, which brings back the effort its row names (--effort).
+  async setEffort(level) {
+    if (!this.turns) throw refusal("only a session runner changes its effort");
+    if (!EFFORTS.includes(level)) throw refusal(`not an effort to switch to: ${level}`);
+    this.ensureQuery();
+    await this.q.applyFlagSettings({ effortLevel: level || null });
+    this.learn({ effort: level });
   }
 
   // stopTask stops one of the session's background tasks; Claude Code then

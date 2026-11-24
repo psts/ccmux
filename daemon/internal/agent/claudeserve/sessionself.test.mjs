@@ -38,9 +38,9 @@ test("bare names from init do not replace commands that came with descriptions",
 test("before any turn a query says its commands and the models to pick from", () => {
   const self = fromInitialization({
     commands: [{ name: "hello", description: "Say hello", argumentHint: "" }],
-    models: [{ value: "default", displayName: "Default (recommended)", resolvedModel: "claude-opus-5-5" }, { value: "haiku", displayName: "Haiku 5.5", resolvedModel: "claude-haiku-5-5", supportsEffort: true }],
+    models: [{ value: "default", displayName: "Default (recommended)", resolvedModel: "claude-opus-5-5" }, { value: "haiku", displayName: "Haiku 5.5", resolvedModel: "claude-haiku-5-5", supportsEffort: true, supportedEffortLevels: ["low", "high"] }],
   });
-  assert.deepEqual(self.models, [{ value: "default", name: "Default (recommended)", model: "claude-opus-5-5" }, { value: "haiku", name: "Haiku 5.5", model: "claude-haiku-5-5" }]);
+  assert.deepEqual(self.models, [{ value: "default", name: "Default (recommended)", model: "claude-opus-5-5" }, { value: "haiku", name: "Haiku 5.5", model: "claude-haiku-5-5", efforts: ["low", "high"] }]);
   assert.equal(self.commands[0].description, "Say hello");
   assert.deepEqual(fromInitialization({}), { commands: [], models: [] });
   assert.equal(fromInitialization({ claude_code_version: "2.1.326" }).claudeCode, "2.1.326");

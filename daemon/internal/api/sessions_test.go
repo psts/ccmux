@@ -28,6 +28,7 @@ type fakeRunners struct {
 	wanted      []string
 	models      []string
 	advisors    []string
+	efforts     []string
 	restarts    int
 	startedOver []string // session ids StartOver was asked for
 	rewinds     []string // "session to dry" of each going back
@@ -179,6 +180,14 @@ func (f *fakeRunners) SetAdvisor(id, advisor string) error {
 		return runner.ErrSessionDone
 	}
 	f.advisors = append(f.advisors, advisor)
+	return nil
+}
+
+func (f *fakeRunners) SetEffort(id, effort string) error {
+	if id == "ended" {
+		return runner.ErrSessionDone
+	}
+	f.efforts = append(f.efforts, effort)
 	return nil
 }
 

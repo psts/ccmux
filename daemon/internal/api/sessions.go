@@ -37,6 +37,7 @@ type runnerSupervisor interface {
 	SetWanted(sessionID, wanted string) error
 	SetModel(sessionID, model string) error
 	SetAdvisor(sessionID, advisor string) error
+	SetEffort(sessionID, effort string) error
 	Restart(sessionID string) error
 	StartOver(sessionID string) error
 	RestartBetweenTurns(sessionID string) error
@@ -118,6 +119,7 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/wanted", s.setRunnerWanted)
 	mux.HandleFunc("POST /v1/sessions/{id}/model", s.setRunnerModel)
 	mux.HandleFunc("POST /v1/sessions/{id}/advisor", s.setRunnerAdvisor)
+	mux.HandleFunc("POST /v1/sessions/{id}/effort", s.setRunnerEffort)
 	mux.HandleFunc("POST /v1/sessions/{id}/restart", s.restartRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/start-over", s.startOverRunnerSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/acted", s.actedRunnerSession)

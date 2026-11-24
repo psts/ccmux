@@ -42,3 +42,18 @@ test("the modes offered are the ones the runner switches to (claudeserve/session
   const runner = JSON.parse(/export const MODES = (\[[^\]]*\]);/.exec(src)[1]);
   assert.deepEqual(L.MODES.map((m) => m.value), runner, "the two lists must not drift apart");
 });
+
+test("the efforts offered are the ones the session's model takes, the picked one always there", () => {
+  const info = { model: "claude-haiku-5-5", models: [{ value: "haiku", model: "claude-haiku-5-5", efforts: ["low", "high"] }] };
+  assert.deepEqual(L.effortOptions(info, "").map((e) => e.value), ["", "low", "high"]);
+  assert.deepEqual(L.effortOptions(info, "max").map((e) => e.value), ["", "low", "high", "max"], "what the row names stays");
+  assert.deepEqual(L.effortOptions({}, "").map((e) => e.value), L.EFFORTS.map((e) => e.value), "a runner that did not say: all");
+});
+
+test("the page's efforts are the runner's and the daemon's (sessionself.mjs, api/sessioneffort.go)", () => {
+  const fs = require("node:fs"), path = require("node:path");
+  const runner = JSON.parse(/export const EFFORTS = (\[[^\]]*\]);/.exec(fs.readFileSync(path.join(__dirname, "../internal/agent/claudeserve/sessionself.mjs"), "utf8"))[1]);
+  const daemon = JSON.parse("[" + /var efforts = \[\]string\{([^}]*)\}/.exec(fs.readFileSync(path.join(__dirname, "../internal/api/sessioneffort.go"), "utf8"))[1] + "]");
+  assert.deepEqual(L.EFFORTS.map((e) => e.value), runner);
+  assert.deepEqual(runner, daemon, "the three lists must not drift apart");
+});

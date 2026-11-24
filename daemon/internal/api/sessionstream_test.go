@@ -163,6 +163,16 @@ func (p *fakeProc) SetMode(_ context.Context, mode string) error {
 	return nil
 }
 
+func (p *fakeProc) SetEffort(_ context.Context, level string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.down {
+		return errors.New("connection refused")
+	}
+	p.did = append(p.did, "effort "+level)
+	return nil
+}
+
 func (p *fakeProc) StopTask(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -188,6 +198,23 @@ type streamRows struct {
 	fakeRunnerRows
 	mu     sync.Mutex
 	closed []string // "<card> <state>"
+	kind   string   // s1's kind, "" for a person's session
+}
+
+func (r *streamRows) setKind(kind string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.kind = kind
+}
+
+func (r *streamRows) RunnerSession(id string) (*store.RunnerSession, error) {
+	sess, err := r.fakeRunnerRows.RunnerSession(id)
+	if sess != nil {
+		r.mu.Lock()
+		sess.Kind = r.kind
+		r.mu.Unlock()
+	}
+	return sess, err
 }
 
 func (r *streamRows) SetSessionCardState(_, id, state string, _ int64) error {

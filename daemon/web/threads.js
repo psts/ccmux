@@ -75,12 +75,14 @@
     fail: (text) => { S.error = text; drawAll(); },
   });
 
-  // What a running session does besides talking (threadlive.js): its mode,
+  // What a running session does besides talking (threadlive.js): its mode
+  // and effort,
   // its background tasks, the usage limit; and "@" file mentions in its box
   // (threadmention.js).
   const Live = window.ccmuxThreadLive.create({
     call, session: () => session(), info: () => S.stream.info, running: () => { const s = session(); return !!s && s.state === "running"; },
     fail: (text) => { S.error = text; drawAll(); },
+    said: (text) => { S.said = text; S.error = ""; drawAll(); },
     clock: (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
   });
   const Mention = window.ccmuxThreadMention.create({

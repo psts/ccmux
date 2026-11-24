@@ -23,6 +23,13 @@ func migrateAdvisor(db *sql.DB) error {
 	return nil
 }
 
+// SetRunnerSessionEffort records the effort a session starts with
+// (--effort), set from its page; "" goes back to the model's own. The
+// column came with builders (migrateBuilders).
+func (s *SQLite) SetRunnerSessionEffort(id, effort string, now int64) error {
+	return s.updateSession(`UPDATE sessions SET effort=?, updated_at=? WHERE id=?`, effort, now, id)
+}
+
 // SetRunnerSessionAdvisor records a session's advisor, for its later
 // starts; "" goes back to the person's settings.
 func (s *SQLite) SetRunnerSessionAdvisor(id, advisor string, now int64) error {

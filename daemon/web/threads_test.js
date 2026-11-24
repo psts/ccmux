@@ -1833,6 +1833,36 @@ test("several background tasks fold into one line that opens to a row each, ever
   assert.equal(p.$("bgtasks-bar").querySelectorAll(".bg-row")[0].querySelector(".bg-stop"), stop, "and nothing is rebuilt: focus and a Stop on its way stay put");
 });
 
+test("a running session's effort is picked from the header, from the levels its model takes, and says when a restart is needed", async () => {
+  let applies = "now";
+  const p = await boot({ sessions: [{ ...lead, state: "running", effort: "high" }], search: "?s=lead1", routes: [
+    [/^POST \/v1\/sessions\/lead1\/effort$/, (body) => ({ effort: body.effort, applies })],
+  ] });
+  await p.frame(snapshot({ info: { model: "claude-opus-5-5", models: [{ value: "default", name: "Opus", model: "claude-opus-5-5", efforts: ["low", "medium", "high", "max"] }] } }));
+  assert.ok(!p.$("effort-box").classList.contains("hidden"));
+  assert.equal(p.$("effort").value, "high");
+  assert.equal(p.$("effort-shown").textContent, "High");
+  assert.deepEqual(p.$("effort").children.map((o) => o.value), ["", "low", "medium", "high", "max"], "only the levels its model takes");
+  p.$("effort").value = "max";
+  p.$("effort").onchange({ target: p.$("effort") });
+  await p.settle();
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [["/v1/sessions/lead1/effort", { effort: "max" }]]);
+  assert.equal(p.$("effort").value, "max");
+  assert.ok(p.$("notice-bar").classList.contains("hidden"), "taken at once: nothing to say");
+  applies = "on the next restart";
+  p.$("effort").value = "";
+  p.$("effort").onchange({ target: p.$("effort") });
+  await p.settle();
+  assert.equal(p.$("effort-shown").textContent, "Default");
+  assert.match(p.$("notice-bar").textContent, /Effort Default is saved and applies when the session restarts/);
+});
+
+test("an agent's effort is its base's: no Effort picker", async () => {
+  const p = await boot({ sessions: [{ ...lead, kind: "agent", state: "running" }], search: "?s=lead1" });
+  await p.frame(snapshot());
+  assert.ok(p.$("effort-box").classList.contains("hidden"));
+});
+
 test("the tray is not rebuilt while its tasks are the same: a Stop on its way stays disabled through the lists' reload", async () => {
   let release;
   const p = await boot({ sessions: [{ ...lead, state: "running" }], search: "?s=lead1", routes: [

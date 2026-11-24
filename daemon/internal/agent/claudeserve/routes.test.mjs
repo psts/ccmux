@@ -220,7 +220,7 @@ test("the rewind route: a look or a going back, a refusal is a 409 in the agent'
   });
 });
 
-test("the mode and task-stop routes: done is a 200, a no is a 409 in the agent's words, a failure a logged 500", async () => {
+test("the mode, effort and task-stop routes: done is a 200, a no is a 409 in the agent's words, a failure a logged 500", async () => {
   await withServer(async (agent, call) => {
     const did = [];
     agent.setMode = async (mode) => { if (mode === "nope") throw Object.assign(new Error("not a mode to switch to: nope"), { refused: true }); did.push(["mode", mode]); };
@@ -232,6 +232,9 @@ test("the mode and task-stop routes: done is a 200, a no is a 409 in the agent's
     const broke = await call("POST", "/task/gone/stop", {});
     assert.equal(broke.status, 500, "a failure is not a refusal");
     assert.ok(agent.logged.some((l) => l.includes("Claude Code exited")), "and it is logged");
-    assert.deepEqual(did, [["mode", "plan"], ["stop", "b1"]]);
+    agent.setEffort = async (level) => { did.push(["effort", level]); };
+    assert.equal((await call("POST", "/effort", { effort: "max" })).status, 200);
+    assert.equal((await call("POST", "/effort", {})).status, 200, "none: the model's own");
+    assert.deepEqual(did, [["mode", "plan"], ["stop", "b1"], ["effort", "max"], ["effort", ""]]);
   });
 });

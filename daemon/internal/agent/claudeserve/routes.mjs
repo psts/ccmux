@@ -90,9 +90,10 @@ export const handlers = {
       return [500, { error: text }];
     }
   },
-  // A running session's permission mode, switched from its page, and one
+  // A running session's permission mode and effort, switched from its page, and one
   // of its background tasks stopped. A "no" is a 409 in the agent's words.
   "POST mode": (a, id, body) => answered(() => a.setMode(String(body.mode || ""))),
+  "POST effort": (a, id, body) => answered(() => a.setEffort(String(body.effort || ""))),
   "POST task/:id/stop": (a, id) => answered(() => a.stopTask(id)),
   "POST delivered": (a, id, body) => [200, { delivered: a.delivered(Array.isArray(body.ids) ? body.ids : []) }],
   // The daemon's PushPrompt (first message, bus messages) speaks opencode's

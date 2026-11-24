@@ -42,7 +42,7 @@ export function fromInitialization(r) {
   return {
     ...self,
     commands: commandList(r.commands),
-    models: (r.models || []).map((x) => ({ value: String(x.value || ""), name: String(x.displayName || x.value || ""), model: String(x.resolvedModel || "") })),
+    models: (r.models || []).map(modelOf),
   };
 }
 
@@ -124,6 +124,18 @@ export function usageLimit(info) {
 // MODES are the permission modes a person may switch a running session to
 // from its page; bypassPermissions and dontAsk are not offered.
 export const MODES = ["default", "acceptEdits", "plan", "auto"];
+
+// EFFORTS are the effort levels a person may set a running session to
+// from its page (Claude Code's /effort); "" goes back to the model's own.
+export const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+
+// modelOf is one model a login may pick, as the page lists it; efforts are
+// the levels Claude Code says it takes, when it says.
+function modelOf(x) {
+  const m = { value: String(x.value || ""), name: String(x.displayName || x.value || ""), model: String(x.resolvedModel || "") };
+  if (Array.isArray(x.supportedEffortLevels)) m.efforts = x.supportedEffortLevels.map(String);
+  return m;
+}
 
 
 // advisorOf is the advisor a session runs with, as its page shows it: the

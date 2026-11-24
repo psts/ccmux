@@ -21,6 +21,8 @@ function stubSDK(script = []) {
       q.modes = [];
       q.stopped = [];
       q.setPermissionMode = async (mode) => { q.modes.push(mode); };
+      q.flags = [];
+      q.applyFlagSettings = async (f) => { q.flags.push(f); };
       q.stopTask = async (id) => { q.stopped.push(id); };
       q[Symbol.asyncIterator] = async function* () {
         for (const m of script) {
@@ -611,6 +613,17 @@ test("a runner switches its mode and stops a background task when its page asks"
   await agent.stopTask("b1");
   assert.deepEqual(sdk.queries[0].stopped, ["b1"]);
   await assert.rejects(makeAgent().agent.setMode("plan"), /only a session runner/);
+});
+
+test("a runner changes its effort when its page asks, and back to the model's own with none", async () => {
+  const { agent, sdk, events } = runnerAgent();
+  agent.prompt("hi", "p1");
+  await agent.setEffort("xhigh");
+  await agent.setEffort("");
+  assert.deepEqual(sdk.queries[0].flags, [{ effortLevel: "xhigh" }, { effortLevel: null }]);
+  assert.equal(events.filter((e) => e.type === "session.info").pop().properties.info.effort, "");
+  await assert.rejects(agent.setEffort("huge"), (e) => e.refused && /not an effort to switch to/.test(e.message));
+  await assert.rejects(makeAgent().agent.setEffort("high"), /only a session runner/);
 });
 
 test("a task's builder runs in the mode and at the effort its row names", () => {

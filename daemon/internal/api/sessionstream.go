@@ -41,6 +41,7 @@ type SessionRunner interface {
 	Abort(ctx context.Context, sessionID string) error
 	AnswerCard(ctx context.Context, a runner.Answer) (bool, error)
 	SetMode(ctx context.Context, mode string) error
+	SetEffort(ctx context.Context, level string) error
 	StopTask(ctx context.Context, taskID string) error
 }
 

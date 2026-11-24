@@ -21,6 +21,7 @@ type Store interface {
 	SetRunnerSessionWanted(id, wanted string, now int64) error
 	SetRunnerSessionModel(id, model string, now int64) error
 	SetRunnerSessionAdvisor(id, advisor string, now int64) error
+	SetRunnerSessionEffort(id, effort string, now int64) error
 	SetRunnerSessionNote(id, note string, now int64) error
 	SetRunnerSessionPlace(id string, p store.SessionPlace, now int64) error
 	SetRunnerSessionLoadout(id, loadout string) error
@@ -388,6 +389,21 @@ func (s *Supervisor) SetAdvisor(sessionID, advisor string) error {
 		return ErrSessionDone
 	}
 	return s.st.SetRunnerSessionAdvisor(sessionID, advisor, s.millis())
+}
+
+// SetEffort sets the effort a session starts with ("" for the model's
+// own). The page also asks a running session's runner to take it at once
+// (Client.SetEffort); this is what its later starts run with.
+func (s *Supervisor) SetEffort(sessionID, effort string) error {
+	defer s.lock(sessionID)()
+	sess, err := s.row(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess.Wanted == store.SessionDone {
+		return ErrSessionDone
+	}
+	return s.st.SetRunnerSessionEffort(sessionID, effort, s.millis())
 }
 
 // Restart starts a session again now, from its row as it is (its model,

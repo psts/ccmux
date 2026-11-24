@@ -1,4 +1,4 @@
-// threadpill.js: the header's settings pill (Model, Advisor, Mode). Each
+// threadpill.js: the header's settings pill (Model, Advisor, Effort, Mode). Each
 // picker is a native select laid over a short label of its choice: the open
 // list keeps its full words ("Opus 5.5 (default)", "Settings (Fable)"), the
 // closed one reads "Opus 5.5", "Fable". shortLabel is pure, so
@@ -6,7 +6,7 @@
 (function (root) {
   "use strict";
 
-  const PICKERS = ["model", "advisor", "mode"];
+  const PICKERS = ["model", "advisor", "effort", "mode"];
 
   // shortLabel is an option's words as the closed picker shows them.
   function shortLabel(text) {

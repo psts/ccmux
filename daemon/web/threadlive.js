@@ -1,6 +1,8 @@
 // threadlive.js: what a running session is doing besides its conversation,
 // on the thread page, as Claude Code shows it around its prompt box:
 // - its permission mode, switched like Shift+Tab (POST .../mode);
+// - its effort, set like /effort (POST .../effort), which its row keeps
+//   for later starts too;
 // - its background tasks (a dev server, a monitor, a helper sent off),
 //   each with Stop (POST .../tasks/{id}/stop);
 // - a warning when the plan's usage limit is near or reached.
@@ -15,6 +17,25 @@
     { value: "default", label: "Ask first" }, { value: "acceptEdits", label: "Accept edits" },
     { value: "plan", label: "Plan" }, { value: "auto", label: "Auto" },
   ];
+
+  // EFFORTS are the levels a session may be set to, "" the model's own
+  // (api/sessioneffort.go efforts).
+  const EFFORTS = [
+    { value: "", label: "Default" }, { value: "low", label: "Low" }, { value: "medium", label: "Medium" },
+    { value: "high", label: "High" }, { value: "xhigh", label: "Extra high" }, { value: "max", label: "Max" },
+  ];
+
+  // effortOptions are the levels to offer: the ones the session's model
+  // takes when its runner said (info.models efforts), else all; the one
+  // picked now is always there.
+  function effortOptions(info, picked) {
+    const models = (info && info.models) || [];
+    const m = models.find((x) => x.model === info.model || x.value === info.model);
+    const takes = m && Array.isArray(m.efforts) ? m.efforts : null;
+    return EFFORTS.filter((e) => !e.value || e.value === picked || !takes || takes.includes(e.value));
+  }
+
+  const effortLabel = (value) => (EFFORTS.find((e) => e.value === value) || { label: value }).label;
 
   const kinds = { local_bash: "Shell", local_agent: "Agent", monitor: "Monitor", workflow: "Workflow" };
 
@@ -69,6 +90,7 @@
       const sess = d.session();
       const live = !!sess && d.running();
       const info = d.info() || {};
+      drawEffort(sess, live, info); // before drawMode, whose pill sync shows its label
       drawMode(live, info.permissionMode || "");
       drawTasks(live ? info.tasks || [] : []);
       const warn = sess ? limitLine(info.limit, d.clock) : "";
@@ -86,6 +108,39 @@
       show("mode-box", live && known);
       if (known) select.value = mode;
       if (window.ccmuxThreadPill) window.ccmuxThreadPill.sync($);
+    }
+
+    // drawEffort is the Effort picker: for a running session that is not a
+    // role agent's (its base names its effort). Its options are filled
+    // again only when they change, so an open list is not pulled away.
+    function drawEffort(sess, live, info) {
+      const select = $("effort");
+      show("effort-box", live && sess.kind !== "agent");
+      if (!live) return;
+      const picked = sess.effort || "";
+      const opts = effortOptions(info, picked);
+      const key = opts.map((o) => o.value).join(",");
+      if (select.dataset.key !== key) {
+        select.dataset.key = key;
+        select.textContent = "";
+        for (const o of opts) { const n = document.createElement("option"); n.value = o.value; n.textContent = o.label; select.appendChild(n); }
+      }
+      select.value = picked;
+    }
+
+    // pickEffort saves the session's effort; a runner that could not take
+    // it at once (one started before it could) gets it at its restart.
+    async function pickEffort(value) {
+      const sess = d.session();
+      if (!sess) return;
+      try {
+        const out = await d.call("POST", `/v1/sessions/${enc(sess.id)}/effort`, { effort: value });
+        sess.effort = value;
+        if (out && out.applies && out.applies !== "now") d.said(`Effort ${effortLabel(value)} is saved and applies when the session restarts.`);
+        else draw();
+      } catch (e) {
+        d.fail(e.message);
+      }
     }
 
     // drawTasks is the tray on the chat box (threads.css .bgtasks): one
@@ -170,10 +225,11 @@
     }
 
     $("mode").onchange = (e) => act("/mode", { mode: e.target.value });
+    $("effort").onchange = (e) => pickEffort(e.target.value);
     return { draw, tick };
   }
 
-  const api = { create, MODES, taskParts, ranFor, trayLine, trayKey, limitLine };
+  const api = { create, MODES, EFFORTS, effortOptions, taskParts, ranFor, trayLine, trayKey, limitLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof window !== "undefined") window.ccmuxThreadLive = api;
 })();

@@ -26,6 +26,12 @@ func (c *Client) SetMode(ctx context.Context, mode string) error {
 	return c.action(ctx, "/mode", map[string]string{"mode": mode})
 }
 
+// SetEffort changes the session's effort ("" back to the model's own)
+// until it ends or starts again.
+func (c *Client) SetEffort(ctx context.Context, level string) error {
+	return c.action(ctx, "/effort", map[string]string{"effort": level})
+}
+
 // StopTask stops one of the session's background tasks.
 func (c *Client) StopTask(ctx context.Context, taskID string) error {
 	return c.action(ctx, "/task/"+url.PathEscape(taskID)+"/stop", struct{}{})
