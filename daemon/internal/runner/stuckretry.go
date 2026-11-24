@@ -61,6 +61,18 @@ func (t *stuckTries) due(id string, now time.Time) (int, bool) {
 	return st.tries + 1, !now.Before(st.since.Add(wait))
 }
 
+// forget drops what is kept of a session that is no longer stuck, keeping
+// only when it was last tried (for stuckFresh): a later park starts a
+// fresh wait.
+func (t *stuckTries) forget(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if st, ok := t.seen[id]; ok && !st.since.IsZero() {
+		st.since = time.Time{}
+		t.seen[id] = st
+	}
+}
+
 // tried records a try: the next wait starts when it is seen stuck again.
 func (t *stuckTries) tried(id string, now time.Time) {
 	t.mu.Lock()
@@ -77,17 +89,20 @@ func (s *Supervisor) retryStuck(list []store.RunnerSession) {
 	now := s.now()
 	for _, sess := range list {
 		if !sess.Stuck || sess.Wanted != store.SessionAsleep {
+			s.stuck.forget(sess.ID) // woken some other way: its next park waits afresh
 			continue
 		}
 		try, ok := s.stuck.due(sess.ID, now) // its wait starts when it is first seen stuck, work or not
 		if !ok || !s.stuckHasWork(sess) {
 			continue
 		}
-		if err := s.retryOne(sess.ID, try); err != nil {
-			log.Printf("runner: session %s: stuck, not tried again: %v", short(sess.ID), err)
-			continue
+		woke, err := s.retryOne(sess.ID, try)
+		if err != nil {
+			log.Printf("runner: session %s: stuck, trying again failed: %v", short(sess.ID), err)
 		}
-		s.stuck.tried(sess.ID, now)
+		if woke {
+			s.stuck.tried(sess.ID, now)
+		}
 	}
 }
 
@@ -110,18 +125,20 @@ func (s *Supervisor) stuckHasWork(sess store.RunnerSession) bool {
 }
 
 // retryOne wakes a session that is still stuck, as a person's wake would,
-// and says so in its note.
-func (s *Supervisor) retryOne(id string, try int) error {
+// says so in its note, and says whether it woke it. A wake whose note
+// alone was not saved still woke it.
+func (s *Supervisor) retryOne(id string, try int) (bool, error) {
 	defer s.lock(id)()
 	sess, err := s.row(id)
 	if err != nil || !sess.Stuck || sess.Wanted != store.SessionAsleep {
-		return err
+		return false, err
 	}
-	if err := s.wake(id); err != nil {
-		return err
+	err = s.wake(id)
+	if now, rerr := s.row(id); rerr != nil || now.Wanted != store.SessionRunning {
+		return false, err
 	}
 	log.Printf("runner: session %s: stuck, trying again by itself (try %d)", short(id), try)
 	s.note(id, fmt.Sprintf("trying again by itself after it could not start (try %d)", try))
 	s.announce(id)
-	return nil
+	return true, err
 }

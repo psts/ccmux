@@ -331,7 +331,7 @@ func TestASessionWithChangedSkillsIsStartedAgainEarly(t *testing.T) {
 		t.Fatalf("not restarted for changed skills: %v", r.units.calls)
 	}
 	row, _ := r.st.RunnerSession(sess.ID)
-	if !strings.Contains(row.Note, "skills") || strings.Contains(row.Note, "after 1h") {
+	if !strings.Contains(row.Note, "because its skills or plugins changed") {
 		t.Fatalf("its note says why: %q", row.Note)
 	}
 	r.age(sess.ID, time.Minute)

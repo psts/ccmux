@@ -946,6 +946,25 @@ func TestAnAdvisorIsSavedForTheNextStart(t *testing.T) {
 	}
 }
 
+func TestAnEffortIsSavedForTheNextStart(t *testing.T) {
+	r := newRig(t)
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	if err := r.sup.SetEffort(sess.ID, "xhigh"); err != nil {
+		t.Fatal(err)
+	}
+	r.units.set(r.paths.Unit(sess.ID), false) // its next start
+	r.reconcile()
+	sp, _ := ReadSpec(r.paths.SpecFile(sess.ID))
+	if !strings.Contains(strings.Join(sp.Args, " "), "--effort xhigh") {
+		t.Fatalf("the next start runs with it: %v", sp.Args)
+	}
+	r.sup.SetWanted(sess.ID, store.SessionDone)
+	if err := r.sup.SetEffort(sess.ID, "low"); !errors.Is(err, ErrSessionDone) {
+		t.Fatalf("an ended session takes no effort: %v", err)
+	}
+}
+
 func TestAPromptsImagesGoWithItEveryTimeItIsSent(t *testing.T) {
 	r := newRig(t)
 	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})

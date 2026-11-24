@@ -84,3 +84,27 @@ func TestAStuckAgentTriesAgainOnlyForAWaitingMessage(t *testing.T) {
 		t.Fatalf("a builder was woken: %+v", got)
 	}
 }
+
+// A session woken some other way (a person, a message) waits afresh when
+// it is parked again: no burst of starts right after the park.
+func TestAStuckSessionWokenByAPersonWaitsAfreshAtItsNextPark(t *testing.T) {
+	r, sess := stuckRig(t, NewSession{Cwd: "/r/app"})
+	r.after(5 * time.Minute)
+	if err := r.sup.SetWanted(sess.ID, store.SessionRunning); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile()
+	r.after(48 * time.Hour)
+	if err := r.sup.park(sess.ID, "put to sleep: again"); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile()
+	if got, _ := r.st.RunnerSession(sess.ID); got.Wanted != store.SessionAsleep {
+		t.Fatalf("retried at once after a later park: %+v", got)
+	}
+	r.after(11 * time.Minute)
+	r.reconcile()
+	if got, _ := r.st.RunnerSession(sess.ID); got.Wanted != store.SessionRunning {
+		t.Fatalf("not retried 10 minutes after the later park: %+v", got)
+	}
+}
