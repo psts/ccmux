@@ -50,7 +50,7 @@ func (t *Tidier) tidyRepo(ctx context.Context, r repo) {
 	o, through := t.tidy(ctx, r, convs, until)
 	o.At, o.Repo = until.Format(time.RFC3339), r.Path
 	t.record(o)
-	if ctx.Err() != nil || o.Result == "failed" || o.Result == "skipped" {
+	if ctx.Err() != nil || o.Result == "failed" || o.Result == "skipped" || o.Result == "partial" {
 		return
 	}
 	if st, err = t.loadState(); err == nil {
@@ -114,9 +114,16 @@ func (t *Tidier) settle(r repo, live string, read files, tidied string) outcome 
 		return o
 	}
 	backup := filepath.Join(t.StateDir, "backups", filepath.Base(projectDir(t.Projects, r.Path)), t.clock().Format("2006-01-02T1504"))
-	err = apply(live, read, new, c, backup)
+	wrote, err := apply(live, read, new, c, backup)
 	if errors.Is(err, errChanged) {
 		o.Result, o.Why = "skipped", err.Error()
+		return o
+	}
+	if err != nil && len(wrote) > 0 {
+		// Some notes landed before the error: say which, and where the
+		// old memory is, so a person can put it back.
+		o.Result = "partial"
+		o.Why = fmt.Sprintf("%v; wrote %s before it; the old memory is in %s", err, strings.Join(wrote, ", "), backup)
 		return o
 	}
 	if err != nil {

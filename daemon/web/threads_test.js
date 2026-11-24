@@ -1873,6 +1873,18 @@ test("an asleep session keeps the Effort and Mode places, waiting and not pickab
   assert.ok(!p.$("gauge").classList.contains("hidden") && p.$("gauge").classList.contains("blank"), "the gauge's place too");
 });
 
+test("a running session's Mode and Effort unlock once it says them, without the waiting option", async () => {
+  const p = await boot({ sessions: [{ ...lead, state: "running" }], search: "?s=lead1" });
+  assert.equal(p.$("mode").disabled, true, "before its snapshot it has said nothing");
+  await p.frame(snapshot({ info: { permissionMode: "auto", model: "claude-opus-5-5", settingsEffort: "medium", models: [] } }));
+  for (const id of ["mode", "effort"]) {
+    assert.equal(p.$(id).disabled, false, id + " can be picked");
+    assert.ok(!p.$(id).children.some((o) => o.textContent === "\u2026"), id + " lost its waiting option");
+  }
+  assert.equal(p.$("mode-shown").textContent, "Auto");
+  assert.equal(p.$("effort-shown").textContent, "Medium");
+});
+
 test("a new thread's header already holds every place the session will fill", async () => {
   const p = await boot({ sessions: [lead], search: "?ws=ws1&new=thread" });
   for (const id of ["model-box", "advisor-box", "effort-box", "mode-box", "gauge", "more"]) assert.ok(!p.$(id).classList.contains("hidden"), id + " keeps its place");

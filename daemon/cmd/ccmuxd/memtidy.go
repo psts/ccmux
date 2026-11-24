@@ -5,12 +5,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/harness"
 	"ccmux.dev/ccmuxd/internal/memtidy"
 	"ccmux.dev/ccmuxd/internal/store"
 )
+
+// tokenWarn says once that the API token is not checked for.
+var tokenWarn sync.Once
 
 // memoryTidyLimit is how long one repo's tidy-up may take.
 const memoryTidyLimit = 30 * time.Minute
@@ -42,10 +46,12 @@ func startMemoryTidy(ctx context.Context, st *store.SQLite, hour int, model stri
 			return memtidy.DreamLive(filepath.Join(home, ".claude.json"), filepath.Join(home, ".claude", "settings.json"))
 		},
 		Secrets: func() []string {
-			if tok, err := readPrivate(apiTokenFile()); err == nil && tok != "" {
-				return []string{tok}
+			tok, err := readPrivate(apiTokenFile())
+			if err != nil || tok == "" {
+				tokenWarn.Do(func() { log.Printf("memory tidy: the API token could not be read, so it is not checked for: %v", err) })
+				return nil
 			}
-			return nil
+			return []string{tok}
 		},
 	}
 	log.Printf("memory tidy: nightly from %02d:00 on %s", hour, model)

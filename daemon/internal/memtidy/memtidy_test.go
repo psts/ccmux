@@ -428,3 +428,130 @@ func TestAnEmptiedNoteIsRemovedAndAnUntouchedOneKept(t *testing.T) {
 		t.Fatalf("live memory: %v", got)
 	}
 }
+
+// A note under a linked folder is refused before anything lands, so the
+// live memory is all old, never half new.
+func TestALinkedFolderRefusesTheWholeNight(t *testing.T) {
+	f := newNight(t, func(_ context.Context, dir, _ string) (string, error) {
+		m := filepath.Join(dir, "memory")
+		os.WriteFile(filepath.Join(m, "MEMORY.md"), []byte("- [x](agents/x.md) — y\n"), 0o644)
+		os.WriteFile(filepath.Join(m, "a.md"), []byte("new"), 0o644)
+		os.MkdirAll(filepath.Join(m, "agents"), 0o755)
+		os.WriteFile(filepath.Join(m, "agents", "x.md"), []byte("planted"), 0o644)
+		return "", nil
+	})
+	os.Symlink(t.TempDir(), filepath.Join(f.live, "agents"))
+	f.t.Once(context.Background())
+	got, _ := readNotes(f.live)
+	if _, ok := got["a.md"]; ok || !strings.Contains(string(got["MEMORY.md"]), "old") {
+		t.Fatalf("nothing lands when one note is under a link: %v", got)
+	}
+}
+
+// A write that fails after others landed says which landed and where the
+// old memory is, and the bookmark stays for the next night.
+func TestAWriteThatFailsPartwaySaysWhatLanded(t *testing.T) {
+	f := newNight(t, func(_ context.Context, dir, _ string) (string, error) {
+		m := filepath.Join(dir, "memory")
+		os.WriteFile(filepath.Join(m, "a.md"), []byte("new"), 0o644)
+		os.MkdirAll(filepath.Join(m, "ro"), 0o755)
+		os.WriteFile(filepath.Join(m, "ro", "x.md"), []byte("new"), 0o644)
+		return "", nil
+	})
+	ro := filepath.Join(f.live, "ro")
+	os.MkdirAll(ro, 0o755)
+	os.Chmod(ro, 0o500)
+	defer os.Chmod(ro, 0o755)
+	f.t.Once(context.Background())
+	logs := readLog(t, f.t.StateDir)
+	if len(logs) != 1 || logs[0].Result != "partial" || !strings.Contains(logs[0].Why, "a.md") || !strings.Contains(logs[0].Why, "backups") {
+		t.Fatalf("log: %+v", logs)
+	}
+	st, _ := f.t.loadState()
+	if _, ok := st.Bookmarks[f.repoPath]; ok {
+		t.Fatal("a partial night keeps the bookmark")
+	}
+}
+
+// A refused night (here: a secret) leaves the live memory byte for byte,
+// says why, and moves the bookmark: those conversations are not tried again.
+func TestARefusedNightLeavesMemoryAndMovesOn(t *testing.T) {
+	f := newNight(t, func(_ context.Context, dir, _ string) (string, error) {
+		os.WriteFile(filepath.Join(dir, "memory", "old.md"), []byte("token s3cret-api-token-value"), 0o644)
+		return "", nil
+	})
+	f.t.Secrets = func() []string { return []string{"s3cret-api-token-value"} }
+	before, _ := readNotes(f.live)
+	f.t.Once(context.Background())
+	after, _ := readNotes(f.live)
+	if !same(before, after) {
+		t.Fatalf("live memory changed: %v", after)
+	}
+	logs := readLog(t, f.t.StateDir)
+	if len(logs) != 1 || logs[0].Result != "refused" || !strings.Contains(logs[0].Why, "ccmux token") {
+		t.Fatalf("log: %+v", logs)
+	}
+	st, _ := f.t.loadState()
+	if _, ok := st.Bookmarks[f.repoPath]; !ok {
+		t.Fatal("a refused night moves the bookmark")
+	}
+}
+
+func TestPruneBackupsKeepsTheNewest(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"2026-11-01T0300", "2026-11-02T0300", "2026-11-03T0300", "2026-11-04T0300"} {
+		os.MkdirAll(filepath.Join(dir, n), 0o755)
+	}
+	os.WriteFile(filepath.Join(dir, "note.txt"), []byte("x"), 0o644)
+	pruneBackups(dir, 2)
+	ents, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "2026-11-03T0300,2026-11-04T0300,note.txt" {
+		t.Fatalf("kept: %v", names)
+	}
+}
+
+func TestATranscriptOfAnUnknownFormatIsUnreadable(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.jsonl")
+	os.WriteFile(p, []byte("not json\nnor this\n"), 0o644)
+	if _, err := digest(p); err == nil || !strings.Contains(err.Error(), "2 lines") {
+		t.Fatalf("got %v", err)
+	}
+	q := filepath.Join(t.TempDir(), "d.jsonl")
+	os.WriteFile(q, []byte(`{"type":"user","message":{"content":[{"type":"tool_result"}]}}`+"\n"), 0o644)
+	if text, err := digest(q); err != nil || strings.TrimSpace(text) != "" {
+		t.Fatalf("a known format with nothing to say is empty, not unreadable: %q %v", text, err)
+	}
+}
+
+// The tidy-up's Claude is walled by its flags: no tool listed, the shell
+// and web refused, edits only by acceptEdits, run in its work folder.
+func TestHeadlessRunsClaudeWithItsWallsInItsFolder(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "claude")
+	os.WriteFile(fake, []byte("#!/bin/sh\npwd\nfor a in \"$@\"; do echo \"$a\"; done\n"), 0o755)
+	work := t.TempDir()
+	out, err := Headless(fake, "sonnet", nil, time.Minute)(context.Background(), work, "the prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if real, _ := filepath.EvalSymlinks(work); lines[0] != work && lines[0] != real {
+		t.Fatalf("ran in %q, not its work folder", lines[0])
+	}
+	args := strings.Join(lines[1:], "\n")
+	for _, want := range []string{"-p\nthe prompt", "--permission-mode\nacceptEdits", "--setting-sources\nproject", "--strict-mcp-config", "--no-session-persistence"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args lack %q:\n%s", want, args)
+		}
+	}
+	if !strings.Contains(args, "--disallowedTools\nBash,WebFetch,WebSearch") {
+		t.Errorf("the shell and web must be refused:\n%s", args)
+	}
+	if strings.Contains(args, "--allowedTools") || strings.Contains(args, "--allowed-tools") {
+		t.Errorf("no tool may be on the allow list:\n%s", args)
+	}
+}

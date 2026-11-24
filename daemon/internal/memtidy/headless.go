@@ -32,6 +32,9 @@ func Headless(claude, model string, env []string, limit time.Duration) func(ctx 
 		)
 		cmd.Dir = dir
 		cmd.Env = env
+		// A child of claude holding its output open must not keep Run
+		// waiting past the limit.
+		cmd.WaitDelay = 10 * time.Second
 		var out, errOut bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errOut
 		if err := cmd.Run(); err != nil {

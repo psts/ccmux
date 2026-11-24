@@ -115,22 +115,23 @@ func check(old, new files, c change, secrets []string) error {
 
 // apply puts a checked memory in place of the live one: only when the live
 // one is still what was read, after a backup, each file by rename, and
-// never outside the live folder (openLive).
-func apply(live string, read, new files, c change, backup string) error {
+// never outside the live folder (openLive). It returns what it wrote, so a
+// write that fails partway can say so.
+func apply(live string, read, new files, c change, backup string) ([]string, error) {
 	root, err := openLive(live)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer root.Close()
 	now, err := readNotes(live)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !same(now, read) {
-		return errChanged
+		return nil, errChanged
 	}
 	if err := writeNotes(backup, read); err != nil {
-		return fmt.Errorf("backup: %w", err)
+		return nil, fmt.Errorf("backup: %w", err)
 	}
 	put := files{}
 	for _, rel := range append(append([]string{}, c.Added...), c.Changed...) {

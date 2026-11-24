@@ -47,17 +47,25 @@ func digest(path string) (string, error) {
 	var b strings.Builder
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
+	lines, parsed := 0, 0
 	for sc.Scan() {
+		lines++
 		var l line
-		if json.Unmarshal(sc.Bytes(), &l) != nil || l.IsMeta {
+		if json.Unmarshal(sc.Bytes(), &l) != nil {
 			continue
 		}
-		if l.Type == "user" || l.Type == "assistant" {
+		parsed++
+		if !l.IsMeta && (l.Type == "user" || l.Type == "assistant") {
 			writeMessage(&b, l)
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return "", err
+	}
+	// Not one line read: the transcript's format is not what this knows
+	// (a new Claude Code), which must show as unreadable, not as empty.
+	if lines > 0 && parsed == 0 {
+		return "", fmt.Errorf("none of its %d lines reads as a transcript line", lines)
 	}
 	return headTail(b.String(), convHead, convTail), nil
 }

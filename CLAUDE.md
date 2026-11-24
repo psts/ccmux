@@ -554,8 +554,10 @@ SDK's bare prompt and was never told how to save memory.
   session can write `~/.claude/projects`, so it could plant one. The live
   memory is written through an `os.Root` (a link out of it is refused),
   the memory folder and its project folder must be real folders, and
-  temp files are new ones of their own. A night that meets a link fails
-  and says so in the log.
+  temp files are new ones of their own. A night with a note under a
+  linked folder fails before anything is written. A write that fails
+  partway is logged as `partial` with what landed and the backup folder
+  to put back from.
 - A busy night reads the oldest conversations up to its budget and
   leaves the rest for the next (`deferred` in the log).
 - **Claude Code's own auto-dream** does the same and stays off while
