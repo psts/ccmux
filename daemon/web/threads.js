@@ -410,7 +410,7 @@
   function liveState(sess) {
     if (S.stream.where === "starting" || S.stream.where === "updating") return S.stream.where;
     const state = Model.stateOf(sess);
-    if (state === "ended" || state === "asleep" || state === "unknown") return state;
+    if (state === "ended" || state === "asleep" || state === "unknown" || state === "stuck") return state;
     if (S.stream.cards.length) return "waiting";
     return S.stream.busy ? "running" : state === "running" ? "idle" : state;
   }

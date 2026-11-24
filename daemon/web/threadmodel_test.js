@@ -11,12 +11,15 @@ test("where a session is, as one word", () => {
     [{ state: "running", attention: "idle" }, "idle"],
     [{ state: "running" }, "idle"],
     [{ state: "asleep", attention: "done" }, "asleep"],
+    [{ state: "asleep", stuck: true }, "stuck"],
+    [{ state: "running", stuck: true }, "idle"], // woken again: the mark is the daemon's to clear
     [{ state: "done", attention: "running" }, "ended"],
     [{ state: "unknown", attention: "needs_input" }, "unknown"],
     [null, "asleep"],
   ];
   for (const [session, want] of rows) assert.equal(m.stateOf(session), want, JSON.stringify(session));
   assert.equal(m.stateLabel("waiting"), "Needs you");
+  assert.equal(m.stateLabel("stuck"), "Could not start");
   assert.equal(m.stateLabel("something-new"), "something-new");
 });
 

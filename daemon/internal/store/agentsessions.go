@@ -87,7 +87,7 @@ func (s *SQLite) SetRunnerSessionFresh(id string, fresh bool, now int64) error {
 // whether its next start opens a new conversation: a wake that read one
 // without the other would start it on the wrong one.
 func (s *SQLite) SleepRunnerSession(id string, fresh bool, now int64) error {
-	return s.updateSession(`UPDATE sessions SET wanted=?, fresh_next=?, updated_at=? WHERE id=?`, SessionAsleep, fresh, now, id)
+	return s.updateSession(`UPDATE sessions SET wanted=?, fresh_next=?, stuck=0, updated_at=? WHERE id=?`, SessionAsleep, fresh, now, id)
 }
 
 // RotateRunnerConversation gives a session a new conversation and clears

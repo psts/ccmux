@@ -113,6 +113,10 @@ type RunnerSession struct {
 	// advisorModel setting, store/advisor.go); "" keeps what the person's
 	// settings choose.
 	Advisor string `json:"advisor,omitempty"`
+	// Stuck says the daemon gave up starting the session (store/stuck.go):
+	// asleep after failed starts, its note says why. Whatever wants it next
+	// clears it.
+	Stuck bool `json:"stuck,omitempty"`
 	// Loadout is what the session loaded from the capability catalog at its
 	// last start (internal/loadout's record, JSON; "" before its first start
 	// with one). The routes serve it parsed (api.sessionView), never raw.
@@ -191,7 +195,7 @@ type SessionCard struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
-const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at,pane_id,workspace_id,attention,attention_reason,attention_since,kind,title,goal,thread_id,role,repo,worktree,branch,read_only,loadout,effort,permission_mode,conversation,fresh_next,agent_version,advisor,left_conversations"
+const sessionCols = "id,name,cwd,model,wanted,note,created_at,updated_at,pane_id,workspace_id,attention,attention_reason,attention_since,kind,title,goal,thread_id,role,repo,worktree,branch,read_only,loadout,effort,permission_mode,conversation,fresh_next,agent_version,advisor,left_conversations,stuck"
 
 // migrateSessionThreads gives a session row its kind, title and goal, and
 // the rule that a workspace has one lead that has not ended. Strict, as
@@ -240,11 +244,11 @@ func migrateSessionPanes(db *sql.DB) error {
 // one is ErrMemberExists; a second session for a role agent's home that has
 // one is ErrAgentExists.
 func (s *SQLite) AddRunnerSession(r RunnerSession) error {
-	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.Name, r.Cwd, r.Model, r.Wanted, r.Note, r.CreatedAt, r.UpdatedAt,
 		r.PaneID, r.WorkspaceID, r.Attention, r.AttentionReason, r.AttentionSince, r.Kind, r.Title, r.Goal,
 		r.ThreadID, r.Role, r.Repo, r.Worktree, r.Branch, r.ReadOnly, r.Loadout, r.Effort, r.PermissionMode,
-		r.Conversation, r.FreshNext, r.AgentVersion, r.Advisor, leftColumn(r.Left))
+		r.Conversation, r.FreshNext, r.AgentVersion, r.Advisor, leftColumn(r.Left), r.Stuck)
 	if err != nil && r.Kind == SessionAgent && strings.Contains(err.Error(), "UNIQUE constraint failed: sessions.workspace_id") {
 		return ErrAgentExists
 	}
@@ -330,7 +334,7 @@ func (s *SQLite) querySessions(q string, args ...any) ([]RunnerSession, error) {
 		if err := rows.Scan(&r.ID, &r.Name, &r.Cwd, &r.Model, &r.Wanted, &r.Note, &r.CreatedAt, &r.UpdatedAt,
 			&r.PaneID, &r.WorkspaceID, &r.Attention, &r.AttentionReason, &r.AttentionSince, &r.Kind, &r.Title, &r.Goal,
 			&r.ThreadID, &r.Role, &r.Repo, &r.Worktree, &r.Branch, &r.ReadOnly, &r.Loadout, &r.Effort, &r.PermissionMode,
-			&r.Conversation, &r.FreshNext, &r.AgentVersion, &r.Advisor, &left); err != nil {
+			&r.Conversation, &r.FreshNext, &r.AgentVersion, &r.Advisor, &left, &r.Stuck); err != nil {
 			return nil, err
 		}
 		r.Left = parseLeft(left)
@@ -344,7 +348,7 @@ var ErrNoSession = errors.New("no such session")
 
 // SetRunnerSessionWanted sets what the daemon keeps a session at.
 func (s *SQLite) SetRunnerSessionWanted(id, wanted string, now int64) error {
-	return s.updateSession(`UPDATE sessions SET wanted=?, updated_at=? WHERE id=?`, wanted, now, id)
+	return s.updateSession(`UPDATE sessions SET wanted=?, stuck=0, updated_at=? WHERE id=?`, wanted, now, id)
 }
 
 // SetRunnerSessionNote records why the daemon acted on a session ("" clears it).
@@ -390,7 +394,7 @@ VALUES (?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM session_inbox WHERE session_id=?
 		return err
 	}
 	if wake {
-		if _, err := tx.Exec(`UPDATE sessions SET wanted=?, note='', updated_at=? WHERE id=? AND wanted=?`,
+		if _, err := tx.Exec(`UPDATE sessions SET wanted=?, note='', stuck=0, updated_at=? WHERE id=? AND wanted=?`,
 			SessionRunning, now, p.SessionID, SessionAsleep); err != nil {
 			return err
 		}

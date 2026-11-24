@@ -19,6 +19,7 @@ type Store interface {
 	RunnerSession(id string) (*store.RunnerSession, error)
 	RunnerSessions() ([]store.RunnerSession, error)
 	SetRunnerSessionWanted(id, wanted string, now int64) error
+	ParkRunnerSession(id string, now int64) error
 	SetRunnerSessionModel(id, model string, now int64) error
 	SetRunnerSessionAdvisor(id, advisor string, now int64) error
 	SetRunnerSessionEffort(id, effort string, now int64) error
@@ -70,6 +71,8 @@ type Supervisor struct {
 	// refresh is the restarts that bring a long-running session onto what
 	// is installed now (refresh.go).
 	refresh refresher
+	// stuck counts the tries of sessions it gave up starting (stuckretry.go).
+	stuck stuckTries
 
 	// Changed hears a session's row each time what it wants changes (made,
 	// woken, put to sleep, ended), with the row as it now is. The daemon
@@ -561,6 +564,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) {
 			log.Printf("runner: session %s: %v", short(listed.ID), err)
 		}
 	}
+	s.retryStuck(list)
 	s.refreshPass(ctx, list)
 }
 
@@ -638,8 +642,10 @@ func (s *Supervisor) startFailed(sess store.RunnerSession, cause error) string {
 	return text
 }
 
+// park puts a session it gave up starting to sleep, marked stuck (the
+// lenses draw it red), with text as its note.
 func (s *Supervisor) park(id, text string) error {
-	if err := s.st.SetRunnerSessionWanted(id, store.SessionAsleep, s.millis()); err != nil {
+	if err := s.st.ParkRunnerSession(id, s.millis()); err != nil {
 		return err
 	}
 	s.note(id, text)

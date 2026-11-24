@@ -11,15 +11,18 @@
   // stateOf is where a session is, as one word the page colours and labels:
   // running (a turn is going), waiting (it asked something), done (a turn
   // finished and nobody has looked), idle (up, nothing to say), asleep,
-  // ended, or unknown (the daemon could not say; never guessed).
+  // ended, unknown (the daemon could not say; never guessed), or stuck
+  // (asleep because the daemon gave up starting it: store/stuck.go; its
+  // note says why, and it tries again by itself while it has work).
   function stateOf(session) {
     if (!session) return "asleep";
+    if (session.state === "asleep" && session.stuck) return "stuck";
     const where = { done: "ended", asleep: "asleep", unknown: "unknown" }[session.state];
     if (where) return where;
     return { needs_input: "waiting", running: "running", done: "done" }[session.attention] || "idle";
   }
 
-  const labels = { running: "Running", waiting: "Needs you", done: "Done", idle: "Idle", asleep: "Asleep", ended: "Ended", unknown: "Unknown" };
+  const labels = { running: "Running", waiting: "Needs you", done: "Done", idle: "Idle", asleep: "Asleep", ended: "Ended", unknown: "Unknown", stuck: "Could not start" };
   const stateLabel = (state) => labels[state] || state;
 
   // ab is "↑2 ↓1" for a branch ahead and behind, "" when it is neither.

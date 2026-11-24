@@ -2032,3 +2032,14 @@ test("an agent's /clear is not sent: it is told how an agent starts fresh, and i
   assert.deepEqual(p.posts(), [], "nothing reaches the agent");
   assert.match(p.$("error-bar").textContent, /put to sleep/);
 });
+
+test("a session the daemon could not start shows red on its repo's row and its agent's row, and says so in the header", async () => {
+  const agentWs = { id: "ws2", name: "x-publish", agent: "x-publish", status: "closed" };
+  const p = await boot({ workspaces: [repo, agentWs], sessions: [
+    { ...lead, state: "asleep", stuck: true, note: "put to sleep: it failed to start 5 times" },
+    { ...lead, id: "ag1", workspaceId: "ws2", kind: "agent", state: "asleep", stuck: true, paneId: "pane2" },
+  ], search: "?s=lead1" });
+  const dots = p.$("tree").querySelectorAll(".dot");
+  assert.ok(dots.length >= 2 && dots.every((d) => d.className.includes("stuck")), dots.map((d) => d.className).join(" | "));
+  assert.equal(p.$("state").textContent, "Could not start");
+});

@@ -68,7 +68,7 @@
     return own;
   }
 
-  const words = { waiting: "needs you", running: "running", done: "done", idle: "idle", asleep: "asleep", ended: "ended", unknown: "unknown" };
+  const words = { waiting: "needs you", running: "running", done: "done", idle: "idle", asleep: "asleep", ended: "ended", unknown: "unknown", stuck: "could not start" };
 
   // subLine is the line under a thread in the sidebar: who it works with,
   // then where it stands ("with backend, admin · needs you"). thread is its

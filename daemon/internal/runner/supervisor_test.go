@@ -605,8 +605,8 @@ func TestASessionPastTheStartLimitIsPutToSleepAndAPromptWakesIt(t *testing.T) {
 	r.units.set(r.paths.Unit(other.ID), false) // crashed once: started again as usual
 	r.reconcile()
 	got, _ := r.st.RunnerSession(sess.ID)
-	if got.Wanted != store.SessionAsleep || !strings.Contains(got.Note, "put to sleep") {
-		t.Fatalf("parked with a note: %+v", got)
+	if got.Wanted != store.SessionAsleep || !strings.Contains(got.Note, "put to sleep") || !got.Stuck {
+		t.Fatalf("parked with a note, marked stuck: %+v", got)
 	}
 	if r.units.count("start "+unit) != 1 {
 		t.Fatalf("not started again past the limit: %v", r.units.calls)
@@ -619,7 +619,7 @@ func TestASessionPastTheStartLimitIsPutToSleepAndAPromptWakesIt(t *testing.T) {
 	}
 	r.reconcile()
 	got, _ = r.st.RunnerSession(sess.ID)
-	if got.Wanted != store.SessionRunning || got.Note != "" || r.units.count("reset-failed "+unit) != 1 || r.units.count("start "+unit) != 2 {
+	if got.Wanted != store.SessionRunning || got.Note != "" || got.Stuck || r.units.count("reset-failed "+unit) != 1 || r.units.count("start "+unit) != 2 {
 		t.Fatalf("a prompt clears the limit and starts it: %+v %v", got, r.units.calls)
 	}
 }

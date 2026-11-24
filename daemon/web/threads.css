@@ -98,6 +98,7 @@ a:hover { color: var(--blue-d); }
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--asleep); }
 .dot.running { background: var(--run); }
 .dot.waiting { background: var(--wait); }
+.dot.stuck { background: var(--red); }
 .dot.done { background: var(--run); }
 /* The header's context and cache gauge (threadgauge.js): orange when the
    window is near full or the cache is about to go, struck when it went. */
@@ -182,6 +183,7 @@ a:hover { color: var(--blue-d); }
 .status.running { color: var(--run); }
 .status.running::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--run) 25%, transparent); }
 .status.waiting { color: var(--wait); }
+.status.stuck { color: var(--red); }
 .status.done { color: var(--done); }
 /* Model, Advisor and Mode as one pill: each a native select laid clear over
    its short label (threadpill.js), so the open list keeps the full words */
