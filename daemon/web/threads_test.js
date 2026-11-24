@@ -1833,6 +1833,31 @@ test("several background tasks fold into one line that opens to a row each, ever
   assert.equal(p.$("bgtasks-bar").querySelectorAll(".bg-row")[0].querySelector(".bg-stop"), stop, "and nothing is rebuilt: focus and a Stop on its way stay put");
 });
 
+test("the tray is not rebuilt while its tasks are the same: a Stop on its way stays disabled through the lists' reload", async () => {
+  let release;
+  const p = await boot({ sessions: [{ ...lead, state: "running" }], search: "?s=lead1", routes: [
+    [/^POST \/v1\/sessions\/lead1\/tasks\/b1\/stop$/, () => new Promise((r) => { release = () => r({}); })],
+  ] });
+  const task = { id: "b1", type: "local_bash", description: "npm run dev", since: Date.now() - 3 * 60000 };
+  await p.frame(snapshot({ info: { tasks: [task] } }));
+  const stop = p.$("bgtasks-bar").querySelector(".bg-stop");
+  stop.click();
+  await p.settle();
+  assert.equal(stop.disabled, true, "the Stop is on its way");
+  p.book.intervals.find((i) => i.ms === 20000).fn(); // the lists' reload
+  await p.settle();
+  await p.frame({ t: "event", seq: 6, data: { type: "session.info", properties: { info: { tasks: [{ ...task }] } } } });
+  assert.equal(p.$("bgtasks-bar").querySelector(".bg-stop"), stop, "the same tasks: nothing is rebuilt");
+  assert.equal(stop.disabled, true, "so a second Stop cannot be sent");
+  release();
+  await p.settle();
+  assert.equal(stop.disabled, false);
+  await p.frame({ t: "event", seq: 7, data: { type: "session.info", properties: { info: { tasks: [task, { id: "b2", type: "monitor", description: "tail log" }] } } } });
+  assert.equal(p.$("bgtasks-bar").querySelector(".bg-head .bg-what").textContent, "npm run dev, tail log", "another task: the tray is drawn anew");
+  await p.frame({ t: "event", seq: 8, data: { type: "session.info", properties: { info: { tasks: [] } } } });
+  assert.ok(p.$("bgtasks-bar").classList.contains("hidden"), "no tasks, no bar");
+});
+
 test("typing @ lists the session's matching files, and a pick puts the path in the box", async () => {
   const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [
     [/^GET \/v1\/sessions\/lead1\/files\?q=he$/, () => ({ files: ["src/head.go", "README.md"] })],

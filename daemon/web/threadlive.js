@@ -40,6 +40,10 @@
     return tasks.length > 2 ? `${names}, +${tasks.length - 2}` : names;
   }
 
+  // trayKey is what the tray shows, as one string: whether it is open and
+  // each task's id, words, kind, agent and start.
+  const trayKey = (tasks, open) => JSON.stringify([open, tasks.map((t) => [t.id, t.description, t.type, t.agent, t.since])]);
+
   const limitNames = { five_hour: "5-hour", seven_day: "weekly", seven_day_opus: "weekly Opus", seven_day_sonnet: "weekly Sonnet", overage: "extra usage" };
 
   // limitLine is the warning for a usage limit the runner reported, "" for
@@ -87,8 +91,16 @@
     // drawTasks is the tray on the chat box (threads.css .bgtasks): one
     // task on its one line with its Stop; several folded into one line that
     // opens to a row each. Open or folded holds while the page is open.
+    // The tray is drawn anew only when what it says changed (trayKey): the
+    // page calls draw on every stream event and every lists' reload, and a
+    // rebuild drops the keyboard's place and enables again a Stop whose
+    // request is on its way. In between, tick moves its minutes on.
     let trayOpen = false;
+    let drawnKey = null;
     function drawTasks(tasks) {
+      const key = trayKey(tasks, trayOpen);
+      if (key === drawnKey) return tick();
+      drawnKey = key;
       const bar = $("bgtasks-bar");
       show("bgtasks-bar", tasks.length > 0);
       bar.textContent = "";
@@ -161,7 +173,7 @@
     return { draw, tick };
   }
 
-  const api = { create, MODES, taskParts, ranFor, trayLine, limitLine };
+  const api = { create, MODES, taskParts, ranFor, trayLine, trayKey, limitLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof window !== "undefined") window.ccmuxThreadLive = api;
 })();
