@@ -8,9 +8,14 @@
 
   const PICKERS = ["model", "advisor", "effort", "mode"];
 
-  // shortLabel is an option's words as the closed picker shows them.
-  function shortLabel(text) {
+  // shortLabel is an option's words as the closed picker shows them; id is
+  // the picker's. Effort's Default reads as the level it runs at
+  // ("Default (Medium)" closed is "Medium"), as Advisor's "Settings (Fable)"
+  // reads "Fable"; the open list says which it is.
+  function shortLabel(text, id) {
     const t = String(text || "").replace(/ \(default\)$/, "");
+    const level = id === "effort" && /^Default \((.+)\)$/.exec(t);
+    if (level) return level[1];
     const m = /^Settings \((.+)\)$/.exec(t);
     if (!m) return t;
     return m[1] === "none" ? "None" : m[1];
@@ -28,7 +33,7 @@
     for (const id of PICKERS) {
       const select = $(id), shown = $(id + "-shown");
       if (!select || !shown) continue;
-      const draw = () => { shown.textContent = shortLabel(chosen(select)); };
+      const draw = () => { shown.textContent = shortLabel(chosen(select), id); };
       select.oninput = draw;
       draw();
     }

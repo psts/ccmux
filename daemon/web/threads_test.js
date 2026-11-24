@@ -1853,7 +1853,7 @@ test("a running session's effort is picked from the header, from the levels its 
   p.$("effort").value = "";
   p.$("effort").onchange({ target: p.$("effort") });
   await p.settle();
-  assert.equal(p.$("effort-shown").textContent, "Default (Medium)");
+  assert.equal(p.$("effort-shown").textContent, "Medium");
   assert.match(p.$("notice-bar").textContent, /Effort Default \(Medium\) is saved and applies when the session restarts/);
 });
 
