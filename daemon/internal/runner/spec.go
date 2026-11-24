@@ -35,6 +35,10 @@ type Spec struct {
 	// AgentVersion is the base version a role agent's session starts with
 	// (AgentStart.Version), which its row keeps; "" for any other session.
 	AgentVersion string `json:"-"`
+	// Runs marks the Claude Code and the SDK this start runs (RunsMark),
+	// so the refresh can tell a session that started before an update; ""
+	// in a spec an older daemon wrote.
+	Runs string `json:"runs,omitempty"`
 	// Walls is what a walled session's runner checks before it starts
 	// (walls.Check), and Plan the walls themselves, which the supervisor
 	// writes as the unit's drop-in file (sessionwalls.go). Both nil for a
@@ -171,6 +175,20 @@ type Config struct {
 	// quiet moment, without waiting for RefreshAfter. Nil, or a nil answer
 	// (the choices could not be read), checks nothing.
 	StaleLoadouts func() func(store.RunnerSession) bool
+	// RunsNow is the RunsMark a session started now would have, asked once
+	// per refresh pass: a running session whose spec marks another is
+	// refreshed at its next quiet moment too. Nil, or "", checks nothing.
+	RunsNow func() string
+}
+
+// RunsMark names the Claude Code and the SDK a start runs: the file the
+// claude link points at (Claude Code's updater moves the link) and the
+// sidecar script, whose folder is its SDK version (agent.SidecarScriptNow).
+func RunsMark(claude, script string) string {
+	if real, err := filepath.EvalSymlinks(claude); err == nil {
+		claude = real
+	}
+	return "claude=" + claude + " sdk=" + script
 }
 
 // settingSources loads the user's own settings, as in a terminal session:
@@ -186,7 +204,7 @@ func (c Config) BuildSpec(sess store.RunnerSession, paths Paths) (Spec, error) {
 	if err != nil {
 		return Spec{}, fmt.Errorf("session runner: %w", err)
 	}
-	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess)}
+	sp := Spec{Node: node, Script: script, Dir: sess.Cwd, Env: c.env(sess), Runs: RunsMark(c.Claude, script)}
 	if sess.Kind == store.SessionAgent {
 		return c.agentSpec(sp, sess, paths)
 	}

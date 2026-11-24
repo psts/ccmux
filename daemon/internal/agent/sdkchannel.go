@@ -96,19 +96,36 @@ func (s *Store) writeChannelFile(name string, v any) error {
 // than the pin and installed: its folder with this daemon's scripts
 // written in. ok false sends the caller to the pinned install.
 func (s *Store) channelSidecar() (script string, ok bool, err error) {
-	cur := s.SDKCurrent()
-	pinned, _ := pinnedSDKVersion()
-	if cur == "" || !NewerVersion(cur, pinned) {
-		return "", false, nil
-	}
-	dir := filepath.Join(s.channelDir(), cur)
-	if installedSDKVersion(dir) != cur {
+	dir, ok := s.channelChoice()
+	if !ok {
 		return "", false, nil
 	}
 	if err := writeSidecarScripts(dir); err != nil {
 		return "", false, err
 	}
 	return filepath.Join(dir, claudeServeFile), true, nil
+}
+
+// channelChoice is the promoted version's folder when a start would run
+// it: newer than the pin and really installed. It only reads.
+func (s *Store) channelChoice() (dir string, ok bool) {
+	cur := s.SDKCurrent()
+	pinned, _ := pinnedSDKVersion()
+	if cur == "" || !NewerVersion(cur, pinned) {
+		return "", false
+	}
+	dir = filepath.Join(s.channelDir(), cur)
+	return dir, installedSDKVersion(dir) == cur
+}
+
+// SidecarScriptNow is the sidecar script a session started now would run
+// (EnsureClaudeServe's answer), without installing or writing anything:
+// the session refresh compares it with what a running session started on.
+func (s *Store) SidecarScriptNow() string {
+	if dir, ok := s.channelChoice(); ok {
+		return filepath.Join(dir, claudeServeFile)
+	}
+	return ClaudeServeScript(s.Root)
 }
 
 // writeSidecarScripts writes this daemon's sidecar into dir, all but the

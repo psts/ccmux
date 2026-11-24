@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -361,5 +362,66 @@ func TestChangedSkillsWaitForAColdCache(t *testing.T) {
 	r.reconcile()
 	if r.restarts(sess.ID) != 0 {
 		t.Fatalf("restarted on a warm cache: %v", r.units.calls)
+	}
+}
+
+// A session that started on another Claude Code or SDK than a start now
+// would run is started again at its next quiet moment, once per update.
+// One whose spec says nothing of it (written by an older daemon) waits
+// for its age.
+func TestAnUpdatedClaudeOrSDKStartsASessionAgainEarly(t *testing.T) {
+	r := refreshRig(t)
+	now := RunsMark("/bin/claude", "/sc/serve.mjs") // what the rig's sessions start on
+	r.sup.cfg.RunsNow = func() string { return now }
+	sess, _ := r.sup.Create(NewSession{Cwd: "/r/app"})
+	r.reconcile()
+	r.age(sess.ID, 10*time.Minute)
+	r.reconcile()
+	if r.restarts(sess.ID) != 0 {
+		t.Fatalf("restarted on what it already runs: %v", r.units.calls)
+	}
+	now = RunsMark("/bin/claude", "/sdk/0.3.331/serve.mjs")
+	r.reconcile()
+	if r.restarts(sess.ID) != 1 {
+		t.Fatalf("not restarted for a new SDK: %v", r.units.calls)
+	}
+	row, _ := r.st.RunnerSession(sess.ID)
+	if !strings.Contains(row.Note, "Claude Code or the SDK") {
+		t.Fatalf("its note says why: %q", row.Note)
+	}
+	r.age(sess.ID, time.Minute)
+	r.reconcile()
+	r.reconcile()
+	if r.restarts(sess.ID) != 1 {
+		t.Fatalf("still on the old one after its restart, restarted again: %v", r.units.calls)
+	}
+
+	sp, _ := ReadSpec(r.paths.SpecFile(sess.ID))
+	sp.Runs = ""
+	if err := WriteSpec(r.paths.SpecFile(sess.ID), sp); err != nil {
+		t.Fatal(err)
+	}
+	r.sup.refresh.markStale(sess.ID, false)
+	r.reconcile()
+	if r.restarts(sess.ID) != 1 {
+		t.Fatalf("a spec that says nothing was taken as outdated: %v", r.units.calls)
+	}
+}
+
+// The mark names the Claude Code a link points at, so moving the link
+// (what Claude Code's updater does) changes it.
+func TestRunsMarkFollowsTheClaudeLink(t *testing.T) {
+	dir := t.TempDir()
+	link := dir + "/claude"
+	if err := os.Symlink(dir+"/v1", link); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(dir+"/v1", nil, 0o755)
+	os.WriteFile(dir+"/v2", nil, 0o755)
+	before := RunsMark(link, "/s.mjs")
+	os.Remove(link)
+	os.Symlink(dir+"/v2", link)
+	if after := RunsMark(link, "/s.mjs"); after == before || !strings.Contains(after, "v2") {
+		t.Fatalf("before %q after %q", before, after)
 	}
 }

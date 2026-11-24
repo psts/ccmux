@@ -17,8 +17,9 @@ import (
 // starts, and a repo's lead can run for days without one. So a session
 // that has run longer than Config.RefreshAfter is started again, on the
 // same conversation, the first time it is truly idle; so is one whose
-// skills or plugins changed since it started (Config.StaleLoadouts), once
-// per change, however young: no turn, no card, no
+// skills or plugins (Config.StaleLoadouts), or Claude Code or the SDK
+// (Config.RunsNow), changed since it started, once per change, however
+// young: no turn, no card, no
 // message waiting, no background task, and its prompt cache already cold,
 // so the restart costs nothing a next message would not have paid anyway.
 //
@@ -58,9 +59,10 @@ type refresher struct {
 	told      bool                 // the waiting session's note says the refreshes stopped on it
 	next      map[string]time.Time // held: not asked again before this
 	aged      map[string]time.Time // young: not due by its age before this
-	// staleDone are the sessions restarted for changed skills that have not
-	// been seen up to date since: still out of date after that restart,
-	// another would not help, so they wait for their age.
+	// staleDone are the sessions restarted on a change (skills, plugins,
+	// Claude Code, the SDK) that have not been seen up to date since: still
+	// out of date after that restart, another would not help, so they wait
+	// for their age.
 	staleDone map[string]bool
 }
 
@@ -80,7 +82,7 @@ func (r *refresher) agedNotBefore(id string, now time.Time) bool {
 	return now.Before(r.aged[id])
 }
 
-// staleTried says whether id was restarted for changed skills and not
+// staleTried says whether id was restarted on a change and not
 // seen up to date since; markStale records such a restart (on true) or
 // that it is up to date again (false).
 func (r *refresher) staleTried(id string) bool {
@@ -123,12 +125,9 @@ func (s *Supervisor) refreshPass(ctx context.Context, list []store.RunnerSession
 	if s.cfg.RefreshAfter <= 0 || s.refreshWaiting(ctx) {
 		return
 	}
-	var stale func(store.RunnerSession) bool
-	if s.cfg.StaleLoadouts != nil {
-		stale = s.cfg.StaleLoadouts()
-	}
+	changed := s.changeCheck()
 	for _, sess := range list {
-		why := s.refreshDue(sess, stale)
+		why := s.refreshDue(sess, changed)
 		if why == "" {
 			continue
 		}
@@ -136,6 +135,40 @@ func (s *Supervisor) refreshPass(ctx context.Context, list []store.RunnerSession
 			return
 		}
 	}
+}
+
+// changeCheck is this pass's check of what changed under a session since
+// it started (its skills and plugins, Claude Code or the SDK): why, or "".
+// Nil when there is nothing to check against.
+func (s *Supervisor) changeCheck() func(store.RunnerSession) string {
+	var stale func(store.RunnerSession) bool
+	if s.cfg.StaleLoadouts != nil {
+		stale = s.cfg.StaleLoadouts()
+	}
+	runs := ""
+	if s.cfg.RunsNow != nil {
+		runs = s.cfg.RunsNow()
+	}
+	if stale == nil && runs == "" {
+		return nil
+	}
+	return func(sess store.RunnerSession) string {
+		if stale != nil && stale(sess) {
+			return "its skills or plugins changed"
+		}
+		if runs != "" && s.startedOnOther(sess.ID, runs) {
+			return "Claude Code or the SDK was updated"
+		}
+		return ""
+	}
+}
+
+// startedOnOther says whether the session's spec marks another Claude
+// Code or SDK than runs. A spec that cannot be read, or marks nothing (an
+// older daemon wrote it), says no: its age refreshes it.
+func (s *Supervisor) startedOnOther(id, runs string) bool {
+	sp, err := ReadSpec(s.paths.SpecFile(id))
+	return err == nil && sp.Runs != "" && sp.Runs != runs
 }
 
 // refreshWaiting says whether the refreshes wait on the last restarted
@@ -179,10 +212,10 @@ func (s *Supervisor) refreshAnswered(ctx context.Context, id string) bool {
 
 // refreshDue is the cheap part: why a running person's session, not
 // asked about lately, should be started again ("" when it should not):
-// its skills or plugins changed (refreshStale), or its unit has run
+// something changed under it (refreshChanged), or its unit has run
 // longer than RefreshAfter. One that is not old yet is not asked about
 // its age again until it will be.
-func (s *Supervisor) refreshDue(sess store.RunnerSession, stale func(store.RunnerSession) bool) string {
+func (s *Supervisor) refreshDue(sess store.RunnerSession, changed func(store.RunnerSession) string) string {
 	if sess.Wanted != store.SessionRunning || sess.Kind == store.SessionAgent || sess.Role == store.RoleBuilder {
 		return ""
 	}
@@ -190,8 +223,8 @@ func (s *Supervisor) refreshDue(sess store.RunnerSession, stale func(store.Runne
 	if s.refresh.notBefore(sess.ID, now) {
 		return ""
 	}
-	if s.refreshStale(sess, stale) {
-		return "its skills or plugins changed"
+	if why := s.refreshChanged(sess, changed); why != "" {
+		return why
 	}
 	if s.refresh.agedNotBefore(sess.ID, now) {
 		return ""
@@ -207,18 +240,22 @@ func (s *Supervisor) refreshDue(sess store.RunnerSession, stale func(store.Runne
 	return fmt.Sprintf("it had run %s", s.cfg.RefreshAfter)
 }
 
-// refreshStale says whether the session's skills or plugins changed and a
-// restart has not been tried on that yet. One still out of date after its
-// restart is logged once and left to its age.
-func (s *Supervisor) refreshStale(sess store.RunnerSession, stale func(store.RunnerSession) bool) bool {
-	if stale == nil {
-		return false
+// refreshChanged is why the session should start again on what changed
+// under it, "" when nothing did or a restart was already tried on it: one
+// still out of date after its restart waits for its age.
+func (s *Supervisor) refreshChanged(sess store.RunnerSession, changed func(store.RunnerSession) string) string {
+	if changed == nil {
+		return ""
 	}
-	if !stale(sess) {
+	why := changed(sess)
+	if why == "" {
 		s.refresh.markStale(sess.ID, false)
-		return false
+		return ""
 	}
-	return !s.refresh.staleTried(sess.ID)
+	if s.refresh.staleTried(sess.ID) {
+		return ""
+	}
+	return why
 }
 
 // refreshIfIdle restarts the session when nothing it does would be lost,

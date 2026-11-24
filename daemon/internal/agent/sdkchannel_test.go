@@ -46,6 +46,9 @@ func TestTheChannelSidecarWinsOnlyWhenNewerAndInstalled(t *testing.T) {
 	if _, ok, _ := s.channelSidecar(); ok {
 		t.Fatal("no version promoted: the pin serves")
 	}
+	if got := s.SidecarScriptNow(); got != ClaudeServeScript(s.Root) {
+		t.Fatalf("SidecarScriptNow with the pin serving = %q", got)
+	}
 	if err := s.PromoteSDK("99.0.0"); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +60,9 @@ func TestTheChannelSidecarWinsOnlyWhenNewerAndInstalled(t *testing.T) {
 	script, ok, err := s.channelSidecar()
 	if err != nil || !ok || script != filepath.Join(dir, "serve.mjs") {
 		t.Fatalf("got %q %v %v", script, ok, err)
+	}
+	if got := s.SidecarScriptNow(); got != script {
+		t.Fatalf("SidecarScriptNow = %q, a start now runs %q", got, script)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "agent.mjs")); err != nil {
 		t.Fatal("the scripts are written into the version's folder")
