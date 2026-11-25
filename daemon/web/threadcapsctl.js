@@ -135,12 +135,36 @@
   // Skills and plugins come the page's own entries: a group's
   // (deps.groupItems: move it, open it alone, add a repo to it) or a
   // repo's (deps.repoItems: move it to another group).
+  // A repo's menu also has its nightly memory switch, read from the daemon
+  // when the menu opens and drawn again when the answer is in. A role
+  // agent has none (its memory is in its own home).
+  let menuNow = null; // the open menu; an answer for another is dropped
   function menu(kind, item, ev) {
     const box = $("caps-menu");
+    const at = pointOf(ev); // before any wait: the event's target goes
     const pick = kind === "repo" ? () => open("repo", { id: item.id, name: item.name }) : () => open("group", { id: item.id, name: item.name });
     const own = kind === "group" ? deps.groupItems : deps.repoItems;
-    CV.menu(box, [["Skills and plugins…", pick], ...(own ? own(item) : [])], pointOf(ev), closeMenu);
-    box.classList.remove("hidden");
+    const withMemory = kind === "repo" && !item.agent;
+    const show = (mem) => {
+      const memItem = withMemory ? [[Caps.memoryLabel(mem, Date.now()), mem ? () => toggleMemory(item, mem) : null]] : [];
+      CV.menu(box, [["Skills and plugins…", pick], ...memItem, ...(own ? own(item) : [])], at, closeMenu);
+      box.classList.remove("hidden");
+    };
+    const mine = (menuNow = {});
+    show(undefined);
+    if (!withMemory) return;
+    deps.call("GET", `/v1/workspaces/${enc(item.id)}/memory-tidy`).then((m) => (m && typeof m.on === "boolean" ? m : null), () => null).then((mem) => {
+      if (menuNow === mine && !box.classList.contains("hidden")) show(mem);
+    });
+  }
+
+  async function toggleMemory(item, mem) {
+    const req = Caps.memoryToggle(item.id, mem);
+    try {
+      await deps.call(req.method, req.path, req.body);
+    } catch (e) {
+      if (deps.fail) deps.fail(`Nightly memory for ${item.name} was not switched: ${e.message}`);
+    }
   }
 
   // escape closes the menu, else the panel; false when neither is open.
@@ -216,7 +240,8 @@
 
   // create wires the screens to the page: deps.call is its fetch,
   // deps.lists() its windows, workspaces and sessions, deps.changed() has
-  // them read again, deps.confirm asks the human, and deps.settings is the
+  // them read again, deps.confirm asks the human, deps.fail(text) shows
+  // what went wrong, and deps.settings is the
   // Settings window, which gets this page's tab at its front;
   // deps.groupItems(group) and deps.repoItems(repo), optional, add entries
   // to a group's or a repo's menu ([label, fn], or [label, null, entries]

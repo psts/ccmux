@@ -116,9 +116,21 @@ func newNight(t *testing.T, claude func(ctx context.Context, dir, prompt string)
 			return []store.RunnerSession{{Kind: store.SessionLead, Cwd: repoPath}}, nil
 		},
 		Projects: projects, StateDir: filepath.Join(root, "state"), Hour: 0,
-		Claude: claude, now: func() time.Time { return now },
+		Claude: answering(claude), now: func() time.Time { return now },
 	}
 	return nightFixture{t: tid, live: live, repoPath: repoPath}
+}
+
+// answering turns a stand-in Claude that answers in words into one that
+// answers as Headless does, at a cost of $0.42.
+func answering(claude func(ctx context.Context, dir, prompt string) (string, error)) func(context.Context, string, string) (Answer, error) {
+	if claude == nil {
+		return nil
+	}
+	return func(ctx context.Context, dir, prompt string) (Answer, error) {
+		text, err := claude(ctx, dir, prompt)
+		return Answer{Text: text, CostUSD: 0.42}, err
+	}
 }
 
 func readLog(t *testing.T, dir string) []outcome {
@@ -155,7 +167,7 @@ func TestANightTidiesBacksUpAndMovesTheBookmark(t *testing.T) {
 		t.Errorf("a file that is not a note is left alone: %v", err)
 	}
 	logs := readLog(t, f.t.StateDir)
-	if len(logs) != 1 || logs[0].Result != "applied" || logs[0].Answer != "added login, removed old" {
+	if len(logs) != 1 || logs[0].Result != "applied" || logs[0].Answer != "added login, removed old" || logs[0].CostUSD != 0.42 {
 		t.Fatalf("log: %+v", logs)
 	}
 	backups, _ := filepath.Glob(filepath.Join(f.t.StateDir, "backups", "*", "*", "old.md"))
@@ -532,18 +544,24 @@ func TestATranscriptOfAnUnknownFormatIsUnreadable(t *testing.T) {
 func TestHeadlessRunsClaudeWithItsWallsInItsFolder(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "claude")
-	os.WriteFile(fake, []byte("#!/bin/sh\npwd\nfor a in \"$@\"; do echo \"$a\"; done\n"), 0o755)
+	seen := filepath.Join(dir, "seen")
+	os.WriteFile(fake, []byte("#!/bin/sh\n{ pwd; for a in \"$@\"; do echo \"$a\"; done; } > "+seen+"\n"+
+		`echo '{"type":"result","subtype":"success","is_error":false,"result":"tidied","total_cost_usd":0.25}'`+"\n"), 0o755)
 	work := t.TempDir()
 	out, err := Headless(fake, "sonnet", nil, time.Minute)(context.Background(), work, "the prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if out.Text != "tidied" || out.CostUSD != 0.25 {
+		t.Fatalf("answer: %+v", out)
+	}
+	b, _ := os.ReadFile(seen)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	if real, _ := filepath.EvalSymlinks(work); lines[0] != work && lines[0] != real {
 		t.Fatalf("ran in %q, not its work folder", lines[0])
 	}
 	args := strings.Join(lines[1:], "\n")
-	for _, want := range []string{"-p\nthe prompt", "--permission-mode\nacceptEdits", "--setting-sources\nproject", "--strict-mcp-config", "--no-session-persistence"} {
+	for _, want := range []string{"-p\nthe prompt", "--permission-mode\nacceptEdits", "--setting-sources\nproject", "--strict-mcp-config", "--no-session-persistence", "--output-format\njson"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args lack %q:\n%s", want, args)
 		}

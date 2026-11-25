@@ -89,6 +89,7 @@ var gatedRoutes = []string{
 	"POST /v1/panes/p1/harness", "POST /v1/panes/p1/agent/reply", "GET /v1/panes/p1/agent/ws", "PUT /v1/panes/p1/llm-route",
 	"GET /v1/attach", "GET /v1/events", "PUT /v1/settings", "GET /v1/settings", "POST /v1/upgrade", "POST /v1/projects",
 	"POST /v1/capabilities/import", "PUT /v1/windows/w1/slots",
+	"GET /v1/workspaces/w1/memory-tidy", "PUT /v1/workspaces/w1/memory-tidy",
 	"GET /v1/llm/accounts/main/key",
 	// Bus routes a session never calls: each hands out a token or a view.
 	"POST /v1/peers/pane-token", "POST /v1/peers/host-token", "PUT /v1/peers/local-groups", "GET /v1/peers/viewer", "GET /v1/peers/messages", "GET /v1/peers",

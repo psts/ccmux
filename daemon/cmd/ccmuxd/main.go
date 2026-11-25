@@ -245,7 +245,7 @@ func runDaemon() {
 	mgr.OnMembershipChange = apiSrv.WindowNotice
 	apiSrv.StartScheduler(ctx, 30*time.Second)
 	startSDKUpdate(ctx, agentStore, *sdkUpdateEvery)
-	startMemoryTidy(ctx, st, *memoryTidyHour, *memoryTidyModel)
+	startMemoryTidy(ctx, st, apiSrv, *memoryTidyHour, *memoryTidyModel)
 	apiSrv.SetClipboardToken(clipToken) // "" (mint failure) keeps the endpoint 503
 	// The token a caller on this machine must show (apitoken.go). Fatal when
 	// it cannot be made: without it the API is open to every local process,

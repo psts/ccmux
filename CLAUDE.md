@@ -560,6 +560,28 @@ SDK's bare prompt and was never told how to save memory.
   to put back from.
 - A busy night reads the oldest conversations up to its budget and
   leaves the rest for the next (`deferred` in the log).
+- **Each repo has a switch, on by default** (task #195,
+  `memtidy/switch.go`): the repo's right-click menu on the thread page
+  ("Nightly memory: on · last night $0.42"), `GET/PUT
+  /v1/workspaces/{id}/memory-tidy` (gated by the API token). It is the
+  setting `memory-tidy:<repo's main folder>` (`todos.Keys`, so a
+  worktree has none of its own): `off`, or `on <unix ms>` when switched
+  on again, and a night then reads no further back than 48 hours before
+  that. The time is in the setting, not in `state.json`, because that is
+  the night's own file and a PUT would race it. An off repo is not read
+  at all; a switch that cannot be read skips the repo that night.
+- **Each night's cost is in the log** (`costUSD`): Claude runs with
+  `--output-format json` and the daemon reads `result` and
+  `total_cost_usd`. That is Claude Code's list price, not what the
+  account is billed. An answer in another format is taken as the
+  answer, cost unknown, so a Claude Code update does not fail every night.
+- **Problems that keep coming back become to-dos** (`memtidy/proposals.go`):
+  besides `./memory` its Claude may write `./proposals.json` (at most
+  three, each one line with a proposed fix). A night that ran to the end
+  (applied, unchanged or refused) files them on the repo's to-do list
+  through `api.Server.AddTodo`, by "memory tidy-up", after the to-do
+  rules and the same secret check as memory; `todos` in the log says how
+  many. It never changes CLAUDE.md, skills or settings itself.
 - **Claude Code's own auto-dream** does the same and stays off while
   Anthropic's switch for it is off on this account (`tengu_onyx_plover`
   in `~/.claude.json`); when it comes on, ours stands down

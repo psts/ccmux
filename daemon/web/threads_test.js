@@ -925,7 +925,7 @@ test("a right-click on a repo opens its menu, and Skills and plugins its panel; 
   p.$("tree").querySelector(".row").oncontextmenu({ preventDefault: () => { prevented = true; }, clientX: 40, clientY: 80 });
   assert.equal(prevented, true, "the browser's own menu stays shut");
   assert.equal(p.$("caps-menu").classList.contains("hidden"), false);
-  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Hostnames…", "Move to group›", "No group (Other)", "New group…"], "a repo in the only group can leave it or make a new one");
+  assert.deepEqual(p.$("caps-menu").querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Nightly memory: …", "Hostnames…", "Move to group›", "No group (Other)", "New group…"], "a repo in the only group can leave it or make a new one");
   p.$("caps-menu").querySelector(".ctx-item").click();
   await p.settle();
   assert.equal(p.$("caps-menu").classList.contains("hidden"), true);
@@ -1522,7 +1522,7 @@ test("a repo moves to another group from its menu, after the person says yes, an
   const p = await boot({ ...twoGroups(), confirm: (q) => { asked.push(q); return answer; },
     routes: [[/^PUT \/v1\/workspaces\/ws1\/group$/, (body) => { moved.push(body); return {}; }]] });
   const box = menuOf(p, "app");
-  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Hostnames…", "Move to group›", "dasha", "No group (Other)", "New group…"]);
+  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent), ["Skills and plugins…", "Nightly memory: …", "Hostnames…", "Move to group›", "dasha", "No group (Other)", "New group…"]);
   const sub = box.querySelector(".ctx-sub");
   assert.ok(sub.classList.contains("hidden"), "its groups wait behind the arrow");
   itemNamed(box, "Move to group›").click();
@@ -1692,7 +1692,7 @@ test("Hostnames opens from a repo's menu with what listens, maps a port, saves t
     [/^PUT \/v1\/workspaces\/ws1\/hostnames$/, (body) => { saved.push(body); return {}; }],
   ] });
   const box = menuOf(p, "app");
-  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent).slice(0, 3), ["Skills and plugins…", "Hostnames…", "● app : 3000"], "a saved name opens from the menu");
+  assert.deepEqual(box.querySelectorAll(".ctx-item").map((b) => b.textContent).slice(0, 4), ["Skills and plugins…", "Nightly memory: …", "Hostnames…", "● app : 3000"], "a saved name opens from the menu");
   itemNamed(box, "● app : 3000").click();
   assert.deepEqual(p.book.opened.at(-1), ["https://app.example.invalid", "_blank"]);
   menuOf(p, "app");
@@ -2104,4 +2104,37 @@ test("an agent has no Restart in More: its editor restarts it", async () => {
   const p = await boot({ sessions: [{ ...lead, id: "ag1", kind: "agent", paneId: "pane-ag1" }], search: "?s=ag1" });
   await p.frame(snapshot());
   assert.equal(p.$("restart").classList.contains("hidden"), true);
+});
+
+// A repo's menu reads its nightly memory switch when it opens, shows last
+// night's cost, and a click sends the other state; a switch that could
+// not be read is shown, unknown, and cannot be picked.
+test("a repo's menu switches its nightly memory and shows what last night cost", async () => {
+  const sent = [];
+  let fail = false, putFail = false;
+  const night = { at: new Date().toISOString(), result: "applied", costUSD: 0.42, conversations: 3 };
+  const p = await boot({ sessions: [lead], routes: [
+    [/^GET \/v1\/workspaces\/ws1\/memory-tidy$/, () => (fail ? { fail: 500, error: "db gone" } : { on: true, running: true, last: night })],
+    [/^PUT \/v1\/workspaces\/ws1\/memory-tidy$/, (body) => { sent.push(body); return putFail ? { fail: 500, error: "db gone" } : { on: false, running: true, last: night }; }],
+  ] });
+  const open = async () => { p.$("tree").querySelector(".row").oncontextmenu({ preventDefault() {}, clientX: 40, clientY: 80 }); await p.settle(); };
+  const item = () => p.$("caps-menu").querySelectorAll(".ctx-item")[1];
+  await open();
+  assert.equal(item().textContent, "Nightly memory: on · last night $0.42");
+  item().click();
+  await p.settle();
+  assert.deepEqual(sent, [{ on: false }]);
+  assert.equal(p.$("caps-menu").classList.contains("hidden"), true);
+  fail = true;
+  await open();
+  assert.equal(item().textContent, "Nightly memory: unknown");
+  assert.equal(item().disabled, true);
+  item().click();
+  assert.equal(sent.length, 1, "an unknown switch sends nothing");
+  fail = false;
+  putFail = true;
+  await open();
+  item().click();
+  await p.settle();
+  assert.equal(p.$("error-bar").textContent, "Nightly memory for app was not switched: db gone");
 });

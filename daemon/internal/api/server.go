@@ -110,10 +110,14 @@ type Server struct {
 	threads    threadService // threads with helpers (threads.go); nil turns their routes off
 	// loadouts and choices are the skills and plugins choices per group and
 	// repo (capchoices.go); nil turns their routes off.
-	loadouts   *loadout.Service
-	choices    choiceStore
-	doors      RunnerDoors   // the thread page's way to a session's runner (sessionstream.go)
-	streamPace time.Duration // how often a session stream looks at a session it is not following; 0 = a second
+	loadouts *loadout.Service
+	choices  choiceStore
+	// memTidy is the nightly memory tidy-up's per-repo switch
+	// (memorytidy.go); nil answers 503 on its routes.
+	memTidy        memoryTidy
+	memTidyRunning bool
+	doors          RunnerDoors   // the thread page's way to a session's runner (sessionstream.go)
+	streamPace     time.Duration // how often a session stream looks at a session it is not following; 0 = a second
 
 	// agents is the base-agent folder store, wired by SetAgents; nil means
 	// the /v1/agents routes answer 503.
@@ -406,6 +410,7 @@ func (s *Server) Handler() http.Handler {
 	s.sessionRoutes(mux)
 	s.threadRoutes(mux)
 	s.choiceRoutes(mux)
+	s.memoryTidyRoutes(mux)
 	// Base agents: folder-backed role definitions (internal/agent). Per-name
 	// upsert and explicit delete, not a list replace — see putAgent.
 	mux.HandleFunc("GET /v1/agents", s.listAgents)

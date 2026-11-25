@@ -10,8 +10,8 @@ import (
 // record adds a repo's night to the log (log.jsonl in the state folder)
 // and says it in the daemon's log.
 func (t *Tidier) record(o outcome) {
-	log.Printf("memory tidy: %s: %s (%d conversations read, %d unreadable, %d left for next night; +%d ~%d -%d) %s",
-		o.Repo, o.Result, o.Conversations, len(o.Unreadable), o.Deferred, len(o.Added), len(o.Changed), len(o.Removed), o.Why)
+	log.Printf("memory tidy: %s: %s (%d conversations read, %d unreadable, %d left for next night; +%d ~%d -%d; %d to-dos filed; $%.2f) %s",
+		o.Repo, o.Result, o.Conversations, len(o.Unreadable), o.Deferred, len(o.Added), len(o.Changed), len(o.Removed), o.Todos, o.CostUSD, o.Why)
 	for _, u := range o.Unreadable {
 		log.Printf("memory tidy: %s: unreadable, left out: %s", o.Repo, u)
 	}

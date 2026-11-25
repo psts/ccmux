@@ -140,9 +140,11 @@
     return add(box, list);
   }
 
+  // menuItem is one entry; one with no fn is shown and cannot be picked.
   function menuItem([label, fn], close) {
-    const b = button(label, "ctx-item", () => { close(); fn(); });
+    const b = button(label, "ctx-item", () => { if (!fn) return; close(); fn(); });
     b.setAttribute("role", "menuitem");
+    if (!fn) { b.disabled = true; b.setAttribute("aria-disabled", "true"); }
     return b;
   }
 

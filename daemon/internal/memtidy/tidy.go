@@ -33,8 +33,15 @@ type Tidier struct {
 	// Hour is the local hour from which the night's pass is due.
 	Hour int
 	// Claude runs the tidy-up's Claude in dir with the prompt and returns
-	// its answer.
-	Claude func(ctx context.Context, dir, prompt string) (string, error)
+	// its answer and what it cost.
+	Claude func(ctx context.Context, dir, prompt string) (Answer, error)
+	// Enabled is a repo's switch (Switches.Enabled): whether it is tidied,
+	// and when it was switched on again (zero: never switched off). A repo
+	// that is off is not read at all. nil is on for every repo.
+	Enabled func(repoPath string) (bool, time.Time)
+	// Todo files a problem the night found coming back on the repo's
+	// to-do list; nil files none.
+	Todo func(repo, text, urgency string) error
 	// DreamOn says Claude Code's own auto-dream is live; then this skips.
 	DreamOn func() bool
 	// Secrets are values never to be written into memory.
@@ -118,11 +125,22 @@ func (t *Tidier) Once(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if isRepo(r.Path) {
-			t.tidyRepo(ctx, r)
+		if !isRepo(r.Path) {
+			continue
+		}
+		if on, onAt := t.switchOf(r.Path); on {
+			t.tidyRepo(ctx, r, onAt)
 		}
 	}
 	t.finishNight(ctx)
+}
+
+// switchOf is a repo's switch; every repo is on without one.
+func (t *Tidier) switchOf(path string) (bool, time.Time) {
+	if t.Enabled == nil {
+		return true, time.Time{}
+	}
+	return t.Enabled(path)
 }
 
 func (t *Tidier) finishNight(ctx context.Context) {

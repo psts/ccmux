@@ -111,3 +111,17 @@ test("what an Update answered, in one line", () => {
   assert.equal(m.updateNote({ source: { id: "personal" }, changed: [{}, {}], added: ["x"], behind: [{}] }), "personal: 2 changed, 1 new, 1 pinned behind.");
   assert.equal(m.updateNote({ source: { id: "p" }, changed: [], added: [] }), "p: nothing changed.");
 });
+
+test("a repo menu's nightly memory entry: its switch, last night's cost, and no guess", () => {
+  const at = Date.parse("2026-11-25T03:10:00Z");
+  const night = { at: "2026-11-25T03:00:00Z", result: "applied", costUSD: 0.4234, conversations: 4 };
+  assert.equal(m.memoryLabel(undefined, at), "Nightly memory: …");
+  assert.equal(m.memoryLabel(null, at), "Nightly memory: unknown");
+  assert.equal(m.memoryLabel({ on: true, running: true, last: night }, at), "Nightly memory: on · last night $0.42");
+  assert.equal(m.memoryLabel({ on: false, running: true, last: night }, at + 5 * 86400e3), "Nightly memory: off · last run $0.42");
+  assert.equal(m.memoryLabel({ on: true, running: true, last: null }, at), "Nightly memory: on");
+  assert.equal(m.memoryLabel({ on: true, running: true, last: { ...night, costUSD: 0 } }, at), "Nightly memory: on", "no cost known, none said");
+  assert.equal(m.memoryLabel({ on: true, running: false, last: null }, at), "Nightly memory: on · not run on this host");
+  assert.deepEqual(m.memoryToggle("ws 1", { on: true }), { method: "PUT", path: "/v1/workspaces/ws%201/memory-tidy", body: { on: false } });
+  assert.deepEqual(m.memoryToggle("ws1", { on: false }).body, { on: true });
+});

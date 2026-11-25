@@ -26,13 +26,27 @@ type outcome struct {
 	Changed       []string `json:"changed,omitempty"`
 	Removed       []string `json:"removed,omitempty"`
 	Answer        string   `json:"answer,omitempty"`
+	CostUSD       float64  `json:"costUSD,omitempty"` // list price, as Claude Code says
+	Todos         int      `json:"todos,omitempty"`   // problems filed on the to-do list
+}
+
+// ranToTheEnd is a night whose Claude finished and whose result stands:
+// its bookmark moves, and what it proposed is filed. A failed, skipped or
+// partial night is read again next time.
+func (o outcome) ranToTheEnd() bool {
+	switch o.Result {
+	case "applied", "unchanged", "refused":
+		return true
+	}
+	return false
 }
 
 // tidyRepo is one repo's night: read what is new, let Claude tidy a copy,
 // check it and put it in place. The bookmark moves up to what was read,
 // unless the work failed or a session wrote the memory meanwhile: then the
-// same conversations are read again next night.
-func (t *Tidier) tidyRepo(ctx context.Context, r repo) {
+// same conversations are read again next night. A repo switched on again
+// at onAt reads no further back than firstLook before it.
+func (t *Tidier) tidyRepo(ctx context.Context, r repo, onAt time.Time) {
 	st, err := t.loadState()
 	if err != nil {
 		log.Printf("memory tidy: %v", err)
@@ -43,6 +57,9 @@ func (t *Tidier) tidyRepo(ctx context.Context, r repo) {
 	if ms, ok := st.Bookmarks[r.Path]; ok {
 		since = time.UnixMilli(ms)
 	}
+	if back := onAt.Add(-firstLook); !onAt.IsZero() && back.After(since) {
+		since = back
+	}
 	convs := conversationsOf(t.Projects, r, since, until)
 	if len(convs) == 0 {
 		return
@@ -50,7 +67,7 @@ func (t *Tidier) tidyRepo(ctx context.Context, r repo) {
 	o, through := t.tidy(ctx, r, convs, until)
 	o.At, o.Repo = until.Format(time.RFC3339), r.Path
 	t.record(o)
-	if ctx.Err() != nil || o.Result == "failed" || o.Result == "skipped" || o.Result == "partial" {
+	if ctx.Err() != nil || !o.ranToTheEnd() {
 		return
 	}
 	if st, err = t.loadState(); err == nil {
@@ -83,13 +100,23 @@ func (t *Tidier) tidy(ctx context.Context, r repo, convs []conversation, until t
 	}
 	answer, err := t.Claude(ctx, work, prompt(r.Path, b.n))
 	if err != nil {
-		counts.Result, counts.Why = "failed", err.Error()
+		counts.Result, counts.Why, counts.CostUSD = "failed", err.Error(), answer.CostUSD
 		return counts, until
 	}
 	o := t.settle(r, live, read, filepath.Join(work, "memory"))
 	o.Conversations, o.Unreadable, o.Deferred = counts.Conversations, counts.Unreadable, counts.Deferred
-	o.Answer = clip(strings.TrimSpace(answer), 600)
+	o.Answer, o.CostUSD = clip(strings.TrimSpace(answer.Text), 600), answer.CostUSD
+	if o.ranToTheEnd() && ctx.Err() == nil {
+		o.Todos = t.fileProposals(r.Path, readProposals(work, r.Path, t.secrets()))
+	}
 	return o, b.through
+}
+
+func (t *Tidier) secrets() []string {
+	if t.Secrets == nil {
+		return nil
+	}
+	return t.Secrets()
 }
 
 // settle checks the tidied copy and puts it in place.
@@ -105,11 +132,7 @@ func (t *Tidier) settle(r repo, live string, read files, tidied string) outcome 
 		o.Result = "unchanged"
 		return o
 	}
-	var secrets []string
-	if t.Secrets != nil {
-		secrets = t.Secrets()
-	}
-	if err := check(read, new, c, secrets); err != nil {
+	if err := check(read, new, c, t.secrets()); err != nil {
 		o.Result, o.Why = "refused", err.Error()
 		return o
 	}

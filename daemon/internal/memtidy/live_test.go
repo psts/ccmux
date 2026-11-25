@@ -57,9 +57,11 @@ func TestLiveTidyOnACopy(t *testing.T) {
 		},
 		Projects: projects, StateDir: filepath.Join(root, "state"),
 		Claude: Headless(claude, model, append(os.Environ(), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"), 30*time.Minute),
+		// The proposals are printed, never filed: this is a copy.
+		Todo: func(_, text, urgency string) error { t.Logf("proposal (%s): %s", urgency, text); return nil },
 	}
 	tid.Once(context.Background())
 	for _, o := range readLog(t, tid.StateDir) {
-		t.Logf("%s: %d conversations, +%v ~%v -%v %s\n%s", o.Result, o.Conversations, o.Added, o.Changed, o.Removed, o.Why, o.Answer)
+		t.Logf("%s: %d conversations, $%.2f, %d to-dos, +%v ~%v -%v %s\n%s", o.Result, o.Conversations, o.CostUSD, o.Todos, o.Added, o.Changed, o.Removed, o.Why, o.Answer)
 	}
 }

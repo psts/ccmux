@@ -195,7 +195,27 @@
     return `${id}: ${parts.length ? parts.join(", ") : "nothing changed"}.`;
   }
 
-  const api = { kindLabel, name, tokens, brief, shortURL, sourceId, checked, sourceRow, placesOn, pinnable, entryRow, entryGroups, repoNote, repoRows, groupRows, cost, stale, footLine, staleLine, updateNote };
+  // memoryLabel is a repo menu's nightly memory entry: its switch and,
+  // when known, what its last night cost. state is the daemon's answer
+  // (GET /v1/workspaces/{id}/memory-tidy), undefined while it is read and
+  // null when it could not be: then no guess is made.
+  function memoryLabel(state, now) {
+    if (state === undefined) return "Nightly memory: …";
+    if (!state) return "Nightly memory: unknown";
+    let label = "Nightly memory: " + (state.on ? "on" : "off");
+    const last = state.last;
+    if (last && last.costUSD > 0) {
+      const recent = now - Date.parse(last.at) < 36 * 3600 * 1000;
+      label += ` · ${recent ? "last night" : "last run"} $${last.costUSD.toFixed(2)}`;
+    }
+    if (!state.running) label += " · not run on this host";
+    return label;
+  }
+
+  // memoryToggle is the request that flips the switch.
+  const memoryToggle = (id, state) => ({ method: "PUT", path: `/v1/workspaces/${encodeURIComponent(id)}/memory-tidy`, body: { on: !state.on } });
+
+  const api = { kindLabel, name, tokens, brief, shortURL, sourceId, checked, sourceRow, placesOn, pinnable, entryRow, entryGroups, repoNote, repoRows, groupRows, cost, stale, footLine, staleLine, updateNote, memoryLabel, memoryToggle };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadCaps = api;
 })(typeof window !== "undefined" ? window : this);

@@ -63,6 +63,7 @@
     ...window.ccmuxThreadHostnames.links(S.workspaces.find((w) => w.id === r.id)).map((l) => [l.label, () => window.open(l.url, "_blank")])];
   const Caps = window.ccmuxThreadCapsCtl.create({
     call, lists: () => S, changed: () => loadLists(), confirm: (q) => confirm(q), settings: Settings,
+    fail: (text) => { S.error = text; drawAll(); },
     groupItems: (g) => [...Side.menuItems(g), ...Groups.groupItems(g)], repoItems: (r) => [...hostItems(r), ...Groups.repoItems(r)],
   });
 
