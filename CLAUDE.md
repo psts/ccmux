@@ -417,6 +417,18 @@ watchdog, reports, the merge and tidy-up jobs, send-back.
   come along), and `--keep-out-files <repo>`: its file tools cannot write in
   the repo's own folder, its shell is not judged (its brief tells it to `cp`
   env files out of that folder).
+- **A builder's commit reviews outlive its worktree** (task #204; the change
+  is in the qa plugin, not in this repo). The plugin's commit-time hook keeps
+  its marks and reports in the repo's shared `.git/qa/`, under the sha and
+  under the change's patch-id, so a commit the merge rebased is still found
+  and `/qa:review` at `/ship` skips it. A walled builder cannot write there
+  (of `.git` it gets `objects`, `refs`, `logs` and its own
+  `worktrees/<name>`): its reviews stay in the worktree, go with the
+  tidy-up, and are done again at ship. A builder runs the plugin from
+  `~/.claude/plugins`; a main session with qa on for its repo or window
+  runs the catalog's copy (`~/.ccmux/capabilities/personal`), and "Update"
+  on that source resets it to GitHub (`agent/capgit.go`, `syncCheckout`):
+  a change made only in that folder is lost then.
 - **A builder's dev servers die with its unit** (`KillMode=control-group`)
   when it is restarted or ended. Ports still come from the part's block.
 - **Tmux workers from before still finish the old way.** `TaskPane`,
