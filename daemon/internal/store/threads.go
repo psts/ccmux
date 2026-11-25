@@ -178,6 +178,14 @@ func (s *SQLite) MainSessions() ([]RunnerSession, error) {
 	return s.querySessions(`SELECT `+sessionCols+` FROM sessions WHERE kind=? AND thread_id=0 AND wanted<>'done' ORDER BY created_at, id`, SessionLead)
 }
 
+// SideLeads lists the sessions that ask other repos through side helpers of
+// their own, and have not ended, oldest first: the repos' main sessions
+// (kind lead, in no thread) and their planners (store/planners.go).
+func (s *SQLite) SideLeads() ([]RunnerSession, error) {
+	return s.querySessions(`SELECT `+sessionCols+` FROM sessions WHERE (kind=? OR kind=?) AND thread_id=0 AND wanted<>'done' ORDER BY created_at, id`,
+		SessionLead, SessionPlanner)
+}
+
 // migrateThreadKind gives a thread row its kind. Strict, as
 // migrateSessionPanes is: threadCols names the column. Rows from before are
 // threads a person started, or a task's.

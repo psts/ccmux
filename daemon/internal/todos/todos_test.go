@@ -609,3 +609,176 @@ func TestAddOnceFindsAPrefixWithFoldedSpaces(t *testing.T) {
 		t.Fatalf("another worktree is another item: %v %v", added, err)
 	}
 }
+
+// Make task puts an item in its repo's planning line; filing takes it out
+// as tasked, and its task's merge makes it done: open ↔ planning → tasked →
+// done.
+func TestPlan_AnItemGoesThroughThePlanningLine(t *testing.T) {
+	b, clock, told := book(t)
+	it := add(t, b, "/r/app", "Fix the flaky test", "low")
+	other := add(t, b, "/r/app", "Update the readme", "low")
+
+	*clock = 2000
+	now, was, err := b.Plan(it.ID)
+	if err != nil || now.Status != Planning || now.PlanningAt != 2000 || was.Status != Open {
+		t.Fatalf("planned = %+v (was %+v), %v", now, was, err)
+	}
+	*clock = 3000
+	again, wasAgain, err := b.Plan(it.ID)
+	if err != nil || again.PlanningAt != 2000 || wasAgain.Status != Planning {
+		t.Fatalf("planned again = %+v (was %+v), %v; want its place in the line kept", again, wasAgain, err)
+	}
+	if _, _, err := b.Plan(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	line, err := b.Line("/r/app")
+	if err != nil || len(line) != 2 || line[0].ID != it.ID || line[1].ID != other.ID {
+		t.Fatalf("the line = %+v, %v; want the longest in it first", line, err)
+	}
+	if blog, _ := b.Line("/r/blog"); len(blog) != 0 {
+		t.Fatalf("another repo's line: %+v", blog)
+	}
+
+	// Put back: open, and out of the line. Then in again, at the end.
+	back, err := b.Change(it.ID, Edit{Status: sp(Open)})
+	if err != nil || back.Status != Open || back.PlanningAt != 0 {
+		t.Fatalf("put back = %+v, %v", back, err)
+	}
+	*clock = 4000
+	if now, _, _ = b.Plan(it.ID); now.PlanningAt != 4000 {
+		t.Fatalf("planned anew = %+v", now)
+	}
+	if line, _ = b.Line("/r/app"); len(line) != 2 || line[0].ID != other.ID {
+		t.Fatalf("an item put back and planned again goes to the end: %+v", line)
+	}
+
+	before := *told
+	if err := b.Filed(it.ID, 41); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Tasked || got.TaskID != 41 || got.PlanningAt != 0 || *told == before {
+		t.Fatalf("filed = %+v (told %d times); want tasked under #41 and out of the line", got, *told-before)
+	}
+	if err := b.Settle(func(int64) string { return TaskMerged }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Done {
+		t.Fatalf("its task merged: %+v", got)
+	}
+	if line, _ = b.Line("/r/app"); len(line) != 1 || line[0].ID != other.ID {
+		t.Fatalf("the line after the filing: %+v", line)
+	}
+	// Ticked off by the planner (already fixed, not worth a task): out of the line.
+	if got, err := b.Finish(other.ID, "app-planner", "fixed in abc123"); err != nil || got.Status != Done || got.PlanningAt != 0 {
+		t.Fatalf("ticked off = %+v, %v", got, err)
+	}
+}
+
+// What cannot go into the line, and that a status change never puts an
+// item there: nothing would have been sent to the planner.
+func TestPlan_RefusesWhatIsDoneOrATasksAndIsNoStatusChange(t *testing.T) {
+	b, _, _ := book(t)
+	done := add(t, b, "/r/app", "Fixed already", "low")
+	if _, err := b.Finish(done.ID, "Pat", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.Plan(done.ID); kindOf(err) != Conflict {
+		t.Fatalf("a done item: %v, want a conflict", err)
+	}
+	filed := add(t, b, "/r/app", "Has a task", "low")
+	if err := b.Filed(filed.ID, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.Plan(filed.ID); kindOf(err) != Conflict || !strings.Contains(err.Error(), "task #7") {
+		t.Fatalf("an item a task has: %v, want a conflict naming the task", err)
+	}
+	if _, _, err := b.Plan(999); kindOf(err) != Missing {
+		t.Fatalf("no such item: %v", err)
+	}
+	open := add(t, b, "/r/app", "Open item", "low")
+	if _, err := b.Change(open.ID, Edit{Status: sp(Planning)}); kindOf(err) != Invalid || !strings.Contains(err.Error(), "Make task") {
+		t.Fatalf("planning as a status change: %v, want it refused with how it is done", err)
+	}
+	if got, _ := b.Get(open.ID); got.Status != Open {
+		t.Fatalf("the refused change moved the item: %+v", got)
+	}
+}
+
+// An item whose task was cancelled is open and still linked; planned anew
+// it lets go of that task, or Settle would pull it back to open. And one
+// sent to the repo's session before the line was there (tasked, no task)
+// can go into the line.
+func TestPlan_LetsGoOfACancelledTaskAndTakesWhatWasSentBefore(t *testing.T) {
+	b, _, _ := book(t)
+	it := add(t, b, "/r/app", "Fix the flaky test", "low")
+	if err := b.Filed(it.ID, 11); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Settle(func(int64) string { return TaskCancelled }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Open || got.TaskID != 11 || got.Note == "" {
+		t.Fatalf("its task was cancelled: %+v", got)
+	}
+	now, was, err := b.Plan(it.ID)
+	if err != nil || now.Status != Planning || now.TaskID != 0 || now.Note != "" || was.TaskID != 11 {
+		t.Fatalf("planned anew = %+v (was %+v), %v; want the cancelled task and its note gone", now, was, err)
+	}
+	if err := b.Settle(func(int64) string { return TaskCancelled }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Planning {
+		t.Fatalf("the cancelled task pulled the item out of the line: %+v", got)
+	}
+
+	sent := add(t, b, "/r/app", "Sent before the line", "low")
+	if _, err := b.Change(sent.ID, Edit{Status: sp(Tasked)}); err != nil {
+		t.Fatal(err)
+	}
+	if now, was, err := b.Plan(sent.ID); err != nil || now.Status != Planning || was.Status != Tasked {
+		t.Fatalf("an item sent before = %+v (was %+v), %v", now, was, err)
+	}
+}
+
+// An item that reached no planner is as it was before; one that has left
+// the line since, or was in it before this Make task, is left alone.
+func TestUnplan_PutsBackOnlyWhatThisPlanMoved(t *testing.T) {
+	b, _, _ := book(t)
+	it := add(t, b, "/r/app", "Fix the flaky test", "low")
+	if err := b.Filed(it.ID, 11); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Settle(func(int64) string { return TaskCancelled }); err != nil {
+		t.Fatal(err)
+	}
+	_, was, _ := b.Plan(it.ID)
+	if err := b.Unplan(was); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Open || got.TaskID != 11 || got.Note != was.Note || got.PlanningAt != 0 {
+		t.Fatalf("unplanned = %+v, want it as it was: %+v", got, was)
+	}
+
+	// Sent again while already in the line: a failed resend leaves it there.
+	first, _, _ := b.Plan(it.ID)
+	_, wasPlanning, _ := b.Plan(it.ID)
+	if err := b.Unplan(wasPlanning); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(it.ID); got.Status != Planning || got.PlanningAt != first.PlanningAt {
+		t.Fatalf("a failed resend took the item out of the line: %+v", got)
+	}
+
+	// Filed between the plan and the failure: it is the task's now.
+	other := add(t, b, "/r/app", "Update the readme", "low")
+	_, wasOpen, _ := b.Plan(other.ID)
+	if err := b.Filed(other.ID, 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Unplan(wasOpen); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Get(other.ID); got.Status != Tasked || got.TaskID != 12 {
+		t.Fatalf("unplan undid a filing: %+v", got)
+	}
+}

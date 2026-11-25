@@ -394,6 +394,7 @@ func erroringMigrations(db *sql.DB) error {
 		migrateTaskLook, migratePartRun, migrateForYou, migrateWindowOpenDevices, migrateSessionPanes,
 		migrateInboxAttachments, migrateSessionThreads, migrateSessionMembers, migrateSessionLoadout,
 		migratePeerMsgID, migrateBuilders, migrateAgentSessions, migrateAdvisor, migrateLeftConversations, migrateThreadKind, migrateStuck,
+		migrateTodoPlanning, migratePlanners,
 	} {
 		if err := migrate(db); err != nil {
 			return err

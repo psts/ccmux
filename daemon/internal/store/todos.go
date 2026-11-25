@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 )
 
 // Todo is one item on a repo's to-do list: something a session noticed and
@@ -20,13 +22,17 @@ type Todo struct {
 	Urgency string `json:"urgency"`
 	Status  string `json:"status"`
 	// TaskID is the task the item was filed as, once it has one.
-	TaskID    int64  `json:"taskId,omitempty"`
-	AddedBy   string `json:"addedBy,omitempty"`
-	DoneBy    string `json:"doneBy,omitempty"`
-	Note      string `json:"note,omitempty"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
-	DoneAt    int64  `json:"doneAt,omitempty"`
+	TaskID int64 `json:"taskId,omitempty"`
+	// PlanningAt is when the item was put in its repo's planning line
+	// (status planning: handed to the repo's planner, not filed yet), which
+	// is its place in that line; 0 for an item that is not in it.
+	PlanningAt int64  `json:"planningAt,omitempty"`
+	AddedBy    string `json:"addedBy,omitempty"`
+	DoneBy     string `json:"doneBy,omitempty"`
+	Note       string `json:"note,omitempty"`
+	CreatedAt  int64  `json:"createdAt"`
+	UpdatedAt  int64  `json:"updatedAt"`
+	DoneAt     int64  `json:"doneAt,omitempty"`
 }
 
 // todosSchema is the to-do lists' table. norm is the item's text as two
@@ -52,15 +58,26 @@ CREATE TABLE IF NOT EXISTS repo_todos (
 CREATE UNIQUE INDEX IF NOT EXISTS repo_todos_unfinished ON repo_todos (repo, norm) WHERE status != 'done';
 `
 
-const todoCols = "id,repo,text,urgency,status,task_id,added_by,done_by,note,created_at,updated_at,done_at"
+const todoCols = "id,repo,text,urgency,status,task_id,added_by,done_by,note,created_at,updated_at,done_at,planning_at"
+
+// migrateTodoPlanning gives an item the time it entered its repo's planning
+// line. Strict, as migrateSessionPanes is: todoCols names the column. Rows
+// from before are in no line.
+func migrateTodoPlanning(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE repo_todos ADD COLUMN planning_at INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate repo_todos.planning_at: %w", err)
+	}
+	return nil
+}
 
 // AddTodo adds an item, with norm as what it is compared by, and returns
 // its number.
 func (s *SQLite) AddTodo(t Todo, norm string) (int64, error) {
 	res, err := s.db.Exec(`
-INSERT INTO repo_todos (repo,text,norm,urgency,status,task_id,added_by,done_by,note,created_at,updated_at,done_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.Repo, t.Text, norm, t.Urgency, t.Status, t.TaskID, t.AddedBy, t.DoneBy, t.Note, t.CreatedAt, t.UpdatedAt, t.DoneAt)
+INSERT INTO repo_todos (repo,text,norm,urgency,status,task_id,added_by,done_by,note,created_at,updated_at,done_at,planning_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.Repo, t.Text, norm, t.Urgency, t.Status, t.TaskID, t.AddedBy, t.DoneBy, t.Note, t.CreatedAt, t.UpdatedAt, t.DoneAt, t.PlanningAt)
 	if err != nil {
 		return 0, err
 	}
@@ -100,13 +117,19 @@ func (s *SQLite) TodosWithTask() ([]Todo, error) {
 	return s.queryTodos(`SELECT ` + todoCols + ` FROM repo_todos WHERE task_id != 0 AND status != 'done' ORDER BY id`)
 }
 
+// PlanningTodos lists the items in a planning line, every repo's when repo
+// is "", in the order they entered it: handed to a planner, not filed yet.
+func (s *SQLite) PlanningTodos(repo string) ([]Todo, error) {
+	return s.queryTodos(`SELECT `+todoCols+` FROM repo_todos WHERE status='planning' AND (?='' OR repo=?) ORDER BY planning_at, id`, repo, repo)
+}
+
 // SaveTodo writes an item back, with norm as what its text now compares
 // by; false when the item no longer exists. Its repo, who added it and when
 // are not written: they never change.
 func (s *SQLite) SaveTodo(t Todo, norm string) (bool, error) {
 	return execSaved(s.db, `
-UPDATE repo_todos SET text=?, norm=?, urgency=?, status=?, task_id=?, done_by=?, note=?, updated_at=?, done_at=? WHERE id=?`,
-		t.Text, norm, t.Urgency, t.Status, t.TaskID, t.DoneBy, t.Note, t.UpdatedAt, t.DoneAt, t.ID)
+UPDATE repo_todos SET text=?, norm=?, urgency=?, status=?, task_id=?, done_by=?, note=?, updated_at=?, done_at=?, planning_at=? WHERE id=?`,
+		t.Text, norm, t.Urgency, t.Status, t.TaskID, t.DoneBy, t.Note, t.UpdatedAt, t.DoneAt, t.PlanningAt, t.ID)
 }
 
 // DeleteTodo removes one item; false when there was none.
@@ -134,6 +157,6 @@ func (s *SQLite) queryTodos(query string, args ...any) ([]Todo, error) {
 func scanTodo(row interface{ Scan(...any) error }) (Todo, error) {
 	var t Todo
 	err := row.Scan(&t.ID, &t.Repo, &t.Text, &t.Urgency, &t.Status, &t.TaskID, &t.AddedBy, &t.DoneBy, &t.Note,
-		&t.CreatedAt, &t.UpdatedAt, &t.DoneAt)
+		&t.CreatedAt, &t.UpdatedAt, &t.DoneAt, &t.PlanningAt)
 	return t, err
 }

@@ -17,12 +17,15 @@ import (
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
-// An item's statuses: open, tasked (handed to its repo's session to file as
-// a task, or filed as one), and done.
+// An item's statuses: open, planning (in its repo's planning line: handed
+// to the repo's planner, which has not filed it yet), tasked (filed as a
+// task; before the planning line there was, also handed to the repo's
+// session to file), and done.
 const (
-	Open   = "open"
-	Tasked = "tasked"
-	Done   = "done"
+	Open     = "open"
+	Planning = "planning"
+	Tasked   = "tasked"
+	Done     = "done"
 )
 
 // The urgencies, as the tool and the page name them.

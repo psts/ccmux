@@ -242,23 +242,15 @@ func migrateSessionPanes(db *sql.DB) error {
 // AddRunnerSession inserts a new session row. A lead for a workspace that
 // has one is ErrLeadExists; a second member of a thread for a repo that has
 // one is ErrMemberExists; a second session for a role agent's home that has
-// one is ErrAgentExists.
+// one is ErrAgentExists; a second planner for a workspace that has one is
+// ErrPlannerExists (sessionClash).
 func (s *SQLite) AddRunnerSession(r RunnerSession) error {
 	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.Name, r.Cwd, r.Model, r.Wanted, r.Note, r.CreatedAt, r.UpdatedAt,
 		r.PaneID, r.WorkspaceID, r.Attention, r.AttentionReason, r.AttentionSince, r.Kind, r.Title, r.Goal,
 		r.ThreadID, r.Role, r.Repo, r.Worktree, r.Branch, r.ReadOnly, r.Loadout, r.Effort, r.PermissionMode,
 		r.Conversation, r.FreshNext, r.AgentVersion, r.Advisor, leftColumn(r.Left), r.Stuck)
-	if err != nil && r.Kind == SessionAgent && strings.Contains(err.Error(), "UNIQUE constraint failed: sessions.workspace_id") {
-		return ErrAgentExists
-	}
-	if err != nil && r.Kind == SessionLead && strings.Contains(err.Error(), "UNIQUE constraint failed: sessions.workspace_id") {
-		return ErrLeadExists
-	}
-	if err != nil && r.ThreadID != 0 && strings.Contains(err.Error(), "UNIQUE constraint failed: sessions.thread_id") {
-		return ErrMemberExists
-	}
-	return err
+	return sessionClash(r, err)
 }
 
 // RunnerLead is a workspace's lead session that has not ended, or nil.

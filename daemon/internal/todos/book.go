@@ -16,6 +16,7 @@ type Store interface {
 	UnfinishedTodo(repo, norm string) (*store.Todo, error)
 	Todos(repo string) ([]store.Todo, error)
 	TodosWithTask() ([]store.Todo, error)
+	PlanningTodos(repo string) ([]store.Todo, error)
 	SaveTodo(t store.Todo, norm string) (bool, error)
 	DeleteTodo(id int64) (bool, error)
 }
@@ -267,23 +268,36 @@ func setUrgency(t *store.Todo, e Edit) error {
 // setStatus moves an item: done records who finished it and when; open
 // takes it back onto the list, with what it had of a task or a finish
 // cleared; tasked is an open item handed on to be filed as a task, which
-// lets go of any task it had before.
+// lets go of any task it had before. Every move takes an item out of its
+// repo's planning line; into the line is Plan's alone, since an item is
+// only in it once it was sent to the planner.
 func (b *Book) setStatus(t *store.Todo, e Edit) error {
 	if e.Status == nil || *e.Status == t.Status {
 		return nil
 	}
-	switch *e.Status {
-	case Done:
+	move, ok := moves[*e.Status]
+	if !ok {
+		return problem(Invalid, "status is open, tasked or done, not %q", *e.Status)
+	}
+	t.PlanningAt = 0
+	return move(b, t, e)
+}
+
+// moves is what a change of status does to an item, by the status asked for.
+var moves = map[string]func(*Book, *store.Todo, Edit) error{
+	Done: func(b *Book, t *store.Todo, e Edit) error {
 		t.Status, t.DoneBy, t.DoneAt = Done, e.By, b.now()
 		return nil
-	case Open:
+	},
+	Open: func(b *Book, t *store.Todo, _ Edit) error {
 		wasDone := t.Status == Done
 		t.Status, t.DoneBy, t.DoneAt, t.TaskID = Open, "", 0, 0
 		if wasDone {
 			return b.notTwice(*t)
 		}
 		return nil
-	case Tasked:
+	},
+	Tasked: func(_ *Book, t *store.Todo, _ Edit) error {
 		if t.Status == Done {
 			return problem(Conflict, "to-do #%d is done; put it back on the list before making it a task", t.ID)
 		}
@@ -291,8 +305,10 @@ func (b *Book) setStatus(t *store.Todo, e Edit) error {
 		// was open) and what was noted of that are history.
 		t.Status, t.TaskID, t.Note = Tasked, 0, ""
 		return nil
-	}
-	return problem(Invalid, "status is open, tasked or done, not %q", *e.Status)
+	},
+	Planning: func(_ *Book, t *store.Todo, _ Edit) error {
+		return problem(Invalid, "to-do #%d goes into the planning line with Make task (POST /v1/todos/%d/task), which sends it to the repo's planner; a status change sends nothing", t.ID, t.ID)
+	},
 }
 
 // Fileable says why item id of repo cannot be filed as a task, or nil. The
@@ -324,7 +340,9 @@ func (b *Book) Filed(id, taskID int64) error {
 	if t.Status == Done {
 		return nil // finished between the check and the filing: it stays done
 	}
-	t.Status, t.TaskID, t.Note = Tasked, taskID, "" // a note on an earlier task is not about this one
+	// A note on an earlier task is not about this one; filed, it has left
+	// the planning line.
+	t.Status, t.TaskID, t.Note, t.PlanningAt = Tasked, taskID, "", 0
 	_, err = b.save(t)
 	return err
 }
