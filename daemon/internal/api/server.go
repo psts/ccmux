@@ -451,6 +451,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tasks", s.listTasks)
 	mux.HandleFunc("PATCH /v1/tasks/{id}", s.patchTask)
 	mux.HandleFunc("POST /v1/tasks/{id}/move", s.moveTask)
+	mux.HandleFunc("POST /v1/tasks/{id}/clear-lock", s.clearTaskLock)
 	mux.HandleFunc("PATCH /v1/tasks/{id}/parts/{part}", s.patchPart)
 	mux.HandleFunc("POST /v1/tasks/{id}/parts/{part}/send-back", s.sendBackPart)
 	mux.HandleFunc("DELETE /v1/tasks/{id}", s.deleteTask)

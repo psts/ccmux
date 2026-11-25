@@ -18,7 +18,7 @@ type Edit struct {
 
 // Apply checks e against the task and the whole list and returns the task
 // as it would be saved. It changes nothing on a refusal.
-func Apply(t store.Task, all []store.Task, e Edit) (store.Task, error) {
+func (r Rules) Apply(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 	if e.Title != nil && !Editable(t.Status) {
 		return t, fmt.Errorf("task #%d is %s; only a planning or waiting task can be edited", t.ID, t.Status)
 	}
@@ -30,7 +30,7 @@ func Apply(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 		return t, err
 	}
 	if e.Status != nil && *e.Status != t.Status {
-		return moveTo(next, all, *e.Status)
+		return r.moveTo(next, all, *e.Status)
 	}
 	return next, nil
 }
@@ -57,9 +57,9 @@ func applyFields(t store.Task, all []store.Task, e Edit) (store.Task, error) {
 // moveTo checks and makes a status change. A task put back in the queue has
 // its "starts after" checked again (the task it waited for may have been
 // cancelled meanwhile) and loses the note on why it stopped.
-func moveTo(t store.Task, all []store.Task, to string) (store.Task, error) {
-	if !CanMove(t.Status, to) {
-		return t, fmt.Errorf("task #%d cannot go from %s to %s", t.ID, t.Status, to)
+func (r Rules) moveTo(t store.Task, all []store.Task, to string) (store.Task, error) {
+	if !r.CanMove(t.Status, to) {
+		return t, r.moveRefusal(t, to)
 	}
 	if to == Waiting {
 		if err := CheckAfter(all, t.ID, t.AfterIDs); err != nil {

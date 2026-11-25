@@ -157,6 +157,24 @@ a person), the task's row, the slots.
   macOS and any host without systemd: nothing merges in the daemon any more.
   A test that names a prefix must stop its units and delete
   `~/.config/systemd/user/<prefix>@.service` afterwards.
+- **"Mark merged" exists only where nothing merges** (task #201,
+  `taskq.Rules`, made by `Runner.Rules` from whether it has `Jobs`). Where
+  jobs run, done is no person's move from ready to merge or merge failed:
+  the lens does not offer it and `PATCH /v1/tasks/{id}` refuses it with why
+  (it would close the task with nothing merged). Every route asks the same
+  `Rules`; never test a move against `humanMoves` alone.
+- **A merge held by a repo's folder asks a person after 10 minutes**
+  (`taskq/mergeblock.go`): the runner keeps what holds each built task
+  (`FolderBlock`: a git lock, the trunk checked out elsewhere, uncommitted
+  changes on it) and since when (a lock's file time, else first seen, in
+  memory), the task view carries it as `block`, and `counts` carry
+  `merge_stuck` for the sidebar. For a lock with no git process in the repo
+  the page offers "Remove the stale lock", `POST /v1/tasks/{id}/clear-lock`
+  (gated): `taskq.ClearStaleLock` removes only the lock `git rev-parse
+  --git-path index.lock` names in one of the task's repos, a plain file of
+  at most 64 KiB, 10 minutes old, while no process named git has its folder
+  in the repo (`/proc`; a host without it refuses). It starts no merge: the
+  next pass merges. The other blocks have no fix button.
 - A new kind of job is a `jobs.Runner` in `jobKinds` and a `jobs.Handler` in
   `wireJobs` (`cmd/ccmuxd/jobs.go`), and a case in `workOf`
   (`cmd/ccmuxd/sandbox.go`): with the sandbox on, a job whose work the walls

@@ -1,6 +1,7 @@
 package taskq
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -66,36 +67,68 @@ func TestAfterList(t *testing.T) {
 }
 
 func TestCanMove(t *testing.T) {
+	hand := Rules{HandMerge: true}
 	for _, m := range [][2]string{{Planning, Waiting}, {Waiting, Planning}, {Running, Cancelled}, {NeedsYou, Cancelled}, {ReadyToMerge, Done}, {Cancelled, Waiting}, {MergeFailed, ReadyToMerge}, {MergeFailed, Done}} {
-		if !CanMove(m[0], m[1]) {
+		if !hand.CanMove(m[0], m[1]) {
 			t.Errorf("%s -> %s refused", m[0], m[1])
 		}
 	}
 	for _, m := range [][2]string{{Waiting, Done}, {Running, Waiting}, {Running, Done}, {Done, Waiting}, {Merging, Done}, {Merging, Cancelled}, {ReadyToMerge, Merging}} {
-		if CanMove(m[0], m[1]) {
+		if hand.CanMove(m[0], m[1]) {
 			t.Errorf("%s -> %s allowed by hand", m[0], m[1])
 		}
+	}
+}
+
+// Where the daemon merges (the zero rules), built work is never marked
+// merged by hand: not offered, and refused with why. Everything else a
+// person may do stays, and a task already done stays done.
+func TestRulesWhereTheDaemonMerges(t *testing.T) {
+	jobs := Rules{}
+	if got := jobs.Moves(ReadyToMerge); !slices.Equal(got, []string{Cancelled}) {
+		t.Fatalf("moves from ready to merge = %v, want only cancel", got)
+	}
+	if got := jobs.Moves(MergeFailed); !slices.Equal(got, []string{ReadyToMerge, Cancelled}) {
+		t.Fatalf("moves from merge failed = %v, want merge again or cancel", got)
+	}
+	if got := (Rules{HandMerge: true}).Moves(ReadyToMerge); !slices.Equal(got, []string{Done, Cancelled}) {
+		t.Fatalf("a daemon with no jobs lost Mark merged: %v", got)
+	}
+	if got := jobs.Moves(Done); got == nil || len(got) != 0 {
+		t.Fatalf("moves from done = %#v, want an empty list (never null on the wire)", got)
+	}
+	done := Done
+	for _, from := range []string{ReadyToMerge, MergeFailed} {
+		task := store.Task{ID: 4, Title: "t", Status: from}
+		_, err := jobs.Apply(task, list(task), Edit{Status: &done})
+		if err == nil || !strings.Contains(err.Error(), "cannot be marked merged by hand: this daemon merges built work itself") {
+			t.Errorf("mark merged from %s = %v, want the refusal with why", from, err)
+		}
+	}
+	task := store.Task{ID: 4, Title: "t", Status: Running}
+	if _, err := jobs.Apply(task, list(task), Edit{Status: &done}); err == nil || !strings.Contains(err.Error(), "cannot go from running to done") {
+		t.Errorf("running -> done = %v, want the plain refusal", err)
 	}
 }
 
 func TestApply(t *testing.T) {
 	task := store.Task{ID: 1, Title: "t", Status: Waiting}
 	title := " new "
-	got, err := Apply(task, list(task), Edit{Title: &title})
+	got, err := (Rules{}).Apply(task, list(task), Edit{Title: &title})
 	if err != nil || got.Title != "new" {
 		t.Fatalf("title edit = %+v, %v", got, err)
 	}
 	running := task
 	running.Status = Running
-	if _, err := Apply(running, list(running), Edit{Title: &title}); err == nil {
+	if _, err := (Rules{}).Apply(running, list(running), Edit{Title: &title}); err == nil {
 		t.Fatal("a running task's title was edited")
 	}
 	blank := "  "
-	if _, err := Apply(task, list(task), Edit{Title: &blank}); err == nil {
+	if _, err := (Rules{}).Apply(task, list(task), Edit{Title: &blank}); err == nil {
 		t.Fatal("a blank title was accepted")
 	}
 	cancel := Cancelled
-	if got, err := Apply(running, list(running), Edit{Status: &cancel}); err != nil || got.Status != Cancelled {
+	if got, err := (Rules{}).Apply(running, list(running), Edit{Status: &cancel}); err != nil || got.Status != Cancelled {
 		t.Fatalf("cancel a running task = %+v, %v", got, err)
 	}
 }
@@ -106,11 +139,11 @@ func TestApply_RequeueRechecksAfter(t *testing.T) {
 	dep := store.Task{ID: 1, Status: Cancelled}
 	task := store.Task{ID: 2, Title: "t", Status: Cancelled, AfterIDs: []int64{1}, Note: "why it stopped"}
 	waiting := Waiting
-	if _, err := Apply(task, list(dep, task), Edit{Status: &waiting}); err == nil || !strings.Contains(err.Error(), "change what it starts after") {
+	if _, err := (Rules{}).Apply(task, list(dep, task), Edit{Status: &waiting}); err == nil || !strings.Contains(err.Error(), "change what it starts after") {
 		t.Fatalf("requeue after a cancelled task = %v", err)
 	}
 	none := []int64{}
-	got, err := Apply(task, list(dep, task), Edit{Status: &waiting, AfterIDs: &none})
+	got, err := (Rules{}).Apply(task, list(dep, task), Edit{Status: &waiting, AfterIDs: &none})
 	if err != nil || got.Status != Waiting || len(got.AfterIDs) != 0 || got.Note != "" {
 		t.Fatalf("requeue that clears after = %+v, %v", got, err)
 	}

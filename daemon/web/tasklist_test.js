@@ -171,3 +171,44 @@ test("reportHtml draws a table, escaping every cell", () => {
   assert.equal(html, '<div class="md-table-wrap"><table class="md-table"><thead><tr><th>a</th><th style="text-align:right">b</th></tr></thead>' +
     '<tbody><tr><td>&lt;i&gt;x&lt;/i&gt;</td><td style="text-align:right"><strong>2</strong></td></tr></tbody></table></div>');
 });
+
+test("Mark merged is a button only when the daemon offers the move", () => {
+  const labels = (t) => L.buttons(t).map((b) => b.label);
+  // Where the daemon merges, its moves from ready to merge are cancel only.
+  assert.deepStrictEqual(labels({ status: "ready_to_merge", moves: ["cancelled"] }), ["Cancel"]);
+  assert.deepStrictEqual(labels({ status: "merge_failed", moves: ["ready_to_merge", "cancelled"] }), ["Try merge again", "Cancel"]);
+  // A daemon with no jobs: merging by hand is the only way out.
+  assert.deepStrictEqual(labels({ status: "ready_to_merge", moves: ["done", "cancelled"] }), ["Mark merged", "Cancel"]);
+  assert.deepStrictEqual(L.buttons({ moves: ["done"] })[0], { act: "move", label: "Mark merged", to: "done" });
+});
+
+const lockBlock = (over) => ({ kind: "lock", repo: "kullio-hq", lock: "/r/kullio-hq/.git/index.lock", since: 1, needsPerson: true, clearable: true, ...over });
+const when = () => "2 Nov 2026, 10:00";
+
+test("a merge held by an old lock asks a person, says so plainly and offers the removal", () => {
+  const t = { status: "ready_to_merge", moves: ["cancelled"], block: lockBlock() };
+  assert.ok(L.needsPerson(t));
+  assert.strictEqual(L.blockText(t, when), "Merge waits: kullio-hq has a git lock file from 2 Nov 2026, 10:00, and no git command is running there.");
+  assert.deepStrictEqual(L.buttons(t).map((b) => b.act), ["clearlock", "move"]);
+  assert.strictEqual(L.buttons(t)[0].label, "Remove the stale lock");
+  const running = { ...t, block: lockBlock({ gitRunning: true, clearable: false }) };
+  assert.match(L.blockText(running, when), /and a git command is running there\.$/);
+  assert.ok(!L.buttons(running).some((b) => b.act === "clearlock"));
+  assert.match(L.blockText({ block: lockBlock({ gitUnknown: true, clearable: false }) }, when), /cannot tell whether a git command is running/);
+});
+
+test("a young block neither asks nor shows; other folder blocks say which", () => {
+  const young = { status: "ready_to_merge", block: lockBlock({ needsPerson: false, clearable: false }) };
+  assert.ok(!L.needsPerson(young));
+  assert.strictEqual(L.blockText(young, when), "");
+  assert.ok(!L.buttons(young).some((b) => b.act === "clearlock"));
+  assert.strictEqual(L.blockText({ block: { kind: "uncommitted", repo: "app", since: 1, needsPerson: true } }, when),
+    "Merge waits: app has uncommitted changes on its trunk, since 2 Nov 2026, 10:00.");
+  assert.strictEqual(L.blockText({ block: { kind: "elsewhere", repo: "app", since: 1, needsPerson: true } }, when),
+    "Merge waits: app has its trunk checked out in another worktree, since 2 Nov 2026, 10:00.");
+  assert.ok(L.needsPerson({ status: "ready_to_merge", block: { kind: "uncommitted", needsPerson: true } }));
+});
+
+test("the sidebar alert counts the merges stuck long enough to ask a person", () => {
+  assert.deepStrictEqual(L.summary({ ready_to_merge: 1, merge_stuck: 1 }), { text: "1 merging", alert: 1 });
+});

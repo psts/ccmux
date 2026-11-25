@@ -99,6 +99,7 @@ func TestTasks_WorkerAddsPartsOnlyInItsWindow(t *testing.T) {
 // another task in the same session is left alone.
 func TestTasks_MarkMergedClosesIdleWorkers(t *testing.T) {
 	s, mgr, st := itestServer(t, "ccmux-api-tasks-itest")
+	s.taskSettler = &taskq.Runner{} // no merge jobs here: marking merged by hand is the way out
 	repo, wt, other := t.TempDir(), t.TempDir(), t.TempDir()
 	ws, err := mgr.CreateWorkspace("app", repo, repo, "", "tester", "")
 	if err != nil {

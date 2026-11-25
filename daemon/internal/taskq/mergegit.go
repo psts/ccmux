@@ -8,14 +8,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // MergeGit is the git a merge needs, faked in tests.
 type MergeGit interface {
-	// TrunkBlocked says why repo's trunk cannot be moved forward now ("" when
-	// it can): it is checked out in the repo's own folder with uncommitted
-	// changes there, or checked out in another worktree.
-	TrunkBlocked(repo, trunk string) (string, error)
+	// TrunkBlocked says why repo's trunk cannot be moved forward now (a
+	// zero FolderBlock when it can): git is busy there, the trunk is
+	// checked out in another worktree, or in the repo's own folder with
+	// uncommitted changes there.
+	TrunkBlocked(repo, trunk string) (FolderBlock, error)
 	// Uncommitted lists what the worktree holds that is not committed ("" for
 	// nothing): the merge takes commits only, so a check that passed on such
 	// a file proves nothing about what lands.
@@ -59,46 +61,62 @@ func checkedOut(repo string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func (ExecGit) TrunkBlocked(repo, trunk string) (string, error) {
-	if locked, err := gitBusy(repo); err != nil || locked != "" {
-		return locked, err
+// What holds a repo's folder against a merge (FolderBlock.Kind).
+const (
+	BlockLock        = "lock"        // git's index lock is there
+	BlockElsewhere   = "elsewhere"   // the trunk is checked out in another worktree
+	BlockUncommitted = "uncommitted" // the trunk is checked out with uncommitted changes
+)
+
+// FolderBlock is why a repo's own folder cannot take a merge now. The zero
+// value is "it can".
+type FolderBlock struct {
+	Kind string
+	Repo string // the repo's folder
+	Why  string // said plainly, for a note
+	// Lock and LockTime: the lock file and when it was last written
+	// (BlockLock only).
+	Lock     string
+	LockTime time.Time
+}
+
+// Blocked reports whether there is a block at all.
+func (b FolderBlock) Blocked() bool { return b.Why != "" }
+
+func (ExecGit) TrunkBlocked(repo, trunk string) (FolderBlock, error) {
+	if b, err := gitBusy(repo); err != nil || b.Blocked() {
+		return b, err
 	}
 	if elsewhere, err := trunkElsewhere(repo, trunk); err != nil || elsewhere != "" {
-		return elsewhere, err
+		return FolderBlock{Kind: BlockElsewhere, Repo: repo, Why: elsewhere}, err
 	}
 	cur, err := checkedOut(repo)
-	if err != nil {
-		return "", err
-	}
-	if cur != trunk {
-		return "", nil // the ref moves without touching anyone's files
+	if err != nil || cur != trunk {
+		return FolderBlock{}, err // another branch: the ref moves without touching anyone's files
 	}
 	out, err := runGit(repo, "status", "--porcelain", "--untracked-files=no")
-	if err != nil {
-		return "", err
+	if err != nil || out == "" {
+		return FolderBlock{}, err
 	}
-	if out != "" {
-		return fmt.Sprintf("%s has uncommitted changes on %s", filepath.Base(repo), trunk), nil
-	}
-	return "", nil
+	return FolderBlock{Kind: BlockUncommitted, Repo: repo, Why: fmt.Sprintf("%s has uncommitted changes on %s", filepath.Base(repo), trunk)}, nil
 }
 
 // gitBusy names the repo's index lock when it exists: a git command is
 // running there, or one crashed and left it. Either way every write fails
-// until it is gone, and only a person can tell which it is.
-func gitBusy(repo string) (string, error) {
-	rel, err := runGit(repo, "rev-parse", "--git-path", "index.lock")
+// until it is gone; ClearStaleLock removes one a crash left.
+func gitBusy(repo string) (FolderBlock, error) {
+	lock, err := LockPath(repo)
 	if err != nil {
-		return "", err
+		return FolderBlock{}, err
 	}
-	lock := rel
-	if !filepath.IsAbs(lock) {
-		lock = filepath.Join(repo, rel)
+	fi, err := os.Lstat(lock)
+	if err != nil {
+		return FolderBlock{}, nil
 	}
-	if _, err := os.Stat(lock); err == nil {
-		return fmt.Sprintf("git is busy in %s (%s exists); if that lasts, a crashed git command left it: remove it once no git command is running", filepath.Base(repo), lock), nil
-	}
-	return "", nil
+	return FolderBlock{
+		Kind: BlockLock, Repo: repo, Lock: lock, LockTime: fi.ModTime(),
+		Why: fmt.Sprintf("git is busy in %s (%s exists); if that lasts, a crashed git command left it: remove it once no git command is running", filepath.Base(repo), lock),
+	}, nil
 }
 
 // trunkElsewhere names a worktree other than the repo's own folder that has

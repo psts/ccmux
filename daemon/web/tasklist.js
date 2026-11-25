@@ -83,7 +83,9 @@
     if (merging) parts.push(`${merging} merging`);
     if (c.waiting) parts.push(`${c.waiting} waiting`);
     if (c.done) parts.push(`${c.done} done`);
-    return { text: parts.join(" · "), alert: (c.needs_you || 0) + (c.merge_failed || 0) };
+    // merge_stuck: built ones whose merge waits on a repo's folder long
+    // enough to ask a person (the daemon counts them).
+    return { text: parts.join(" · "), alert: (c.needs_you || 0) + (c.merge_failed || 0) + (c.merge_stuck || 0) };
   }
 
   // waitsOn says what a task waits for: nothing, the tasks it starts after
@@ -155,8 +157,47 @@
   const TITLES = new Map(SECTIONS);
   function statusWord(status) { return TITLES.get(status) || status; }
 
-  // needsPerson is whether a task waits on a person (the row's highlight).
-  function needsPerson(t) { return t.status === "needs_you" || t.status === "merge_failed"; }
+  // needsPerson is whether a task waits on a person (the row's highlight):
+  // it asks, its merge failed, or its merge has waited on a repo's folder
+  // long enough that the daemon says so (taskq.MergeBlock).
+  function needsPerson(t) {
+    return t.status === "needs_you" || t.status === "merge_failed" || !!(t.block && t.block.needsPerson);
+  }
+
+  // blockText says what holds a built task's merge once that asks a person,
+  // "" before. when(ms) writes a time the way the page does.
+  function blockText(t, when) {
+    const b = t.block;
+    if (!b || !b.needsPerson) return "";
+    const since = when(b.since);
+    if (b.kind === "lock") {
+      const git = b.gitRunning ? "and a git command is running there"
+        : b.gitUnknown ? "and this host cannot tell whether a git command is running there"
+          : "and no git command is running there";
+      return `Merge waits: ${b.repo} has a git lock file from ${since}, ${git}.`;
+    }
+    if (b.kind === "elsewhere") return `Merge waits: ${b.repo} has its trunk checked out in another worktree, since ${since}.`;
+    if (b.kind === "uncommitted") return `Merge waits: ${b.repo} has uncommitted changes on its trunk, since ${since}.`;
+    return `Merge waits on ${b.repo}, since ${since}.`;
+  }
+
+  // buttons is what a task's details offer, in order, each {act, label,
+  // to}: only what the daemon says the task may do now (its moves come
+  // from taskq.Rules, so "Mark merged" is there only on a daemon that
+  // merges nothing itself).
+  function buttons(t) {
+    const out = [];
+    const add = (act, label, to) => out.push(to === undefined ? { act, label } : { act, label, to });
+    if (t.editable) add("save", "Save");
+    if (t.canUp) add("up", "↑");
+    if (t.canDown) add("down", "↓");
+    for (const dep of (t.orderable && t.afterIds) || []) add("unwait", `Stop waiting on #${dep}`, dep);
+    if (t.marked) add("read", "Mark as read");
+    if (t.block && t.block.clearable) add("clearlock", "Remove the stale lock");
+    for (const to of t.moves || []) add("move", moveLabel(to), to);
+    if (t.removable) add("remove", "Remove");
+    return out;
+  }
 
   // forYou is what a task's builders say a person must check before it
   // ships, its parts' lines in order; a task of several parts names the
@@ -202,7 +243,7 @@
 
   const api = {
     sections, repos, summary, waitsOn, moveLabel, partWord, builtWith, slotChoices, priorityChoices,
-    repoTasks, statusWord, needsPerson, forYou, preview, reportHtml, SECTIONS,
+    repoTasks, statusWord, needsPerson, blockText, buttons, forYou, preview, reportHtml, SECTIONS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxTaskList = api;

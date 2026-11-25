@@ -104,21 +104,26 @@ func Fixable(err error) (int, bool) {
 // Blocked says why the work cannot land now, "" when it can: a repo's own
 // folder holds uncommitted changes on the trunk, has the trunk checked out
 // elsewhere, or git is busy there.
-func (l Lander) Blocked(work []Work) string {
+func (l Lander) Blocked(work []Work) string { return l.BlockOf(work).Why }
+
+// BlockOf is Blocked with what holds the folder, for a person to act on. A
+// repo that cannot be read is a block with no kind.
+func (l Lander) BlockOf(work []Work) FolderBlock {
 	for _, w := range work {
 		trunk, err := l.Git.Trunk(w.RepoPath)
 		if err != nil {
-			return "waiting: " + err.Error()
+			return FolderBlock{Repo: w.RepoPath, Why: "waiting: " + err.Error()}
 		}
-		why, err := l.MergeGit.TrunkBlocked(w.RepoPath, trunk)
+		b, err := l.MergeGit.TrunkBlocked(w.RepoPath, trunk)
 		if err != nil {
-			return "waiting: " + err.Error()
+			return FolderBlock{Repo: w.RepoPath, Why: "waiting: " + err.Error()}
 		}
-		if why != "" {
-			return "waiting to merge: " + why
+		if b.Blocked() {
+			b.Why = "waiting to merge: " + b.Why
+			return b
 		}
 	}
-	return ""
+	return FolderBlock{}
 }
 
 // checked is a piece of work ready to land: its trunk, the commit its

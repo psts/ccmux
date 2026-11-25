@@ -59,9 +59,11 @@ func (r *Runner) pickMerge(tasks []store.Task, parts []store.Part, order []int) 
 // (Settled) does not: that is a minute or so, and the slot is what keeps
 // the next build off the checks about to run. Under the lock.
 func (r *Runner) mergeWait(id int64, mine []store.Part) string {
-	if why := r.mergeBlocked(mine); why != "" {
+	b := r.mergeBlocked(mine)
+	r.noteBlock(id, b)
+	if b.Blocked() {
 		r.park(id)
-		return why
+		return b.Why
 	}
 	delete(r.parked, id)
 	now := r.Now()
@@ -101,13 +103,17 @@ func (r *Runner) park(id int64) {
 // merge (merged by hand, cancelled, sent back): one built again later holds
 // its slot until pickMerge has looked at its folder afresh. Under the lock.
 func (r *Runner) forgetParked(tasks []store.Task) {
-	if len(r.parked) == 0 {
-		return
-	}
-	waiting := map[int64]bool{}
+	waiting, inLine := map[int64]bool{}, map[int64]bool{}
 	for _, t := range tasks {
-		if t.Status == ReadyToMerge && r.parked[t.ID] {
-			waiting[t.ID] = true
+		if t.Status == ReadyToMerge {
+			inLine[t.ID] = true
+			waiting[t.ID] = r.parked[t.ID]
+		}
+	}
+	r.keepBlocks(inLine)
+	for id, parked := range waiting {
+		if !parked {
+			delete(waiting, id)
 		}
 	}
 	r.parked = waiting
@@ -134,9 +140,10 @@ func worksOf(parts []store.Part) []Work {
 	return out
 }
 
-// mergeBlocked says why the feature cannot merge now, "" when it can.
-func (r *Runner) mergeBlocked(parts []store.Part) string {
-	return r.lander().Blocked(worksOf(parts))
+// mergeBlocked says why the feature cannot merge now, a zero block when it
+// can.
+func (r *Runner) mergeBlocked(parts []store.Part) FolderBlock {
+	return r.lander().BlockOf(worksOf(parts))
 }
 
 // noteTidying ends a merged feature's note while its tidy-up runs. The

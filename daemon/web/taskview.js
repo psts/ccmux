@@ -208,6 +208,7 @@
         `<div class="tq-line" data-act="toggle"><span class="tq-id">#${t.id}</span>` +
         `<span class="tq-name">${esc(t.title)}</span>${chips}` +
         (w ? `<span class="tq-after${w.blocked ? " blocked" : ""}">${esc(w.text)}</span>` : "") +
+        blockHtml(t) +
         (t.marked ? `<span class="tq-look" title="Its builder lists something a person must check before it ships. It merges on its own all the same.">For you</span>` : "") +
         (t.note ? `<span class="tq-note">${esc(L().preview(t.note))}</span>` : "") + `</div>` +
         (open ? detailHtml(t) : "") + `</div>`;
@@ -265,16 +266,14 @@
     }
 
     function buttonsHtml(t) {
-      const b = (act, label, extra) => `<button type="button" data-act="${act}"${extra || ""}>${esc(label)}</button>`;
-      const out = [];
-      if (t.editable) out.push(b("save", "Save"));
-      if (t.canUp) out.push(b("up", "↑"));
-      if (t.canDown) out.push(b("down", "↓"));
-      for (const dep of (t.orderable && t.afterIds) || []) out.push(b("unwait", `Stop waiting on #${dep}`, ` data-to="${dep}"`));
-      if (t.marked) out.push(b("read", "Mark as read"));
-      for (const to of t.moves || []) out.push(b("move", L().moveLabel(to), ` data-to="${to}"`));
-      if (t.removable) out.push(b("remove", "Remove"));
-      return out.join("");
+      return L().buttons(t).map((x) =>
+        `<button type="button" data-act="${x.act}"${x.to === undefined ? "" : ` data-to="${esc(String(x.to))}"`}>${esc(x.label)}</button>`).join("");
+    }
+
+    // blockHtml says what holds a built task's merge once it asks a person.
+    function blockHtml(t) {
+      const text = L().blockText(t, (ms) => new Date(ms).toLocaleString());
+      return text ? `<span class="tq-after blocked tq-block">${esc(text)}</span>` : "";
     }
 
     // --- acting ---
@@ -369,6 +368,8 @@
       retry: (id, _to, partId) => send(`/${id}/parts/${partId}`, "PATCH", { retry: true }),
       // The worker gets the task's failure note and the part runs again.
       sendback: (id, _to, partId) => send(`/${id}/parts/${partId}/send-back`, "POST"),
+      // The daemon checks the lock again and removes it; the next pass merges.
+      clearlock: (id) => send(`/${id}/clear-lock`, "POST"),
     };
 
     function act(kind, id, to, partId) {

@@ -40,6 +40,16 @@ type taskStore interface {
 // SetTasks wires the task queue's store.
 func (s *Server) SetTasks(st taskStore) { s.tasks = st }
 
+// taskRules is what a person may do to a task on this daemon (taskq.Rules):
+// the runner's, from whether it runs merge jobs. With no runner nothing
+// merges here at all, and the zero rules refuse marking merged by hand.
+func (s *Server) taskRules() taskq.Rules {
+	if s.taskSettler == nil {
+		return taskq.Rules{}
+	}
+	return s.taskSettler.Rules()
+}
+
 func (s *Server) taskNow() int64 { return time.Now().UnixMilli() }
 
 // taskView is a task on the wire with its parts, and what the rules allow
@@ -62,6 +72,10 @@ type taskView struct {
 	// Marked: a builder listed something a person must check, and nobody
 	// has marked it read yet (taskq.Marked). The lines are on the parts.
 	Marked bool `json:"marked"`
+	// Block: what holds a built feature's merge in a repo's own folder
+	// (taskq.MergeBlock), with since when and whether it now asks a person;
+	// nil when nothing does.
+	Block *taskq.MergeBlock `json:"block,omitempty"`
 }
 
 // partView is a part with its repo's short name, its Claude's bus name, and
@@ -86,11 +100,12 @@ func (s *Server) taskViewsOf(tasks []store.Task, parts []store.Part) []taskView 
 	for _, t := range tasks {
 		queue := taskq.InWindow(tasks, t.WindowID)
 		v := taskView{
-			Task: t, Parts: []partView{}, Moves: taskq.Moves(t.Status),
+			Task: t, Parts: []partView{}, Moves: s.taskRules().Moves(t.Status),
 			Editable: taskq.Editable(t.Status), Orderable: taskq.Orderable(t.Status),
 			Removable: taskq.Removable(t.Status), Ahead: taskq.Ahead(queue, t.ID),
 			Marked: taskq.Marked(t, parts),
 		}
+		v.Block = s.mergeBlockOf(t)
 		if v.Editable {
 			_, v.CanUp = taskq.Neighbour(queue, t.ID, true)
 			_, v.CanDown = taskq.Neighbour(queue, t.ID, false)
@@ -101,6 +116,17 @@ func (s *Server) taskViewsOf(tasks []store.Task, parts []store.Part) []taskView 
 		out = append(out, v)
 	}
 	return out
+}
+
+// mergeBlockOf is what the runner saw holding built feature t's merge.
+func (s *Server) mergeBlockOf(t store.Task) *taskq.MergeBlock {
+	if t.Status != taskq.ReadyToMerge || s.taskSettler == nil {
+		return nil
+	}
+	if b, ok := s.taskSettler.BlockOf(t.ID); ok {
+		return &b
+	}
+	return nil
 }
 
 func (s *Server) partViewOf(t store.Task, p store.Part) partView {
@@ -149,13 +175,30 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	views := s.taskViewsOf(tasks, parts)
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": views, "counts": taskCounts(tasks, views)})
+}
+
+// stuckKey is the count, beside the statuses', of built features whose
+// merge has waited on a repo's folder long enough to ask a person
+// (MergeBlock.NeedsPerson): the sidebar counts them with what needs you.
+const stuckKey = "merge_stuck"
+
+// taskCounts tallies each window's tasks by status, and its stuck merges.
+func taskCounts(tasks []store.Task, views []taskView) map[string]map[string]int {
 	counts := map[string]map[string]int{}
 	for _, t := range tasks {
 		if _, done := counts[t.WindowID]; !done {
 			counts[t.WindowID] = taskq.Counts(taskq.InWindow(tasks, t.WindowID))
+			counts[t.WindowID][stuckKey] = 0
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskViewsOf(tasks, parts), "counts": counts})
+	for _, v := range views {
+		if v.Block != nil && v.Block.NeedsPerson {
+			counts[v.WindowID][stuckKey]++
+		}
+	}
+	return counts
 }
 
 // taskOf loads {id} with its window's queue, which its order, "starts
@@ -234,7 +277,7 @@ func (s *Server) applyTaskPatch(t store.Task, all []store.Task, p taskPatch) (st
 	next := t
 	if p.Edit != (taskq.Edit{}) {
 		var err error
-		if next, err = taskq.Apply(t, all, p.Edit); err != nil {
+		if next, err = s.taskRules().Apply(t, all, p.Edit); err != nil {
 			return t, http.StatusConflict, err
 		}
 		if err := s.saveTaskChange(t, next); err != nil {

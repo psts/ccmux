@@ -198,23 +198,30 @@ func (h *fakeHost) TasksChanged() {
 type fakeGit struct {
 	mu          sync.Mutex // a test may run a job beside a pass
 	added       []string
-	blocked     map[string]string   // repo -> why its trunk cannot move
-	clash       map[string]bool     // repo -> its rebase clashes
-	ffErr       map[string]error    // repo -> its fast-forward fails
-	rmErr       map[string]error    // repo -> its worktree will not go
-	gateChanges map[string][]string // repo -> files its branch changes under .claude
-	dirty       map[string]string   // repo -> uncommitted work in its worktree
-	moved       map[string]string   // repo -> how its worktree changed after the checks
-	ffs         []string            // repos fast-forwarded, in order
-	removed     []string            // worktrees removed after a merge
+	blocked     map[string]string      // repo -> why its trunk cannot move
+	folders     map[string]FolderBlock // repo -> what holds its folder, over blocked
+	clash       map[string]bool        // repo -> its rebase clashes
+	ffErr       map[string]error       // repo -> its fast-forward fails
+	rmErr       map[string]error       // repo -> its worktree will not go
+	gateChanges map[string][]string    // repo -> files its branch changes under .claude
+	dirty       map[string]string      // repo -> uncommitted work in its worktree
+	moved       map[string]string      // repo -> how its worktree changed after the checks
+	ffs         []string               // repos fast-forwarded, in order
+	removed     []string               // worktrees removed after a merge
 	rebased     int
 	onRemove    func() // runs as a merged part's worktree is removed
 }
 
-func (g *fakeGit) TrunkBlocked(repo, trunk string) (string, error) {
+func (g *fakeGit) TrunkBlocked(repo, trunk string) (FolderBlock, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.blocked[repo], nil
+	if b, ok := g.folders[repo]; ok {
+		return b, nil
+	}
+	if why := g.blocked[repo]; why != "" {
+		return FolderBlock{Kind: BlockUncommitted, Repo: repo, Why: why}, nil
+	}
+	return FolderBlock{}, nil
 }
 func (g *fakeGit) ChangedUnder(repo, trunk, rev, dir string) ([]string, error) {
 	g.mu.Lock()

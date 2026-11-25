@@ -306,7 +306,7 @@ func (s *Server) editPaneTask(who taskFiler, req paneTaskReq) (string, int, erro
 	if err != nil {
 		return "", status, err
 	}
-	next, err := taskq.Apply(t, all, taskEditOf(req))
+	next, err := s.taskRules().Apply(t, all, taskEditOf(req))
 	if err != nil {
 		return "", http.StatusConflict, err
 	}
@@ -395,7 +395,7 @@ func (s *Server) changeMemberTask(who taskFiler, id int64, e taskq.Edit, verb st
 	if err != nil {
 		return "", status, err
 	}
-	next, err := taskq.Apply(t, all, e)
+	next, err := s.taskRules().Apply(t, all, e)
 	if err != nil {
 		return "", http.StatusConflict, err
 	}

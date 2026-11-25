@@ -99,12 +99,18 @@ type Runner struct {
 	// (SlotsHeld). Guarded by Lock. Empty after a restart, so such a
 	// feature holds its slot for the one pass it takes to look again.
 	parked map[int64]bool
+	// blocks is what holds each parked feature's merge (mergeblock.go).
+	blocks blockBook
 	// missed is when this daemon first failed to deliver each notice that
 	// still waits in the outbox (notices.go), by the notice's id. Guarded by
 	// Lock. Empty after a restart, on purpose: the time a notice is tried
 	// for counts from the daemon that tries.
 	missed map[string]time.Time
 }
+
+// Rules is what a person may do to a task on this daemon: built work is
+// marked merged by hand only where no merge job runs.
+func (r *Runner) Rules() Rules { return Rules{HandMerge: r.Jobs == nil} }
 
 // job is one claimed part to start, with its teammates' parts and bus names.
 type job struct {

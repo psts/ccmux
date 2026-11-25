@@ -187,10 +187,14 @@ func (g *fakeGit) AddWorktree(repo, path, branch, base string) error {
 	return nil
 }
 
-func (g *fakeGit) TrunkBlocked(repo, _ string) (string, error) {
+func (g *fakeGit) TrunkBlocked(repo, _ string) (taskq.FolderBlock, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.blocked[filepath.Base(repo)], nil
+	why := g.blocked[filepath.Base(repo)]
+	if why == "" {
+		return taskq.FolderBlock{}, nil
+	}
+	return taskq.FolderBlock{Kind: taskq.BlockUncommitted, Repo: repo, Why: why}, nil
 }
 
 func (g *fakeGit) Uncommitted(worktree string) (string, error) {

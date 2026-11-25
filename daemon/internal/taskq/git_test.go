@@ -138,12 +138,12 @@ func TestExecGit_MergeSteps(t *testing.T) {
 	commitFile(t, repo, "other.txt", "landed meanwhile")
 
 	os.WriteFile(filepath.Join(repo, "other.txt"), []byte("typing"), 0o644)
-	if why, err := g.TrunkBlocked(repo, "main"); err != nil || !strings.Contains(why, "uncommitted") {
+	if why, err := g.TrunkBlocked(repo, "main"); err != nil || why.Kind != BlockUncommitted || !strings.Contains(why.Why, "uncommitted") {
 		t.Fatalf("dirty folder = %q, %v", why, err)
 	}
 	runGit(repo, "checkout", "--", "other.txt")
 	os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("x"), 0o644)
-	if why, _ := g.TrunkBlocked(repo, "main"); why != "" {
+	if why, _ := g.TrunkBlocked(repo, "main"); why.Blocked() {
 		t.Fatalf("an untracked file blocked the merge: %q", why)
 	}
 
@@ -199,7 +199,7 @@ func TestExecGit_FastForwardOffTrunk(t *testing.T) {
 	commitFile(t, wt, "feature.txt", "new")
 	runGit(repo, "checkout", "-q", "-b", "mine")
 	os.WriteFile(filepath.Join(repo, "README"), []byte("typing on my branch"), 0o644)
-	if why, _ := g.TrunkBlocked(repo, "main"); why != "" {
+	if why, _ := g.TrunkBlocked(repo, "main"); why.Blocked() {
 		t.Fatalf("off-trunk folder blocked: %q", why)
 	}
 	rev, _ := runGit(wt, "rev-parse", "HEAD")
@@ -250,11 +250,11 @@ func TestExecGit_TrunkElsewhereAndMoved(t *testing.T) {
 	if _, err := runGit(repo, "worktree", "add", other, "main"); err != nil {
 		t.Fatal(err)
 	}
-	if why, _ := g.TrunkBlocked(repo, "main"); !strings.Contains(why, "checked out in") {
+	if why, _ := g.TrunkBlocked(repo, "main"); why.Kind != BlockElsewhere || !strings.Contains(why.Why, "checked out in") {
 		t.Fatalf("trunk in another worktree = %q", why)
 	}
 	runGit(repo, "worktree", "remove", other)
-	if why, _ := g.TrunkBlocked(repo, "main"); why != "" {
+	if why, _ := g.TrunkBlocked(repo, "main"); why.Blocked() {
 		t.Fatalf("trunk free again = %q", why)
 	}
 	runGit(repo, "checkout", "-q", "main")
@@ -414,7 +414,7 @@ func TestExecGit_GitErrorsAreNotNo(t *testing.T) {
 func TestExecGit_TrunkBlockedByAGitLock(t *testing.T) {
 	repo := gitRepo(t)
 	g := ExecGit{}
-	if why, err := g.TrunkBlocked(repo, "main"); err != nil || why != "" {
+	if why, err := g.TrunkBlocked(repo, "main"); err != nil || why.Blocked() {
 		t.Fatalf("clean folder = %q, %v", why, err)
 	}
 	lock := filepath.Join(repo, ".git", "index.lock")
@@ -422,7 +422,7 @@ func TestExecGit_TrunkBlockedByAGitLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	why, err := g.TrunkBlocked(repo, "main")
-	if err != nil || !strings.Contains(why, lock) || !strings.Contains(why, "git is busy") {
+	if err != nil || why.Kind != BlockLock || why.Lock != lock || why.LockTime.IsZero() || !strings.Contains(why.Why, lock) || !strings.Contains(why.Why, "git is busy") {
 		t.Fatalf("locked folder = %q, %v", why, err)
 	}
 }

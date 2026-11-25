@@ -49,7 +49,8 @@ const (
 // draft, pull a waiting task back to draft, cancel anything not finished
 // (a running one's Claudes are closed), put a cancelled one back in the
 // queue, mark built work merged by hand, and send a failed merge back to
-// be tried again. A merge in progress is the runner's alone.
+// be tried again. A merge in progress is the runner's alone. Marking merged
+// by hand is only for a daemon that merges nothing itself (Rules).
 var humanMoves = map[string][]string{
 	Planning:     {Waiting, Cancelled},
 	Waiting:      {Planning, Cancelled},
@@ -60,18 +61,41 @@ var humanMoves = map[string][]string{
 	Cancelled:    {Waiting},
 }
 
+// Rules is what a person may do to a task on this daemon, which differs in
+// one place: whether built work may be marked merged by hand. Runner.Rules
+// makes it, from whether the daemon runs merge jobs; every route asks it,
+// so the buttons offered and the moves accepted cannot drift apart.
+type Rules struct {
+	// HandMerge: this daemon runs no merge jobs (macOS, no systemd, a
+	// scratch daemon without -job-unit-prefix), so a person merges built
+	// work by hand and then marks it merged. Where the daemon merges,
+	// marking merged by hand would close a task as done with nothing
+	// merged, so the zero value refuses it.
+	HandMerge bool
+}
+
 // Moves lists the statuses a human may move a task to from status, so the
 // lenses offer exactly the buttons the daemon will accept.
-func Moves(status string) []string { return append([]string{}, humanMoves[status]...) }
-
-// CanMove reports whether a human may move a task from one status to another.
-func CanMove(from, to string) bool {
-	for _, s := range humanMoves[from] {
-		if s == to {
-			return true
+func (r Rules) Moves(status string) []string {
+	out := []string{}
+	for _, to := range humanMoves[status] {
+		if to != Done || r.HandMerge {
+			out = append(out, to)
 		}
 	}
-	return false
+	return out
+}
+
+// CanMove reports whether a human may move a task from one status to another.
+func (r Rules) CanMove(from, to string) bool { return slices.Contains(r.Moves(from), to) }
+
+// moveRefusal says why a person may not move a task from one status to
+// another.
+func (r Rules) moveRefusal(t store.Task, to string) error {
+	if to == Done && slices.Contains(humanMoves[t.Status], Done) {
+		return fmt.Errorf("task #%d cannot be marked merged by hand: this daemon merges built work itself, and marking it merged would close it with nothing merged; wait for the merge, send a failed one back to merge again, or cancel it", t.ID)
+	}
+	return fmt.Errorf("task #%d cannot go from %s to %s", t.ID, t.Status, to)
 }
 
 // Editable reports whether a task's title, its parts' plans and its order
