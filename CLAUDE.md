@@ -402,6 +402,16 @@ watchdog, reports, the merge and tidy-up jobs, send-back.
 - **Tmux workers from before still finish the old way.** `TaskPane`,
   `ClearTaskFolder` and `TellWorker` serve both; `Manager.StartTaskPane` is
   kept only for them and their tests, and goes when they are gone.
+- **On this host task worktrees are on /ext** (`/ext/sanlabs-home/.ccmux/worktrees`,
+  to-do #101, 2026-11-25), set by the drop-in
+  `~/.config/systemd/user/ccmuxd.service.d/worktrees-on-ext.conf`, which also
+  sets `UV_CACHE_DIR=/ext/sanlabs-home/.cache/uv` for the daemon and so for
+  every session and job. Home is on `/`, the repos and bun's and pnpm's caches
+  on `/ext`: a hard link cannot cross disks, so on `/` every builder's install
+  copied every package (tested: bun `links=1` on `/`, `links=3` on `/ext`).
+  The drop-in overrides ExecStart whole: when `ccmuxd install` changes the main
+  unit's flags, carry them into it. Never move the folder while a task is
+  open: the queue works out a task's paths from it (`taskq.layoutOf`).
 - "Open session" on a part opens the builder's conversation
   (`/threads.html?s=<session>`); the part's view carries `sessionId`.
 
