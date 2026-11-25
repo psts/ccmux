@@ -153,7 +153,11 @@
     const mine = (menuNow = {});
     show(undefined);
     if (!withMemory) return;
-    deps.call("GET", `/v1/workspaces/${enc(item.id)}/memory-tidy`).then((m) => (m && typeof m.on === "boolean" ? m : null), () => null).then((mem) => {
+    deps.call("GET", `/v1/workspaces/${enc(item.id)}/memory-tidy`).then((m) => (m && typeof m.on === "boolean" ? m : null), (e) => {
+      // The item reads "unknown"; say why, so a broken switch is not silent.
+      console.warn(`threads: nightly memory for ${item.name} could not be read: ${e.message}`);
+      return null;
+    }).then((mem) => {
       if (menuNow === mine && !box.classList.contains("hidden")) show(mem);
     });
   }

@@ -183,7 +183,9 @@ func startSweepJob(mgr *jobs.Manager, repos []wtsweep.Repo, disks *diskcheck.Wat
 		Input: wtsweep.Input{Repos: swept, Before: time.Now().Add(-wtsweep.MinAge).UnixMilli()},
 		Limit: wtsweep.Limit,
 	})
-	if err != nil && !errors.Is(err, store.ErrJobOpen) {
+	if errors.Is(err, store.ErrJobOpen) {
+		log.Printf("sweep: the last sweep's job is still open, so none started this week: %v", err)
+	} else if err != nil {
 		log.Printf("sweep: its job did not start: %v", err)
 	}
 }

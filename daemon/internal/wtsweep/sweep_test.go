@@ -3,6 +3,7 @@ package wtsweep
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -308,5 +309,43 @@ func TestAnUnreadableWorktreesFolderIsSkippedWithItsReason(t *testing.T) {
 	}
 	if out.Repos[1].Skipped != "" || len(out.Repos[1].Kept)+len(out.Repos[1].Removed) != 0 {
 		t.Fatalf("no folder, nothing to sweep and nothing skipped: %+v", out.Repos[1])
+	}
+}
+
+// One to-do that cannot be filed does not hold the job open (an open job
+// blocks every later sweep): the others are filed, the job settles, and a
+// later run files the one that failed, never one twice.
+func TestAToDoThatCannotBeFiledDoesNotStopTheSweep(t *testing.T) {
+	jobDir := t.TempDir()
+	failA := true
+	var filed []string
+	h := Handler{
+		Todo: func(repo, prefix, text, urgency string) error {
+			if failA && strings.Contains(prefix, "/a (") {
+				return errors.New("store busy")
+			}
+			filed = append(filed, prefix)
+			return nil
+		},
+		Applied: func(string) (*jobs.Journal, error) { return jobs.OpenJournal(filepath.Join(jobDir, "applied.jsonl")) },
+	}
+	out := Output{Repos: []RepoResult{{Repo: "/p/app", Trunk: "main", Kept: []Kept{
+		{Path: "/p/app/.claude/worktrees/a", Branch: "wa", Dirty: true},
+		{Path: "/p/app/.claude/worktrees/b", Branch: "wb", Unmerged: 1},
+	}}}}
+	raw, _ := json.Marshal(out)
+	job := store.Job{ID: "sweep-x"}
+	if err := h.Apply(job, jobs.Result{Output: raw}); err != nil {
+		t.Fatalf("the job settles: %v", err)
+	}
+	if len(filed) != 1 || !strings.Contains(filed[0], "/b (") {
+		t.Fatalf("b is filed though a failed: %v", filed)
+	}
+	failA = false
+	if err := h.Apply(job, jobs.Result{Output: raw}); err != nil {
+		t.Fatal(err)
+	}
+	if len(filed) != 2 || !strings.Contains(filed[1], "/a (") {
+		t.Fatalf("a is filed on a later run, b not again: %v", filed)
 	}
 }

@@ -30,8 +30,10 @@ type Handler struct {
 
 // Apply files the to-dos of a sweep's result. A result that cannot be
 // read is logged and settled: there is nothing to file, and next week's
-// sweep looks again. A to-do that could not be filed is an error, so the
-// handler is called again.
+// sweep looks again. A to-do that could not be filed is logged and the
+// job still settles (an open job would block every later sweep); next
+// week's sweep files it again. Only a journal that cannot be opened is an
+// error, so the handler is called again.
 func (h Handler) Apply(job store.Job, res jobs.Result) error {
 	if res.Error != "" {
 		log.Printf("sweep: %s did not run to its end: %s", job.ID, res.Error)
@@ -48,8 +50,11 @@ func (h Handler) Apply(job store.Job, res jobs.Result) error {
 	for _, repo := range out.Repos {
 		logRepo(repo)
 		for _, k := range repo.Kept {
+			// One item that cannot be filed must not hold the job open:
+			// an open job blocks every later week's sweep. It is said here,
+			// and next week's sweep files it again (AddOnce finds a repeat).
 			if err := h.file(applied, repo, k); err != nil {
-				return err
+				log.Printf("%v; the other items are filed, and next week's sweep tries this one again", err)
 			}
 		}
 	}

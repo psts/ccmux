@@ -591,3 +591,21 @@ func TestAddOnceFoldsBySomethingThatNamesTheThing(t *testing.T) {
 		t.Fatalf("a text that does not start with its prefix is refused: %v", err)
 	}
 }
+
+// A prefix with two spaces in a row (a folder name can have them) finds
+// its item again, though the kept text has its spaces folded; another
+// folder's item is not taken for it.
+func TestAddOnceFindsAPrefixWithFoldedSpaces(t *testing.T) {
+	b, _, _ := book(t)
+	pre := "Leftover Claude Code worktree /p/my  app/.claude/worktrees/a ("
+	if _, added, err := b.AddOnce("/r", pre, pre+"2 GB)", "low", "weekly sweep"); err != nil || !added {
+		t.Fatalf("first: %v %v", added, err)
+	}
+	if _, added, err := b.AddOnce("/r", pre, pre+"3 GB)", "low", "weekly sweep"); err != nil || added {
+		t.Fatalf("the same worktree is the same item: %v %v", added, err)
+	}
+	other := "Leftover Claude Code worktree /p/my app/.claude/worktrees/b ("
+	if _, added, err := b.AddOnce("/r", other, other+"1 GB)", "low", "weekly sweep"); err != nil || !added {
+		t.Fatalf("another worktree is another item: %v %v", added, err)
+	}
+}

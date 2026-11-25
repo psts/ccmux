@@ -80,8 +80,11 @@ func (b *Book) AddOnce(repo, prefix, text, urgency, by string) (store.Todo, bool
 		if err != nil {
 			return nil, err
 		}
+		// Kept text has its spaces folded (CheckText); fold the prefix
+		// the same way, or a path with two spaces never finds its item.
+		kept := strings.Join(strings.Fields(prefix), " ")
 		for _, t := range Unfinished(list) {
-			if strings.HasPrefix(t.Text, prefix) {
+			if strings.HasPrefix(t.Text, kept) {
 				return &t, nil
 			}
 		}

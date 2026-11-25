@@ -132,3 +132,17 @@ func TestKnownReposAreWorkspacesByMainFolder(t *testing.T) {
 		t.Fatalf("locks = %+v", got)
 	}
 }
+
+// A scratch daemon (CCMUXD_ROOT) sweeps nothing unless it was given
+// -sweep-hour: a test must never remove the person's real worktrees. A
+// daemon that is not a scratch one keeps its hour.
+func TestAScratchDaemonDoesNotSweep(t *testing.T) {
+	t.Setenv("CCMUXD_ROOT", t.TempDir())
+	if _, hour, err := sweepSchedule("sunday", 4); err != nil || hour != -1 {
+		t.Fatalf("a scratch daemon got hour %d, %v; want -1 (off)", hour, err)
+	}
+	t.Setenv("CCMUXD_ROOT", "")
+	if _, hour, err := sweepSchedule("sunday", 4); err != nil || hour != 4 {
+		t.Fatalf("the person's daemon got hour %d, %v; want 4", hour, err)
+	}
+}
