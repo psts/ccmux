@@ -285,9 +285,10 @@ shows what this host allows with the command that fixes what it lacks.
   walled haiku builder was refused at every one of them, did its turn,
   committed, reported over the bus, and its merge and tidy-up landed walled.
 - **What the walls still do not stop.** A walled session can message a
-  session outside the walls over the bus (and start it with
-  `spawn_if_missing`); it reads as a peer's message, not a person's, and the
-  other Claude decides. It writes `~/.claude/projects` (its repo's memory is
+  session outside the walls over the bus (and start one with
+  `spawn_if_missing`: since task #199 that is the repo's main session on the
+  thread page, not a terminal Claude); it reads as a peer's message, not a
+  person's, and the other Claude decides. It writes `~/.claude/projects` (its repo's memory is
   shared with the repo's own session, by Claude Code's design, and so are
   other sessions' conversations there). It keeps its network, and home is
   readable: what the person can push or log in to with the keys in home, it
@@ -385,7 +386,8 @@ watchdog, reports, the merge and tidy-up jobs, send-back.
 - **Gone means asleep.** A builder's Claude counts as exited when its row
   says asleep, never when its unit is down between two restarts.
 - **Names are the task's**: `<repo>-task-<n>` on the bus. A repo's plain name
-  is still the repo's own session; a task's thread reroutes nothing and
+  is still the repo's own session (its main session on the thread page,
+  since task #199); a task's thread reroutes nothing and
   stands up no helper (`store.Threads` leaves it out on purpose, so the
   routing, the thread merge and its recovery never meet one).
 - **The brief is the file beside the worktree** (`taskq.BriefFile`) and is
@@ -452,9 +454,26 @@ that repo's own main session (`internal/threads/side.go`).
   `TestCleanStartedRunsOffTheSessionsLock`).
 - A helper naming its main session's repo reaches the main session itself
   (`HelperRoute.Pane`). A main session ending stands its helpers down.
-- **Not covered:** role agents, task builders and old terminal sessions that
-  name a repo keep the old routing (they can still start a terminal Claude).
-  The tasks tool still wants a part in the filing repo.
+- **Everyone else who names a repo reaches its main session** (task #199,
+  `peers/mainsession.go`): a role agent, a task builder, a helper naming its
+  own repo, a terminal session, the bus's tools called by name. The main
+  session is on the bus as `<repo>-s-<id>` and never takes the plain name,
+  so a by-name send, quiet notice or delegation that finds no present peer
+  called exactly that goes to the main session of the repo whose folder is
+  called that, in the addressed group (asleep counts: the message wakes it
+  through its inbox). A peer called exactly the plain name (a terminal
+  Claude a person started) still wins, and helper routing above still runs
+  first. `list_peers` shows it as `Name: sommelia-s-3aad55a4 (answers to
+  sommelia)`. A main session naming its own repo is told so.
+- **`spawn_if_missing` never opens a terminal Claude for a repo where
+  sessions run.** With no exact peer and no main session it makes the
+  repo's main session (`Service.StartMain` → `api.ensureLead`, what the
+  thread page does for a repo that has none) and the message is its first
+  prompt; what waits is taken by that session's peer alone. It starts in
+  the sender's own group, as the tmux spawn did. Agents keep their own
+  start. A host with no session runners (macOS, no systemd) keeps the tmux
+  spawn as it was, and so does a name that is no repo of the window.
+- **Not covered:** the tasks tool still wants a part in the filing repo.
 - Main sessions read their own rule on the bus (`buscontext.Reader.Main`).
 
 ## Start over, not Claude Code's /clear (Linux)

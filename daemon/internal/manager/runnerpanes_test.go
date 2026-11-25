@@ -389,3 +389,34 @@ func TestARunnerPaneFollowsItsSessionIntoAnotherFolder(t *testing.T) {
 		t.Fatalf("its repo is still its workspace's: %+v %v", info, ok)
 	}
 }
+
+// The repo's main session (kind lead, in no thread) is the one pane the
+// bus hands the repo's plain name to; a thread, and a lead of a thread
+// with helpers, are not, and the mark goes when the session ends.
+func TestTheMainSessionsPaneIsMarked(t *testing.T) {
+	m, _, thread := runnerManager(t)
+	m.SyncRunnerPane(thread)
+	main := store.RunnerSession{ID: "11111111-aaaa", Cwd: "/r/app", Wanted: store.SessionAsleep, PaneID: "main1", WorkspaceID: "ws", Kind: store.SessionLead}
+	m.SyncRunnerPane(main)
+	led := store.RunnerSession{ID: "22222222-aaaa", Cwd: "/r/app", Wanted: store.SessionRunning, PaneID: "led1", WorkspaceID: "ws", Kind: store.SessionLead, ThreadID: 7}
+	m.SyncRunnerPane(led)
+	for pane, want := range map[string]bool{"run1": false, "main1": true, "led1": false} {
+		if got, ok := m.RunnerPane(pane); !ok || got.Main != want {
+			t.Errorf("pane %s: main %v (there %v), want %v", pane, got.Main, ok, want)
+		}
+	}
+	if got, _ := m.RunnerPane("main1"); !got.Asleep || got.Name != "app-s-11111111" || got.Repo != "/r/app" {
+		t.Errorf("the asleep main session reads %+v, want it asleep under its own bus name", got)
+	}
+	main.Wanted = store.SessionDone
+	m.SyncRunnerPane(main)
+	if m.byID["ws"].mainPane != "" {
+		t.Errorf("an ended main session is still marked: %q", m.byID["ws"].mainPane)
+	}
+	// The next main session of the repo takes the mark.
+	next := store.RunnerSession{ID: "33333333-aaaa", Cwd: "/r/app", Wanted: store.SessionRunning, PaneID: "main2", WorkspaceID: "ws", Kind: store.SessionLead}
+	m.SyncRunnerPane(next)
+	if got, _ := m.RunnerPane("main2"); !got.Main {
+		t.Errorf("the repo's next main session is not marked: %+v", got)
+	}
+}

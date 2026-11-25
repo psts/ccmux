@@ -1,4 +1,7 @@
-// Teammate spawn (spawn_if_missing): preferred path is native — a live
+// Teammate spawn (spawn_if_missing). Where sessions run, a repo of the
+// sender's window gets its main session started, never a terminal Claude
+// (mainsession.go); what follows is the spawn everywhere else, and for a
+// name that is no repo of the window. Preferred path is native — a live
 // workspace in the sender's window whose repo basename matches the name gets
 // an ephemeral pane running the frozen claude launch command; a CLOSED one
 // is reopened like Revive with Claude in the pane it last ran in. With no match
@@ -104,6 +107,9 @@ func (s *Service) trySpawnLocked(sender *Peer, group, name, text, toRepo string)
 	if resp, ok := s.tryStartAgentLocked(sender, key, group, name, text, prompt); ok {
 		return resp
 	}
+	if resp, ok := s.tryStartMainLocked(sender, key, group, name, text); ok {
+		return resp
+	}
 	plan, err := s.spawnPlanFor(sender, group, name, toRepo)
 	if err != nil {
 		return SendResp{Error: err.Error()}
@@ -200,16 +206,12 @@ func (s *Service) openSpawnURL(repo, prompt, requesterID string) error {
 // lands in the teammate's recent-senders set (permission relay reachability).
 // Native teammates match by (group, name); a deep-link teammate registers
 // pane-less in the dirname fallback group, so it matches by (name, repo) and
-// gets pinned into the requester's group.
+// gets pinned into the requester's group. A repo's main session takes what
+// was queued under its repo's plain name, and nobody else does.
 func (s *Service) fulfillPendingSpawnLocked(teammate *Peer) {
-	key := spawnKey(s.groupOfLocked(teammate), teammate.Name)
-	pending := s.spawns[key]
+	key, pending := s.pendingForLocked(teammate)
 	if pending == nil {
-		key, pending = s.matchSpawnByRepoLocked(teammate)
-		if pending == nil {
-			return
-		}
-		teammate.GroupOverride = pending.group
+		return
 	}
 	delete(s.spawns, key)
 	pending.timer.Stop()
@@ -222,12 +224,31 @@ func (s *Service) fulfillPendingSpawnLocked(teammate *Peer) {
 	}
 }
 
+// pendingForLocked is the start a peer that just came onto the bus was
+// awaited by, with its key: by its own name in its group, as its repo's
+// main session, or (pane-less) by name and repo.
+func (s *Service) pendingForLocked(teammate *Peer) (string, *pendingSpawn) {
+	group := s.groupOfLocked(teammate)
+	key := spawnKey(group, teammate.Name)
+	if pending := s.spawns[key]; pending != nil && !pending.main {
+		return key, pending
+	}
+	if key, pending := s.pendingMainLocked(teammate, group); pending != nil {
+		return key, pending
+	}
+	key, pending := s.matchSpawnByRepoLocked(teammate)
+	if pending != nil {
+		teammate.GroupOverride = pending.group
+	}
+	return key, pending
+}
+
 func (s *Service) matchSpawnByRepoLocked(teammate *Peer) (string, *pendingSpawn) {
 	if teammate.PaneID != "" {
 		return "", nil // daemon panes always resolve by exact group key
 	}
 	for key, pending := range s.spawns {
-		if pending.name != teammate.Name {
+		if pending.main || pending.name != teammate.Name {
 			continue
 		}
 		if teammate.GitRoot == pending.repo || teammate.CWD == pending.repo ||
@@ -262,6 +283,10 @@ func (s *Service) spawnTimedOut(key string) {
 func (s *Service) abortSpawn(key, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.abortSpawnLocked(key, text)
+}
+
+func (s *Service) abortSpawnLocked(key, text string) {
 	pending := s.spawns[key]
 	if pending == nil {
 		return

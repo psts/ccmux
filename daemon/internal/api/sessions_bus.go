@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -25,6 +26,23 @@ func (s *Server) wirePeersRunners() {
 	s.peersSvc.RunnerInbox = s.runnerInbox
 	s.peersSvc.ReplyToPane = s.replyToAgentPane // a runner's cards are answered through it too
 	s.peersSvc.RunnerSummary = s.keepRunnerGoal
+	s.peersSvc.StartMain = s.startMainForBus
+}
+
+// startMainForBus is the bus's StartMain: the main session of the repo
+// session wsID, made when it has none, as the thread page makes one when a
+// person opens a repo that has none. The bus then hands it the message
+// that asked for it, which is its first prompt.
+func (s *Server) startMainForBus(wsID string) (paneID, cwd string, err error) {
+	ws := s.mgr.Workspace(wsID)
+	if ws == nil || ws.Agent != "" {
+		return "", "", fmt.Errorf("%s is not a repo session on this host", wsID)
+	}
+	lead, err := s.ensureLead(ws, "")
+	if err != nil {
+		return "", "", err
+	}
+	return lead.PaneID, lead.Cwd, nil
 }
 
 // keepRunnerGoal is the bus's RunnerSummary: the note a session gave the bus

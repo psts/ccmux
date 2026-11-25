@@ -165,13 +165,17 @@ func (s *Service) namedLocked(name, group, senderID string) []*Peer {
 // resolveByNameLocked finds the addressee by name within the addressed
 // group, the sender's own unless to_group names another (erroring on
 // ambiguity instead of the old silent first-match), optionally spawning a
-// missing named teammate.
+// missing named teammate. A repo's plain name that no present peer carries
+// reaches the repo's main session (mainsession.go).
 func (s *Service) resolveByNameLocked(req SendReq, sender *Peer, senderGroup string) (*Peer, SendResp) {
 	wantGroup := senderGroup
 	if req.ToGroup != "" {
 		wantGroup = req.ToGroup
 	}
-	matches := s.namedLocked(req.ToName, wantGroup, sender.ID)
+	matches, self := s.answeringLocked(req.ToName, wantGroup, sender.ID)
+	if self {
+		return nil, SendResp{Error: selfNameError(req.ToName)}
+	}
 	switch len(matches) {
 	case 1:
 		return matches[0], SendResp{}
@@ -190,7 +194,8 @@ func (s *Service) resolveByNameLocked(req SendReq, sender *Peer, senderGroup str
 // old sentence stays the prefix. The spawn path starts the teammate in the
 // sender's own group, so a spawn is advised only when the sender stayed in its
 // group and either the name is an agent (agents join the caller's project by
-// design) or no session with that name runs anywhere else.
+// design) or no session with that name runs anywhere else. Where a spawn
+// would start the repo's main session (mainsession.go), the advice says so.
 func (s *Service) nameMissErrorLocked(req SendReq, sender *Peer, senderGroup, wantGroup string) string {
 	prefix := fmt.Sprintf("Peer %q not found in project", req.ToName)
 	ownGroup := sameGroup(wantGroup, senderGroup)
@@ -206,6 +211,10 @@ func (s *Service) nameMissErrorLocked(req SendReq, sender *Peer, senderGroup, wa
 	if !ownGroup {
 		return fmt.Sprintf("%s: it is not running in %q", prefix, wantGroup)
 	}
+	if _, _, ok := s.mainStartLocked(senderGroup, req.ToName); ok {
+		return prefix + ": that repo has no session now. Resend with spawn_if_missing=true: " +
+			"its main session is started on the thread page (no terminal Claude) and gets your message as its first prompt"
+	}
 	return prefix + ": it is not running. Resend with spawn_if_missing=true to start it"
 }
 
@@ -220,12 +229,13 @@ func (s *Service) isAgentName(name string) bool {
 }
 
 // groupsRunningNameLocked returns, sorted, every group other than `exclude`
-// where a present peer named `name` runs.
+// where a present peer answers to `name`: one called that, or the main
+// session of a repo called that.
 func (s *Service) groupsRunningNameLocked(name, senderID, exclude string) []string {
 	seen := map[string]bool{}
 	var groups []string
 	for _, p := range s.peers {
-		if p.Name != name || p.ID == senderID || !s.presentLocked(p) {
+		if !s.answersToLocked(p, name) || p.ID == senderID || !s.presentLocked(p) {
 			continue
 		}
 		if g := s.groupOfLocked(p); !sameGroup(g, exclude) && !seen[g] {

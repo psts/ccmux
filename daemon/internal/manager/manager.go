@@ -42,6 +42,9 @@ type entry struct {
 	// runners are the workspace's runner sessions' panes, held beside
 	// ws.Panes, which stays tmux's own list (runnerpanes.go).
 	runners []*model.Pane
+	// mainPane is the runner pane of the repo's main session (its session
+	// on the thread page: kind lead, in no thread), "" when it has none.
+	mainPane string
 }
 
 // Manager is the daemon's core. Safe for concurrent use.

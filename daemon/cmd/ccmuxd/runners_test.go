@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
@@ -95,6 +97,63 @@ func TestASessionsChangeMovesItsPaneAndItsPeer(t *testing.T) {
 	changed(store.RunnerSession{ID: "bare", Wanted: store.SessionRunning}) // no pane: nothing to do, nothing to break
 	registerRunnerPeers(mgr, bus)
 	loadRunnerPanes(mgr)
+}
+
+// The manager's mark on a repo's main session reaches the bus through this
+// wiring: a message to the repo's plain name goes to the main session's
+// inbox, and never to a thread of the same repo, which answers only to its
+// own name.
+func TestARepoPlainNameReachesItsMainSessionThroughTheWiring(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "reg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	tsrv := &tmux.Server{Socket: "ccmux-runners-main-test"}
+	t.Cleanup(func() { _ = tsrv.KillServer() })
+	if err := st.SaveWorkspace(&model.Workspace{ID: "ws", Name: "app", RepoPath: "/r/app", TmuxSession: "ccmux-app-main-wiring"}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := manager.New(context.Background(), tsrv, st)
+	if err := mgr.Start(); err != nil {
+		t.Skipf("no tmux to start a manager with: %v", err)
+	}
+	bus := peers.NewService(st, mgr, []byte("test-secret-test-secret-test-sec"))
+	bus.RunnerPane = runnerPaneForBus(mgr)
+	var mu sync.Mutex
+	var got []string // "pane|sender" of each prompt handed to a session
+	bus.RunnerInbox = func(paneID, _, _, sender string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, paneID+"|"+sender)
+		return nil
+	}
+	prompts := func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), got...) }
+	changed := sessionChanged(mgr, bus, nil)
+	// A session outside ccmux in a sibling folder shares the repo's group.
+	web := bus.Register(peers.RegisterReq{PID: os.Getpid(), CWD: "/r/web", GitRoot: "/r/web"}).PeerID
+
+	changed(store.RunnerSession{ID: "0a1b2c3d-0000-0000-0000-000000000001", Cwd: "/r/app", Wanted: store.SessionRunning, PaneID: "thr1", WorkspaceID: "ws"})
+	if resp := bus.Send(peers.SendReq{FromID: web, ToName: "app", Text: "anyone?"}); resp.OK || !strings.Contains(resp.Error, `Peer "app" not found`) {
+		t.Fatalf("with only a thread in the repo, its plain name reaches nobody: %+v", resp)
+	}
+	changed(store.RunnerSession{ID: "11112222-0000-0000-0000-000000000002", Cwd: "/r/app", Wanted: store.SessionAsleep, PaneID: "main1", WorkspaceID: "ws", Kind: store.SessionLead})
+	if info, ok := bus.RunnerPane("main1"); !ok || !info.Main || !info.Asleep || info.Name != "app-s-11112222" {
+		t.Fatalf("the bus is told which pane is the repo's main session: %+v %v", info, ok)
+	}
+	if info, _ := bus.RunnerPane("thr1"); info.Main {
+		t.Fatalf("a thread is no main session: %+v", info)
+	}
+	if resp := bus.Send(peers.SendReq{FromID: web, ToName: "app", Text: "what is the plan?"}); !resp.OK || resp.Spawning {
+		t.Fatalf("the plain name reaches the asleep main session: %+v", resp)
+	}
+	for end := time.Now().Add(10 * time.Second); len(prompts()) == 0 && time.Now().Before(end); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // a second hand-over would be on its way by now
+	if p := prompts(); len(p) != 1 || p[0] != "main1|web" {
+		t.Fatalf("prompts = %v, want the one message in the main session's inbox and none in the thread's", p)
+	}
 }
 
 // The bus keeps its peers in memory, and an asleep session has no shim to

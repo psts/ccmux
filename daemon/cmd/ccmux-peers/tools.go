@@ -364,6 +364,7 @@ func (a *app) callTool(name string, args json.RawMessage) any {
 type listEntry struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
+	AnswersTo string `json:"answers_to"`
 	Group     string `json:"group"`
 	CWD       string `json:"cwd"`
 	GitRoot   string `json:"git_root"`
@@ -395,7 +396,7 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 	lines := make([]string, 0, len(peers))
 	for _, p := range peers {
 		parts := []string{
-			"Name: " + orID(p.Name, "(unnamed)"),
+			"Name: " + listedName(p),
 			"ID: " + p.ID,
 			"Group: " + p.Group, // pass this as to_group to message across projects
 			"CWD: " + p.CWD,
@@ -411,6 +412,17 @@ func (a *app) toolListPeers(args json.RawMessage) any {
 	}
 	return toolText(fmt.Sprintf("Found %d peer(s) (scope: %s, project: %s):\n\n%s",
 		len(peers), in.Scope, a.group(), strings.Join(lines, "\n\n"))+footer, false)
+}
+
+// listedName is a peer's name in a listing, with the repo's plain name it
+// also answers to: a repo's main session is on the bus under a name of its
+// own, and a message to the plain name reaches it all the same.
+func listedName(p listEntry) string {
+	name := orID(p.Name, "(unnamed)")
+	if p.AnswersTo != "" {
+		name += " (answers to " + p.AnswersTo + ")"
+	}
+	return name
 }
 
 func (a *app) toolSendMessage(args json.RawMessage) any {

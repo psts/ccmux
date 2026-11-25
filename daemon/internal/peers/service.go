@@ -154,9 +154,13 @@ const (
 )
 
 type pendingSpawn struct {
-	name     string
-	group    string
-	repo     string
+	name  string
+	group string
+	repo  string
+	// main marks the start of a repo's main session, queued under the
+	// repo's plain name: only that session's peer takes what waits
+	// (mainsession.go), never a peer that registers under the plain name.
+	main     bool
 	requests []queuedRequest
 	timer    *time.Timer
 }
@@ -228,6 +232,15 @@ type Service struct {
 	// startup when threads are on; nil means there are none.
 	ThreadRoute func(senderPaneID, toName string) (HelperRoute, bool)
 	StartHelper func(HelperRoute) error
+
+	// StartMain makes the main session of the repo session wsID (its session
+	// on the thread page), or finds the one it has, and answers with its
+	// pane and folder: what spawn_if_missing does for a repo where sessions
+	// run, in the place of a terminal Claude (mainsession.go). It makes a
+	// session, which registers a peer here, so it is never called under the
+	// lock. Wired by the api when session runners are on; nil means there
+	// are none, and the tmux spawn stands.
+	StartMain func(wsID string) (paneID, cwd string, err error)
 
 	// SpawnTimeout is how long a spawned teammate has to register before its
 	// requester gets an "unreachable" notice. Exported for tests.

@@ -35,10 +35,13 @@ import (
 var ErrInboxClosed = errors.New("the session has ended")
 
 // RunnerInfo is what the daemon says of a runner session's pane: its name
-// on the bus, its workspace's repo folder, and whether it is asleep.
+// on the bus, its workspace's repo folder, whether it is asleep, and whether
+// it is that repo's main session (its session on the thread page, of kind
+// lead and in no thread), which answers to the repo's plain name too
+// (mainsession.go).
 type RunnerInfo struct {
-	Name, Repo string
-	Asleep     bool
+	Name, Repo   string
+	Asleep, Main bool
 }
 
 // runnerLocked reports whether paneID is a runner session's pane, and what
@@ -108,8 +111,9 @@ func (s *Service) EnsureRunnerPeer(paneID, cwd string) {
 	}
 	p.CWD = cwd // a thread member moves into its worktree, and back
 	s.stampRunnerLocked(p)
-	// A helper a thread asked for by name is on the bus from here on: what
-	// was sent to start it is delivered now (helperroute.go).
+	// A helper a thread asked for by name, or a main session a message to
+	// its repo started, is on the bus from here on: what was sent to start
+	// it is delivered now (helperroute.go, mainsession.go).
 	s.fulfillPendingSpawnLocked(p)
 	s.mu.Unlock()
 	go s.drainInbox(id, paneID)

@@ -41,9 +41,11 @@ func (s *Service) sendQuietLocked(req SendReq, sender *Peer, senderGroup string)
 
 // resolveQuietTargetLocked finds a quiet notice's addressee. By name it
 // takes an away peer too (an asleep agent, an archived repo session),
-// since a notice is for reading later; a present one wins, then the one
-// seen last. It never spawns: a name that has never run here has no
-// mailbox to wait in.
+// since a notice is for reading later; a present one wins, then the main
+// session of the repo called that (mainsession.go: it will read the
+// notice, an archived terminal session may never), then the one seen
+// last. It never spawns: a name that has never run here has no mailbox to
+// wait in.
 func (s *Service) resolveQuietTargetLocked(req SendReq, sender *Peer, senderGroup string) (*Peer, string) {
 	if req.ToID != "" {
 		if t := s.peers[req.ToID]; t != nil {
@@ -58,11 +60,25 @@ func (s *Service) resolveQuietTargetLocked(req SendReq, sender *Peer, senderGrou
 	if req.ToGroup != "" {
 		wantGroup = req.ToGroup
 	}
-	if best := s.quietByNameLocked(req.ToName, sender.ID, wantGroup); best != nil {
+	if best := s.quietNamedLocked(req.ToName, sender.ID, wantGroup); best != nil {
 		return best, ""
 	}
 	return nil, fmt.Sprintf("Peer %q not found in project: a quiet notice only waits for a session or agent that has run here. "+
 		"Send it without quiet (spawn_if_missing=true) to start it", req.ToName)
+}
+
+// quietNamedLocked is who a quiet notice to name is for in group: a present
+// peer called that, else the repo's main session, else an away peer called
+// that. nil when there is none, and for a main session naming its own repo.
+func (s *Service) quietNamedLocked(name, senderID, group string) *Peer {
+	best := s.quietByNameLocked(name, senderID, group)
+	if best != nil && s.presentLocked(best) {
+		return best
+	}
+	if mains, _ := s.answeringLocked(name, group, senderID); len(mains) == 1 {
+		return mains[0]
+	}
+	return best
 }
 
 // quietByNameLocked is the best peer named name in group, present or not.

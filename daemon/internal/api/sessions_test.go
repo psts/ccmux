@@ -380,3 +380,21 @@ func TestAPromptCarriesItsCleanStart(t *testing.T) {
 		t.Fatalf("a plain message took the clean path: %+v", f.prompts)
 	}
 }
+
+// The bus's StartMain makes a repo's main session the way the thread page
+// does for a repo that has none: kind lead, in the repo's folder, on the
+// default model. Anything that is no repo session on this host is refused.
+func TestTheBusStartsARepoMainSession(t *testing.T) {
+	dir := t.TempDir()
+	s, f, _ := sessionsServer(t, dir)
+	pane, cwd, err := s.startMainForBus("ws-app")
+	if err != nil || pane != "pane-of-s1" || cwd != dir {
+		t.Fatalf("start = %q %q %v, want the new session's pane in %s", pane, cwd, err, dir)
+	}
+	if len(f.created) != 1 || f.created[0].Kind != store.SessionLead || f.created[0].WorkspaceID != "ws-app" || f.created[0].Cwd != dir || f.created[0].Model != "" {
+		t.Fatalf("made %+v, want one lead in the repo's folder on the default model", f.created)
+	}
+	if _, _, err := s.startMainForBus("no-such-ws"); err == nil || len(f.created) != 1 {
+		t.Fatalf("an unknown workspace: err %v, made %d; want a refusal and nothing made", err, len(f.created))
+	}
+}

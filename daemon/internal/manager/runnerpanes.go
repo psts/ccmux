@@ -138,6 +138,7 @@ func (m *Manager) SyncRunnerPane(sess store.RunnerSession) {
 		p.Status = model.StatusLive
 	}
 	stampRunnerAgent(p, sess)
+	noteMainPane(e, sess)
 	pane := *p
 	m.mu.Unlock()
 	if made {
@@ -159,10 +160,25 @@ func newRunnerPane(sess store.RunnerSession) *model.Pane {
 	}
 }
 
+// noteMainPane keeps which of a workspace's runner panes is the repo's main
+// session: its session on the thread page, of kind lead and in no thread
+// (the rule store.MainSessions reads the rows by). The bus hands that
+// session what is sent to the repo's plain name (peers/mainsession.go).
+func noteMainPane(e *entry, sess store.RunnerSession) {
+	switch {
+	case sess.Kind == store.SessionLead && sess.ThreadID == 0:
+		e.mainPane = sess.PaneID
+	case e.mainPane == sess.PaneID:
+		e.mainPane = ""
+	}
+}
+
 // runnerNameLocked is a session's name on the bus: the row's name when it
 // has one, else "<repo folder>-s-<first 8 of its id>". Never the plain name
-// of a repo folder: that name is the repo's own tmux session's, and a
-// message "to ccmux" must keep reaching it.
+// of a repo folder: a peer registered under exactly that name (a terminal
+// Claude a person started in the repo) keeps answering to it. With no such
+// peer, the bus hands the plain name's messages to the repo's main session
+// (RunnerPaneInfo.Main, peers/mainsession.go).
 func (m *Manager) runnerNameLocked(sess store.RunnerSession, ws *model.Workspace) string {
 	if sess.Name != "" && !m.repoNamedLocked(sess.Name) {
 		return sess.Name
@@ -210,16 +226,19 @@ func (m *Manager) dropRunnerPane(paneID string) {
 			}
 		}
 		e.runners = kept
+		if e.mainPane == paneID {
+			e.mainPane = ""
+		}
 	}
 }
 
 // RunnerPaneInfo is what the rest of the daemon needs to know about a
 // runner session's pane: the name the daemon gives it on the bus, its
-// session's id, its workspace's repo folder, and whether its row says it
-// is asleep.
+// session's id, its workspace's repo folder, whether its row says it is
+// asleep, and whether it is the repo's main session (noteMainPane).
 type RunnerPaneInfo struct {
 	Name, SessionID, Repo string
-	Asleep                bool
+	Asleep, Main          bool
 }
 
 // RunnerPane reports a runner session's pane. ok is false for a tmux pane,
@@ -229,7 +248,7 @@ func (m *Manager) RunnerPane(paneID string) (RunnerPaneInfo, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if e, p := m.findPaneLocked(paneID); p != nil && p.Runtime == model.RuntimeRunner {
-		return RunnerPaneInfo{Name: p.Title, SessionID: p.SessionID, Repo: e.ws.RepoPath, Asleep: p.Status != model.StatusLive}, true
+		return RunnerPaneInfo{Name: p.Title, SessionID: p.SessionID, Repo: e.ws.RepoPath, Asleep: p.Status != model.StatusLive, Main: e.mainPane == p.ID}, true
 	}
 	return RunnerPaneInfo{}, false
 }

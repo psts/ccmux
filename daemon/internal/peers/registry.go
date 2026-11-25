@@ -297,8 +297,12 @@ func (s *Service) SetSummary(peerID, summary string) bool {
 // ListEntry is one row of a peer listing. project duplicates group so the Mac
 // overlay's existing decoder keeps working during the cutover.
 type ListEntry struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// AnswersTo is the plain repo name this peer also answers to: set for a
+	// repo's main session when no peer in its group is called exactly that
+	// (mainsession.go), so whoever reads a listing knows the plain name works.
+	AnswersTo string `json:"answers_to,omitempty"`
 	Group     string `json:"group"`
 	Project   string `json:"project"`
 	PID       int    `json:"pid"`
@@ -385,7 +389,7 @@ func (s *Service) GroupPeers(group string) []ListEntry {
 func (s *Service) listEntryLocked(p *Peer) ListEntry {
 	g := s.groupOfLocked(p)
 	return ListEntry{
-		ID: p.ID, Name: p.Name, Group: g, Project: g,
+		ID: p.ID, Name: p.Name, AnswersTo: s.plainNameLocked(p, g), Group: g, Project: g,
 		PID: p.PID, CWD: p.CWD, GitRoot: p.GitRoot, Summary: p.Summary,
 		LastSeen: isoMillis(p.LastSeenAt), Connected: s.conns[p.ID] != nil,
 		PollOnly: p.PollOnly, Host: p.Host, ShimVersion: p.ShimVersion,

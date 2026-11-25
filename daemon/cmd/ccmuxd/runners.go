@@ -285,7 +285,7 @@ func loadRunnerPanes(mgr *manager.Manager) {
 func runnerPaneForBus(mgr *manager.Manager) func(paneID string) (peers.RunnerInfo, bool) {
 	return func(paneID string) (peers.RunnerInfo, bool) {
 		info, ok := mgr.RunnerPane(paneID)
-		return peers.RunnerInfo{Name: info.Name, Repo: info.Repo, Asleep: info.Asleep}, ok
+		return peers.RunnerInfo{Name: info.Name, Repo: info.Repo, Asleep: info.Asleep, Main: info.Main}, ok
 	}
 }
 
