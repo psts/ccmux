@@ -197,11 +197,7 @@ func TestControlClient_LargePaste(t *testing.T) {
 	tmuxRun(t, socket, "kill-server") // ignore error
 	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
 
-	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
-		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
-		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
-		t.Fatalf("new-session: %v", err)
-	}
+	rawSinkSession(t, socket, sink)
 
 	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
 	if err != nil {
@@ -378,11 +374,7 @@ func TestSendKeys_ConcurrentPastesStayContiguous(t *testing.T) {
 	sink := filepath.Join(t.TempDir(), "sink")
 	tmuxRun(t, socket, "kill-server")
 	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
-	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
-		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
-		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
-		t.Fatalf("new-session: %v", err)
-	}
+	rawSinkSession(t, socket, sink)
 	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -444,11 +436,7 @@ func TestSendKeysAsync_ReturnsBeforeDelivery(t *testing.T) {
 	sink := filepath.Join(t.TempDir(), "sink")
 	tmuxRun(t, socket, "kill-server")
 	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
-	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
-		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
-		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
-		t.Fatalf("new-session: %v", err)
-	}
+	rawSinkSession(t, socket, sink)
 	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -511,11 +499,7 @@ func TestSendKeysAsync_KeepsSubmissionOrder(t *testing.T) {
 	sink := filepath.Join(t.TempDir(), "sink")
 	tmuxRun(t, socket, "kill-server")
 	t.Cleanup(func() { tmuxRun(t, socket, "kill-server") })
-	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
-		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
-		"sh -c 'stty raw -echo; exec cat > "+sink+"'").Run(); err != nil {
-		t.Fatalf("new-session: %v", err)
-	}
+	rawSinkSession(t, socket, sink)
 	c, err := Dial(t.Context(), socket, "it", newCollectHandler())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -652,4 +636,30 @@ func TestCaptureScreen_ReportsMouseModes(t *testing.T) {
 		t.Fatalf("send-keys: %v", err)
 	}
 	waitMouse(MouseModes{Known: true})
+}
+
+// rawSinkSession starts session "it" on socket with a pane that writes what
+// it reads to sink in raw mode, and waits until the pane IS raw. Sending
+// sooner races the pane's shell: in cooked mode the tty holds at most 4096
+// bytes of a line and drops the rest, which read as lost keystrokes (seen
+// with tmux 3.8, which starts the pane faster than 3.4: a chunk past 4 kB
+// went missing on every run).
+func rawSinkSession(t *testing.T, socket, sink string) {
+	t.Helper()
+	ready := sink + ".raw"
+	if err := exec.Command("tmux", "-L", socket, "-f", "/dev/null",
+		"new-session", "-d", "-s", "it", "-x", "80", "-y", "24",
+		"sh -c 'stty raw -echo && : > "+ready+"; exec cat > "+sink+"'").Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the pane never switched to raw mode")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
