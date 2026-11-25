@@ -57,6 +57,20 @@ type runnerWiring struct {
 // It returns what the job loop needs (jobs.go). The loop is started by
 // main, later: a job's end is also the task queue's to act on, and the
 // queue's runner is made after the bus.
+// runnerPrefix is the unit template sessions run under, "" and why when
+// this daemon must run none. A scratch daemon (CCMUXD_ROOT) needs a
+// -runner-unit-prefix of its own, never the live one: starting the
+// runners writes the template with this binary's path, so a scratch
+// daemon on the live name points every session start at its own build,
+// and once that build's folder is gone every start fails (2026-11-26).
+// Jobs have the same rule (jobPrefix).
+func runnerPrefix(flagValue string, given bool, scratch string) (string, string) {
+	if scratch != "" && (!given || flagValue == runner.DefaultPrefix) {
+		return "", "a scratch daemon (CCMUXD_ROOT) that named no -runner-unit-prefix of its own"
+	}
+	return flagValue, ""
+}
+
 func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	if runtime.GOOS != "linux" {
 		return jobWiring{off: "jobs are systemd services, and this is " + runtime.GOOS}
@@ -65,7 +79,12 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 		log.Printf("session runners off: no systemctl on this host")
 		return jobWiring{off: "no systemctl on this host"}
 	}
-	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s"), Prefix: w.prefix, UnitDir: systemdUserDir()}
+	prefix, why := runnerPrefix(w.prefix, flagGiven("runner-unit-prefix"), scratchRoot())
+	if prefix == "" {
+		log.Printf("session runners off: %s", why)
+		return jobWiring{off: "the session runners are off (" + why + "), and the jobs with them"}
+	}
+	paths := runner.Paths{State: runnerStateDir(), Runtime: filepath.Join(runtimeDir(), "s"), Prefix: prefix, UnitDir: systemdUserDir()}
 	units := runner.Systemctl{}
 	sb := newSandbox(w.mgr)
 	sb.sessions, sb.sockets = paths.State, paths.Runtime

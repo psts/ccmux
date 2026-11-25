@@ -12,6 +12,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/manager"
 	"ccmux.dev/ccmuxd/internal/model"
 	"ccmux.dev/ccmuxd/internal/peers"
+	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/tmux"
 )
@@ -213,5 +214,34 @@ func TestADaemonRestartPutsSessionsBackOnTheBus(t *testing.T) {
 	}
 	if got := mgr.ResolvePane("pane-ended1", "/r/app"); got != "" {
 		t.Errorf("an ended session's late hook lands on %q, want nowhere", got)
+	}
+}
+
+// A scratch daemon (CCMUXD_ROOT) runs sessions only under a unit name of
+// its own: with the live name it would rewrite the live session template
+// with its own binary, and once that binary's folder is gone every new
+// session start fails (2026-11-26, a task builder's smoke test). The
+// person's daemon keeps the live name.
+func TestAScratchDaemonNeverTakesTheLiveSessionTemplate(t *testing.T) {
+	cases := []struct {
+		flag    string
+		given   bool
+		scratch string
+		want    string
+	}{
+		{runner.DefaultPrefix, false, "", runner.DefaultPrefix},
+		{runner.DefaultPrefix, false, "/run/user/1000/t1", ""},
+		{runner.DefaultPrefix, true, "/run/user/1000/t1", ""},
+		{"ccmux-session-t1", true, "/run/user/1000/t1", "ccmux-session-t1"},
+		{"ccmux-session-t1", true, "", "ccmux-session-t1"},
+	}
+	for i, c := range cases {
+		got, why := runnerPrefix(c.flag, c.given, c.scratch)
+		if got != c.want {
+			t.Errorf("case %d: prefix %q, want %q (%s)", i, got, c.want, why)
+		}
+		if got == "" && !strings.Contains(why, "-runner-unit-prefix") {
+			t.Errorf("case %d: refusal should name the flag: %q", i, why)
+		}
 	}
 }

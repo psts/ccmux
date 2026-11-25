@@ -561,7 +561,11 @@ mailbox stay the same. tmux is no longer what keeps an agent alive.
   there. The old chat routes (`/v1/panes/{id}/agent...`) answer 409 for a
   session's pane, and the attention board has no tile for one.
 - **A scratch daemon's agents are sessions too**, under its own
-  `-runner-unit-prefix`, and load the `-peers-shim` it names. Never start
+  `-runner-unit-prefix`, and load the `-peers-shim` it names. Without one
+  (or with the live name) it runs no sessions at all (`runnerPrefix`):
+  starting runners writes the template with the daemon's own binary, and
+  on 2026-11-26 a builder's smoke test did that to the live template, so
+  every session start failed once its worktree was tidied away. Never start
   the real role agents in a test: make a base on Haiku.
 
 ## Memory is tidied every night
