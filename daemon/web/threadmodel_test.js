@@ -142,6 +142,23 @@ test("before a session says which models it offers, the picker names them withou
   assert.equal(m.modelView({ model: "sonnet" }, { models: [{ value: "sonnet", name: "Sonnet 6", model: "claude-sonnet-6" }] }).wantedName, "Sonnet 6", "once it says, its own names, with the version");
 });
 
+// The terminal lens's rule (flash.js): an agent finishes often and on its
+// own, so its green lasts a minute from when it finished; a repo's lasts
+// until someone looks. Orange always lasts until answered.
+test("an agent's done stops pulsing a minute after it finished; a repo's and a waiting one's do not", () => {
+  const home = { id: "h", name: "radar", agent: "radar", status: "cold" };
+  const repo = { id: "r", name: "app", repoPath: "/p/app" };
+  const now = Date.now();
+  const agentAt = (since, attention = "done") => ({ id: "a1", workspaceId: "h", kind: "agent", state: "running", attention, attentionSince: since });
+  const lead = { id: "l1", workspaceId: "r", kind: "lead", state: "running", attention: "done", attentionSince: now - 3600000 };
+  const stateAt = (agent) => m.tree([{ id: "w", name: "W", workspaceIds: ["h", "r"] }], [home, repo], [agent, lead])[0];
+  assert.equal(stateAt(agentAt(now - 30000)).agents[0].state, "done", "half a minute in: still green");
+  assert.equal(stateAt(agentAt(now - 61000)).agents[0].state, "idle", "past a minute: quiet");
+  assert.equal(stateAt(agentAt(now - 61000, "needs_input")).agents[0].state, "waiting", "orange lasts until answered");
+  assert.equal(stateAt(agentAt(0)).agents[0].state, "done", "no time known: as before");
+  assert.equal(stateAt(agentAt(now - 61000)).repos[0].state, "done", "a repo's green waits for a look, however long");
+});
+
 test("an agent that runs as a session carries it: its row is the session's state", () => {
   const home = { id: "h", name: "radar", agent: "radar", status: "cold" };
   const still = { id: "t", name: "x-post", agent: "x-post", status: "live", panes: [{ id: "p" }] };

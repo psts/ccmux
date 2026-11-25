@@ -8,6 +8,9 @@
 (function (root) {
   "use strict";
 
+  // Flash is the terminal lens's rule for how long a green lasts (flash.js).
+  const Flash = typeof module !== "undefined" && module.exports ? require("./flash.js") : root.ccmuxFlash;
+
   // stateOf is where a session is, as one word the page colours and labels:
   // running (a turn is going), waiting (it asked something), done (a turn
   // finished and nobody has looked), idle (up, nothing to say), asleep,
@@ -91,8 +94,18 @@
   // that still runs in a terminal has none, and only says whether it is up.
   function agentRow(ws, sessions) {
     const session = sessions.find((s) => s.workspaceId === ws.id && s.kind === "agent" && s.state !== "done");
-    if (session) return { id: ws.id, name: repoName(ws), state: stateOf(session), session };
+    if (session) return { id: ws.id, name: repoName(ws), state: agentState(session), session };
     return { id: ws.id, name: repoName(ws), state: ws.status === "live" ? "live" : "asleep" };
+  }
+
+  // agentState is an agent session's state, with the terminal lens's rule
+  // for its green (flash.js): an agent finishes often and on its own, so its
+  // done lasts a minute from when it finished and then reads idle. Orange
+  // lasts until answered, as for anything.
+  function agentState(session, now = Date.now()) {
+    const state = stateOf(session);
+    if (state !== "done" || !Flash) return state;
+    return Flash.doneShows(true, session.attentionSince || 0, now) ? state : "idle";
   }
 
   const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });

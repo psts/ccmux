@@ -110,7 +110,7 @@ a:hover { color: var(--blue-d); }
 .gauge .ring { width: 16px; height: 16px; border-radius: 50%; flex: none; -webkit-mask: radial-gradient(circle, transparent 4.5px, #000 5px); mask: radial-gradient(circle, transparent 4.5px, #000 5px); }
 /* A sidebar row that needs you pulses orange until answered, one that is
    done pulses green until looked at: the lens's rule (style.css .ws.att-*). */
-.row.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
+.row.att-waiting { background: rgba(180, 83, 9, .10); }
 .row.att-waiting .row-name { color: var(--wait); }
 .row.att-done { background: rgba(21, 128, 61, .10); }
 @media (prefers-reduced-motion: no-preference) {
@@ -594,7 +594,7 @@ span.cap-kind { font-size: 11px; font-weight: 600; color: var(--fg2); background
 .group-sum { flex: none; font-size: 11.5px; color: var(--muted); white-space: nowrap; margin: 0 6px 0 4px; }
 .group-head[draggable="true"] { cursor: grab; }
 .group-head.att-waiting, .group-head.att-done { border-radius: 8px; padding: 2px 0; }
-.group-head.att-waiting { background: rgba(180, 83, 9, .10); box-shadow: inset 3px 0 0 var(--wait); }
+.group-head.att-waiting { background: rgba(180, 83, 9, .10); }
 .group-head.att-waiting .group-name { color: var(--wait); }
 .group-head.att-done { background: rgba(21, 128, 61, .10); }
 @media (prefers-reduced-motion: no-preference) {
