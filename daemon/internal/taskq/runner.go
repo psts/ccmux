@@ -184,7 +184,7 @@ func (r *Runner) decide() ([]job, *mergeJob, bool) {
 	order := r.priorityOrder(tasks)
 	mj, picked := r.mergeStep(tasks, parts, order)
 	jobs, sent := r.claim(inOrder(tasks, order), parts)
-	return jobs, mj, changed || sent || picked || len(jobs) > 0
+	return jobs, mj, r.blocksMoved() || changed || sent || picked || len(jobs) > 0
 }
 
 // mergeStep puts a merge that never got its job back in line and picks the

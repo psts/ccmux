@@ -45,6 +45,8 @@ type heldBlock struct {
 type blockBook struct {
 	mu sync.Mutex
 	by map[int64]heldBlock
+	// shown is each block as the lenses were last told of it (blocksMoved).
+	shown map[int64]MergeBlock
 }
 
 // noteBlock keeps what holds feature id's merge (b blocked) or forgets it.
@@ -88,16 +90,42 @@ func (r *Runner) keepBlocks(waiting map[int64]bool) {
 // BlockOf is what holds feature id's merge now, if anything does.
 func (r *Runner) BlockOf(id int64) (MergeBlock, bool) {
 	r.blocks.mu.Lock()
+	defer r.blocks.mu.Unlock()
 	h, ok := r.blocks.by[id]
-	r.blocks.mu.Unlock()
 	if !ok {
 		return MergeBlock{}, false
 	}
+	return r.viewOf(h), true
+}
+
+// viewOf is a kept block as the page shows it. Under r.blocks.mu.
+func (r *Runner) viewOf(h heldBlock) MergeBlock {
 	b := MergeBlock{
 		Kind: h.Kind, Repo: filepath.Base(h.Repo), Lock: h.Lock, Since: h.since.UnixMilli(),
 		GitRunning: h.gitRunning, GitUnknown: h.gitUnknown,
 		NeedsPerson: r.Now().Sub(h.since) >= StaleLockAge,
 	}
 	b.Clearable = b.Kind == BlockLock && b.NeedsPerson && !b.GitRunning && !b.GitUnknown
-	return b, true
+	return b
+}
+
+// blocksMoved reports whether any block reads differently on the page than
+// when the lenses were last told: one came or went, or one crossed
+// StaleLockAge. No row changes then, so without it a page would never
+// learn that a merge started asking for a person.
+func (r *Runner) blocksMoved() bool {
+	r.blocks.mu.Lock()
+	defer r.blocks.mu.Unlock()
+	now := make(map[int64]MergeBlock, len(r.blocks.by))
+	for id, h := range r.blocks.by {
+		now[id] = r.viewOf(h)
+	}
+	moved := len(now) != len(r.blocks.shown)
+	for id, b := range now {
+		if was, ok := r.blocks.shown[id]; !ok || was != b {
+			moved = true
+		}
+	}
+	r.blocks.shown = now
+	return moved
 }

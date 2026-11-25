@@ -523,3 +523,31 @@ func TestDropScratchForcesItsOwnCopyOnly(t *testing.T) {
 		t.Fatalf("nothing to drop = %v", err)
 	}
 }
+
+// Where the daemon merges there is no "Mark merged": work a person merged
+// by hand (a gate-file change, say) is closed by trying the merge again,
+// which finds it in the trunk and lands nothing new, without an error.
+func TestExecGit_MergeAgainAfterAHandMerge(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	wt := filepath.Join(t.TempDir(), "task-1")
+	if err := g.AddWorktree(repo, wt, "task/1-x", "main"); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(wt, ".claude"), 0o755)
+	commitFile(t, wt, ".claude/qa-gates", "a gate")
+	if _, err := runGit(repo, "merge", "-q", "--ff-only", "task/1-x"); err != nil { // the person's hand merge
+		t.Fatal(err)
+	}
+	tip, _ := runGit(repo, "rev-parse", "main")
+	rev, err := g.Rebase(wt, "main")
+	if err != nil || rev != tip {
+		t.Fatalf("rebase after a hand merge = %s, %v; want main's tip %s", rev, err, tip)
+	}
+	if changed, err := g.ChangedUnder(repo, "main", rev, ".claude"); err != nil || len(changed) != 0 {
+		t.Fatalf("gate files changed against the trunk after the hand merge = %v, %v", changed, err)
+	}
+	if err := g.FastForward(repo, rev, "main"); err != nil {
+		t.Fatalf("fast-forward to what is already the trunk = %v", err)
+	}
+}

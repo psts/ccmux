@@ -291,7 +291,7 @@ func (r *Runner) cutShort(job store.Job, why string) error {
 		landed = "Already merged, and staying so: " + strings.Join(got, ", ") + "."
 	}
 	log.Printf("tasks: #%d: %s. %s", id, why, landed)
-	return r.failForPerson(id, fmt.Sprintf("%s. %s\nIts log: journalctl --user -u %s\nPut it back to merge to try again (what already landed is skipped), or Mark merged.", why, landed, r.Jobs.Unit(job.ID)))
+	return r.failForPerson(id, fmt.Sprintf("%s. %s\nIts log: journalctl --user -u %s\nTry merge again (what already landed is skipped), or cancel it.", why, landed, r.Jobs.Unit(job.ID)))
 }
 
 // unread settles a merge job this daemon cannot read (what it kept of it,
@@ -304,7 +304,7 @@ func (r *Runner) unread(job store.Job, cause error) error {
 		return nil
 	}
 	return r.failForPerson(id, fmt.Sprintf("its merge ended, and this ccmuxd cannot read how (%v). It may have landed, or half of it.\n"+
-		"Look at each repo's trunk and at journalctl --user -u %s, then Mark merged or put it back to merge.", cause, r.Jobs.Unit(job.ID)))
+		"Look at each repo's trunk and at journalctl --user -u %s, then try the merge again: work already in its trunk lands as nothing new.", cause, r.Jobs.Unit(job.ID)))
 }
 
 // mergeFailed sends a failed merge where it can be fixed.

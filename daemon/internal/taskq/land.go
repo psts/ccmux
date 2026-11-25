@@ -355,7 +355,7 @@ func (l Lander) gateFilesUntouched(repo, trunk, rev string) error {
 	if len(changed) == 0 {
 		return nil
 	}
-	return fmt.Errorf("it changes the repo's gate files (%s), so it is not merged on its own checks; look them over, then merge it by hand and Mark merged", cut(strings.Join(changed, ", "), 300))
+	return fmt.Errorf("it changes the repo's gate files (%s), so it is not merged on its own checks; look them over, then merge it by hand and try the merge again: it finds the work in the trunk and closes it", cut(strings.Join(changed, ", "), 300))
 }
 
 // mergedSoFar names the repos already merged when a later one failed: the

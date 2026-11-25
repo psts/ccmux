@@ -3,12 +3,15 @@ package taskq
 import (
 	"testing"
 	"time"
+
+	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // A built feature held by a git lock carries the block, from the lock's own
 // time; once it is StaleLockAge old it asks a person and may be removed.
 func TestMergeBlock_ALockAsksAPersonAfterTenMinutes(t *testing.T) {
 	g := newRig(t)
+	fakeProc(t, nil)
 	g.feature(1, 0, "app")
 	g.tick()
 	g.doneParts(1)
@@ -23,11 +26,21 @@ func TestMergeBlock_ALockAsksAPersonAfterTenMinutes(t *testing.T) {
 	if !ok || b.Kind != BlockLock || b.Repo != "app" || b.Since != lockAt.UnixMilli() || b.NeedsPerson || b.Clearable {
 		t.Fatalf("a five-minute lock = %+v %v, want a lock block from its time, not asking yet", b, ok)
 	}
+	// No row changes when a block starts asking: the lenses are told all
+	// the same, once, or no page would ever show it.
+	told := g.host.changed
 	g.now = g.now.Add(6 * time.Minute)
 	g.tick()
 	b, _ = g.r.BlockOf(1)
 	if !b.NeedsPerson || !b.Clearable {
 		t.Fatalf("an eleven-minute lock = %+v, want it to ask a person and be removable", b)
+	}
+	if g.host.changed != told+1 {
+		t.Fatalf("lenses told %d times as the lock started asking, want once", g.host.changed-told)
+	}
+	g.tick()
+	if g.host.changed != told+1 {
+		t.Fatal("lenses told again with nothing new")
 	}
 	delete(g.git.folders, "/p/app")
 	g.tick()
@@ -36,6 +49,25 @@ func TestMergeBlock_ALockAsksAPersonAfterTenMinutes(t *testing.T) {
 	}
 	if g.st.task(1).Status != Done {
 		t.Fatalf("lock gone = %s, want merged", g.st.task(1).Status)
+	}
+}
+
+// A daemon that starts with a lock already old tells the lenses on its
+// first pass, though the task's note is what it was.
+func TestMergeBlock_AnOldLockIsToldOnTheFirstPass(t *testing.T) {
+	g := newRig(t)
+	fakeProc(t, nil)
+	why := "waiting to merge: git is busy in app (/p/app/.git/index.lock exists)"
+	g.st.tasks = append(g.st.tasks, store.Task{ID: 1, Title: "t", Status: ReadyToMerge, Note: why})
+	g.st.parts = append(g.st.parts, store.Part{ID: 1, TaskID: 1, RepoPath: "/p/app", Status: Ready})
+	g.git.folders = map[string]FolderBlock{"/p/app": {Kind: BlockLock, Repo: "/p/app", Lock: "/p/app/.git/index.lock",
+		LockTime: g.now.Add(-21 * 24 * time.Hour), Why: "git is busy in app (/p/app/.git/index.lock exists)"}}
+	g.r.Tick()
+	if g.st.task(1).Note != why {
+		t.Fatalf("note = %q, want it unchanged", g.st.task(1).Note)
+	}
+	if b, _ := g.r.BlockOf(1); !b.Clearable || g.host.changed == 0 {
+		t.Fatalf("an old lock at start = %+v, lenses told %d times", b, g.host.changed)
 	}
 }
 
