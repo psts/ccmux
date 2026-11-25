@@ -270,6 +270,7 @@ func runDaemon() {
 	// was down. That stands helpers down and restarts a lead through the
 	// supervisor, sends a failed task back to its worker over the bus, and
 	// saves task rows through the runner made just above.
+	startSweep(ctx, jobWires, apiSrv, mgr, *worktreesDir) // before wireJobs: it gives the sweep's jobs their handler
 	wireJobs(ctx, jobWires, apiSrv.TaskJobHandlers())
 
 	// Bring the tailnet node up FIRST (if enabled): hub mode must be set before

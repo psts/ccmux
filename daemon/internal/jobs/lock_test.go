@@ -51,3 +51,27 @@ func TestOneHolderOfARepoAtATime(t *testing.T) {
 		t.Fatal("the lock was never handed on")
 	}
 }
+
+// A repo another job holds is not waited for: nothing is kept, and the
+// error says busy. A free one is taken, and let go again.
+func TestTryLockSkipsAHeldRepo(t *testing.T) {
+	dir := t.TempDir()
+	held, err := LockRepos(context.Background(), dir, []string{"/p/app"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TryLockRepos(dir, []string{"/p/admin", "/p/app"}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a held repo is busy: %v", err)
+	}
+	free, err := TryLockRepos(dir, []string{"/p/admin"})
+	if err != nil {
+		t.Fatalf("what the busy try had taken is free again: %v", err)
+	}
+	free.Release()
+	held.Release()
+	l, err := TryLockRepos(dir, []string{"/p/app"})
+	if err != nil {
+		t.Fatalf("a repo whose holder let go is taken: %v", err)
+	}
+	l.Release()
+}

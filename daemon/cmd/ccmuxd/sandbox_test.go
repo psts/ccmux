@@ -15,6 +15,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/threads"
 	"ccmux.dev/ccmuxd/internal/walls"
+	"ccmux.dev/ccmuxd/internal/wtsweep"
 )
 
 // testSandbox is a sandbox over settings the test holds and a host that
@@ -339,6 +340,7 @@ func TestEveryJobKindThisBinaryRunsIsOneTheWallsKnow(t *testing.T) {
 		threads.MergeKind: taskq.LandInput{Work: work},
 		taskq.MergeKind:   taskq.LandInput{Work: work},
 		taskq.TidyKind:    taskq.TidyInput{Work: work},
+		wtsweep.Kind:      wtsweep.Input{Repos: []wtsweep.Repo{{Path: repo}}},
 	}
 	for kind := range jobKinds {
 		in, ok := startedFrom[kind]

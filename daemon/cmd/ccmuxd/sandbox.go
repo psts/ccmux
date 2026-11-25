@@ -14,6 +14,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/walls"
+	"ccmux.dev/ccmuxd/internal/wtsweep"
 )
 
 // The sandbox (internal/walls) as this daemon applies it: which units are
@@ -220,9 +221,10 @@ func (s *sandbox) jobWalls(n jobs.New) (*walls.Plan, error) {
 		return nil, err
 	}
 	hide(plan, s.sessions, s.sockets)
-	// A tidy-up removes folders and branches and fetches nothing. A merge
-	// runs the repo's checks, which may well fetch (a module, a package).
-	plan.NoNetwork = n.Kind == taskq.TidyKind
+	// A tidy-up and the weekly sweep remove folders and branches and fetch
+	// nothing. A merge runs the repo's checks, which may well fetch (a
+	// module, a package).
+	plan.NoNetwork = n.Kind == taskq.TidyKind || n.Kind == wtsweep.Kind
 	for _, w := range work {
 		if err := plan.RepoWalls(w.RepoPath); err != nil {
 			return nil, fmt.Errorf("%s cannot be walled: %w", filepath.Base(w.RepoPath), err)
@@ -230,8 +232,11 @@ func (s *sandbox) jobWalls(n jobs.New) (*walls.Plan, error) {
 		// The folder the worktree is in, not the worktree: the files beside
 		// it are the job's too (a rebase's mark, a failed check's output,
 		// the brief a tidy-up removes), and a tidy-up removes the worktree
-		// itself.
-		plan.Write = append(plan.Write, walls.Existing([]string{filepath.Dir(w.Worktree)})...)
+		// itself. The sweep names no worktree: its worktrees are in the
+		// repo's own folder (.claude/worktrees).
+		if w.Worktree != "" {
+			plan.Write = append(plan.Write, walls.Existing([]string{filepath.Dir(w.Worktree)})...)
+		}
 	}
 	return plan, nil
 }
@@ -244,6 +249,12 @@ func workOf(n jobs.New) ([]taskq.Work, bool) {
 		return in.Work, true
 	case taskq.TidyInput:
 		return in.Work, true
+	case wtsweep.Input:
+		work := make([]taskq.Work, len(in.Repos))
+		for i, r := range in.Repos {
+			work[i] = taskq.Work{RepoPath: r.Path}
+		}
+		return work, true
 	}
 	return nil, false
 }

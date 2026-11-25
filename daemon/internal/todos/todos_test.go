@@ -563,3 +563,31 @@ func TestTaskedAgain_AnItemLetsGoOfItsOldTask(t *testing.T) {
 		t.Fatalf("filed again after its task was removed: %+v, want tasked under #32 with no note", got)
 	}
 }
+
+// An item added once is one item while it is not done, whatever its
+// numbers say on the next sighting; a higher urgency still raises it, a
+// name that only starts the same is another item, and a done one is seen
+// again as new.
+func TestAddOnceFoldsBySomethingThatNamesTheThing(t *testing.T) {
+	b, _, _ := book(t)
+	first, added, err := b.AddOnce("/r", "disk / is low (", "disk / is low (91% full, 12 GB free)", "medium", "weekly sweep")
+	if err != nil || !added {
+		t.Fatalf("first sighting: %v %v", added, err)
+	}
+	again, added, err := b.AddOnce("/r", "disk / is low (", "disk / is low (96% full, 4 GB free)", "high", "weekly sweep")
+	if err != nil || added || again.ID != first.ID || again.Urgency != "high" {
+		t.Fatalf("seen again with other numbers is the same item, raised: %+v %v %v", again, added, err)
+	}
+	if _, added, _ := b.AddOnce("/r", "disk /ext is low (", "disk /ext is low (91% full)", "medium", "x"); !added {
+		t.Fatal("another name is another item")
+	}
+	if _, err := b.Finish(first.ID, "person", "freed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, added, _ := b.AddOnce("/r", "disk / is low (", "disk / is low (92% full)", "medium", "x"); !added {
+		t.Fatal("a done item is not the one seen again")
+	}
+	if _, _, err := b.AddOnce("/r", "elsewhere (", "disk / is low", "medium", "x"); kindOf(err) != Invalid {
+		t.Fatalf("a text that does not start with its prefix is refused: %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package todos
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +60,38 @@ func (b *Book) List(repo string) ([]store.Todo, error) {
 // comes back as it is, its urgency raised when this sighting's is higher,
 // and no second row is made.
 func (b *Book) Add(repo, text, urgency, by string) (store.Todo, bool, error) {
+	return b.add(repo, text, urgency, by, func(norm string) (*store.Todo, error) {
+		return b.Store.UnfinishedTodo(repo, norm)
+	})
+}
+
+// AddOnce is Add for an item that names a thing whose numbers change from
+// one sighting to the next ("3 commits, 1.2 GB" this week, "4 commits"
+// the next): any unfinished item of repo whose text starts with prefix,
+// as written, is that item. prefix should end in a delimiter after the
+// name ("worktree /a/foo (") so one name never takes another's
+// ("/a/foo-bar").
+func (b *Book) AddOnce(repo, prefix, text, urgency, by string) (store.Todo, bool, error) {
+	if !strings.HasPrefix(text, prefix) || strings.TrimSpace(prefix) == "" {
+		return store.Todo{}, false, problem(Invalid, "an item added once must start with its prefix")
+	}
+	return b.add(repo, text, urgency, by, func(string) (*store.Todo, error) {
+		list, err := b.Store.Todos(repo)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range Unfinished(list) {
+			if strings.HasPrefix(t.Text, prefix) {
+				return &t, nil
+			}
+		}
+		return nil, nil
+	})
+}
+
+// add files text on repo's list unless same finds it there already. same
+// is asked under the book's lock, with the text as compared (Normalize).
+func (b *Book) add(repo, text, urgency, by string, same func(norm string) (*store.Todo, error)) (store.Todo, bool, error) {
 	text, err := CheckText(text)
 	if err != nil {
 		return store.Todo{}, false, err
@@ -72,12 +105,12 @@ func (b *Book) Add(repo, text, urgency, by string) (store.Todo, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	norm := Normalize(text)
-	same, err := b.Store.UnfinishedTodo(repo, norm)
+	found, err := same(norm)
 	if err != nil {
 		return store.Todo{}, false, err
 	}
-	if same != nil {
-		return b.seenAgain(*same, urgency)
+	if found != nil {
+		return b.seenAgain(*found, urgency)
 	}
 	now := b.now()
 	t := store.Todo{Repo: repo, Text: text, Urgency: urgency, Status: Open, AddedBy: by, CreatedAt: now, UpdatedAt: now}

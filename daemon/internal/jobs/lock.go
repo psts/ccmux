@@ -110,3 +110,33 @@ func (l *Lock) Release() {
 	}
 	l.files = nil
 }
+
+// ErrBusy is a lock another job holds right now (TryLockRepos).
+var ErrBusy = errors.New("another job holds it")
+
+// TryLockRepos takes the lock of every repo given without waiting: when
+// another job holds any of them, none is kept and the error is ErrBusy
+// (errors.Is). For work that would rather skip a repo than wait for it.
+func TryLockRepos(dir string, repos []string) (*Lock, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	l := &Lock{}
+	for _, repo := range uniqueSorted(repos) {
+		f, err := os.OpenFile(LockFile(dir, repo), os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			l.Release()
+			return nil, err
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			f.Close()
+			l.Release()
+			if errors.Is(err, syscall.EWOULDBLOCK) {
+				return nil, fmt.Errorf("the lock on %s: %w", filepath.Base(repo), ErrBusy)
+			}
+			return nil, fmt.Errorf("the lock on %s: %w", filepath.Base(repo), err)
+		}
+		l.files = append(l.files, f)
+	}
+	return l, nil
+}

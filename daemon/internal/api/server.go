@@ -178,6 +178,9 @@ type Server struct {
 	// llmProxyHealth is the "llmProxy" part of GET /v1/health: where the
 	// proxy runs and whether it answers. nil leaves the field out.
 	llmProxyHealth func() map[string]any
+	// diskHealth is the "disks" part of GET /v1/health: free space on the
+	// disks this daemon's work is on (sweep.go). nil leaves the field out.
+	diskHealth func() any
 	// sandbox is the caps and walls of the session and job services
 	// (sandbox.go); nil turns its routes off.
 	sandbox sandboxService
@@ -718,6 +721,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	// like llmProxy.
 	if s.sidecars != nil {
 		resp["llmSidecarsRunning"] = sidecarsRunning(s.sidecars.Status())
+	}
+	// Free space on the disks the worktrees, home and the repos are on, as
+	// the last hourly look found it. Additive, like llmProxy.
+	if s.diskHealth != nil {
+		resp["disks"] = s.diskHealth()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -11,6 +11,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/threads"
+	"ccmux.dev/ccmuxd/internal/wtsweep"
 )
 
 // Job services. Long work (a thread's merge, a queued task's merge and the
@@ -27,6 +28,7 @@ var jobKinds = map[string]jobs.Runner{
 	threads.MergeKind: taskq.RunLand,
 	taskq.MergeKind:   taskq.RunLand,
 	taskq.TidyKind:    taskq.RunTidy,
+	wtsweep.Kind:      wtsweep.Run,
 }
 
 // cmdJobExec is the unit template's ExecStart: run the job a spec file

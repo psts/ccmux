@@ -7,6 +7,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/jobs"
 	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/threads"
+	"ccmux.dev/ccmuxd/internal/wtsweep"
 )
 
 func TestOnlyTheInstalledDaemonRunsJobsUnderTheDefaultName(t *testing.T) {
@@ -22,7 +23,7 @@ func TestOnlyTheInstalledDaemonRunsJobsUnderTheDefaultName(t *testing.T) {
 }
 
 func TestEveryJobKindTheDaemonStartsHasItsRunner(t *testing.T) {
-	for _, kind := range []string{threads.MergeKind, taskq.MergeKind, taskq.TidyKind} {
+	for _, kind := range []string{threads.MergeKind, taskq.MergeKind, taskq.TidyKind, wtsweep.Kind} {
 		if _, ok := jobKinds[kind]; !ok {
 			t.Fatalf("a %s job has no runner: it would be refused by job-exec", kind)
 		}

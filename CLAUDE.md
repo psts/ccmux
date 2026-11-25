@@ -592,6 +592,52 @@ SDK's bare prompt and was never told how to save memory.
 - Role agents are left out: their memory is in their own home, in two
   folders that have drifted apart (on the to-do list).
 
+## Leftover worktrees are swept every week (Linux)
+
+Claude Code's Agent tool, run with worktree isolation, makes
+`<repo>/.claude/worktrees/<name>` per subagent and leaves it when the
+agent changed anything (task #196: 4.9 GB of them in one repo). ccmux's
+own task worktrees are not these; the tidy-up removes those.
+
+- **The sweep** (`internal/wtsweep`, `cmd/ccmuxd/sweep.go`) runs weekly
+  from `-sweep-day` (sunday) at `-sweep-hour` (4, local; -1 never), and
+  still within a day after it when the daemon was down then (the `jobs`
+  table says when the last one started). It looks in every workspace's
+  repo (role agents' homes left out), by main folder (`todos.Keys`), that
+  has a `.claude/worktrees` folder.
+- **Removed only when all hold:** git knows the folder as a worktree of
+  the repo (and it is a real folder, not a link), nothing in it changed
+  for 7 days (its folder, its top level, its `.git` file), `git status
+  --porcelain` is empty, and it has no commit the trunk lacks (origin/HEAD,
+  else main, else master; a repo with none is skipped and logged). Then
+  `git worktree remove` (never `--force`, never `rm -rf`; the one
+  exception is finishing a removal an earlier run was killed in), `git
+  worktree prune`, and `git branch -d` when no other worktree has the
+  branch out. A refusal of git's (a locked worktree, an unmerged branch)
+  stands.
+- **Every other old one is a to-do** on its repo's list, by "weekly
+  sweep", saying what keeps it and its size. It is filed with
+  `todos.Book.AddOnce` (an unfinished item that starts "Leftover Claude
+  Code worktree <path> (" is that item), so next week's other numbers are
+  not a second item. A folder git does not know is left and logged.
+- **It is a job**, kind `worktree-sweep` (`sweep-<hex>`): walled into each
+  repo's folder with hooks and config sealed, no network. Each repo is
+  swept under its lock, taken without waiting (`jobs.TryLockRepos`): a
+  repo a merge or tidy-up works in is skipped that week. The handler files
+  the to-dos from the result, once per job (applied journal).
+- **The disk check** (`internal/diskcheck`) runs in the daemon once an
+  hour and at each sweep: the disks of `-worktrees-dir`, home and every
+  repo (statfs). Under 10% or under 5 GB free it logs and files a to-do
+  on ccmux's own list (the known repo whose folder is called `ccmux`),
+  high under 5%, when a disk turns low or more urgent, not every hour.
+  `GET /v1/health` carries `disks: [{mount, freeBytes, totalBytes,
+  low}]`. Nothing is pushed or paged.
+- A scratch daemon sweeps nothing unless given `-sweep-hour` (and, being a
+  scratch daemon, `-job-unit-prefix`); its disk check runs, into its own
+  database.
+- Not swept: `node_modules`, `.next`, caches, and cancelled tasks'
+  worktrees.
+
 ## Sessions stay current by themselves (Linux)
 
 - **A person's session restarts itself once it has run 20 hours**
