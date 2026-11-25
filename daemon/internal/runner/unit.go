@@ -33,8 +33,11 @@ import (
 // changed template. A runner that refused to start because its walls are
 // not up (walls.ExitRefused) is not started again by systemd: the next
 // start would find the same host.
+//
+// Its first line is the owner mark: the folder the sessions' specs live in.
 func templateText(execPath, specDir string, caps walls.Caps) string {
-	return fmt.Sprintf(`[Unit]
+	return fmt.Sprintf(`%s%s
+[Unit]
 Description=ccmux session %%i
 StartLimitIntervalSec=%d
 StartLimitBurst=%d
@@ -48,7 +51,7 @@ RestartPreventExitStatus=%d
 KillMode=control-group
 TimeoutStopSec=20
 %sStandardInput=null
-`, startLimitWindow, startLimitBurst, execPath, specDir, walls.ExitRefused, caps.Lines())
+`, ownerMark, specDir, startLimitWindow, startLimitBurst, execPath, specDir, walls.ExitRefused, caps.Lines())
 }
 
 // startLimitBurst starts in startLimitWindow seconds, crashes and the
@@ -85,14 +88,30 @@ type Units interface {
 	Reload() error
 }
 
+// ownerMark is the line of the template that says whose it is: the folder
+// its sessions' specs live in (Paths.State). It is a comment to systemd and
+// the ownership record to ccmuxd, as the job template's is
+// (jobs.ownerMark). A daemon that finds another folder there leaves the
+// template alone: on 2026-11-26 a scratch daemon rewrote the live one with
+// its own binary, and every session start failed once that was gone.
+const ownerMark = "# ccmux-session-state="
+
 // EnsureTemplate writes the unit template under dir (the user's systemd
 // folder) and reloads systemd, only when the file is missing or differs:
-// every daemon start calls it, and an unchanged file needs no reload.
+// every daemon start calls it, and an unchanged file needs no reload. A
+// template that belongs to another daemon is left alone, with an error
+// that says whose it is.
 func EnsureTemplate(dir, execPath string, paths Paths, caps walls.Caps, u Units) error {
 	want := []byte(templateText(execPath, paths.State, caps))
 	path := filepath.Join(dir, paths.Template())
-	if have, err := os.ReadFile(path); err == nil && bytes.Equal(have, want) {
+	have, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(have, want) {
 		return nil
+	}
+	if err == nil {
+		if other, ok := ownerOf(have, paths.State); !ok {
+			return fmt.Errorf("the unit template %s belongs to another daemon (its sessions live in %s): pass -runner-unit-prefix to give this one its own, or if that template is a leftover, remove %s and restart ccmuxd", paths.Template(), other, path)
+		}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -101,6 +120,49 @@ func EnsureTemplate(dir, execPath string, paths Paths, caps walls.Caps, u Units)
 		return err
 	}
 	return u.Reload()
+}
+
+// ownerOf is the session folder a template's text names, and whether that
+// is state. A template from before the mark is read by its ExecStart: it
+// is this daemon's when the spec path it runs lies in state.
+func ownerOf(text []byte, state string) (string, bool) {
+	state = filepath.Clean(state)
+	if owner, ok := markOf(text); ok {
+		return owner, filepath.Clean(owner) == state
+	}
+	spec := specPathOf(text)
+	if spec == "" {
+		return "(none named)", false
+	}
+	return filepath.Dir(spec), strings.HasPrefix(filepath.Clean(spec), state+string(filepath.Separator))
+}
+
+// markOf is the folder on a template's owner mark, false for none.
+func markOf(text []byte) (string, bool) {
+	for _, line := range strings.Split(string(text), "\n") {
+		if owner, ok := strings.CutPrefix(line, ownerMark); ok {
+			return strings.TrimSpace(owner), true
+		}
+	}
+	return "", false
+}
+
+// specPathOf is the spec path a template's ExecStart hands runner-exec
+// ("<state>/%i.json"), "" when it names none.
+func specPathOf(text []byte) string {
+	for _, line := range strings.Split(string(text), "\n") {
+		cmd, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(cmd)
+		for i := 0; i+1 < len(f); i++ {
+			if f[i] == "runner-exec" {
+				return f[i+1]
+			}
+		}
+	}
+	return ""
 }
 
 // Systemctl is Units through `systemctl --user`.

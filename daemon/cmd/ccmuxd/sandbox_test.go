@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"ccmux.dev/ccmuxd/internal/jobs"
+	"ccmux.dev/ccmuxd/internal/runner"
 	"ccmux.dev/ccmuxd/internal/store"
 	"ccmux.dev/ccmuxd/internal/taskq"
 	"ccmux.dev/ccmuxd/internal/threads"
@@ -358,5 +359,29 @@ func TestCapsFallBackToTheDefaultsWhenTheSettingsCannotBeRead(t *testing.T) {
 	sb := &sandbox{settings: func() (walls.Settings, error) { return walls.Settings{}, errors.New("locked") }}
 	if got, want := sb.caps(), walls.Defaults().Caps(); got != want {
 		t.Fatalf("a template has to say something: %+v, want %+v", got, want)
+	}
+}
+
+// A caps change from Settings > Sandbox rewrites the templates; one that
+// belongs to another daemon is refused, and the refusal reaches the save.
+func TestACapsChangeReportsATemplateOfAnotherDaemon(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "systemd", "user")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "ccmux-session-t203@.service")
+	theirs := "# ccmux-session-state=/live/sessions\n[Service]\nExecStart=/live/ccmuxd runner-exec /live/sessions/%i.json\n"
+	if err := os.WriteFile(path, []byte(theirs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths := runner.Paths{State: filepath.Join(home, "sessions"), Prefix: "ccmux-session-t203"}
+	err := writeTemplates(paths, nil)(walls.Defaults().Caps())
+	if err == nil || !strings.Contains(err.Error(), "the sessions' unit template") || !strings.Contains(err.Error(), "/live/sessions") {
+		t.Fatalf("the refusal is the save's answer: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != theirs {
+		t.Fatal("and the other daemon's template is untouched")
 	}
 }

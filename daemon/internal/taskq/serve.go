@@ -174,5 +174,8 @@ const serverRules = `
   anything else that changes its tables. If your part needs a migration, write
   it and test it with the repo's test suite, but do not apply it, and say so in
   your report.
+- A scratch ccmuxd (CCMUXD_ROOT) gets its own -runner-unit-prefix,
+  -job-unit-prefix and -llm-proxy-unit (or none), never the defaults: those
+  are the person's live services. Remove its unit files afterwards.
 - Stop every server you started before you report.
 `

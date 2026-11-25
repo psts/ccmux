@@ -36,3 +36,13 @@ func TestServerRulesSayUv(t *testing.T) {
 		t.Fatal("the brief must tell builders to make their own venv with uv")
 	}
 }
+
+// A builder that runs a scratch ccmuxd is told to give it its own three
+// unit names: the defaults are the person's live services.
+func TestServerRulesNameAScratchDaemonsThreeUnits(t *testing.T) {
+	for _, want := range []string{"CCMUXD_ROOT", "-runner-unit-prefix", "-job-unit-prefix", "-llm-proxy-unit", "never the defaults"} {
+		if !strings.Contains(serverRules, want) {
+			t.Errorf("the brief misses %q", want)
+		}
+	}
+}

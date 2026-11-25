@@ -432,6 +432,10 @@ watchdog, reports, the merge and tidy-up jobs, send-back.
   The drop-in overrides ExecStart whole: when `ccmuxd install` changes the main
   unit's flags, carry them into it. Never move the folder while a task is
   open: the queue works out a task's paths from it (`taskq.layoutOf`).
+- **The brief's dev-server rules tell a builder that runs a scratch ccmuxd**
+  to give it its own `-runner-unit-prefix`, `-job-unit-prefix` and
+  `-llm-proxy-unit` (or none), and to remove its unit files after
+  (`taskq.serverRules`).
 - "Open session" on a part opens the builder's conversation
   (`/threads.html?s=<session>`); the part's view carries `sessionId`.
 
@@ -567,6 +571,11 @@ mailbox stay the same. tmux is no longer what keeps an agent alive.
   on 2026-11-26 a builder's smoke test did that to the live template, so
   every session start failed once its worktree was tidied away. Never start
   the real role agents in a test: make a base on Haiku.
+- **The session template carries an owner mark** (task #203,
+  `runner.ownerMark`, as the job template's): `# ccmux-session-state=<its
+  sessions folder>`. Any daemon that finds another folder there (or, in a
+  file from before the mark, another folder in ExecStart's spec path)
+  leaves it alone: its runners stay off, and a Sandbox save says why.
 
 ## Memory is tidied every night
 
