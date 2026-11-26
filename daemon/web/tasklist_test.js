@@ -212,3 +212,19 @@ test("a young block neither asks nor shows; other folder blocks say which", () =
 test("the sidebar alert counts the merges stuck long enough to ask a person", () => {
   assert.deepStrictEqual(L.summary({ ready_to_merge: 1, merge_stuck: 1 }), { text: "1 merging", alert: 1 });
 });
+
+test("a repo's task is matched to its builder's session only by the repo's own part", () => {
+  const p = (repoPath, sessionId) => ({ repo: repoPath.split("/").pop(), repoPath, sessionId });
+  const ts = [
+    { id: 1, status: "running", parts: [p("/r/app", "s1")] },
+    { id: 2, status: "waiting", parts: [p("/r/app")] },
+    { id: 3, status: "running", parts: [p("/r/app", "s3"), p("/r/blog", "s4")] },
+    { id: 4, status: "running", parts: [p("/r/app", "gone")] },
+  ];
+  const app = L.builderTasks(ts, "/r/app", new Set(["s1", "s3", "s4"]));
+  assert.deepStrictEqual([...app.entries()].map(([s, t]) => [s, t.id]), [["s1", 1], ["s3", 3]]);
+  const blog = L.builderTasks(ts, "/r/blog", new Set(["s4"]));
+  assert.deepStrictEqual([...blog.entries()].map(([s, t]) => [s, t.id]), [["s4", 3]]);
+  assert.strictEqual(L.builderTasks(ts, "/r/blog", new Set(["s3"])).size, 0, "app's builder does not hide blog's row");
+  assert.strictEqual(L.builderTasks(null, "/r/app", new Set()).size, 0);
+});

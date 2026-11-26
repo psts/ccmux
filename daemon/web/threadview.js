@@ -300,10 +300,10 @@
   // repoTaskRows are the unfinished tasks a repo has a part in, under its
   // row like its threads, one line each: a dot (amber when it waits on a
   // person), its title and its number. Its status is in the row's title.
-  // One opens the group's queue at that task.
-  function repoTaskRows(g, r, ctx) {
+  // One opens the group's queue at that task. list is the repo's tasks
+  // less those its builder's session row already stands for (repoEl).
+  function repoTaskRows(g, r, ctx, list) {
     const T = ctx.tasks;
-    const list = T ? T.repoTasks(g, r) : [];
     if (!list.length) return null;
     const on = T.taskOn(g, r);
     const box = el("div", "repo-tasks");
@@ -315,6 +315,29 @@
       add(box, add(row, el("span", "st-dot"), el("span", "st-name", t.title), el("span", "st-id", "#" + t.id)));
     }
     return box;
+  }
+
+  // repoTasksOf is a repo's unfinished tasks (ctx.tasks) split in two: the
+  // ones a builder session listed under the repo already stands for (by
+  // session id, Tq.builderTasks), and the rest, which keep their own rows.
+  // A running task so shows once, as its builder's conversation.
+  function repoTasksOf(g, r, ctx) {
+    const all = g && ctx.tasks ? ctx.tasks.repoTasks(g, r) : [];
+    const built = Tq.builderTasks(all, r.path, new Set(r.threads.map((t) => t.session.id)));
+    const shown = new Set(built.values());
+    return { built, rest: all.filter((t) => !shown.has(t)) };
+  }
+
+  // threadRow is one of a repo's sessions. task is the task it builds when
+  // that task's own row is left out: one that needs a person then puts the
+  // task row's amber on this row's dot, and its status in the title.
+  function threadRow(t, ctx, task) {
+    const ask = !!task && Tq.needsPerson(task);
+    const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : "") + attClass(t.state) + (ask ? " task-alert" : ""));
+    tr.type = "button";
+    tr.title = ask ? Tq.statusWord(task.status) + ": task #" + task.id + " waits on you" : t.sub || Model.stateLabel(t.state).toLowerCase();
+    tr.onclick = () => ctx.pickSession(t.session);
+    return add(tr, el("span", "dot " + t.state), add(el("span", "row-body"), el("span", "row-name", t.title)));
   }
 
   // todoBadge is a repo's to-do list in the sidebar (ctx.todos,
@@ -354,14 +377,9 @@
     add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
     const todo = todoBadge(r, ctx);
     if (todo) { box.classList.add("has-todo"); add(box, todo); }
-    for (const t of r.threads) {
-      const tr = el("button", "row thread" + (ctx.isSession(t.session) ? " on" : "") + attClass(t.state));
-      tr.type = "button";
-      tr.title = t.sub || Model.stateLabel(t.state).toLowerCase();
-      tr.onclick = () => ctx.pickSession(t.session);
-      add(box, add(tr, el("span", "dot " + t.state), add(el("span", "row-body"), el("span", "row-name", t.title))));
-    }
-    return add(box, g ? repoTaskRows(g, r, ctx) : null);
+    const tasks = repoTasksOf(g, r, ctx);
+    for (const t of r.threads) add(box, threadRow(t, ctx, tasks.built.get(t.session.id)));
+    return add(box, g ? repoTaskRows(g, r, ctx, tasks.rest) : null);
   }
 
   // groupHead is a group's name; a group that is a window (not "Other")

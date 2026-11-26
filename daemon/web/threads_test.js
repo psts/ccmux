@@ -1124,6 +1124,39 @@ test("the Settings window is the lens's, whole, with this page's tab in front", 
   assert.equal(p.$("settings-modal").classList.contains("hidden"), true);
 });
 
+// A running task shows once in the sidebar, as its builder's session: the
+// task row goes when the repo lists the session of the task's part in that
+// repo, and a task that needs a person puts its amber on the session row.
+test("a task whose builder session is listed shows once, as that session", async () => {
+  const blog = { id: "ws2", name: "blog", repoPath: "/p/blog", git: { isGitRepo: true, branch: "main" } };
+  const builder = (id, ws, task, createdAt) => ({ id, workspaceId: ws, kind: "thread", role: "builder", title: `Task #${task}: x`,
+    cwd: "/w", model: "", state: "running", attention: "idle", paneId: "p-" + id, createdAt });
+  const part = (id, repoPath, sessionId) => ({ id, repoPath, repo: repoPath.split("/").pop(), status: "working", plan: "p", sessionId });
+  const tasks = [
+    { id: 4, windowId: "w1", title: "Run", status: "running", parts: [part(1, "/p/app", "b4")], moves: [] },
+    { id: 5, windowId: "w1", title: "Wait", status: "waiting", parts: [part(2, "/p/app")], moves: [] },
+    { id: 6, windowId: "w1", title: "Ask", status: "needs_you", parts: [part(3, "/p/app", "b6")], moves: [] },
+    { id: 7, windowId: "w1", title: "Two", status: "running", parts: [part(4, "/p/app", "b7a"), part(5, "/p/blog", "b7b")], moves: [] },
+  ];
+  const windows = [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "ws2"], taskSlots: 2 }];
+  const sessions = [lead, builder("b4", "ws1", 4, 2), builder("b6", "ws1", 6, 3), builder("b7a", "ws1", 7, 4)];
+  const p = await boot({ workspaces: [repo, blog], windows, sessions, search: "?s=lead1",
+    routes: [[/^GET \/v1\/tasks\?user=Pat$/, () => ({ tasks, counts: { w1: { running: 2, waiting: 1, needs_you: 1 } } })]] });
+  const repoBox = (name) => p.$("tree").querySelectorAll(".repo").find((r) => r.querySelector(".row-name").textContent === name);
+  const ids = (name) => repoBox(name).querySelectorAll(".side-task").map((t) => t.querySelector(".st-id").textContent);
+  assert.deepEqual(ids("app"), ["#5"], "only the task with no builder session listed keeps its row");
+  assert.deepEqual(ids("blog"), ["#7"], "blog lists no builder of #7's blog part, so its row stays there");
+  const rows = repoBox("app").querySelectorAll(".row.thread");
+  assert.equal(rows.length, 3);
+  const ask = rows.find((r) => r.querySelector(".row-name").textContent === "Task #6: x");
+  assert.ok(ask.classList.contains("task-alert"), "the builder of a task that needs a person is amber");
+  assert.match(ask.title, /^Needs you/);
+  assert.ok(!rows.find((r) => r.querySelector(".row-name").textContent === "Task #4: x").classList.contains("task-alert"));
+  ask.click();
+  await p.settle();
+  assert.equal(p.book.pushed.pop(), "/threads.html?s=b6", "the row still opens the builder's conversation");
+});
+
 // The task queue on the thread page: a Tasks row per group with its counts,
 // under each repo the unfinished tasks it has a PART in (one with parts in
 // two repos is under both), the queue in place of the conversation, and the

@@ -153,6 +153,22 @@
     return mine.sort((a, b) => (ORDER.get(a.status) ?? 99) - (ORDER.get(b.status) ?? 99));
   }
 
+  // builderTasks says which of a repo's tasks are already in its sidebar
+  // as a builder's conversation: for each task in tasks whose part in the
+  // repo at repoPath is built by a session in listed (a Set of session
+  // ids), that session's id maps to the task. Only the repo's own part
+  // counts, so a task with parts in two repos is matched in each by its own
+  // builder. A part with no sessionId (a terminal worker, or one whose
+  // builder has ended) matches nothing, and its task keeps its own row.
+  function builderTasks(tasks, repoPath, listed) {
+    const out = new Map();
+    for (const t of tasks || []) {
+      const p = partsOf(t).find((x) => x.repoPath === repoPath && x.sessionId && listed.has(x.sessionId));
+      if (p) out.set(p.sessionId, t);
+    }
+    return out;
+  }
+
   // statusWord is a task's status as its section's title says it.
   const TITLES = new Map(SECTIONS);
   function statusWord(status) { return TITLES.get(status) || status; }
@@ -243,7 +259,7 @@
 
   const api = {
     sections, repos, summary, waitsOn, moveLabel, partWord, builtWith, slotChoices, priorityChoices,
-    repoTasks, statusWord, needsPerson, blockText, buttons, forYou, preview, reportHtml, SECTIONS,
+    repoTasks, builderTasks, statusWord, needsPerson, blockText, buttons, forYou, preview, reportHtml, SECTIONS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxTaskList = api;
