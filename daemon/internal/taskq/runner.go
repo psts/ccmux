@@ -24,6 +24,9 @@ type Store interface {
 	WaitingTaskNotices() ([]store.TaskNotice, error)
 	EndTaskNotice(id string, sentAt int64, failed string) error
 	PruneTaskNotices(beforeMillis int64) error
+	// The settings hold each window's drain mark (filer.go).
+	GetSetting(key string) (string, error)
+	SetSetting(key, value string) error
 }
 
 // Host is the daemon the workers run on: it finds a repo's session, clears
@@ -51,6 +54,12 @@ type Host interface {
 	// fixed id, "" for none: said again under the same id it is heard once
 	// (notices.go).
 	TellWorker(paneID, msgID, text string) error
+	// TellFiler sends text to the session that filed a task in windowID:
+	// filer is its workspace's name (store.Task.FiledBy), which reaches the
+	// repo's main session on the bus. quiet is a notice that wakes nobody;
+	// otherwise the message wakes it. msgID is the message's fixed id: said
+	// again under it, it is heard once (filer.go).
+	TellFiler(windowID, filer, msgID, text string, quiet bool) error
 }
 
 // Runner starts waiting tasks while slots are free (a slot is a feature:
@@ -106,6 +115,12 @@ type Runner struct {
 	// Lock. Empty after a restart, on purpose: the time a notice is tried
 	// for counts from the daemon that tries.
 	missed map[string]time.Time
+	// drainMu makes one drain check at a time (filer.go): a merge's end and
+	// a pass both look. marks is each window's drain mark as last read or
+	// saved, unmarked the windows read as having none; both under drainMu.
+	drainMu  sync.Mutex
+	marks    map[string]int64
+	unmarked map[string]bool
 }
 
 // Rules is what a person may do to a task on this daemon: built work is
@@ -151,6 +166,7 @@ func (r *Runner) Tick() {
 	if changed {
 		r.Host.TasksChanged()
 	}
+	r.drainPass()
 }
 
 // decide judges every working part, rolls each started task up from its

@@ -16,6 +16,7 @@ type trunkGit struct{}
 
 func (trunkGit) Trunk(string) (string, error)                     { return "main", nil }
 func (trunkGit) AddWorktree(string, string, string, string) error { return nil }
+func (trunkGit) Unpushed(string, string) (int, string, error)     { return 0, "", nil }
 
 // "Send back to worker" end to end on a real pane and the real bus: the
 // button is offered while the worker's pane is open, pressing it puts the

@@ -551,3 +551,27 @@ func TestExecGit_MergeAgainAfterAHandMerge(t *testing.T) {
 		t.Fatalf("fast-forward to what is already the trunk = %v", err)
 	}
 }
+
+// Unpushed names the trunk's upstream and counts what it lacks; a trunk
+// with none says so, and is no error.
+func TestExecGit_Unpushed(t *testing.T) {
+	repo := gitRepo(t)
+	g := ExecGit{}
+	if n, up, err := g.Unpushed(repo, "main"); err != nil || up != "" || n != 0 {
+		t.Fatalf("no upstream = %d %q %v", n, up, err)
+	}
+	remote := t.TempDir()
+	for _, args := range [][]string{
+		{"-C", remote, "init", "-q", "--bare"},
+		{"-C", repo, "remote", "add", "origin", remote},
+		{"-C", repo, "push", "-q", "-u", "origin", "main"},
+		{"-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "two"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if n, up, err := g.Unpushed(repo, "main"); err != nil || up != "origin/main" || n != 1 {
+		t.Fatalf("one ahead = %d %q %v", n, up, err)
+	}
+}

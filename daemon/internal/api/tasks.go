@@ -35,6 +35,9 @@ type taskStore interface {
 	WaitingTaskNotices() ([]store.TaskNotice, error)
 	EndTaskNotice(id string, sentAt int64, failed string) error
 	PruneTaskNotices(beforeMillis int64) error
+	// The runner's drain marks (taskq/filer.go).
+	GetSetting(key string) (string, error)
+	SetSetting(key, value string) error
 }
 
 // SetTasks wires the task queue's store.

@@ -23,6 +23,16 @@ type memStore struct {
 	partErr  error // SavePart fails with it
 	notices  []store.TaskNotice
 	endErr   error // EndTaskNotice fails with it
+	settings map[string]string
+}
+
+func (m *memStore) GetSetting(key string) (string, error) { return m.settings[key], nil }
+func (m *memStore) SetSetting(key, value string) error {
+	if m.settings == nil {
+		m.settings = map[string]string{}
+	}
+	m.settings[key] = value
+	return nil
 }
 
 func (m *memStore) Tasks() ([]store.Task, error) {
@@ -137,6 +147,31 @@ type fakeHost struct {
 	deaf      bool                        // TellWorker finds no Claude on the bus
 	prompted  func() int64                // when set, the clock a told worker's pane is marked as prompted by
 	domain    string
+	filerErr  error       // TellFiler fails with it
+	filerTry  int         // calls of TellFiler
+	filed     []filerSaid // what filers heard, once per fixed id, as the bus keeps them
+}
+
+// filerSaid is one message the bus took for a task's filer.
+type filerSaid struct {
+	window, filer, msgID, text string
+	quiet                      bool
+}
+
+func (h *fakeHost) TellFiler(windowID, filer, msgID, text string, quiet bool) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.filerTry++
+	if h.filerErr != nil {
+		return h.filerErr
+	}
+	for _, f := range h.filed {
+		if f.msgID == msgID {
+			return nil
+		}
+	}
+	h.filed = append(h.filed, filerSaid{windowID, filer, msgID, text, quiet})
+	return nil
 }
 
 func (h *fakeHost) TaskWorkspace(repo, windowID string) (string, error) {
@@ -209,7 +244,8 @@ type fakeGit struct {
 	ffs         []string               // repos fast-forwarded, in order
 	removed     []string               // worktrees removed after a merge
 	rebased     int
-	onRemove    func() // runs as a merged part's worktree is removed
+	onRemove    func()         // runs as a merged part's worktree is removed
+	ahead       map[string]int // repo -> commits its trunk is ahead of its upstream; absent: no upstream
 }
 
 func (g *fakeGit) TrunkBlocked(repo, trunk string) (FolderBlock, error) {
@@ -298,6 +334,15 @@ func (c *fakeChecks) Run(repo, worktree, trunk string) CheckResult {
 }
 
 func (g *fakeGit) Trunk(string) (string, error) { return "dev", nil }
+func (g *fakeGit) Unpushed(repo, trunk string) (int, string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n, ok := g.ahead[repo]
+	if !ok {
+		return 0, "", nil
+	}
+	return n, "origin/" + trunk, nil
+}
 func (g *fakeGit) AddWorktree(repo, path, branch, base string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

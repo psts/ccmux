@@ -2,6 +2,7 @@ package peers
 
 import (
 	"errors"
+	"fmt"
 	"log"
 )
 
@@ -74,4 +75,46 @@ func (s *Service) NotifyPaneAs(paneID, msgID, text string) error {
 		return s.deliverLocked(ev)
 	}
 	return errors.New("no Claude is on the bus in that pane")
+}
+
+// NotifyNamed sends text, from the bus itself, to whoever name reaches in
+// group, as send_message(to_name=name) would: a present peer called exactly
+// that, else the main session of the repo whose folder is called that
+// (mainsession.go; asleep counts, and the message wakes it). The task
+// runner telling a task's filer that it merged. quiet stores a notice that
+// wakes nobody instead (quiet.go), and a quiet one may wait for an away
+// peer. It never starts a session. msgID is the message's fixed id, as for
+// NotifyPaneAs: said again, it is not stored a second time.
+func (s *Service) NotifyNamed(group, name, msgID, text string, quiet bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	said, err := s.st.HasPeerMsg(msgID)
+	if err != nil || said {
+		return err
+	}
+	if quiet {
+		return s.notifyQuietLocked(group, name, msgID, text)
+	}
+	matches, _ := s.answeringLocked(name, group, "")
+	if len(matches) != 1 {
+		return fmt.Errorf("%d sessions answer to %q in %q, want one", len(matches), name, group)
+	}
+	ev := systemEvent(matches[0], group, text)
+	ev.MsgID = msgID
+	return s.deliverLocked(ev)
+}
+
+// notifyQuietLocked stores a quiet notice from the bus for name in group.
+func (s *Service) notifyQuietLocked(group, name, msgID, text string) error {
+	target := s.quietNamedLocked(name, "", group)
+	if target == nil {
+		return fmt.Errorf("no session answers to %q in %q", name, group)
+	}
+	ev := systemEvent(target, group, text)
+	ev.MsgID, ev.Quiet, ev.SentAt = msgID, true, s.Now().UnixMilli()
+	if _, err := s.st.AppendPeerEvent(ev); err != nil {
+		return err
+	}
+	s.fanToListenersLocked(ev)
+	return nil
 }

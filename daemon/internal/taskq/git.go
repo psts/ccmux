@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,9 @@ type Git interface {
 	// branch from base when it does not exist yet. A path that is already
 	// a worktree is kept as it is: a retried task carries on from its work.
 	AddWorktree(repo, path, branch, base string) error
+	// Unpushed counts the commits trunk has that its upstream lacks, as far
+	// as repo last fetched, and names the upstream ("" for none).
+	Unpushed(repo, trunk string) (n int, upstream string, err error)
 }
 
 // ExecGit runs the git binary.
@@ -87,6 +91,22 @@ func (ExecGit) Trunk(repo string) (string, error) {
 		}
 	}
 	return runGit(repo, "symbolic-ref", "--short", "HEAD")
+}
+
+func (ExecGit) Unpushed(repo, trunk string) (int, string, error) {
+	upstream, err := runGit(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", trunk+"@{upstream}")
+	if err != nil && strings.Contains(err.Error(), "no upstream") {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	count, err := runGit(repo, "rev-list", "--count", upstream+".."+trunk)
+	if err != nil {
+		return 0, upstream, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(count))
+	return n, upstream, err
 }
 
 func (ExecGit) AddWorktree(repo, path, branch, base string) error {

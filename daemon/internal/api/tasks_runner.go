@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"time"
 
 	"ccmux.dev/ccmuxd/internal/jobs"
@@ -39,6 +41,47 @@ func (h taskHost) TellWorker(paneID, msgID, text string) error {
 	}
 	h.mgr.NoteTaskPrompt(paneID)
 	return nil
+}
+
+// TellFiler sends a task's filer text over the bus: the main session of
+// the repo of the workspace called filer in windowID, by its plain name in
+// the window's group (peers.NotifyNamed). A task a repo's planner filed
+// (planner.go) carries the repo's workspace too, so this reaches the
+// repo's main session, not the planner: wanted, since the planner ends
+// when its cache is cold and the main session is the repo's lead.
+func (h taskHost) TellFiler(windowID, filer, msgID, text string, quiet bool) error {
+	if h.peers == nil {
+		return errors.New("this daemon runs no peers bus")
+	}
+	group, repo, err := h.filerOnBus(windowID, filer)
+	if err != nil {
+		return err
+	}
+	return h.peers.NotifyNamed(group, repo, msgID, text, quiet)
+}
+
+// filerOnBus is the bus group of windowID (its name) and the folder name
+// of the repo whose workspace in it is called filer. Two workspaces of
+// that name in different repos are not guessed between.
+func (h taskHost) filerOnBus(windowID, filer string) (group, repo string, err error) {
+	members, _, names, err := h.mgr.WindowsStrict()
+	if err != nil {
+		return "", "", fmt.Errorf("the windows were not read: %w", err)
+	}
+	if group = names[windowID]; group == "" {
+		return "", "", fmt.Errorf("window %q has no name on the bus", windowID)
+	}
+	repos := map[string]bool{}
+	for _, ws := range h.mgr.List() {
+		if ws.Name == filer && ws.Agent == "" && ws.RepoPath != "" && members[ws.ID] == windowID {
+			repo = filepath.Base(ws.RepoPath)
+			repos[repo] = true
+		}
+	}
+	if len(repos) != 1 {
+		return "", "", fmt.Errorf("%d repos have a session called %q in window %q, want one", len(repos), filer, windowID)
+	}
+	return group, repo, nil
 }
 
 func (h taskHost) TaskWorkspace(repo, windowID string) (string, error) {

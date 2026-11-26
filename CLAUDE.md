@@ -114,6 +114,21 @@ a person), the task's row, the slots.
   on every pass until the bus took it, under a fixed id the bus keeps one
   message for. Send a worker anything about a merge through it, never with a
   bare `TellWorker`.
+- **The session that filed a task is told when it lands** (task #215,
+  `taskq/filer.go`, `Host.TellFiler` → `peers.NotifyNamed`). Each merge
+  that lands sends the filer a quiet notice (`task-landed-<n>`). When its
+  window then has nothing waiting, running, needing a person, built,
+  merging or failed (planning does not count), every filer of what landed
+  since the last drain is woken once (`queue-drained-<window>-<top>-<filer>`)
+  with what landed, each repo's trunk against its upstream, and the push
+  rule (dev: `/push`; main only: tell the person it is ready for `/ship`).
+  "Since the last drain" is the setting `task-drain:<window>` (a finish
+  time), seeded at a window's first landing; a pass also looks, so a cancel
+  that empties the queue counts. The filer is `FiledBy`, a workspace name:
+  it reaches the repo's main session by the repo's folder name, so a
+  planner's task tells the main session. A builder or an unknown filer is
+  skipped and logged; a failed send never touches the row. **The daemon
+  never pushes.**
 - **Watch one:** `journalctl --user -u 'ccmux-job@<id>'` is its log (the checks'
   own lines are in it); `systemctl --user list-units 'ccmux-job@*'` lists the
   ones running. The thread page shows the step and the time, and

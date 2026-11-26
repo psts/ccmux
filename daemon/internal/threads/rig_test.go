@@ -176,7 +176,8 @@ type fakeGit struct {
 	landHook    func()            // runs as the first check starts
 }
 
-func (g *fakeGit) Trunk(string) (string, error) { return "main", nil }
+func (g *fakeGit) Trunk(string) (string, error)                 { return "main", nil }
+func (g *fakeGit) Unpushed(string, string) (int, string, error) { return 0, "", nil }
 func (g *fakeGit) AddWorktree(repo, path, branch, base string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

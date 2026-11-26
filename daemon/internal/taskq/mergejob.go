@@ -349,6 +349,7 @@ func (r *Runner) mergeLanded(job store.Job, ask mergeAsk, note string) error {
 		return err
 	}
 	r.changed(was)
+	r.told(ask.TaskID)
 	// Not only when the row was merging just now: a daemon cut off right
 	// after that save comes back here with the row already done, and the
 	// tidy-up still to start.
