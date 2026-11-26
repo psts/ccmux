@@ -15,12 +15,17 @@
 
   const isHelper = (s) => !!s && s.role === "helper";
 
-  // sideOf is a main session's side thread: the helpers it asked for when
-  // it named another repo (the daemon's threads/side.go, a thread row of
-  // kind "side" led by the main session, which is itself in no thread).
-  // null for any other session.
+  // leadsSide says session leads a side thread of its own: a repo's main
+  // session, or its planner (the session that turns the repo's to-do items
+  // into tasks). Both are in no thread themselves.
+  const leadsSide = (s) => !!s && !s.threadId && (s.kind === "lead" || s.kind === "planner");
+
+  // sideOf is a main session's or a planner's side thread: the helpers it
+  // asked for when it named another repo (the daemon's threads/side.go, a
+  // thread row of kind "side" led by that session, which is itself in no
+  // thread). null for any other session.
   function sideOf(session, threads) {
-    if (!session || session.threadId || session.kind !== "lead") return null;
+    if (!leadsSide(session)) return null;
     return (threads || []).find((t) => t.kind === "side" && t.leadSession === session.id) || null;
   }
 
@@ -33,8 +38,9 @@
     return side ? side.id : 0;
   }
 
-  // leads says session leads its team: a thread's lead, or a main session.
-  const leads = (s) => s.role === "lead" || (s.kind === "lead" && !s.threadId);
+  // leads says session leads its team: a thread's lead, a main session, or
+  // a planner.
+  const leads = (s) => s.role === "lead" || leadsSide(s);
 
   // membersOf is the sessions of session's team that have not ended, the
   // lead first; just the session itself when it has none. A side thread's
@@ -117,7 +123,7 @@
 
   // whereOf is where one member of a team works, in a few words.
   function whereOf(s, side) {
-    if (!s.threadId) return "repo folder · main session";
+    if (!s.threadId) return s.kind === "planner" ? "repo folder · planner" : "repo folder · main session";
     if (!s.worktree) return "repo folder · read only";
     return side ? "scratch copy · never merged" : "worktree · " + (s.branch || "");
   }
@@ -139,7 +145,7 @@
     if (isBuilder(session)) return builderLine(session, members, workspaces, group);
     const lead = members.find(leads);
     const helpers = members.filter(isHelper).map((s) => repoOf(s, workspaces));
-    const leadRepo = lead ? repoOf(lead, workspaces) : "?";
+    const leadRepo = lead ? repoOf(lead, workspaces) + (lead.kind === "planner" ? "'s planner" : "") : "?";
     if (isHelper(session)) return `${group} · helper in ${repoOf(session, workspaces)} · lead: ${leadRepo}`;
     const team = helpers.length ? ` · helper${helpers.length === 1 ? "" : "s"}: ${helpers.join(", ")}` : "";
     return `${group} · lead: ${leadRepo}${team}`;
@@ -187,7 +193,7 @@
     return say ? { running: false, stopping: false, text: say(merge) } : null;
   }
 
-  const api = { isHelper, sideOf, teamId, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, changeGroups, elapsed, mergeLine };
+  const api = { isHelper, leadsSide, sideOf, teamId, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, changeGroups, elapsed, mergeLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadTeam = api;
 })(typeof window !== "undefined" ? window : this);

@@ -3,12 +3,18 @@
 // draws under each repo (threadview.js: how many items wait, and how urgent
 // the worst is), and shows one repo's list in the main area, in place of
 // the conversation, where a person adds items, re-ranks them, ticks them
-// off, deletes them and makes one a task. How the list reads is
-// threadtodo.js; the rules are the daemon's (internal/todos).
+// off, deletes them and makes one a task. Make task puts the item in the
+// repo's planning line: the daemon sends it to the repo's planner, a
+// session of its own that plans it and files it, and never to the repo's
+// main session. How the list reads is threadtodo.js; the rules are the
+// daemon's (internal/todos).
 //
 // create() takes the page:
 //   user()      the name the page signs with
-//   model()     the model a repo's lead is started on when it has none yet
+//   model()     the model a repo's planner is started on when it has none yet
+//   sessions()  the sessions the page knows, for the link to a repo's planner
+//   sessionHref(id)  the address of a session's conversation
+//   openSession(id)  show that conversation here
 //   call(method, path, body)   the page's daemon call; it throws with the reason
 //   leave()     take the conversation (and the task queue) off screen
 //   changed()   the counts or the open list changed: redraw the page
@@ -143,10 +149,22 @@
       row.dataset.id = String(t.id);
       const urgency = urgencyPicker(t.urgency, "Urgency");
       urgency.onchange = () => send("PATCH", `/v1/todos/${t.id}`, { urgency: urgency.value });
-      const chip = T.chip(t);
-      const meta = add(el("div", "rt-meta"), el("span", "rt-id", "#" + t.id), el("span", "", T.byline(t, now, ago)), chip ? el("span", "rt-chip", chip) : null,
+      const meta = add(el("div", "rt-meta"), el("span", "rt-id", "#" + t.id), el("span", "", T.byline(t, now, ago)), chipEl(t),
         t.note ? el("span", "rt-note", t.note) : null);
       return add(row, urgency, add(el("div", "rt-body"), el("div", "rt-item-text", t.text), meta), actionsEl(t));
+    }
+
+    // chipEl is where an item someone has taken is. One in the planning
+    // line links to the planner's conversation, when the repo has a planner
+    // now (one that ended is started again by the daemon within a minute).
+    function chipEl(t) {
+      const chip = T.chip(t);
+      if (!chip) return null;
+      const planner = t.status === "planning" ? T.plannerOf(page.sessions(), q.repos, t.repo) : null;
+      if (!planner) return el("span", "rt-chip", chip);
+      const link = Object.assign(el("a", "rt-chip rt-chip-link", chip), { href: page.sessionHref(planner.id), title: `Open ${q.name}'s planner` });
+      link.onclick = (e) => { e.preventDefault(); page.openSession(planner.id); };
+      return link;
     }
 
     function doneSection(done, now) {
@@ -175,15 +193,18 @@
 
     // --- acting ---
 
-    // makeTask hands the item to the repo's own session, which plans it and
-    // files it; the daemon starts that session when the repo has none yet.
-    const makeTask = (t) => send("POST", `/v1/todos/${t.id}/task`, { workspaceId: q.ws, sender: page.user(), model: page.model() },
-      `Sent #${t.id} to ${q.name}'s session to plan and file as a task.`);
+    // makeTask puts the item in the repo's planning line: the daemon sends
+    // it to the repo's planner, which plans it and files it, and starts
+    // that planner when the repo has none. sendAgain is the same call for
+    // an item that is in the line already.
+    const toPlanner = (t, said) => send("POST", `/v1/todos/${t.id}/task`, { workspaceId: q.ws, sender: page.user(), model: page.model() }, said);
+    const makeTask = (t) => toPlanner(t, `Added #${t.id} to ${q.name}'s planning line.`);
+    const sendAgain = (t) => toPlanner(t, `Sent #${t.id} to ${q.name}'s planner again.`);
 
     // What each button does, by its action (threadtodo.js's actions).
     const acts = {
       task: makeTask,
-      again: makeTask,
+      again: sendAgain,
       done: (t) => send("PATCH", `/v1/todos/${t.id}`, { status: "done", by: page.user() }),
       reopen: (t) => send("PATCH", `/v1/todos/${t.id}`, { status: "open" }),
       delete: (t) => { if (page.confirm(`Delete to-do #${t.id}? It is gone for good.`)) send("DELETE", `/v1/todos/${t.id}`); },

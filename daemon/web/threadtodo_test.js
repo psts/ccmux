@@ -29,23 +29,42 @@ test("summary counts what waits for someone, names the highest urgency there, an
   const got = T.summary([
     item(1, { urgency: "low" }), item(2, { urgency: "medium" }), item(3, { urgency: "medium" }),
     item(4, { urgency: "high", status: "tasked" }), item(5, { urgency: "high", status: "done" }),
+    item(6, { urgency: "high", status: "planning" }), item(7, { status: "planning" }),
   ]);
-  assert.deepEqual(got, { open: 3, tasked: 1, top: "medium", text: "2 medium · 1 low · 1 tasked" },
-    "a high item that a task already has does not make the row high");
-  assert.deepEqual(T.summary([item(1, { urgency: "high" })]), { open: 1, tasked: 0, top: "high", text: "1 high" });
-  assert.deepEqual(T.summary([item(1, { status: "done" })]), { open: 0, tasked: 0, top: "", text: "" });
-  assert.deepEqual(T.summary(undefined), { open: 0, tasked: 0, top: "", text: "" });
+  assert.deepEqual(got, { open: 3, planning: 2, tasked: 1, top: "medium", text: "2 medium · 1 low · 2 planning · 1 tasked" },
+    "a high item that the planner or a task already has does not make the row high");
+  assert.deepEqual(T.summary([item(1, { urgency: "high" })]), { open: 1, planning: 0, tasked: 0, top: "high", text: "1 high" });
+  assert.deepEqual(T.summary([item(1, { status: "planning" })]), { open: 0, planning: 1, tasked: 0, top: "", text: "1 planning" },
+    "an item in the planning line is counted, like one a task has");
+  assert.deepEqual(T.summary([item(1, { status: "done" })]), { open: 0, planning: 0, tasked: 0, top: "", text: "" });
+  assert.deepEqual(T.summary(undefined), { open: 0, planning: 0, tasked: 0, top: "", text: "" });
 });
 
-test("chip says where a tasked item is, and nothing for the rest", () => {
+test("chip says where an item someone has taken is, and nothing for the rest", () => {
+  assert.equal(T.chip(item(1, { status: "planning" })), "planning");
   assert.equal(T.chip(item(1, { status: "tasked", taskId: 41 })), "task #41");
-  assert.equal(T.chip(item(1, { status: "tasked" })), "sent to the repo's session to file");
+  assert.equal(T.chip(item(1, { status: "tasked" })), "sent to the repo's session to file", "sent before there were planners");
   assert.equal(T.chip(item(1)), "");
   assert.equal(T.chip(item(1, { status: "done", taskId: 41 })), "", "a done item's task is history");
 });
 
+test("plannerOf is the planner of the list's repo, in whichever of its sessions it runs", () => {
+  const repos = { ws1: "/p/app", ws1b: "/p/app", ws2: "/p/blog" };
+  const sessions = [
+    { id: "lead1", workspaceId: "ws1", kind: "lead", state: "running" },
+    { id: "old", workspaceId: "ws1", kind: "planner", state: "done" },
+    { id: "plan1", workspaceId: "ws1b", kind: "planner", state: "asleep" },
+    { id: "plan2", workspaceId: "ws2", kind: "planner", state: "running" },
+  ];
+  assert.equal(T.plannerOf(sessions, repos, "/p/app").id, "plan1", "not the lead, not one that ended, and by the list's key");
+  assert.equal(T.plannerOf(sessions, repos, "/p/blog").id, "plan2");
+  assert.equal(T.plannerOf(sessions, repos, "/p/none"), null);
+  assert.equal(T.plannerOf(undefined, undefined, "/p/app"), null);
+});
+
 test("actions are the buttons each kind of item gets", () => {
   assert.deepEqual(T.actions(item(1)), ["task", "done", "delete"]);
+  assert.deepEqual(T.actions(item(1, { status: "planning" })), ["again", "reopen", "done", "delete"], "in the planner's line: send it again, or put it back");
   assert.deepEqual(T.actions(item(1, { status: "tasked" })), ["again", "done", "delete"], "sent, nothing filed yet: it can be sent again");
   assert.deepEqual(T.actions(item(1, { status: "tasked", taskId: 41 })), ["done", "delete"], "a task has it: no second task");
   assert.deepEqual(T.actions(item(1, { status: "done" })), ["reopen", "delete"]);

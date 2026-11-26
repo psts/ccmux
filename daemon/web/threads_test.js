@@ -1396,19 +1396,66 @@ test("a delete that is not confirmed deletes nothing, and a refusal is said on t
   assert.ok(status.classList.contains("bad"));
 });
 
-test("Make task sends the item to its repo's session through the daemon, and an item sent but not filed can be sent again", async () => {
-  const { p, state, repoBox, changes, itemOf } = await todoPage([todoItem(1), todoItem(2, { status: "tasked" })]);
-  repoBox("app").querySelector(".side-todo").click();
+test("Make task puts the item in the repo's planning line through the daemon; one in the line can be sent again or put back", async () => {
+  const { p, state, repoBox, changes, itemOf } = await todoPage([todoItem(1), todoItem(2, { status: "planning" }), todoItem(3, { status: "tasked" })]);
+  const pill = repoBox("app").querySelector(".side-todo");
+  assert.equal(pill.title, "To-do: 1 low · 1 planning · 1 tasked", "what is in the planning line is counted, and does not wait for anyone");
+  assert.equal(pill.querySelector(".sd-count").textContent, "1");
+  pill.click();
   await p.settle();
-  assert.deepEqual(itemOf(2).querySelectorAll(".rt-actions button").map((b) => b.textContent), ["Send again", "Done", "Delete"]);
-  assert.equal(itemOf(2).querySelector(".rt-chip").textContent, "sent to the repo's session to file");
-  state.todos = [todoItem(1, { status: "tasked" }), todoItem(2, { status: "tasked" })]; // what the daemon answers once the item is sent
+  assert.equal(itemOf(2).className, "rt-item u-low s-planning");
+  assert.deepEqual(itemOf(2).querySelectorAll(".rt-actions button").map((b) => b.textContent), ["Send again", "Put back", "Done", "Delete"]);
+  const chip = itemOf(2).querySelector(".rt-chip");
+  assert.equal(chip.textContent, "planning");
+  assert.equal(chip.tagName, "SPAN", "the repo has no planner yet (the daemon starts one): the chip links nowhere");
+  assert.deepEqual(itemOf(3).querySelectorAll(".rt-actions button").map((b) => b.textContent), ["Send again", "Done", "Delete"], "sent to the repo's session before there were planners");
+  assert.equal(itemOf(3).querySelector(".rt-chip").textContent, "sent to the repo's session to file");
+
+  state.todos = [todoItem(1, { status: "planning" }), todoItem(2, { status: "planning" }), todoItem(3, { status: "tasked" })]; // what the daemon answers once the item is in the line
   itemOf(1).querySelector(".rt-act-task").click();
   await p.settle();
   assert.deepEqual(changes(), [["POST", "/v1/todos/1/task", { workspaceId: "ws1", sender: "Pat", model: "" }]]);
-  assert.equal(p.$("repo-todo").querySelector(".rt-status").textContent, "Sent #1 to app's session to plan and file as a task.");
-  assert.equal(itemOf(1).className, "rt-item u-low s-tasked", "the list is read again and shows it tasked");
-  assert.equal(p.book.calls.filter((c) => c.method === "POST" && /^\/v1\/sessions/.test(c.url)).length, 0, "the daemon reaches the session; the page starts none");
+  assert.equal(p.$("repo-todo").querySelector(".rt-status").textContent, "Added #1 to app's planning line.");
+  assert.equal(itemOf(1).className, "rt-item u-low s-planning", "the list is read again and shows it in the line");
+  assert.equal(p.book.calls.filter((c) => c.method === "POST" && /^\/v1\/sessions/.test(c.url)).length, 0, "the daemon makes the planner; the page starts no session and prompts none");
+
+  itemOf(2).querySelector(".rt-act-again").click();
+  await p.settle();
+  assert.deepEqual(changes()[1], ["POST", "/v1/todos/2/task", { workspaceId: "ws1", sender: "Pat", model: "" }]);
+  assert.equal(p.$("repo-todo").querySelector(".rt-status").textContent, "Sent #2 to app's planner again.");
+  itemOf(2).querySelector(".rt-act-reopen").click();
+  await p.settle();
+  assert.deepEqual(changes()[2], ["PATCH", "/v1/todos/2", { status: "open" }], "Put back takes it out of the line");
+});
+
+test("an item in the planning line links to the repo's planner, which is a session row called Planner", async () => {
+  const planner = { id: "plan1", workspaceId: "ws1", kind: "planner", title: "Planner", cwd: "/p/app", model: "", state: "running", attention: "idle", paneId: "pane9", createdAt: 5 };
+  const blog = { id: "ws2", name: "blog", repoPath: "/p/blog-worktree", git: { isGitRepo: true, branch: "main" } };
+  const p = await boot({
+    workspaces: [repo, blog], sessions: [lead, planner], search: "?s=lead1",
+    windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "ws2"], taskSlots: 1 }],
+    routes: [[/^GET \/v1\/todos$/, () => ({ todos: [todoItem(1, { status: "planning" }), todoItem(2, { repo: "/p/blog", status: "planning" })], repos: { ws1: "/p/app", ws2: "/p/blog" } })]],
+  });
+  const repoBox = (name) => p.$("tree").querySelectorAll(".repo").find((r) => r.querySelector(".row-name").textContent === name);
+  assert.match(p.$("meta").textContent, /main session · 0 threads/, "the planner is not counted as a thread of the main session");
+  assert.deepEqual(repoBox("app").querySelectorAll(".row-name").map((n) => n.textContent), ["app", "Planner"], "the planner is a row under its repo, by that name");
+
+  repoBox("app").querySelector(".side-todo").click();
+  await p.settle();
+  const chip = p.$("repo-todo").querySelectorAll(".rt-item").find((i) => i.dataset.id === "1").querySelector(".rt-chip");
+  assert.equal(chip.tagName, "A");
+  assert.equal(chip.textContent, "planning");
+  assert.equal(chip.getAttribute ? chip.getAttribute("href") || chip.href : chip.href, "/threads.html?s=plan1");
+  chip.onclick({ preventDefault() {} });
+  await p.settle();
+  assert.equal(p.$("page").classList.contains("todo-mode"), false, "the planner's conversation takes the list's place");
+  assert.equal(p.$("title").textContent, "Planner");
+  assert.match(p.$("meta").textContent, /app's planner · plans to-do items and files them as tasks/);
+
+  repoBox("blog").querySelector(".side-todo").click();
+  await p.settle();
+  const other = p.$("repo-todo").querySelectorAll(".rt-item").find((i) => i.dataset.id === "2").querySelector(".rt-chip");
+  assert.equal(other.tagName, "SPAN", "blog has no planner: app's is not offered for its line");
 });
 
 test("a todos-changed frame reads the lists again, and picking a repo or the task queue closes the list", async () => {

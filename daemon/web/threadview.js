@@ -353,7 +353,7 @@
     if (!D) return null;
     const s = D.sum(r);
     const on = D.on(r);
-    if (!s.open && !s.tasked && !on && !ctx.inRepo(r)) return null;
+    if (!s.open && !s.planning && !s.tasked && !on && !ctx.inRepo(r)) return null;
     const b = el("button", "side-todo" + (on ? " on" : ""));
     b.type = "button";
     b.title = "To-do: " + (s.text || "nothing open");

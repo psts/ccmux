@@ -134,6 +134,8 @@
   const Todo = window.ccmuxThreadTodoView.create({
     user: () => S.user, model: () => S.draftModel, call, changed: () => schedule(), confirm: (q) => confirm(q),
     leave: () => { Tasks.close(); pick({ kind: "none" }, S.sel.kind !== "none"); },
+    // An item in a planning line links to the repo's planner.
+    sessions: () => S.sessions, sessionHref: (id) => R.threadHref({ kind: "session", id }), openSession: (id) => select({ kind: "session", id }),
   });
 
   // --- the daemon ---
@@ -424,9 +426,10 @@
     const group = groupOf(ws);
     if (sess && sess.threadId) return { title: Model.titleOf(sess, ws), meta: Team.metaLine(sess, S.sessions, S.workspaces, group, S.threads) };
     if (sess && sess.kind === "agent") return { title: Model.titleOf(sess, ws), meta: `${group} · role agent${sess.agentVersion ? " · base " + sess.agentVersion : ""} · a message starts it` };
+    if (sess && sess.kind === "planner") return { title: Model.titleOf(sess, ws), meta: `${group} · ${repo}'s planner · plans to-do items and files them as tasks` };
     if (sess) {
       const lead = sess.kind === "lead";
-      const filed = S.sessions.filter((s) => s.workspaceId === sess.workspaceId && s.kind !== "lead" && s.state !== "done").length;
+      const filed = S.sessions.filter((s) => s.workspaceId === sess.workspaceId && s.kind !== "lead" && s.kind !== "planner" && s.state !== "done").length;
       return { title: Model.titleOf(sess, ws), meta: lead ? `${group} · main session · ${filed} thread${filed === 1 ? "" : "s"}` : `${group} · lead: ${repo}` };
     }
     if (S.sel.kind === "draft" && ws) {
@@ -705,7 +708,7 @@
     View.helpersTab($("tab-team"), Team.helperRows(sess, S.sessions, S.workspaces, S.threads), {
       isPicked: (r) => !!sess && r.id === sess.id,
       pick: (r) => select({ kind: "session", id: r.id }),
-      side: isSideTeam(team) || (!!sess && sess.kind === "lead" && !sess.threadId),
+      side: isSideTeam(team) || Team.leadsSide(sess),
       canStandDown: !!team && !!sess && (sess.role === "lead" || !sess.threadId),
       standDown: (r) => threadAct("stand-down", { repo: r.name }, standDownAsk(r.name, team)),
     });

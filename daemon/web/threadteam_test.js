@@ -145,3 +145,27 @@ test("the Helpers tab of a main session shows its helpers and where each works",
   assert.equal(t.teamState(mainApp, withSide, sides), "waiting", "a helper's card needs you, so the main session does");
   assert.equal(t.subLine(mainApp, withSide, workspaces, undefined, sides), "with admin, backend · needs you");
 });
+
+// A repo's planner (kind planner, in no thread) leads a side thread of its
+// own, #11, beside the main session's #9.
+const plannerApp = { id: "PL", workspaceId: "app", kind: "planner", title: "Planner", state: "running", attention: "idle", createdAt: 5, name: "app-s-99aa88bb" };
+const planBackend = { id: "PB", workspaceId: "api", threadId: 11, role: "helper", state: "running", attention: "idle", createdAt: 6, name: "backend-for-app-planner", readOnly: true };
+const bothSides = [...sides, { id: 11, kind: "side", leadSession: "PL", state: "open" }];
+const withPlanner = [...withSide, plannerApp, planBackend];
+
+test("a planner's side helpers are its team, apart from the main session's", () => {
+  assert.equal(t.leadsSide(plannerApp), true);
+  assert.equal(t.leadsSide(mainApp), true);
+  assert.equal(t.leadsSide(plain), false);
+  assert.equal(t.leadsSide(null), false);
+  assert.equal(t.teamId(plannerApp, bothSides), 11);
+  assert.equal(t.teamId(plannerApp, sides), 0, "a planner that never asked has no team yet");
+  assert.deepEqual(t.membersOf(plannerApp, withPlanner, bothSides).map((s) => s.id), ["PL", "PB"]);
+  assert.deepEqual(t.membersOf(mainApp, withPlanner, bothSides).map((s) => s.id), ["M", "SA", "SB"], "the main session's team has none of the planner's");
+  assert.deepEqual(t.helperRows(plannerApp, withPlanner, workspaces, bothSides), [
+    { id: "PL", name: "app", bus: "app-s-99aa88bb", role: "lead", state: "idle", doing: "Idle.", where: "repo folder · planner" },
+    { id: "PB", name: "backend", bus: "backend-for-app-planner", role: "helper", state: "idle", doing: "Idle.", where: "repo folder · read only" },
+  ]);
+  assert.equal(t.metaLine(planBackend, withPlanner, workspaces, "ChartLabs", bothSides), "ChartLabs · helper in backend · lead: app's planner");
+  assert.equal(t.subLine(plannerApp, withPlanner, workspaces, undefined, bothSides), "with backend · idle");
+});

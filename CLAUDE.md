@@ -481,7 +481,8 @@ that repo's own main session (`internal/threads/side.go`).
 - **It also ends when its main session moves on** (`Service.MainMovedOn`):
   a new conversation that was really made (a clean start or Start over,
   heard from the runner's `CleanStarted`; a refused one or a resend is not
-  heard) and filing a task each stand the helpers down. `CleanStarted` runs
+  heard) and filing a task each stand the helpers down (a planner's are
+  not stood down by its filings, next section). `CleanStarted` runs
   on its own goroutine, off the session's lock: a person's stand-down holds
   the side thread's lock while it tells the main session, so calling it
   under the session's lock deadlocked (caught in review, test
@@ -489,7 +490,8 @@ that repo's own main session (`internal/threads/side.go`).
 - A helper naming its main session's repo reaches the main session itself
   (`HelperRoute.Pane`). A main session ending stands its helpers down.
 - **Everyone else who names a repo reaches its main session** (task #199,
-  `peers/mainsession.go`): a role agent, a task builder, a helper naming its
+  `peers/mainsession.go`), a repo's planner excepted (next section): a role
+  agent, a task builder, a helper naming its
   own repo, a terminal session, the bus's tools called by name. The main
   session is on the bus as `<repo>-s-<id>` and never takes the plain name,
   so a by-name send, quiet notice or delegation that finds no present peer
@@ -509,6 +511,56 @@ that repo's own main session (`internal/threads/side.go`).
   spawn as it was, and so does a name that is no repo of the window.
 - **Not covered:** the tasks tool still wants a part in the filing repo.
 - Main sessions read their own rule on the bus (`buscontext.Reader.Main`).
+
+## Make task goes to a repo's planner (Linux)
+
+Since task #205 "Make task" on a repo's to-do list never prompts the repo's
+main session. The item goes into the repo's planning line (to-do status
+`planning`, with when it entered it) and to the repo's planner: a runner
+session of kind `planner`, one per repo, in the repo's own folder, in no
+thread, not walled, titled "Planner" (`api/planner.go`,
+`store/planners.go`). It plans each item and files it with the tasks tool.
+
+- **Planning is set only by Make task** (`todos.Book.Plan`, with `Unplan`
+  for an item that reached no planner). A PATCH with `status: planning` is
+  refused: nothing would have been sent. An item leaves the line when it is
+  filed, ticked off or put back; a person doing the last three is said to
+  the planner (`api.leftLine`), or it would file the task anyway.
+- **One planner per repo, not per workspace.** The index is per workspace
+  (`sessions_one_planner`); `api.plannerOf` looks the planner up by the
+  list's key, so two sessions of one repo share it. Make task and the
+  minute pass run under one lock (`plannerMu`).
+- **A new planner gets the whole line** in one message; a planner that is
+  there gets the one item, with the others listed under it.
+- **`todo` on the tasks tool's file action is a number or a list** (the
+  shim's schema is `anyOf`; the daemon reads both, `api.todoList`), so a
+  planner that merges items into one task links them all.
+- **The minute pass** (`api.PlannerPass`, on the side helpers' timer):
+  a planner whose line is empty ends once `Supervisor.Cold` says so and the
+  bus says it owes no delegation; a line with no planner (a person ended
+  it) gets a new one, a fresh conversation on the last one's model, sent
+  the whole line. A planner with an item still in its line is never ended
+  by the daemon, however quiet: the item's chip links to its conversation
+  and a person sends it again or puts it back. A new planner that could
+  not be sent its line is ended at once, or it would never go cold.
+- **It asks other repos through side helpers of its own**, like a main
+  session (`threads.leadsSide`), named `<repo>-for-<its repo>-planner`, in
+  a side thread it leads. Filing a task does not stand them down
+  (`api.filedStandsHelpersDown`); they end when cold, when the planner
+  starts over, or with the planner.
+- **The bus never hands a planner's by-name message to a repo's main
+  session, and never starts one for it** (`peers.plannerBarLocked`): send,
+  delegate, quiet, `spawn_if_missing`, `to_group`. Its own repo's name is
+  refused whoever would answer. The check reads the manager's pane mark
+  (`RunnerPaneInfo.Planner`, set before the session starts), not the
+  threads index, which is rebuilt on a goroutine.
+- **Its standing prompt is `threads.plannerBrief`** (through
+  `SessionBrief`); on the bus it reads `buscontext.Reader.Planner`'s rule,
+  and the shim leaves the build-or-file rule out for it.
+- `POST /v1/sessions` still refuses kind `planner`: only the daemon makes
+  one. A person can type in its conversation, rename it, or end it.
+- Items tasked with no task from before (sent to the main session) stay
+  as they are; "Send again" on one puts it in the line.
 
 ## Start over, not Claude Code's /clear (Linux)
 

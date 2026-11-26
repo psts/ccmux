@@ -82,6 +82,18 @@ test("a lead is titled after its repo, a thread after itself", () => {
   assert.equal(m.titleOf({}, { name: "app" }), "New thread");
 });
 
+test("a repo's planner is titled Planner, and is a session of its repo, never its lead", () => {
+  assert.equal(m.titleOf({ kind: "planner", title: "Planner" }, { name: "app" }), "Planner");
+  assert.equal(m.titleOf({ kind: "planner" }, { name: "app" }), "Planner", "never New thread, and never its first prompt");
+  const ws = { id: "ws1", name: "app", repoPath: "/p/app" };
+  const [row] = m.tree([{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1"] }], [ws], [
+    { id: "lead1", workspaceId: "ws1", kind: "lead", state: "running", createdAt: 1 },
+    { id: "plan1", workspaceId: "ws1", kind: "planner", title: "Planner", state: "running", createdAt: 2 },
+  ])[0].repos;
+  assert.equal(row.lead.id, "lead1");
+  assert.deepEqual(row.threads.map((t) => [t.session.id, t.title]), [["plan1", "Planner"]]);
+});
+
 const offered = [
   { value: "default", name: "Default (recommended)", model: "claude-opus-5-5" }, { value: "opus", name: "Opus 5.5", model: "claude-opus-5-5" },
   { value: "claude-fable-5-2[1m]", name: "Fable 5.2", model: "claude-fable-5-2[1m]" }, { value: "haiku", name: "Haiku 5.5", model: "claude-haiku-5-5" },

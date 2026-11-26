@@ -68,10 +68,13 @@
   const repoName = (ws) => ws.name || String(ws.repoPath || "").split("/").filter(Boolean).pop() || "repo";
 
   // titleOf is what a session's row and header show: a lead is its repo, a
-  // thread its title (its first prompt names it; until then it is new).
+  // repo's planner (the session Make task sends to-do items to) is
+  // "Planner" and never its first prompt, a thread its title (its first
+  // prompt names it; until then it is new).
   function titleOf(session, ws) {
     if (session.kind === "agent") return ws ? repoName(ws) : session.title || session.name || "agent";
     if (session.kind === "lead") return ws ? repoName(ws) : session.title || "lead";
+    if (session.kind === "planner") return session.title || "Planner";
     return session.title || "New thread";
   }
 
