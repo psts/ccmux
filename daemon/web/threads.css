@@ -101,11 +101,11 @@ a:hover { color: var(--blue-d); }
    clear of the sidebar's grey and a short mark on its left, so it is found
    at a glance in a long list (option B, 2026-11-26). */
 #tree .row.on, .side-tasks.on, .side-task.on { position: relative; background: var(--sel); }
-#tree .row.on::before, .side-tasks.on::before, .side-task.on::before {
+/* Repos, threads and agents keep the fill but no mark; only the task rows
+   have one (user's call, 2026-11-26). */
+.side-tasks.on::before, .side-task.on::before {
   content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--sel-mark);
 }
-/* A repo's own row keeps the fill but no mark (user's call, 2026-11-26). */
-#tree .repo > .row.on:not(.thread)::before { content: none; }
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--asleep); }
 .dot.running { background: var(--run); }
 .dot.waiting { background: var(--wait); }
