@@ -220,7 +220,13 @@
     // title is the header's line while a list is on show.
     const title = () => ({ title: "To-do", meta: `${q.name} · what its sessions noticed and left, and what you add` });
 
-    return { refresh, open, close, isOpen: () => !!q.ws, title, sidebar };
+    // sessionsChanged hears that the page read its sessions again: a list
+    // on show is redrawn, since an item in the planning line links to the
+    // repo's planner, which may have just been made (the first Make task)
+    // or replaced (the daemon started a new one for a line left behind).
+    const sessionsChanged = () => { if (q.ws) drawList(); };
+
+    return { refresh, open, close, isOpen: () => !!q.ws, title, sidebar, sessionsChanged };
   }
 
   window.ccmuxThreadTodoView = { create };

@@ -1458,6 +1458,29 @@ test("an item in the planning line links to the repo's planner, which is a sessi
   assert.equal(other.tagName, "SPAN", "blog has no planner: app's is not offered for its line");
 });
 
+test("the planning chip follows the planner: made after the list was drawn, then replaced by a new one", async () => {
+  const planner = (id) => ({ id, workspaceId: "ws1", kind: "planner", title: "Planner", cwd: "/p/app", model: "", state: "running", attention: "idle", paneId: "pane-" + id, createdAt: 5 });
+  const live = { sessions: [lead] };
+  const { p, repoBox, itemOf } = await todoPage([todoItem(1, { status: "planning" })], { routes: [[/^GET \/v1\/sessions$/, () => ({ sessions: live.sessions })]] });
+  repoBox("app").querySelector(".side-todo").click();
+  await p.settle();
+  assert.equal(itemOf(1).querySelector(".rt-chip").tagName, "SPAN", "no planner yet");
+  const sessionsChanged = async () => {
+    p.book.sockets[0].onmessage({ data: JSON.stringify({ t: "sessions-changed", workspace: "ws1" }) });
+    p.book.timers.pop().fn();
+    await p.settle();
+  };
+  // The daemon made the planner; no to-do changed, only the sessions.
+  live.sessions = [lead, planner("plan1")];
+  await sessionsChanged();
+  assert.equal(itemOf(1).querySelector(".rt-chip").href, "/threads.html?s=plan1", "the chip links to the planner as soon as the page knows it");
+  // That planner ended and the daemon started a new one for the line.
+  live.sessions = [lead, { ...planner("plan1"), state: "done" }, planner("plan2")];
+  await sessionsChanged();
+  assert.equal(itemOf(1).querySelector(".rt-chip").href, "/threads.html?s=plan2", "never a link to a planner that ended");
+  assert.ok(p.$("page").classList.contains("todo-mode"), "the list stays on screen");
+});
+
 test("a todos-changed frame reads the lists again, and picking a repo or the task queue closes the list", async () => {
   const { p, state, repoBox, items } = await todoPage([todoItem(1)], { routes: [[/^GET \/v1\/tasks/, () => ({ tasks: [], counts: {} })]] });
   repoBox("app").querySelector(".side-todo").click();

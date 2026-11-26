@@ -169,6 +169,7 @@
     drawAll();
     Side.load();
     Caps.listsChanged();
+    Todo.sessionsChanged();
     maybeActed();
     loadTeam();
   }

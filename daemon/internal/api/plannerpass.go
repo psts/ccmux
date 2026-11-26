@@ -107,7 +107,7 @@ func (s *Server) replacePlanner(key string, line []store.Todo) {
 		return
 	}
 	s.plannerSays(key, "")
-	log.Printf("todos: %s's planning line had no planner: started %s with its %d items", name, planner.ID, len(line))
+	log.Printf("todos: %s's planning line had no planner: started %s and sent it the line (%d)", name, planner.ID, len(line))
 }
 
 // plannerHome is the repo session a line's planner is made in: the first of
