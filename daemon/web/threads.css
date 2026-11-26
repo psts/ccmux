@@ -234,6 +234,10 @@ a:hover { color: var(--blue-d); }
 .apply { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--blue); background: var(--blue-bg); color: var(--blue-d); font-size: 12.5px; font-weight: 600; }
 .primary { height: 36px; padding: 0 16px; border-radius: 8px; border: 0; background: var(--blue); color: var(--on-accent); font-size: 13.5px; font-weight: 600; }
 .primary:disabled { opacity: .55; cursor: default; }
+/* The header's Notes button (threadnotesctl.js): an icon the size of ⋯ beside it. */
+.head-icon { height: 30px; width: 32px; padding: 0; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); color: var(--fg2); display: flex; align-items: center; justify-content: center; }
+.head-icon:hover { background: var(--soft); color: var(--fg); }
+.head-icon svg { display: block; }
 .more { position: relative; }
 .more summary { list-style: none; cursor: pointer; height: 30px; width: 32px; border-radius: 7px; border: 1px solid var(--line3); background: var(--card); display: flex; align-items: center; justify-content: center; }
 .more summary::-webkit-details-marker { display: none; }
@@ -624,3 +628,18 @@ span.cap-kind { font-size: 11px; font-weight: 600; color: var(--fg2); background
 #update-bar { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 60; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: calc(100vw - 32px); background: var(--card); color: var(--fg); border: 1px solid var(--line3); border-radius: 10px; padding: 8px 12px; font-size: 13px; box-shadow: 0 4px 14px var(--lift); }
 #update-bar .update-reload { height: 28px; padding: 0 12px; border-radius: 7px; border: 0; background: var(--blue); color: var(--on-accent); font-weight: 600; cursor: pointer; }
 #update-bar .update-dismiss { border: 0; background: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+/* A repo's Notes (threadnotesctl.js): a pop-up that takes most of the
+   window, the text box filling it and scrolling on its own, so the notes
+   open at their end. Full screen on a phone. */
+.overlay.notes-overlay { align-items: stretch; padding: 4vh 4vw; overflow: hidden; }
+.sheet.notes-sheet { max-width: 1200px; height: 100%; overflow: hidden; }
+.notes-head { padding: 12px 12px 12px 18px; border-bottom: 1px solid var(--line); justify-content: flex-start; }
+.notes-sub { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notes-text { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: none; margin: 0; padding: 14px 18px; background: var(--card); color: var(--fg); font: 13px/1.55 var(--mono); }
+.notes-text[readonly] { color: var(--muted); }
+.notes-status { min-height: 33px; padding: 8px 18px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.notes-status.bad { color: var(--red); }
+@media (max-width: 560px) {
+  .overlay.notes-overlay { padding: 0; }
+  .sheet.notes-sheet { border-radius: 0; }
+}

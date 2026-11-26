@@ -226,7 +226,7 @@
     // or replaced (the daemon started a new one for a line left behind).
     const sessionsChanged = () => { if (q.ws) drawList(); };
 
-    return { refresh, open, close, isOpen: () => !!q.ws, title, sidebar, sessionsChanged };
+    return { refresh, open, close, isOpen: () => !!q.ws, repoId: () => q.ws, title, sidebar, sessionsChanged };
   }
 
   window.ccmuxThreadTodoView = { create };

@@ -138,6 +138,14 @@
     sessions: () => S.sessions, sessionHref: (id) => R.threadHref({ kind: "session", id }), openSession: (id) => select({ kind: "session", id }),
   });
 
+  // A repo's Notes (threadnotesctl.js): the old lens's Scratchpad, the same
+  // text, in a pop-up from the header's notepad button.
+  const Notes = window.ccmuxThreadNotesCtl.create({
+    call, fetch: (url, init) => fetch(url, init), user: () => S.user, repo: () => notesRepo(), storage,
+    overlay: () => $("notes-overlay"), sheet: () => $("notes-sheet"),
+    later: (fn, ms) => setTimeout(fn, ms), cancel: (t) => clearTimeout(t), listen: (type, fn) => window.addEventListener(type, fn),
+  });
+
   // --- the daemon ---
 
   async function call(method, path, body) {
@@ -227,6 +235,14 @@
   // roots are the folders the picked session's paths are written without:
   // its repo's, and a thread member's worktree (threadwork.js).
   const roots = () => { const ws = workspace(); return Work.threadRoots(session(), ws ? ws.repoPath || "" : "", S.stream.turns); };
+  // notesRepo is the repo whose Notes the header offers: the one on screen,
+  // or the one whose to-do list is open; none for the task queue, which is
+  // a group's, or for a role agent, which has no repo.
+  function notesRepo() {
+    const id = Todo.isOpen() ? Todo.repoId() : Tasks.isOpen() ? "" : (workspace() || {}).id;
+    const ws = id ? S.workspaces.find((w) => w.id === id) : null;
+    return ws && !ws.agent ? { id: ws.id, name: Model.repoName(ws) } : null;
+  }
   const groupOf = (ws) => { const w = ws && S.windows.find((x) => (x.workspaceIds || []).includes(ws.id)); return w ? w.name : "Other"; };
 
   // --- what is on screen ---
@@ -464,6 +480,7 @@
     // something to show.
     const bar = live || (S.sel.kind === "draft" && !!ws);
     show("more", bar);
+    show("notes", !!notesRepo());
     $("more").classList.toggle("blank", !live);
     show("start-over", live && !agent);
     show("restart", live && !agent); // an agent restarts from its editor
@@ -1090,6 +1107,7 @@
     ["attention", noteAttention],
     ["sessions-changed", reloadSoon], ["workspace-added", reloadSoon], ["workspace-removed", reloadSoon],
     ["workspace-status", reloadSoon], ["workspace-git", reloadSoon],
+    ["workspace-scratchpad", (m) => { Notes.remote(m.workspace); }], // someone saved a repo's notes
   ]);
 
   const reportPresence = () => {
@@ -1126,7 +1144,7 @@
   const editable = (t) => !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
   function onKey(e) {
-    if (e.key === "Escape" && (Caps.escape() || NewRepo.escape() || Hosts.escape() || Settings.escape())) return;
+    if (e.key === "Escape" && (Notes.escape() || Caps.escape() || NewRepo.escape() || Hosts.escape() || Settings.escape())) return;
     if (e.key === "Escape" && S.menu) { S.menu = false; drawCommands(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey || editable(e.target)) return; // a digit typed into the composer is a digit
     if ("1234".includes(e.key) && View.pressKey($("cards"), e.key)) e.preventDefault();
@@ -1195,6 +1213,7 @@
     $("end-thread").onclick = () => threadAct("end", undefined, "Close this thread? Its helpers are stood down. Work that is not merged stays on its branch.");
     $("stop-merge").onclick = () => threadAct("stop-merge", undefined, "Stop this merge? Its checks are ended. A repo that already landed stays landed.");
     $("past").onclick = (e) => Past.open(e);
+    $("notes").onclick = () => Notes.open();
     $("past-back").onclick = () => Past.back();
     $("new-thread").onclick = () => { const ws = workspace(); if (ws) select({ kind: "draft", ws: ws.id, as: "thread" }); };
     $("side-toggle").onclick = () => $("page").classList.toggle("side-open");

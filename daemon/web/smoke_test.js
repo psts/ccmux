@@ -216,7 +216,7 @@ async function scratchEnv(daemon, storage) {
   await settle();
   const winOn = {};
   r.ctx.addEventListener = (type, fn) => { winOn[type] = fn; };
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "scratchpad.js"), "utf8"), r.ctx, { filename: "scratchpad.js" });
+  for (const f of ["notes.js", "scratchpad.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), r.ctx, { filename: f });
   const on = {};
   const ta = { value: "", readOnly: false, selectionStart: 0, selectionEnd: 0, focus() {}, setSelectionRange() {},
     addEventListener: (type, fn) => { on[type] = fn; } };

@@ -68,6 +68,7 @@ class Node {
   setAttribute(k, v) { this.attrs[k] = String(v); }
   addEventListener(type, fn) { this["on" + type] = fn; }
   focus() { this.ownerDocument.activeElement = this; }
+  setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
   click() { if (!this.disabled && this.onclick) return this.onclick({ target: this, preventDefault() {} }); }
   matches(sel) {
     const s = simple(sel);
@@ -1783,6 +1784,64 @@ test("an agent's Earlier lists its conversations, shows one read only, and Back 
 test("a repo's lead has no Earlier", async () => {
   const p = await boot({ sessions: [lead], search: "?s=lead1" });
   assert.equal(p.$("past").classList.contains("hidden"), true);
+});
+
+// --- a repo's Notes ---
+
+const notesShown = (p) => !p.$("notes").classList.contains("hidden");
+
+test("the header's Notes button shows for a repo and its to-do list, not for nothing picked, the task queue or an agent", async () => {
+  assert.equal(notesShown(await boot()), false, "nothing picked");
+  assert.equal(notesShown(await boot({ sessions: [lead], search: "?s=lead1" })), true, "a repo's main session");
+  assert.equal(notesShown(await boot({ search: "?ws=ws1&new=lead" })), true, "a repo with no session yet");
+  const member = { ...lead, id: "t1", kind: "", threadId: 3, role: "lead", cwd: "/p/app-wt/thread-3" };
+  assert.equal(notesShown(await boot({ sessions: [lead, member], search: "?s=t1" })), true, "a thread, on its repo's notes");
+  const home = { id: "radar", name: "radar", agent: "radar", status: "cold", panes: null };
+  const agent = { id: "a1", workspaceId: "radar", kind: "agent", name: "radar", state: "running" };
+  const a = await boot({ workspaces: [repo, home], sessions: [agent], search: "?s=a1", windows: [{ id: "w1", name: "ChartLabs", workspaceIds: ["ws1", "radar"] }] });
+  assert.equal(notesShown(a), false, "a role agent has no repo");
+  const { p, repoBox } = await todoPage([todoItem(1)], { routes: [[/^GET \/v1\/tasks/, () => ({ tasks: [], counts: {} })]] });
+  repoBox("app").querySelector(".side-todo").click();
+  await p.settle();
+  assert.equal(notesShown(p), true, "the repo's to-do list");
+  p.$("tree").querySelector(".side-tasks").click();
+  await p.settle();
+  assert.equal(notesShown(p), false, "the task queue is a group's");
+});
+
+test("Notes opens the repo's own notes in the pop-up, saves on Esc, and a save elsewhere is read again", async () => {
+  const pads = { ws1: "first line\nlast line" };
+  // Before boot()'s GET /v1/workspaces, which would answer this path too.
+  const routes = [
+    [/^GET \/v1\/workspaces\/ws1\/scratchpad/, () => ({ content: pads.ws1, updatedAt: 1, updatedBy: "pat" })],
+    [/^PUT \/v1\/workspaces\/ws1\/scratchpad/, (body) => { pads.ws1 = body.content; return { content: body.content, updatedAt: 2, updatedBy: "Pat" }; }],
+  ];
+  const member = { ...lead, id: "t1", kind: "", threadId: 3, role: "lead", cwd: "/p/app-wt/thread-3" };
+  const p = await boot({ sessions: [lead, member], search: "?s=t1", routes });
+  assert.equal(p.$("notes-overlay").classList.contains("hidden"), true);
+  p.$("notes").click();
+  await p.settle();
+  assert.equal(p.$("notes-overlay").classList.contains("hidden"), false);
+  assert.deepEqual(p.book.calls.filter((c) => c.url.includes("/scratchpad")).map((c) => [c.method, c.url]), [["GET", "/v1/workspaces/ws1/scratchpad?user=Pat"]], "the repo's workspace, never a worktree's");
+  const area = p.$("notes-sheet").querySelector(".notes-text");
+  assert.equal(area.value, "first line\nlast line");
+  assert.equal(area.selectionStart, area.value.length, "the caret at the end");
+  assert.equal(p.$("notes-sheet").querySelector(".notes-sub").textContent, "app · shared with everyone");
+  area.value = "first line\nlast line\nmore";
+  area.oninput();
+  p.doc.dispatchEvent({ type: "keydown", key: "Escape", target: area });
+  await p.settle();
+  assert.equal(p.$("notes-overlay").classList.contains("hidden"), true, "Esc closes it");
+  assert.equal(pads.ws1, "first line\nlast line\nmore", "and saved first");
+  p.$("notes").click();
+  await p.settle();
+  pads.ws1 = "dasha's";
+  const reads = () => p.book.calls.filter((c) => c.method === "GET" && c.url.includes("/scratchpad")).length;
+  const before = reads();
+  p.book.sockets[0].onmessage({ data: JSON.stringify({ t: "workspace-scratchpad", workspace: "ws1" }) });
+  await p.settle();
+  assert.equal(reads(), before + 1);
+  assert.equal(area.value, "dasha's", "nothing unsaved here, so the change is taken");
 });
 
 // --- a repo's Hostnames ---
