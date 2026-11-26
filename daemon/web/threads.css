@@ -396,7 +396,7 @@ a:hover { color: var(--blue-d); }
 .chip { position: relative; width: 72px; height: 72px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line2); background: var(--img-bg); }
 .chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .chip button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, .6); color: #fff; font-size: 12px; line-height: 20px; padding: 0; }
-.commands { position: absolute; left: 12px; right: 12px; bottom: 60px; max-height: 280px; overflow-y: auto; background: var(--card); border: 1px solid var(--line3); border-radius: 10px; box-shadow: 0 6px 20px var(--pop); padding: 6px; z-index: 4; }
+.commands { position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); max-height: min(280px, 45vh); /* above the whole box, never over what was typed */ overflow-y: auto; background: var(--card); border: 1px solid var(--line3); border-radius: 10px; box-shadow: 0 6px 20px var(--pop); padding: 6px; z-index: 4; }
 .cmd { display: flex; gap: 10px; align-items: baseline; width: 100%; text-align: left; border: 0; background: transparent; padding: 7px 10px; border-radius: 6px; }
 .cmd:hover, .cmd.on { background: var(--side); }
 .cmd-name { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
