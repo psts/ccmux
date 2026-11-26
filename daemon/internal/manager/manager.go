@@ -45,6 +45,9 @@ type entry struct {
 	// mainPane is the runner pane of the repo's main session (its session
 	// on the thread page: kind lead, in no thread), "" when it has none.
 	mainPane string
+	// plannerPane is the runner pane of the repo's planner (kind planner),
+	// "" when it has none.
+	plannerPane string
 }
 
 // Manager is the daemon's core. Safe for concurrent use.

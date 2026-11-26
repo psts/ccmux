@@ -98,18 +98,39 @@ func TestTodoToolTextSaysWhenToAddAndIsShort(t *testing.T) {
 	}
 }
 
-// The tasks tool's file action can name the to-do item it is for.
-func TestTasksToolSchemaNamesTheTodoItFiles(t *testing.T) {
+// The tasks tool's file action can name the to-do item it is for, or the
+// several a planner merged into one task.
+func TestTasksToolSchemaNamesTheTodosItFiles(t *testing.T) {
 	for _, tool := range toolsList {
 		if tool["name"] != "tasks" {
 			continue
 		}
 		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 		todo, ok := props["todo"].(map[string]any)
-		if !ok || todo["type"] != "integer" {
-			t.Fatalf("tasks has no integer todo property: %v", props["todo"])
+		if !ok {
+			t.Fatalf("tasks has no todo property: %v", props["todo"])
+		}
+		forms, _ := todo["anyOf"].([]map[string]any)
+		if len(forms) != 2 || forms[0]["type"] != "integer" || forms[1]["type"] != "array" || forms[1]["items"].(map[string]any)["type"] != "integer" {
+			t.Fatalf("todo takes %v, want a number or a list of numbers", todo["anyOf"])
+		}
+		if desc, _ := todo["description"].(string); !strings.Contains(desc, "a list of numbers when one task covers several") {
+			t.Fatalf("the description does not say when to send a list: %q", desc)
 		}
 		return
 	}
 	t.Fatal("no tasks tool")
+}
+
+// An item in a planning line reads as taken: nobody starts on it by hand.
+func TestTodoLine_SaysWhoHasAnItem(t *testing.T) {
+	for status, want := range map[string]string{"planning": "(in the planner's line)", "tasked": "(being filed as a task)", "open": ""} {
+		got := todoLine(listedTodo{ID: 3, Urgency: "low", Text: "Fix it", Status: status})
+		if want == "" && strings.Contains(got, "(") || !strings.Contains(got, want) {
+			t.Errorf("%s: %q, want it to say %q", status, got, want)
+		}
+	}
+	if got := todoLine(listedTodo{ID: 3, Urgency: "low", Text: "Fix it", Status: "tasked", TaskID: 41}); !strings.Contains(got, "(task #41 has it)") {
+		t.Errorf("an item with a task: %q", got)
+	}
 }

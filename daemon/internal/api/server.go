@@ -79,6 +79,14 @@ type Server struct {
 	// routes. todoKeys names the list a folder's items go on.
 	todos    *todos.Book
 	todoKeys *todos.Keys
+	// plannerMu serializes Make task and the planners' minute pass
+	// (planner.go): an item going into a line, the planner made for it and
+	// the message sent are one step. plannerDoors is what ends an idle
+	// planner; plannerSaid what the pass last logged of each line (under
+	// plannerMu).
+	plannerMu    sync.Mutex
+	plannerDoors PlannerDoors
+	plannerSaid  map[string]string
 	// owns keeps each repo's "owns" line for the bus (owns.go); nil shows
 	// none and answers 503 on its routes.
 	owns      *repoowns.Service

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -229,7 +230,7 @@ var todoFiler = taskFiler{repo: "/p/app", session: "app", window: "w1"}
 
 func fileFor(t *testing.T, s *Server, todo int64) int64 {
 	t.Helper()
-	msg := call(t, s, todoFiler, paneTaskReq{Action: "file", Title: "Fix the flaky test", Plan: "p", Todo: todo})
+	msg := call(t, s, todoFiler, paneTaskReq{Action: "file", Title: "Fix the flaky test", Plan: "p", Todo: todoList{todo}})
 	if !strings.Contains(msg, fmt.Sprintf("To-do #%d now follows it", todo)) {
 		t.Fatalf("the filing's message = %q, want it to say the item follows the task", msg)
 	}
@@ -323,7 +324,7 @@ func TestTodos_AFilingForTheWrongItemFilesNothing(t *testing.T) {
 		todo int64
 		want int
 	}{"no such item": {999, http.StatusNotFound}, "another repo's": {other, http.StatusNotFound}, "a done one": {done, http.StatusConflict}} {
-		_, status, err := s.applyPaneTask(todoFiler, paneTaskReq{Action: "file", Title: "Fix it", Plan: "p", Todo: c.todo})
+		_, status, err := s.applyPaneTask(todoFiler, paneTaskReq{Action: "file", Title: "Fix it", Plan: "p", Todo: todoList{c.todo}})
 		if err == nil || status != c.want || !strings.Contains(err.Error(), "file again") {
 			t.Errorf("%s: %d %v, want %d and a way on", name, status, err, c.want)
 		}
@@ -337,5 +338,62 @@ func TestTodos_AFilingForTheWrongItemFilesNothing(t *testing.T) {
 	// A filing for no item is as it always was.
 	if msg := call(t, s, todoFiler, paneTaskReq{Action: "file", Title: "Plain", Plan: "p"}); strings.Contains(msg, "To-do") {
 		t.Fatalf("a plain filing speaks of a to-do: %q", msg)
+	}
+}
+
+// A planner that merges items into one task names them all: each follows
+// the task. One number, the tool's older form, is still one item, and a
+// list with a wrong number files nothing and links nothing.
+func TestTodos_OneTaskCanBeFiledForSeveralItems(t *testing.T) {
+	s, st := todoServer(t)
+	a, b, c := addItem(t, s, "/p/app", "Fix the flaky test"), addItem(t, s, "/p/app", "Fix the other flaky test"), addItem(t, s, "/p/app", "Update the readme")
+	other := addItem(t, s, "/p/backend", "Not this repo's")
+
+	// What the tool sends, as the daemon reads it.
+	for body, want := range map[string]todoList{
+		`{"todo":7}`: {7}, `{"todo":[7,8]}`: {7, 8}, `{"todo":[7,7,0,8]}`: {7, 8}, `{"todo":0}`: {}, `{"todo":[]}`: {}, `{}`: nil,
+	} {
+		var req paneTaskReq
+		if err := json.Unmarshal([]byte(body), &req); err != nil || len(req.Todo) != len(want) {
+			t.Fatalf("%s read as %v, %v; want %v", body, req.Todo, err, want)
+		}
+		for i := range want {
+			if req.Todo[i] != want[i] {
+				t.Fatalf("%s read as %v, want %v", body, req.Todo, want)
+			}
+		}
+	}
+	var bad paneTaskReq
+	if err := json.Unmarshal([]byte(`{"todo":"seven"}`), &bad); err == nil || !strings.Contains(err.Error(), "a list of numbers") {
+		t.Fatalf("a todo that is no number: %v", err)
+	}
+
+	_, status, err := s.applyPaneTask(todoFiler, paneTaskReq{Action: "file", Title: "Both tests", Plan: "p", Todo: todoList{a, other}})
+	if err == nil || status != http.StatusNotFound {
+		t.Fatalf("a list with another repo's item: %d %v", status, err)
+	}
+	if all, _ := st.Tasks(); len(all) != 0 || itemOf(t, st, a).Status != todos.Open {
+		t.Fatalf("the refused filing filed or linked something: %d tasks, #%d %s", len(all), a, itemOf(t, st, a).Status)
+	}
+
+	msg := call(t, s, todoFiler, paneTaskReq{Action: "file", Title: "Both tests", Plan: "p", Todo: todoList{a, b}})
+	all, _ := st.Tasks()
+	for _, id := range []int64{a, b} {
+		if got := itemOf(t, st, id); got.Status != todos.Tasked || got.TaskID != all[0].ID || !strings.Contains(msg, fmt.Sprintf("To-do #%d now follows it", id)) {
+			t.Fatalf("#%d = %+v (%q); want it under task #%d", id, got, msg, all[0].ID)
+		}
+	}
+	if got := itemOf(t, st, c); got.Status != todos.Open {
+		t.Fatalf("an item the filing did not name moved: %+v", got)
+	}
+	merged := all[0]
+	merged.Status = taskq.Done
+	if err := s.saveTask(merged); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{a, b} {
+		if got := itemOf(t, st, id); got.Status != todos.Done {
+			t.Fatalf("the task merged, #%d = %+v", id, got)
+		}
 	}
 }

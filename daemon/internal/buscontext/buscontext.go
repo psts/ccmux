@@ -30,12 +30,15 @@ type Session struct {
 // has no repo of its own and may read the repos it reaches. A repo's main
 // session (Main: its session on the thread page) asks another repo through
 // a helper of its own and files real work there as a task (internal/threads
-// side.go). Self is the reader's own session name, marked in the list; ""
-// for an agent.
+// side.go). A repo's planner (Planner: the session that plans the repo's
+// to-do items and files them as tasks) asks the same way, and never builds.
+// Self is the reader's own session name, marked in the list; "" for an
+// agent.
 type Reader struct {
-	Agent bool   `json:"agent"`
-	Main  bool   `json:"main,omitempty"`
-	Self  string `json:"self,omitempty"`
+	Agent   bool   `json:"agent"`
+	Main    bool   `json:"main,omitempty"`
+	Planner bool   `json:"planner,omitempty"`
+	Self    string `json:"self,omitempty"`
 }
 
 // Agent is one base agent as seen from the window: absent (never added
@@ -93,11 +96,23 @@ const mainRule = "Each repo is owned by its own session, and you are this repo's
 	"When a session delegates work to you, ask it with send_message if anything is unclear, " +
 	"report progress with update_task, and close the task with what you did.\n"
 
-// ruleFor is the rule a repo session reads: a main session's, or the
-// owner rule every other repo session keeps.
+// plannerRule is what a repo's planner is told: another repo is asked
+// through a helper of its own, and work there is a part of the task it
+// files. It is not told to delegate work to a repo: a planner builds
+// nothing, here or there.
+const plannerRule = "Each repo is owned by its own session, and you are this repo's planner. Never read or change another repo yourself: " +
+	"to ask about one or check something there, message it by its plain name (send_message or delegate with to_name=<repo>). " +
+	"That reaches a helper of your own for that repo, started on the spot: it reads, runs checks in a scratch copy and answers you, but never lands a change. " +
+	"Work in another repo is a part of the task you file: name the repo in the tasks tool's parts.\n"
+
+// ruleFor is the rule a repo session reads: a main session's, a planner's,
+// or the owner rule every other repo session keeps.
 func ruleFor(r Reader) string {
-	if r.Main {
+	switch {
+	case r.Main:
 		return mainRule
+	case r.Planner:
+		return plannerRule
 	}
 	return ownerRule
 }
@@ -132,7 +147,7 @@ func sessionsSection(r Reader, list []Session) string {
 	switch {
 	case r.Agent:
 		b.WriteString("\n\nProject sessions in this window (folders on this host; message by name, spawn_if_missing=true starts one not listed above):\n")
-	case r.Main:
+	case r.Main, r.Planner:
 		b.WriteString("\n\nProject sessions in this window (message one by name and a helper of yours answers for it; real work there is a task part):\n")
 	default:
 		b.WriteString("\n\nProject sessions in this window (each owns its repo: delegate work there to it, spawn_if_missing=true starts one not listed above):\n")

@@ -51,9 +51,34 @@ type paneTaskReq struct {
 	// (store.Task.Look; the builder's brief carries it); on an edit, nil
 	// leaves it as it is.
 	Look *bool `json:"look"`
-	// Todo is the to-do item a filing is for (todos_tasks.go): the item is
+	// Todo is the to-do items a filing is for (todos_tasks.go): each is
 	// tasked from then on, and turns done when the task is merged.
-	Todo int64 `json:"todo"`
+	Todo todoList `json:"todo"`
+}
+
+// todoList is the tool's "todo": the numbers of the to-do items a filing
+// is for. One number is one item, as the tool had it before a task could
+// cover several, and 0 is none; a planner that merges items into one task
+// sends a list. A number named twice counts once.
+type todoList []int64
+
+func (l *todoList) UnmarshalJSON(b []byte) error {
+	var many []int64
+	var one int64
+	if json.Unmarshal(b, &one) == nil {
+		many = []int64{one}
+	} else if err := json.Unmarshal(b, &many); err != nil {
+		return errors.New("todo must be a to-do item's number, or a list of numbers")
+	}
+	*l = (*l)[:0]
+	seen := map[int64]bool{}
+	for _, id := range many {
+		if id != 0 && !seen[id] {
+			seen[id] = true
+			*l = append(*l, id)
+		}
+	}
+	return nil
 }
 
 // afterList is the tool's "after": a list of task numbers. A session still
@@ -222,10 +247,13 @@ func (s *Server) fileTask(who taskFiler, req paneTaskReq) (string, int, error) {
 
 // filedStandsHelpersDown stands down the side helpers of the main session
 // that just filed task id: the planning they helped with is done. Off the
-// answer's path: standing a helper down stops its unit.
+// answer's path: standing a helper down stops its unit. A planner keeps
+// its helpers: filing is what it does all day, and the next item in its
+// line asks the same repos again. They end when their cache is cold, or
+// with the planner.
 func (s *Server) filedStandsHelpersDown(paneID string, id int64) {
 	info, ok := s.mgr.RunnerPane(paneID)
-	if s.threads == nil || !ok {
+	if s.threads == nil || !ok || info.Planner {
 		return
 	}
 	go s.threads.MainMovedOn(info.SessionID, fmt.Sprintf("filed task #%d", id))

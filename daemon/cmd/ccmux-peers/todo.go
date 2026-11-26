@@ -109,6 +109,8 @@ func todoLine(t listedTodo) string {
 	switch {
 	case t.TaskID != 0:
 		line += fmt.Sprintf("  (task #%d has it)", t.TaskID)
+	case t.Status == "planning":
+		line += "  (in the planner's line)"
 	case t.Status == "tasked":
 		line += "  (being filed as a task)"
 	}

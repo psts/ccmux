@@ -139,6 +139,7 @@ func (m *Manager) SyncRunnerPane(sess store.RunnerSession) {
 	}
 	stampRunnerAgent(p, sess)
 	noteMainPane(e, sess)
+	notePlannerPane(e, sess)
 	pane := *p
 	m.mu.Unlock()
 	if made {
@@ -170,6 +171,19 @@ func noteMainPane(e *entry, sess store.RunnerSession) {
 		e.mainPane = sess.PaneID
 	case e.mainPane == sess.PaneID:
 		e.mainPane = ""
+	}
+}
+
+// notePlannerPane keeps which of a workspace's runner panes is the repo's
+// planner (store/planners.go): never its main session, and the bus never
+// hands a planner's by-name message to a repo's main session
+// (peers/mainsession.go).
+func notePlannerPane(e *entry, sess store.RunnerSession) {
+	switch {
+	case sess.Kind == store.SessionPlanner:
+		e.plannerPane = sess.PaneID
+	case e.plannerPane == sess.PaneID:
+		e.plannerPane = ""
 	}
 }
 
@@ -229,16 +243,20 @@ func (m *Manager) dropRunnerPane(paneID string) {
 		if e.mainPane == paneID {
 			e.mainPane = ""
 		}
+		if e.plannerPane == paneID {
+			e.plannerPane = ""
+		}
 	}
 }
 
 // RunnerPaneInfo is what the rest of the daemon needs to know about a
 // runner session's pane: the name the daemon gives it on the bus, its
 // session's id, its workspace's repo folder, whether its row says it is
-// asleep, and whether it is the repo's main session (noteMainPane).
+// asleep, and whether it is the repo's main session (noteMainPane) or its
+// planner (notePlannerPane).
 type RunnerPaneInfo struct {
 	Name, SessionID, Repo string
-	Asleep, Main          bool
+	Asleep, Main, Planner bool
 }
 
 // RunnerPane reports a runner session's pane. ok is false for a tmux pane,
@@ -248,7 +266,10 @@ func (m *Manager) RunnerPane(paneID string) (RunnerPaneInfo, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if e, p := m.findPaneLocked(paneID); p != nil && p.Runtime == model.RuntimeRunner {
-		return RunnerPaneInfo{Name: p.Title, SessionID: p.SessionID, Repo: e.ws.RepoPath, Asleep: p.Status != model.StatusLive, Main: e.mainPane == p.ID}, true
+		return RunnerPaneInfo{
+			Name: p.Title, SessionID: p.SessionID, Repo: e.ws.RepoPath, Asleep: p.Status != model.StatusLive,
+			Main: e.mainPane == p.ID, Planner: e.plannerPane == p.ID,
+		}, true
 	}
 	return RunnerPaneInfo{}, false
 }

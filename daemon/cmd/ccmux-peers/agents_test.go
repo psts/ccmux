@@ -380,3 +380,25 @@ func TestInstructionsDoNotHangWithoutARegistration(t *testing.T) {
 		t.Fatal("without a registration the session must still get the fixed rules, and no window parts")
 	}
 }
+
+// A repo's planner always files and never builds, so it is not told to ask
+// "Build it now, or file it as a task?": the person chose by pressing Make
+// task. It keeps the to-do rule, and reads the planner's rule for the
+// window's repos.
+func TestAPlannerIsNotAskedToOfferBuildOrFile(t *testing.T) {
+	reader, sessions := `{"agent":false,"planner":true,"self":"app"}`, `[{"name":"app","repoPath":"/r/app","status":"live"},{"name":"backend","repoPath":"/r/backend","status":"cold"}]`
+	srv := sessionsServer(t, &reader, &sessions)
+	a := &app{daemon: newDaemonClient(srv.URL, "t"), id: "p1", paneID: "pane-1"}
+	got := a.instructions()
+	if strings.Contains(got, buildOrFile) {
+		t.Fatalf("a planner was told to offer build-or-file:\n%s", got)
+	}
+	for _, want := range []string{"add it with the todo tool, unasked", "you are this repo's planner", "helper of your own"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a planner's instructions lost %q", want)
+		}
+	}
+	if strings.Contains(got, "delegate it to that session") {
+		t.Fatal("a planner was told to hand work to a repo's own session")
+	}
+}

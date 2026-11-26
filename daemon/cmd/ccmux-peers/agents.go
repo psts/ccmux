@@ -124,8 +124,10 @@ TO-DO: When you notice something you are not fixing now (an "Also found", a find
 // file a task: a ccmux pane, in a window (the daemon lists no sessions
 // outside one), and a repo's session, not a role agent's. Anywhere else the
 // choice's second half would fail, and the human's answer would be wasted.
+// A repo's planner is not asked either: it always files and never builds
+// (its brief says so), and the person chose "file" by pressing Make task.
 func (a *app) taskQueueParagraph(w windowSessions) string {
-	if a.paneID == "" || len(w.Sessions) == 0 || w.Reader.Agent {
+	if a.paneID == "" || len(w.Sessions) == 0 || w.Reader.Agent || w.Reader.Planner {
 		return ""
 	}
 	return taskQueueRule

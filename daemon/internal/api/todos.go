@@ -150,7 +150,9 @@ func todoID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 
 // patchTodo: PATCH /v1/todos/{id} with any of {status, urgency, text,
 // note}, and by: who is asking, kept as who finished an item that turns
-// done. Status is open, tasked or done.
+// done. Status is open, tasked or done; planning is Make task's (the item
+// has to be sent to the planner). An item taken out of the planning line
+// this way is said to its repo's planner.
 func (s *Server) patchTodo(w http.ResponseWriter, r *http.Request) {
 	if !s.todosReady(w) {
 		return
@@ -166,10 +168,14 @@ func (s *Server) patchTodo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	before, _ := s.todos.Get(id) // an item that is not there is Change's to refuse
 	item, err := s.todos.Change(id, todos.Edit{Text: in.Text, Urgency: in.Urgency, Status: in.Status, Note: in.Note, By: in.By})
 	if err != nil {
 		writeTodoError(w, err)
 		return
+	}
+	if item.Status != todos.Planning {
+		s.leftLine(before, howItLeft(item.Status))
 	}
 	writeJSON(w, http.StatusOK, map[string]store.Todo{"todo": item})
 }
@@ -183,9 +189,11 @@ func (s *Server) deleteTodo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	before, _ := s.todos.Get(id) // an item that is not there is Delete's to refuse
 	if err := s.todos.Delete(id); err != nil {
 		writeTodoError(w, err)
 		return
 	}
+	s.leftLine(before, "deleted it")
 	w.WriteHeader(http.StatusNoContent)
 }

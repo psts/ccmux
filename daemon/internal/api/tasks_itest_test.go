@@ -180,6 +180,7 @@ func TestTasks_LeadFilesEveryPart(t *testing.T) {
 
 // A main session that files a task is done planning: its side helpers are
 // stood down. A tmux session that files one has none, and nothing is asked.
+// A planner keeps its helpers.
 func TestTasks_AMainSessionFilingStandsItsHelpersDown(t *testing.T) {
 	s, mgr, st := itestServer(t, "ccmux-api-tasks-main-itest")
 	f := &fakeThreads{}
@@ -202,12 +203,23 @@ func TestTasks_AMainSessionFilingStandsItsHelpersDown(t *testing.T) {
 	if rec := do(t, s, "POST", "/v1/panes/"+ws.Panes[0].ID+"/tasks", `{"action":"file","title":"From tmux","plan":"`+plan+`"}`); rec.Code != 200 {
 		t.Fatalf("filing from the tmux pane = %d %s", rec.Code, rec.Body)
 	}
+	// The repo's planner files all day, and the next item in its line asks
+	// the same repos again: filing never stands its helpers down.
+	planner := store.RunnerSession{ID: "pl1", Cwd: dir, Wanted: store.SessionRunning, Kind: store.SessionPlanner, PaneID: "run-pl1", WorkspaceID: ws.ID}
+	if err := st.AddRunnerSession(planner); err != nil {
+		t.Fatal(err)
+	}
+	mgr.SyncRunnerPane(planner)
+	if rec := do(t, s, "POST", "/v1/panes/run-pl1/tasks", `{"action":"file","title":"From the planner","plan":"`+plan+`"}`); rec.Code != 200 {
+		t.Fatalf("filing from the planner = %d %s", rec.Code, rec.Body)
+	}
 	if rec := do(t, s, "POST", "/v1/panes/run-m1/tasks", `{"action":"file","title":"From the main session","plan":"`+plan+`"}`); rec.Code != 200 {
 		t.Fatalf("filing from the main session = %d %s", rec.Code, rec.Body)
 	}
 	for end := time.Now().Add(5 * time.Second); len(f.movedOnNow()) == 0 && time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
 	}
-	if got := f.movedOnNow(); len(got) != 1 || got[0] != "m1 filed task #2" {
+	time.Sleep(50 * time.Millisecond) // a stand-down the planner's filing asked for would have come by now
+	if got := f.movedOnNow(); len(got) != 1 || got[0] != "m1 filed task #3" {
 		t.Fatalf("moved on = %v, want only the main session, for its task", got)
 	}
 }

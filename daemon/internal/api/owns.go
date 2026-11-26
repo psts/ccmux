@@ -53,7 +53,8 @@ func (s *Server) readerOfPane(paneID, fallback string) buscontext.Reader {
 			if ws.Agent != "" {
 				return buscontext.Reader{Agent: true}
 			}
-			return buscontext.Reader{Self: repoBusName(ws.Name, ws.RepoPath), Main: s.mainSessionPane(paneID)}
+			info, _ := s.mgr.RunnerPane(paneID)
+			return buscontext.Reader{Self: repoBusName(ws.Name, ws.RepoPath), Main: s.mainSessionPane(paneID), Planner: info.Planner}
 		}
 	}
 	return buscontext.Reader{Self: fallback}

@@ -107,3 +107,30 @@ func TestAMainSessionIsToldItsHelpersAndTasks(t *testing.T) {
 		}
 	}
 }
+
+// A planner asks other repos through helpers of its own, like a main
+// session, and is never told to hand work to a repo's own session: it
+// builds nothing, and a delegation would land in a person's conversation.
+func TestAPlannerIsToldItsHelpersAndNeverToDelegate(t *testing.T) {
+	r := Reader{Planner: true, Self: "hq"}
+	sessions := []Session{{Name: "hq", RepoPath: "/r/hq", Status: "live"}, {Name: "backend", RepoPath: "/r/backend", Status: "cold"}}
+	got := Paragraph(r, sessions, "", nil)
+	for _, want := range []string{"you are this repo's planner", "helper of your own", "never lands a change", "a part of the task you file", "hq (you)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{"delegate it to that session", "main session"} {
+		if strings.Contains(got, not) {
+			t.Fatalf("a planner is told %q:\n%s", not, got)
+		}
+	}
+	if got := Section(r, sessions, "", nil); !strings.Contains(got, "a helper of yours answers for it") {
+		t.Fatalf("list_peers says the same:\n%s", got)
+	}
+	for room := len(got) - 1; room > 0; room -= 7 {
+		if short := Fit(r, sessions, "", nil, room); !strings.Contains(short, "this repo's planner") || strings.Contains(short, "delegate it to that session") {
+			t.Fatalf("room %d: every shortened form keeps the planner's rule:\n%s", room, short)
+		}
+	}
+}

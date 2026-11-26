@@ -59,6 +59,8 @@ type runnerRows interface {
 	AgentSession(workspaceID string) (*store.RunnerSession, error)
 	SetRunnerSessionTitle(id, title string, now int64) error
 	SetRunnerSessionGoal(id, goal string, now int64) error
+	RunnerPlanners() ([]store.RunnerSession, error)
+	LastPlannerModel(workspaceID string) (string, error)
 }
 
 // SetRunners turns the session routes on.
@@ -376,16 +378,19 @@ func orNoRunner(err error) error {
 }
 
 func writeRunnerError(w http.ResponseWriter, err error) {
+	writeError(w, runnerStatus(err), err.Error())
+}
+
+// runnerStatus is the HTTP status of a supervisor's refusal.
+func runnerStatus(err error) int {
 	var capped errAgentCap
 	if errors.Is(err, runner.ErrSessionDone) || errors.Is(err, runner.ErrPromptWaiting) || errors.Is(err, runner.ErrCleanRefused) || errors.As(err, &capped) {
-		writeError(w, http.StatusConflict, err.Error())
-		return
+		return http.StatusConflict
 	}
 	if errors.Is(err, store.ErrNoSession) {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
+		return http.StatusNotFound
 	}
-	writeError(w, http.StatusInternalServerError, err.Error())
+	return http.StatusInternalServerError
 }
 
 func (s *Server) promptRunnerSession(w http.ResponseWriter, r *http.Request) {

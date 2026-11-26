@@ -256,8 +256,11 @@ var toolsList = []map[string]any{
 					"description": "report: at most 3 short lines (140 characters each) of what a person must check before this ships, and why. Only for: existing data changed or deleted, access/login/permission rules, money, anything sent to people outside ccmux, security (secrets, something newly exposed on the network). Not for an added table or column, UI, refactors or your decisions (those go in note). Leave it out when nothing is on the list; that is the normal case.",
 				},
 				"todo": map[string]any{
-					"type":        "integer",
-					"description": "file: the number of the to-do item this task is for, when it is for one. The item then follows the task and turns done when it is merged.",
+					"anyOf": []map[string]any{
+						{"type": "integer"},
+						{"type": "array", "items": map[string]any{"type": "integer"}},
+					},
+					"description": "file: the number of the to-do item this task is for, when it is for one; a list of numbers when one task covers several items. Each item then follows the task and turns done when it is merged.",
 				},
 			},
 			"required": []string{"action"},

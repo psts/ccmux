@@ -35,6 +35,8 @@ type todoAnswer struct {
 	Todos []store.Todo      `json:"todos"`
 	Repos map[string]string `json:"repos"`
 	Error string            `json:"error"`
+	// SessionID is Make task's: the planner the item was sent to.
+	SessionID string `json:"sessionId"`
 }
 
 func todoCall(t *testing.T, s *Server, method, path, body string, want int) todoAnswer {
