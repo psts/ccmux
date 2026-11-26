@@ -6,13 +6,27 @@
 //
 // Read: fenced code, headings, list items, tables (a header row when the
 // second line is |---|, a column's alignment from its colons), paragraphs;
-// and inside a line or a table cell `code`, **bold** and [links](https://…).
+// and inside a line or a table cell `code`, **bold**, [links](https://…)
+// and bare web addresses (https://…), which become links too.
 // Anything else stays as written.
 (function (root) {
   "use strict";
 
-  // One pattern for the three inline forms; the first that matches wins.
-  const inlineRE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  // One pattern for the four inline forms; the first that matches wins, so
+  // an address inside `code` or a [link](…) stays what it is there.
+  const inlineRE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()[\]`*]+)/g;
+
+  // Punctuation that ends a sentence after a bare address is not part of it.
+  const tailRE = /[.,;:!?'"]+$/;
+
+  // bare is a bare address's spans: the link, then what was only punctuation.
+  function bare(url) {
+    const tail = (url.match(tailRE) || [""])[0];
+    const href = url.slice(0, url.length - tail.length);
+    const out = [{ t: "a", text: href, href }];
+    if (tail) out.push({ t: "text", text: tail });
+    return out;
+  }
 
   // spans splits one line of text into {t: "text"|"code"|"b"|"a", text, href}.
   function spans(text) {
@@ -22,6 +36,7 @@
       if (m.index > last) out.push({ t: "text", text: text.slice(last, m.index) });
       if (m[1] != null) out.push({ t: "code", text: m[1] });
       else if (m[2] != null) out.push({ t: "b", text: m[2] });
+      else if (m[5] != null) out.push(...bare(m[5]));
       else out.push({ t: "a", text: m[3], href: m[4] });
       last = m.index + m[0].length;
     }

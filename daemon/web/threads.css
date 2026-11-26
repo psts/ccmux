@@ -12,6 +12,7 @@
   --user: #1F2A44; --claude: #D97757;
   --scrim: rgba(20, 20, 18, .32); --shadow: rgba(0, 0, 0, .14);
   --run: #15803D; --wait: #B45309; --asleep: #8A8A84; --done: #2557D6;
+  --sel: var(--card); --sel-mark: var(--fg2); /* the open sidebar row: its fill and the mark on its left */
   --on-accent: #FFFFFF; /* text on a strong colour: a primary button, a count, the Settings window's accent (settings.css) */
   --hover: rgba(255, 255, 255, .5); --lift: rgba(0, 0, 0, .08); --pop: rgba(0, 0, 0, .12);
   --code-bg: #F6F6F3; --img-bg: #F2F5FB; --bus-line: #D5E0F7; --composer-line: #D6D6CF; --box-line: #A3A39C;
@@ -29,6 +30,7 @@
      the dark grey, so the accent is neutral. A primary button is light grey
      with dark text (--on-accent); what was blue text is soft white. */
   --blue: #E4E4DE; --blue-d: #EDEDE8; --blue-bg: #3A3A35; --blue-line: #6B6B64; /* bg and line stand clear of --card and --line3: hovers, a chosen option and a tasked to-do show on a card */
+  --sel: #3A3A35; --sel-mark: #EDEDE8; /* the open sidebar row stands clear of --side (2026-11-26, user's pick B) */
   --menu: #C4C4BD; /* the sidebar's repo, agent and thread names: dimmer than the page's text */
   --green: #4ADE80; --green-d: #86EFAC; --green-bg: #16261C; --green-line: #234A31; --add-bg: #15301F;
   --red: #F87171; --red-bg: #2E1A18; --red-line: #5A2A25; --del-bg: #3A1D1B;
@@ -95,6 +97,13 @@ a:hover { color: var(--blue-d); }
 :root[data-theme="dark"] #tree .row.att-waiting .row-name { color: var(--wait); }
 .row:hover { background: var(--hover); }
 .row.on { background: var(--card); box-shadow: 0 1px 2px var(--lift); }
+/* The open row in the sidebar (a repo, an agent, a thread, a task): a fill
+   clear of the sidebar's grey and a short mark on its left, so it is found
+   at a glance in a long list (option B, 2026-11-26). */
+#tree .row.on, .side-tasks.on, .side-task.on { position: relative; background: var(--sel); }
+#tree .row.on::before, .side-tasks.on::before, .side-task.on::before {
+  content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--sel-mark);
+}
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--asleep); }
 .dot.running { background: var(--run); }
 .dot.waiting { background: var(--wait); }
@@ -154,7 +163,7 @@ a:hover { color: var(--blue-d); }
 .side-tasks, .side-task { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; padding: 5px 8px; border-radius: 8px; border: 0; background: transparent; }
 .side-task { gap: 8px; padding: 3px 8px 3px 22px; }
 .side-tasks:hover, .side-task:hover { background: var(--hover); }
-.side-tasks.on, .side-task.on { background: var(--card); box-shadow: 0 1px 2px var(--lift); }
+.side-tasks.on, .side-task.on { box-shadow: 0 1px 2px var(--lift); }
 .st-icon { width: 8px; flex: none; font-size: 12px; line-height: 20px; color: var(--muted); }
 .st-dot { width: 5px; height: 5px; border-radius: 50%; flex: none; background: var(--run); }
 .side-task.alert .st-dot { background: var(--wait); }

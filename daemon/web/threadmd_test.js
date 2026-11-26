@@ -18,6 +18,21 @@ test("only a web address becomes a link", () => {
   }
 });
 
+test("a bare web address is a link, without the punctuation after it", () => {
+  assert.deepEqual(md.spans("Open https://claude.ai/artifact/AGU9 now."), [
+    { t: "text", text: "Open " }, { t: "a", text: "https://claude.ai/artifact/AGU9", href: "https://claude.ai/artifact/AGU9" }, { t: "text", text: " now." },
+  ]);
+  assert.deepEqual(md.spans("(see http://x.dev/a?b=1), then"), [
+    { t: "text", text: "(see " }, { t: "a", text: "http://x.dev/a?b=1", href: "http://x.dev/a?b=1" }, { t: "text", text: "), then" },
+  ]);
+  assert.deepEqual(md.spans("`https://in.code` and [t](https://x.dev)"), [
+    { t: "code", text: "https://in.code" }, { t: "text", text: " and " }, { t: "a", text: "t", href: "https://x.dev" },
+  ]);
+  for (const bad of ["javascript:alert(1)", "ftp://x.dev", "https://", "file:///etc/passwd"]) {
+    assert.ok(md.spans(bad).every((s) => s.t === "text"), bad);
+  }
+});
+
 test("markup inside a reply stays text", () => {
   const b = md.parse("<img src=x onerror=alert(1)> and **<b>bold</b>**");
   assert.deepEqual(b, [{ type: "p", lines: [[{ t: "text", text: "<img src=x onerror=alert(1)> and " }, { t: "b", text: "<b>bold</b>" }]] }]);
