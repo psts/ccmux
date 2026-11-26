@@ -26,23 +26,49 @@ import (
 // merged. A helper ends once its prompt cache has gone cold (ExpireSide):
 // the next question starts a fresh one, which costs no more than a cold
 // cache would have.
+//
+// A repo's planner (store/planners.go: it turns the repo's to-do items into
+// tasks) asks other repos the same way, through a side thread and helpers
+// of its own, under names of their own (SideHelperName): the main session's
+// helper for a repo and the planner's are two sessions, and neither gets
+// the other's mail. "Main session" below means either, where it is about
+// leading a side thread.
 
 // SideHelperName is the bus name of the helper for repo that the main
-// session of leadRepo asks: "backend-for-hq".
-func SideHelperName(repo, leadRepo string) string {
-	return filepath.Base(repo) + "-for-" + filepath.Base(leadRepo)
+// session of leadRepo asks, "backend-for-hq", or that leadRepo's planner
+// asks, "backend-for-hq-planner".
+func SideHelperName(repo, leadRepo string, planner bool) string {
+	name := filepath.Base(repo) + "-for-" + filepath.Base(leadRepo)
+	if planner {
+		return name + "-planner"
+	}
+	return name
 }
 
-// sideRef is what the member index knows of a side thread's team: its main
-// session, that session's pane, and its repo.
+// sideRef is what the member index knows of a side thread's team: the
+// session that leads it (a main session, or a planner), that session's
+// pane, and its repo.
 type sideRef struct {
 	lead, pane, repo string
+	planner          bool
+}
+
+// helperName is the bus name of this team's helper for repo.
+func (r *sideRef) helperName(repo string) string {
+	return SideHelperName(repo, r.repo, r.planner)
+}
+
+// leadsSide says a session leads a side thread of its own: a repo's main
+// session, or its planner.
+func leadsSide(sess store.RunnerSession) bool {
+	return sess.ThreadID == 0 && (sess.Kind == store.SessionLead || sess.Kind == store.SessionPlanner)
 }
 
 // sideRoute is where a message from a side thread's team to repo ws goes.
 // The main session's own repo is the main session itself (for a helper) or
-// not the thread's to route (for the main session). A helper's own repo is
-// not either: it may want that repo's own session.
+// not the thread's to route (for the main session; a planner naming its
+// own repo is refused by the bus, peers/mainsession.go). A helper's own
+// repo is not either: it may want that repo's own session.
 func sideRoute(me memberRef, senderPane string, ws *model.Workspace) (Route, bool) {
 	if ws.RepoPath == me.side.repo {
 		if senderPane == me.side.pane {
@@ -53,15 +79,15 @@ func sideRoute(me memberRef, senderPane string, ws *model.Workspace) (Route, boo
 	if ws.RepoPath == me.repo {
 		return Route{}, false
 	}
-	return Route{ThreadID: me.thread, Repo: ws.RepoPath, Lead: me.side.lead, Name: SideHelperName(ws.RepoPath, me.side.repo)}, true
+	return Route{ThreadID: me.thread, Repo: ws.RepoPath, Lead: me.side.lead, Name: me.side.helperName(ws.RepoPath)}, true
 }
 
-// indexSides adds every main session's pane to the member index, with its
-// side thread when it has one (0 when its first helper has not been asked
-// for yet). Side helpers are in the index already, as their thread's
-// members; they get the same side reference.
+// indexSides adds every main session's and every planner's pane to the
+// member index, with its side thread when it has one (0 when its first
+// helper has not been asked for yet). Side helpers are in the index
+// already, as their thread's members; they get the same side reference.
 func (s *Service) indexSides(next map[string]memberRef, sides map[string]int64) error {
-	mains, err := s.St.MainSessions()
+	mains, err := s.St.SideLeads()
 	if err != nil {
 		return err
 	}
@@ -71,7 +97,7 @@ func (s *Service) indexSides(next map[string]memberRef, sides map[string]int64) 
 		if ws == nil || m.PaneID == "" {
 			continue
 		}
-		side := &sideRef{lead: m.ID, pane: m.PaneID, repo: ws.RepoPath}
+		side := &sideRef{lead: m.ID, pane: m.PaneID, repo: ws.RepoPath, planner: m.Kind == store.SessionPlanner}
 		next[m.PaneID] = memberRef{thread: sides[m.ID], repo: ws.RepoPath, side: side}
 		if id := sides[m.ID]; id != 0 {
 			refs[id] = side
@@ -86,9 +112,9 @@ func (s *Service) indexSides(next map[string]memberRef, sides map[string]int64) 
 	return nil
 }
 
-// NoteMain hears of a main session's row (made, woken, renamed): one the
-// member index does not have yet is added, so its first message to another
-// repo reaches a side helper.
+// NoteMain hears of a main session's or a planner's row (made, woken,
+// renamed): one the member index does not have yet is added, so its first
+// message to another repo reaches a side helper.
 func (s *Service) NoteMain(sess store.RunnerSession) {
 	s.mu.RLock()
 	_, known := s.members[sess.PaneID]
@@ -105,7 +131,7 @@ func (s *Service) NoteMain(sess store.RunnerSession) {
 // started, it does nothing: the index in the registry keeps it to one.
 func (s *Service) StartSideHelper(leadID, repo string) error {
 	defer s.lock("side:" + leadID)()
-	lead, err := s.mainSession(leadID)
+	lead, err := s.sideLead(leadID)
 	if err != nil {
 		return err
 	}
@@ -126,14 +152,15 @@ func (s *Service) StartSideHelper(leadID, repo string) error {
 	return nil
 }
 
-// mainSession reads a repo's main session that has not ended.
-func (s *Service) mainSession(id string) (store.RunnerSession, error) {
+// sideLead reads a session that leads a side thread and has not ended: a
+// repo's main session, or its planner.
+func (s *Service) sideLead(id string) (store.RunnerSession, error) {
 	sess, err := s.St.RunnerSession(id)
 	if err != nil {
 		return store.RunnerSession{}, err
 	}
-	if sess == nil || sess.Kind != store.SessionLead || sess.ThreadID != 0 || sess.Wanted == store.SessionDone {
-		return store.RunnerSession{}, fmt.Errorf("session %s is not a repo's main session that runs", id)
+	if sess == nil || !leadsSide(*sess) || sess.Wanted == store.SessionDone {
+		return store.RunnerSession{}, fmt.Errorf("session %s is not a repo's main session or planner that runs", id)
 	}
 	return *sess, nil
 }
@@ -157,9 +184,14 @@ func (s *Service) sideThread(lead store.RunnerSession) (store.Thread, error) {
 
 // sideMember is the session a side helper starts as.
 func sideMember(th store.Thread, ws *model.Workspace, lead store.RunnerSession, leadRepo string) runner.NewSession {
+	planner := lead.Kind == store.SessionPlanner
+	title := "Helping " + filepath.Base(leadRepo)
+	if planner {
+		title += "'s planner"
+	}
 	return runner.NewSession{
-		Cwd: ws.RepoPath, Name: SideHelperName(ws.RepoPath, leadRepo), Model: lead.Model, WorkspaceID: ws.ID,
-		Title: "Helping " + filepath.Base(leadRepo), ThreadID: th.ID, Role: store.RoleHelper, Repo: ws.RepoPath, ReadOnly: true,
+		Cwd: ws.RepoPath, Name: SideHelperName(ws.RepoPath, leadRepo, planner), Model: lead.Model, WorkspaceID: ws.ID,
+		Title: title, ThreadID: th.ID, Role: store.RoleHelper, Repo: ws.RepoPath, ReadOnly: true,
 	}
 }
 
@@ -190,8 +222,8 @@ func (s *Service) dropScratch(m store.RunnerSession) []string {
 // fails here is done again by the expiry pass (ExpireSide), which finds a
 // side thread whose main session ended and is not closed.
 func (s *Service) mainEnded(sess store.RunnerSession) {
-	if sess.Kind != store.SessionLead {
-		return // a session in no thread that is no main session has no helpers
+	if !leadsSide(sess) {
+		return // a session in no thread that is no main session or planner has no helpers
 	}
 	th, err := s.St.SideThread(sess.ID)
 	if err != nil || th == nil {

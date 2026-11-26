@@ -78,6 +78,51 @@ func selfNameError(name string) string {
 		"Name another repo, or a peer by its id (see list_peers)", name)
 }
 
+// plannerBarLocked is why a by-name message from sender may not go on to a
+// repo's main session, or "". A repo's planner (store/planners.go) turns
+// to-do items into tasks with nobody watching, and a main session's
+// conversation is its person's: Make task exists so that it is never
+// prompted. So a planner's message that would reach a repo's main session,
+// or start one (spawn_if_missing), is refused, whichever way it came: a
+// send, a delegation, a quiet notice, into its own group or another. Its
+// questions to another repo of its window never get here: they go to a
+// helper of its own (helperroute.go). What does get here is its own repo's
+// name, a repo of another project, and a name sent in the moment before
+// the threads service has heard of a planner that was just made.
+//
+// Its own repo's name is refused whoever would answer: it is in that repo
+// and reads it itself, and whoever else is called that (a terminal Claude
+// a person started there) is a person's conversation too. For any other
+// name a present peer called exactly that still takes the message, as for
+// any sender.
+func (s *Service) plannerBarLocked(sender *Peer, name, group string) string {
+	info, ok := s.runnerLocked(sender.PaneID)
+	if !ok || !info.Planner {
+		return ""
+	}
+	if name == filepath.Base(info.Repo) && sameGroup(group, s.groupOfLocked(sender)) {
+		return fmt.Sprintf("%q is your own repo, and you are its planner: read it yourself. "+
+			"Its main session is a person's own conversation, and a planner never messages it", name)
+	}
+	if len(s.namedLocked(name, group, sender.ID)) > 0 || !s.mainOrStartableLocked(name, group) {
+		return ""
+	}
+	return fmt.Sprintf("%q's main session is a person's own conversation, and a planner never messages it. "+
+		"A repo of your own window is answered by a helper of yours when you name it (send again in a moment if you have just started); "+
+		"work in a repo is a part of the task you file", name)
+}
+
+// mainOrStartableLocked says a by-name message to name in group would go to
+// a repo's main session: one that is there, or one spawn_if_missing would
+// make.
+func (s *Service) mainOrStartableLocked(name, group string) bool {
+	if len(s.mainSessionsLocked(name, group)) > 0 {
+		return true
+	}
+	_, _, startable := s.mainStartLocked(group, name)
+	return startable
+}
+
 // plainNameLocked is the plain name a listing shows p answering to: its
 // repo's, when it is the main session and no present peer in its group is
 // called exactly that (that peer would get the message instead).

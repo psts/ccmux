@@ -108,11 +108,14 @@ func builderSession(th store.Thread, b taskq.Builder) runner.NewSession {
 // SessionBrief is the standing text any session starts with
 // (runner.Config.Brief): a builder's is its part's whole brief, read from
 // the file the queue wrote beside its worktree, and one that cannot be
-// read fails the start; a led thread's member gets Brief; a session in no
-// thread gets none.
+// read fails the start; a repo's planner gets plannerBrief; a led thread's
+// member gets Brief; any other session in no thread gets none.
 func (s *Service) SessionBrief(sess store.RunnerSession) (string, error) {
 	if sess.Role == store.RoleBuilder {
 		return taskq.ReadBrief(sess.Worktree)
+	}
+	if sess.Kind == store.SessionPlanner {
+		return s.plannerBrief(sess), nil
 	}
 	return s.Brief(sess), nil
 }

@@ -60,6 +60,9 @@ func (s *Service) resolveQuietTargetLocked(req SendReq, sender *Peer, senderGrou
 	if req.ToGroup != "" {
 		wantGroup = req.ToGroup
 	}
+	if bar := s.plannerBarLocked(sender, req.ToName, wantGroup); bar != "" {
+		return nil, bar
+	}
 	if best := s.quietNamedLocked(req.ToName, sender.ID, wantGroup); best != nil {
 		return best, ""
 	}

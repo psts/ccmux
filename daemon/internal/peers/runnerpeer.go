@@ -38,10 +38,11 @@ var ErrInboxClosed = errors.New("the session has ended")
 // on the bus, its workspace's repo folder, whether it is asleep, and whether
 // it is that repo's main session (its session on the thread page, of kind
 // lead and in no thread), which answers to the repo's plain name too
-// (mainsession.go).
+// (mainsession.go). Planner is that repo's planner (store/planners.go),
+// which never reaches a repo's main session by name.
 type RunnerInfo struct {
-	Name, Repo   string
-	Asleep, Main bool
+	Name, Repo            string
+	Asleep, Main, Planner bool
 }
 
 // runnerLocked reports whether paneID is a runner session's pane, and what

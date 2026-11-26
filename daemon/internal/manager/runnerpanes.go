@@ -163,7 +163,7 @@ func newRunnerPane(sess store.RunnerSession) *model.Pane {
 
 // noteMainPane keeps which of a workspace's runner panes is the repo's main
 // session: its session on the thread page, of kind lead and in no thread
-// (the rule store.MainSessions reads the rows by). The bus hands that
+// (the rule store.SideLeads reads the rows by, planners aside). The bus hands that
 // session what is sent to the repo's plain name (peers/mainsession.go).
 func noteMainPane(e *entry, sess store.RunnerSession) {
 	switch {

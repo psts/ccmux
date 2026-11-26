@@ -420,3 +420,25 @@ func TestTheMainSessionsPaneIsMarked(t *testing.T) {
 		t.Errorf("the repo's next main session is not marked: %+v", got)
 	}
 }
+
+// The repo's planner is marked as that, beside the main session and never
+// in its place: the bus hands it no plain name, and refuses its by-name
+// messages to a main session. The mark goes when it ends.
+func TestThePlannersPaneIsMarkedAndIsNeverTheMainSession(t *testing.T) {
+	m, _, _ := runnerManager(t)
+	main := store.RunnerSession{ID: "11111111-aaaa", Cwd: "/r/app", Wanted: store.SessionRunning, PaneID: "main1", WorkspaceID: "ws", Kind: store.SessionLead}
+	planner := store.RunnerSession{ID: "44444444-aaaa", Cwd: "/r/app", Wanted: store.SessionRunning, PaneID: "plan1", WorkspaceID: "ws", Kind: store.SessionPlanner, Title: "Planner"}
+	m.SyncRunnerPane(main)
+	m.SyncRunnerPane(planner)
+	if got, ok := m.RunnerPane("plan1"); !ok || !got.Planner || got.Main || got.Name != "app-s-44444444" {
+		t.Fatalf("the planner's pane reads %+v (there %v), want a planner under its own bus name, not the main session", got, ok)
+	}
+	if got, _ := m.RunnerPane("main1"); !got.Main || got.Planner {
+		t.Fatalf("the main session beside a planner reads %+v", got)
+	}
+	planner.Wanted = store.SessionDone
+	m.SyncRunnerPane(planner)
+	if m.byID["ws"].plannerPane != "" || m.byID["ws"].mainPane != "main1" {
+		t.Fatalf("after the planner ended: planner mark %q, main mark %q", m.byID["ws"].plannerPane, m.byID["ws"].mainPane)
+	}
+}

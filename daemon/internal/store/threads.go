@@ -172,12 +172,6 @@ func (s *SQLite) LeadlessThreads() ([]Thread, error) {
 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id=threads.lead_session AND sessions.wanted='done') ORDER BY id`, ThreadSide, ThreadOpen)
 }
 
-// MainSessions lists the repos' main sessions that have not ended: the
-// sessions of kind lead that are in no thread, oldest first.
-func (s *SQLite) MainSessions() ([]RunnerSession, error) {
-	return s.querySessions(`SELECT `+sessionCols+` FROM sessions WHERE kind=? AND thread_id=0 AND wanted<>'done' ORDER BY created_at, id`, SessionLead)
-}
-
 // SideLeads lists the sessions that ask other repos through side helpers of
 // their own, and have not ended, oldest first: the repos' main sessions
 // (kind lead, in no thread) and their planners (store/planners.go).

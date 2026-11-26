@@ -125,7 +125,8 @@ func wireRunners(ctx context.Context, w runnerWiring) jobWiring {
 	// Only now: what Recover does reaches the sessions through the
 	// supervisor, which has to tell the panes and the bus of it (Changed).
 	team.Recover()
-	go expireSideHelpers(ctx, team)
+	wirePlanners(w, sup)
+	go expireSideHelpers(ctx, team, w.api.PlannerPass)
 	w.mgr.RunnerLiveness = sup.Liveness
 	w.mgr.EndRunnerSession = func(id string) error { return sup.SetWanted(id, store.SessionDone) }
 	w.api.SetRunners(sup, w.st)
@@ -230,8 +231,9 @@ func wireHelpers(team *threads.Service, bus *peers.Service) {
 const sideExpiryEvery = time.Minute
 
 // expireSideHelpers ends cold side helpers on a timer, for the daemon's
-// life, and takes apart threads whose lead's end could not finish.
-func expireSideHelpers(ctx context.Context, team *threads.Service) {
+// life, and takes apart threads whose lead's end could not finish. On the
+// same beat planners runs: the repo planners' own pass (planners.go).
+func expireSideHelpers(ctx context.Context, team *threads.Service, planners func()) {
 	t := time.NewTicker(sideExpiryEvery)
 	defer t.Stop()
 	for {
@@ -241,6 +243,7 @@ func expireSideHelpers(ctx context.Context, team *threads.Service) {
 		case <-t.C:
 			team.ExpireSide()
 			team.SweepLeadless()
+			planners()
 		}
 	}
 }
@@ -280,13 +283,13 @@ func cleanStartStandsHelpersDown(team *threads.Service) func(store.RunnerSession
 }
 
 // teamHears tells the threads of a session's row: one that ended (a lead
-// takes its helpers with it), and a main session, which its first message
-// to another repo needs in the member index.
+// takes its helpers with it), and a main session or a planner, which its
+// first message to another repo needs in the member index.
 func teamHears(team *threads.Service, sess store.RunnerSession) {
 	switch {
 	case sess.Wanted == store.SessionDone:
 		team.SessionEnded(sess)
-	case sess.Kind == store.SessionLead && sess.ThreadID == 0:
+	case sess.ThreadID == 0 && (sess.Kind == store.SessionLead || sess.Kind == store.SessionPlanner):
 		team.NoteMain(sess)
 	}
 }
@@ -304,7 +307,7 @@ func loadRunnerPanes(mgr *manager.Manager) {
 func runnerPaneForBus(mgr *manager.Manager) func(paneID string) (peers.RunnerInfo, bool) {
 	return func(paneID string) (peers.RunnerInfo, bool) {
 		info, ok := mgr.RunnerPane(paneID)
-		return peers.RunnerInfo{Name: info.Name, Repo: info.Repo, Asleep: info.Asleep, Main: info.Main}, ok
+		return peers.RunnerInfo{Name: info.Name, Repo: info.Repo, Asleep: info.Asleep, Main: info.Main, Planner: info.Planner}, ok
 	}
 }
 

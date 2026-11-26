@@ -166,11 +166,15 @@ func (s *Service) namedLocked(name, group, senderID string) []*Peer {
 // group, the sender's own unless to_group names another (erroring on
 // ambiguity instead of the old silent first-match), optionally spawning a
 // missing named teammate. A repo's plain name that no present peer carries
-// reaches the repo's main session (mainsession.go).
+// reaches the repo's main session (mainsession.go), unless a planner sent
+// it (plannerBarLocked).
 func (s *Service) resolveByNameLocked(req SendReq, sender *Peer, senderGroup string) (*Peer, SendResp) {
 	wantGroup := senderGroup
 	if req.ToGroup != "" {
 		wantGroup = req.ToGroup
+	}
+	if bar := s.plannerBarLocked(sender, req.ToName, wantGroup); bar != "" {
+		return nil, SendResp{Error: bar}
 	}
 	matches, self := s.answeringLocked(req.ToName, wantGroup, sender.ID)
 	if self {

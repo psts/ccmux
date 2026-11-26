@@ -28,7 +28,7 @@ func (s *Service) Brief(sess store.RunnerSession) string {
 		return leadBrief(*th, sess)
 	}
 	if th.Kind == store.ThreadSide {
-		return sideBrief(sess, s.leadName(*th), s.leadRepo(*th))
+		return sideBrief(sess, s.leadName(*th), s.leadRepo(*th), s.ledByPlanner(*th))
 	}
 	return helperBrief(*th, sess, s.leadName(*th))
 }
@@ -117,21 +117,33 @@ func helperBrief(th store.Thread, sess store.RunnerSession, lead string) string 
 	}, "\n")
 }
 
-// sideBrief is a main session's helper's: it answers and checks, and never
-// lands a change (side.go).
-func sideBrief(sess store.RunnerSession, lead, leadRepo string) string {
+// ledByPlanner says a side thread is a planner's, not a main session's.
+func (s *Service) ledByPlanner(th store.Thread) bool {
+	lead, err := s.St.RunnerSession(th.LeadSession)
+	return err == nil && lead != nil && lead.Kind == store.SessionPlanner
+}
+
+// sideBrief is a main session's or a planner's helper's: it answers and
+// checks, and never lands a change (side.go).
+func sideBrief(sess store.RunnerSession, lead, leadRepo string, planner bool) string {
 	repo := filepath.Base(sess.Repo)
+	who := fmt.Sprintf("%s is the main session of another repo in this window, where a person plans and checks work.", lead)
+	files, page := "the main session files it as a task or has it done", "under the main session's helpers"
+	if planner {
+		who = fmt.Sprintf("%s is the planner of %s, another repo in this window: it turns that repo's to-do items into tasks for the task queue, and builds nothing itself.", lead, filepath.Base(leadRepo))
+		files, page = "the planner puts it in the task it files", "under the planner's helpers"
+	}
 	return strings.Join([]string{
 		fmt.Sprintf("# You are %s's helper in %s", lead, repo),
-		fmt.Sprintf("%s is the main session of another repo in this window, where a person plans and checks work. It asked about %s, and you answer for this repo: what is in it, what it does, what is live.", lead, repo),
+		fmt.Sprintf("%s It asked about %s, and you answer for this repo: what is in it, what it does, what is live.", who, repo),
 		fmt.Sprintf("- Your name on the peers bus is %s. Answer %s with send_message (or update_task when the message is a delegation). Say what you found and where (file:line, commit, command output). Never make it ask twice.", sess.Name, lead),
 		fmt.Sprintf("- A message to another repo's plain name (to_name=\"<repo>\") reaches %s's helper there, started when it is not there yet; to_name=\"%s\" reaches %s itself.", lead, filepath.Base(leadRepo), lead),
 		fmt.Sprintf("- You start in %s, the repo's own folder, where you only read: a person or the repo's own session may be working there. "+
 			"Your first command that does more than read (a test, a build, a query of a live system) moves you into a scratch copy of the repo: that one call is refused, the session restarts there, and you run it again.", sess.Repo),
 		"- You never land a change. Nothing in the scratch copy is merged, and it is deleted when you end. When the answer is \"this needs a change\", " +
-			"do not make it: say exactly what it is (files, what to change, how to check it), and the main session files it as a task or has it done.",
+			"do not make it: say exactly what it is (files, what to change, how to check it), and " + files + ".",
 		"- Never push, merge, deploy or change anything live. Read live systems only when asked to.",
 		"- You end by yourself about an hour after your last answer, once your cache has gone cold; the next question starts a fresh helper. Put whatever matters in your answers.",
-		"- When only the person can decide, raise a question card (AskUserQuestion): they see it on your page under the main session's helpers.",
+		"- When only the person can decide, raise a question card (AskUserQuestion): they see it on your page " + page + ".",
 	}, "\n")
 }

@@ -40,7 +40,7 @@ type Store interface {
 	SideThread(leadSession string) (*store.Thread, error)
 	OpenSideThreads() ([]store.Thread, error)
 	LeadlessThreads() ([]store.Thread, error)
-	MainSessions() ([]store.RunnerSession, error)
+	SideLeads() ([]store.RunnerSession, error)
 	ThreadMembers(threadID int64) ([]store.RunnerSession, error)
 	RunnerSession(id string) (*store.RunnerSession, error)
 }
@@ -125,8 +125,8 @@ type Service struct {
 }
 
 // memberRef is a member's thread and the repo it works for. side is set
-// for a main session and its side helpers (side.go); a main session's
-// thread is 0 until its first helper is asked for.
+// for a main session or a planner and its side helpers (side.go); such a
+// session's thread is 0 until its first helper is asked for.
 type memberRef struct {
 	thread int64
 	repo   string
