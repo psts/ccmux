@@ -41,6 +41,7 @@ type commitRow struct {
 	SHA     string `json:"sha"`
 	Short   string `json:"short"`
 	Subject string `json:"subject"`
+	Body    string `json:"body"` // the message under the subject, trimmed
 	Author  string `json:"author"`
 	Time    int64  `json:"time"` // unix ms, as the page's other times
 }
@@ -276,7 +277,7 @@ func readGroup(ctx context.Context, dir string, rg commitRange) (commitGroup, er
 	if total == 0 {
 		return g, nil
 	}
-	out, err = git(ctx, dir, "log", "--no-color", "--format=%H%x00%h%x00%s%x00%an%x00%at", "--max-count="+strconv.Itoa(commitsShown), span, "--")
+	out, err = git(ctx, dir, "log", "--no-color", "--format=%H%x00%h%x00%s%x00%an%x00%at%x00%b%x1e", "--max-count="+strconv.Itoa(commitsShown), span, "--")
 	if err != nil {
 		return commitGroup{}, err
 	}
@@ -285,17 +286,18 @@ func readGroup(ctx context.Context, dir string, rg commitRange) (commitGroup, er
 	return g, nil
 }
 
-// parseLog reads git log's lines of sha, short sha, subject, author and
-// time, split by NULs. A line it cannot read is left out.
+// parseLog reads git log's records of sha, short sha, subject, author, time
+// and body, split by NULs and ended by a record separator (a body has
+// lines of its own). A record it cannot read is left out.
 func parseLog(out []byte) []commitRow {
 	rows := []commitRow{}
-	for _, line := range bytes.Split(out, []byte{'\n'}) {
-		f := strings.Split(string(line), "\x00")
-		if len(f) != 5 {
+	for _, rec := range bytes.Split(out, []byte{0x1e}) {
+		f := strings.Split(strings.TrimLeft(string(rec), "\n"), "\x00")
+		if len(f) != 6 {
 			continue
 		}
 		at, _ := strconv.ParseInt(f[4], 10, 64)
-		rows = append(rows, commitRow{SHA: f[0], Short: f[1], Subject: f[2], Author: f[3], Time: at * 1000})
+		rows = append(rows, commitRow{SHA: f[0], Short: f[1], Subject: f[2], Body: strings.TrimSpace(f[5]), Author: f[3], Time: at * 1000})
 	}
 	return rows
 }

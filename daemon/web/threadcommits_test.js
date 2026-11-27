@@ -27,11 +27,12 @@ test("the quiet lines", () => {
   assert.deepEqual(C.listView(null, now), { quiet: "Nothing waiting: every commit has shipped." });
 });
 
-test("a file's line over its diff", () => {
-  assert.equal(C.fileLabel({ path: "a.go", added: 3, removed: 1 }), "a.go · +3 −1");
-  assert.equal(C.fileLabel({ path: "new.md", from: "old.md", added: 0, removed: 0 }), "old.md → new.md · +0 −0");
-  assert.equal(C.fileLabel({ path: "logo.png", binary: true }), "logo.png · binary");
-  assert.equal(C.metaLine({ sha: "0123456789abcdef", author: "Pat", time: now - 3 * hour }, now), "0123456789 · Pat · 3 h ago");
+test("a row carries its whole message and the line under it", () => {
+  const v = C.listView({ repo: true, groups: [{ key: "pushed", title: "Pushed, not shipped", more: 0, commits: [
+    { sha: "0123456789abcdef", short: "0123456", subject: "Fix it", body: "Why: it broke.", author: "Pat", time: now - 3 * hour },
+    { sha: "f".repeat(40), subject: "No body", time: now - hour },
+  ] }] }, now);
+  assert.deepEqual(v.groups[0].rows.map((r) => [r.body, r.meta]), [["Why: it broke.", "0123456789 · Pat · 3 h ago"], ["", "ffffffffff · 1 h ago"]]);
 });
 
 // A page with no DOM: draw is only asked to follow the session here, so

@@ -137,8 +137,7 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/mode", s.setRunnerMode)
 	mux.HandleFunc("POST /v1/sessions/{id}/tasks/{task}/stop", s.stopRunnerTask)
 	mux.HandleFunc("GET /v1/sessions/{id}/files", s.sessionFiles)
-	mux.HandleFunc("GET /v1/sessions/{id}/commits", s.sessionCommits)      // sessioncommits.go
-	mux.HandleFunc("GET /v1/sessions/{id}/commits/{sha}", s.sessionCommit) // sessioncommit.go
+	mux.HandleFunc("GET /v1/sessions/{id}/commits", s.sessionCommits) // sessioncommits.go
 	mux.HandleFunc("POST /v1/sessions/{id}/images", s.uploadRunnerImage)
 	mux.HandleFunc("GET /v1/sessions/{id}/media/{name}", s.runnerMedia)
 }

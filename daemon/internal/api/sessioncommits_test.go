@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -75,61 +74,14 @@ func TestExactRefsIgnoresRefsBelowASlash(t *testing.T) {
 }
 
 func TestParseLog(t *testing.T) {
-	out := "aaaa\x00aa\x00Fix: a thing\x00Pat\x001700000000\nbroken line\n"
-	want := []commitRow{{SHA: "aaaa", Short: "aa", Subject: "Fix: a thing", Author: "Pat", Time: 1700000000000}}
+	out := "aaaa\x00aa\x00Fix: a thing\x00Pat\x001700000000\x00Why: it broke.\n\nCo-Authored-By: Kim\n\x1e\n" +
+		"bbbb\x00bb\x00No body\x00Pat\x001700000001\x00\x1e\nbroken record\x1e\n"
+	want := []commitRow{
+		{SHA: "aaaa", Short: "aa", Subject: "Fix: a thing", Body: "Why: it broke.\n\nCo-Authored-By: Kim", Author: "Pat", Time: 1700000000000},
+		{SHA: "bbbb", Short: "bb", Subject: "No body", Author: "Pat", Time: 1700000001000},
+	}
 	if got := parseLog([]byte(out)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v", got)
-	}
-}
-
-func TestParseNumstatRenamesAndBinaries(t *testing.T) {
-	out := "3\t1\tsrc/a.go\x00-\t-\tlogo.png\x001\t0\t\x00old name.md\x00new name.md\x00"
-	want := []commitFile{
-		{Path: "src/a.go", Added: 3, Removed: 1},
-		{Path: "logo.png", Binary: true},
-		{Path: "new name.md", From: "old name.md", Added: 1},
-	}
-	if got := parseNumstat([]byte(out)); !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %+v", got)
-	}
-}
-
-func TestParsePatchKeepsHunksNotHeaders(t *testing.T) {
-	patch := strings.Join([]string{
-		"diff --git a/a.go b/a.go", "index 1..2 100644", "--- a/a.go", "+++ b/a.go",
-		"@@ -3,2 +3,3 @@ func x() {", " keep", "-gone", "+came", "+also",
-		"diff --git a/logo.png b/logo.png", "Binary files a/logo.png and b/logo.png differ",
-		"diff --git a/b.go b/b.go", "--- a/b.go", "+++ b/b.go", "@@ -1 +1 @@", "-x", "\\ No newline at end of file", "+y", "",
-	}, "\n")
-	got := parsePatch([]byte(patch), false)
-	want := []fileDiff{
-		{Hunks: []diffHunk{{OldStart: 3, NewStart: 3, Lines: []string{" keep", "-gone", "+came", "+also"}}}},
-		{Hunks: []diffHunk{}},
-		{Hunks: []diffHunk{{OldStart: 1, NewStart: 1, Lines: []string{"-x", "\\ No newline at end of file", "+y"}}}},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %+v", got)
-	}
-}
-
-func TestParsePatchCapsTheLines(t *testing.T) {
-	lines := []string{"diff --git a/a b/a", "@@ -1 +1,4000 @@"}
-	for range commitLines + 5 {
-		lines = append(lines, "+x")
-	}
-	lines = append(lines, "diff --git a/b b/b", "@@ -1 +1 @@", "+y")
-	got := parsePatch([]byte(strings.Join(lines, "\n")), false)
-	if len(got) != 2 || len(got[0].Hunks[0].Lines) != commitLines || !got[0].Truncated || !got[1].Truncated || len(got[1].Hunks) != 0 {
-		t.Fatalf("the cap is for the whole commit and marks what it cut: %d files, first %d lines %v, second %+v",
-			len(got), len(got[0].Hunks[0].Lines), got[0].Truncated, got[1])
-	}
-	long := parsePatch([]byte("diff --git a/a b/a\n@@ -1 +1 @@\n+"+strings.Repeat("z", 5000)), true)
-	if l := long[0].Hunks[0].Lines[0]; len(l) > commitLineChars+4 || !long[0].Truncated {
-		t.Fatalf("a long line is cut, and a patch read in part marks its last file: %d %v", len(l), long[0].Truncated)
-	}
-	files := joinDiffs([]commitFile{{Path: "a"}, {Path: "b"}, {Path: "c.png", Binary: true}}, long)
-	if !files[1].Diff.Truncated || files[2].Diff.Truncated || files[1].Diff.Hunks == nil {
-		t.Fatalf("a file the patch did not reach is cut, a binary one has nothing to cut: %+v", files)
 	}
 }
 
@@ -217,6 +169,24 @@ func TestListCommitsInADevRepo(t *testing.T) {
 	}
 }
 
+func TestListCommitsCarriesTheWholeMessage(t *testing.T) {
+	g := newRepo(t)
+	g.commit("b.txt", "b\n", "plain")
+	g.run("commit", "-q", "--allow-empty", "-m", "with a body", "-m", "Why: people asked.\n\nSecond paragraph.")
+	v, err := listCommits(context.Background(), g.dir)
+	if err != nil || len(v.Groups) == 0 {
+		t.Fatalf("%v %+v", err, v)
+	}
+	var got [][2]string
+	for _, c := range v.Groups[0].Commits {
+		got = append(got, [2]string{c.Subject, c.Body})
+	}
+	want := [][2]string{{"with a body", "Why: people asked.\n\nSecond paragraph."}, {"plain", ""}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestListCommitsInAMainOnlyRepo(t *testing.T) {
 	g := newRepo(t)
 	if got := groupsOf(t, g.dir); len(got) != 0 {
@@ -257,57 +227,9 @@ func TestListCommitsCapsAGroup(t *testing.T) {
 	}
 }
 
-func TestReadCommitShowsMergesRenamesAndBinaries(t *testing.T) {
-	g := newRepo(t)
-	g.run("checkout", "-q", "-b", "side")
-	g.run("mv", "a.txt", "moved.txt")
-	if err := os.WriteFile(filepath.Join(g.dir, "logo.png"), []byte{0, 1, 2, 0, 255}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	g.run("add", "-A")
-	g.run("commit", "-q", "-m", "move and logo", "-m", "Why: tidy.")
-	side := g.run("rev-parse", "HEAD")
-	g.run("checkout", "-q", "main")
-	g.commit("b.txt", "b\n", "on main")
-	g.run("merge", "-q", "--no-ff", "-m", "merge side", "side")
-	merge := g.run("rev-parse", "HEAD")
-
-	d, err := readCommit(context.Background(), g.dir, side[:10])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.SHA != side || d.Subject != "move and logo" || d.Body != "Why: tidy." || d.Author != "Pat" || len(d.Files) != 2 {
-		t.Fatalf("got %+v", d)
-	}
-	byPath := map[string]commitFile{}
-	for _, f := range d.Files {
-		byPath[f.Path] = f
-	}
-	if f := byPath["moved.txt"]; f.From != "a.txt" {
-		t.Errorf("a rename: %+v", f)
-	}
-	if f := byPath["logo.png"]; !f.Binary || len(f.Diff.Hunks) != 0 {
-		t.Errorf("a binary file: %+v", f)
-	}
-	m, err := readCommit(context.Background(), g.dir, merge)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(m.Files) != 2 {
-		t.Fatalf("a merge is shown against its first parent: %+v", m.Files)
-	}
-	if _, err := readCommit(context.Background(), g.dir, "0000000"); !errors.Is(err, errNoCommit) {
-		t.Fatalf("an unknown sha: %v", err)
-	}
-	tree := g.run("rev-parse", "HEAD^{tree}")
-	if _, err := readCommit(context.Background(), g.dir, tree); !errors.Is(err, errNoCommit) {
-		t.Fatalf("a tree is no commit: %v", err)
-	}
-}
-
 func TestSessionCommitsRoutesAnswer(t *testing.T) {
 	g := newRepo(t)
-	sha := g.commit("b.txt", "one\ntwo\n", "local work")
+	g.commit("b.txt", "one\ntwo\n", "local work")
 	in := func(dir string) rowsFor { return rowsFor{sess: &store.RunnerSession{ID: "s1", Cwd: dir}} }
 	cases := []struct {
 		name, path string
@@ -319,12 +241,6 @@ func TestSessionCommitsRoutesAnswer(t *testing.T) {
 		{"no repo", "/v1/sessions/s1/commits", in(t.TempDir()), http.StatusOK, `"repo":false`},
 		{"folder gone", "/v1/sessions/s1/commits", in(filepath.Join(g.dir, "gone")), http.StatusBadGateway, "could not be read"},
 		{"no session", "/v1/sessions/s1/commits", rowsFor{}, http.StatusNotFound, ""},
-		{"one commit", "/v1/sessions/s1/commits/" + sha, in(g.dir), http.StatusOK, `"+two"`},
-		{"upper case", "/v1/sessions/s1/commits/" + strings.ToUpper(sha), in(g.dir), http.StatusOK, `"subject":"local work"`},
-		{"not hex", "/v1/sessions/s1/commits/--output=x", in(g.dir), http.StatusBadRequest, "hex"},
-		{"too short", "/v1/sessions/s1/commits/abc", in(g.dir), http.StatusBadRequest, "hex"},
-		{"unknown", "/v1/sessions/s1/commits/1234567", in(g.dir), http.StatusNotFound, "no such commit"},
-		{"commit, no repo", "/v1/sessions/s1/commits/1234567", in(t.TempDir()), http.StatusNotFound, "not a git repo"},
 	}
 	for _, c := range cases {
 		s := &Server{runners: &fakeRunners{}, runnerRows: c.rows}

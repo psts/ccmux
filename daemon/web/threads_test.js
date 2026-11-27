@@ -803,17 +803,13 @@ test("a session in no thread has no team, and asks for none", async () => {
 
 const hour = 3600 * 1000;
 const commitsAnswer = () => ({ repo: true, branch: "dev", groups: [
-  { key: "unpushed", title: "Not pushed", commits: [{ sha: "a".repeat(40), short: "aaaaaaa", subject: "Add the export link", author: "Pat", time: Date.now() - 3 * hour }], more: 0 },
+  { key: "unpushed", title: "Not pushed", commits: [{ sha: "a".repeat(40), short: "aaaaaaa", subject: "Add the export link", body: "Why: people asked.", author: "Pat", time: Date.now() - 3 * hour }], more: 0 },
   { key: "pushed", title: "Pushed, not shipped", commits: [{ sha: "b".repeat(40), short: "bbbbbbb", subject: "Fix the totals", author: "Pat", time: Date.now() - 26 * hour }], more: 120 },
 ] });
-const oneCommit = { sha: "a".repeat(40), subject: "Add the export link", body: "Why: people asked.", author: "Pat", time: Date.now() - 3 * hour,
-  files: [{ path: "src/export.js", added: 2, removed: 1, diff: { hunks: [{ oldStart: 4, newStart: 4, lines: [" keep", "-old", "+new", "+more"] }], truncated: false } },
-    { path: "logo.png", added: 0, removed: 0, binary: true, diff: { hunks: [], truncated: false } }] };
 
-test("the Commits tab lists what the repo has not shipped, and opens one commit", async () => {
+test("the Commits tab lists what the repo has not shipped, and opens messages in place", async () => {
   let lists = 0;
   const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [
-    [/^GET \/v1\/sessions\/lead1\/commits\/a{40}$/, () => oneCommit],
     [/^GET \/v1\/sessions\/lead1\/commits$/, () => { lists++; return commitsAnswer(); }],
   ] });
   const tab = p.$("tab-commits");
@@ -824,20 +820,26 @@ test("the Commits tab lists what the repo has not shipped, and opens one commit"
     ["Pushed, not shipped", "121", [["bbbbbbb", "Fix the totals", "1 d ago"]]],
   ]);
   assert.ok(tab.textContent.includes("and 120 more"));
-  tab.querySelectorAll(".cm-row")[0].click();
+  assert.equal(tab.querySelectorAll(".cm-msg").length, 0, "every message starts closed");
+  const rows = () => tab.querySelectorAll(".cm-row");
+  rows()[0].click();
   await p.settle();
-  assert.equal(tab.querySelectorAll(".cg").length, 0, "the commit takes the list's place");
-  assert.equal(tab.querySelector(".cm-head").textContent, "Add the export link");
-  assert.equal(tab.querySelector(".cm-body").textContent, "Why: people asked.");
-  assert.deepEqual(tab.querySelectorAll(".diff-path").map((d) => d.textContent), ["src/export.js · +2 −1", "logo.png · binary"]);
-  assert.deepEqual(tab.querySelector(".diff").querySelectorAll(".add").map((l) => l.textContent), ["+new", "+more"]);
-  tab.querySelector(".cm-back").click();
+  rows()[1].click();
   await p.settle();
-  assert.equal(tab.querySelectorAll(".cm-row").length, 2, "back to the list");
+  assert.equal(tab.querySelectorAll(".cg").length, 2, "the list stays");
+  assert.deepEqual(tab.querySelectorAll(".cm-msg").map((m) => [m.querySelector(".cm-body")?.textContent ?? null, m.querySelector(".cm-meta").textContent]), [
+    ["Why: people asked.", "aaaaaaaaaa · Pat · 3 h ago"],
+    [null, "bbbbbbbbbb · Pat · 1 d ago"],
+  ], "both open at once; a commit with no body shows only its line");
+  assert.equal(p.book.calls.filter((c) => c.url.includes("/commits/")).length, 0, "opening asks the daemon nothing");
+  rows()[0].click();
+  await p.settle();
+  assert.deepEqual(tab.querySelectorAll(".cm-msg").map((m) => m.querySelector(".cm-meta").textContent), ["bbbbbbbbbb · Pat · 1 d ago"], "a second click closes it");
   await p.frame(snapshot({ busy: true }));
   assert.equal(lists, 1, "a running turn reads nothing");
   await p.frame({ t: "event", seq: 6, data: { type: "session.idle", properties: {} } });
   assert.equal(lists, 2, "a turn that ended may have committed: read again");
+  assert.equal(tab.querySelectorAll(".cm-msg").length, 1, "what is open stays open across a read");
   await p.frame({ t: "event", seq: 7, data: { type: "session.info", properties: { info: {} } } });
   assert.equal(lists, 2, "and not at every frame");
 });
