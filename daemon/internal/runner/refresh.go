@@ -321,6 +321,10 @@ func (s *Supervisor) refreshHeldByRows(id string) string {
 	return ""
 }
 
+// holdWarm is snapshotHold's word for a warm cache, the one hold
+// Finished does not wait for.
+const holdWarm = "cache warm"
+
 // snapshotHold reads a runner's snapshot: a background task (a restart
 // kills it), a question or permission it shows, or a warm cache (a restart
 // now would pay for it) holds the restart. A session with no finished turn since it started has no cache.
@@ -353,7 +357,7 @@ func snapshotHold(body json.RawMessage, now time.Time) string {
 		ttl = defaultCacheTTL
 	}
 	if now.Before(time.UnixMilli(snap.Result.EndedAt).Add(ttl)) {
-		return "cache warm"
+		return holdWarm
 	}
 	return ""
 }

@@ -1,7 +1,7 @@
 package api
 
-// The planners' minute pass: a planner whose line is empty ends once it has
-// gone cold, and a line whose planner ended gets a new one.
+// The planners' minute pass: a planner whose line is empty ends once its
+// turn is over, and a line whose planner ended gets a new one.
 
 import (
 	"log"
@@ -15,9 +15,10 @@ import (
 // on a timer (cmd/ccmuxd), under the lock Make task takes, so a line is
 // never read as empty while an item is on its way into it.
 //
-//   - A planner whose repo's line is empty is ended once it is cold (its
-//     last turn ended longer ago than its prompt cache lives, no card, no
-//     message waiting) and owes nobody a delegation. Its side helpers end
+//   - A planner whose repo's line is empty is ended once it has finished
+//     (a turn has ended and none runs, no card, no message waiting, no
+//     background task; its cache is not waited for: a planner is not kept
+//     on the page for an hour in case another item comes) and owes nobody a delegation. Its side helpers end
 //     with it (threads.SessionEnded). A planner with items still in its
 //     line is never ended here, however long it has been quiet: the item's
 //     row links to its conversation, and a person sends it again or puts it
@@ -73,14 +74,14 @@ func (s *Server) planningLines() (map[string][]store.Todo, error) {
 // would be lost by it.
 func (s *Server) endIdlePlanner(p store.RunnerSession) {
 	d := s.plannerDoors
-	if d.Cold == nil || (d.Owes != nil && p.PaneID != "" && d.Owes(p.PaneID)) || !d.Cold(p.ID) {
+	if d.Finished == nil || (d.Owes != nil && p.PaneID != "" && d.Owes(p.PaneID)) || !d.Finished(p.ID) {
 		return
 	}
 	if err := s.runners.SetWanted(p.ID, store.SessionDone); err != nil {
 		log.Printf("todos: planner %s is idle with an empty line and was not ended: %v", p.ID, err)
 		return
 	}
-	log.Printf("todos: planner %s ended: its line is empty and its cache had gone cold", p.ID)
+	log.Printf("todos: planner %s ended: its line is empty and its turn is over", p.ID)
 }
 
 // replacePlanner starts a planner for a line that has none and sends it the

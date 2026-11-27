@@ -3,7 +3,7 @@ package api
 // The repo planners (store/planners.go). "Make task" on a repo's to-do list
 // puts the item in the repo's planning line (todos.Book.Plan) and sends it
 // to the repo's planner: one session per repo, of kind planner, made with
-// the first item and ended once its line is empty and it has gone cold
+// the first item and ended once its line is empty and its turn is over
 // (PlannerPass). The planner plans each item and files it with the tasks
 // tool, which takes the item out of the line. The repo's main session is
 // never prompted: its conversation is its person's.
@@ -30,12 +30,12 @@ const plannerTitle = "Planner"
 const plannerSender = "ccmux"
 
 // PlannerDoors is what ending an idle planner asks of the rest of the
-// daemon: Cold says a session's prompt cache has gone cold and nothing
-// waits on it (runner.Supervisor.Cold), Owes that its peer still owes a
-// delegator a result. Without Cold no planner is ended.
+// daemon: Finished says a session's turn has ended and nothing waits on it
+// (runner.Supervisor.Finished), Owes that its peer still owes a delegator
+// a result. Without Finished no planner is ended.
 type PlannerDoors struct {
-	Cold func(sessionID string) bool
-	Owes func(paneID string) bool
+	Finished func(sessionID string) bool
+	Owes     func(paneID string) bool
 }
 
 // SetPlannerDoors wires what PlannerPass ends an idle planner on.
@@ -122,7 +122,7 @@ func (s *Server) feedPlanner(ws *model.Workspace, item store.Todo, modelName, se
 }
 
 // dropUnfed ends a planner that was just made and could not be sent its
-// line: it would never finish a turn, so it would never go cold and end.
+// line: it would never finish a turn, so it would never end.
 func (s *Server) dropUnfed(planner store.RunnerSession, made bool) {
 	if !made {
 		return

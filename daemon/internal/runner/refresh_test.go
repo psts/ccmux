@@ -296,8 +296,13 @@ func TestSnapshotCold(t *testing.T) {
 		{"unreadable", `{`, false},
 	}
 	for _, c := range cases {
-		if got := snapshotCold(json.RawMessage(c.body), now); got != c.want {
+		if got := snapshotQuiet(json.RawMessage(c.body), now, true); got != c.want {
 			t.Errorf("%s: got %v", c.name, got)
+		}
+		// Finished waits for everything but the cache.
+		finished := c.want || strings.HasPrefix(c.name, "warm")
+		if got := snapshotQuiet(json.RawMessage(c.body), now, false); got != finished {
+			t.Errorf("finished, %s: got %v", c.name, got)
 		}
 	}
 }

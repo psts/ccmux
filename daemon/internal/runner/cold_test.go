@@ -7,7 +7,7 @@ import (
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
-// Cold asks the runner itself, over its socket: a session that answered
+// Cold and Finished ask the runner itself, over its socket: a session that answered
 // and whose cache has run out is cold; one at work, warm, holding a card,
 // or not answering is not.
 func TestColdAsksTheRunner(t *testing.T) {
@@ -17,10 +17,10 @@ func TestColdAsksTheRunner(t *testing.T) {
 	for name, c := range map[string]struct {
 		busy, turnOpen bool
 		snap           map[string]any
-		want           bool
+		want, finished bool
 	}{
-		"cold":                  {snap: ended(61 * time.Minute), want: true},
-		"warm":                  {snap: ended(10 * time.Minute)},
+		"cold":                  {snap: ended(61 * time.Minute), want: true, finished: true},
+		"warm":                  {snap: ended(10 * time.Minute), finished: true},
 		"in a turn":             {busy: true, snap: ended(2 * time.Hour)},
 		"a turn open":           {turnOpen: true, snap: ended(2 * time.Hour)},
 		"never finished a turn": {snap: map[string]any{}},
@@ -41,6 +41,9 @@ func TestColdAsksTheRunner(t *testing.T) {
 			fr.busy, fr.turnOpen, fr.snap = c.busy, c.turnOpen, c.snap
 			if got := r.sup.Cold(sess.ID); got != c.want {
 				t.Fatalf("cold: got %v", got)
+			}
+			if got := r.sup.Finished(sess.ID); got != c.finished {
+				t.Fatalf("finished: got %v", got)
 			}
 		})
 	}

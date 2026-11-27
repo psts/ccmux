@@ -11,31 +11,31 @@ import (
 )
 
 // A planner ends only when all three hold: its line is empty, its cache has
-// gone cold, and it owes nobody a delegation.
-func TestPlannerPass_EndsAPlannerOnlyWhenItsLineIsEmptyAndItIsColdAndOwesNothing(t *testing.T) {
+// finished its turn, and it owes nobody a delegation.
+func TestPlannerPass_EndsAPlannerOnlyWhenItsLineIsEmptyAndItHasFinishedAndOwesNothing(t *testing.T) {
 	s, _, st, repo := plannerServer(t)
 	id := addItem(t, s, repo, "Fix the flaky test")
 	makeTask(t, s, id, `{"workspaceId":"ws-app"}`, http.StatusOK)
 	planner := planners(t, st)[0]
-	cold, owes := true, false
+	done, owes := true, false
 	var asked []string
 	s.SetPlannerDoors(PlannerDoors{
-		Cold: func(id string) bool { asked = append(asked, id); return cold },
-		Owes: func(pane string) bool { return pane == planner.PaneID && owes },
+		Finished: func(id string) bool { asked = append(asked, id); return done },
+		Owes:     func(pane string) bool { return pane == planner.PaneID && owes },
 	})
 
 	s.PlannerPass()
 	if len(planners(t, st)) != 1 || len(asked) != 0 {
-		t.Fatalf("a planner with an item in its line was ended, or asked whether it is cold (%v)", asked)
+		t.Fatalf("a planner with an item in its line was ended, or asked whether it has finished (%v)", asked)
 	}
 	todoCall(t, s, "PATCH", fmt.Sprintf("/v1/todos/%d", id), `{"status":"done"}`, http.StatusOK)
 
-	cold = false
+	done = false
 	s.PlannerPass()
 	if len(planners(t, st)) != 1 {
-		t.Fatal("a planner that is not cold was ended")
+		t.Fatal("a planner that has not finished was ended")
 	}
-	cold, owes = true, true
+	done, owes = true, true
 	s.PlannerPass()
 	if len(planners(t, st)) != 1 {
 		t.Fatal("a planner that owes a delegation was ended")
@@ -53,15 +53,15 @@ func TestPlannerPass_EndsAPlannerOnlyWhenItsLineIsEmptyAndItIsColdAndOwesNothing
 	}
 }
 
-// With no way to ask whether it is cold, no planner is ended.
-func TestPlannerPass_EndsNothingWithoutColdToAsk(t *testing.T) {
+// With no way to ask whether it has finished, no planner is ended.
+func TestPlannerPass_EndsNothingWithoutFinishedToAsk(t *testing.T) {
 	s, _, st, repo := plannerServer(t)
 	id := addItem(t, s, repo, "Fix the flaky test")
 	makeTask(t, s, id, `{"workspaceId":"ws-app"}`, http.StatusOK)
 	todoCall(t, s, "PATCH", fmt.Sprintf("/v1/todos/%d", id), `{"status":"done"}`, http.StatusOK)
 	s.PlannerPass()
 	if len(planners(t, st)) != 1 {
-		t.Fatal("a planner was ended with nothing saying it is cold")
+		t.Fatal("a planner was ended with nothing saying it has finished")
 	}
 }
 

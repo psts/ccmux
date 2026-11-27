@@ -16,7 +16,16 @@ import (
 // not answer is not cold either, unless it is asleep, which has no turn to
 // cut. A main session's side helper ends on this (internal/threads
 // sideexpire.go).
-func (s *Supervisor) Cold(id string) bool {
+func (s *Supervisor) Cold(id string) bool { return s.quiet(id, true) }
+
+// Finished is Cold without the wait for the cache: a turn has ended and
+// nothing waits on the session. A repo's planner with an empty line ends
+// on this (api.PlannerPass): its work is done, and keeping it for a cache
+// it is unlikely to use again only kept it on the page.
+func (s *Supervisor) Finished(id string) bool { return s.quiet(id, false) }
+
+// quiet is Cold (cache: the cache must have run out too) or Finished.
+func (s *Supervisor) quiet(id string, cache bool) bool {
 	sess, err := s.row(id)
 	if err != nil || sess.Wanted == store.SessionDone {
 		return false
@@ -38,13 +47,14 @@ func (s *Supervisor) Cold(id string) bool {
 	if err != nil {
 		return false
 	}
-	return snapshotCold(snap.Body, s.now())
+	return snapshotQuiet(snap.Body, s.now(), cache)
 }
 
-// snapshotCold reads a runner's snapshot: cold when nothing in it holds a
-// restart (snapshotHold) and a turn has ended, its cache's lifetime ago.
-func snapshotCold(body json.RawMessage, now time.Time) bool {
-	if snapshotHold(body, now) != "" {
+// snapshotQuiet reads a runner's snapshot: quiet when nothing in it holds a
+// restart (snapshotHold; a warm cache counts only when cache is set) and a
+// turn has ended.
+func snapshotQuiet(body json.RawMessage, now time.Time, cache bool) bool {
+	if hold := snapshotHold(body, now); hold != "" && (cache || hold != holdWarm) {
 		return false
 	}
 	var snap struct {

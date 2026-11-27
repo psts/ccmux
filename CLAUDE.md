@@ -551,13 +551,14 @@ thread, not walled, titled "Planner" (`api/planner.go`,
   shim's schema is `anyOf`; the daemon reads both, `api.todoList`), so a
   planner that merges items into one task links them all.
 - **The minute pass** (`api.PlannerPass`, on the side helpers' timer):
-  a planner whose line is empty ends once `Supervisor.Cold` says so and the
-  bus says it owes no delegation; a line with no planner (a person ended
+  a planner whose line is empty ends once `Supervisor.Finished` says so
+  (Cold without the wait for the cache: a turn ended, none runs, nothing
+  waits on it) and the bus says it owes no delegation; a line with no planner (a person ended
   it) gets a new one, a fresh conversation on the last one's model, sent
   the whole line. A planner with an item still in its line is never ended
   by the daemon, however quiet: the item's chip links to its conversation
   and a person sends it again or puts it back. A new planner that could
-  not be sent its line is ended at once, or it would never go cold.
+  not be sent its line is ended at once, or it would never end.
 - **It asks other repos through side helpers of its own**, like a main
   session (`threads.leadsSide`), named `<repo>-for-<its repo>-planner`, in
   a side thread it leads. Filing a task does not stand them down
