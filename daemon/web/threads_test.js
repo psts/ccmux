@@ -203,7 +203,7 @@ test("the page boots: the sidebar from the daemon's lists, the firehose under th
   const p = await boot({ sessions: [lead] });
   assert.deepEqual(p.$("tree").querySelectorAll(".group-name").map((n) => n.textContent), ["ChartLabs"]);
   assert.deepEqual(p.$("tree").querySelectorAll(".row-name").map((n) => n.textContent), ["app"]);
-  assert.equal(p.$("tree").querySelector(".branch").textContent, "dev");
+  assert.equal(p.$("tree").querySelector(".branch"), null, "the branch is in the Git tab, not the sidebar");
   assert.equal(p.book.sockets[0].url, "ws://d/v1/events?user=Pat&device=web");
   p.book.sockets[0].onopen();
   assert.deepEqual(p.book.sockets[0].sent, [{ t: "focus", present: true }], "a person at this page counts as at a screen");
@@ -521,25 +521,18 @@ test("an advisor picked is saved and applies on the next restart, on the same ba
   assert.equal(p.posts().pop().url, "/v1/sessions/lead1/restart");
 });
 
-test("a repo's git details open on a click on the repo the page is in, never on the way to another, stay open beside others, and close on the next click", async () => {
+test("a repo row is its name alone: its git is in the Git tab, and a click on the repo the page is in does nothing", async () => {
   const other = { id: "ws2", name: "web", repoPath: "/p/web", git: { isGitRepo: true, branch: "main" } };
   const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, defaultBranch: "main", defaultRef: "origin/main", aheadOfDefault: 74, modifiedFiles: ["a.ts"] } };
-  const kept = {};
-  const storage = { getItem: (k) => kept[k] || null, setItem: (k, v) => { kept[k] = v; } };
-  const p = await boot({ workspaces: [app, other], sessions: [lead], search: "?s=lead1", storage });
+  const p = await boot({ workspaces: [app, other], sessions: [lead], search: "?s=lead1" });
   const rows = () => p.$("tree").querySelectorAll(".row");
-  const opened = () => rows().map((r) => !!r.querySelector(".git-detail"));
-  assert.deepEqual(opened(), [false, false], "nothing opened yet");
-  assert.deepEqual(rows()[0].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:app", "row-status:●1↑2↑74", "branch:dev"], "name, then changes, ahead and what is not shipped, then the branch last");
-  const ship = rows()[0].querySelector(".ship");
-  assert.equal(ship.title, "74 commits not on origin/main yet: ready to ship");
-  assert.deepEqual(rows()[1].querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent), ["row-name:web", "row-status:", "branch:main"], "a clean repo keeps its empty column, so the branches line up");
+  assert.deepEqual(rows().map((r) => r.querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent)), [["row-name:app"], ["row-name:web"]], "no changes, ahead or behind, ship pill or branch");
+  assert.equal(p.$("tree").querySelector(".ship"), null);
   rows()[0].click();
   await p.settle();
   assert.equal(p.book.pushed.length, 0, "the repo the page is in: no move");
-  assert.equal(rows()[0].className, "row on open");
-  assert.deepEqual(rows()[0].querySelector(".git-detail").children.map((c) => c.textContent), ["dev → origin/dev ↑2", "vs origin/main ↑74", "● 1 changed file"], "no folder: it is in the row's hover tip");
-  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on open", "side-more", "side-todo"], "beside the card, not inside it: its menu button, which only a phone shows (threads.css), and the repo's to-do pill, both laid over the card");
+  assert.equal(rows()[0].className, "row on", "and nothing opens");
+  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row on", "side-more", "side-todo"], "beside the card, not inside it: its menu button, which only a phone shows (threads.css), and the repo's to-do pill, both laid over the card");
   const pill = p.$("tree").querySelectorAll(".repo")[0].querySelector(".side-todo");
   assert.equal(pill.querySelector(".sd-count").className, "sd-count", "the repo the page is in shows its pill with nothing on its list, so a first item can be added");
   assert.equal(pill.textContent, "0");
@@ -549,16 +542,6 @@ test("a repo's git details open on a click on the repo the page is in, never on 
   rows()[1].click();
   await p.settle();
   assert.equal(p.book.pushed.pop(), "/threads.html?ws=ws2&new=lead", "another repo: the page goes there");
-  assert.deepEqual(opened(), [true, false], "and its details stay shut on the way in");
-  assert.deepEqual(p.$("tree").querySelectorAll(".repo")[0].children.map((c) => c.className), ["row open", "side-more"], "a repo the page is not in, with nothing on its list, has no to-do pill");
-  rows()[1].click();
-  await p.settle();
-  assert.deepEqual(opened(), [true, true], "a second click opens them, and both stay open");
-  rows()[1].click();
-  await p.settle();
-  assert.deepEqual(opened(), [true, false], "a click on the repo the page is in closes its details");
-  const again = await boot({ workspaces: [app, other], sessions: [lead], storage });
-  assert.deepEqual(again.$("tree").querySelectorAll(".row").map((r) => !!r.querySelector(".git-detail")), [true, false], "kept for the next load");
 });
 
 test("an agent that runs as a session opens its conversation here, and shows no model picker", async () => {
@@ -819,18 +802,21 @@ test("a session in no thread has no team, and asks for none", async () => {
 });
 
 const hour = 3600 * 1000;
-const commitsAnswer = () => ({ repo: true, branch: "dev", groups: [
+const commitsAnswer = () => ({ repo: true, branch: "dev", git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 1, defaultBranch: "main", defaultRef: "origin/main", aheadOfDefault: 2, modifiedFiles: [{ path: "a.js" }] }, groups: [
   { key: "unpushed", title: "Not pushed", commits: [{ sha: "a".repeat(40), short: "aaaaaaa", subject: "Add the export link", body: "Why: people asked.", author: "Pat", time: Date.now() - 3 * hour }], more: 0 },
   { key: "pushed", title: "Pushed, not shipped", commits: [{ sha: "b".repeat(40), short: "bbbbbbb", subject: "Fix the totals", author: "Pat", time: Date.now() - 26 * hour }], more: 120 },
 ] });
 
-test("the Commits tab lists what the repo has not shipped, and opens messages in place", async () => {
+test("the Git tab lists what the repo has not shipped, and opens messages in place", async () => {
   let lists = 0;
   const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [
     [/^GET \/v1\/sessions\/lead1\/commits$/, () => { lists++; return commitsAnswer(); }],
   ] });
   const tab = p.$("tab-commits");
   assert.equal(lists, 1, "read when the session is picked");
+  const line = tab.querySelector(".git-line");
+  assert.deepEqual(line.children.map((c) => c.className + ":" + c.textContent), ["branch:dev", "dirty:●1", "ab:↑1", "ship:↑2"], "one line over the groups: branch, changes, upstream, what a ship would send");
+  assert.equal(line.querySelector(".ship").title, "2 commits not on origin/main yet: ready to ship");
   assert.deepEqual(tab.querySelectorAll(".cg").map((g) => [g.querySelector(".cg-title").textContent, g.querySelector(".cg-count").textContent,
     g.querySelectorAll(".cm-row").map((r) => [r.querySelector(".cm-sha").textContent, r.querySelector(".cm-subject").textContent, r.querySelector(".cm-when").textContent])]), [
     ["Not pushed", "1", [["aaaaaaa", "Add the export link", "3 h ago"]]],
@@ -861,7 +847,7 @@ test("the Commits tab lists what the repo has not shipped, and opens messages in
   assert.equal(lists, 2, "and not at every frame");
 });
 
-test("the Commits tab's quiet lines: nothing waiting, no repo, a failed read", async () => {
+test("the Git tab's quiet lines: nothing waiting, no repo, a failed read", async () => {
   const say = async (answer) => {
     const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [[/^GET \/v1\/sessions\/lead1\/commits$/, () => answer]] });
     return p.$("tab-commits").textContent;
@@ -1591,7 +1577,7 @@ test("the session's own step list is the Steps tab, apart from the repo's to-do 
   assert.equal(p.$("repo-todo").querySelectorAll(".todo-text").length, 0, "a session's steps are never on the repo's list");
   const html = fs.readFileSync(path.join(__dirname, "threads.html"), "utf8");
   assert.deepEqual([...html.matchAll(/class="tab[^"]*"[^>]*data-tab="(\w+)"[^>]*>([^<]+)</g)].map((m) => [m[1], m[2]]),
-    [["commits", "Commits"], ["team", "Helpers"], ["steps", "Steps"]]);
+    [["commits", "Git"], ["team", "Helpers"], ["steps", "Steps"]]);
   const empty = await todoPage([]);
   await empty.p.frame(snapshot());
   assert.equal(empty.p.$("tab-steps").textContent, "No step list in this session.");

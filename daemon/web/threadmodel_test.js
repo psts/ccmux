@@ -65,9 +65,8 @@ test("the sidebar is windows, then repos with their lead, then the threads filed
   const [app, api] = groups[0].repos;
   assert.equal(app.lead.id, "lead");
   assert.equal(app.state, "asleep");
-  assert.equal(app.git.branch, "dev");
   assert.deepEqual(app.threads.map((t) => [t.session.id, t.title, t.state]), [["t1", "New thread", "waiting"], ["t2", "Drawings lost on exit", "running"]]);
-  assert.deepEqual([api.name, api.lead, api.state, api.threads.length, api.git], ["backend", null, "asleep", 0, null]);
+  assert.deepEqual([api.name, api.lead, api.state, api.threads.length], ["backend", null, "asleep", 0]);
   assert.deepEqual(groups[0].repos.map((r) => r.name), ["app", "backend"], "repos by name, not the window's order");
   assert.deepEqual(groups[0].agents, [{ id: "radar", name: "radar", state: "live" }, { id: "x-post", name: "X-post", state: "asleep" }], "agents apart from the repos, by name, ignoring case");
   assert.deepEqual(groups[1].repos.map((r) => r.name), ["solo"], "an agent's own workspace is not a repo");

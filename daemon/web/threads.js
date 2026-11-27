@@ -11,8 +11,6 @@
   const Pending = window.ccmuxThreadPending, Cmds = window.ccmuxThreadCmds, Advisor = window.ccmuxThreadAdvisor;
   const EarlierView = window.ccmuxThreadEarlier;
   const storage = () => { try { return window.localStorage; } catch (_) { return null; } }; // blocked: nothing kept
-  const DETAILS = "ccmux-thread-details";
-  const loadDetails = () => { try { const v = JSON.parse(storage().getItem(DETAILS) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch (_) { return new Set(); } };
   const $ = (id) => document.getElementById(id);
   const show = (id, on) => $(id).classList.toggle("hidden", !on);
 
@@ -24,7 +22,6 @@
     drafts: new Map(), // unsent text and images by what is on screen (keepDraft)
     user: "anon", feed: null, acted: "", images: [], pending: [], pendingKey: 0, pumping: false, error: "", listError: "", menu: false,
     draftModel: "", draftAdvisor: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
-    details: loadDetails(), // the repos whose git details are open in the sidebar
     cmds: Cmds.load(storage()), cmdsFrom: null, // each repo's last command list, for its drafts (threadcmds.js)
   };
 
@@ -138,7 +135,7 @@
     sessions: () => S.sessions, sessionHref: (id) => R.threadHref({ kind: "session", id }), openSession: (id) => select({ kind: "session", id }),
   });
 
-  // The Commits tab (threadcommits.js): what the picked session's repo
+  // The Git tab (threadcommits.js): what the picked session's repo
   // has not shipped yet.
   const Commits = window.ccmuxThreadCommits.create({ call, changed: () => schedule(), now: () => Date.now() });
 
@@ -406,7 +403,6 @@
       isLead: (r) => (sess ? !!r.lead && r.lead.id === sess.id : S.sel.kind === "draft" && S.sel.as === "lead" && S.sel.ws === r.id),
       isSession: (s) => !!sess && s.id === sess.id,
       inRepo: (r) => !!ws && ws.id === r.id,
-      detailOpen: (r) => S.details.has(r.id),
       pickRepo,
       pickSession: (s) => select({ kind: "session", id: s.id }),
       openAgent: (a, g) => { location.href = R.href(g.id, a.id); },
@@ -417,17 +413,11 @@
     });
   }
 
-  // pickRepo goes to a repo's lead; a click on the repo the page is already
-  // in opens or closes its git details instead, so they never open on the
-  // way in. Open details stay open, several at once, and are kept for the
-  // next load.
+  // pickRepo goes to a repo's lead, or a draft for one when it has none.
+  // Its git state is in the Git tab.
   function pickRepo(r) {
     const here = S.sel.kind === "session" ? !!r.lead && r.lead.id === S.sel.id : S.sel.kind === "draft" && S.sel.as === "lead" && S.sel.ws === r.id;
-    if (!here) return select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" });
-    if (S.details.has(r.id)) S.details.delete(r.id);
-    else S.details.add(r.id);
-    try { storage().setItem(DETAILS, JSON.stringify([...S.details])); } catch (_) { /* blocked: kept for this load */ }
-    drawAll();
+    if (!here) select(r.lead ? { kind: "session", id: r.lead.id } : { kind: "draft", ws: r.id, as: "lead" });
   }
 
   // liveState is where the picked session is right now: its row's word,

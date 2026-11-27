@@ -249,39 +249,6 @@
 
   // --- the sidebar ---
 
-  // gitCols are a repo row's two right-hand columns (threads.css .cols):
-  // its changed files and how far it is from its upstream, then its branch,
-  // last, so every row's branch and changes line up whatever is shown.
-  function gitCols(git) {
-    if (!git) return [];
-    const status = add(el("span", "row-status"), git.dirty ? el("span", "dirty", "●" + git.dirty) : null, git.origin ? el("span", "ab", git.origin) : null, shipTag(git));
-    const branch = el("span", "branch", git.branch);
-    branch.title = git.branch;
-    return [status, branch];
-  }
-
-  // shipTag is how the branch stands against the trunk (origin/main), as a
-  // small pill: ↑ the commits a ship would send, ↓ what the trunk has that the
-  // branch has not. Short, so the repo's name keeps its room; the words are
-  // in its tip. None when both are zero.
-  function shipTag(git) {
-    if (!git.ship && !git.shipBehind) return null;
-    const t = el("span", "ship", Model.ab(git.ship, git.shipBehind));
-    const n = (k) => `${k} commit${k === 1 ? "" : "s"}`;
-    t.title = [git.ship ? `${n(git.ship)} not on ${git.shipRef} yet: ready to ship` : "", git.shipBehind ? `${n(git.shipBehind)} on ${git.shipRef} not in this branch` : ""].filter(Boolean).join(". ");
-    return t;
-  }
-
-  // gitDetail is the repo's git state written out, inside its row's card,
-  // for each repo whose details the person opened: how its branch stands and
-  // whether anything is changed. Its folder is left out: the row's title
-  // carries it.
-  function gitDetail(r) {
-    const g = r.git;
-    const state = g.dirty ? el("span", "git-dirty", "● " + g.clean) : el("span", "git-clean", "✓ Clean, no changes");
-    return add(el("span", "git-detail"), el("span", "", g.track), g.vs ? el("span", "", g.vs) : null, state);
-  }
-
   // withMenu gives a sidebar item its right-click menu (ctx.menu), and a
   // "⋯" button that opens the same menu on a touch screen.
   function withMenu(target, kind, item, ctx) {
@@ -380,13 +347,13 @@
 
   function repoEl(r, ctx, g) {
     const box = el("div", "repo");
-    const open = !!r.git && ctx.detailOpen(r);
-    const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + (open ? " open" : "") + attClass(r.state));
+    const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + attClass(r.state));
     row.type = "button";
     row.title = (r.path ? r.path + "\n" : "") + (r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet");
     row.onclick = () => ctx.pickRepo(r);
-    const top = add(el("span", "row-top cols"), el("span", "row-name", r.name), ...gitCols(r.git));
-    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top, open ? gitDetail(r) : null)), withMenu(row, "repo", r, ctx));
+    // Its git state is in the Git tab (threadcommits.js), not here.
+    const top = add(el("span", "row-top cols"), el("span", "row-name", r.name));
+    add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top)), withMenu(row, "repo", r, ctx));
     const todo = todoBadge(r, ctx);
     if (todo) { box.classList.add("has-todo"); add(box, todo); }
     const tasks = repoTasksOf(g, r, ctx);

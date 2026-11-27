@@ -1,4 +1,4 @@
-// threadcommits_test.js: how the Commits tab reads the daemon's answers
+// threadcommits_test.js: how the Git tab reads the daemon's answers
 // (threadcommits.js). The tab in the page, with its clicks, is driven in
 // threads_test.js.
 const test = require("node:test");
@@ -33,6 +33,18 @@ test("a row carries its whole message and the line under it", () => {
     { sha: "f".repeat(40), subject: "No body", time: now - hour },
   ] }] }, now);
   assert.deepEqual(v.groups[0].rows.map((r) => [r.body, r.meta]), [["Why: it broke.", "0123456789 · Pat · 3 h ago"], ["", "ffffffffff · 1 h ago"]]);
+});
+
+test("the git line: branch, changes, upstream and what a ship would send, each with its words on hover", () => {
+  const l = C.gitLine({ isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, behind: 1, defaultBranch: "main", defaultRef: "origin/main", aheadOfDefault: 74, behindDefault: 3, modifiedFiles: [{ path: "a" }] });
+  assert.deepEqual(l, {
+    branch: "dev", dirty: "●1", dirtyTip: "1 changed file", origin: "↑2 ↓1", originTip: "dev → origin/dev ↑2 ↓1",
+    ship: "↑74 ↓3", shipTip: "74 commits not on origin/main yet: ready to ship. 3 commits on origin/main not in this branch",
+  });
+  const clean = C.gitLine({ isGitRepo: true, branch: "main", trackingBranch: "origin/main", defaultBranch: "main", defaultRef: "origin/main" });
+  assert.deepEqual([clean.dirty, clean.origin, clean.ship, clean.originTip], ["", "", "", "main → origin/main up to date"], "a clean trunk shows its branch alone");
+  assert.equal(C.gitLine(undefined), null, "a daemon that sent no status");
+  assert.equal(C.gitLine({ isGitRepo: false }), null);
 });
 
 // A page with no DOM: draw is only asked to follow the session here, so

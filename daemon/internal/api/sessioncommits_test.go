@@ -169,6 +169,25 @@ func TestListCommitsInADevRepo(t *testing.T) {
 	}
 }
 
+func TestListCommitsCarriesTheFoldersGitStatus(t *testing.T) {
+	g := newRepo(t)
+	g.run("checkout", "-q", "-b", "dev")
+	g.commit("b.txt", "b\n", "pushed to dev")
+	g.run("push", "-q", "-u", "origin", "dev")
+	g.commit("c.txt", "c\n", "only here")
+	if err := os.WriteFile(filepath.Join(g.dir, "b.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := listCommits(context.Background(), g.dir)
+	if err != nil || v.Git == nil {
+		t.Fatalf("%v %+v", err, v)
+	}
+	st := v.Git
+	if st.Branch != "dev" || st.TrackingBranch != "origin/dev" || st.Ahead != 1 || st.Behind != 0 || len(st.ModifiedFiles) != 1 || st.DefaultBranch != "main" || st.AheadOfDefault != 2 {
+		t.Fatalf("got %+v", st)
+	}
+}
+
 func TestListCommitsCarriesTheWholeMessage(t *testing.T) {
 	g := newRepo(t)
 	g.commit("b.txt", "b\n", "plain")

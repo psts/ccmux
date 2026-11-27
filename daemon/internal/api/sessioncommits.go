@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"ccmux.dev/ccmuxd/internal/gitstatus"
 	"ccmux.dev/ccmuxd/internal/store"
 )
 
-// The thread page's Commits tab: the commits in a session's repo that have
+// The thread page's Git tab: the commits in a session's repo that have
 // not shipped yet, in groups by how far they still have to go. A repo with
 // a dev branch ships dev to main; a repo with only main ships by pushing
 // it, so "not shipped" there is what came since the last v* tag.
@@ -57,6 +58,11 @@ type commitsView struct {
 	Repo   bool          `json:"repo"`
 	Branch string        `json:"branch"`
 	Groups []commitGroup `json:"groups"`
+	// Git is the folder's own status (branch, changed files, ahead and
+	// behind its upstream and its trunk), the one line over the groups.
+	// It is the session's folder, a worktree included, not the repo's main
+	// one. Absent when it could not be read: the groups still stand.
+	Git *gitstatus.Status `json:"git,omitempty"`
 }
 
 // commitRange is one group before git is asked for it: the commits
@@ -123,7 +129,7 @@ func listCommits(ctx context.Context, dir string) (commitsView, error) {
 	if err != nil {
 		return commitsView{}, err
 	}
-	view := commitsView{Repo: true, Branch: head, Groups: []commitGroup{}}
+	view := commitsView{Repo: true, Branch: head, Groups: []commitGroup{}, Git: folderStatus(ctx, dir)}
 	for _, rg := range pickRanges(has, head, trunk, tag) {
 		g, err := readGroup(ctx, dir, rg)
 		if err != nil {
@@ -300,4 +306,15 @@ func parseLog(out []byte) []commitRow {
 		rows = append(rows, commitRow{SHA: f[0], Short: f[1], Subject: f[2], Body: strings.TrimSpace(f[5]), Author: f[3], Time: at * 1000})
 	}
 	return rows
+}
+
+// folderStatus is dir's git status for the line over the groups, or nil
+// (logged) when it could not be read.
+func folderStatus(ctx context.Context, dir string) *gitstatus.Status {
+	st, err := gitstatus.Full(ctx, dir, gitstatus.DetectDefaultBranch(ctx, dir))
+	if err != nil {
+		log.Printf("sessions: git status of %s not read: %v", dir, err)
+		return nil
+	}
+	return st
 }

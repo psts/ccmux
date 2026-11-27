@@ -42,7 +42,7 @@
     return git.trackingBranch && git.trackingBranch === ref ? git.ahead || 0 : 0;
   }
 
-  // gitView is a repo's git state as the sidebar writes it, or null when it
+  // gitView is a folder's git state as the Git tab writes it, or null when it
   // is not known (never read, or not a git repo).
   function gitView(git) {
     if (!git || !git.isGitRepo) return null;
@@ -86,7 +86,7 @@
     const lead = mine.find((s) => s.kind === "lead") || null;
     const threads = mine.filter((s) => s !== lead).sort((a, b) => a.createdAt - b.createdAt);
     return {
-      id: ws.id, name: repoName(ws), path: ws.repoPath || "", git: gitView(ws.git), lead, state: stateOf(lead),
+      id: ws.id, name: repoName(ws), path: ws.repoPath || "", lead, state: stateOf(lead),
       threads: threads.map((s) => ({ session: s, title: titleOf(s, ws), state: stateOf(s) })),
     };
   }

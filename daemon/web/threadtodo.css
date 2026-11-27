@@ -12,11 +12,10 @@
 /* --- the sidebar pill ---
    It is the repo row's sibling in the repo's grid (threads.css .repo), in
    the same cell, so it lies over the row's first line in the column the
-   row keeps free for it, left of the branch (8px row padding, 64px branch,
-   6px gap). The "⋯" a touch screen shows sits at the row's bottom right,
+   row keeps free for it, at its right (8px row padding). The "⋯" a touch screen shows sits at the row's bottom right,
    clear of it. High and medium are the urgency's colour; low, and nothing
    open, a grey chip. */
-.repo > .side-todo { grid-area: 1 / 1; align-self: start; justify-self: end; position: relative; margin: 5px 78px 0 0; }
+.repo > .side-todo { grid-area: 1 / 1; align-self: start; justify-self: end; position: relative; margin: 5px 8px 0 0; }
 .side-todo { display: flex; align-items: center; height: 20px; padding: 0; border: 0; border-radius: 9px; background: transparent; }
 .side-todo:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .sd-count { min-width: 18px; border-radius: 9px; font-size: 10.5px; font-weight: 700; text-align: center; padding: 0 6px; line-height: 17px; color: var(--fg2); background: var(--chip); font-variant-numeric: tabular-nums; }
