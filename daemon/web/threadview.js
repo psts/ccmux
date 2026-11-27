@@ -487,33 +487,6 @@
 
   // --- the right-hand tabs ---
 
-  // repoChanges is one repo of a thread in the Changes tab: whose branch it
-  // is, the one line on what the branch holds, and its files.
-  function repoChanges(g) {
-    const box = el("div", "chg");
-    add(box, add(el("div", "chg-head"), el("span", "chg-repo", g.repo), el("span", "branch", g.branch)));
-    for (const f of g.files) add(box, add(el("div", "file still"), el("span", "file-path", f.path), el("span", "plus", f.added ? "+" + f.added : ""), el("span", "minus", f.removed ? "−" + f.removed : "")));
-    return add(box, el("div", "chg-status", g.status));
-  }
-
-  // changesTab draws a thread's changes by repo (groups, from the daemon's
-  // read of each member's branch), then what this session itself changed
-  // with its diffs (files, from its conversation).
-  function changesTab(box, files, picked, onPick, groups = []) {
-    box.textContent = "";
-    for (const g of groups) add(box, repoChanges(g));
-    if (groups.length && files.length) add(box, el("div", "chg-own", "Edits in this conversation"));
-    if (!files.length) return groups.length ? box : add(box, el("div", "quiet", "No files changed in this session yet."));
-    for (const f of files) {
-      const row = el("button", "file" + (picked === f.path ? " on" : ""));
-      row.type = "button";
-      row.onclick = () => onPick(f.path);
-      add(box, add(row, el("span", "file-path", f.path), el("span", "plus", f.added ? "+" + f.added : ""), el("span", "minus", f.removed ? "−" + f.removed : "")));
-    }
-    const shown = files.find((f) => f.path === picked) || files[files.length - 1];
-    return add(box, diff(shown.diff, shown.path));
-  }
-
   // What the Helpers tab says of its team: a thread's lead stands its
   // helpers down; a main session's helpers end by themselves.
   const helpersSay = {
@@ -564,5 +537,5 @@
     }
   }
 
-  window.ccmuxThreadView = { el, block, sig, card, pressKey, frameAnswer, sidebar, changesTab, helpersTab, stepsTab, diff, mediaURL };
+  window.ccmuxThreadView = { el, block, sig, card, pressKey, frameAnswer, sidebar, helpersTab, stepsTab, diff, mediaURL };
 })();

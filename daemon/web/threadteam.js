@@ -2,10 +2,9 @@
 // with helpers is one piece of work with its own sessions: the one that
 // leads it, in its repo, and a helper per other repo it needs. The daemon
 // serves every session with its thread, its role and where it works
-// (/v1/sessions), the thread's own row (/v1/threads), and for one thread
-// each member's changes (/v1/threads/{id}); this turns them into the
-// sidebar's line under a thread, the header's line, the Helpers tab and the
-// changes by repo.
+// (/v1/sessions), the thread's own row (/v1/threads), and one thread whole
+// (/v1/threads/{id}); this turns them into the sidebar's line under a
+// thread, the header's line, the Helpers tab and the merge bar.
 //
 // Plain functions over plain data, so threadteam_test.js runs them without
 // a browser. It builds on threadmodel.js (where a session is, a repo's name).
@@ -151,15 +150,6 @@
     return `${group} · lead: ${leadRepo}${team}`;
   }
 
-  // changeGroups is the Changes tab by repo: each member's branch, the one
-  // line on what it holds, and its files with lines added and removed.
-  function changeGroups(detail) {
-    return ((detail && detail.members) || []).map((m) => ({
-      repo: m.repo, role: m.session.role || "", branch: m.session.branch || "no branch yet", status: m.status || "",
-      files: ((m.changes && m.changes.files) || []).map((f) => ({ path: f.path, added: f.added || 0, removed: f.removed || 0 })),
-    }));
-  }
-
   // elapsed is how long something has run, as a person reads it: "45s",
   // "3m 05s", "1h 02m".
   function elapsed(ms) {
@@ -193,7 +183,7 @@
     return say ? { running: false, stopping: false, text: say(merge) } : null;
   }
 
-  const api = { isHelper, leadsSide, sideOf, teamId, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, changeGroups, elapsed, mergeLine };
+  const api = { isHelper, leadsSide, sideOf, teamId, membersOf, repoOf, teamState, subLine, decorate, helperRows, metaLine, elapsed, mergeLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadTeam = api;
 })(typeof window !== "undefined" ? window : this);

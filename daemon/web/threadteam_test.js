@@ -85,18 +85,6 @@ test("a task's builder is named as one, with its teammates, and no lead is asked
   assert.equal(t.teamState(appB, both), "waiting", "a teammate's question shows on the task's rows");
 });
 
-test("changes are grouped by repo, with each member's branch and what it holds", () => {
-  const detail = { thread: { id: 3 }, members: [
-    { session: lead, repo: "app", status: "2 commits, all committed", changes: { commits: 2, files: [{ path: "src/a.js", added: 18, removed: 2 }, { path: "bin/logo.png" }] } },
-    { session: admin, repo: "admin", status: "Reading only" },
-  ] };
-  assert.deepEqual(t.changeGroups(detail), [
-    { repo: "app", role: "lead", branch: "thread/3-export", status: "2 commits, all committed", files: [{ path: "src/a.js", added: 18, removed: 2 }, { path: "bin/logo.png", added: 0, removed: 0 }] },
-    { repo: "admin", role: "helper", branch: "no branch yet", status: "Reading only", files: [] },
-  ]);
-  assert.deepEqual(t.changeGroups(null), []);
-});
-
 test("a member whose repo session is not in the lists is named after its folder", () => {
   assert.equal(t.repoOf({ workspaceId: "nope", repo: "/p/payments" }, workspaces), "payments");
   assert.equal(t.repoOf({ workspaceId: "api" }, workspaces), "backend");

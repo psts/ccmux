@@ -80,14 +80,6 @@ test("a turn that failed shows its error after what it did", () => {
   assert.deepEqual(b.map((x) => [x.kind, x.text]), [["work", undefined], ["error", "overloaded"]]);
 });
 
-test("the files a session wrote, each once, with its lines in total", () => {
-  const c = w.changes(turns, "/p/app");
-  assert.deepEqual(c.map((f) => [f.path, f.added, f.removed]), [["src/a.ts", 19, 3], ["src/b.test.ts", 31, 0]]);
-  assert.equal(c[0].diff.added, 1, "the last diff made to the file");
-  const pending = [assistant("m1", [tool("m1.0", "Edit", { file_path: "/p/app/x" }, { status: "running", diff: diff("/p/app/x", 5, 0) }), tool("m1.1", "Edit", { file_path: "/p/app/y" }, { status: "error" })])];
-  assert.deepEqual(w.changes(pending, "/p/app"), [], "a write that has not happened, or failed, changed nothing");
-});
-
 test("a path outside the repo is written whole", () => {
   assert.equal(w.rel("/p/app/src/a.ts", "/p/app"), "src/a.ts");
   assert.equal(w.rel("/p/application/a.ts", "/p/app"), "/p/application/a.ts");

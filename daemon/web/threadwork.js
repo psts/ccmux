@@ -158,24 +158,7 @@
     return out;
   }
 
-  // changes is the files a session's finished tool calls wrote, in the order
-  // first touched, each with its lines added and removed in total and the
-  // last diff made to it.
-  function changes(turns, repo) {
-    const byPath = new Map();
-    for (const turn of turns) {
-      for (const p of turn.parts) {
-        const st = p.state || {};
-        if (p.type !== "tool" || !st.diff || st.status !== "completed") continue;
-        const path = rel(st.diff.path, repo);
-        const had = byPath.get(path) || { path, added: 0, removed: 0, diff: null };
-        byPath.set(path, { path, added: had.added + st.diff.added, removed: had.removed + st.diff.removed, diff: st.diff });
-      }
-    }
-    return [...byPath.values()];
-  }
-
-  const api = { rel, threadRoots, busMessage, outcome, step, summarize, blocks, changes };
+  const api = { rel, threadRoots, busMessage, outcome, step, summarize, blocks };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadWork = api;
 })(typeof window !== "undefined" ? window : this);

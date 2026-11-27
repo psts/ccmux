@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"ccmux.dev/ccmuxd/internal/store"
 )
 
 // The files a person can mention with "@" in a session's box on the
@@ -32,17 +30,8 @@ const (
 // sessionFiles: GET /v1/sessions/{id}/files?q=... answers {files: [...]},
 // the best matches first. A folder that is not a git repo has none.
 func (s *Server) sessionFiles(w http.ResponseWriter, r *http.Request) {
-	if !s.runnersReady(w) {
-		return
-	}
-	sess, err := s.runnerRows.RunnerSession(r.PathValue("id"))
-	if err != nil {
-		log.Printf("sessions: files of %s: row not read: %v", r.PathValue("id"), err)
-		writeError(w, http.StatusInternalServerError, "the session could not be read: "+err.Error())
-		return
-	}
+	sess := s.sessionFolder(w, r, "files")
 	if sess == nil {
-		writeRunnerError(w, store.ErrNoSession)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), filesWait)
@@ -69,12 +58,8 @@ var errNotRepo = errors.New("not a git repository")
 
 // gitFiles is every file git tracks or would track (not ignored) under dir.
 func gitFiles(ctx context.Context, dir string) ([]string, error) {
-	inside, err := git(ctx, dir, "rev-parse", "--is-inside-work-tree")
-	if err != nil {
+	if err := workTree(ctx, dir); err != nil {
 		return nil, err
-	}
-	if strings.TrimSpace(string(inside)) != "true" {
-		return nil, errNotRepo // inside a .git folder: no work tree to list
 	}
 	out, err := git(ctx, dir, "ls-files", "-co", "--exclude-standard", "-z")
 	if err != nil {

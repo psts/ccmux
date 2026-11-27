@@ -20,7 +20,7 @@
     windows: [], workspaces: [], sessions: [], threads: [], detail: null, listed: false,
     sel: R.parseThread(location.search), // what is on screen: a session, a draft, or nothing
     stream: Stream.fresh(), sock: null, retry: window.ccmuxRetry.backoff(), feedRetry: window.ccmuxRetry.backoff(),
-    drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), file: "", dirty: false, jump: false,
+    drawn: new Map(), drawnFor: "", cardsSig: "", pinned: true, open: new Set(), dirty: false, jump: false,
     drafts: new Map(), // unsent text and images by what is on screen (keepDraft)
     user: "anon", feed: null, acted: "", images: [], pending: [], pendingKey: 0, pumping: false, error: "", listError: "", menu: false,
     draftModel: "", draftAdvisor: "", picked: "", later: new Set(), awaitBoot: null, restarted: false,
@@ -137,6 +137,10 @@
     // An item in a planning line links to the repo's planner.
     sessions: () => S.sessions, sessionHref: (id) => R.threadHref({ kind: "session", id }), openSession: (id) => select({ kind: "session", id }),
   });
+
+  // The Commits tab (threadcommits.js): what the picked session's repo
+  // has not shipped yet.
+  const Commits = window.ccmuxThreadCommits.create({ call, changed: () => schedule(), now: () => Date.now() });
 
   // A repo's Notes (threadnotesctl.js): the old lens's Scratchpad, the same
   // text, in a pop-up from the header's notepad button.
@@ -266,7 +270,7 @@
     $("cards").textContent = ""; // drawCards draws nothing for a new conversation's no cards
     S.cardsSig = "";
     S.open.clear();
-    Object.assign(S, { file: "", error: "", restarted: false, awaitBoot: null, picked: "", menu: false, detail: null, said: "" });
+    Object.assign(S, { error: "", restarted: false, awaitBoot: null, picked: "", menu: false, detail: null, said: "" });
     closeSock();
     if (sel.kind === "session") openSock();
     document.getElementById("page").classList.remove("side-open");
@@ -718,11 +722,9 @@
   }
 
   function drawDetail() {
-    const files = Work.changes(S.stream.turns, roots());
     const sess = session();
     const team = Team.teamId(sess, S.threads);
-    const mine = !!sess && !!S.detail && S.detail.thread.id === team;
-    View.changesTab($("tab-changes"), files, S.file, (path) => { S.file = path; schedule(); }, mine ? Team.changeGroups(S.detail) : []);
+    Commits.draw($("tab-commits"), sess ? sess.id : "", S.stream.busy);
     View.helpersTab($("tab-team"), Team.helperRows(sess, S.sessions, S.workspaces, S.threads), {
       isPicked: (r) => !!sess && r.id === sess.id,
       pick: (r) => select({ kind: "session", id: r.id }),
@@ -1224,7 +1226,8 @@
     for (const tab of document.querySelectorAll(".tab")) {
       tab.onclick = () => {
         for (const t of document.querySelectorAll(".tab")) t.classList.toggle("on", t === tab);
-        for (const name of ["changes", "team", "steps"]) show("tab-" + name, tab.dataset.tab === name);
+        for (const name of ["commits", "team", "steps"]) show("tab-" + name, tab.dataset.tab === name);
+        if (tab.dataset.tab === "commits") Commits.shown();
       };
     }
   }

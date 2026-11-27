@@ -151,11 +151,11 @@
 
     <aside id="detail" aria-label="Thread details">
       <div class="tabs" role="tablist">
-        <button class="tab on" role="tab" data-tab="changes" type="button">Changes</button>
+        <button class="tab on" role="tab" data-tab="commits" type="button" title="What this repo has not shipped yet">Commits</button>
         <button class="tab" role="tab" data-tab="team" type="button">Helpers</button>
         <button class="tab" role="tab" data-tab="steps" type="button" title="This session's own step list">Steps</button>
       </div>
-      <div id="tab-changes" class="tab-body"></div>
+      <div id="tab-commits" class="tab-body"></div>
       <div id="tab-team" class="tab-body hidden"></div>
       <div id="tab-steps" class="tab-body hidden"></div>
     </aside>
@@ -238,6 +238,7 @@
   <script src="/threadtodoview.js"></script>
   <script src="/threadsideprefs.js"></script>
   <script src="/threadview.js"></script>
+  <script src="/threadcommits.js"></script>
   <script src="/threadcaps.js"></script>
   <script src="/threadcapsview.js"></script>
   <script src="/threadcapsctl.js"></script>

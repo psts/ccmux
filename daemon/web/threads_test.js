@@ -795,17 +795,64 @@ test("the Helpers tab lists the team, opens a member, and stands a helper down",
   assert.equal(p.$("tab-team").querySelectorAll(".small").length, 0, "and so is standing a helper down");
 });
 
-test("changes are shown by repo, each with its branch and what it holds", async () => {
-  const p = await team();
-  const groups = p.$("tab-changes").querySelectorAll(".chg");
-  assert.deepEqual(groups.map((g) => [g.querySelector(".chg-repo").textContent, g.querySelector(".branch").textContent, g.querySelector(".chg-status").textContent, g.querySelectorAll(".file-path").map((f) => f.textContent)]), [
-    ["app", "thread/3-trade-csv-export", "1 commit, all committed", ["src/exportLink.js"]],
-    ["backend", "no branch yet", "Reading only", []],
-  ]);
+test("a session in no thread has no team, and asks for none", async () => {
   const plain = await boot({ sessions: [lead], search: "?s=lead1" });
-  assert.equal(plain.$("tab-changes").querySelectorAll(".chg").length, 0, "a session in no thread has no team to show");
   assert.equal(plain.$("tab-team").textContent, "No helpers. This session gets one when it asks another repo something.", "a main session gets helpers by asking, not by starting a thread");
   assert.equal(plain.book.calls.some((c) => /\/v1\/threads\/\d/.test(c.url)), false, "and no thread is asked for");
+});
+
+const hour = 3600 * 1000;
+const commitsAnswer = () => ({ repo: true, branch: "dev", groups: [
+  { key: "unpushed", title: "Not pushed", commits: [{ sha: "a".repeat(40), short: "aaaaaaa", subject: "Add the export link", author: "Pat", time: Date.now() - 3 * hour }], more: 0 },
+  { key: "pushed", title: "Pushed, not shipped", commits: [{ sha: "b".repeat(40), short: "bbbbbbb", subject: "Fix the totals", author: "Pat", time: Date.now() - 26 * hour }], more: 120 },
+] });
+const oneCommit = { sha: "a".repeat(40), subject: "Add the export link", body: "Why: people asked.", author: "Pat", time: Date.now() - 3 * hour,
+  files: [{ path: "src/export.js", added: 2, removed: 1, diff: { hunks: [{ oldStart: 4, newStart: 4, lines: [" keep", "-old", "+new", "+more"] }], truncated: false } },
+    { path: "logo.png", added: 0, removed: 0, binary: true, diff: { hunks: [], truncated: false } }] };
+
+test("the Commits tab lists what the repo has not shipped, and opens one commit", async () => {
+  let lists = 0;
+  const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [
+    [/^GET \/v1\/sessions\/lead1\/commits\/a{40}$/, () => oneCommit],
+    [/^GET \/v1\/sessions\/lead1\/commits$/, () => { lists++; return commitsAnswer(); }],
+  ] });
+  const tab = p.$("tab-commits");
+  assert.equal(lists, 1, "read when the session is picked");
+  assert.deepEqual(tab.querySelectorAll(".cg").map((g) => [g.querySelector(".cg-title").textContent, g.querySelector(".cg-count").textContent,
+    g.querySelectorAll(".cm-row").map((r) => [r.querySelector(".cm-sha").textContent, r.querySelector(".cm-subject").textContent, r.querySelector(".cm-when").textContent])]), [
+    ["Not pushed", "1", [["aaaaaaa", "Add the export link", "3 h ago"]]],
+    ["Pushed, not shipped", "121", [["bbbbbbb", "Fix the totals", "1 d ago"]]],
+  ]);
+  assert.ok(tab.textContent.includes("and 120 more"));
+  tab.querySelectorAll(".cm-row")[0].click();
+  await p.settle();
+  assert.equal(tab.querySelectorAll(".cg").length, 0, "the commit takes the list's place");
+  assert.equal(tab.querySelector(".cm-head").textContent, "Add the export link");
+  assert.equal(tab.querySelector(".cm-body").textContent, "Why: people asked.");
+  assert.deepEqual(tab.querySelectorAll(".diff-path").map((d) => d.textContent), ["src/export.js · +2 −1", "logo.png · binary"]);
+  assert.deepEqual(tab.querySelector(".diff").querySelectorAll(".add").map((l) => l.textContent), ["+new", "+more"]);
+  tab.querySelector(".cm-back").click();
+  await p.settle();
+  assert.equal(tab.querySelectorAll(".cm-row").length, 2, "back to the list");
+  await p.frame(snapshot({ busy: true }));
+  assert.equal(lists, 1, "a running turn reads nothing");
+  await p.frame({ t: "event", seq: 6, data: { type: "session.idle", properties: {} } });
+  assert.equal(lists, 2, "a turn that ended may have committed: read again");
+  await p.frame({ t: "event", seq: 7, data: { type: "session.info", properties: { info: {} } } });
+  assert.equal(lists, 2, "and not at every frame");
+});
+
+test("the Commits tab's quiet lines: nothing waiting, no repo, a failed read", async () => {
+  const say = async (answer) => {
+    const p = await boot({ sessions: [lead], search: "?s=lead1", routes: [[/^GET \/v1\/sessions\/lead1\/commits$/, () => answer]] });
+    return p.$("tab-commits").textContent;
+  };
+  assert.equal(await say({ repo: true, groups: [] }), "Nothing waiting: every commit has shipped.");
+  assert.equal(await say({ repo: false, groups: [] }), "Not a git repo.");
+  assert.equal(await say({}), "Nothing waiting: every commit has shipped.", "an answer with no groups is nothing to show");
+  assert.equal(await say({ fail: 502, error: "git log: boom" }), "The commits could not be read: git log: boom");
+  const none = await boot({ sessions: [lead] });
+  assert.equal(none.book.calls.some((c) => c.url.includes("/commits")), false, "no session, no read");
 });
 
 test("Merge thread asks the daemon, and says what it said or why it would not", async () => {
@@ -1525,7 +1572,7 @@ test("the session's own step list is the Steps tab, apart from the repo's to-do 
   assert.equal(p.$("repo-todo").querySelectorAll(".todo-text").length, 0, "a session's steps are never on the repo's list");
   const html = fs.readFileSync(path.join(__dirname, "threads.html"), "utf8");
   assert.deepEqual([...html.matchAll(/class="tab[^"]*"[^>]*data-tab="(\w+)"[^>]*>([^<]+)</g)].map((m) => [m[1], m[2]]),
-    [["changes", "Changes"], ["team", "Helpers"], ["steps", "Steps"]]);
+    [["commits", "Commits"], ["team", "Helpers"], ["steps", "Steps"]]);
   const empty = await todoPage([]);
   await empty.p.frame(snapshot());
   assert.equal(empty.p.$("tab-steps").textContent, "No step list in this session.");
