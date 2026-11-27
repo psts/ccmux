@@ -11,8 +11,9 @@
 
 /* --- the sidebar pill ---
    It is the repo row's sibling in the repo's grid (threads.css .repo), in
-   the same cell, so it lies over the row's first line in the column the
-   row keeps free for it, at its right (8px row padding). The "⋯" a touch screen shows sits at the row's bottom right,
+   the same cell, so it lies over the row's first line in the 38px column
+   every repo row keeps free for it, at its right (8px row padding), right
+   of the sync arrows' column (threads.css .row-top.cols). The "⋯" a touch screen shows sits at the row's bottom right,
    clear of it. High and medium are the urgency's colour; low, and nothing
    open, a grey chip. */
 .repo > .side-todo { grid-area: 1 / 1; align-self: start; justify-self: end; position: relative; margin: 5px 8px 0 0; }

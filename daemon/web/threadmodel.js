@@ -65,6 +65,21 @@
     };
   }
 
+  // syncOf is how a repo stands against its trunk ref (origin/main, or
+  // origin/master): ahead, the commits a ship would send; behind, what the
+  // trunk has that the repo has not. null when it is level, or not known.
+  // On the trunk itself that is its own ahead and behind, when it tracks
+  // that ref; off it, the daemon's counts against the ref.
+  function syncOf(git) {
+    if (!git || !git.isGitRepo) return null;
+    const ref = git.defaultRef || git.defaultBranch || "";
+    const off = !!git.defaultBranch && git.branch !== git.defaultBranch;
+    const tracks = !!git.trackingBranch && git.trackingBranch === ref;
+    const ahead = off ? git.aheadOfDefault || 0 : tracks ? git.ahead || 0 : 0;
+    const behind = off ? git.behindDefault || 0 : tracks ? git.behind || 0 : 0;
+    return ahead || behind ? { ahead, behind, ref } : null;
+  }
+
   const repoName = (ws) => ws.name || String(ws.repoPath || "").split("/").filter(Boolean).pop() || "repo";
 
   // titleOf is what a session's row and header show: a lead is its repo, a
@@ -86,7 +101,7 @@
     const lead = mine.find((s) => s.kind === "lead") || null;
     const threads = mine.filter((s) => s !== lead).sort((a, b) => a.createdAt - b.createdAt);
     return {
-      id: ws.id, name: repoName(ws), path: ws.repoPath || "", lead, state: stateOf(lead),
+      id: ws.id, name: repoName(ws), path: ws.repoPath || "", sync: syncOf(ws.git), lead, state: stateOf(lead),
       threads: threads.map((s) => ({ session: s, title: titleOf(s, ws), state: stateOf(s) })),
     };
   }
@@ -196,7 +211,7 @@
     return Math.round(s / 86400) + " d ago";
   }
 
-  const api = { stateOf, stateLabel, ab, gitView, repoName, titleOf, tree, modelView, ago };
+  const api = { stateOf, stateLabel, ab, gitView, syncOf, repoName, titleOf, tree, modelView, ago };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ccmuxThreadModel = api;
 })(typeof window !== "undefined" ? window : this);

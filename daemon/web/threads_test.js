@@ -521,12 +521,13 @@ test("an advisor picked is saved and applies on the next restart, on the same ba
   assert.equal(p.posts().pop().url, "/v1/sessions/lead1/restart");
 });
 
-test("a repo row is its name alone: its git is in the Git tab, and a click on the repo the page is in does nothing", async () => {
+test("a repo row is its name and arrows when it is not level with its trunk: the rest of its git is in the Git tab, and a click on the repo the page is in does nothing", async () => {
   const other = { id: "ws2", name: "web", repoPath: "/p/web", git: { isGitRepo: true, branch: "main" } };
   const app = { ...repo, git: { isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 2, defaultBranch: "main", defaultRef: "origin/main", aheadOfDefault: 74, modifiedFiles: ["a.ts"] } };
   const p = await boot({ workspaces: [app, other], sessions: [lead], search: "?s=lead1" });
   const rows = () => p.$("tree").querySelectorAll(".row");
-  assert.deepEqual(rows().map((r) => r.querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent)), [["row-name:app"], ["row-name:web"]], "no changes, ahead or behind, ship pill or branch");
+  assert.deepEqual(rows().map((r) => r.querySelector(".row-top").children.map((c) => c.className + ":" + c.textContent)), [["row-name:app", "sync:↑"], ["row-name:web"]], "an arrow, no numbers; no changes, upstream counts or branch");
+  assert.equal(rows()[0].querySelector(".sync").title, "74 commits not on origin/main yet");
   assert.equal(p.$("tree").querySelector(".ship"), null);
   rows()[0].click();
   await p.settle();
@@ -537,7 +538,6 @@ test("a repo row is its name alone: its git is in the Git tab, and a click on th
   assert.equal(pill.querySelector(".sd-count").className, "sd-count", "the repo the page is in shows its pill with nothing on its list, so a first item can be added");
   assert.equal(pill.textContent, "0");
   assert.equal(pill.title, "To-do: nothing open");
-  assert.ok(p.$("tree").querySelectorAll(".repo")[0].classList.contains("has-todo"), "its row keeps a column free for the pill");
   assert.equal(p.$("tree").querySelectorAll(".repo")[1].querySelector(".side-todo"), null, "another repo with nothing on its list has none");
   rows()[1].click();
   await p.settle();

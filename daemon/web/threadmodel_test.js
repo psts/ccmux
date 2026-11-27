@@ -38,6 +38,13 @@ test("git state reads like the lens: branch, dirty count, origin, and the defaul
   assert.equal(m.gitView({ isGitRepo: true, branch: "dev", defaultBranch: "main" }).vs, "vs main even");
   assert.equal(m.gitView({ isGitRepo: true, branch: "x" }).track, "x (no upstream)");
   assert.equal(m.gitView({ isGitRepo: false }), null);
+  assert.deepEqual(m.syncOf({ isGitRepo: true, branch: "dev", trackingBranch: "origin/dev", ahead: 1, defaultBranch: "main", defaultRef: "origin/main", aheadOfDefault: 74, behindDefault: 2 }), { ahead: 74, behind: 2, ref: "origin/main" }, "off the trunk: against the trunk, not its upstream");
+  assert.deepEqual(m.syncOf({ isGitRepo: true, branch: "main", trackingBranch: "origin/main", ahead: 3, behind: 1, defaultBranch: "main", defaultRef: "origin/main" }), { ahead: 3, behind: 1, ref: "origin/main" }, "on the trunk: its own ahead and behind");
+  assert.deepEqual(m.syncOf({ isGitRepo: true, branch: "master", trackingBranch: "origin/master", behind: 4, defaultBranch: "master", defaultRef: "origin/master" }), { ahead: 0, behind: 4, ref: "origin/master" });
+  assert.equal(m.syncOf({ isGitRepo: true, branch: "main", trackingBranch: "fork/main", ahead: 3, defaultBranch: "main", defaultRef: "origin/main" }), null, "a trunk that tracks another remote says nothing against origin/main");
+  assert.equal(m.syncOf({ isGitRepo: true, branch: "main", trackingBranch: "origin/main", defaultBranch: "main", defaultRef: "origin/main" }), null, "level: nothing");
+  assert.equal(m.syncOf({ isGitRepo: false }), null);
+  assert.equal(m.syncOf(undefined), null);
   assert.equal(m.gitView(undefined), null);
   assert.equal(m.ab(0, 3), "↓3");
   assert.equal(m.ab(2, 1), "↑2 ↓1");

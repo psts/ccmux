@@ -345,17 +345,30 @@
   // is answered, green until someone looks. Other states are the dot alone.
   const attClass = (state) => (state === "waiting" || state === "done" ? " att-" + state : "");
 
+  // syncMark is how a repo stands against its trunk, as arrows with no
+  // numbers: ↑ it has commits the trunk has not (ready to ship), ↓ the
+  // trunk has commits it has not. The counts are in its tip and the Git
+  // tab. None when it is level.
+  function syncMark(s) {
+    if (!s) return null;
+    const n = (k) => `${k} commit${k === 1 ? "" : "s"}`;
+    const mark = add(el("span", "sync"), s.ahead ? el("span", "up", "↑") : null, s.behind ? el("span", "down", "↓") : null);
+    mark.title = [s.ahead ? `${n(s.ahead)} not on ${s.ref} yet` : "", s.behind ? `${n(s.behind)} on ${s.ref} not here` : ""].filter(Boolean).join(". ");
+    return mark;
+  }
+
   function repoEl(r, ctx, g) {
     const box = el("div", "repo");
     const row = el("button", "row" + (ctx.isLead(r) ? " on" : "") + attClass(r.state));
     row.type = "button";
     row.title = (r.path ? r.path + "\n" : "") + (r.lead ? "lead " + Model.stateLabel(r.state).toLowerCase() : "no lead yet");
     row.onclick = () => ctx.pickRepo(r);
-    // Its git state is in the Git tab (threadcommits.js), not here.
-    const top = add(el("span", "row-top cols"), el("span", "row-name", r.name));
+    // Only whether it is level with its trunk shows here; the rest of its
+    // git state is in the Git tab (threadcommits.js).
+    const top = add(el("span", "row-top cols"), el("span", "row-name", r.name), syncMark(r.sync));
     add(box, add(row, el("span", "dot " + r.state), add(el("span", "row-body"), top)), withMenu(row, "repo", r, ctx));
     const todo = todoBadge(r, ctx);
-    if (todo) { box.classList.add("has-todo"); add(box, todo); }
+    if (todo) add(box, todo);
     const tasks = repoTasksOf(g, r, ctx);
     for (const t of r.threads) add(box, threadRow(t, ctx, tasks.built.get(t.session.id)));
     return add(box, g ? repoTaskRows(g, r, ctx, tasks.rest) : null);

@@ -133,13 +133,18 @@ a:hover { color: var(--blue-d); }
 .dot.unknown { background: transparent; border: 1.5px solid var(--asleep); }
 .row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
-/* A repo row's top line: its name, cut off with …. Its git state is in
-   the Git tab, not here. */
-.row-top.cols { display: grid; grid-template-columns: minmax(0, 1fr); }
+/* A repo row's top line in three fixed columns: its name (left, cut off
+   with …), the arrows that say it is not level with its trunk
+   (threadview.js syncMark, right-aligned), and a slot for its to-do pill,
+   which is laid over the row there (threadtodo.css). Both right columns
+   are kept on every row, pill or none, so the arrows line up down the
+   menu whatever a pill says. The rest of its git state is in the Git tab. */
+.row-top.cols { display: grid; grid-template-columns: minmax(0, 1fr) 22px 38px; }
+.row-top.cols .sync { grid-column: 2; justify-self: end; }
+.sync { display: flex; gap: 1px; font-size: 12px; font-weight: 700; line-height: 1; cursor: default; }
+.sync .up { color: var(--blue-d); }
+.sync .down { color: var(--amber); }
 .row-top.cols .row-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* A repo with a to-do pill keeps a column free for it at the right: the
-   pill is laid over the row (threadtodo.css). */
-#tree .repo.has-todo .row-top.cols { grid-template-columns: minmax(0, 1fr) 26px; }
 /* A role agent's row: its dot is green while it is up. */
 .dot.live { background: var(--run); }
 #tree .row.agent .row-name { font-size: 13px; }
