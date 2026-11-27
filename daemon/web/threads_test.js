@@ -351,6 +351,23 @@ test("the conversation draws from a snapshot and its events, and a hole in the n
   assert.equal(p.$("blocks").textContent.includes("after a hole"), false, "nothing past the hole was drawn");
 });
 
+test("a message from Claude says when, beside who said it, with the whole date on hover", async () => {
+  const at = new Date(2026, 10, 27, 19, 42, 5).getTime();
+  const p = await boot({ sessions: [lead], search: "?s=lead1" });
+  await p.frame(snapshot({ messages: [
+    { info: { id: "m1", role: "assistant", time: { created: at } }, parts: [{ id: "m1.0", messageID: "m1", type: "text", text: "pushed" }, { id: "m1.1", messageID: "m1", type: "text", text: "and more" }] },
+    { info: { id: "m2", role: "assistant" }, parts: [{ id: "m2.0", messageID: "m2", type: "text", text: "no time" }] },
+  ] }));
+  const heads = p.$("blocks").querySelectorAll(".who");
+  const when = heads[0].querySelector(".said-at");
+  assert.equal(when.textContent, new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+  assert.equal(when.title, new Date(at).toLocaleString([], { dateStyle: "full", timeStyle: "medium" }));
+  assert.equal(when.dateTime, new Date(at).toISOString());
+  assert.equal(heads[1].querySelector(".said-at").textContent, when.textContent, "each piece of one message has the message's time");
+  assert.equal(heads[2].querySelector(".said-at"), null, "a message with no time shows none");
+  assert.equal(heads[2].textContent, "Claude · app lead");
+});
+
 test("a conversation that arrives before the lists is drawn again once they say whose it is", async () => {
   let release;
   const p = await boot({ sessions: [lead], search: "?s=lead1", listsWait: new Promise((r) => { release = r; }) });

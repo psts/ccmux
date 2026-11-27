@@ -146,9 +146,10 @@
       if (turn.info.role === "user") say(userBlock(turn));
       else if (turn.info.role === "note") say({ kind: "note", id: turn.info.id, text: turn.parts.map((p) => p.text || "").join("\n"), level: turn.info.level || "notice" });
       else {
+        const at = (turn.info.time && turn.info.time.created) || 0; // when the message began
         for (const p of turn.parts) {
           if (p.type === "tool") (run = run || []).push(p);
-          else if (p.type === "text" && p.text) say({ kind: "claude", id: p.id, text: p.text });
+          else if (p.type === "text" && p.text) say({ kind: "claude", id: p.id, text: p.text, at });
         }
         const err = turn.info.error;
         if (err) say({ kind: "error", id: turn.info.id + ".error", text: (err.data && err.data.message) || err.name || "error" });

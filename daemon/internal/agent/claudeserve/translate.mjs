@@ -97,6 +97,7 @@ export class Transcript {
     this.byCall = new Map(); // tool call id → part
     this.streamed = new Map(); // message id → parts by block index
     this.seq = 0;
+    this.at = 0; // the time of the message being applied, when it says one
   }
 
   // messages is the whole conversation in GET /session/{id}/message shape.
@@ -145,7 +146,20 @@ export class Transcript {
 
   // apply folds one SDK message in and returns the events it caused. A
   // result message is not folded in here: Agent.onResult ends the turn.
+  // A message read back from disk carries when it was written
+  // (timestamp, which the SDK's type leaves out): a turn it makes is dated
+  // by it, not by when it was read. A live one has none and the turn takes
+  // the clock.
   apply(m) {
+    this.at = Date.parse((m && m.timestamp) || "") || 0;
+    try {
+      return this.applyMessage(m);
+    } finally {
+      this.at = 0;
+    }
+  }
+
+  applyMessage(m) {
     switch (m.type) {
       case "stream_event":
         return this.applyStream(m.event);
@@ -310,7 +324,7 @@ export class Transcript {
   ensureTurn(id, role) {
     let turn = this.byID.get(id);
     if (turn) return turn;
-    turn = { info: { id, sessionID: this.sessionID, role, time: { created: this.now() } }, parts: [] };
+    turn = { info: { id, sessionID: this.sessionID, role, time: { created: this.at || this.now() } }, parts: [] };
     this.turns.push(turn);
     this.byID.set(id, turn);
     this.streamed.set(id, new Map());

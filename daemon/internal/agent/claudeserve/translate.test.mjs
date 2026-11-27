@@ -88,3 +88,12 @@ test("a question card renders for the bus as lines a peer can answer in words", 
   assert.equal(questionCardText(req), "Tone: Which tone?\n  - Warm: friendly\n  - Dry\nPost now? (one or more)\n  - Yes");
   assert.equal(questionCardText({ questions: [] }), "");
 });
+
+test("a message read back from disk dates its turn by its own timestamp; a live one by the clock", () => {
+  const t = new Transcript("s1", now);
+  t.apply({ type: "user", uuid: "u1", timestamp: "2026-11-27T17:03:16.355Z", message: { role: "user", content: "hi" } });
+  t.apply({ type: "assistant", timestamp: "2026-11-27T17:04:00.000Z", message: { id: "m1", content: [{ type: "text", text: "hello" }] } });
+  t.apply({ type: "assistant", timestamp: "not a time", message: { id: "m2", content: [{ type: "text", text: "again" }] } });
+  t.apply({ type: "stream_event", event: { type: "message_start", message: { id: "m3" } } });
+  assert.deepEqual(t.messages().map((m) => m.info.time.created), [Date.parse("2026-11-27T17:03:16.355Z"), Date.parse("2026-11-27T17:04:00.000Z"), 1000, 1000]);
+});

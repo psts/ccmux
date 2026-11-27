@@ -131,8 +131,20 @@
     return x;
   }
 
+  // whenSaid is when a message was: its clock time beside who said it, the
+  // whole date and time on hover. A message with no time shows none.
+  function whenSaid(at) {
+    if (!at) return null;
+    const d = new Date(at);
+    const x = el("time", "said-at", d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    x.dateTime = d.toISOString();
+    x.title = d.toLocaleString([], { dateStyle: "full", timeStyle: "medium" });
+    return x;
+  }
+
   function claude(b, ctx) {
-    const said = add(el("div", "said"), el("span", "who", ctx.who), MD.render(document, el("div", "md"), b.text));
+    const head = add(el("div", "who"), el("span", "", ctx.who), whenSaid(b.at));
+    const said = add(el("div", "said"), head, MD.render(document, el("div", "md"), b.text));
     return add(el("div", "b-claude"), el("span", "avatar"), said);
   }
 
